@@ -295,45 +295,48 @@ describe("commands and schemas", () => {
   });
 
   test("snapshot, resume, and pr emit minimal stable schemas", async () => {
-    const replies = [
-      { id: "s1", status: "warm", backupId: "backup-1", ignored: true },
-      {
-        id: "s1",
-        status: "warm",
-        branch: "scotty/s1",
-        url: "https://worker.example/s/s1?t=secret",
-        ignored: true,
-      },
-      {
-        prUrl: "https://github.test/pr/1",
-        branchUrl: "https://github.test/tree/scotty/s1",
-        created: true,
-        ignored: true,
-      },
-    ];
-    for (const [index, args] of [
-      [0, ["snapshot", "s1"]],
-      [1, ["resume", "s1"]],
-      [2, ["pr", "s1", "--title", "A fix"]],
-    ] as const) {
-      const h = harness({ fetch: async () => Response.json(replies[index]) });
-      expect(
-        await main([...args, "--host", "https://worker.example", "--token", "secret"], h.deps),
-      ).toBe(EXIT.OK);
-      if (index === 0) expect(h.json()).toEqual({ id: "s1", status: "warm", backupId: "backup-1" });
-      if (index === 1)
-        expect(h.json()).toEqual({
+    for (const [args, reply, expected] of [
+      [
+        ["snapshot", "s1"],
+        { id: "s1", status: "warm", backupId: "backup-1", ignored: true },
+        { id: "s1", status: "warm", backupId: "backup-1" },
+      ],
+      [
+        ["resume", "s1"],
+        {
+          id: "s1",
+          status: "warm",
+          branch: "scotty/s1",
+          url: "https://worker.example/s/s1?t=secret",
+          ignored: true,
+        },
+        {
           id: "s1",
           status: "warm",
           url: "https://worker.example/s/s1",
           branch: "scotty/s1",
-        });
-      if (index === 2)
-        expect(h.json()).toEqual({
+        },
+      ],
+      [
+        ["pr", "s1", "--title", "A fix"],
+        {
           prUrl: "https://github.test/pr/1",
           branchUrl: "https://github.test/tree/scotty/s1",
           created: true,
-        });
+          ignored: true,
+        },
+        {
+          prUrl: "https://github.test/pr/1",
+          branchUrl: "https://github.test/tree/scotty/s1",
+          created: true,
+        },
+      ],
+    ] as const) {
+      const h = harness({ fetch: async () => Response.json(reply) });
+      expect(
+        await main([...args, "--host", "https://worker.example", "--token", "secret"], h.deps),
+      ).toBe(EXIT.OK);
+      expect(h.json()).toEqual(expected);
     }
   });
 

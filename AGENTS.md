@@ -67,6 +67,22 @@ Do not copy its product/package complexity, broad plugin architecture, or unrela
 - Use Alchemy's event scopes and Effect HTTP/DO/RPC bridges. Convert Effects to Promises only in the official Sandbox SDK callback islands or CLI boundary where Alchemy cannot own the host signature. Preserve interruption signals where the host provides them.
 - Decode untrusted HTTP, env, KV, R2, OAuth, CLI, and archive data with Schema at the boundary. Avoid unsafe casts, `any`, non-null assertions, and manual shape probing.
 
+## Effect remediation skills
+
+Use the project skills under `.agents/skills` when a matching lint diagnostic or design task appears:
+
+- [`modeling-effect-errors`](.agents/skills/modeling-effect-errors/SKILL.md) for typed failures, tagged errors, and recovery.
+- [`decoding-effect-boundaries`](.agents/skills/decoding-effect-boundaries/SKILL.md) for Schema decoding and unknown inputs.
+- [`deriving-schema-types`](.agents/skills/deriving-schema-types/SKILL.md) for schema-owned TypeScript types.
+- [`wrapping-promise-clients`](.agents/skills/wrapping-promise-clients/SKILL.md) for Promise SDK adapters.
+- [`testing-effect-programs`](.agents/skills/testing-effect-programs/SKILL.md) for `@effect/vitest`, `it.effect`, `assert`, and `TestClock`.
+- [`maintaining-typescript-safety`](.agents/skills/maintaining-typescript-safety/SKILL.md) for casts, host/runtime boundaries, and execution ownership.
+- [`routing-effect-http`](.agents/skills/routing-effect-http/SKILL.md) for Effect HTTP routing with native Cloudflare host types.
+
+Start remediation at the diagnostic's referenced skill, inspect beta.99 source and tests, make the smallest behavior-preserving fix, then run `npm run fmt`, `npm run lint:skills`, the focused test, and the affected typecheck. Boundary suppressions must be adjacent, rule-specific, and explain the native host contract.
+
+Every newly migrated Effect domain module must be added to the strict Scotty override in `.oxlintrc.json` in the same change. Do not classify legacy Worker, CLI, or E2E modules as migrated merely to expand lint coverage.
+
 ## Formatting, lint, and tests
 
 - Use oxfmt and oxlint. Do not format or lint `vendor/**`, generated assets, tldraw archives, or `work/**`.
@@ -79,6 +95,7 @@ Current baseline verification:
 
 ```sh
 npm run fmt
+npm run lint:skills
 npm run lint
 npm run typecheck
 npm run test:all

@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": [{ "name": "scotty", "specifier": "./scripts/oxlint-plugin-scotty.js" }],
   "ignorePatterns": [
     ".pi/**",
     ".wrangler/**",
@@ -15,6 +16,32 @@
   },
   "rules": {
     "typescript/no-explicit-any": "error",
-    "no-debugger": "error"
-  }
+    "no-debugger": "error",
+    "scotty/no-conditional-tests": "error",
+    "scotty/no-double-cast": "error",
+    "scotty/no-effect-escape-hatch": "error",
+    "scotty/no-effect-run-sync-in-tests": "error",
+    "scotty/no-inline-object-type-assertion": "error",
+    "scotty/no-inline-schema-compile": "error",
+    "scotty/no-ts-nocheck": "error",
+    "scotty/prefer-schema-inferred-types": "error"
+  },
+  "overrides": [
+    {
+      "files": [
+        "spikes/infra/external-sandbox-container-binding.ts",
+        "spikes/infra/sandbox-sdk-canary.ts",
+        "spikes/infra/write-only-secret.ts"
+      ],
+      "rules": {
+        "scotty/no-effect-runtime-escape": "error",
+        "scotty/no-error-constructor": "error",
+        "scotty/no-instanceof-error": "error",
+        "scotty/no-json-parse": "error",
+        "scotty/no-promise-reject": "error",
+        "scotty/no-raw-wall-clock": "error",
+        "scotty/no-try-catch-or-throw": "error"
+      }
+    }
+  ]
 }

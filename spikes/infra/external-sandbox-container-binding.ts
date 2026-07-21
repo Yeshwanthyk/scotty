@@ -27,6 +27,7 @@ export const bindExternalSandboxContainer = Effect.fnUntraced(function* ({
     Output.map((namespaces) => {
       const resolved = namespaces[className];
       if (resolved === undefined) {
+        // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: synchronous Output.map invariant check must throw to reject Alchemy output resolution
         throw new Error(
           `Worker ${worker.LogicalId} did not expose Durable Object namespace ${className}.`,
         );

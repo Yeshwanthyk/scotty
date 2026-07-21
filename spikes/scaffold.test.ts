@@ -2,9 +2,10 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 const root = new URL("../", import.meta.url);
+type JsonObject = Record<string, unknown>;
 
-async function readJson(path: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await readFile(new URL(path, root), "utf8")) as Record<string, unknown>;
+async function readJson(path: string): Promise<JsonObject> {
+  return JSON.parse(await readFile(new URL(path, root), "utf8")) as JsonObject;
 }
 
 describe("pinned Task 4 contracts", () => {

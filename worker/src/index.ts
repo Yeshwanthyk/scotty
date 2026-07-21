@@ -11,6 +11,7 @@ import {
   ScottyError,
   toSessionView,
   type SessionProjection,
+  type SessionStatus,
 } from "./contracts";
 import { requireAuth, setAuthCookie } from "./auth";
 import { Sandbox as ScottySandbox } from "./session";
@@ -211,12 +212,15 @@ function normalizeError(error: unknown): ScottyError {
   return new ScottyError("internal", "Internal error", { httpStatus: 500, exitCode: 1 });
 }
 
+const isSessionStatus = (value: string): value is SessionStatus =>
+  ["booting", "warm", "sleeping", "failed", "gone"].includes(value);
+
 function parseProjection(value: unknown): SessionProjection | null {
   if (!isRecord(value) || value.version !== 1) return null;
   if (
     typeof value.id !== "string" ||
     typeof value.status !== "string" ||
-    !["booting", "warm", "sleeping", "failed", "gone"].includes(value.status) ||
+    !isSessionStatus(value.status) ||
     typeof value.repo !== "string" ||
     typeof value.defaultBranch !== "string" ||
     typeof value.branch !== "string" ||
@@ -227,7 +231,43 @@ function parseProjection(value: unknown): SessionProjection | null {
   ) {
     return null;
   }
-  return value as unknown as SessionProjection;
+  if (
+    (value.backupId !== undefined && typeof value.backupId !== "string") ||
+    (value.codexThreadId !== undefined && typeof value.codexThreadId !== "string")
+  ) {
+    return null;
+  }
+  let failure;
+  if (value.failure !== undefined) {
+    if (
+      !isRecord(value.failure) ||
+      typeof value.failure.code !== "string" ||
+      typeof value.failure.message !== "string" ||
+      typeof value.failure.recoverable !== "boolean"
+    ) {
+      return null;
+    }
+    failure = {
+      code: value.failure.code,
+      message: value.failure.message,
+      recoverable: value.failure.recoverable,
+    };
+  }
+  return {
+    version: 1,
+    id: value.id,
+    status: value.status,
+    repo: value.repo,
+    defaultBranch: value.defaultBranch,
+    branch: value.branch,
+    backupId: value.backupId,
+    codexThreadId: value.codexThreadId,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    hardCapAt: value.hardCapAt,
+    projectedAt: value.projectedAt,
+    failure,
+  };
 }
 
 async function terminalAsset(env: Bindings, request: Request): Promise<Response> {

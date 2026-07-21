@@ -140,24 +140,29 @@ export function assertM01CCanaryConfig(config: M01CCanaryConfig): void {
     !/^m01c-canary-[a-f0-9]{32}$/u.test(config.stage) ||
     /(?:^|-)(?:prod|production|main|staging)(?:-|$)/u.test(config.stage)
   ) {
+    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: deployment preflight reports configuration failure to the Alchemy CLI
     throw new Error(
       `M01C refuses stage ${JSON.stringify(config.stage)}; use an isolated ${M01C_STAGE_PREFIX}<id> stage.`,
     );
   }
   if (config.deployApproval !== expectedDeployApproval(config.stage)) {
+    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: deployment preflight reports configuration failure to the Alchemy CLI
     throw new Error(
       `M01C deployment is not approved for stage ${config.stage}; set ${M01C_DEPLOY_APPROVAL} to the exact stage-scoped approval.`,
     );
   }
   if (!config.telemetryDisabled) {
+    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: deployment preflight reports configuration failure to the Alchemy CLI
     throw new Error("M01C requires ALCHEMY_TELEMETRY_DISABLED=1.");
   }
   if (!config.pinnedSafetyExtensionsReady) {
+    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: deployment preflight reports configuration failure to the Alchemy CLI
     throw new Error(
       "M01C deployment is blocked until pinned Alchemy refuses existing KV/R2 resources and persists retain-to-destroy policy changes on no-op apply.",
     );
   }
   if (config.armCleanup && config.cleanupApproval !== expectedCleanupApproval(config.stage)) {
+    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: deployment preflight reports configuration failure to the Alchemy CLI
     throw new Error(
       `M01C cleanup is not approved for stage ${config.stage}; set ${M01C_CLEANUP_APPROVAL} to the exact destructive approval.`,
     );
@@ -259,5 +264,5 @@ export default Alchemy.Stack(
       // Hard-coded fail-closed until a pinned Alchemy extension and its regressions land.
       pinnedSafetyExtensionsReady: false,
     });
-  }).pipe(Effect.orDie),
+  }),
 );

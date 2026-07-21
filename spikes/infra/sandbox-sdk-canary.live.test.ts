@@ -47,6 +47,10 @@ const BackupResponse = Schema.Struct({
   restored: Schema.Boolean,
 });
 const EmptyResponse = Schema.Unknown;
+const decodeCoreResponse = Schema.decodeUnknownEffect(CoreResponse);
+const decodeStateResponse = Schema.decodeUnknownEffect(StateResponse);
+const decodeBackupResponse = Schema.decodeUnknownEffect(BackupResponse);
+const decodeEmptyResponse = Schema.decodeUnknownEffect(EmptyResponse);
 
 const ptyRoundTrip = (): Promise<void> =>
   new Promise((resolve, reject) => {
@@ -75,7 +79,7 @@ const ptyRoundTrip = (): Promise<void> =>
     });
   });
 
-const post = <S extends Schema.Top>(action: string, schema: S) =>
+const post = <A, E, R>(action: string, decode: (value: unknown) => Effect.Effect<A, E, R>) =>
   Effect.tryPromise({
     try: () =>
       fetch(`${baseUrl}/m01c/${action}`, { method: "POST" }).then(async (response) => {
@@ -83,12 +87,12 @@ const post = <S extends Schema.Top>(action: string, schema: S) =>
         return response.json();
       }),
     catch: () => new Error(`M01C ${action} request failed`),
-  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(schema)));
+  }).pipe(Effect.flatMap(decode));
 
 describe.skipIf(!approved)("M01C explicitly approved deployed assertions", () => {
   it.effect("proves commands, files, named sessions, and outbound interception", () =>
     Effect.gen(function* () {
-      const result = yield* post("core", CoreResponse);
+      const result = yield* post("core", decodeCoreResponse);
       assert.equal(result.command, "m01c-command");
       assert.equal(result.file, "m01c-file");
       assert.equal(result.fileDeleted, true);
@@ -101,10 +105,10 @@ describe.skipIf(!approved)("M01C explicitly approved deployed assertions", () =>
 
   it.effect("proves DO storage and lifecycle counters survive reconstruction", () =>
     Effect.gen(function* () {
-      yield* post("core", CoreResponse);
-      const before = yield* post("state", StateResponse);
-      yield* Effect.ignore(post("reconstruct", EmptyResponse));
-      const reconstructed = yield* post("state", StateResponse);
+      yield* post("core", decodeCoreResponse);
+      const before = yield* post("state", decodeStateResponse);
+      yield* Effect.ignore(post("reconstruct", decodeEmptyResponse));
+      const reconstructed = yield* post("state", decodeStateResponse);
       assert.equal(reconstructed.marker, `marker-${stage}`);
       assert.notEqual(reconstructed.incarnation, before.incarnation);
     }),
@@ -112,8 +116,8 @@ describe.skipIf(!approved)("M01C explicitly approved deployed assertions", () =>
 
   it.effect("proves credential-less binding-backed R2 backup and restore", () =>
     Effect.gen(function* () {
-      yield* post("core", CoreResponse);
-      const result = yield* post("backup", BackupResponse);
+      yield* post("core", decodeCoreResponse);
+      const result = yield* post("backup", decodeBackupResponse);
       assert.ok(result.backupId.length > 0);
       assert.equal(result.restored, true);
     }),
