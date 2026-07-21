@@ -38,6 +38,12 @@ stage-local owner key while keeping Alchemy state local. Do not use `~/.codex/au
    export SCOTTY_M01B_BINDING_ATTACHED=1
    ```
 
+   An account may have only one Secrets Store. If no store exists, create one retained, isolated test
+   store under separate operator approval with
+   `npx wrangler secrets-store store create scotty-integration-canary --remote`. This store is a
+   reusable prerequisite outside the disposable stage lifecycle and must not be deleted by this
+   canary.
+
    Sync is an explicit pre-plan operation, but it remains locked until all three exact approvals are
    present. Planning consumes only the resulting digest; reconcile reopens the source lazily and
    verifies the same digest before mutation.
@@ -70,7 +76,7 @@ stage-local owner key while keeping Alchemy state local. Do not use `~/.codex/au
 
    ```sh
    export SCOTTY_M01B_PHASE=first SCOTTY_M01B_OPERATION=plan
-   bun spikes/infra/account-secrets-store-canary-exec.ts
+   node --experimental-strip-types spikes/infra/account-secrets-store-canary-exec.ts
    ```
 
    The first plan must be create-only for exactly `SyntheticSecret (Scotty.WriteOnlySecret)` and
@@ -83,9 +89,11 @@ stage-local owner key while keeping Alchemy state local. Do not use `~/.codex/au
    `SCOTTY_M01B_INTERRUPT_AFTER_WRITE=create` and `SCOTTY_M01B_OPERATION=apply` for the first approved
    apply. The canary adapter interrupts only after Cloudflare returns successful create
    metadata, so Alchemy must not have a committed resource output. Unset the variable immediately
-   and rerun guarded `apply`: recovery must find the authentic same-name secret, re-resolve the synthetic
-   source, PATCH its exact ID, observe `active`, and then create the Worker. Never kill an arbitrary
-   mutation and guess whether it committed.
+   and rerun guarded `apply` with `SCOTTY_M01B_PHASE=first-replay`: recovery must find the authentic
+   same-name secret, re-resolve the synthetic source, PATCH its exact ID, and observe `active`. Alchemy
+   may have created the independent Worker concurrently before the injected secret interruption, so
+   this replay phase requires Worker no-op. Never kill an arbitrary mutation and guess whether it
+   committed.
 6. Update `auth.json` with a newly generated synthetic value, rerun sync, set
    `SCOTTY_M01B_PHASE=update`, and use guarded `plan` then `apply`. The plan may contain only secret
    update plus Worker no-op. Set

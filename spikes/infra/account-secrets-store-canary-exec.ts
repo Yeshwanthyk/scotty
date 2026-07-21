@@ -51,7 +51,7 @@ const program = Effect.gen(function* () {
   // Explicit pre-plan scan boundary for mutation phases only. No stack/provider
   // exists yet. No-op, unbind, and destroy must not open the source at all.
   const markers: readonly string[] =
-    phase === "first" || phase === "update"
+    phase === "first" || phase === "first-replay" || phase === "update"
       ? yield* disposableLocalSecretScanMarkers(paths, M01B_SYNTHETIC_SOURCE_ID)
       : [];
 
@@ -80,7 +80,7 @@ const program = Effect.gen(function* () {
         );
 
         assertM01BScanClean(plan, ...markers);
-        process.stdout.write(`${Alchemy.Plan.printPlan(plan)}\n`);
+        process.stdout.write(`${JSON.stringify({ phase, entries }, undefined, 2)}\n`);
         if (operation === "plan") return;
 
         const output = yield* Alchemy.apply(plan);

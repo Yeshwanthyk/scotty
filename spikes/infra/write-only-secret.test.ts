@@ -925,6 +925,42 @@ describe("M01B Account Secrets Store provider reconcile", () => {
     }),
   );
 
+  it.live("read-recovered create output is re-resolved and PATCHed before commit", () =>
+    Effect.gen(function* () {
+      world.reset();
+      const news = propsFor(world.plaintext);
+      world.createMode = "interrupt-after";
+      const firstExit = yield* Effect.exit(runReconcile(news, {}));
+      assert.isTrue(Exit.hasInterrupts(firstExit));
+      const recovered = yield* runRead(news, undefined);
+      assert.ok(recovered !== undefined && !("resource" in recovered));
+      const resolvesAfterRead = world.counts.sourceResolves;
+      const patchesAfterRead = world.counts.patch;
+      world.createMode = "ok";
+      const result = yield* runReconcile(news, { output: recovered });
+      assert.strictEqual(result?.status, "active");
+      assert.strictEqual(world.counts.sourceResolves, resolvesAfterRead + 1);
+      assert.strictEqual(world.counts.patch, patchesAfterRead + 1);
+    }),
+  );
+
+  it.live("read-recovered create output revalidates source digest before PATCH", () =>
+    Effect.gen(function* () {
+      world.reset();
+      const news = propsFor(world.plaintext);
+      world.createMode = "interrupt-after";
+      const firstExit = yield* Effect.exit(runReconcile(news, {}));
+      assert.isTrue(Exit.hasInterrupts(firstExit));
+      const recovered = yield* runRead(news, undefined);
+      assert.ok(recovered !== undefined && !("resource" in recovered));
+      world.plaintext = randomBytes(32).toString("base64url");
+      const patchesBeforeReplay = world.counts.patch;
+      const replayExit = yield* Effect.exit(runReconcile(news, { output: recovered }));
+      assert.isTrue(Exit.isFailure(replayExit));
+      assert.strictEqual(world.counts.patch, patchesBeforeReplay);
+    }),
+  );
+
   it.live("ambiguous patch re-resolves and PATCHes before committing desired output", () =>
     Effect.gen(function* () {
       world.reset();
@@ -1473,6 +1509,27 @@ describe("M01B Account Secrets Store end-to-end lifecycle and plaintext scan", (
         const bundle = yield* Effect.tryPromise(() => readFile(bundlePath, "utf8"));
         assertNoPlaintext("bundle", plaintexts, bundle);
       }),
+  );
+
+  test.provider("engine replay PATCHes read-recovered create output before commit", (stack) =>
+    Effect.gen(function* () {
+      world.reset();
+      const desired = propsFor(world.plaintext);
+      world.createMode = "interrupt-after";
+      const firstExit = yield* Effect.exit(stack.deploy(program(desired)));
+      assert.isTrue(Exit.hasInterrupts(firstExit));
+      assert.strictEqual(world.store.size, 1);
+      const resolvesAfterFirst = world.counts.sourceResolves;
+      const patchesAfterFirst = world.counts.patch;
+
+      world.createMode = "ok";
+      yield* stack.deploy(program(desired));
+      assert.strictEqual(world.counts.sourceResolves, resolvesAfterFirst + 1);
+      assert.strictEqual(world.counts.patch, patchesAfterFirst + 1);
+
+      yield* stack.destroy();
+      assert.strictEqual(world.store.size, 0);
+    }),
   );
 
   test.provider("failed adoption cannot authorize a later unapproved deploy", (stack) =>

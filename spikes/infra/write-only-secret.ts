@@ -644,7 +644,7 @@ export const writeOnlySecretProvider = Provider.succeed(
       // non-active status.
       return { action: "update" } as const;
     }),
-    reconcile: Effect.fnUntraced(function* ({ fqn, instanceId, news, output }) {
+    reconcile: Effect.fnUntraced(function* ({ fqn, instanceId, news, olds, output }) {
       const expectedOwner = ownerReference(fqn, instanceId);
       const markerKeys = yield* SecretOwnerKey;
       const observed = yield* observeSecret(news, output, markerKeys);
@@ -667,6 +667,7 @@ export const writeOnlySecretProvider = Provider.succeed(
         // and updates whose output still describes the old material must
         // re-resolve and idempotently PATCH the exact ID once more.
         const desiredMaterialWasCommitted =
+          olds !== undefined &&
           output !== undefined &&
           output.ownerReference === expectedOwner &&
           output.secretId === observed.metadata.secretId &&

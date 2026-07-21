@@ -227,6 +227,15 @@ describe("M01B Account Secrets Store canary scaffold", () => {
       { logicalId: "SyntheticBindingWorker", resource: "Cloudflare.Worker", action },
     ];
     assert.doesNotThrow(() => assertM01BPlan(entries("create"), "first"));
+    assert.doesNotThrow(() =>
+      assertM01BPlan(
+        [
+          { logicalId: "SyntheticSecret", resource: "Scotty.WriteOnlySecret", action: "create" },
+          { logicalId: "SyntheticBindingWorker", resource: "Cloudflare.Worker", action: "noop" },
+        ],
+        "first-replay",
+      ),
+    );
     assert.doesNotThrow(() => assertM01BPlan(entries("noop"), "second"));
     assert.doesNotThrow(() => assertM01BPlan(entries("delete"), "destroy"));
     assert.doesNotThrow(() =>

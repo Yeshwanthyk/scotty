@@ -99,7 +99,13 @@ describe("Cloudflare Account Secrets Store destination", () => {
   it.effect("composes provider, HTTP, source, and owner-key Layers", () =>
     Effect.gen(function* () {
       const provider = yield* WriteOnlySecret.Provider;
+      const source = yield* SecretSource;
+      const ownerKey = yield* SecretOwnerKey;
+      const destination = yield* WriteOnlySecretDestination;
       assert.strictEqual(provider.version, 1);
+      assert.isFunction(source.resolve);
+      assert.strictEqual(ownerKey.active.length, 32);
+      assert.isFunction(destination.read);
     }).pipe(
       Effect.provide(
         cloudflareWriteOnlySecretProviderLayer(
@@ -253,6 +259,103 @@ describe("Cloudflare Account Secrets Store destination", () => {
             {
               status: 200,
               body: envelope([], { result_info: { page: 2, total_pages: 2 } }),
+            },
+          ],
+          captured,
+        ),
+      ),
+    );
+  });
+
+  it.effect("accepts an empty filtered result with a nonempty count-based store", () => {
+    const captured: CapturedRequest[] = [];
+    return Effect.gen(function* () {
+      const destination = yield* WriteOnlySecretDestination;
+      const metadata = yield* destination.find({
+        accountId: "account-1",
+        storeId: "store-1",
+        secretName: "SYNTHETIC_TOKEN",
+      });
+      assert.isUndefined(metadata);
+      assert.strictEqual(captured.length, 1);
+    }).pipe(
+      Effect.provide(
+        makeLayer(
+          [
+            {
+              status: 200,
+              body: envelope([], {
+                result_info: { page: 1, per_page: 50, count: 0, total_count: 5001 },
+              }),
+            },
+          ],
+          captured,
+        ),
+      ),
+    );
+  });
+
+  it.effect("fails on a full unmatched count-based page 100 without requesting page 101", () => {
+    const captured: CapturedRequest[] = [];
+    return Effect.gen(function* () {
+      const destination = yield* WriteOnlySecretDestination;
+      const error = yield* Effect.flip(
+        destination.find({
+          accountId: "account-1",
+          storeId: "store-1",
+          secretName: "SYNTHETIC_TOKEN",
+        }),
+      );
+      assert.ok(isDestinationError(error));
+      assert.strictEqual(error.code, "destination-failure");
+      assert.strictEqual(captured.length, 100);
+      assert.match(captured[99]?.url ?? "", /page=100/u);
+    }).pipe(
+      Effect.provide(
+        makeLayer(
+          Array.from({ length: 100 }, (_, index) => ({
+            status: 200,
+            body: envelope([secret({ id: `other-${index}`, name: "OTHER" })], {
+              result_info: {
+                page: index + 1,
+                per_page: 1,
+                count: 1,
+                total_count: 5001,
+              },
+            }),
+          })),
+          captured,
+        ),
+      ),
+    );
+  });
+
+  it.effect("continues count-based pagination while a filtered page is full", () => {
+    const captured: CapturedRequest[] = [];
+    return Effect.gen(function* () {
+      const destination = yield* WriteOnlySecretDestination;
+      const metadata = yield* destination.find({
+        accountId: "account-1",
+        storeId: "store-1",
+        secretName: "SYNTHETIC_TOKEN",
+      });
+      assert.strictEqual(metadata?.secretId, "exact");
+      assert.strictEqual(captured.length, 2);
+    }).pipe(
+      Effect.provide(
+        makeLayer(
+          [
+            {
+              status: 200,
+              body: envelope([secret({ name: "OTHER" })], {
+                result_info: { page: 1, per_page: 1, count: 1, total_count: 2 },
+              }),
+            },
+            {
+              status: 200,
+              body: envelope([secret({ id: "exact" })], {
+                result_info: { page: 2, per_page: 1, count: 1, total_count: 2 },
+              }),
             },
           ],
           captured,

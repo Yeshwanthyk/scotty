@@ -330,9 +330,20 @@ intentionally fails closed on unmodified Alchemy beta.63 because the engine
 cannot carry current-run adoption authorization safely into reconcile. The
 Cloudflare HTTP transport, local-only lazy Codex source, stable/rotatable owner
 key, complete provider Layer composition, identifier-only binding, and guarded
-synthetic canary definition pass offline contracts. The synthetic deployed
-Secrets Store canary remains unverified and requires separate approval on a
-local operator machine before production use.
+synthetic canary definition pass offline contracts. The approved local
+Secrets Store canary on 2026-07-21 passed create convergence, exact-ID update
+recovery, identifier-only runtime binding, steady-state no-op, unbind,
+exact-ID delete, and direct absence checks without disclosing synthetic
+plaintext or owner-key material. Live proof also corrected the provider Layer
+service exposure, Cloudflare's count-based pagination envelope,
+unresolved-Output plan display, and the guarded replay shape when Alchemy
+creates an independent Worker concurrently with the injected secret-create
+interruption. Review then found that read-recovered create metadata could skip
+source revalidation; the provider now requires committed old props before a
+no-op, with direct and full Plan-to-Apply regressions proving re-resolution,
+digest verification, and exact-ID PATCH. The reusable isolated test store
+remains; the stage Worker, secret, local state, and synthetic files were
+removed.
 
 #### 1A External Sandbox Container binding helper
 

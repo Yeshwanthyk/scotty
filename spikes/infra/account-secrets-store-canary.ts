@@ -243,13 +243,14 @@ export interface M01BPlanEntry {
   readonly action: M01BPlanAction;
 }
 
-export type M01BPhase = "first" | "update" | "second" | "unbind" | "destroy";
+export type M01BPhase = "first" | "first-replay" | "update" | "second" | "unbind" | "destroy";
 
 export const m01bCanaryPhaseFromEnvironment = (
   environment: Readonly<Record<string, string | undefined>>,
 ): M01BPhase => {
   const phase = environment[M01B_PHASE];
   return phase === "first" ||
+    phase === "first-replay" ||
     phase === "update" ||
     phase === "second" ||
     phase === "unbind" ||
@@ -285,7 +286,7 @@ export function assertM01BPlan(
   )
     reject("M01B plan contains an unexpected or missing resource.");
   const secretAction =
-    phase === "first"
+    phase === "first" || phase === "first-replay"
       ? "create"
       : phase === "update"
         ? "update"
@@ -295,11 +296,13 @@ export function assertM01BPlan(
   const workerAction =
     phase === "first"
       ? "create"
-      : phase === "unbind"
-        ? "update"
-        : phase === "destroy"
-          ? "delete"
-          : "noop";
+      : phase === "first-replay"
+        ? "noop"
+        : phase === "unbind"
+          ? "update"
+          : phase === "destroy"
+            ? "delete"
+            : "noop";
   if (
     !entries.every((entry) =>
       entry.logicalId === "SyntheticSecret"

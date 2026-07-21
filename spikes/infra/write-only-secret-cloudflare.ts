@@ -35,7 +35,10 @@ const SecretWireSchema = Schema.Struct({
 
 const ResultInfoSchema = Schema.Struct({
   page: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  total_pages: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  per_page: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  count: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  total_count: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  total_pages: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
 });
 
 const SecretEnvelopeSchema = Schema.Struct({
@@ -241,13 +244,26 @@ export const cloudflareWriteOnlySecretDestinationLayer = Layer.effect(
               key,
             );
             const infoPage = envelope.result_info.page;
-            const totalPages = envelope.result_info.total_pages;
+            const declaredPages = envelope.result_info.total_pages;
+            const perPage = envelope.result_info.per_page;
+            const count = envelope.result_info.count;
+            const totalCount = envelope.result_info.total_count;
             if (
               infoPage !== requestedPage ||
-              totalPages < requestedPage ||
-              totalPages > 100 ||
-              (declaredTotalPages !== undefined && totalPages !== declaredTotalPages) ||
-              (envelope.result.length === 0 && requestedPage < totalPages)
+              (declaredPages === undefined &&
+                (perPage === undefined || count === undefined || totalCount === undefined)) ||
+              (declaredPages !== undefined &&
+                (declaredPages < requestedPage || declaredPages > 100)) ||
+              (perPage !== undefined && perPage > 100) ||
+              (count !== undefined && count !== envelope.result.length) ||
+              (perPage !== undefined && envelope.result.length > perPage) ||
+              (perPage !== undefined &&
+                totalCount !== undefined &&
+                totalCount < (requestedPage - 1) * perPage + envelope.result.length) ||
+              (declaredTotalPages !== undefined && declaredPages !== declaredTotalPages) ||
+              (declaredPages !== undefined &&
+                envelope.result.length === 0 &&
+                requestedPage < declaredPages)
             ) {
               return yield* Effect.fail(
                 new WriteOnlySecretDestinationError({
@@ -260,10 +276,26 @@ export const cloudflareWriteOnlySecretDestinationLayer = Layer.effect(
               );
             }
             const exact = envelope.result.find((secret) => secret.name === key.secretName);
-            declaredTotalPages = totalPages;
-            complete = requestedPage === totalPages;
+            if (exact !== undefined) return metadataFromWire(key.accountId, exact);
+            declaredTotalPages = declaredPages;
+            complete =
+              requestedPage === declaredPages ||
+              (declaredPages === undefined &&
+                perPage !== undefined &&
+                envelope.result.length < perPage);
+            if (!complete && requestedPage >= 100) {
+              return yield* Effect.fail(
+                new WriteOnlySecretDestinationError({
+                  operation: "find",
+                  code: "destination-failure",
+                  accountId: key.accountId,
+                  storeId: key.storeId,
+                  secretId: undefined,
+                }),
+              );
+            }
             page = requestedPage + 1;
-            return exact === undefined ? undefined : metadataFromWire(key.accountId, exact);
+            return undefined;
           }),
         step: (metadata) => {
           found = metadata;
@@ -445,7 +477,7 @@ export const writeOnlySecretProviderLayer = <
   >,
 ) =>
   writeOnlySecretProvider.pipe(
-    Layer.provide(Layer.mergeAll(sourceLayer, ownerKeyLayer, destinationLayer)),
+    Layer.provideMerge(Layer.mergeAll(sourceLayer, ownerKeyLayer, destinationLayer)),
     Layer.orDie,
   );
 
