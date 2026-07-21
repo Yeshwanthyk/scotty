@@ -251,6 +251,10 @@ Prefer a write-only Secrets Store resource plus identifier-only Worker binding i
 
 ### Chunk 0 — restore and record a green baseline
 
+**Status:** Complete. Node is pinned to `22.22.2`; `npm run check` enforces a
+single installed Effect version; and
+`spikes/fixtures/wrangler-bundle-metadata.json` records the Wrangler baseline.
+
 **Purpose:** separate pre-existing behavior/tooling issues from migration regressions.
 
 **Work:**

@@ -7,7 +7,8 @@
   ],
   "type": "module",
   "scripts": {
-    "check": "npm run fmt:check && npm run lint && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
+    "check": "npm run check:effect-version && npm run fmt:check && npm run lint && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
+    "check:effect-version": "node e2e/scripts/check-effect-version.mjs",
     "fmt": "oxfmt --disable-nested-config --write .",
     "fmt:check": "oxfmt --disable-nested-config --check .",
     "lint": "oxlint --disable-nested-config --deny-warnings .",

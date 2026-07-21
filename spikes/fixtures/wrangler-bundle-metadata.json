@@ -1,0 +1,79 @@
+{
+  "fixtureVersion": 1,
+  "recordedAtCommit": "88efc83a1e5d1c2317b49a20c1b42de829f5a4ec",
+  "wranglerVersion": "4.112.0",
+  "command": "wrangler deploy --dry-run --config worker/wrangler.jsonc --outdir <temporary> --metafile <temporary>/bundle-meta.json --containers-rollout none",
+  "worker": {
+    "name": "scotty-worker",
+    "entryPoint": "worker/src/index.ts",
+    "format": "esm",
+    "compatibilityDate": "2026-07-20",
+    "compatibilityFlags": ["nodejs_compat"],
+    "observability": true,
+    "exports": ["ContainerProxy", "ScottySandbox", "default"]
+  },
+  "bundle": {
+    "bytes": 728945,
+    "sha256": "42a239a3ad8668ef19ea2275d855f160e06fb4366a4b9c00886ca0f572106da1",
+    "inputCount": 43,
+    "externalImports": ["cloudflare:workers", "node:path/posix"],
+    "sourceBytesInOutput": {
+      "worker/src/auth.ts": 2225,
+      "worker/src/contracts.ts": 4202,
+      "worker/src/egress.ts": 10812,
+      "worker/src/index.ts": 7600,
+      "worker/src/session.ts": 29894
+    }
+  },
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "worker/public",
+    "runWorkerFirst": ["/api/*", "/s/*", "/health"],
+    "notFoundHandling": "404-page"
+  },
+  "bindings": [
+    {
+      "type": "durable_object",
+      "name": "SANDBOX",
+      "className": "ScottySandbox"
+    },
+    {
+      "type": "kv_namespace",
+      "name": "SESSIONS"
+    },
+    {
+      "type": "r2_bucket",
+      "name": "BACKUP_BUCKET",
+      "bucketName": "scotty-backups"
+    },
+    {
+      "type": "assets",
+      "name": "ASSETS"
+    },
+    {
+      "type": "plain_text",
+      "name": "SANDBOX_TRANSPORT",
+      "value": "rpc"
+    },
+    {
+      "type": "plain_text",
+      "name": "BACKUP_BUCKET_NAME",
+      "value": "scotty-backups"
+    }
+  ],
+  "durableObjectMigrations": [
+    {
+      "tag": "v1",
+      "newSqliteClasses": ["ScottySandbox"]
+    }
+  ],
+  "containers": [
+    {
+      "className": "ScottySandbox",
+      "dockerfile": "worker/container/Dockerfile",
+      "imageName": "scotty-worker-scottysandbox",
+      "instanceType": "standard-2",
+      "maxInstances": 10
+    }
+  ]
+}
