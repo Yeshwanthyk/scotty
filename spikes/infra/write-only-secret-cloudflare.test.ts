@@ -8,10 +8,16 @@ import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import {
+  SecretOwnerKey,
+  SecretSource,
+  WriteOnlySecret,
   WriteOnlySecretDestination,
   WriteOnlySecretDestinationError,
 } from "./write-only-secret.ts";
-import { cloudflareWriteOnlySecretDestinationLayer } from "./write-only-secret-cloudflare.ts";
+import {
+  cloudflareWriteOnlySecretDestinationLayer,
+  cloudflareWriteOnlySecretProviderLayer,
+} from "./write-only-secret-cloudflare.ts";
 
 interface CapturedRequest {
   readonly method: string;
@@ -90,6 +96,40 @@ const makeLayer = (
 };
 
 describe("Cloudflare Account Secrets Store destination", () => {
+  it.effect("composes provider, HTTP, source, and owner-key Layers", () =>
+    Effect.gen(function* () {
+      const provider = yield* WriteOnlySecret.Provider;
+      assert.strictEqual(provider.version, 1);
+    }).pipe(
+      Effect.provide(
+        cloudflareWriteOnlySecretProviderLayer(
+          Layer.succeed(SecretSource, {
+            resolve: () =>
+              Effect.succeed({
+                plaintext: "synthetic",
+                keyedDigest: `hmac-sha256:v1:${"0".repeat(64)}`,
+              }),
+          }),
+          Layer.succeed(SecretOwnerKey, {
+            active: new Uint8Array(32),
+            previous: [],
+          }),
+        ).pipe(
+          Layer.provide(
+            Layer.succeed(
+              Credentials,
+              Effect.succeed({
+                type: "apiToken" as const,
+                apiToken: Redacted.make("synthetic-api-token"),
+                apiBaseUrl: "https://api.example.test/client/v4",
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect("reads exact-ID metadata with bearer authentication", () => {
     const captured: CapturedRequest[] = [];
     return Effect.gen(function* () {

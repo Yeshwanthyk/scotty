@@ -121,13 +121,18 @@ export class SecretSource extends Context.Service<
   }
 >()("Scotty/SecretSource") {}
 
-/** Key used to authenticate the ownership marker. Scotty-only in production. */
-export class SecretOwnerKey extends Context.Service<
-  SecretOwnerKey,
-  {
-    readonly key: Uint8Array;
-  }
->()("Scotty/SecretOwnerKey") {}
+/**
+ * Keys used to authenticate ownership markers. New markers use `active`;
+ * `previous` permits a bounded rotation window for existing markers.
+ */
+export interface SecretOwnerKeys {
+  readonly active: Uint8Array;
+  readonly previous: readonly Uint8Array[];
+}
+
+export class SecretOwnerKey extends Context.Service<SecretOwnerKey, SecretOwnerKeys>()(
+  "Scotty/SecretOwnerKey",
+) {}
 
 /** Metadata returned by the destination adapter. The value is never returned. */
 export interface SecretMetadata {
@@ -312,6 +317,20 @@ export const verifyOwnerMarker = (
   };
 };
 
+/** Verifies with the active key first, then keys retained for rotation. */
+export const verifyOwnerMarkerWithKeys = (
+  comment: string | undefined,
+  keys: SecretOwnerKeys,
+): OwnerMarkerVerification => {
+  const active = verifyOwnerMarker(comment, keys.active);
+  if (active.authentic) return active;
+  for (const previous of keys.previous) {
+    const verified = verifyOwnerMarker(comment, previous);
+    if (verified.authentic) return verified;
+  }
+  return active;
+};
+
 const sameDestination = (
   left: Pick<WriteOnlySecretProps, "accountId" | "storeId" | "secretName">,
   right: Pick<WriteOnlySecretProps, "accountId" | "storeId" | "secretName">,
@@ -355,7 +374,7 @@ const isConverged = (
 const observeSecret = Effect.fnUntraced(function* (
   props: WriteOnlySecretProps,
   output: WriteOnlySecretAttributes | undefined,
-  markerKey: Uint8Array,
+  markerKeys: SecretOwnerKeys,
 ) {
   const destination = yield* WriteOnlySecretDestination;
   const accountKey: DestinationAccountKey = {
@@ -364,7 +383,7 @@ const observeSecret = Effect.fnUntraced(function* (
   };
   const fromMetadata = (metadata: SecretMetadata): ObservedSecret => ({
     metadata,
-    marker: verifyOwnerMarker(metadata.comment, markerKey),
+    marker: verifyOwnerMarkerWithKeys(metadata.comment, markerKeys),
   });
   if (output?.secretId !== undefined) {
     // Exact-ID read: a 404 means the persisted secret is gone (out-of-band
@@ -587,8 +606,8 @@ export const writeOnlySecretProvider = Provider.succeed(
     stables: ["storeId", "accountId", "secretName"],
     list: () => Effect.succeed([]),
     read: Effect.fnUntraced(function* ({ fqn, instanceId, olds, output }) {
-      const markerKey = (yield* SecretOwnerKey).key;
-      const observed = yield* observeSecret(olds, output, markerKey);
+      const markerKeys = yield* SecretOwnerKey;
+      const observed = yield* observeSecret(olds, output, markerKeys);
       if (observed === undefined) return undefined;
       const expectedOwner = ownerReference(fqn, instanceId);
       const classification = classifyObserved(observed, expectedOwner);
@@ -613,8 +632,8 @@ export const writeOnlySecretProvider = Provider.succeed(
       ) {
         return { action: "update" } as const;
       }
-      const markerKey = (yield* SecretOwnerKey).key;
-      const observed = yield* observeSecret(news, output, markerKey);
+      const markerKeys = yield* SecretOwnerKey;
+      const observed = yield* observeSecret(news, output, markerKeys);
       if (observed === undefined) return { action: "update" } as const;
       const expectedOwner = ownerReference(fqn, instanceId);
       if (isConverged(observed, news, expectedOwner)) {
@@ -627,8 +646,8 @@ export const writeOnlySecretProvider = Provider.succeed(
     }),
     reconcile: Effect.fnUntraced(function* ({ fqn, instanceId, news, output }) {
       const expectedOwner = ownerReference(fqn, instanceId);
-      const markerKey = (yield* SecretOwnerKey).key;
-      const observed = yield* observeSecret(news, output, markerKey);
+      const markerKeys = yield* SecretOwnerKey;
+      const observed = yield* observeSecret(news, output, markerKeys);
       // Pinned Alchemy beta.63 does not carry current-run adoption approval
       // into reconcile. Persisted foreign output proves identity, not current
       // authorization, and can survive a failed adoption attempt. Therefore
@@ -672,7 +691,7 @@ export const writeOnlySecretProvider = Provider.succeed(
         expectedOwner,
         news.keyedDigest,
         news.providerVersion,
-        markerKey,
+        markerKeys.active,
       );
       const accountKey: DestinationAccountKey = {
         accountId: news.accountId,
@@ -704,7 +723,7 @@ export const writeOnlySecretProvider = Provider.succeed(
       // scope, not just active status.
       const activeObserved: ObservedSecret = {
         metadata: active,
-        marker: verifyOwnerMarker(active.comment, markerKey),
+        marker: verifyOwnerMarker(active.comment, markerKeys.active),
       };
       if (!isConverged(activeObserved, news, expectedOwner)) {
         return yield* Effect.fail(
@@ -715,13 +734,13 @@ export const writeOnlySecretProvider = Provider.succeed(
     }),
     delete: Effect.fnUntraced(function* ({ fqn, instanceId, olds, output }) {
       const expectedOwner = ownerReference(fqn, instanceId);
-      const markerKey = (yield* SecretOwnerKey).key;
+      const markerKeys = yield* SecretOwnerKey;
       // Delete never resolves plaintext. Observe the exact persisted ID and
       // verify owner/marker before deleting only that ID.
       // Never derive the deletion target from response metadata — use the
       // persisted output.secretId that observeSecret validated against.
       if (output?.secretId === undefined) return;
-      const observed = yield* observeSecret(olds, output, markerKey);
+      const observed = yield* observeSecret(olds, output, markerKeys);
       if (observed === undefined) return;
       const classification = classifyObserved(observed, expectedOwner);
       if (classification !== "ours") {
@@ -754,7 +773,7 @@ const recoverFromCollision = Effect.fnUntraced(function* (
   comment: string,
   expectedOwner: string,
 ) {
-  const markerKey = (yield* SecretOwnerKey).key;
+  const markerKeys = yield* SecretOwnerKey;
   const destination = yield* WriteOnlySecretDestination;
   const found = yield* Effect.suspend(() =>
     destination.find({ ...accountKey, secretName: news.secretName }),
@@ -772,7 +791,7 @@ const recoverFromCollision = Effect.fnUntraced(function* (
   }
   const observed: ObservedSecret = {
     metadata: found,
-    marker: verifyOwnerMarker(found.comment, markerKey),
+    marker: verifyOwnerMarkerWithKeys(found.comment, markerKeys),
   };
   const classification = classifyObserved(observed, expectedOwner);
   // Collision recovery only runs during an initial create (output undefined).

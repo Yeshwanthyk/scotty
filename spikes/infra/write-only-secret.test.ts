@@ -23,6 +23,7 @@ import {
   type DestinationSecretKey,
   type SecretStatus,
   verifyOwnerMarker,
+  verifyOwnerMarkerWithKeys,
   WriteOnlySecret,
   type WriteOnlySecretAttributes,
   type WriteOnlySecretProps,
@@ -436,7 +437,7 @@ const makeWorld = (): World => {
     Layer.provideMerge(
       Layer.mergeAll(
         Layer.succeed(SecretSource, sourceImpl),
-        Layer.succeed(SecretOwnerKey, { key: ownerKey }),
+        Layer.succeed(SecretOwnerKey, { active: ownerKey, previous: [] }),
         Layer.succeed(WriteOnlySecretDestination, destinationImpl),
       ),
     ),
@@ -578,6 +579,17 @@ describe("M01B Account Secrets Store marker and binding (pure)", () => {
     assert.strictEqual(verified.ownerReference, EXPECTED_OWNER);
     assert.strictEqual(verified.keyedDigest, digest);
     assert.strictEqual(verified.providerVersion, 1);
+  });
+
+  it("accepts a previous key only during an explicit rotation window", () => {
+    const nextKey = randomBytes(32);
+    const digest = digestOf("rotating");
+    const marker = buildOwnerMarker(EXPECTED_OWNER, digest, 1, ownerKey);
+
+    assert.isTrue(
+      verifyOwnerMarkerWithKeys(marker, { active: nextKey, previous: [ownerKey] }).authentic,
+    );
+    assert.isFalse(verifyOwnerMarkerWithKeys(marker, { active: nextKey, previous: [] }).authentic);
   });
 
   it("rejects a foreign-owner marker as not ours but authentic to its author", () => {

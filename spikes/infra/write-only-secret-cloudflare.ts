@@ -6,12 +6,20 @@ import * as Match from "effect/Match";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import {
+  localCodexSecretOwnerKeyLayer,
+  localCodexSecretSourceLayer,
+} from "./local-secret-source.ts";
 import {
   type DestinationAccountKey,
   type DestinationSecretKey,
   type SecretMetadata,
+  SecretOwnerKey,
+  SecretSource,
   WriteOnlySecretDestination,
   WriteOnlySecretDestinationError,
+  writeOnlySecretProvider,
 } from "./write-only-secret.ts";
 
 const SecretStatusSchema = Schema.Literals(["pending", "active", "deleted"]);
@@ -415,3 +423,62 @@ export const cloudflareWriteOnlySecretDestinationLayer = Layer.effect(
     });
   }),
 );
+
+/** Production HTTP implementation with its Effect fetch client supplied. */
+export const cloudflareWriteOnlySecretDestinationLive =
+  cloudflareWriteOnlySecretDestinationLayer.pipe(Layer.provide(FetchHttpClient.layer));
+
+export const writeOnlySecretProviderLayer = <
+  SourceError,
+  SourceRequirements,
+  KeyError,
+  KeyRequirements,
+  DestinationError,
+  DestinationRequirements,
+>(
+  sourceLayer: Layer.Layer<SecretSource, SourceError, SourceRequirements>,
+  ownerKeyLayer: Layer.Layer<SecretOwnerKey, KeyError, KeyRequirements>,
+  destinationLayer: Layer.Layer<
+    WriteOnlySecretDestination,
+    DestinationError,
+    DestinationRequirements
+  >,
+) =>
+  writeOnlySecretProvider.pipe(
+    Layer.provide(Layer.mergeAll(sourceLayer, ownerKeyLayer, destinationLayer)),
+    Layer.orDie,
+  );
+
+/**
+ * Complete custom-provider Layer. The caller supplies only trusted source and
+ * owner-key Layers; Cloudflare credentials remain owned by Alchemy's provider
+ * collection and plaintext is still resolved exclusively by reconcile.
+ */
+export const cloudflareWriteOnlySecretProviderLayer = <
+  SourceError,
+  SourceRequirements,
+  KeyError,
+  KeyRequirements,
+>(
+  sourceLayer: Layer.Layer<SecretSource, SourceError, SourceRequirements>,
+  ownerKeyLayer: Layer.Layer<SecretOwnerKey, KeyError, KeyRequirements>,
+) =>
+  writeOnlySecretProviderLayer(
+    sourceLayer,
+    ownerKeyLayer,
+    cloudflareWriteOnlySecretDestinationLive,
+  );
+
+/**
+ * Complete temporary local-production composition. Exact Codex/root paths,
+ * local-only execution, and recovery evidence are enforced by the source/key
+ * boundary before Alchemy can evaluate this provider.
+ */
+export const localCodexCloudflareWriteOnlySecretProviderLayer = (
+  environment: Readonly<Record<string, string | undefined>>,
+  expectedUid: number,
+) =>
+  cloudflareWriteOnlySecretProviderLayer(
+    localCodexSecretSourceLayer(environment, expectedUid),
+    localCodexSecretOwnerKeyLayer(environment, expectedUid),
+  );

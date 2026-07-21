@@ -154,6 +154,40 @@ Implement one small Alchemy custom resource, tentatively `WorkerSecretReference`
 
 Prefer a write-only Secrets Store resource plus identifier-only Worker binding if the target account supports it. Otherwise prove separately managed Worker secrets survive later Alchemy uploads. Bind Codex/GitHub seeds only to the Sandbox host and HTTP auth only to the API Worker. The Sandbox DO seeds both real Codex and GitHub values once; existing DO values always win, and egress reads both real credentials from DO storage rather than Worker bindings.
 
+#### Temporary local provenance contract
+
+Until a shared secret manager is selected, approved operators may sync the
+initial Codex seed from exactly `${CODEX_HOME:-~/.codex}/auth.json` on the
+local deploy machine. The trusted adapter rejects arbitrary source IDs,
+symlinks, non-regular files, wrong ownership, group/other permissions,
+malformed Codex JSON, and values over the provider's 1024-byte cap. CI cannot
+resolve this source and fails closed when standard CI identity variables are
+present. The production Layer derives paths only from absolute `HOME` and
+`CODEX_HOME`; arbitrary-path source Layers are explicitly disposable synthetic
+canary/test boundaries and are not used by the production composition.
+
+A stable 256-bit root lives outside the repository at
+`~/.config/scotty/secrets/root-key`, mode 0600, with an independent encrypted
+recovery copy required before any real mutation. Domain-separated digest and
+owner-marker keys are derived in memory. The operator that creates the recovery
+copy records a mode-0600, no-symlink `root-key.recovery.json` receipt containing
+only `{version:1,rootKeyFingerprint,escrowId}`. The production owner-key Layer
+fails before provider evaluation if the receipt is absent, malformed, or does
+not match the active root. The receipt is a trusted operator attestation, not a
+second copy of the key. An explicit sync step reads the local source and emits
+only `{sourceId,keyedDigest}`; Alchemy plan consumes that metadata and never
+opens the Codex file. Reconcile re-reads the exact file, recomputes the digest,
+and fails before mutation if the source changed after sync.
+
+Owner-key rotation verifies with one active key and at most one retained
+previous key, signs with the active key only, and uses a provider-version bump
+to force re-signing. The retained key has its own matching recovery receipt and
+uses the fixed `root-key.previous` path; enable it only with
+`SCOTTY_RETAIN_PREVIOUS_OWNER_KEY=1`. Drop the previous key only after a no-op
+plan passes with active-only verification. Existing Sandbox DO credential
+bundles remain authoritative; changing the local seed affects new sessions,
+while Chunk 5 owns rotation for existing sessions.
+
 ### Alchemy state and deployment policy
 
 - Pin `alchemy@2.0.0-beta.63` and its source SHA. Upgrade only in a dedicated compatibility change.
@@ -289,13 +323,16 @@ and Cloudflare API reads independently confirmed the Worker, Container
 application, KV namespace, and R2 bucket absent after guarded cleanup. Exact
 activity-expiry timing and browser asset rendering remain outside that proof.
 
-The Account Secrets Store provider scaffold now enforces metadata-only state,
-exact-ID ownership/update/delete, authenticated markers, bounded activation,
-and ambiguous-write replay with short-lived plaintext. Foreign/unowned
-adoption intentionally fails closed on unmodified Alchemy beta.63 because the
-engine cannot carry current-run adoption authorization safely into reconcile.
-Concrete Cloudflare HTTP, trusted-source, and marker-key adapters plus the
-synthetic deployed Secrets Store canary remain required before production use.
+The Account Secrets Store provider now enforces metadata-only state, exact-ID
+ownership/update/delete, authenticated markers, bounded activation, and
+ambiguous-write replay with short-lived plaintext. Foreign/unowned adoption
+intentionally fails closed on unmodified Alchemy beta.63 because the engine
+cannot carry current-run adoption authorization safely into reconcile. The
+Cloudflare HTTP transport, local-only lazy Codex source, stable/rotatable owner
+key, complete provider Layer composition, identifier-only binding, and guarded
+synthetic canary definition pass offline contracts. The synthetic deployed
+Secrets Store canary remains unverified and requires separate approval on a
+local operator machine before production use.
 
 #### 1A External Sandbox Container binding helper
 
