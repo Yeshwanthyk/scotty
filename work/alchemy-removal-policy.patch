@@ -1,0 +1,558 @@
+From 10eb6c7dd0b3731504f13d83bffc33e45b0bdc13 Mon Sep 17 00:00:00 2001
+From: yeshwanthyk <yeshwanth.yk@gmail.com>
+Date: Tue, 21 Jul 2026 10:02:51 -0400
+Subject: [PATCH] fix(core): persist removal policy-only updates
+
+---
+ packages/alchemy/src/Apply.ts                 |  26 ++-
+ packages/alchemy/src/Cli/LoggingCli.ts        |   5 +-
+ packages/alchemy/src/Cli/NamespaceTree.ts     |   3 +
+ .../alchemy/src/Cli/tui/components/Plan.tsx   |   9 +-
+ packages/alchemy/src/Plan.ts                  |  29 ++-
+ packages/alchemy/test/apply.test.ts           | 206 ++++++++++++++++++
+ packages/alchemy/test/plan.test.ts            |  72 ++++++
+ 7 files changed, 342 insertions(+), 8 deletions(-)
+
+diff --git a/packages/alchemy/src/Apply.ts b/packages/alchemy/src/Apply.ts
+index a025189e..e157e9f5 100644
+--- a/packages/alchemy/src/Apply.ts
++++ b/packages/alchemy/src/Apply.ts
+@@ -492,6 +492,30 @@ const executeNode = (
+       return;
+     }
+ 
++    // ── update-policy ──
++
++    if (node.action === "update-policy") {
++      // Persist before publishing attrs or readiness. If interrupted before
++      // the atomic state write, planning emits this action again; after it,
++      // planning sees the desired policy and safely no-ops.
++      yield* commit<CreatedResourceState | UpdatedResourceState>({
++        ...node.state,
++        resourceType: node.resource.Type,
++        downstream: node.downstream,
++        removalPolicy: node.resource.RemovalPolicy,
++      });
++      tracker[fqn] = {
++        output: node.state.attr,
++        props: node.state.props,
++        bindings: node.state.bindings ?? [],
++        instanceId: node.state.instanceId,
++      };
++      yield* signalReady;
++      yield* signalReadyStable;
++      yield* markTerminal("updated");
++      return;
++    }
++
+     const allUpstreamFqns = () => {
+       const propDeps = Object.keys(Output.resolveUpstream(node.props));
+       const bindingDeps = Object.keys(Output.resolveUpstream(node.bindings));
+@@ -1344,7 +1368,7 @@ const converge = Effect.fn(function* (
+     let anyUpdated = false;
+ 
+     for (const [fqn, node] of Object.entries(plan.resources)) {
+-      if (node.action === "noop") continue;
++      if (node.action === "noop" || node.action === "update-policy") continue;
+       if (!tracker[fqn]) continue;
+ 
+       const outputs = Object.fromEntries(
+diff --git a/packages/alchemy/src/Cli/LoggingCli.ts b/packages/alchemy/src/Cli/LoggingCli.ts
+index 05f8a394..296040a7 100644
+--- a/packages/alchemy/src/Cli/LoggingCli.ts
++++ b/packages/alchemy/src/Cli/LoggingCli.ts
+@@ -22,6 +22,7 @@ const cyan = (s: string) => c("36", s);
+ const actionColor: Record<CRUD["action"], (s: string) => string> = {
+   create: green,
+   update: yellow,
++  "update-policy": yellow,
+   replace: magenta,
+   delete: red,
+   noop: dim,
+@@ -68,7 +69,9 @@ const formatPlanLines = (plan: Plan): string[] => {
+     (acc, item) => ((acc[item.action] = (acc[item.action] ?? 0) + 1), acc),
+     {} as Record<CRUD["action"], number>,
+   );
+-  const summary = (["create", "update", "replace", "delete", "noop"] as const)
++  const summary = (
++    ["create", "update", "update-policy", "replace", "delete", "noop"] as const
++  )
+     .filter((a) => counts[a])
+     .map((a) => actionColor[a](`${counts[a]} to ${a}`))
+     .join(dim(", "));
+diff --git a/packages/alchemy/src/Cli/NamespaceTree.ts b/packages/alchemy/src/Cli/NamespaceTree.ts
+index 27be247f..c11aa24b 100644
+--- a/packages/alchemy/src/Cli/NamespaceTree.ts
++++ b/packages/alchemy/src/Cli/NamespaceTree.ts
+@@ -30,6 +30,7 @@ export interface TreeNode {
+ export type DerivedAction =
+   | "create"
+   | "update"
++  | "update-policy"
+   | "delete"
+   | "replace"
+   | "noop"
+@@ -242,5 +243,7 @@ const deriveAction = (
+   if (actions.has("delete")) return actions.size === 1 ? "delete" : "mixed";
+   if (actions.has("create")) return actions.size === 1 ? "create" : "mixed";
+   if (actions.has("update")) return actions.size === 1 ? "update" : "mixed";
++  if (actions.has("update-policy"))
++    return actions.size === 1 ? "update-policy" : "mixed";
+   return "noop";
+ };
+diff --git a/packages/alchemy/src/Cli/tui/components/Plan.tsx b/packages/alchemy/src/Cli/tui/components/Plan.tsx
+index ebe178a0..530c2f41 100644
+--- a/packages/alchemy/src/Cli/tui/components/Plan.tsx
++++ b/packages/alchemy/src/Cli/tui/components/Plan.tsx
+@@ -49,6 +49,7 @@ export function Plan({ plan }: PlanProps): JSX.Element {
+   const counts = items.reduce((acc, item) => (acc[item.action]++, acc), {
+     create: 0,
+     update: 0,
++    "update-policy": 0,
+     delete: 0,
+     noop: 0,
+     replace: 0,
+@@ -58,9 +59,9 @@ export function Plan({ plan }: PlanProps): JSX.Element {
+     { run: 0, noop: 0, delete: 0 },
+   );
+ 
+-  const actions = (["create", "update", "delete", "replace"] as const).filter(
+-    (action) => counts[action] > 0,
+-  );
++  const actions = (
++    ["create", "update", "update-policy", "delete", "replace"] as const
++  ).filter((action) => counts[action] > 0);
+   const taskHeaderEntries = [
+     taskCounts.run > 0 ? `${taskCounts.run} to run` : undefined,
+     taskCounts.delete > 0 ? `${taskCounts.delete} to drop` : undefined,
+@@ -180,6 +181,7 @@ const getActionColor = (action: AnyAction): Color =>
+     noop: "gray",
+     create: "green",
+     update: "yellow",
++    "update-policy": "yellow",
+     delete: "red",
+     replace: "magenta",
+     mixed: "cyan",
+@@ -190,6 +192,7 @@ const getActionIcon = (action: AnyAction): string =>
+   ({
+     create: "+",
+     update: "~",
++    "update-policy": "p",
+     delete: "-",
+     noop: "•",
+     replace: "!",
+diff --git a/packages/alchemy/src/Plan.ts b/packages/alchemy/src/Plan.ts
+index 58e8e610..421636e7 100644
+--- a/packages/alchemy/src/Plan.ts
++++ b/packages/alchemy/src/Plan.ts
+@@ -68,6 +68,7 @@ export const isCRUD = (node: any): node is CRUD => {
+     typeof node === "object" &&
+     (node.action === "create" ||
+       node.action === "update" ||
++      node.action === "update-policy" ||
+       node.action === "replace" ||
+       node.action === "noop")
+   );
+@@ -79,6 +80,7 @@ export const isCRUD = (node: any): node is CRUD => {
+ export type CRUD<R extends ResourceLike = ResourceLike> =
+   | Create<R>
+   | Update<R>
++  | UpdatePolicy<R>
+   | Delete<R>
+   | Replace<R>
+   | NoopUpdate<R>;
+@@ -86,6 +88,7 @@ export type CRUD<R extends ResourceLike = ResourceLike> =
+ export type Apply<R extends ResourceLike = ResourceLike> =
+   | Create<R>
+   | Update<R>
++  | UpdatePolicy<R>
+   | Replace<R>
+   | NoopUpdate<R>;
+ 
+@@ -127,6 +130,13 @@ export interface Update<
+     | ReplacedResourceState;
+ }
+ 
++export interface UpdatePolicy<
++  R extends ResourceLike = ResourceLike,
++> extends BaseNode<R> {
++  action: "update-policy";
++  state: CreatedResourceState | UpdatedResourceState;
++}
++
+ export interface Delete<
+   R extends ResourceLike = ResourceLike,
+ > extends BaseNode<R> {
+@@ -1052,6 +1062,17 @@ export const make = <A>(
+                 deleteFirst: diff?.deleteFirst ?? false,
+               });
+             } else {
++              // Legacy rows without a policy used the engine's historical
++              // destroy behavior. A policy-only change is still approval-
++              // visible even though it must not invoke the provider.
++              if (
++                (oldState.removalPolicy ?? "destroy") !== resource.RemovalPolicy
++              ) {
++                return Node<UpdatePolicy>({
++                  action: "update-policy",
++                  state: oldState,
++                });
++              }
+               return Node<NoopUpdate>({
+                 action: "noop",
+                 state: oldState,
+@@ -1402,6 +1423,8 @@ export const printPlan = (plan: Plan): string => {
+         return "+";
+       case "update":
+         return "~";
++      case "update-policy":
++        return "p";
+       case "delete":
+         return "-";
+       case "replace":
+@@ -1424,10 +1447,10 @@ export const printPlan = (plan: Plan): string => {
+     "╠════════════════════════════════════════════════════════════════╣",
+   );
+   lines.push(
+-    "║ Legend: + create, ~ update, - delete, ± replace, = noop,       ║",
++    "║ Legend: + create, ~ update, p update-policy, - delete,         ║",
+   );
+   lines.push(
+-    "║         λ run task, · skip task                                ║",
++    "║         ± replace, = noop, λ run task, · skip task             ║",
+   );
+   lines.push(
+     "╚════════════════════════════════════════════════════════════════╝",
+@@ -1442,7 +1465,7 @@ export const printPlan = (plan: Plan): string => {
+   for (const id of resourceIds) {
+     const node = plan.resources[id];
+     const symbol = actionSymbol(node.action);
+-    const type = node.resource?.type ?? "unknown";
++    const type = node.resource?.Type ?? "unknown";
+     const downstream = node.state?.downstream?.length
+       ? ` → [${node.state?.downstream.join(", ")}]`
+       : "";
+diff --git a/packages/alchemy/test/apply.test.ts b/packages/alchemy/test/apply.test.ts
+index 5d2b9c8c..aa8c7065 100644
+--- a/packages/alchemy/test/apply.test.ts
++++ b/packages/alchemy/test/apply.test.ts
+@@ -9,13 +9,16 @@ import {
+   type ReplacedResourceState,
+   type ReplacingResourceState,
+   type ResourceState,
++  isResourceState,
+   State,
+ } from "@/State";
+ import * as Test from "@/Test/Alchemy";
+ import { describe, expect } from "alchemy-test";
+ import { Data, Layer } from "effect";
++import * as Cause from "effect/Cause";
+ import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
++import * as Exit from "effect/Exit";
+ import * as Redacted from "effect/Redacted";
+ import {
+   AliasedWidget,
+@@ -2204,6 +2207,209 @@ describe("retain removal policy on replace", () => {
+   );
+ });
+ 
++describe("persist removal policy-only changes", () => {
++  const program = (retain: boolean) =>
++    Effect.gen(function* () {
++      const A = yield* BindingTarget("A", {
++        name: "a",
++        string: "a-value",
++      }).pipe(RemovalPolicy.retain(retain));
++      const B = yield* TestResource("B", { string: A.string });
++      return { A, B };
++    });
++
++  test.provider(
++    "persists both policy directions without provider mutation and preserves state",
++    (stack) =>
++      Effect.gen(function* () {
++        yield* program(true).pipe(stack.deploy);
++        const retained = yield* getState("A");
++        expect(retained?.removalPolicy).toBe("retain");
++
++        let reconciles = 0;
++        let deletes = 0;
++        const countProviderCalls = hook({
++          create: () =>
++            Effect.sync(() => {
++              reconciles += 1;
++            }),
++          update: () =>
++            Effect.sync(() => {
++              reconciles += 1;
++            }),
++          delete: () =>
++            Effect.sync(() => {
++              deletes += 1;
++            }),
++        });
++
++        const destroyPlan = yield* stack.plan(program(false));
++        expect(destroyPlan.resources.A?.action).toBe("update-policy");
++        expect(destroyPlan.resources.B?.action).toBe("noop");
++
++        yield* program(false).pipe(stack.deploy, countProviderCalls);
++        const destroyed = yield* getState("A");
++        expect(destroyed).toEqual({
++          ...retained,
++          removalPolicy: "destroy",
++        });
++        expect(reconciles).toBe(0);
++        expect(deletes).toBe(0);
++
++        const retainPlan = yield* stack.plan(program(true));
++        expect(retainPlan.resources.A?.action).toBe("update-policy");
++        expect(retainPlan.resources.B?.action).toBe("noop");
++
++        yield* program(true).pipe(stack.deploy, countProviderCalls);
++        expect(yield* getState("A")).toEqual(retained);
++        expect(reconciles).toBe(0);
++        expect(deletes).toBe(0);
++      }),
++  );
++
++  test.provider("commits policy before publishing terminal status", (stack) =>
++    Effect.gen(function* () {
++      yield* program(true).pipe(stack.deploy);
++
++      const observations: string[] = [];
++      const state = yield* yield* State;
++      const cli = Cli.of({
++        approvePlan: () => Effect.succeed(true),
++        displayPlan: () => Effect.void,
++        startApplySession: () =>
++          Effect.succeed({
++            done: () => Effect.void,
++            emit: (event) =>
++              event.kind === "status-change" &&
++              event.id === "A" &&
++              event.status === "updated"
++                ? state
++                    .get({ stack: stack.name, stage: "test", fqn: "A" })
++                    .pipe(
++                      Effect.catch((error) => Effect.die(error)),
++                      Effect.map((persisted) => {
++                        observations.push(
++                          isResourceState(persisted)
++                            ? (persisted.removalPolicy ?? "missing")
++                            : "missing",
++                        );
++                      }),
++                    )
++                : Effect.void,
++          }),
++      });
++
++      yield* program(false).pipe(
++        stack.deploy,
++        Effect.provide(Layer.succeed(Cli, cli)),
++      );
++
++      expect(observations.length).toBeGreaterThan(0);
++      expect(observations.every((policy) => policy === "destroy")).toBe(true);
++    }),
++  );
++
++  test.provider(
++    "replans after interruption before commit and converges after interruption following commit",
++    (stack) =>
++      Effect.gen(function* () {
++        yield* program(true).pipe(stack.deploy);
++
++        const state = yield* yield* State;
++        const originalSet = state.set;
++        let interruptNextSet = true;
++        yield* Effect.sync(() => {
++          state.set = (request) => {
++            if (interruptNextSet) {
++              interruptNextSet = false;
++              return Effect.interrupt;
++            }
++            return originalSet(request);
++          };
++        });
++
++        const beforeCommit = yield* program(false).pipe(
++          stack.deploy,
++          Effect.exit,
++          Effect.ensuring(
++            Effect.sync(() => {
++              state.set = originalSet;
++            }),
++          ),
++        );
++        expect(Exit.isFailure(beforeCommit)).toBe(true);
++        if (Exit.isFailure(beforeCommit)) {
++          expect(Cause.hasInterrupts(beforeCommit.cause)).toBe(true);
++        }
++        expect((yield* stack.plan(program(false))).resources.A?.action).toBe(
++          "update-policy",
++        );
++
++        const interruptingCli = Cli.of({
++          approvePlan: () => Effect.succeed(true),
++          displayPlan: () => Effect.void,
++          startApplySession: () =>
++            Effect.succeed({
++              done: () => Effect.void,
++              emit: (event) =>
++                event.kind === "status-change" &&
++                event.id === "A" &&
++                event.status === "updated"
++                  ? Effect.interrupt
++                  : Effect.void,
++            }),
++        });
++        const afterCommit = yield* program(false).pipe(
++          stack.deploy,
++          Effect.provide(Layer.succeed(Cli, interruptingCli)),
++          Effect.exit,
++        );
++        expect(Exit.isFailure(afterCommit)).toBe(true);
++        if (Exit.isFailure(afterCommit)) {
++          expect(Cause.hasInterrupts(afterCommit.cause)).toBe(true);
++        }
++        expect((yield* getState("A"))?.removalPolicy).toBe("destroy");
++        expect((yield* stack.plan(program(false))).resources.A?.action).toBe(
++          "noop",
++        );
++      }),
++  );
++
++  test.provider(
++    "migrates a legacy missing policy to retain and then noops",
++    (stack) =>
++      Effect.gen(function* () {
++        yield* program(false).pipe(stack.deploy);
++
++        const state = yield* yield* State;
++        const persisted = yield* state.get({
++          stack: stack.name,
++          stage: "test",
++          fqn: "A",
++        });
++        if (!isResourceState(persisted)) {
++          return expect.fail("expected resource state for A");
++        }
++        const { removalPolicy: _removed, ...legacy } = persisted;
++        yield* state.set({
++          stack: stack.name,
++          stage: "test",
++          fqn: "A",
++          value: legacy,
++        });
++
++        expect((yield* stack.plan(program(true))).resources.A?.action).toBe(
++          "update-policy",
++        );
++        yield* program(true).pipe(stack.deploy);
++        expect((yield* getState("A"))?.removalPolicy).toBe("retain");
++        expect((yield* stack.plan(program(true))).resources.A?.action).toBe(
++          "noop",
++        );
++      }),
++  );
++});
++
+ describe("from deleting state", () => {
+   test.provider(
+     "create when props unchanged or have updatable changes",
+diff --git a/packages/alchemy/test/plan.test.ts b/packages/alchemy/test/plan.test.ts
+index 2f1c9063..f8951613 100644
+--- a/packages/alchemy/test/plan.test.ts
++++ b/packages/alchemy/test/plan.test.ts
+@@ -5,6 +5,7 @@ import * as Namespace from "@/Namespace.ts";
+ import * as Output from "@/Output";
+ import * as Plan from "@/Plan";
+ import * as Provider from "@/Provider";
++import * as RemovalPolicy from "@/RemovalPolicy.ts";
+ import { UnsatisfiedResourceCycle } from "@/Plan";
+ import type { ResourceBinding } from "@/Resource";
+ import * as Stack from "@/Stack";
+@@ -730,6 +731,77 @@ test(
+   }),
+ );
+ 
++describe("removal policy-only changes", () => {
++  const state = (removalPolicy?: "retain" | "destroy"): ResourceState => ({
++    instanceId,
++    providerVersion: 0,
++    logicalId: "A",
++    fqn: "A",
++    namespace: undefined,
++    resourceType: "Test.TestResource",
++    status: "created",
++    props: { string: "value" },
++    attr: {
++      string: "value",
++      stringArray: [],
++      stableString: "A",
++      stableArray: ["A"],
++      replaceString: undefined,
++      redacted: undefined,
++      redactedArray: undefined,
++    },
++    bindings: [],
++    downstream: [],
++    removalPolicy,
++  });
++
++  test(
++    "retain to destroy emits an approval-visible policy action only",
++    Effect.gen(function* () {
++      yield* seed({ A: state("retain") });
++
++      const plan = yield* Effect.gen(function* () {
++        yield* TestResource("A", { string: "value" });
++      }).pipe(makePlan);
++
++      expect(plan.resources.A?.action).toBe("update-policy");
++      expect(plan.deletions).toEqual({});
++      expect(Plan.printPlan(plan)).toContain("[p] A (Test.TestResource)");
++      expect(Plan.printPlan(plan)).toContain("± replace, = noop");
++    }),
++  );
++
++  test(
++    "destroy to retain emits an approval-visible policy action only",
++    Effect.gen(function* () {
++      yield* seed({ A: state("destroy") });
++
++      const plan = yield* Effect.gen(function* () {
++        yield* TestResource("A", { string: "value" }).pipe(
++          RemovalPolicy.retain(),
++        );
++      }).pipe(makePlan);
++
++      expect(plan.resources.A?.action).toBe("update-policy");
++      expect(plan.deletions).toEqual({});
++      expect(Plan.printPlan(plan)).toContain("[p] A (Test.TestResource)");
++    }),
++  );
++
++  test(
++    "legacy missing policy is equivalent to destroy",
++    Effect.gen(function* () {
++      yield* seed({ A: state() });
++
++      const plan = yield* Effect.gen(function* () {
++        yield* TestResource("A", { string: "value" });
++      }).pipe(makePlan);
++
++      expect(plan.resources.A?.action).toBe("noop");
++    }),
++  );
++});
++
+ describe("replace resource when replaceString changes", () => {
+   const stateResources: Record<string, ResourceState> = {
+     A: {
+-- 
+2.50.1 (Apple Git-155)
+
