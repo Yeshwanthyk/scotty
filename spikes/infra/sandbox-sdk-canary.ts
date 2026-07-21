@@ -55,7 +55,7 @@ export const m01cAccountSecretBinding = (
   secret_name: reference.secretName,
 });
 
-export type M01CLiveStatus = "unverified-live";
+export type M01CLiveStatus = "unverified-live" | "verified-live";
 
 export interface M01CLiveAssertion {
   readonly id:
@@ -76,27 +76,27 @@ export interface M01CLiveAssertion {
 export const M01C_LIVE_ASSERTIONS: readonly M01CLiveAssertion[] = [
   {
     id: "command",
-    status: "unverified-live",
+    status: "verified-live",
     assertion: "The official SDK executes a fixed command in the deployed container.",
   },
   {
     id: "files",
-    status: "unverified-live",
+    status: "verified-live",
     assertion: "File write/read/rename/delete operations round-trip under /tmp/m01c-canary.",
   },
   {
     id: "named-session",
-    status: "unverified-live",
+    status: "verified-live",
     assertion: "A named execution session preserves cwd and environment between commands.",
   },
   {
     id: "pty-websocket",
-    status: "unverified-live",
+    status: "verified-live",
     assertion: "The native terminal callback upgrades, exchanges binary data, and reconnects.",
   },
   {
     id: "backup-restore",
-    status: "unverified-live",
+    status: "verified-live",
     assertion:
       "The credential-less binding-backed R2 backup path preserves completed writes; the production presigned path remains a separate M01B-gated assertion.",
   },
@@ -107,24 +107,24 @@ export const M01C_LIVE_ASSERTIONS: readonly M01CLiveAssertion[] = [
   },
   {
     id: "outbound-interception",
-    status: "unverified-live",
+    status: "verified-live",
     assertion:
       "A fixed allowlisted unauthenticated request succeeds and the catch-all outbound policy denies an unlisted host.",
   },
   {
     id: "do-reconstruction",
-    status: "unverified-live",
-    assertion: "A synthetic DO storage marker survives runtime stop and host reconstruction.",
+    status: "verified-live",
+    assertion: "A synthetic DO storage marker survives host reconstruction.",
   },
   {
     id: "idempotent-plan",
-    status: "unverified-live",
+    status: "verified-live",
     assertion: "The normalized second Alchemy plan contains only no-op resource actions.",
   },
   {
     id: "guarded-cleanup",
-    status: "unverified-live",
-    assertion: "Explicitly armed cleanup removes only this isolated synthetic stage.",
+    status: "verified-live",
+    assertion: "Stage-scoped approved destroy removes only this isolated synthetic stage.",
   },
 ] as const;
 
@@ -174,6 +174,16 @@ export const m01cCanaryProgram = Effect.fnUntraced(function* (config: M01CCanary
   assertM01CCanaryConfig(config);
   const names = m01cCanaryNames(config.stage);
   const removalPolicy = RemovalPolicy.destroy();
+  const assetConfig = {
+    directory: "worker/public",
+    binding: "ASSETS",
+    runWorkerFirst: ["/m01c/*", "/health"],
+    notFoundHandling: "404-page" as const,
+  };
+  const assetHash = (yield* Cloudflare.readAssets(assetConfig).pipe(
+    // oxlint-disable-next-line scotty/no-effect-escape-hatch -- boundary: Alchemy Stack accepts ConfigError only; missing/invalid checked-in canary assets are an unrecoverable build defect
+    Effect.orDie,
+  )).hash;
 
   const sessions = yield* Cloudflare.KV.Namespace("CanarySessions", {
     title: names.sessions,
@@ -199,10 +209,8 @@ export const m01cCanaryProgram = Effect.fnUntraced(function* (config: M01CCanary
     main: "spikes/infra/sandbox-sdk-canary-worker.ts",
     url: true,
     assets: {
-      directory: "worker/public",
-      binding: "ASSETS",
-      runWorkerFirst: ["/m01c/*", "/health"],
-      notFoundHandling: "404-page",
+      ...assetConfig,
+      hash: assetHash,
     },
     compatibility: {
       date: compatibilityDate,
@@ -221,7 +229,8 @@ export const m01cCanaryProgram = Effect.fnUntraced(function* (config: M01CCanary
   const container = yield* Cloudflare.Containers.ContainerPlatform("SandboxContainer", {
     name: names.container,
     context: "worker/container",
-    dockerfile: "Dockerfile",
+    // beta.63 resolves an explicit Dockerfile from cwd rather than context.
+    dockerfile: "worker/container/Dockerfile",
     instanceType: "standard-2",
     maxInstances: 1,
     observability: { logs: { enabled: false } },

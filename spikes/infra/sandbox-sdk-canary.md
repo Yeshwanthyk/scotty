@@ -96,9 +96,25 @@ serialized for that stack and stage.
 The live suite is a starting harness for fixed command execution, file operations, a named session,
 native binary PTY WebSocket exchange/reconnect, binding-backed backup/restore, outbound
 allow/deny behavior, lifecycle callbacks, and Durable Object storage across host reconstruction.
-It exposes only one stage-derived DO and `/bin/cat`, never an interactive shell. Until the suite,
-actual activity-expiry timing, static assets, second plan, and guarded cleanup pass, all entries in
-`M01C_LIVE_ASSERTIONS` remain `unverified-live`.
+It exposes only one stage-derived DO and `/bin/cat`, never an interactive shell.
+
+### Deployed proof — 2026-07-21
+
+Disposable stage `m01c-canary-eeef23ea0ed2054a0f0f9797cdcb9273` passed the approved canary:
+
+- the first plan contained only four creates;
+- fixed command, file round trip/deletion, named-session mutation, outbound allow/deny,
+  credential-less R2 backup/restore, DO reconstruction with storage preservation, and two native
+  binary PTY connections passed;
+- after supplying a public `readAssets` input hash, the second plan contained four no-ops;
+- guarded destroy deleted four resources, and independent Cloudflare API reads confirmed the
+  Worker, Container application, KV namespace, and R2 bucket were absent.
+
+Actual ten-minute activity-expiry timing remains `unverified-live`; the canary observed native
+start/stop counters but did not wait for the full expiry window. Static asset upload succeeded as
+part of Worker deployment but its browser rendering was not asserted. The outbound policy returned
+HTTP 403 internally; Cloudflare surfaced the denied Container request as HTTP 520, so the live
+assertion accepts only those two observed denial statuses rather than any non-success response.
 
 ## Pinned public contracts
 

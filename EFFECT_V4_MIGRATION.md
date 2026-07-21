@@ -282,6 +282,13 @@ retain-to-destroy transition. Fail-closed adoption and policy persistence
 remain blockers for Chunk 2 production adoption, where stable existing names
 and retained authoritative data cannot use the disposable-canary workaround.
 
+The approved disposable deployment on 2026-07-21 passed command/file/session,
+outbound allow/deny, binding-backed R2 backup/restore, DO reconstruction, and
+binary PTY reconnect tests. Its normalized second plan contained four no-ops,
+and Cloudflare API reads independently confirmed the Worker, Container
+application, KV namespace, and R2 bucket absent after guarded cleanup. Exact
+activity-expiry timing and browser asset rendering remain outside that proof.
+
 #### 1A External Sandbox Container binding helper
 
 Implement and test the public binding helper against a disposable Worker/DO/Container. Verify:

@@ -47,6 +47,10 @@ export class ScottySandbox extends Sandbox {
     return (await this.ctx.storage.get<Record<string, number>>(lifecycleKey)) ?? {};
   }
 
+  m01cReadIncarnation(): string {
+    return this.m01cIncarnation;
+  }
+
   m01cAbortHost(): void {
     this.ctx.abort("M01C requested host reconstruction");
   }
@@ -86,11 +90,11 @@ export default {
       return Response.json({
         marker: await sandbox.m01cReadMarker(),
         lifecycle: await sandbox.m01cLifecycle(),
-        incarnation: sandbox.m01cIncarnation,
+        incarnation: await sandbox.m01cReadIncarnation(),
       });
     }
     if (match[1] === "reconstruct") {
-      sandbox.m01cAbortHost();
+      await sandbox.m01cAbortHost();
       return new Response(null, { status: 204 });
     }
     if (match[1] === "stop") {

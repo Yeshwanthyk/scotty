@@ -99,8 +99,10 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
     assert.match(stackSource, /className: "ScottySandbox"/u);
     assert.match(stackSource, /main: "spikes\/infra\/sandbox-sdk-canary-worker\.ts"/u);
     assert.match(stackSource, /context: "worker\/container"/u);
-    assert.match(stackSource, /dockerfile: "Dockerfile"/u);
+    assert.match(stackSource, /dockerfile: "worker\/container\/Dockerfile"/u);
     assert.match(stackSource, /directory: "worker\/public"/u);
+    assert.match(stackSource, /Cloudflare\.readAssets\(assetConfig\)/u);
+    assert.match(stackSource, /hash: assetHash/u);
     assert.match(stackSource, /date: compatibilityDate/u);
     assert.match(stackSource, /flags: \["nodejs_compat"\]/u);
     assert.match(stackSource, /observability: \{ enabled: false \}/u);
@@ -122,7 +124,7 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
     assert.notMatch(stackSource, /(?:Worker|Container)Provider/u);
   });
 
-  it("marks every Cloudflare-only assertion as unverified locally", () => {
+  it("records the deployed canary evidence without overstating lifecycle timing", () => {
     assert.deepEqual(
       M01C_LIVE_ASSERTIONS.map(({ id }) => id),
       [
@@ -138,9 +140,9 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
         "guarded-cleanup",
       ],
     );
-    assert.equal(
-      M01C_LIVE_ASSERTIONS.every(({ status }) => status === "unverified-live"),
-      true,
+    assert.deepEqual(
+      M01C_LIVE_ASSERTIONS.filter(({ status }) => status === "unverified-live").map(({ id }) => id),
+      ["lifecycle-callbacks"],
     );
   });
 

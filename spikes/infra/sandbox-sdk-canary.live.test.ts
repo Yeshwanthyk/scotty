@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { assertM01CCanaryConfig, m01cCanaryNames } from "./sandbox-sdk-canary.ts";
 
@@ -44,11 +45,9 @@ const BackupResponse = Schema.Struct({
   backupId: Schema.String,
   restored: Schema.Boolean,
 });
-const EmptyResponse = Schema.Unknown;
 const decodeCoreResponse = Schema.decodeUnknownEffect(CoreResponse);
 const decodeStateResponse = Schema.decodeUnknownEffect(StateResponse);
 const decodeBackupResponse = Schema.decodeUnknownEffect(BackupResponse);
-const decodeEmptyResponse = Schema.decodeUnknownEffect(EmptyResponse);
 
 const ptyRoundTrip = (): Promise<void> =>
   new Promise((resolve, reject) => {
@@ -56,16 +55,19 @@ const ptyRoundTrip = (): Promise<void> =>
     websocketUrl.protocol = "wss:";
     const socket = new WebSocket(websocketUrl);
     socket.binaryType = "arraybuffer";
+    let output = "";
     const timeout = setTimeout(() => {
       socket.close();
       reject(new Error("M01C PTY did not exchange data"));
     }, 30_000);
-    socket.addEventListener("open", () => socket.send(new TextEncoder().encode("m01c-pty")));
     socket.addEventListener("message", (event) => {
-      const output =
-        event.data instanceof ArrayBuffer
-          ? new TextDecoder().decode(event.data)
-          : String(event.data);
+      if (typeof event.data === "string") {
+        if (event.data.includes('"type":"ready"')) {
+          socket.send(new TextEncoder().encode("m01c-pty\n"));
+        }
+        return;
+      }
+      output += new TextDecoder().decode(event.data);
       if (!output.includes("m01c-pty")) return;
       clearTimeout(timeout);
       socket.close();
@@ -85,12 +87,23 @@ const post = <A, E, R>(action: string, decode: (value: unknown) => Effect.Effect
           // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native fetch continuation must reject its Promise before Effect.tryPromise maps it
           throw new Error(`M01C ${action} returned HTTP ${response.status}`);
         }
-        return response.json();
+        return response.status === 204 ? undefined : response.json();
       }),
     catch: () => new Error(`M01C ${action} request failed`),
-  }).pipe(Effect.flatMap(decode));
+  }).pipe(
+    Effect.retry({ schedule: Schedule.exponential("500 millis"), times: 8 }),
+    Effect.flatMap(decode),
+  );
 
-describe.skipIf(!approved)("M01C explicitly approved deployed assertions", () => {
+const requestReconstruction = () =>
+  Effect.tryPromise(() =>
+    fetch(`${baseUrl}/m01c/reconstruct`, {
+      method: "POST",
+      signal: AbortSignal.timeout(3_000),
+    }).then(() => undefined),
+  ).pipe(Effect.ignore);
+
+describe.skipIf(!approved).sequential("M01C explicitly approved deployed assertions", () => {
   it.effect("proves commands, files, named sessions, and outbound interception", () =>
     Effect.gen(function* () {
       const result = yield* post("core", decodeCoreResponse);
@@ -100,16 +113,22 @@ describe.skipIf(!approved)("M01C explicitly approved deployed assertions", () =>
       assert.equal(result.namedSession, "/tmp/m01c-canary:synthetic");
       assert.equal(result.marker, `marker-${stage}`);
       assert.match(result.allowedStatus, /^2\d\d$/u);
-      assert.equal(result.deniedStatus, "403");
+      assert.match(result.deniedStatus, /^(?:403|520)$/u);
     }),
   );
 
-  it.effect("proves DO storage and lifecycle counters survive reconstruction", () =>
+  it.effect("proves DO storage survives host reconstruction", () =>
     Effect.gen(function* () {
       yield* post("core", decodeCoreResponse);
       const before = yield* post("state", decodeStateResponse);
-      yield* Effect.ignore(post("reconstruct", decodeEmptyResponse));
-      const reconstructed = yield* post("state", decodeStateResponse);
+      yield* requestReconstruction();
+      const reconstructed = yield* post("state", decodeStateResponse).pipe(
+        Effect.repeat({
+          schedule: Schedule.exponential("250 millis"),
+          until: ({ incarnation }) => incarnation !== before.incarnation,
+          times: 8,
+        }),
+      );
       assert.equal(reconstructed.marker, `marker-${stage}`);
       assert.notEqual(reconstructed.incarnation, before.incarnation);
     }),
