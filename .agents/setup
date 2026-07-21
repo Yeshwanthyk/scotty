@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+node_version="$(cat .nvmrc)"
+
+if [[ "$(node --version 2>/dev/null || true)" != "v${node_version}" ]]; then
+  case "$(uname -m)" in
+    x86_64) node_arch="x64" ;;
+    aarch64 | arm64) node_arch="arm64" ;;
+    *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+
+  archive="node-v${node_version}-linux-${node_arch}.tar.xz"
+  download="https://nodejs.org/dist/v${node_version}"
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "$temp_dir"' EXIT
+
+  echo "Installing Node.js ${node_version}..."
+  curl --fail --location --silent --show-error "${download}/${archive}" -o "${temp_dir}/${archive}"
+  curl --fail --location --silent --show-error "${download}/SHASUMS256.txt" -o "${temp_dir}/SHASUMS256.txt"
+  (cd "$temp_dir" && grep "  ${archive}$" SHASUMS256.txt | sha256sum --check --strict)
+
+  sudo mkdir -p "/opt/node-v${node_version}"
+  sudo tar --extract --xz --file "${temp_dir}/${archive}" \
+    --directory "/opt/node-v${node_version}" --strip-components=1
+  for executable in node npm npx corepack; do
+    sudo ln -sfn "/opt/node-v${node_version}/bin/${executable}" "/usr/local/bin/${executable}"
+  done
+fi
+
+echo "Using Node.js $(node --version) and Bun $(bun --version)."
+git submodule update --init vendor/effect vendor/alchemy
+npm ci

@@ -1,0 +1,3 @@
+{"timestamp":"2026-07-20T12:00:00.000Z","type":"session_meta","payload":{"id":"019f8e2a-11aa-7000-8000-000000000001","cwd":"/workspace/e2e-0001"}}
+{"timestamp":"2026-07-20T12:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"E2E fixture prompt"}]}}
+{"timestamp":"2026-07-20T12:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"E2E fixture response"}]}}

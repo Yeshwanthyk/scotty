@@ -1,0 +1,47 @@
+{
+  "name": "scotty",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "worker"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "npm run fmt:check && npm run lint && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
+    "fmt": "oxfmt --disable-nested-config --write .",
+    "fmt:check": "oxfmt --disable-nested-config --check .",
+    "lint": "oxlint --disable-nested-config --deny-warnings .",
+    "typecheck": "npm run typecheck:worker && npm run typecheck:contracts",
+    "typecheck:worker": "tsc -p worker/tsconfig.json",
+    "typecheck:contracts": "tsc -p spikes/tsconfig.json",
+    "test": "npm run test:contracts",
+    "test:contracts": "vitest run spikes",
+    "test:worker": "vitest run worker/test",
+    "test:cli": "bun test cli/test",
+    "test:e2e": "npm run test:e2e:offline",
+    "test:e2e:offline": "node --test e2e/tests/cli-lifecycle.test.mjs e2e/tests/protocol-security.test.mjs",
+    "test:e2e:deployed": "SCOTTY_E2E_EXPLICIT=1 node --test e2e/tests/deployed.test.mjs",
+    "test:all": "npm run test:contracts && npm run test:worker && npm run test:cli && npm run test:e2e:offline",
+    "probe:dry-run": "wrangler deploy --dry-run --config spikes/wrangler.jsonc",
+    "worker:dev": "npm run dev --workspace @scotty/worker",
+    "worker:deploy": "npm run deploy --workspace @scotty/worker"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-beta.99",
+    "alchemy": "2.0.0-beta.63",
+    "effect": "4.0.0-beta.99"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260719.1",
+    "@effect/vitest": "4.0.0-beta.99",
+    "@types/node": "24.0.15",
+    "oxfmt": "0.59.0",
+    "oxlint": "1.74.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.112.0"
+  },
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  }
+}

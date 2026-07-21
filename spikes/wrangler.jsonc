@@ -1,0 +1,39 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "scotty-contract-probe",
+  "main": "./cloudflare-contracts.ts",
+  "compatibility_date": "2026-07-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SANDBOX",
+        "class_name": "ContractSandbox",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ContractSandbox"],
+    },
+  ],
+  "containers": [
+    {
+      "class_name": "ContractSandbox",
+      "image": "../worker/container/Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 1,
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BACKUP_BUCKET",
+      "bucket_name": "scotty-contract-probe",
+    },
+  ],
+  "vars": {
+    "SANDBOX_TRANSPORT": "rpc",
+    "BACKUP_BUCKET_NAME": "scotty-contract-probe",
+  },
+}

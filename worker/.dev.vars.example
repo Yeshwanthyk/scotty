@@ -1,0 +1,9 @@
+# Copy to .dev.vars; never commit the populated file.
+SCOTTY_TOKEN="replace-with-a-random-32-byte-token"
+CODEX_AUTH_JSON='{"tokens":{"id_token":"replace","access_token":"replace","refresh_token":"replace","account_id":"replace"}}'
+GH_TOKEN="github_pat_replace"
+R2_ACCESS_KEY_ID="replace"
+R2_SECRET_ACCESS_KEY="replace"
+CLOUDFLARE_ACCOUNT_ID="replace"
+SCOTTY_FAKE_AGENT="1"
+SCOTTY_LOCAL_BACKUP="1"

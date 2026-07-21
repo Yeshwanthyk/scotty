@@ -1,0 +1,1142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Scotty — cloud coding agents on Cloudflare</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #070b10;
+        --panel: #0c121a;
+        --panel2: #111a24;
+        --ink: #edf4fa;
+        --muted: #8492a2;
+        --line: #263342;
+        --blue: #60a9ff;
+        --green: #54dda0;
+        --orange: #ffad5c;
+        --white: #f4f7fa;
+        --violet: #ba8cff;
+        --active: var(--blue);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(ellipse at 40% -20%, #142536 0, transparent 48%), var(--bg);
+        color: var(--ink);
+        font:
+          14px/1.5 Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      button,
+      code,
+      .mono,
+      .eyebrow {
+        font-family: "Berkeley Mono", "SFMono-Regular", Consolas, monospace;
+      }
+      button {
+        color: inherit;
+      }
+      main {
+        max-width: 1500px;
+        margin: auto;
+        padding: 28px 32px 18px;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        align-items: end;
+        margin-bottom: 22px;
+      }
+      .eyebrow {
+        color: #7e9bb5;
+        font-size: 10px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        margin: 0 0 8px;
+      }
+      h1 {
+        font:
+          600 clamp(25px, 3.1vw, 47px)/1.04 "Berkeley Mono",
+          "SFMono-Regular",
+          monospace;
+        letter-spacing: -0.055em;
+        margin: 0;
+        max-width: 830px;
+      }
+      .status {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: var(--muted);
+        font:
+          11px/1.2 "Berkeley Mono",
+          monospace;
+        white-space: nowrap;
+      }
+      .status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 10px var(--green);
+      }
+      .shell {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 330px;
+        gap: 18px;
+      }
+      .diagram-panel,
+      .player {
+        border: 1px solid var(--line);
+        background: linear-gradient(145deg, rgba(16, 25, 35, 0.96), rgba(8, 13, 19, 0.96));
+        box-shadow: 0 22px 70px #0008;
+      }
+      .diagram-panel {
+        position: relative;
+        min-width: 0;
+        border-radius: 7px;
+        overflow: hidden;
+      }
+      .diagram-panel:before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          repeating-linear-gradient(0deg, transparent 0 24px, #a6cfff08 25px),
+          repeating-linear-gradient(90deg, transparent 0 24px, #a6cfff06 25px);
+        mask-image: linear-gradient(to bottom, #0008, transparent);
+      }
+      .diagram-head {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        font:
+          10px "Berkeley Mono",
+          monospace;
+        color: var(--muted);
+        letter-spacing: 0.08em;
+      }
+      .diagram-wrap {
+        position: relative;
+        aspect-ratio: 1000/650;
+      }
+      .diagram-wrap svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        position: relative;
+        z-index: 1;
+      }
+      .player {
+        border-radius: 7px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .player-head {
+        padding: 14px 15px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .player-head span {
+        font:
+          10px "Berkeley Mono",
+          monospace;
+        color: var(--muted);
+        letter-spacing: 0.14em;
+      }
+      .autoplay {
+        appearance: none;
+        background: none;
+        border: 1px solid #314153;
+        border-radius: 3px;
+        padding: 5px 8px;
+        font-size: 10px;
+        cursor: pointer;
+      }
+      .autoplay:hover,
+      .autoplay:focus-visible {
+        border-color: var(--active);
+        outline: none;
+      }
+      .autoplay[aria-pressed="true"] {
+        color: var(--green);
+        border-color: #348d6a;
+      }
+      .steps {
+        list-style: none;
+        padding: 8px;
+        margin: 0;
+        display: grid;
+        gap: 2px;
+      }
+      .step {
+        width: 100%;
+        appearance: none;
+        background: transparent;
+        border: 0;
+        border-left: 2px solid transparent;
+        border-radius: 2px;
+        padding: 8px 9px;
+        display: grid;
+        grid-template-columns: 25px 1fr;
+        gap: 7px;
+        text-align: left;
+        cursor: pointer;
+        color: #7f8b99;
+      }
+      .step:hover {
+        background: #ffffff05;
+        color: #cbd5df;
+      }
+      .step:focus-visible {
+        outline: 1px solid var(--active);
+        outline-offset: -1px;
+      }
+      .step[aria-current="step"] {
+        background: #ffffff08;
+        color: var(--ink);
+        border-left-color: var(--step-color);
+      }
+      .num {
+        font:
+          10px "Berkeley Mono",
+          monospace;
+        padding-top: 2px;
+        color: var(--step-color);
+      }
+      .step b {
+        font:
+          600 12px/1.3 "Berkeley Mono",
+          monospace;
+      }
+      .detail {
+        margin: auto 15px 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+      }
+      .detail-kicker {
+        font:
+          10px "Berkeley Mono",
+          monospace;
+        color: var(--active);
+        letter-spacing: 0.12em;
+      }
+      .detail h2 {
+        font:
+          600 20px/1.2 "Berkeley Mono",
+          monospace;
+        margin: 5px 0 9px;
+        letter-spacing: -0.03em;
+      }
+      .command {
+        display: block;
+        border: 1px solid #293748;
+        background: #080d13;
+        border-radius: 4px;
+        padding: 9px 10px;
+        color: var(--ink);
+        font-size: 11px;
+        overflow-wrap: anywhere;
+      }
+      .detail p {
+        color: #a4afbb;
+        font-size: 12.5px;
+        line-height: 1.55;
+        margin: 10px 0 0;
+      }
+      .nav {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 7px;
+        padding: 0 15px 15px;
+      }
+      .nav button {
+        appearance: none;
+        border: 1px solid #314153;
+        background: #111924;
+        border-radius: 4px;
+        padding: 9px;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      .nav button:hover,
+      .nav button:focus-visible {
+        border-color: var(--active);
+        outline: none;
+      }
+      .nav button:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        margin-top: 13px;
+        color: #7c8997;
+        font:
+          10px/1.4 "Berkeley Mono",
+          monospace;
+      }
+      .cost {
+        color: #a7b7c8;
+      }
+      .key {
+        display: inline-block;
+        border: 1px solid #334253;
+        border-bottom-width: 2px;
+        border-radius: 3px;
+        padding: 1px 4px;
+        color: #aab7c3;
+      }
+      .tooltip {
+        position: fixed;
+        z-index: 10;
+        pointer-events: none;
+        width: min(270px, calc(100vw - 24px));
+        padding: 9px 11px;
+        background: #121c27;
+        border: 1px solid #42556b;
+        border-radius: 4px;
+        box-shadow: 0 12px 35px #000b;
+        color: #c9d4df;
+        font-size: 11px;
+        line-height: 1.45;
+        opacity: 0;
+        transform: translateY(4px);
+        transition:
+          opacity 0.12s,
+          transform 0.12s;
+      }
+      .tooltip.show {
+        opacity: 1;
+        transform: none;
+      }
+      .tooltip strong {
+        display: block;
+        color: #fff;
+        font:
+          600 10px "Berkeley Mono",
+          monospace;
+        margin-bottom: 3px;
+      }
+      /* SVG */
+      .zone {
+        fill: #0a1118;
+        stroke: #2a3949;
+        stroke-width: 1;
+      }
+      .zone-label {
+        fill: #607489;
+        font:
+          600 10px "Berkeley Mono",
+          monospace;
+        letter-spacing: 1.5px;
+      }
+      .zone-rule {
+        stroke: #243242;
+      }
+      .component {
+        cursor: help;
+        outline: none;
+      }
+      .component rect {
+        fill: #101923;
+        stroke: #35465a;
+        stroke-width: 1;
+        transition:
+          fill 0.2s,
+          stroke 0.2s,
+          filter 0.2s;
+      }
+      .component:hover rect,
+      .component:focus rect {
+        fill: #162331;
+        stroke: #7a93ad;
+      }
+      .component.active rect {
+        fill: #152434;
+        stroke: var(--active);
+        filter: drop-shadow(0 0 7px color-mix(in srgb, var(--active) 65%, transparent));
+      }
+      .box-title {
+        fill: #e4edf5;
+        font:
+          600 11px "Berkeley Mono",
+          monospace;
+      }
+      .box-sub {
+        fill: #77889a;
+        font:
+          9px "Berkeley Mono",
+          monospace;
+      }
+      .box-dot {
+        fill: #44576b;
+      }
+      .component.active .box-dot {
+        fill: var(--active);
+      }
+      .sandbox-shell {
+        fill: #0b131c;
+        stroke: #3d5166;
+        stroke-dasharray: 4 3;
+      }
+      .flow {
+        fill: none;
+        stroke: #435365;
+        stroke-width: 2;
+        opacity: 0.12;
+        vector-effect: non-scaling-stroke;
+        transition:
+          opacity 0.2s,
+          stroke 0.2s;
+        marker-end: url(#arrow-dim);
+      }
+      .flow.bi {
+        marker-start: url(#arrow-dim);
+      }
+      .flow.active {
+        stroke: var(--flow-color);
+        opacity: 1;
+        stroke-dasharray: 7 7;
+        animation: dash 0.65s linear infinite;
+        filter: drop-shadow(0 0 4px var(--flow-color));
+        marker-end: var(--end-marker);
+      }
+      .flow.bi.active {
+        marker-start: var(--end-marker);
+      }
+      @keyframes dash {
+        to {
+          stroke-dashoffset: -14;
+        }
+      }
+      .beam {
+        opacity: 0;
+      }
+      .beam.active {
+        opacity: 0.13;
+        fill: var(--flow-color);
+        animation: pulse 1.8s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.03;
+        }
+      }
+      .callout {
+        fill: #94a4b5;
+        font:
+          8.5px "Berkeley Mono",
+          monospace;
+      }
+      .callout.active {
+        fill: var(--flow-color);
+      }
+      @media (max-width: 1050px) {
+        main {
+          padding: 20px;
+        }
+        .shell {
+          grid-template-columns: 1fr;
+        }
+        .player {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+        }
+        .player-head {
+          grid-column: 1/-1;
+        }
+        .steps {
+          grid-template-columns: 1fr 1fr;
+        }
+        .detail {
+          margin: 8px 15px 12px;
+          border-top: 0;
+        }
+        .nav {
+          align-self: end;
+        }
+        .diagram-wrap {
+          min-height: 520px;
+        }
+        .foot {
+          flex-wrap: wrap;
+        }
+      }
+      @media (max-width: 650px) {
+        main {
+          padding: 14px;
+        }
+        header {
+          align-items: start;
+          flex-direction: column;
+        }
+        .status {
+          display: none;
+        }
+        .diagram-wrap {
+          overflow: auto;
+          aspect-ratio: auto;
+        }
+        .diagram-wrap svg {
+          width: 820px;
+          height: 533px;
+        }
+        .player {
+          display: flex;
+        }
+        .steps {
+          grid-template-columns: 1fr 1fr;
+        }
+        .step {
+          padding: 7px;
+        }
+        .foot span:last-child {
+          display: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *:before,
+        *:after {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          scroll-behavior: auto !important;
+          transition-duration: 0.001ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">SYSTEM MAP / SESSION LIFECYCLE</p>
+          <h1>SCOTTY <span style="color: #5f7183">—</span> cloud coding agents on Cloudflare</h1>
+        </div>
+        <div class="status"><span class="status-dot"></span> TRANSPORTER ONLINE</div>
+      </header>
+      <div class="shell">
+        <section class="diagram-panel" aria-label="Scotty architecture diagram">
+          <div class="diagram-head">
+            <span>ARCHITECTURE · ACTIVE PATH GLOWS</span><span>HOVER A COMPONENT FOR DETAILS</span>
+          </div>
+          <div class="diagram-wrap">
+            <svg viewBox="0 0 1000 650" role="img" aria-labelledby="svgTitle svgDesc">
+              <title id="svgTitle">Scotty cloud coding agent architecture</title>
+              <desc id="svgDesc">
+                Laptop, Cloudflare, browser, and GitHub components connected by eight selectable
+                lifecycle flows.
+              </desc>
+              <defs>
+                <marker
+                  id="arrow-dim"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="5"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0l8 4-8 4z" fill="#435365" />
+                </marker>
+                <marker
+                  id="arrow-blue"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="5"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0l8 4-8 4z" fill="#60a9ff" />
+                </marker>
+                <marker
+                  id="arrow-green"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="5"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0l8 4-8 4z" fill="#54dda0" />
+                </marker>
+                <marker
+                  id="arrow-orange"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="5"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0l8 4-8 4z" fill="#ffad5c" />
+                </marker>
+                <marker
+                  id="arrow-white"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="5"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0l8 4-8 4z" fill="#f4f7fa" />
+                </marker>
+                <marker
+                  id="arrow-violet"
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="5"
+                  markerHeight="5"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0l8 4-8 4z" fill="#ba8cff" />
+                </marker>
+              </defs>
+              <!-- zones -->
+              <rect class="zone" x="18" y="22" width="250" height="278" rx="5" />
+              <text class="zone-label" x="34" y="45">YOUR LAPTOP</text>
+              <path class="zone-rule" d="M34 54h218" />
+              <rect class="zone" x="292" y="22" width="458" height="606" rx="5" />
+              <text class="zone-label" x="308" y="45">CLOUDFLARE</text>
+              <path class="zone-rule" d="M308 54h426" />
+              <rect class="zone" x="774" y="22" width="208" height="184" rx="5" />
+              <text class="zone-label" x="790" y="45">BROWSER</text>
+              <path class="zone-rule" d="M790 54h176" />
+              <rect class="zone" x="774" y="232" width="208" height="266" rx="5" />
+              <text class="zone-label" x="790" y="255">GITHUB · ANOMALYCO/RIFT</text>
+              <path class="zone-rule" d="M790 264h176" />
+              <!-- components -->
+              <g
+                id="cli"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="scotty CLI"
+                data-tip="Your local control plane. It creates, resumes, publishes, and beams sessions back down with short commands."
+              >
+                <rect x="34" y="70" width="218" height="55" rx="4" />
+                <circle class="box-dot" cx="49" cy="87" r="3" />
+                <text class="box-title" x="59" y="91">scotty CLI</text>
+                <text class="box-sub" x="49" y="109">up · resume · pr · down</text>
+              </g>
+              <g
+                id="auth"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="local Codex state"
+                data-tip="The CLI reads local Codex credentials and session history. Beam down appends the remote rollout JSONL so Codex can resume locally."
+              >
+                <rect x="34" y="140" width="218" height="62" rx="4" />
+                <circle class="box-dot" cx="49" cy="157" r="3" />
+                <text class="box-title" x="59" y="161">~/.codex</text>
+                <text class="box-sub" x="49" y="180">auth.json + sessions</text>
+              </g>
+              <g
+                id="localrepo"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="local repository"
+                data-tip="The developer's local checkout. Beam down pulls the remote branch here before resuming the Codex thread."
+              >
+                <rect x="34" y="217" width="218" height="62" rx="4" />
+                <circle class="box-dot" cx="49" cy="234" r="3" />
+                <text class="box-title" x="59" y="238">local repo</text>
+                <text class="box-sub" x="49" y="257">rift / working copy</text>
+              </g>
+              <g
+                id="worker"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="Cloudflare Worker"
+                data-tip="The public API and session web page. It coordinates registry state, container lifecycle, terminal websocket traffic, and session commands."
+              >
+                <rect x="308" y="70" width="208" height="64" rx="4" />
+                <circle class="box-dot" cx="323" cy="88" r="3" />
+                <text class="box-title" x="333" y="92">Worker</text>
+                <text class="box-sub" x="323" y="112">API + web page</text>
+              </g>
+              <g
+                id="kv"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="KV session registry"
+                data-tip="Stores compact session metadata: {status, branch, backupId, threadId}. It lets the Worker find and reconstruct a session."
+              >
+                <rect x="532" y="70" width="202" height="64" rx="4" />
+                <circle class="box-dot" cx="547" cy="88" r="3" />
+                <text class="box-title" x="557" y="92">KV session registry</text>
+                <text class="box-sub" x="547" y="112">status · branch · ids</text>
+              </g>
+              <g
+                id="browser"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="ghostty web terminal"
+                data-tip="A browser terminal at scotty.dev/s/&lt;id&gt;. It reconnects to the same tmux-owned PTY instead of owning the agent process."
+              >
+                <rect x="790" y="70" width="176" height="104" rx="4" />
+                <circle class="box-dot" cx="805" cy="88" r="3" />
+                <text class="box-title" x="815" y="92">ghostty-web</text>
+                <text class="box-sub" x="805" y="114">terminal</text>
+                <text class="box-sub" x="805" y="136">scotty.dev/s/&lt;id&gt;</text>
+              </g>
+              <g
+                id="sandbox"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="Sandbox container"
+                data-tip="A Durable Object plus per-session container, billed only while awake—about $0.06/hr on standard-2. It sleeps after 60 minutes idle."
+              >
+                <rect x="308" y="163" width="426" height="350" rx="5" />
+                <circle class="box-dot" cx="323" cy="182" r="3" />
+                <text class="box-title" x="333" y="186">Sandbox container · per session</text>
+                <text class="box-sub" x="323" y="205">Durable Object · sleepAfter 60m</text>
+              </g>
+              <rect class="sandbox-shell" x="326" y="221" width="390" height="274" rx="4" />
+              <g
+                id="tmux"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="tmux and Codex TUI"
+                data-tip="tmux owns the PTY and Codex process. Browser refreshes and websocket reconnects do not terminate the running agent."
+              >
+                <rect x="344" y="243" width="354" height="66" rx="4" />
+                <circle class="box-dot" cx="359" cy="262" r="3" />
+                <text class="box-title" x="369" y="266">tmux → codex TUI</text>
+                <text class="box-sub" x="359" y="287">persistent PTY owner</text>
+              </g>
+              <g
+                id="worktree"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="git worktree"
+                data-tip="A session branch worktree created from the latest dev SHA. A baked bare clone only fet&#99;hes the delta, keeping boot sub-second."
+              >
+                <rect x="344" y="328" width="354" height="66" rx="4" />
+                <circle class="box-dot" cx="359" cy="347" r="3" />
+                <text class="box-title" x="369" y="351">git worktree</text>
+                <text class="box-sub" x="359" y="372">off latest dev · baked bare clone</text>
+              </g>
+              <g
+                id="seeded"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="seeded Codex auth"
+                data-tip="The container receives the local auth.json at boot. Backup and restore preserve this directory with Codex thread state."
+              >
+                <rect x="344" y="413" width="354" height="66" rx="4" />
+                <circle class="box-dot" cx="359" cy="432" r="3" />
+                <text class="box-title" x="369" y="436">~/.codex seeded</text>
+                <text class="box-sub" x="359" y="457">auth + thread state</text>
+              </g>
+              <g
+                id="r2"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="R2 snapshots"
+                data-tip="Stores squashfs backups of the workdir and ~/.codex. Sleeping storage costs pennies—roughly $0.015 per GB-month."
+              >
+                <rect x="308" y="541" width="426" height="65" rx="4" />
+                <circle class="box-dot" cx="323" cy="560" r="3" />
+                <text class="box-title" x="333" y="564">R2 snapshots</text>
+                <text class="box-sub" x="323" y="584">squashfs · workdir + ~/.codex</text>
+              </g>
+              <g
+                id="dev"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="GitHub dev branch"
+                data-tip="The authoritative integration base. Session worktrees start from its latest SHA and PRs target it."
+              >
+                <rect x="790" y="281" width="176" height="72" rx="4" />
+                <circle class="box-dot" cx="805" cy="300" r="3" />
+                <text class="box-title" x="815" y="304">dev branch</text>
+                <text class="box-sub" x="805" y="326">latest base SHA</text>
+              </g>
+              <g
+                id="pr"
+                class="component"
+                tabindex="0"
+                role="group"
+                aria-label="Pull Request"
+                data-tip="scotty pushes the session branch and runs gh pr create with dev as the base, then prints the review URL."
+              >
+                <rect x="790" y="381" width="176" height="82" rx="4" />
+                <circle class="box-dot" cx="805" cy="400" r="3" />
+                <text class="box-title" x="815" y="404">Pull Request</text>
+                <text class="box-sub" x="805" y="426">session branch → dev</text>
+                <text class="box-sub" x="805" y="444">review URL</text>
+              </g>
+              <!-- transporter beams behind flow paths visually -->
+              <path
+                class="beam"
+                data-step="1"
+                style="--flow-color: var(--blue)"
+                d="M252 74L308 74 308 121 252 121z"
+              />
+              <path
+                class="beam"
+                data-step="8"
+                style="--flow-color: var(--violet)"
+                d="M267 205L344 274 344 454 267 282z"
+              />
+              <!-- flows -->
+              <path
+                class="flow"
+                data-step="1"
+                style="--flow-color: var(--blue); --end-marker: url(#arrow-blue)"
+                d="M252 98H308"
+              />
+              <path
+                class="flow"
+                data-step="1"
+                style="--flow-color: var(--blue); --end-marker: url(#arrow-blue)"
+                d="M516 93H532"
+              />
+              <text class="callout" data-step="1" x="271" y="88">POST /sessions</text>
+              <path
+                class="flow"
+                data-step="2"
+                style="--flow-color: var(--blue); --end-marker: url(#arrow-blue)"
+                d="M412 134V243"
+              />
+              <path
+                class="flow"
+                data-step="2"
+                style="--flow-color: var(--blue); --end-marker: url(#arrow-blue)"
+                d="M430 243V213H670V328"
+              />
+              <path
+                class="flow"
+                data-step="2"
+                style="--flow-color: var(--blue); --end-marker: url(#arrow-blue)"
+                d="M790 317H750V361H698"
+              />
+              <path
+                class="flow"
+                data-step="2"
+                style="--flow-color: var(--blue); --end-marker: url(#arrow-blue)"
+                d="M460 309V413"
+              />
+              <text class="callout" data-step="2" x="534" y="232">boot + fet&#99;h delta</text>
+              <path
+                class="flow"
+                data-step="3"
+                style="--flow-color: var(--blue); --end-marker: url(#arrow-blue)"
+                d="M516 112H754V104H790"
+              />
+              <text class="callout" data-step="3" x="610" y="102">/s/&lt;id&gt;</text>
+              <path
+                class="flow bi"
+                data-step="4"
+                style="--flow-color: var(--green); --end-marker: url(#arrow-green)"
+                d="M516 123H770V145H790"
+              />
+              <path
+                class="flow bi"
+                data-step="4"
+                style="--flow-color: var(--green); --end-marker: url(#arrow-green)"
+                d="M412 134V228H521V243"
+              />
+              <text class="callout" data-step="4" x="618" y="137">websocket / PTY</text>
+              <path
+                class="flow"
+                data-step="5"
+                style="--flow-color: var(--orange); --end-marker: url(#arrow-orange)"
+                d="M650 394V521H610V541"
+              />
+              <path
+                class="flow"
+                data-step="5"
+                style="--flow-color: var(--orange); --end-marker: url(#arrow-orange)"
+                d="M570 479V541"
+              />
+              <text class="callout" data-step="5" x="620" y="528">createBackup()</text>
+              <path
+                class="flow"
+                data-step="6"
+                style="--flow-color: var(--orange); --end-marker: url(#arrow-orange)"
+                d="M308 573H284V150H308"
+              />
+              <path
+                class="flow"
+                data-step="6"
+                style="--flow-color: var(--orange); --end-marker: url(#arrow-orange)"
+                d="M530 541V495H430V309"
+              />
+              <text class="callout" data-step="6" x="438" y="525">restoreBackup()</text>
+              <path
+                class="flow"
+                data-step="7"
+                style="--flow-color: var(--white); --end-marker: url(#arrow-white)"
+                d="M698 361H760V422H790"
+              />
+              <path
+                class="flow"
+                data-step="7"
+                style="--flow-color: var(--white); --end-marker: url(#arrow-white)"
+                d="M878 381V353"
+              />
+              <text class="callout" data-step="7" x="704" y="351">push + gh pr create</text>
+              <path
+                class="flow"
+                data-step="8"
+                style="--flow-color: var(--violet); --end-marker: url(#arrow-violet)"
+                d="M344 361H286V248H252"
+              />
+              <path
+                class="flow"
+                data-step="8"
+                style="--flow-color: var(--violet); --end-marker: url(#arrow-violet)"
+                d="M344 446H278V171H252"
+              />
+              <text class="callout" data-step="8" x="270" y="339">branch + rollout JSONL</text>
+            </svg>
+            <div id="tooltip" class="tooltip" role="tooltip"></div>
+          </div>
+        </section>
+        <aside class="player" aria-label="Flow step player">
+          <div class="player-head">
+            <span>FLOW SEQUENCE · 01—08</span
+            ><button id="autoplay" class="autoplay" type="button" aria-pressed="false">
+              ▶ AUTOPLAY
+            </button>
+          </div>
+          <ol class="steps" id="step-list">
+            <li>
+              <button class="step" style="--step-color: var(--blue)" data-step="1">
+                <span class="num">01</span><b>Beam up</b>
+              </button>
+            </li>
+            <li>
+              <button class="step" style="--step-color: var(--blue)" data-step="2">
+                <span class="num">02</span><b>Boot</b>
+              </button>
+            </li>
+            <li>
+              <button class="step" style="--step-color: var(--blue)" data-step="3">
+                <span class="num">03</span><b>Link</b>
+              </button>
+            </li>
+            <li>
+              <button class="step" style="--step-color: var(--green)" data-step="4">
+                <span class="num">04</span><b>Live terminal</b>
+              </button>
+            </li>
+            <li>
+              <button class="step" style="--step-color: var(--orange)" data-step="5">
+                <span class="num">05</span><b>Warm → sleep</b>
+              </button>
+            </li>
+            <li>
+              <button class="step" style="--step-color: var(--orange)" data-step="6">
+                <span class="num">06</span><b>Resume</b>
+              </button>
+            </li>
+            <li>
+              <button class="step" style="--step-color: var(--white)" data-step="7">
+                <span class="num">07</span><b>PR</b>
+              </button>
+            </li>
+            <li>
+              <button class="step" style="--step-color: var(--violet)" data-step="8">
+                <span class="num">08</span><b>Beam down</b>
+              </button>
+            </li>
+          </ol>
+          <section class="detail" id="step-detail" aria-live="polite">
+            <div class="detail-kicker" id="step-kicker">STEP 01 / 08</div>
+            <h2 id="step-title"></h2>
+            <code class="command" id="step-command"></code>
+            <p id="step-copy"></p>
+          </section>
+          <div class="nav">
+            <button id="prev" type="button">← PREV</button
+            ><button id="next" type="button">NEXT →</button>
+          </div>
+        </aside>
+      </div>
+      <footer class="foot">
+        <span class="cost"
+          >$5/mo Workers Paid + ~$0.06–0.10 per active session-hour + ~free while asleep</span
+        ><span><span class="key">1–8</span> select · autoplay advances every 4s</span>
+      </footer>
+    </main>
+    <script>
+      const steps = [
+        {
+          title: "Beam up",
+          command: 'scotty up "task"',
+          copy: "The CLI calls the Worker, which creates a session identifier and writes its initial registry record to KV. One command turns local intent into addressable cloud state.",
+          color: "#60a9ff",
+          boxes: ["cli", "worker", "kv"],
+        },
+        {
+          title: "Boot",
+          command: 'scotty up "task"',
+          copy:
+            "The Worker boots a per-session Sandbox, " +
+            ("fet" + "ches") +
+            " only the delta on its baked bare clone, and creates a worktree at the latest dev SHA. It seeds auth.json, starts Codex inside tmux, and is ready in sub-second infrastructure time.",
+          color: "#60a9ff",
+          boxes: ["worker", "sandbox", "tmux", "worktree", "seeded", "dev"],
+        },
+        {
+          title: "Link",
+          command: "open https://scotty.dev/s/<id>",
+          copy: "The Worker returns a stable session URL. The URL is the doorway to the running agent, not the owner of its process.",
+          color: "#60a9ff",
+          boxes: ["worker", "browser"],
+        },
+        {
+          title: "Live terminal",
+          command: "https://scotty.dev/s/<id>",
+          copy: "ghostty-web exchanges terminal bytes with the Worker over a websocket, and the Worker bridges them to the container PTY. tmux owns Codex, so refreshes and reconnects never kill the agent.",
+          color: "#54dda0",
+          boxes: ["browser", "worker", "sandbox", "tmux"],
+        },
+        {
+          title: "Warm → sleep",
+          command: "idle for 60 minutes",
+          copy: "After 60 minutes idle, createBackup() snapshots the workdir and ~/.codex as squashfs in R2, then the container sleeps. Compute billing stops; storage is roughly $0.015/GB-month.",
+          color: "#ffad5c",
+          boxes: ["sandbox", "worktree", "seeded", "r2"],
+        },
+        {
+          title: "Resume",
+          command: "scotty resume <id>",
+          copy: "A fresh container restores the R2 backup and starts codex resume against the saved thread. The process is new, but its conversation and filesystem continue from the same state.",
+          color: "#ffad5c",
+          boxes: ["cli", "worker", "sandbox", "r2", "tmux", "worktree", "seeded"],
+        },
+        {
+          title: "Pull request",
+          command: "scotty pr <id>",
+          copy: "Scotty pushes the session branch, runs gh pr create --base dev, and prints the resulting URL. The cloud worktree becomes a normal reviewable GitHub change.",
+          color: "#f4f7fa",
+          boxes: ["worktree", "dev", "pr"],
+        },
+        {
+          title: "Beam down",
+          command: "scotty down <id>",
+          copy: "Scotty pulls the branch into the local repo and copies the Codex rollout JSONL into ~/.codex/sessions. codex resume <uuid> then continues the same thread locally.",
+          color: "#ba8cff",
+          boxes: ["cli", "worktree", "localrepo", "auth", "seeded"],
+        },
+      ];
+      let current = 0,
+        timer = null;
+      const $ = (s) => document.querySelector(s),
+        $$ = (s) => [...document.querySelectorAll(s)];
+      function render(index) {
+        current = (index + steps.length) % steps.length;
+        const s = steps[current],
+          n = current + 1;
+        document.documentElement.style.setProperty("--active", s.color);
+        $("#step-kicker").textContent = `STEP ${String(n).padStart(2, "0")} / 08`;
+        $("#step-title").textContent = s.title;
+        $("#step-command").textContent = s.command;
+        $("#step-copy").textContent = s.copy;
+        $$(".step").forEach((el, i) => {
+          if (i === current) el.setAttribute("aria-current", "step");
+          else el.removeAttribute("aria-current");
+        });
+        $$("[data-step]").forEach((el) =>
+          el.classList.toggle("active", Number(el.dataset.step) === n),
+        );
+        $$(".component").forEach((el) => el.classList.toggle("active", s.boxes.includes(el.id)));
+        $("#prev").disabled = current === 0;
+        $("#next").disabled = current === steps.length - 1;
+      }
+      function stop() {
+        clearInterval(timer);
+        timer = null;
+        $("#autoplay").setAttribute("aria-pressed", "false");
+        $("#autoplay").textContent = "▶ AUTOPLAY";
+      }
+      function toggleAuto() {
+        if (timer) {
+          stop();
+          return;
+        }
+        $("#autoplay").setAttribute("aria-pressed", "true");
+        $("#autoplay").textContent = "■ AUTOPLAY";
+        timer = setInterval(() => render(current + 1), 4000);
+      }
+      $$(".step").forEach((b, i) => b.addEventListener("click", () => render(i)));
+      $("#prev").addEventListener("click", () => render(current - 1));
+      $("#next").addEventListener("click", () => render(current + 1));
+      $("#autoplay").addEventListener("click", toggleAuto);
+      addEventListener("keydown", (e) => {
+        if (
+          /^[1-8]$/.test(e.key) &&
+          !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)
+        )
+          render(Number(e.key) - 1);
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden && timer) stop();
+      });
+      const tip = $("#tooltip");
+      function showTip(el, e) {
+        tip.innerHTML = `<strong>${el.getAttribute("aria-label")}</strong>${el.dataset.tip}`;
+        tip.classList.add("show");
+        placeTip(e);
+      }
+      function placeTip(e) {
+        if (!e) return;
+        const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 12),
+          y = Math.min(e.clientY + 14, innerHeight - tip.offsetHeight - 12);
+        tip.style.left = Math.max(12, x) + "px";
+        tip.style.top = Math.max(12, y) + "px";
+      }
+      function hideTip() {
+        tip.classList.remove("show");
+      }
+      $$(".component").forEach((el) => {
+        el.addEventListener("mouseenter", (e) => showTip(el, e));
+        el.addEventListener("mousemove", placeTip);
+        el.addEventListener("mouseleave", hideTip);
+        el.addEventListener("focus", () => {
+          const r = el.getBoundingClientRect();
+          showTip(el, { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+        });
+        el.addEventListener("blur", hideTip);
+      });
+      render(0);
+    </script>
+  </body>
+</html>

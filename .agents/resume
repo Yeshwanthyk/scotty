@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+expected="v$(cat .nvmrc)"
+actual="$(node --version)"
+
+if [[ "$actual" != "$expected" ]]; then
+  echo "Expected Node.js ${expected}, found ${actual}; rebuild the orb snapshot." >&2
+  exit 1
+fi
+
+command -v bun >/dev/null
+echo "Orb ready: Node.js ${actual}, Bun $(bun --version)."

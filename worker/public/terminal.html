@@ -1,0 +1,886 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#090d12" />
+    <meta name="referrer" content="same-origin" />
+    <title>Scotty terminal</title>
+    <script>
+      // The Worker normally exchanges ?t= for an HttpOnly cookie before serving this
+      // page. Scrub defensively before any subresource loads; never extract or retain it.
+      (() => {
+        const clean = new URL(window.location.href);
+        if (!clean.searchParams.has("t")) return;
+        clean.searchParams.delete("t");
+        history.replaceState(null, "", `${clean.pathname}${clean.search}${clean.hash}`);
+      })();
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --space: oklch(13% 0.012 248);
+        --shell: oklch(16% 0.014 248);
+        --terminal: #0b1016;
+        --ink: oklch(93% 0.012 220);
+        --muted: oklch(70% 0.025 230);
+        --quiet: oklch(53% 0.024 235);
+        --line: oklch(30% 0.025 235);
+        --beam: oklch(79% 0.115 200);
+        --warm: oklch(79% 0.12 78);
+        --danger: oklch(70% 0.16 25);
+        --focus: oklch(84% 0.13 197);
+        --header-height: 54px;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        font-synthesis: none;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        min-width: 280px;
+        overflow: hidden;
+        background: var(--space);
+        color: var(--ink);
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .app {
+        display: grid;
+        grid-template-rows: var(--header-height) minmax(0, 1fr);
+        height: 100dvh;
+        min-height: 320px;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+          env(safe-area-inset-left);
+        background:
+          radial-gradient(100% 62% at 50% -18%, oklch(31% 0.05 225 / 0.32), transparent 68%),
+          var(--space);
+      }
+
+      .masthead {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        min-width: 0;
+        padding: 0 16px;
+        background: var(--shell);
+        box-shadow: 0 1px 0 var(--line);
+      }
+
+      .identity {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        min-width: 0;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      .wordmark {
+        flex: none;
+        color: var(--ink);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+      }
+
+      .session-label {
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-variant-numeric: tabular-nums;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .status-cluster {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+
+      .signal {
+        position: relative;
+        width: 8px;
+        height: 8px;
+        flex: none;
+        border-radius: 50%;
+        background: var(--quiet);
+        box-shadow: 0 0 0 3px oklch(53% 0.024 235 / 0.12);
+        transition-property: background-color, box-shadow;
+        transition-duration: 180ms;
+        transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      .status-text {
+        min-width: 0;
+        overflow: hidden;
+        font-variant-numeric: tabular-nums;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .transport-line {
+        position: absolute;
+        right: 0;
+        bottom: -1px;
+        left: 0;
+        height: 1px;
+        overflow: hidden;
+        background: var(--line);
+        pointer-events: none;
+      }
+
+      .transport-line::after {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: min(18vw, 180px);
+        background: var(--beam);
+        content: "";
+        opacity: 0;
+        transform: translateX(-110%);
+      }
+
+      .action {
+        min-width: 76px;
+        min-height: 40px;
+        flex: none;
+        padding: 0 13px;
+        border: 0;
+        border-radius: 5px;
+        background: var(--beam);
+        color: oklch(18% 0.024 220);
+        font-size: 0.75rem;
+        font-weight: 720;
+        cursor: pointer;
+        transition-property: background-color, color, opacity, scale;
+        transition-duration: 160ms;
+        transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      .action:hover {
+        background: oklch(86% 0.12 197);
+      }
+      .action:active {
+        scale: 0.96;
+      }
+      .action:focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
+      }
+      .action:disabled {
+        cursor: wait;
+        opacity: 0.58;
+      }
+      .action[hidden] {
+        display: none;
+      }
+
+      .stage {
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+        margin: 10px;
+        overflow: hidden;
+        border-radius: 7px;
+        background: var(--terminal);
+        box-shadow:
+          0 0 0 1px oklch(34% 0.028 235),
+          0 3px 8px oklch(3% 0.01 245 / 0.55);
+      }
+
+      .terminal-host {
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        padding: 12px;
+        outline: none;
+      }
+
+      .terminal-host canvas {
+        max-width: 100%;
+      }
+
+      .veil {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: oklch(11% 0.012 248 / 0.9);
+        opacity: 1;
+        transition-property: opacity, visibility;
+        transition-duration: 180ms;
+        transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      .veil[hidden] {
+        visibility: hidden;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .state-card {
+        width: min(100%, 440px);
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .state-mark {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        margin-bottom: 13px;
+        color: var(--warm);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.06em;
+      }
+
+      .state-mark::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        content: "";
+        box-shadow: 0 0 0 4px oklch(79% 0.12 78 / 0.1);
+      }
+
+      .state-title {
+        margin: 0;
+        color: var(--ink);
+        font-size: 1.05rem;
+        font-weight: 640;
+        letter-spacing: -0.015em;
+        text-wrap: balance;
+      }
+
+      .state-copy {
+        max-width: 52ch;
+        margin: 8px auto 0;
+        color: var(--muted);
+        font-size: 0.82rem;
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .app[data-state="connected"] .signal {
+        background: var(--beam);
+        box-shadow:
+          0 0 0 3px oklch(79% 0.115 200 / 0.12),
+          0 0 12px oklch(79% 0.115 200 / 0.32);
+      }
+
+      .app[data-state="connecting"] .transport-line::after,
+      .app[data-state="reconnecting"] .transport-line::after,
+      .app[data-state="resuming"] .transport-line::after {
+        opacity: 0.9;
+        animation: acquire 1.45s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+      }
+
+      .app[data-state="sleeping"] .signal {
+        background: var(--warm);
+        box-shadow: 0 0 0 3px oklch(79% 0.12 78 / 0.12);
+      }
+
+      .app[data-state="failed"] .signal,
+      .app[data-state="exited"] .signal {
+        background: var(--danger);
+        box-shadow: 0 0 0 3px oklch(70% 0.16 25 / 0.12);
+      }
+
+      @keyframes acquire {
+        from {
+          transform: translateX(-110%);
+        }
+        to {
+          transform: translateX(calc(100vw + 110%));
+        }
+      }
+
+      @media (max-width: 560px) {
+        :root {
+          --header-height: 58px;
+        }
+        .masthead {
+          gap: 10px;
+          padding-inline: 12px;
+        }
+        .identity {
+          display: grid;
+          gap: 1px;
+        }
+        .wordmark {
+          font-size: 0.72rem;
+        }
+        .session-label {
+          max-width: 38vw;
+          font-size: 0.65rem;
+        }
+        .status-cluster {
+          gap: 7px;
+          font-size: 0.68rem;
+        }
+        .status-text {
+          max-width: 27vw;
+        }
+        .action {
+          min-width: 70px;
+          min-height: 40px;
+          padding-inline: 11px;
+        }
+        .stage {
+          margin: 6px;
+          border-radius: 5px;
+        }
+        .terminal-host {
+          padding: 8px;
+        }
+        .veil {
+          padding: 18px;
+        }
+      }
+
+      @media (max-width: 380px) {
+        .wordmark {
+          letter-spacing: 0.05em;
+        }
+        .session-label {
+          max-width: 31vw;
+        }
+        .status-text {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+        }
+      }
+
+      @media (prefers-contrast: more) {
+        :root {
+          --muted: oklch(81% 0.02 230);
+          --line: oklch(49% 0.03 235);
+        }
+        .stage {
+          box-shadow: 0 0 0 2px var(--line);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app" id="app" data-state="initializing">
+      <header class="masthead">
+        <div class="identity" aria-label="Scotty remote terminal">
+          <span class="wordmark">SCOTTY</span>
+          <span class="session-label" id="session-label">/ identifying</span>
+        </div>
+        <div class="status-cluster" role="status" aria-live="polite" aria-atomic="true">
+          <span class="signal" aria-hidden="true"></span>
+          <span class="status-text" id="status-text">Loading terminal</span>
+        </div>
+        <button class="action" id="action" type="button" hidden>Reconnect</button>
+        <span class="transport-line" aria-hidden="true"></span>
+      </header>
+
+      <section class="stage" aria-label="Remote Codex terminal">
+        <div class="terminal-host" id="terminal" aria-label="Interactive remote terminal"></div>
+        <div class="veil" id="veil">
+          <div class="state-card">
+            <div class="state-mark" id="state-mark">ACQUIRING BEAM</div>
+            <h1 class="state-title" id="state-title">Connecting to the remote session</h1>
+            <p class="state-copy" id="state-copy">
+              The terminal will accept input when the secure channel is ready.
+            </p>
+          </div>
+        </div>
+      </section>
+      <p class="sr-only" id="announcer" aria-live="assertive"></p>
+    </main>
+
+    <script type="module">
+      import { FitAddon, Terminal, init } from "/vendor/ghostty-web/ghostty-web.js";
+
+      const app = document.querySelector("#app");
+      const action = document.querySelector("#action");
+      const announcer = document.querySelector("#announcer");
+      const sessionLabel = document.querySelector("#session-label");
+      const statusText = document.querySelector("#status-text");
+      const terminalHost = document.querySelector("#terminal");
+      const veil = document.querySelector("#veil");
+      const stateMark = document.querySelector("#state-mark");
+      const stateTitle = document.querySelector("#state-title");
+      const stateCopy = document.querySelector("#state-copy");
+
+      const pathParts = location.pathname.split("/").filter(Boolean);
+      const routeIndex = pathParts.lastIndexOf("s");
+      const encodedSessionId =
+        routeIndex >= 0 && pathParts[routeIndex + 1]
+          ? pathParts[routeIndex + 1]
+          : pathParts.at(-1) || "unknown";
+      let sessionId;
+      try {
+        sessionId = decodeURIComponent(encodedSessionId);
+      } catch {
+        sessionId = "unknown";
+      }
+      const apiId = encodeURIComponent(sessionId);
+      const encoder = new TextEncoder();
+      const reconnectDelays = [750, 1500, 3000, 6000, 10000, 15000];
+
+      let terminal;
+      let fitAddon;
+      let socket;
+      let ready = false;
+      let reconnectAttempt = 0;
+      let reconnectTimer;
+      let reconnectTicker;
+      let reconnectDeadline = 0;
+      let intentionalClose = false;
+      let currentState = "initializing";
+      let lastAnnounced = "";
+
+      sessionLabel.textContent = `/ ${sessionId}`;
+      document.title = `${sessionId} · Scotty`;
+
+      const stateContent = {
+        initializing: [
+          "LOADING CONSOLE",
+          "Preparing the terminal",
+          "Loading the local terminal engine.",
+        ],
+        connecting: [
+          "ACQUIRING BEAM",
+          "Connecting to the remote session",
+          "The terminal will accept input when the secure channel is ready.",
+        ],
+        reconnecting: [
+          "REACQUIRING BEAM",
+          "Connection interrupted",
+          "The remote process is still owned by tmux. Scotty will reattach automatically.",
+        ],
+        sleeping: [
+          "SESSION SLEEPING",
+          "The remote session is safely asleep",
+          "Its worktree and conversation are checkpointed. Resume it to restore the terminal.",
+        ],
+        resuming: [
+          "RESTORING SESSION",
+          "Waking the remote workspace",
+          "Scotty is restoring the checkpoint and Codex thread.",
+        ],
+        failed: [
+          "LINK UNAVAILABLE",
+          "The terminal could not connect",
+          "The session may still be running. Retry the connection when the service is available.",
+        ],
+        exited: [
+          "REMOTE EXIT",
+          "The terminal process ended",
+          "Reconnect to attach again, or resume if the session has gone to sleep.",
+        ],
+        offline: [
+          "NETWORK OFFLINE",
+          "Waiting for a network connection",
+          "Scotty will reconnect when this device is back online.",
+        ],
+      };
+
+      function announce(message) {
+        if (!message || message === lastAnnounced) return;
+        lastAnnounced = message;
+        announcer.textContent = "";
+        requestAnimationFrame(() => {
+          announcer.textContent = message;
+        });
+      }
+
+      function setState(nextState, detail) {
+        currentState = nextState;
+        app.dataset.state = nextState;
+
+        const content = stateContent[nextState] || stateContent.failed;
+        stateMark.textContent = content[0];
+        stateTitle.textContent = content[1];
+        stateCopy.textContent = content[2];
+
+        const connected = nextState === "connected";
+        veil.hidden = connected;
+        terminalHost.inert = !connected;
+
+        action.hidden = true;
+        action.disabled = false;
+        if (nextState === "sleeping") {
+          action.textContent = "Resume";
+          action.hidden = false;
+        } else if (nextState === "failed" || nextState === "exited") {
+          action.textContent = "Reconnect";
+          action.hidden = false;
+        } else if (nextState === "resuming") {
+          action.textContent = "Resuming";
+          action.hidden = false;
+          action.disabled = true;
+        }
+
+        const labels = {
+          initializing: "Loading terminal",
+          connecting: "Connecting",
+          connected: "Beam locked",
+          reconnecting: detail || "Reconnecting",
+          sleeping: "Sleeping",
+          resuming: "Resuming",
+          failed: "Connection failed",
+          exited: detail || "Terminal exited",
+          offline: "Network offline",
+        };
+        statusText.textContent = labels[nextState] || labels.failed;
+        announce(statusText.textContent);
+      }
+
+      function clearReconnectTimers() {
+        clearTimeout(reconnectTimer);
+        clearInterval(reconnectTicker);
+        reconnectTimer = undefined;
+        reconnectTicker = undefined;
+      }
+
+      function dimensions() {
+        fitAddon.fit();
+        return {
+          cols: Math.max(1, terminal.cols || 80),
+          rows: Math.max(1, terminal.rows || 24),
+        };
+      }
+
+      function websocketUrl() {
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        const size = dimensions();
+        const url = new URL(`${protocol}//${location.host}/api/sessions/${apiId}/pty`);
+        url.searchParams.set("cols", String(size.cols));
+        url.searchParams.set("rows", String(size.rows));
+        return url.href;
+      }
+
+      function sendResize(cols = terminal.cols, rows = terminal.rows) {
+        if (!ready || socket?.readyState !== WebSocket.OPEN) return;
+        if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return;
+        socket.send(JSON.stringify({ type: "resize", cols, rows }));
+      }
+
+      function closeSocket() {
+        intentionalClose = true;
+        ready = false;
+        if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "client reconnect");
+        socket = undefined;
+      }
+
+      async function readSessionStatus() {
+        try {
+          const response = await fetch("/api/sessions", {
+            credentials: "same-origin",
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+          });
+          if (!response.ok) return undefined;
+          const body = await response.json();
+          const sessions = Array.isArray(body) ? body : body.sessions;
+          if (!Array.isArray(sessions)) return undefined;
+          return sessions.find((session) => session?.id === sessionId)?.status;
+        } catch {
+          return undefined;
+        }
+      }
+
+      async function detectSleeping() {
+        const status = await readSessionStatus();
+        if (status === "sleeping") {
+          clearReconnectTimers();
+          setState("sleeping");
+          return true;
+        }
+        return false;
+      }
+
+      function scheduleReconnect() {
+        if (intentionalClose || currentState === "sleeping" || currentState === "resuming") return;
+        if (!navigator.onLine) {
+          setState("offline");
+          return;
+        }
+
+        clearReconnectTimers();
+        const base = reconnectDelays[Math.min(reconnectAttempt, reconnectDelays.length - 1)];
+        const delay = Math.round(base * (0.9 + Math.random() * 0.2));
+        reconnectAttempt += 1;
+        reconnectDeadline = Date.now() + delay;
+
+        const updateCountdown = () => {
+          const seconds = Math.max(1, Math.ceil((reconnectDeadline - Date.now()) / 1000));
+          setState("reconnecting", `Reconnecting in ${seconds}s`);
+        };
+        updateCountdown();
+        reconnectTicker = setInterval(updateCountdown, 250);
+        reconnectTimer = setTimeout(async () => {
+          clearReconnectTimers();
+          if (!(await detectSleeping())) connect();
+        }, delay);
+      }
+
+      function handleControlFrame(payload) {
+        let message;
+        try {
+          message = JSON.parse(payload);
+        } catch {
+          setState("failed");
+          closeSocket();
+          return;
+        }
+
+        if (message?.type === "ready") {
+          ready = true;
+          reconnectAttempt = 0;
+          clearReconnectTimers();
+          setState("connected");
+          dimensions();
+          sendResize();
+          terminal.focus();
+          return;
+        }
+
+        if (message?.type === "exit") {
+          intentionalClose = true;
+          ready = false;
+          const code = Number.isInteger(message.code) ? ` (code ${message.code})` : "";
+          setState("exited", `Terminal exited${code}`);
+          return;
+        }
+
+        if (message?.type === "error") {
+          ready = false;
+          const sleeping =
+            message.code === "SESSION_SLEEPING" || /sleep/i.test(String(message.message || ""));
+          if (sleeping) {
+            intentionalClose = true;
+            setState("sleeping");
+          } else {
+            setState("failed");
+          }
+        }
+      }
+
+      function connect() {
+        if (!terminal || !navigator.onLine) {
+          setState("offline");
+          return;
+        }
+
+        closeSocket();
+        intentionalClose = false;
+        setState(reconnectAttempt ? "reconnecting" : "connecting");
+
+        try {
+          socket = new WebSocket(websocketUrl());
+        } catch {
+          setState("failed");
+          scheduleReconnect();
+          return;
+        }
+
+        socket.binaryType = "arraybuffer";
+        socket.addEventListener("message", async (event) => {
+          // Sandbox can replay buffered binary output before the ready control frame.
+          if (event.data instanceof ArrayBuffer) {
+            terminal.write(new Uint8Array(event.data));
+            return;
+          }
+          if (event.data instanceof Blob) {
+            terminal.write(new Uint8Array(await event.data.arrayBuffer()));
+            return;
+          }
+          if (typeof event.data === "string") handleControlFrame(event.data);
+        });
+        socket.addEventListener("close", (event) => {
+          if (event.currentTarget !== socket) return;
+          ready = false;
+          if (!intentionalClose) scheduleReconnect();
+        });
+        socket.addEventListener("error", () => {
+          // close follows error in browsers and owns the reconnect path.
+          ready = false;
+        });
+      }
+
+      async function resume() {
+        clearReconnectTimers();
+        closeSocket();
+        setState("resuming");
+
+        try {
+          const response = await fetch(`/api/sessions/${apiId}/resume`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+          const startedAt = Date.now();
+          while (Date.now() - startedAt < 120000) {
+            const status = await readSessionStatus();
+            if (status === "warm") {
+              reconnectAttempt = 0;
+              connect();
+              return;
+            }
+            if (status === "failed" || status === "gone") throw new Error("resume failed");
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+          }
+          throw new Error("resume timed out");
+        } catch {
+          setState("failed");
+        }
+      }
+
+      action.addEventListener("click", () => {
+        if (currentState === "sleeping") resume();
+        else {
+          reconnectAttempt = 0;
+          clearReconnectTimers();
+          connect();
+        }
+      });
+
+      terminalHost.addEventListener("pointerdown", () => {
+        if (currentState === "connected") terminal.focus();
+      });
+
+      window.addEventListener("online", () => {
+        reconnectAttempt = 0;
+        clearReconnectTimers();
+        connect();
+      });
+      window.addEventListener("offline", () => {
+        clearReconnectTimers();
+        closeSocket();
+        intentionalClose = false;
+        setState("offline");
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden && currentState === "connected") {
+          dimensions();
+          sendResize();
+        }
+      });
+      window.addEventListener("pagehide", () => {
+        intentionalClose = true;
+        clearReconnectTimers();
+        if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "page hidden");
+      });
+
+      try {
+        await init();
+        terminal = new Terminal({
+          cursorBlink: !matchMedia("(prefers-reduced-motion: reduce)").matches,
+          cursorStyle: "block",
+          fontFamily: '"SFMono-Regular", "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+          fontSize: matchMedia("(max-width: 560px)").matches ? 12 : 13,
+          scrollback: 6000,
+          smoothScrollDuration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 110,
+          theme: {
+            background: "#0b1016",
+            foreground: "#dce8ee",
+            cursor: "#7bd8e5",
+            cursorAccent: "#0b1016",
+            selectionBackground: "#214d59",
+            selectionForeground: "#f2fbfd",
+            black: "#111820",
+            red: "#e46e73",
+            green: "#86cfad",
+            yellow: "#d7bd78",
+            blue: "#78a9df",
+            magenta: "#b79ad6",
+            cyan: "#78c8d3",
+            white: "#cdd9df",
+            brightBlack: "#65737e",
+            brightRed: "#f18a8f",
+            brightGreen: "#9adfbe",
+            brightYellow: "#e6cf8d",
+            brightBlue: "#91bceb",
+            brightMagenta: "#cab0e2",
+            brightCyan: "#93dce5",
+            brightWhite: "#f1f6f8",
+          },
+        });
+        fitAddon = new FitAddon();
+        terminal.loadAddon(fitAddon);
+        terminal.open(terminalHost);
+        fitAddon.observeResize();
+        terminal.onData((data) => {
+          if (ready && socket?.readyState === WebSocket.OPEN) socket.send(encoder.encode(data));
+        });
+        terminal.onResize(({ cols, rows }) => sendResize(cols, rows));
+
+        requestAnimationFrame(async () => {
+          dimensions();
+          const status = await readSessionStatus();
+          if (status === "sleeping") setState("sleeping");
+          else connect();
+        });
+      } catch {
+        setState("failed");
+        stateTitle.textContent = "The terminal engine could not load";
+        stateCopy.textContent =
+          "Reload the page. If the problem continues, verify the bundled Ghostty assets are being served.";
+      }
+    </script>
+  </body>
+</html>

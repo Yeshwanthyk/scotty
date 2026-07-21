@@ -1,0 +1,53 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "scotty-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+  },
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./public",
+    "run_worker_first": ["/api/*", "/s/*", "/health"],
+    "not_found_handling": "404-page",
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SANDBOX",
+        "class_name": "ScottySandbox",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ScottySandbox"],
+    },
+  ],
+  "containers": [
+    {
+      "class_name": "ScottySandbox",
+      "image": "./container/Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 10,
+    },
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BACKUP_BUCKET",
+      "bucket_name": "scotty-backups",
+    },
+  ],
+  "vars": {
+    "SANDBOX_TRANSPORT": "rpc",
+    "BACKUP_BUCKET_NAME": "scotty-backups",
+  },
+}

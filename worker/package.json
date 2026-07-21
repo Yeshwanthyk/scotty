@@ -1,0 +1,19 @@
+{
+  "name": "@scotty/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json",
+    "types": "wrangler types --env-interface CloudflareBindings"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.5",
+    "@cloudflare/sandbox": "0.12.3",
+    "effect": "4.0.0-beta.99",
+    "ghostty-web": "0.4.0",
+    "hono": "4.12.31"
+  }
+}

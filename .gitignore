@@ -1,0 +1,8 @@
+/work/
+**/node_modules/
+/dist/
+.wrangler/
+.alchemy/
+.dev.vars
+*.log
+/.pi/
