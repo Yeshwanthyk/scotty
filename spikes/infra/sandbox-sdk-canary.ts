@@ -2,6 +2,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
+export { accountSecretsStoreWorkerBinding as m01cAccountSecretBinding } from "./account-secrets-store-binding.ts";
 import { bindExternalSandboxContainer } from "./external-sandbox-container-binding.ts";
 
 export const M01C_STACK_NAME = "ScottyM01CSandboxCanary";
@@ -38,22 +39,6 @@ export interface M01CAccountSecretReference {
   readonly keyedDigest: string;
   readonly expectedOwnerMarker: string;
 }
-
-export interface M01CAccountSecretBinding {
-  readonly type: "secrets_store_secret";
-  readonly name: string;
-  readonly store_id: string;
-  readonly secret_name: string;
-}
-
-export const m01cAccountSecretBinding = (
-  reference: M01CAccountSecretReference,
-): M01CAccountSecretBinding => ({
-  type: "secrets_store_secret",
-  name: reference.bindingName,
-  store_id: reference.storeId,
-  secret_name: reference.secretName,
-});
 
 export type M01CLiveStatus = "unverified-live" | "verified-live";
 

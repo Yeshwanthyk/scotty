@@ -44,7 +44,7 @@ plaintext in Alchemy resource props/state. A later production-presigned-backup p
 an Account Secrets Store resource and identifier-only Worker binding:
 
 ```text
-{ type: "secrets_store_secret", name, store_id, secret_name }
+{ type: "secrets_store_secret", name, storeId, secretName }
 ```
 
 That binding must remain in every desired Worker upload; omitted-binding preservation is not a

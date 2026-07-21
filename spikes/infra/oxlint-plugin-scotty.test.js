@@ -477,6 +477,7 @@ describe("Scotty Oxlint policy integration", () => {
         files: [
           "spikes/infra/external-sandbox-container-binding.ts",
           "spikes/infra/sandbox-sdk-canary.ts",
+          "spikes/infra/write-only-secret-cloudflare.ts",
           "spikes/infra/write-only-secret.ts",
         ],
         rules: {

@@ -162,8 +162,8 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
     assert.deepEqual(m01cAccountSecretBinding(reference), {
       type: "secrets_store_secret",
       name: reference.bindingName,
-      store_id: reference.storeId,
-      secret_name: reference.secretName,
+      storeId: reference.storeId,
+      secretName: reference.secretName,
     });
     assert.equal(M01C_ACCOUNT_SECRET_MAX_BYTES, 1024);
     assert.equal("plaintext" in reference, false);

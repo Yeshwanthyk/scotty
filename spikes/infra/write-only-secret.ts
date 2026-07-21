@@ -352,28 +352,6 @@ const isConverged = (
   return observed.metadata.scopes.every((scope, index) => scope === SECRET_SCOPES[index]);
 };
 
-/**
- * Identifier-only Worker binding for a Scotty-managed store secret. Carries
- * only `binding`, `store_id`, and `secret_name` — never the value.
- */
-export const writeOnlySecretBinding = (
-  secret: Pick<WriteOnlySecretAttributes, "bindingName" | "storeId" | "secretName">,
-): {
-  readonly secrets_store_secrets: ReadonlyArray<{
-    readonly binding: string;
-    readonly store_id: string;
-    readonly secret_name: string;
-  }>;
-} => ({
-  secrets_store_secrets: [
-    {
-      binding: secret.bindingName,
-      store_id: secret.storeId,
-      secret_name: secret.secretName,
-    },
-  ],
-});
-
 const observeSecret = Effect.fnUntraced(function* (
   props: WriteOnlySecretProps,
   output: WriteOnlySecretAttributes | undefined,

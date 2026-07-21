@@ -29,7 +29,6 @@ import {
   WriteOnlySecretDestination,
   WriteOnlySecretDestinationError,
   WriteOnlySecretFailure,
-  writeOnlySecretBinding,
   writeOnlySecretProvider,
 } from "./write-only-secret.ts";
 
@@ -608,21 +607,6 @@ describe("M01B Account Secrets Store marker and binding (pure)", () => {
     assert.isUndefined(verified.keyedDigest);
     assert.isUndefined(verified.providerVersion);
     assertNoPlaintext("rejected marker fields", [injectedOwner], verified);
-  });
-
-  it("emits an identifier-only Worker binding (no plaintext)", () => {
-    const props = propsFor("secret-value");
-    const binding = writeOnlySecretBinding({
-      bindingName: props.bindingName,
-      storeId: props.storeId,
-      secretName: props.secretName,
-    });
-    assert.deepEqual(binding, {
-      secrets_store_secrets: [
-        { binding: BINDING, store_id: STORE_ID, secret_name: "synthetic-secret" },
-      ],
-    });
-    assertNoPlaintext("binding", ["secret-value"], binding);
   });
 });
 
