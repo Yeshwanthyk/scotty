@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-node_version="$(cat .nvmrc)"
+node_version="$(tr -d '[:space:]' < .nvmrc)"
+
+for command in curl git sha256sum sudo tar; do
+  if ! command -v "$command" >/dev/null; then
+    echo "Required setup command is unavailable: ${command}" >&2
+    exit 1
+  fi
+done
 
 if [[ "$(node --version 2>/dev/null || true)" != "v${node_version}" ]]; then
   case "$(uname -m)" in
@@ -28,6 +35,13 @@ if [[ "$(node --version 2>/dev/null || true)" != "v${node_version}" ]]; then
   done
 fi
 
-echo "Using Node.js $(node --version) and Bun $(bun --version)."
+if ! command -v bun >/dev/null; then
+  echo "Bun is required but unavailable; Amp's Debian orb image should provide it." >&2
+  exit 1
+fi
+
+echo "Using Node.js $(node --version), npm $(npm --version), and Bun $(bun --version)."
+echo "Initializing pinned reference-source submodules..."
 git submodule update --init vendor/effect vendor/alchemy
-npm ci
+echo "Installing dependencies from package-lock.json..."
+npm ci --no-audit --no-fund

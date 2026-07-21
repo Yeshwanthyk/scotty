@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-expected="v$(cat .nvmrc)"
+for command in node npm bun; do
+  if ! command -v "$command" >/dev/null; then
+    echo "Required command is unavailable after orb resume: ${command}; rebuild the orb snapshot." >&2
+    exit 1
+  fi
+done
+
+expected="v$(tr -d '[:space:]' < .nvmrc)"
 actual="$(node --version)"
 
 if [[ "$actual" != "$expected" ]]; then
@@ -9,5 +16,9 @@ if [[ "$actual" != "$expected" ]]; then
   exit 1
 fi
 
-command -v bun >/dev/null
-echo "Orb ready: Node.js ${actual}, Bun $(bun --version)."
+if [[ ! -f node_modules/.package-lock.json ]]; then
+  echo "Dependencies are unavailable after orb resume; rebuild the orb snapshot." >&2
+  exit 1
+fi
+
+echo "Orb ready: Node.js ${actual}, npm $(npm --version), Bun $(bun --version)."
