@@ -82,6 +82,7 @@ const sourceLayer = Layer.succeed(SecretSource, {
   resolve: (sourceId) =>
     Effect.try(() => {
       resolutions += 1;
+      // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: Effect.try test fake deliberately exercises a throwing synchronous source SDK
       if (sourceId !== syntheticSourceId) throw new Error("unknown source");
       return {
         plaintext: syntheticPlaintext,
@@ -134,6 +135,7 @@ const destinationLayer = Layer.succeed(WriteOnlySecretDestination, {
       });
       const live = destinationStore.get(reference);
       if (live !== undefined && live.ownerReference !== ownerReference) {
+        // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: Effect.try test fake deliberately exercises a throwing synchronous destination SDK
         throw new Error("foreign owner");
       }
       destinationStore.delete(reference);

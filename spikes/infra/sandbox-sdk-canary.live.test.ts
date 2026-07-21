@@ -83,7 +83,10 @@ const post = <A, E, R>(action: string, decode: (value: unknown) => Effect.Effect
   Effect.tryPromise({
     try: () =>
       fetch(`${baseUrl}/m01c/${action}`, { method: "POST" }).then(async (response) => {
-        if (!response.ok) throw new Error(`M01C ${action} returned HTTP ${response.status}`);
+        if (!response.ok) {
+          // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native fetch continuation must reject its Promise before Effect.tryPromise maps it
+          throw new Error(`M01C ${action} returned HTTP ${response.status}`);
+        }
         return response.json();
       }),
     catch: () => new Error(`M01C ${action} request failed`),

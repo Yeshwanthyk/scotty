@@ -70,6 +70,26 @@ export const getStringValue = (node) => {
 
 export const isStringLiteral = (node) => getStringValue(node) !== undefined;
 
+export function addEffectNamespaceImport(node, moduleName, exportName, names) {
+  if (getStringValue(node.source) === moduleName) {
+    for (const specifier of node.specifiers ?? []) {
+      if (specifier.type === "ImportNamespaceSpecifier" && isIdentifier(specifier.local)) {
+        names.add(specifier.local.name);
+      }
+    }
+  }
+  if (getStringValue(node.source) !== "effect") return;
+  for (const specifier of node.specifiers ?? []) {
+    if (
+      specifier.type === "ImportSpecifier" &&
+      getPropertyName(specifier.imported) === exportName &&
+      isIdentifier(specifier.local)
+    ) {
+      names.add(specifier.local.name);
+    }
+  }
+}
+
 export function typeName(node) {
   if (node?.type === "Identifier") return node.name;
   if (node?.type === "TSQualifiedName") {
@@ -82,6 +102,24 @@ export function typeName(node) {
 
 export const typeReferenceName = (node) =>
   node?.type === "TSTypeReference" ? typeName(node.typeName) : undefined;
+
+export const isPromiseType = (node) => typeReferenceName(node) === "Promise";
+
+export function containsPromiseType(node) {
+  if (!node || typeof node !== "object") return false;
+  if (isPromiseType(node)) return true;
+  if (node.type === "TSTypeAnnotation" || node.type === "TSParenthesizedType") {
+    return containsPromiseType(node.typeAnnotation);
+  }
+  if (node.type === "TSFunctionType") return containsPromiseType(node.returnType);
+  if (node.type === "TSUnionType" || node.type === "TSIntersectionType") {
+    return (node.types ?? []).some(containsPromiseType);
+  }
+  if (node.type === "TSConditionalType") {
+    return containsPromiseType(node.trueType) || containsPromiseType(node.falseType);
+  }
+  return false;
+}
 
 export const isEffectMember = (node, names) => {
   const expression = unwrapExpression(node);

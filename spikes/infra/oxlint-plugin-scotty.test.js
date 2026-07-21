@@ -12,11 +12,23 @@ import noInlineObjectTypeAssertion from "../../scripts/oxlint-plugin-scotty/rule
 import noInlineSchemaCompile from "../../scripts/oxlint-plugin-scotty/rules/no-inline-schema-compile.js";
 import noInstanceofError from "../../scripts/oxlint-plugin-scotty/rules/no-instanceof-error.js";
 import noJsonParse from "../../scripts/oxlint-plugin-scotty/rules/no-json-parse.js";
+import noManualTagCheck from "../../scripts/oxlint-plugin-scotty/rules/no-manual-tag-check.js";
+import noMatchOrelse from "../../scripts/oxlint-plugin-scotty/rules/no-match-orelse.js";
+import noPromiseClientSurface from "../../scripts/oxlint-plugin-scotty/rules/no-promise-client-surface.js";
 import noPromiseReject from "../../scripts/oxlint-plugin-scotty/rules/no-promise-reject.js";
+import noRawErrorThrow from "../../scripts/oxlint-plugin-scotty/rules/no-raw-error-throw.js";
+import noRawFetch from "../../scripts/oxlint-plugin-scotty/rules/no-raw-fetch.js";
 import noRawWallClock from "../../scripts/oxlint-plugin-scotty/rules/no-raw-wall-clock.js";
+import noRedundantErrorFactory from "../../scripts/oxlint-plugin-scotty/rules/no-redundant-error-factory.js";
+import noRedundantPrimitiveCast from "../../scripts/oxlint-plugin-scotty/rules/no-redundant-primitive-cast.js";
+import noSchemaClass from "../../scripts/oxlint-plugin-scotty/rules/no-schema-class.js";
+import noSwitchStatement from "../../scripts/oxlint-plugin-scotty/rules/no-switch-statement.js";
 import noTryCatchOrThrow from "../../scripts/oxlint-plugin-scotty/rules/no-try-catch-or-throw.js";
 import noTsNocheck from "../../scripts/oxlint-plugin-scotty/rules/no-ts-nocheck.js";
+import noUnsupportedEffectApi from "../../scripts/oxlint-plugin-scotty/rules/no-unsupported-effect-api.js";
+import preferEffectPredicate from "../../scripts/oxlint-plugin-scotty/rules/prefer-effect-predicate.js";
 import preferSchemaInferredTypes from "../../scripts/oxlint-plugin-scotty/rules/prefer-schema-inferred-types.js";
+import preferValueInferredExtensionTypes from "../../scripts/oxlint-plugin-scotty/rules/prefer-value-inferred-extension-types.js";
 import scottyPlugin from "../../scripts/oxlint-plugin-scotty.js";
 
 RuleTester.describe = describe;
@@ -27,6 +39,7 @@ const tester = new RuleTester({
 });
 const productionFile = "spikes/infra/write-only-secret.ts";
 const testFile = "spikes/infra/example.test.ts";
+const toolingFile = path.resolve(import.meta.dirname, "../../scripts/example.ts");
 
 tester.run("no-conditional-tests", noConditionalTests, {
   valid: [
@@ -165,6 +178,238 @@ tester.run("no-json-parse", noJsonParse, {
   invalid: [{ filename: productionFile, code: `JSON.parse(text)`, errors: 1 }],
 });
 
+tester.run("no-manual-tag-check", noManualTagCheck, {
+  valid: [
+    { filename: productionFile, code: `Predicate.isTagged(value, "Ready")` },
+    { filename: productionFile, code: `const value = { _tag: "Ready" }` },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `value._tag === "Ready"; "_tag" in value; consume(value["_tag"])`,
+      errors: 3,
+    },
+  ],
+});
+
+tester.run("no-match-orelse", noMatchOrelse, {
+  valid: [
+    { filename: productionFile, code: `const Match = localMatcher; Match.orElse(fallback)` },
+    {
+      filename: productionFile,
+      code: `import * as Match from "effect/Match"; matcher.pipe(Match.exhaustive)`,
+    },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `import * as Match from "effect/Match"; matcher.pipe(Match.orElse(fallback))`,
+      errors: 1,
+    },
+    {
+      filename: productionFile,
+      code: `import { Match as M } from "effect"; matcher.pipe(M.orElse(fallback))`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("no-promise-client-surface", noPromiseClientSurface, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `interface GitHubClient { readonly get: (id: string) => Effect.Effect<Result, Failure> }`,
+    },
+    {
+      filename: productionFile,
+      code: `interface PromiseFactory { readonly make: () => Promise<Result> }`,
+    },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `interface GitHubClient { get(id: string): Promise<Result>; readonly list: () => Promise<Result[]> }`,
+      errors: 2,
+    },
+    {
+      filename: productionFile,
+      code: `export interface GitHubSdk { readonly get: () => Promise<Result> }`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("no-raw-error-throw", noRawErrorThrow, {
+  valid: [
+    { filename: productionFile, code: `throw new Error("native host failure")` },
+    { filename: productionFile, code: `throw new DomainFailure({ operation: "read" })` },
+    { filename: productionFile, code: `assert.fail("bad")` },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `import { Effect } from "effect"; throw new Error("bad")`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("no-raw-fetch", noRawFetch, {
+  valid: [
+    { filename: productionFile, code: `env.ASSETS.fetch(request); service.fetch(request)` },
+    { filename: productionFile, code: `class Worker { fetch(request) { return response } }` },
+    { filename: productionFile, code: `httpClient.fetch(request)` },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `fetch(url); globalThis.fetch(url); window.fetch(url); self["fetch"]`,
+      errors: 4,
+    },
+    {
+      filename: productionFile,
+      code: `(globalThis.fetch as typeof globalThis.fetch)(url)`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("no-redundant-error-factory", noRedundantErrorFactory, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `const makeReadError = (cause) => new ReadError({ cause: sanitize(cause) })`,
+    },
+    { filename: productionFile, code: `const makeResult = (cause) => new ReadError({ cause })` },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `const makeReadError = (cause) => new ReadError({ cause })`,
+      errors: 1,
+    },
+    {
+      filename: productionFile,
+      code: `function readError(cause) { return new ReadError({ cause, operation: "read" }) }`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("no-redundant-primitive-cast", noRedundantPrimitiveCast, {
+  valid: [
+    { filename: productionFile, code: `const value = String(input)` },
+    { filename: productionFile, code: `const value = "ready" as const` },
+    { filename: toolingFile, code: `const value = input as string` },
+  ],
+  invalid: [
+    { filename: productionFile, code: `const value = input as string`, errors: 1 },
+    { filename: productionFile, code: `const value = <number>record.count`, errors: 1 },
+  ],
+});
+
+tester.run("no-schema-class", noSchemaClass, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `import * as Schema from "effect/Schema"; class Failure extends Schema.TaggedErrorClass<Failure>()("Failure", {}) {}`,
+    },
+    {
+      filename: productionFile,
+      code: `import * as Schema from "effect/Schema"; const Model = Schema.Struct({ id: Schema.String })`,
+    },
+    { filename: productionFile, code: `const Schema = localSchema; Schema.Class()` },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `import * as Schema from "effect/Schema"; class Model extends Schema.Class<Model>("Model")({ id: Schema.String }) {}`,
+      errors: 1,
+    },
+    {
+      filename: productionFile,
+      code: `import { Schema as S } from "effect"; const Tagged = S.TaggedClass<Tagged>()("Tagged", {})`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("no-switch-statement", noSwitchStatement, {
+  valid: [{ filename: productionFile, code: `Match.value(value).pipe(Match.exhaustive)` }],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `switch (value) { case "ready": break; default: break }`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("no-unsupported-effect-api", noUnsupportedEffectApi, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `import * as Effect from "effect/Effect"; Effect.callback(register); Effect.andThen(first, second); Effect.timeoutOption(program, duration); Effect.timeoutOrElse(program, options)`,
+    },
+    { filename: productionFile, code: `client.async(); client.zipRight(); client.timeoutFail()` },
+    { filename: productionFile, code: `const Effect = localRuntime; Effect.async(register)` },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `import * as Effect from "effect/Effect"; Effect.async(register); Effect.zipRight(first, second); Effect.timeoutFail(program, options)`,
+      errors: 3,
+    },
+    {
+      filename: productionFile,
+      code: `import { Effect as Fx } from "effect"; Fx.async(register)`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("prefer-effect-predicate", preferEffectPredicate, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `import { Predicate } from "effect"; values.filter(Predicate.isNotNullish)`,
+    },
+    { filename: productionFile, code: `values.filter((value) => value.active !== false)` },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `import { Effect } from "effect"; const present = (value) => value !== undefined; values.filter((value) => value != null); function absent(value) { return value === null }`,
+      errors: 3,
+    },
+  ],
+});
+
+tester.run("prefer-value-inferred-extension-types", preferValueInferredExtensionTypes, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `type SearchExtension = ReturnType<typeof makeSearchExtension>; const plugin = { extension: makeSearchExtension }`,
+    },
+    {
+      filename: productionFile,
+      code: `interface SearchService { readonly search: () => Result }`,
+    },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `interface SearchExtension { readonly search: () => Result } const plugin = { extension: (): SearchExtension => ({ search }) }`,
+      errors: 1,
+    },
+    {
+      filename: productionFile,
+      code: `type SearchPluginExtension = { readonly search: () => Result }; const plugin = { extension: () => ({ search }) satisfies SearchPluginExtension }`,
+      errors: 1,
+    },
+  ],
+});
+
 tester.run("no-promise-reject", noPromiseReject, {
   valid: [{ filename: productionFile, code: `Effect.fail(error)` }],
   invalid: [
@@ -202,6 +447,28 @@ tester.run("no-try-catch-or-throw", noTryCatchOrThrow, {
 });
 
 describe("Scotty Oxlint policy integration", () => {
+  it("enables the complete non-fetch subset globally", () => {
+    const repoRoot = path.resolve(import.meta.dirname, "../..");
+    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
+    const globalRules = [
+      "no-manual-tag-check",
+      "no-match-orelse",
+      "no-promise-client-surface",
+      "no-raw-error-throw",
+      "no-redundant-error-factory",
+      "no-redundant-primitive-cast",
+      "no-schema-class",
+      "no-switch-statement",
+      "no-unsupported-effect-api",
+      "prefer-effect-predicate",
+      "prefer-value-inferred-extension-types",
+    ];
+    for (const rule of globalRules) {
+      assert.equal(config.rules[`scotty/${rule}`], "error");
+    }
+    assert.equal(config.rules["scotty/no-raw-fetch"], undefined);
+  });
+
   it("tracks migrated Effect modules explicitly", () => {
     const repoRoot = path.resolve(import.meta.dirname, "../..");
     const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
@@ -218,6 +485,8 @@ describe("Scotty Oxlint policy integration", () => {
           "scotty/no-instanceof-error": "error",
           "scotty/no-json-parse": "error",
           "scotty/no-promise-reject": "error",
+          "scotty/no-raw-error-throw": "off",
+          "scotty/no-raw-fetch": "error",
           "scotty/no-raw-wall-clock": "error",
           "scotty/no-try-catch-or-throw": "error",
         },

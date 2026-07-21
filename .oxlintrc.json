@@ -23,8 +23,19 @@
     "scotty/no-effect-run-sync-in-tests": "error",
     "scotty/no-inline-object-type-assertion": "error",
     "scotty/no-inline-schema-compile": "error",
+    "scotty/no-manual-tag-check": "error",
+    "scotty/no-match-orelse": "error",
+    "scotty/no-promise-client-surface": "error",
+    "scotty/no-raw-error-throw": "error",
+    "scotty/no-redundant-error-factory": "error",
+    "scotty/no-redundant-primitive-cast": "error",
+    "scotty/no-schema-class": "error",
+    "scotty/no-switch-statement": "error",
     "scotty/no-ts-nocheck": "error",
-    "scotty/prefer-schema-inferred-types": "error"
+    "scotty/no-unsupported-effect-api": "error",
+    "scotty/prefer-effect-predicate": "error",
+    "scotty/prefer-schema-inferred-types": "error",
+    "scotty/prefer-value-inferred-extension-types": "error"
   },
   "overrides": [
     {
@@ -39,6 +50,8 @@
         "scotty/no-instanceof-error": "error",
         "scotty/no-json-parse": "error",
         "scotty/no-promise-reject": "error",
+        "scotty/no-raw-error-throw": "off",
+        "scotty/no-raw-fetch": "error",
         "scotty/no-raw-wall-clock": "error",
         "scotty/no-try-catch-or-throw": "error"
       }
