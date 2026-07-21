@@ -385,6 +385,39 @@ around the block by guessing physical identities, seeding Alchemy state,
 omitting the existing Container association, accepting retain-on-replace, or
 placing secret plaintext/`Config.redacted` values in Alchemy inputs.
 
+The fail-closed normalizer consumes exactly the pinned Plan surfaces:
+`resources`, `actions`, `deletions`, `actionDeletions`, `output`, and
+`cycleMembers`. The four node collections are FQN-keyed records; resource
+facts come from `resource.LogicalId`, `resource.Type`,
+`resource.RemovalPolicy`, `node.action`, and `node.bindings[].sid/action`.
+Transcript-only review fields are keyed by exactly the same resource FQNs. The
+gate requires no actions, deletions, action deletions, or cycle members and
+exactly the `url` output. Resource reviews retain FQN separately from logical
+ID, identity, changed inputs, exact nested binding IDs/actions, Worker bindings,
+and ordered DO migrations. Clone evidence records exact-keyed
+before/after IDs and seeded digests, full before/desired/observed-after Wrangler
+topology, retained state, post-destroy IDs, and digested plan/state/log/output/
+bundle disclosure coverage. The reviewed plan and second plan are distinct
+artifacts; all six artifacts require unique exact ID/kind coverage, an explicit
+clean result, and a lowercase 64-hex SHA-256 digest. Provider transcript and
+request digests use the same format. Semantically keyed collections compare
+canonically; DO migration history remains chronological.
+
+Pinned beta.63 adoption keeps every adopted resource, including the Worker, at
+noop. The Worker therefore preserves the current `secret_text` binding types.
+Fresh write-only secret resources may be created independently, but Secrets
+Store bindings require a future guarded Worker update. Reviewed and second-plan
+secret identity, account, provider version `1`, digest, and destination metadata
+must correlate by binding name. Plan-node bindings are exactly
+`MonolithWorker` → `SandboxContainer` and `SandboxContainer` → `Sandbox`; KV,
+R2, and secret resource nodes have none. Native Worker bindings remain only in
+the desired-topology transcript.
+
+This offline evidence gate cannot approve cold adoption on beta.63 and always
+retains the known Container blocker. Any future adopted-resource update also
+requires executable provider transcript capture and a deny-by-default request
+firewall proving only reviewed Cloudflare requests can leave the process.
+
 First place current physical resources under Alchemy ownership without changing Worker topology or moving the Durable Object class. Deploy the existing module as an external/async Alchemy Worker and preserve its exact Worker name, Sandbox class name, DO namespace, Container association, KV, R2, assets, compatibility flags, routes, and secrets.
 
 **Files introduced:** `alchemy.run.ts` and focused infrastructure modules under an appropriate existing directory; do not create a broad framework hierarchy.
