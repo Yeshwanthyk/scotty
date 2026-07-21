@@ -16,13 +16,11 @@ import {
 
 const isolatedStage = `m01c-canary-${randomBytes(16).toString("hex")}`;
 
-const approvedConfig = (armCleanup = false) => ({
+const approvedConfig = () => ({
   stage: isolatedStage,
   deployApproval: expectedDeployApproval(isolatedStage),
-  cleanupApproval: armCleanup ? expectedCleanupApproval(isolatedStage) : undefined,
-  armCleanup,
+  cleanupApproval: expectedCleanupApproval(isolatedStage),
   telemetryDisabled: true,
-  pinnedSafetyExtensionsReady: true,
 });
 
 describe("M01C local Sandbox SDK canary scaffold", () => {
@@ -32,10 +30,8 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
         assertM01CCanaryConfig({
           stage,
           deployApproval: expectedDeployApproval(stage),
-          cleanupApproval: undefined,
-          armCleanup: false,
+          cleanupApproval: expectedCleanupApproval(stage),
           telemetryDisabled: true,
-          pinnedSafetyExtensionsReady: true,
         }),
       );
     }
@@ -54,17 +50,10 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
     assert.throws(() =>
       assertM01CCanaryConfig({
         ...approvedConfig(),
-        pinnedSafetyExtensionsReady: false,
-      }),
-    );
-    assert.throws(() =>
-      assertM01CCanaryConfig({
-        ...approvedConfig(true),
         cleanupApproval: undefined,
       }),
     );
     assert.doesNotThrow(() => assertM01CCanaryConfig(approvedConfig()));
-    assert.doesNotThrow(() => assertM01CCanaryConfig(approvedConfig(true)));
   });
 
   it("uses unmistakably synthetic, stage-isolated physical names", () => {
@@ -122,8 +111,8 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
       stackSource,
       /bindExternalSandboxContainer\(\{ worker, container, durableObject \}\)/u,
     );
-    assert.match(stackSource, /RemovalPolicy\.destroy\(config\.armCleanup\)/u);
-    assert.match(stackSource, /pinnedSafetyExtensionsReady: false/u);
+    assert.match(stackSource, /RemovalPolicy\.destroy\(\)/u);
+    assert.notMatch(stackSource, /pinnedSafetyExtensionsReady|SCOTTY_M01C_ARM_CLEANUP/u);
 
     assert.match(bindingSource, /durableObjects: \{ namespaceId \}/u);
     assert.match(bindingSource, /containers: \[/u);

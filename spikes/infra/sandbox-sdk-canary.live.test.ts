@@ -12,10 +12,8 @@ const approved = (() => {
     assertM01CCanaryConfig({
       stage,
       deployApproval: `deploy:${stage}`,
-      cleanupApproval: undefined,
-      armCleanup: false,
+      cleanupApproval: `destroy:${stage}:disposable`,
       telemetryDisabled: true,
-      pinnedSafetyExtensionsReady: true,
     });
     return (
       liveApproval === `run:${stage}` &&

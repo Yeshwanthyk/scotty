@@ -8,7 +8,6 @@ export const M01C_STACK_NAME = "ScottyM01CSandboxCanary";
 export const M01C_STAGE_PREFIX = "m01c-canary-";
 export const M01C_DEPLOY_APPROVAL = "SCOTTY_M01C_APPROVE_DEPLOY";
 export const M01C_CLEANUP_APPROVAL = "SCOTTY_M01C_APPROVE_CLEANUP";
-export const M01C_PUBLIC_EXTENSION_REQUIRED = true;
 export const M01C_ACCOUNT_SECRET_MAX_BYTES = 1024;
 
 const syntheticNamePrefix = "scotty-m01c-disposable";
@@ -18,9 +17,7 @@ export interface M01CCanaryConfig {
   readonly stage: string;
   readonly deployApproval: string | undefined;
   readonly cleanupApproval: string | undefined;
-  readonly armCleanup: boolean;
   readonly telemetryDisabled: boolean;
-  readonly pinnedSafetyExtensionsReady: boolean;
 }
 
 export interface M01CCanaryNames {
@@ -155,16 +152,10 @@ export function assertM01CCanaryConfig(config: M01CCanaryConfig): void {
     // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: deployment preflight reports configuration failure to the Alchemy CLI
     throw new Error("M01C requires ALCHEMY_TELEMETRY_DISABLED=1.");
   }
-  if (!config.pinnedSafetyExtensionsReady) {
+  if (config.cleanupApproval !== expectedCleanupApproval(config.stage)) {
     // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: deployment preflight reports configuration failure to the Alchemy CLI
     throw new Error(
-      "M01C deployment is blocked until pinned Alchemy refuses existing KV/R2 resources and persists retain-to-destroy policy changes on no-op apply.",
-    );
-  }
-  if (config.armCleanup && config.cleanupApproval !== expectedCleanupApproval(config.stage)) {
-    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: deployment preflight reports configuration failure to the Alchemy CLI
-    throw new Error(
-      `M01C cleanup is not approved for stage ${config.stage}; set ${M01C_CLEANUP_APPROVAL} to the exact destructive approval.`,
+      `M01C disposable-resource cleanup is not approved for stage ${config.stage}; set ${M01C_CLEANUP_APPROVAL} to the exact destructive approval before evaluating this stack.`,
     );
   }
 }
@@ -182,7 +173,7 @@ export function m01cCanaryNames(stage: string): M01CCanaryNames {
 export const m01cCanaryProgram = Effect.fnUntraced(function* (config: M01CCanaryConfig) {
   assertM01CCanaryConfig(config);
   const names = m01cCanaryNames(config.stage);
-  const removalPolicy = RemovalPolicy.destroy(config.armCleanup);
+  const removalPolicy = RemovalPolicy.destroy();
 
   const sessions = yield* Cloudflare.KV.Namespace("CanarySessions", {
     title: names.sessions,
@@ -259,10 +250,7 @@ export default Alchemy.Stack(
       stage,
       deployApproval: process.env[M01C_DEPLOY_APPROVAL],
       cleanupApproval: process.env[M01C_CLEANUP_APPROVAL],
-      armCleanup: process.env.SCOTTY_M01C_ARM_CLEANUP === "1",
       telemetryDisabled: process.env.ALCHEMY_TELEMETRY_DISABLED === "1",
-      // Hard-coded fail-closed until a pinned Alchemy extension and its regressions land.
-      pinnedSafetyExtensionsReady: false,
     });
   }),
 );

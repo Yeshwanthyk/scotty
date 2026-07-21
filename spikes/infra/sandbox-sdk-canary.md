@@ -2,20 +2,24 @@
 
 This proof is inert during the normal local gate. It describes one synthetic Alchemy Worker,
 external SQLite Durable Object, Container application, KV namespace, R2 bucket, and static asset
-binding. It does not replace Wrangler/Hono or adopt any existing resource.
+binding. It does not replace Wrangler/Hono and must use a newly generated random stage:
 
-**Deployment is deliberately blocked in code.** Review found two safety contracts that pinned
-Alchemy beta.63 cannot currently express. `pinnedSafetyExtensionsReady` is hard-coded to `false`;
-do not replace that constant with an environment bypass.
+```sh
+stage="m01c-canary-$(openssl rand -hex 16)"
+```
 
-1. KV and R2 providers must refuse a same-name resource when there is no prior owned state. A
-   resource-scoped `adopt(false)` is insufficient while those providers return an ordinary owned
-   observation rather than `Unowned`.
-2. A no-op apply must persist a changed removal policy so a reviewed `retain` → `destroy` arming
-   deployment actually changes the policy used by the later destroy plan.
+The disposable canary runs against unmodified Alchemy beta.63. It avoids two missing production
+safety contracts rather than weakening them:
 
-These require the smallest public changes and regressions in a pinned Alchemy fork/upstream
-release. Editing `.alchemy` state or adding a second reconciler is not acceptable.
+1. Every physical name derives from a fresh 128-bit random stage and retains 96 random bits. This
+   makes accidental collision the primary isolation control. The reviewed first plan must contain
+   only the four expected creates. Never use `--adopt`.
+2. Every resource uses `destroy` from its first deployment. The canary never relies on a later
+   `retain` → `destroy` policy transition.
+
+The portable Alchemy extensions under `work/` remain evidence for later production adoption,
+where stable existing names and retained authoritative data make these workarounds invalid. They
+are not applied to Scotty's dependency or upstream gitlink.
 
 ## Safety model
 
@@ -24,9 +28,9 @@ release. Editing `.alchemy` state or adding a second reconciler is not acceptabl
   stage suffix, and remains at most 63 characters.
 - The stack refuses even to evaluate unless `SCOTTY_M01C_APPROVE_DEPLOY` exactly equals
   `deploy:<stage>`.
-- Resources default to Alchemy `retain`. Cleanup requires a separate arming deployment with
-  `SCOTTY_M01C_ARM_CLEANUP=1` and `SCOTTY_M01C_APPROVE_CLEANUP` exactly equal to
-  `destroy:<stage>:disposable`, followed by an explicitly approved destroy using the same values.
+- Resources use Alchemy `destroy` from creation. Every plan, deployment, and destroy evaluation
+  also requires `SCOTTY_M01C_APPROVE_CLEANUP` to exactly equal `destroy:<stage>:disposable`; this
+  prevents an ordinary environment from evaluating the destructive stack.
 - `ALCHEMY_TELEMETRY_DISABLED=1` is mandatory. Worker/Container observability is disabled. The
   stack has no custom routes or adopted names and must never be run with `--adopt`.
 - No credential is accepted by the stack. The backup assertion uses the SDK's credential-less,
@@ -68,25 +72,24 @@ read/plan/no-op/delete, binding metadata, and secret scans across plans/state/lo
 That provider work is deferred because M01C is a synthetic credential-free scaffold, not Chunk 2
 or production secret adoption.
 
-## Later live procedure — blocked, then requires new explicit approval
+## Later live procedure — requires new explicit approval
 
-Do not execute this procedure until both pinned Alchemy extensions above pass local regressions and
-the hard-coded block is removed in review. Even then, the text below is documentation, not
-authorization. Choose a fresh random stage and keep deploys serialized for that stack and stage.
+The text below is documentation, not authorization. Choose a fresh random stage and keep deploys
+serialized for that stack and stage.
 
-1. Review a plan. It must contain only creates for the Worker, Container, KV, and R2 resources; the
-   `ScottySandbox` SQLite migration, Container class metadata, and the matching namespace
-   association are Worker/Container metadata rather than standalone resources. The plan must
-   contain no adoption, delete, transfer, or replacement.
+1. Review the first plan. It must contain only creates for the Worker, Container, KV, and R2
+   resources; the `ScottySandbox` SQLite migration, Container class metadata, and matching
+   namespace association are Worker/Container metadata rather than standalone resources. Stop on
+   any update, replacement, delete, action, or unexpected resource. A create plan does not prove
+   remote absence for resources whose props contain unresolved outputs; random-name isolation is
+   the collision control for this disposable canary.
 2. Deploy without `--adopt`, record the non-secret Worker URL output, and run
    `sandbox-sdk-canary.live.test.ts` with:
    - `ALCHEMY_STAGE=<stage>`
    - `SCOTTY_M01C_CANARY_URL=<deployed HTTPS URL>`
    - `SCOTTY_M01C_RUN_LIVE=run:<stage>`
 3. Review a second plan. After any provider normalization pass, every action must be `noop`.
-4. Arm cleanup through a deployment that changes only removal policies. Review that plan before
-   applying it.
-5. Run destroy with the cleanup approval still present. Verify the isolated Worker, Container
+4. Run destroy with both exact approvals still present. Verify the isolated Worker, Container
    application, KV namespace, R2 bucket/backups, and DO namespace are absent before deleting local
    state.
 

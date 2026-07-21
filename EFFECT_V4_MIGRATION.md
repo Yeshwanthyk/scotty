@@ -272,11 +272,15 @@ single installed Effect version; and
 This is the first hard gate. Do not migrate routes or lifecycle until it passes.
 
 **Status:** 1A and 1B pass their local public-contract proofs. The 1C local
-scaffold is complete but deployment is blocked on two pinned Alchemy safety
-extensions: fail-closed refuse-existing ownership for KV/R2, and durable
-persistence of retain-to-destroy removal-policy changes when apply is otherwise
-a no-op. `pinnedSafetyExtensionsReady` remains hard-coded false until both
-extensions and regressions are assimilated.
+scaffold uses fresh 128-bit stage-derived physical names, requires an exact
+create-only first-plan review, and marks every disposable resource `destroy`
+from its first deployment. Random-name isolation, rather than the create plan
+alone, controls accidental collision because Alchemy may skip a provider read
+while desired props contain unresolved outputs. This lets the isolated
+synthetic canary use unmodified Alchemy beta.63 without relying on a
+retain-to-destroy transition. Fail-closed adoption and policy persistence
+remain blockers for Chunk 2 production adoption, where stable existing names
+and retained authoritative data cannot use the disposable-canary workaround.
 
 #### 1A External Sandbox Container binding helper
 
