@@ -368,6 +368,23 @@ Deploy the current official `ScottySandbox` class and Dockerfile through Alchemy
 
 ### Chunk 2 — adopt the current monolith without moving authority
 
+**Status:** Blocked at the offline readiness boundary on pinned Alchemy
+`2.0.0-beta.63`. No deployable `alchemy.run.ts` is present and Wrangler remains
+the sole production owner. Cold adoption records no old resource bindings, so
+the existing Container-to-Durable-Object association can plan as a Container
+replacement. Existing Worker/DO foreign adoption, reuse of the `v1` SQLite
+namespace without re-emitting `new_sqlite_classes`, persistence of retain-only
+policy updates, Wrangler Container application identity, and the live Wrangler-
+created KV title also require read-only inventory and clone proof. R2
+`lifecycleRules` must be omitted during adoption rather than set to `[]`.
+
+The fail-closed parity and plan contract is recorded in
+`spikes/infra/monolith-adoption-readiness.ts`; the exact local Cloudflare
+confirmation gate is `spikes/infra/monolith-adoption-readiness.md`. Do not work
+around the block by guessing physical identities, seeding Alchemy state,
+omitting the existing Container association, accepting retain-on-replace, or
+placing secret plaintext/`Config.redacted` values in Alchemy inputs.
+
 First place current physical resources under Alchemy ownership without changing Worker topology or moving the Durable Object class. Deploy the existing module as an external/async Alchemy Worker and preserve its exact Worker name, Sandbox class name, DO namespace, Container association, KV, R2, assets, compatibility flags, routes, and secrets.
 
 **Files introduced:** `alchemy.run.ts` and focused infrastructure modules under an appropriate existing directory; do not create a broad framework hierarchy.

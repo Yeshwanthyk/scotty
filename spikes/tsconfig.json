@@ -2,6 +2,7 @@
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2023", "DOM"],
+    "resolveJsonModule": true,
     "types": ["@cloudflare/workers-types", "node", "vitest/globals"]
   },
   "include": ["**/*.ts"]
