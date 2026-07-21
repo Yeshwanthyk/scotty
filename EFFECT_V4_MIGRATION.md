@@ -271,6 +271,13 @@ single installed Effect version; and
 
 This is the first hard gate. Do not migrate routes or lifecycle until it passes.
 
+**Status:** 1A and 1B pass their local public-contract proofs. The 1C local
+scaffold is complete but deployment is blocked on two pinned Alchemy safety
+extensions: fail-closed refuse-existing ownership for KV/R2, and durable
+persistence of retain-to-destroy removal-policy changes when apply is otherwise
+a no-op. `pinnedSafetyExtensionsReady` remains hard-coded false until both
+extensions and regressions are assimilated.
+
 #### 1A External Sandbox Container binding helper
 
 Implement and test the public binding helper against a disposable Worker/DO/Container. Verify:
