@@ -289,6 +289,14 @@ and Cloudflare API reads independently confirmed the Worker, Container
 application, KV namespace, and R2 bucket absent after guarded cleanup. Exact
 activity-expiry timing and browser asset rendering remain outside that proof.
 
+The Account Secrets Store provider scaffold now enforces metadata-only state,
+exact-ID ownership/update/delete, authenticated markers, bounded activation,
+and ambiguous-write replay with short-lived plaintext. Foreign/unowned
+adoption intentionally fails closed on unmodified Alchemy beta.63 because the
+engine cannot carry current-run adoption authorization safely into reconcile.
+Concrete Cloudflare HTTP, trusted-source, and marker-key adapters plus the
+synthetic deployed Secrets Store canary remain required before production use.
+
 #### 1A External Sandbox Container binding helper
 
 Implement and test the public binding helper against a disposable Worker/DO/Container. Verify:
