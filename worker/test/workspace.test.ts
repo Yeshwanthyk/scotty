@@ -8,6 +8,7 @@ import {
   shellQuote,
   type SandboxExecOptions,
   type SandboxRuntimeCapabilities,
+  type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
 import { sessionRoot, Workspace, workspaceLayer } from "../src/workspace";
 
@@ -62,6 +63,10 @@ class FakeWorkspaceCapabilities implements SandboxRuntimeCapabilities {
     if (this.rejection !== undefined) return Promise.reject(this.rejection);
     return Promise.resolve(this.results.shift() ?? execResult(command));
   };
+
+  createSession = (_options: SandboxSessionOptions): Promise<void> => Promise.resolve();
+
+  deleteSession = (_sessionId: string): Promise<void> => Promise.resolve();
 
   mkdir = (): Promise<unknown> => Promise.resolve(undefined);
   writeFile = (): Promise<unknown> => Promise.resolve(undefined);

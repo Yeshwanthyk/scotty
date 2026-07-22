@@ -1,8 +1,9 @@
 import { Context, Effect, Layer } from "effect";
-import { agentEnv, sessionRoot } from "./container-auth";
+import { agentEnv } from "./container-auth";
 import { CredentialVault, type CredentialVaultFailure } from "./credential-vault";
 import type { SessionRecord } from "./contracts";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
+import { sessionRoot } from "./workspace";
 
 const WEB_SESSION_ID = "scotty-web";
 

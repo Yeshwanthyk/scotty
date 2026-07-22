@@ -7,6 +7,7 @@ import {
   sandboxRuntimeLayer,
   type SandboxExecOptions,
   type SandboxRuntimeCapabilities,
+  type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
 
 const ID = "a0b1c2d3e4f5";
@@ -45,6 +46,10 @@ class FakeSandboxCapabilities implements SandboxRuntimeCapabilities {
     if (this.rejection !== undefined) return Promise.reject(this.rejection);
     return Promise.resolve(this.result);
   };
+
+  createSession = (_options: SandboxSessionOptions): Promise<void> => Promise.resolve();
+
+  deleteSession = (_sessionId: string): Promise<void> => Promise.resolve();
 
   mkdir = (): Promise<unknown> => Promise.resolve({ success: true, path: "/unused" });
 
