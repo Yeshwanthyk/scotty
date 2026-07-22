@@ -32,11 +32,7 @@ import {
   CODEX_SENTINEL_PREFIX,
   GITHUB_SENTINEL_PREFIX,
   denyOutbound,
-  passThrough,
-  proxyChatGpt,
-  proxyGitHub,
-  proxyOAuthRefresh,
-  proxyOpenAI,
+  makeOutboundByHost,
   sentinelAuthJson,
   type CredentialPatch,
   type CredentialRefreshLease,
@@ -829,22 +825,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 }
 
-Sandbox.outboundByHost = {
-  "api.openai.com": proxyOpenAI,
-  "chatgpt.com": proxyChatGpt,
-  "auth.openai.com": proxyOAuthRefresh,
-  "github.com": proxyGitHub,
-  "api.github.com": proxyGitHub,
-  "codeload.github.com": passThrough,
-  "objects.githubusercontent.com": passThrough,
-  "raw.githubusercontent.com": passThrough,
-  "registry.npmjs.org": passThrough,
-  "pypi.org": passThrough,
-  "files.pythonhosted.org": passThrough,
-  "crates.io": passThrough,
-  "static.crates.io": passThrough,
-  "index.crates.io": passThrough,
-};
+Sandbox.outboundByHost = makeOutboundByHost(fetch);
 Sandbox.outbound = denyOutbound;
 
 function pauseAgentCommand(): string {
