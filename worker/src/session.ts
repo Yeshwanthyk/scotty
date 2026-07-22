@@ -1,6 +1,7 @@
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Result } from "effect";
+import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
 import {
   conflict,
@@ -163,7 +164,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }));
 
     try {
-      await this.restoreBackup(backup);
+      await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.restore(backup)));
       const credential = await this.requireCredential();
       await this.seedContainerAuth(record, credential);
       await this.startAgent(record, undefined, record.codexThreadId, true);
@@ -296,7 +297,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
       this.deleteSchedules("enforceHardCap");
       this.deleteSchedules("captureThreadId");
       await this.destroy();
-      for (const backupId of new Set(record.ownedBackupIds)) await this.deleteBackup(backupId);
+      for (const backupId of new Set(record.ownedBackupIds)) {
+        await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.delete(backupId)));
+      }
       await this.ctx.storage.delete(CREDENTIAL_KEY);
       const gone: SessionRecord = {
         ...record,
@@ -632,13 +635,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
       await this.execChecked(pauseAgentCommand(), { timeout: 10_000 });
       paused = true;
       await this.execChecked("sync", { timeout: 30_000 });
-      const backup = await this.createBackup({
-        dir: root,
-        name: `scotty-${record.id}-${Date.now()}`,
-        ttl: BACKUP_TTL_SECONDS,
-        localBucket: this.env.SCOTTY_LOCAL_BACKUP === "1",
-        compression: { format: "zstd" },
-      });
+      const backup = await this.runBackupStore(
+        Effect.flatMap(BackupStore, (store) =>
+          store.create({
+            dir: root,
+            name: `scotty-${record.id}-${Date.now()}`,
+            ttl: BACKUP_TTL_SECONDS,
+            localBucket: this.env.SCOTTY_LOCAL_BACKUP === "1",
+            compression: { format: "zstd" },
+          }),
+        ),
+      );
       const priorPrevious = record.backup?.previous;
       const updated = await this.updateForOperation(nonce, (current) => ({
         ...current,
@@ -649,7 +656,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         failure: undefined,
         updatedAt: new Date().toISOString(),
       }));
-      if (priorPrevious) await this.deleteBackup(priorPrevious.id).catch(() => undefined);
+      if (priorPrevious) {
+        await this.runBackupStore(
+          Effect.flatMap(BackupStore, (store) => store.delete(priorPrevious.id)),
+        ).catch(() => undefined);
+      }
       checkpointSucceeded = true;
       return updated;
     } finally {
@@ -808,14 +819,28 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
-  private async deleteBackup(id: string): Promise<void> {
-    let cursor: string | undefined;
-    do {
-      const result = await this.env.BACKUP_BUCKET.list({ prefix: `backups/${id}/`, cursor });
-      if (result.objects.length > 0)
-        await this.env.BACKUP_BUCKET.delete(result.objects.map((object) => object.key));
-      cursor = result.truncated ? result.cursor : undefined;
-    } while (cursor);
+  private async runBackupStore<A>(
+    program: Effect.Effect<A, BackupStoreFailure, BackupStore>,
+  ): Promise<A> {
+    const layer = backupStoreLayer({
+      createBackup: (options) => this.createBackup(options),
+      restoreBackup: (backup) => this.restoreBackup(backup),
+      listObjects: (prefix, cursor) =>
+        this.env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
+          keys: page.objects.map((object) => object.key),
+          cursor: page.truncated ? page.cursor : undefined,
+        })),
+      deleteObjects: (keys) => this.env.BACKUP_BUCKET.delete([...keys]),
+    });
+    const result = await Effect.runPromise(
+      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
   }
 
   private async execChecked(
