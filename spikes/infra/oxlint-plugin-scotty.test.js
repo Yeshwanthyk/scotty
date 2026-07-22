@@ -485,6 +485,7 @@ describe("Scotty Oxlint policy integration", () => {
           "worker/src/sandbox-runtime.ts",
           "worker/src/session-projection.ts",
           "worker/src/session-store.ts",
+          "worker/src/workspace.ts",
           "spikes/infra/account-secrets-store-canary.run.ts",
           "spikes/infra/account-secrets-store-canary.ts",
           "spikes/infra/external-sandbox-container-binding.ts",

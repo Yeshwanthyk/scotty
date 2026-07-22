@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Layer, Result } from "effect";
-import { agentEnv, ContainerAuth, containerAuthLayer, sessionRoot } from "../src/container-auth";
+import { agentEnv, ContainerAuth, containerAuthLayer } from "../src/container-auth";
 import { sentinelAuthJson, type StoredCredential } from "../src/egress";
 import {
   SandboxRuntimeFailure,
@@ -9,6 +9,7 @@ import {
   type SandboxExecOptions,
   type SandboxRuntimeCapabilities,
 } from "../src/sandbox-runtime";
+import { sessionRoot } from "../src/workspace";
 
 const ID = "a0b1c2d3e4f5";
 const CODEX_SENTINEL = `scotty-codex-${ID}-sentinel`;

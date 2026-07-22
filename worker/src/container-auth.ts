@@ -1,7 +1,8 @@
 import { Context, Effect, Layer } from "effect";
-import { SESSION_ROOT, type SessionRecord } from "./contracts";
+import type { SessionRecord } from "./contracts";
 import { sentinelAuthJson, type StoredCredential } from "./egress";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
+import { sessionRoot } from "./workspace";
 
 interface ContainerAuthShape {
   readonly seed: (
@@ -31,10 +32,6 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
     }),
   ),
 );
-
-export function sessionRoot(id: SessionRecord["id"]): string {
-  return `${SESSION_ROOT}/${id}`;
-}
 
 export function agentEnv(
   id: SessionRecord["id"],

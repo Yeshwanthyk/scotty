@@ -3,7 +3,7 @@ import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Layer, Option, Result } from "effect";
 import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
-import { agentEnv, ContainerAuth, containerAuthLayer, sessionRoot } from "./container-auth";
+import { agentEnv, ContainerAuth, containerAuthLayer } from "./container-auth";
 import {
   CredentialVault,
   type CredentialVaultFailure,
@@ -13,7 +13,6 @@ import {
 import {
   conflict,
   notFound,
-  SESSION_ROOT,
   ScottyError,
   toProjection,
   toSessionView,
@@ -56,6 +55,7 @@ import {
   sessionProjectionLayer,
 } from "./session-projection";
 import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
+import { type PreparedWorkspace, sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
 const RECORD_KEY = "scotty:session";
 const WEB_SESSION_ID = "scotty-web";
@@ -64,11 +64,6 @@ const HARD_CAP_GRACE_MS = 30_000;
 
 interface HardCapPayload {
   hardCapAt: string;
-}
-
-interface WorktreeResult {
-  defaultBranch: string;
-  repoExists: boolean;
 }
 
 export class Sandbox extends BaseSandbox<Bindings> {
@@ -106,7 +101,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
     try {
       const credential = await this.seedCredential(id);
-      const worktree = await this.prepareWorktree(initial, credential.githubSentinel);
+      const worktree = await this.prepareWorkspace(initial, credential.githubSentinel);
       await this.seedContainerAuth(initial, credential);
       await this.startAgent(initial, input.prompt);
       await this.scheduleHardCap(initial.hardCapAt);
@@ -202,7 +197,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const record = await this.requireRecord();
     const credential = await this.requireCredential();
     const env = agentEnv(record.id, credential);
-    const root = this.sessionRoot(record.id);
+    const root = sessionRoot(record.id);
     const repoUrl = `https://github.com/${record.repo}.git`;
 
     try {
@@ -256,7 +251,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   async prepareDownArchive(): Promise<DownArchive> {
     const operation = await this.acquireOperation("down", ["warm"]);
     const record = await this.requireRecord();
-    const root = this.sessionRoot(record.id);
+    const root = sessionRoot(record.id);
 
     try {
       const sha = (
@@ -470,55 +465,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.runCredentialVault(Effect.flatMap(CredentialVault, (vault) => vault.require));
   }
 
-  private async prepareWorktree(
+  private async prepareWorkspace(
     record: SessionRecord,
     githubSentinel: string,
-  ): Promise<WorktreeResult> {
-    const root = this.sessionRoot(record.id);
-    const url = `https://github.com/${record.repo}.git`;
-    const env = { GH_TOKEN: githubSentinel, GIT_TERMINAL_PROMPT: "0" };
-    const repoView = await this.execResult(
-      `gh repo view ${shellQuote(record.repo)} --json defaultBranchRef --jq '.defaultBranchRef.name'`,
-      { env, timeout: 60_000 },
+  ): Promise<PreparedWorkspace> {
+    const layer = workspaceLayer.pipe(Layer.provide(this.sandboxRuntimeLayer()));
+    const result = await Effect.runPromise(
+      Effect.flatMap(Workspace, (workspace) => workspace.prepare(record, githubSentinel)).pipe(
+        Effect.provide(layer),
+        Effect.scoped,
+        Effect.result,
+      ),
     );
-
-    await this.execChecked(`rm -rf ${shellQuote(root)} && mkdir -p ${shellQuote(SESSION_ROOT)}`);
-    if (!repoView.success || !repoView.stdout.trim()) {
-      await this.execChecked(
-        `git init -b main ${shellQuote(root)} && git -C ${shellQuote(root)} remote add origin ${shellQuote(url)} && git -C ${shellQuote(root)} checkout -b ${shellQuote(record.branch)}`,
-        { env },
-      );
-      await this.configureGitCredentialHelper(root);
-      return { defaultBranch: "main", repoExists: false };
-    }
-
-    const defaultBranch = repoView.stdout.trim();
-    const cache =
-      record.repo === "anomalyco/rift" ? "/cache/rift.git" : `/tmp/scotty-cache-${record.id}.git`;
-    const basic = btoa(`x-access-token:${githubSentinel}`);
-    if (record.repo !== "anomalyco/rift") {
-      await this.execChecked(
-        `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --bare ${shellQuote(url)} ${shellQuote(cache)}`,
-        { env, timeout: 180_000 },
-      );
-    }
-    await this.execChecked(
-      `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} -C ${shellQuote(cache)} fetch origin '+refs/heads/*:refs/remotes/origin/*'`,
-      { env, timeout: 180_000 },
-    );
-    await this.execChecked(
-      `git -C ${shellQuote(cache)} worktree add -B ${shellQuote(record.branch)} ${shellQuote(root)} ${shellQuote(`refs/remotes/origin/${defaultBranch}`)}`,
-      { env, timeout: 120_000 },
-    );
-    await this.configureGitCredentialHelper(root);
-    return { defaultBranch, repoExists: true };
-  }
-
-  private async configureGitCredentialHelper(root: string): Promise<void> {
-    const helper = "!f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f";
-    await this.execChecked(
-      `git -C ${shellQuote(root)} config credential.helper ${shellQuote(helper)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --git-path info/exclude) && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`,
-    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
   }
 
   private async seedContainerAuth(
@@ -547,7 +511,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     resumeThreadId?: string,
     resume = false,
   ): Promise<void> {
-    const root = this.sessionRoot(record.id);
+    const root = sessionRoot(record.id);
     const credential = await this.requireCredential();
     const env = agentEnv(record.id, credential);
     await this.exec("tmux kill-session -t agent 2>/dev/null || true", { env });
@@ -577,7 +541,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     releaseLease = resumeAgent,
   ): Promise<SessionRecord> {
     const record = await this.requireRecord();
-    const root = this.sessionRoot(record.id);
+    const root = sessionRoot(record.id);
     let paused = false;
     let checkpointSucceeded = false;
     try {
@@ -641,7 +605,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hardCapAt,
     } satisfies HardCapPayload);
   }
-
   private async acquireOperation(
     kind: OperationKind,
     allowed: SessionStatus[],
@@ -847,10 +810,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       writeFile: (path, content) => this.writeFile(path, content),
       setEnvVars: (envVars) => this.setEnvVars(envVars),
     });
-  }
-
-  private sessionRoot(id: string): string {
-    return sessionRoot(id);
   }
 
   private upstreamError(message: string, error: unknown, sessionId?: string): ScottyError {
