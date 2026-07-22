@@ -1,6 +1,6 @@
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 import type { ExecResult } from "@cloudflare/sandbox";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Layer, Option, Result } from "effect";
 import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
 import { agentEnv, ContainerAuth, containerAuthLayer, sessionRoot } from "./container-auth";
@@ -55,6 +55,7 @@ import {
   projectSessionBestEffort,
   sessionProjectionLayer,
 } from "./session-projection";
+import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
 
 const RECORD_KEY = "scotty:session";
 const WEB_SESSION_ID = "scotty-web";
@@ -261,7 +262,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const sha = (
         await this.execChecked(`git -C ${shellQuote(root)} rev-parse HEAD`)
       ).stdout.trim();
-      const rollout = await this.findNewestRollout(record.id);
+      const rollout = Option.getOrElse(
+        await this.runRolloutDiscovery(
+          Effect.flatMap(RolloutDiscovery, (discovery) => discovery.findNewestRollout(record.id)),
+        ),
+        () => undefined,
+      );
       const manifest: DownManifest = {
         version: 1,
         id: record.id,
@@ -357,12 +363,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
   async captureThreadId(payload: { attempt?: number } = {}): Promise<void> {
     const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
     if (!record || record.status !== "warm") return;
-    const threadId = await this.discoverThreadId(record.id);
-    if (!threadId) {
+    const threadIdOption = await this.runRolloutDiscovery(
+      Effect.flatMap(RolloutDiscovery, (discovery) => discovery.discoverThreadId(record.id)),
+    );
+    if (Option.isNone(threadIdOption)) {
       const attempt = payload.attempt ?? 0;
       if (attempt < 11) await this.schedule(5, "captureThreadId", { attempt: attempt + 1 });
       return;
     }
+    const threadId = threadIdOption.value;
     let updated: SessionRecord | undefined;
     await this.ctx.storage.transaction(async (transaction) => {
       const current = await transaction.get<SessionRecord>(RECORD_KEY);
@@ -633,23 +642,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     } satisfies HardCapPayload);
   }
 
-  private async discoverThreadId(id: string): Promise<string | undefined> {
-    const rollout = await this.findNewestRollout(id);
-    if (!rollout) return undefined;
-    return /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu.exec(
-      basename(rollout),
-    )?.[0];
-  }
-
-  private async findNewestRollout(id: string): Promise<string | undefined> {
-    const codexHome = `${this.sessionRoot(id)}/.codex`;
-    const result = await this.execResult(
-      `find ${shellQuote(`${codexHome}/sessions`)} -type f -name '*.jsonl' -printf '%T@ %p\\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-`,
-      { timeout: 15_000 },
-    );
-    return result.success && result.stdout.trim() ? result.stdout.trim() : undefined;
-  }
-
   private async acquireOperation(
     kind: OperationKind,
     allowed: SessionStatus[],
@@ -824,6 +816,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ): Promise<A> {
     const result = await Effect.runPromise(
       program.pipe(Effect.provide(this.sandboxRuntimeLayer()), Effect.scoped, Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
+  }
+
+  private async runRolloutDiscovery<A>(
+    program: Effect.Effect<A, SandboxRuntimeFailure, RolloutDiscovery>,
+  ): Promise<A> {
+    const layer = rolloutDiscoveryLayer.pipe(Layer.provide(this.sandboxRuntimeLayer()));
+    const result = await Effect.runPromise(
+      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
     );
     return Result.match(result, {
       onFailure: (error) => {

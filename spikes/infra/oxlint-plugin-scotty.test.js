@@ -481,6 +481,7 @@ describe("Scotty Oxlint policy integration", () => {
           "worker/src/contracts.ts",
           "worker/src/credential-vault.ts",
           "worker/src/egress.ts",
+          "worker/src/rollout-discovery.ts",
           "worker/src/sandbox-runtime.ts",
           "worker/src/session-projection.ts",
           "worker/src/session-store.ts",
