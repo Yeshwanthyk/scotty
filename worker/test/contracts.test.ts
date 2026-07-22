@@ -17,7 +17,16 @@ import {
   wrongState,
   type SessionRecord,
 } from "../src/contracts";
-import { parseCodexCredential, sentinelAuthJson, type StoredCredential } from "../src/egress";
+import {
+  decodeCredentialPatch,
+  decodeStoredCredential,
+  oauthContainerResult,
+  parseCodexCredential,
+  parseOAuthRefreshRequest,
+  parseOAuthUpstreamSuccess,
+  sentinelAuthJson,
+  type StoredCredential,
+} from "../src/egress";
 
 describe("request contracts", () => {
   it("parses and bounds create input", () => {
@@ -196,35 +205,173 @@ describe("public errors", () => {
 });
 
 describe("credential boundary", () => {
-  it("parses the pinned Codex auth shape and emits sentinel-only auth", () => {
-    const realAccess = "real-access-token-value";
-    const realRefresh = "real-refresh-token-value";
-    const codex = parseCodexCredential(
-      JSON.stringify({
+  const storedCredential = (codex: StoredCredential["codex"]): StoredCredential => ({
+    codex,
+    codexSentinel: "scotty-codex-session-sentinel",
+    githubSentinel: "scotty-github-session-sentinel",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const assertFixedError = (evaluate: () => unknown, message: string): void => {
+    const result = Result.try(evaluate);
+    assert.ok(Result.isFailure(result));
+    assert.ok(result.failure instanceof Error);
+    assert.strictEqual(result.failure.message, message);
+  };
+
+  it("accepts API-key-only and token bundles without trimming", () => {
+    assert.deepStrictEqual(parseCodexCredential('{"OPENAI_API_KEY":" api-key "}'), {
+      OPENAI_API_KEY: " api-key ",
+      tokens: undefined,
+      account_id: null,
+      last_refresh: null,
+    });
+    assert.deepStrictEqual(
+      parseCodexCredential(
+        JSON.stringify({
+          tokens: {
+            id_token: "real.id.token",
+            access_token: "real-access-token-value",
+            refresh_token: "real-refresh-token-value",
+            account_id: "account-real",
+          },
+        }),
+      ),
+      {
+        OPENAI_API_KEY: null,
         tokens: {
           id_token: "real.id.token",
-          access_token: realAccess,
-          refresh_token: realRefresh,
+          access_token: "real-access-token-value",
+          refresh_token: "real-refresh-token-value",
           account_id: "account-real",
+        },
+        account_id: null,
+        last_refresh: null,
+      },
+    );
+  });
+
+  it("collapses wrong optional seed values and strips unknown fields", () => {
+    const parsed = parseCodexCredential(
+      JSON.stringify({
+        OPENAI_API_KEY: 42,
+        account_id: false,
+        last_refresh: {},
+        honeypot: "must-not-survive",
+        tokens: {
+          id_token: 1,
+          access_token: "access",
+          refresh_token: "",
+          account_id: [],
+          secret: "must-not-survive",
         },
       }),
     );
-    const stored: StoredCredential = {
-      codex,
-      codexSentinel: "scotty-codex-session-sentinel",
-      githubSentinel: "scotty-github-session-sentinel",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    };
-    const containerAuth = sentinelAuthJson(stored);
-    assert.ok(containerAuth.includes(stored.codexSentinel));
-    assert.ok(!containerAuth.includes(realAccess));
-    assert.ok(!containerAuth.includes(realRefresh));
-    assert.ok(!containerAuth.includes("account-real"));
+    assert.deepStrictEqual(parsed, {
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: undefined,
+        access_token: "access",
+        refresh_token: undefined,
+        account_id: null,
+      },
+      account_id: null,
+      last_refresh: null,
+    });
+    assert.ok(!("honeypot" in parsed));
+    assert.ok(!("secret" in (parsed.tokens ?? {})));
   });
 
-  it("rejects incomplete auth bundles", () => {
-    assert.throws(() => parseCodexCredential("{}"), /must contain/u);
-    assert.throws(() => parseCodexCredential("{"), /valid JSON/u);
+  it("preserves exact fixed seed errors", () => {
+    assertFixedError(() => parseCodexCredential("{"), "CODEX_AUTH_JSON is not valid JSON");
+    assertFixedError(
+      () => parseCodexCredential("[]"),
+      "CODEX_AUTH_JSON must contain a JSON object",
+    );
+    assertFixedError(
+      () => parseCodexCredential('{"tokens":[]}'),
+      "CODEX_AUTH_JSON tokens must be an object",
+    );
+    assertFixedError(
+      () => parseCodexCredential("{}"),
+      "CODEX_AUTH_JSON must contain OPENAI_API_KEY or tokens.access_token",
+    );
+  });
+
+  it("decodes stored authority, strips unknown fields, and fails closed with a fixed error", () => {
+    const secret = "stored-honeypot-secret";
+    const decoded = decodeStoredCredential({
+      ...storedCredential(parseCodexCredential('{"OPENAI_API_KEY":"api-key"}')),
+      unknown: secret,
+    });
+    assert.ok(!("unknown" in decoded));
+    assertFixedError(
+      () =>
+        decodeStoredCredential({
+          codex: { OPENAI_API_KEY: secret },
+          codexSentinel: "sentinel",
+        }),
+      "Stored credential record is invalid",
+    );
+  });
+
+  it("accepts only the current OAuth shape while preserving unknown request fields", () => {
+    assert.deepStrictEqual(
+      parseOAuthRefreshRequest({
+        grant_type: "refresh_token",
+        refresh_token: "",
+        client_id: "forward-me",
+      }),
+      { grant_type: "refresh_token", refresh_token: "", client_id: "forward-me" },
+    );
+    assert.strictEqual(
+      parseOAuthRefreshRequest({ grant_type: "authorization_code", refresh_token: "token" }),
+      null,
+    );
+    assert.strictEqual(
+      parseOAuthRefreshRequest({ grant_type: "refresh_token", refresh_token: 1 }),
+      null,
+    );
+  });
+
+  it("requires an upstream access token and omits invalid optional patch values", () => {
+    assert.deepStrictEqual(
+      parseOAuthUpstreamSuccess({
+        access_token: "next-access",
+        id_token: "",
+        refresh_token: 1,
+        ignored: "strip-me",
+      }),
+      { accessToken: "next-access" },
+    );
+    assert.strictEqual(parseOAuthUpstreamSuccess({ refresh_token: "next-refresh" }), null);
+    assert.strictEqual(parseOAuthUpstreamSuccess({ access_token: "" }), null);
+    assert.deepStrictEqual(decodeCredentialPatch({ accessToken: "next-access", ignored: true }), {
+      accessToken: "next-access",
+    });
+  });
+
+  it("emits sentinel-only auth and OAuth success without disclosing honeypot secrets", () => {
+    const realAccess = "honeypot-real-access";
+    const realRefresh = "honeypot-real-refresh";
+    const stored = storedCredential(
+      parseCodexCredential(
+        JSON.stringify({
+          tokens: {
+            access_token: realAccess,
+            refresh_token: realRefresh,
+            account_id: "honeypot-account",
+          },
+        }),
+      ),
+    );
+    const containerAuth = sentinelAuthJson(stored);
+    const refreshResult = JSON.stringify(oauthContainerResult(stored));
+    assert.ok(containerAuth.includes(stored.codexSentinel));
+    assert.ok(refreshResult.includes(stored.codexSentinel));
+    for (const secret of [realAccess, realRefresh, "honeypot-account"]) {
+      assert.ok(!containerAuth.includes(secret));
+      assert.ok(!refreshResult.includes(secret));
+    }
   });
 });
 

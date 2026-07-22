@@ -150,6 +150,112 @@ export const DownArchiveSchema = Schema.Struct({
 });
 export type DownArchive = typeof DownArchiveSchema.Type;
 
+const OptionalNonEmptyStringSchema = Schema.optional(Schema.NonEmptyString);
+
+export const CodexTokenSetSchema = Schema.Struct({
+  id_token: OptionalNonEmptyStringSchema,
+  access_token: OptionalNonEmptyStringSchema,
+  refresh_token: OptionalNonEmptyStringSchema,
+  account_id: Schema.NullOr(Schema.NonEmptyString),
+});
+export type CodexTokenSet = typeof CodexTokenSetSchema.Type;
+
+export const CodexCredentialBundleSchema = Schema.Struct({
+  OPENAI_API_KEY: Schema.NullOr(Schema.NonEmptyString),
+  tokens: Schema.optional(CodexTokenSetSchema),
+  account_id: Schema.NullOr(Schema.NonEmptyString),
+  last_refresh: Schema.NullOr(Schema.NonEmptyString),
+});
+export type CodexCredentialBundle = typeof CodexCredentialBundleSchema.Type;
+
+export const CredentialRefreshLeaseValueSchema = Schema.Struct({
+  nonce: Schema.NonEmptyString,
+  startedAt: Schema.NonEmptyString,
+});
+
+export const StoredCredentialSchema = Schema.Struct({
+  codex: CodexCredentialBundleSchema,
+  codexSentinel: Schema.NonEmptyString,
+  githubSentinel: Schema.NonEmptyString,
+  updatedAt: Schema.NonEmptyString,
+  refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
+});
+export type StoredCredential = typeof StoredCredentialSchema.Type;
+
+export const CredentialRefreshLeaseSchema = Schema.Struct({
+  credential: StoredCredentialSchema,
+  nonce: Schema.NonEmptyString,
+});
+export type CredentialRefreshLease = typeof CredentialRefreshLeaseSchema.Type;
+
+export const CredentialPatchSchema = Schema.Struct({
+  idToken: OptionalNonEmptyStringSchema,
+  accessToken: OptionalNonEmptyStringSchema,
+  refreshToken: OptionalNonEmptyStringSchema,
+});
+export type CredentialPatch = typeof CredentialPatchSchema.Type;
+
+export const OAuthRefreshRequestSchema = Schema.StructWithRest(
+  Schema.Struct({
+    grant_type: Schema.Literal("refresh_token"),
+    refresh_token: Schema.String,
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
+export type OAuthRefreshRequest = typeof OAuthRefreshRequestSchema.Type;
+
+export const OAuthUpstreamSuccessSchema = Schema.Struct({
+  id_token: OptionalNonEmptyStringSchema,
+  access_token: Schema.NonEmptyString,
+  refresh_token: OptionalNonEmptyStringSchema,
+});
+export type OAuthUpstreamSuccess = typeof OAuthUpstreamSuccessSchema.Type;
+
+export const OAuthContainerResultSchema = Schema.Struct({
+  id_token: Schema.NonEmptyString,
+  access_token: Schema.NonEmptyString,
+  refresh_token: Schema.NonEmptyString,
+});
+export type OAuthContainerResult = typeof OAuthContainerResultSchema.Type;
+
+const RawCodexCredentialSchema = Schema.Struct({
+  OPENAI_API_KEY: Schema.optionalKey(Schema.Unknown),
+  tokens: Schema.optionalKey(Schema.Unknown),
+  account_id: Schema.optionalKey(Schema.Unknown),
+  last_refresh: Schema.optionalKey(Schema.Unknown),
+});
+const RawCodexTokenSetSchema = Schema.Struct({
+  id_token: Schema.optionalKey(Schema.Unknown),
+  access_token: Schema.optionalKey(Schema.Unknown),
+  refresh_token: Schema.optionalKey(Schema.Unknown),
+  account_id: Schema.optionalKey(Schema.Unknown),
+});
+const RawOAuthUpstreamSuccessSchema = Schema.Struct({
+  id_token: Schema.optionalKey(Schema.Unknown),
+  access_token: Schema.optionalKey(Schema.Unknown),
+  refresh_token: Schema.optionalKey(Schema.Unknown),
+});
+
+export const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+export const decodeRawCodexCredential = Schema.decodeUnknownOption(RawCodexCredentialSchema);
+export const decodeRawCodexTokenSet = Schema.decodeUnknownOption(RawCodexTokenSetSchema);
+export const decodeStoredCredentialOption = Schema.decodeUnknownOption(StoredCredentialSchema);
+export const decodeCredentialRefreshLeaseOption = Schema.decodeUnknownOption(
+  Schema.NullOr(CredentialRefreshLeaseSchema),
+);
+export const decodeCredentialPatchOption = Schema.decodeUnknownOption(CredentialPatchSchema);
+export const decodeOAuthRefreshRequestOption =
+  Schema.decodeUnknownOption(OAuthRefreshRequestSchema);
+export const decodeRawOAuthUpstreamSuccess = Schema.decodeUnknownOption(
+  RawOAuthUpstreamSuccessSchema,
+);
+export const decodeOAuthUpstreamSuccessOption = Schema.decodeUnknownOption(
+  OAuthUpstreamSuccessSchema,
+);
+export const decodeOAuthContainerResultOption = Schema.decodeUnknownOption(
+  OAuthContainerResultSchema,
+);
+
 export const ApiErrorCodeSchema = Schema.Literals([
   "bad_request",
   "auth",

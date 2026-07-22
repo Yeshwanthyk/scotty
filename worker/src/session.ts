@@ -23,6 +23,8 @@ import {
 import {
   ALLOWED_HOSTS,
   CODEX_SENTINEL_PREFIX,
+  decodeCredentialPatch,
+  decodeStoredCredential,
   GITHUB_SENTINEL_PREFIX,
   denyOutbound,
   parseCodexCredential,
@@ -306,8 +308,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async readCredentialForProxy(sentinel: string): Promise<StoredCredential | null> {
-    const credential = await this.ctx.storage.get<StoredCredential>(CREDENTIAL_KEY);
-    if (!credential) return null;
+    const stored = await this.ctx.storage.get(CREDENTIAL_KEY);
+    if (stored === undefined) return null;
+    const credential = decodeStoredCredential(stored);
     if (sentinel !== credential.codexSentinel && sentinel !== credential.githubSentinel)
       return null;
     return credential;
@@ -316,13 +319,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
   async beginCredentialRefresh(sentinel: string): Promise<CredentialRefreshLease | null> {
     let result: CredentialRefreshLease | null = null;
     await this.ctx.storage.transaction(async (transaction) => {
-      const credential = await transaction.get<StoredCredential>(CREDENTIAL_KEY);
-      if (
-        !credential ||
-        credential.codexSentinel !== sentinel ||
-        !credential.codex.tokens?.refresh_token
-      )
-        return;
+      const stored = await transaction.get(CREDENTIAL_KEY);
+      if (stored === undefined) return;
+      const credential = decodeStoredCredential(stored);
+      if (credential.codexSentinel !== sentinel || !credential.codex.tokens?.refresh_token) return;
       if (
         credential.refreshLease &&
         Date.now() - Date.parse(credential.refreshLease.startedAt) < 60_000
@@ -344,10 +344,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     patch: CredentialPatch,
     nonce: string,
   ): Promise<void> {
+    const decodedPatch = decodeCredentialPatch(patch);
     await this.ctx.storage.transaction(async (transaction) => {
-      const credential = await transaction.get<StoredCredential>(CREDENTIAL_KEY);
-      if (!credential || credential.codexSentinel !== sentinel)
-        throw new Error("Credential sentinel mismatch");
+      const stored = await transaction.get(CREDENTIAL_KEY);
+      if (stored === undefined) throw new Error("Session credential bundle is missing");
+      const credential = decodeStoredCredential(stored);
+      if (credential.codexSentinel !== sentinel) throw new Error("Credential sentinel mismatch");
       if (credential.refreshLease?.nonce !== nonce)
         throw new Error("Credential refresh lease mismatch");
       const tokens = credential.codex.tokens;
@@ -359,9 +361,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ...credential.codex,
           tokens: {
             ...tokens,
-            id_token: patch.idToken ?? tokens.id_token,
-            access_token: patch.accessToken ?? tokens.access_token,
-            refresh_token: patch.refreshToken ?? tokens.refresh_token,
+            id_token: decodedPatch.idToken ?? tokens.id_token,
+            access_token: decodedPatch.accessToken ?? tokens.access_token,
+            refresh_token: decodedPatch.refreshToken ?? tokens.refresh_token,
           },
           last_refresh: new Date().toISOString(),
         },
@@ -373,13 +375,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async cancelCredentialRefresh(sentinel: string, nonce: string): Promise<void> {
     await this.ctx.storage.transaction(async (transaction) => {
-      const credential = await transaction.get<StoredCredential>(CREDENTIAL_KEY);
-      if (
-        !credential ||
-        credential.codexSentinel !== sentinel ||
-        credential.refreshLease?.nonce !== nonce
-      )
-        return;
+      const stored = await transaction.get(CREDENTIAL_KEY);
+      if (stored === undefined) return;
+      const credential = decodeStoredCredential(stored);
+      if (credential.codexSentinel !== sentinel || credential.refreshLease?.nonce !== nonce) return;
       const { refreshLease: _refreshLease, ...next } = credential;
       await transaction.put(CREDENTIAL_KEY, next);
     });
@@ -477,8 +476,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private async seedCredential(id: string): Promise<StoredCredential> {
-    const existing = await this.ctx.storage.get<StoredCredential>(CREDENTIAL_KEY);
-    if (existing) return existing;
+    const existing = await this.ctx.storage.get(CREDENTIAL_KEY);
+    if (existing !== undefined) return decodeStoredCredential(existing);
     const now = new Date().toISOString();
     const credential: StoredCredential = {
       codex: parseCodexCredential(this.env.CODEX_AUTH_JSON),
@@ -491,9 +490,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private async requireCredential(): Promise<StoredCredential> {
-    const credential = await this.ctx.storage.get<StoredCredential>(CREDENTIAL_KEY);
-    if (!credential) throw new Error("Session credential bundle is missing");
-    return credential;
+    const credential = await this.ctx.storage.get(CREDENTIAL_KEY);
+    if (credential === undefined) throw new Error("Session credential bundle is missing");
+    return decodeStoredCredential(credential);
   }
 
   private async prepareWorktree(
