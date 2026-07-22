@@ -468,7 +468,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const root = this.sessionRoot(record.id);
     const url = `https://github.com/${record.repo}.git`;
     const env = { GH_TOKEN: githubSentinel, GIT_TERMINAL_PROMPT: "0" };
-    const repoView = await this.exec(
+    const repoView = await this.execResult(
       `gh repo view ${shellQuote(record.repo)} --json defaultBranchRef --jq '.defaultBranchRef.name'`,
       { env, timeout: 60_000 },
     );
@@ -643,7 +643,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private async findNewestRollout(id: string): Promise<string | undefined> {
     const codexHome = `${this.sessionRoot(id)}/.codex`;
-    const result = await this.exec(
+    const result = await this.execResult(
       `find ${shellQuote(`${codexHome}/sessions`)} -type f -name '*.jsonl' -printf '%T@ %p\\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-`,
       { timeout: 15_000 },
     );
@@ -807,6 +807,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ): Promise<ExecResult> {
     return this.runSandboxRuntime(
       Effect.flatMap(SandboxRuntime, (runtime) => runtime.execChecked(command, options)),
+    );
+  }
+
+  private async execResult(
+    command: string,
+    options: { env?: Record<string, string>; timeout?: number } = {},
+  ): Promise<ExecResult> {
+    return this.runSandboxRuntime(
+      Effect.flatMap(SandboxRuntime, (runtime) => runtime.exec(command, options)),
     );
   }
 

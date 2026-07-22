@@ -57,12 +57,30 @@ const withRuntime = <A, E>(
 const execChecked = (command: string, options?: SandboxExecOptions) =>
   Effect.flatMap(SandboxRuntime, (runtime) => runtime.execChecked(command, options));
 
+const exec = (command: string, options?: SandboxExecOptions) =>
+  Effect.flatMap(SandboxRuntime, (runtime) => runtime.exec(command, options));
+
 const failure = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRuntimeFailure => {
   assert.ok(Result.isFailure(result));
   return result.failure;
 };
 
 describe("SandboxRuntime", () => {
+  it.effect("returns nonzero results for callers that branch on command status", () =>
+    Effect.gen(function* () {
+      const capabilities = new FakeSandboxRuntimeCapabilities();
+      const result = failedResult("gh repo view", "", "not found");
+      capabilities.result = result;
+
+      const actual = yield* withRuntime(capabilities, exec("gh repo view", { timeout: 60_000 }));
+
+      assert.strictEqual(actual, result);
+      assert.deepStrictEqual(capabilities.calls, [
+        { command: "gh repo view", options: { timeout: 60_000 } },
+      ]);
+    }),
+  );
+
   it.effect("captures a successful call and forwards cwd, env, and timeout exactly", () =>
     Effect.gen(function* () {
       const capabilities = new FakeSandboxRuntimeCapabilities();
@@ -107,6 +125,25 @@ describe("SandboxRuntime", () => {
       assert.ok(!serialized.includes("provider"));
       assert.ok(!serialized.includes("github_pat_"));
       assert.ok(!serialized.includes("ghp_"));
+    }),
+  );
+
+  it.effect("keeps unchecked transport failures fixed and redacted", () =>
+    Effect.gen(function* () {
+      const capabilities = new FakeSandboxRuntimeCapabilities();
+      capabilities.rejection = new Error("provider leaked github_pat_provider-secret");
+
+      const result = yield* Effect.result(
+        withRuntime(capabilities, exec("gh repo view ghp_commandsecret")),
+      );
+
+      assert.deepStrictEqual(
+        failure(result),
+        new SandboxRuntimeFailure({
+          reason: "transport",
+          message: "Sandbox command transport failed",
+        }),
+      );
     }),
   );
 

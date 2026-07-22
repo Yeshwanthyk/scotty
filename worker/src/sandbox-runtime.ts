@@ -18,6 +18,10 @@ export interface SandboxRuntimeCapabilities {
 }
 
 interface SandboxRuntimeShape {
+  readonly exec: (
+    command: string,
+    options?: SandboxExecOptions,
+  ) => Effect.Effect<ExecResult, SandboxRuntimeFailure>;
   readonly execChecked: (
     command: string,
     options?: SandboxExecOptions,
@@ -42,17 +46,11 @@ export const sandboxRuntimeLayer = (
 
 const makeSandboxRuntime = (capabilities: SandboxRuntimeCapabilities): SandboxRuntimeShape =>
   SandboxRuntime.of({
+    exec: (command, options) => exec(capabilities, command, options),
     execChecked: Effect.fnUntraced(function* (command, options) {
       // The SDK's non-streaming exec RPC does not propagate AbortSignal cancellation to the
       // remote process. Interruption may stop waiting locally, but must not claim cancellation.
-      const result = yield* Effect.tryPromise({
-        try: () => capabilities.exec(command, options),
-        catch: () =>
-          new SandboxRuntimeFailure({
-            reason: "transport",
-            message: "Sandbox command transport failed",
-          }),
-      });
+      const result = yield* exec(capabilities, command, options);
       if (!result.success) {
         return yield* new SandboxRuntimeFailure({
           reason: "nonzero_exit",
@@ -67,6 +65,20 @@ const makeSandboxRuntime = (capabilities: SandboxRuntimeCapabilities): SandboxRu
       transportVoid("Sandbox file transport failed", () => capabilities.writeFile(path, content)),
     setEnvVars: (envVars) =>
       transportVoid("Sandbox environment transport failed", () => capabilities.setEnvVars(envVars)),
+  });
+
+const exec = (
+  capabilities: SandboxRuntimeCapabilities,
+  command: string,
+  options?: SandboxExecOptions,
+): Effect.Effect<ExecResult, SandboxRuntimeFailure> =>
+  Effect.tryPromise({
+    try: () => capabilities.exec(command, options),
+    catch: () =>
+      new SandboxRuntimeFailure({
+        reason: "transport",
+        message: "Sandbox command transport failed",
+      }),
   });
 
 const transportVoid = (
