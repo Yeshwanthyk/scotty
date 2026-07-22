@@ -279,6 +279,14 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
   });
 
+  it("does not serve the terminal client without a canonical session URL", async () => {
+    const response = await app.request("/terminal", undefined, env());
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe(
+      "Open a session with scotty attach ID or use its /s/ID URL.",
+    );
+  });
+
   it("rejects invalid ids before creating a Durable Object stub", async () => {
     const response = await app.request(
       "/api/sessions/INVALID",

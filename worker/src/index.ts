@@ -150,6 +150,11 @@ app.get("/s/:id", async (c) => {
   return terminalAsset(c.env, c.req.raw);
 });
 
+app.get(
+  "/terminal",
+  () => new Response("Open a session with scotty attach ID or use its /s/ID URL.", { status: 404 }),
+);
+
 app.get("/health", (c) => c.json({ ok: true }));
 
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));

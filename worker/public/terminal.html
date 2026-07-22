@@ -462,19 +462,9 @@
       const stateTitle = document.querySelector("#state-title");
       const stateCopy = document.querySelector("#state-copy");
 
-      const pathParts = location.pathname.split("/").filter(Boolean);
-      const routeIndex = pathParts.lastIndexOf("s");
-      const encodedSessionId =
-        routeIndex >= 0 && pathParts[routeIndex + 1]
-          ? pathParts[routeIndex + 1]
-          : pathParts.at(-1) || "unknown";
-      let sessionId;
-      try {
-        sessionId = decodeURIComponent(encodedSessionId);
-      } catch {
-        sessionId = "unknown";
-      }
-      const apiId = encodeURIComponent(sessionId);
+      const route = /^\/s\/([0-9a-f]{12})\/?$/.exec(location.pathname);
+      const sessionId = route?.[1];
+      const apiId = sessionId ? encodeURIComponent(sessionId) : "";
       const encoder = new TextEncoder();
       const reconnectDelays = [750, 1500, 3000, 6000, 10000, 15000];
 
@@ -490,8 +480,8 @@
       let currentState = "initializing";
       let lastAnnounced = "";
 
-      sessionLabel.textContent = `/ ${sessionId}`;
-      document.title = `${sessionId} · Scotty`;
+      sessionLabel.textContent = sessionId ? `/ ${sessionId}` : "/ invalid session";
+      document.title = sessionId ? `${sessionId} · Scotty` : "Invalid session · Scotty";
 
       const stateContent = {
         initializing: [
@@ -826,60 +816,67 @@
         if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "page hidden");
       });
 
-      try {
-        await init();
-        terminal = new Terminal({
-          cursorBlink: !matchMedia("(prefers-reduced-motion: reduce)").matches,
-          cursorStyle: "block",
-          fontFamily: '"SFMono-Regular", "Cascadia Mono", "Liberation Mono", Consolas, monospace',
-          fontSize: matchMedia("(max-width: 560px)").matches ? 12 : 13,
-          scrollback: 6000,
-          smoothScrollDuration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 110,
-          theme: {
-            background: "#0b1016",
-            foreground: "#dce8ee",
-            cursor: "#7bd8e5",
-            cursorAccent: "#0b1016",
-            selectionBackground: "#214d59",
-            selectionForeground: "#f2fbfd",
-            black: "#111820",
-            red: "#e46e73",
-            green: "#86cfad",
-            yellow: "#d7bd78",
-            blue: "#78a9df",
-            magenta: "#b79ad6",
-            cyan: "#78c8d3",
-            white: "#cdd9df",
-            brightBlack: "#65737e",
-            brightRed: "#f18a8f",
-            brightGreen: "#9adfbe",
-            brightYellow: "#e6cf8d",
-            brightBlue: "#91bceb",
-            brightMagenta: "#cab0e2",
-            brightCyan: "#93dce5",
-            brightWhite: "#f1f6f8",
-          },
-        });
-        fitAddon = new FitAddon();
-        terminal.loadAddon(fitAddon);
-        terminal.open(terminalHost);
-        fitAddon.observeResize();
-        terminal.onData((data) => {
-          if (ready && socket?.readyState === WebSocket.OPEN) socket.send(encoder.encode(data));
-        });
-        terminal.onResize(({ cols, rows }) => sendResize(cols, rows));
-
-        requestAnimationFrame(async () => {
-          dimensions();
-          const status = await readSessionStatus();
-          if (status === "sleeping") setState("sleeping");
-          else connect();
-        });
-      } catch {
+      if (!sessionId) {
         setState("failed");
-        stateTitle.textContent = "The terminal engine could not load";
-        stateCopy.textContent =
-          "Reload the page. If the problem continues, verify the bundled Ghostty assets are being served.";
+        stateTitle.textContent = "This session link is invalid";
+        stateCopy.textContent = "Open a canonical /s/ID link from scotty attach ID.";
+        action.hidden = true;
+      } else {
+        try {
+          await init();
+          terminal = new Terminal({
+            cursorBlink: !matchMedia("(prefers-reduced-motion: reduce)").matches,
+            cursorStyle: "block",
+            fontFamily: '"SFMono-Regular", "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+            fontSize: matchMedia("(max-width: 560px)").matches ? 12 : 13,
+            scrollback: 6000,
+            smoothScrollDuration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 110,
+            theme: {
+              background: "#0b1016",
+              foreground: "#dce8ee",
+              cursor: "#7bd8e5",
+              cursorAccent: "#0b1016",
+              selectionBackground: "#214d59",
+              selectionForeground: "#f2fbfd",
+              black: "#111820",
+              red: "#e46e73",
+              green: "#86cfad",
+              yellow: "#d7bd78",
+              blue: "#78a9df",
+              magenta: "#b79ad6",
+              cyan: "#78c8d3",
+              white: "#cdd9df",
+              brightBlack: "#65737e",
+              brightRed: "#f18a8f",
+              brightGreen: "#9adfbe",
+              brightYellow: "#e6cf8d",
+              brightBlue: "#91bceb",
+              brightMagenta: "#cab0e2",
+              brightCyan: "#93dce5",
+              brightWhite: "#f1f6f8",
+            },
+          });
+          fitAddon = new FitAddon();
+          terminal.loadAddon(fitAddon);
+          terminal.open(terminalHost);
+          fitAddon.observeResize();
+          terminal.onData((data) => {
+            if (ready && socket?.readyState === WebSocket.OPEN) socket.send(encoder.encode(data));
+          });
+          terminal.onResize(({ cols, rows }) => sendResize(cols, rows));
+
+          requestAnimationFrame(async () => {
+            dimensions();
+            const status = await readSessionStatus();
+            if (status === "sleeping") setState("sleeping");
+            else connect();
+          });
+        } catch {
+          setState("failed");
+          stateTitle.textContent = "The terminal engine could not load";
+          stateCopy.textContent =
+            "Reload the page. If the problem continues, verify the bundled Ghostty assets are being served.";
+        }
       }
     </script>
   </body>
