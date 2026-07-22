@@ -34,13 +34,11 @@ export const MONOLITH_GREENFIELD_TOPOLOGY = {
     logicalId: "Sandbox",
     bindingName: "SANDBOX",
     className: "ScottySandbox",
-    scriptName: MONOLITH_GREENFIELD_WORKER_NAME,
   },
   authDurableObject: {
     logicalId: "AuthRegistry",
     bindingName: "AUTH",
     className: "ScottyAuthRegistry",
-    scriptName: MONOLITH_GREENFIELD_WORKER_NAME,
   },
   container: {
     logicalId: "SandboxContainer",
@@ -138,14 +136,12 @@ export const monolithGreenfieldProgram = Effect.fnUntraced(function* (
     MONOLITH_GREENFIELD_TOPOLOGY.durableObject.logicalId,
     {
       className: MONOLITH_GREENFIELD_TOPOLOGY.durableObject.className,
-      scriptName: MONOLITH_GREENFIELD_TOPOLOGY.durableObject.scriptName,
     },
   );
   const authDurableObject = Cloudflare.DurableObject(
     MONOLITH_GREENFIELD_TOPOLOGY.authDurableObject.logicalId,
     {
       className: MONOLITH_GREENFIELD_TOPOLOGY.authDurableObject.className,
-      scriptName: MONOLITH_GREENFIELD_TOPOLOGY.authDurableObject.scriptName,
     },
   );
   const assetConfig = {

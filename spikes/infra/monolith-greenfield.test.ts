@@ -182,13 +182,11 @@ describe("monolith greenfield topology", () => {
         logicalId: "Sandbox",
         bindingName: "SANDBOX",
         className: "ScottySandbox",
-        scriptName: "scotty-worker",
       },
       authDurableObject: {
         logicalId: "AuthRegistry",
         bindingName: "AUTH",
         className: "ScottyAuthRegistry",
-        scriptName: "scotty-worker",
       },
       container: {
         logicalId: "SandboxContainer",
