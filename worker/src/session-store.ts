@@ -38,6 +38,7 @@ interface SessionStoreShape {
     kind: OperationKind,
     allowed: ReadonlyArray<SessionStatus>,
     nonce: string,
+    replaceOperationOlderThanMs?: number,
   ) => Effect.Effect<SessionOperation, ScottyError>;
   readonly updateForOperation: (
     nonce: string,
@@ -146,22 +147,33 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
   return SessionStore.of({
     requireRecord: requireRecord(),
     put,
-    acquireOperation: Effect.fnUntraced(function* (kind, allowed, nonce) {
-      const now = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* transact(async (transaction) => {
-        const stored = await transaction.get();
-        if (stored === undefined) return Result.fail(notFound("unknown"));
-        const decoded = decode(stored);
-        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
-        const record = decoded.success;
-        if (!allowed.includes(record.status)) return Result.fail(wrongState(record.status, kind));
-        if (record.operation)
-          return Result.fail(conflict(`Session is already running ${record.operation.kind}`));
-        const operation = { kind, nonce, startedAt: now };
-        await transaction.put({ ...record, operation, updatedAt: now });
-        return Result.succeed(operation);
-      });
-    }),
+    acquireOperation: Effect.fnUntraced(
+      function* (kind, allowed, nonce, replaceOperationOlderThanMs) {
+        const nowMillis = yield* Clock.currentTimeMillis;
+        const now = new Date(nowMillis).toISOString();
+        return yield* transact(async (transaction) => {
+          const stored = await transaction.get();
+          if (stored === undefined) return Result.fail(notFound("unknown"));
+          const decoded = decode(stored);
+          if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
+          const record = decoded.success;
+          if (!allowed.includes(record.status)) return Result.fail(wrongState(record.status, kind));
+          const operationStartedAt = record.operation
+            ? Date.parse(record.operation.startedAt)
+            : Number.NaN;
+          const canReplaceOperation =
+            kind === "vaporize" &&
+            replaceOperationOlderThanMs !== undefined &&
+            Number.isFinite(operationStartedAt) &&
+            nowMillis - operationStartedAt >= replaceOperationOlderThanMs;
+          if (record.operation && !canReplaceOperation)
+            return Result.fail(conflict(`Session is already running ${record.operation.kind}`));
+          const operation = { kind, nonce, startedAt: now };
+          await transaction.put({ ...record, operation, updatedAt: now });
+          return Result.succeed(operation);
+        });
+      },
+    ),
     updateForOperation,
     releaseOperation,
     releaseOperationIfHeld: Effect.fnUntraced(function* (nonce) {

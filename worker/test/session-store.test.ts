@@ -185,6 +185,67 @@ describe("SessionStore", () => {
     }),
   );
 
+  it.effect("lets vaporize atomically replace only an expired operation lease", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const fresh = record({
+        operation: {
+          kind: "resume",
+          nonce: "fresh",
+          startedAt: new Date(NOW - 299_999).toISOString(),
+        },
+      });
+      const freshStorage = new MemorySessionRecordStorage(fresh);
+      const freshResult = yield* Effect.result(
+        withStore(
+          freshStorage,
+          Effect.flatMap(SessionStore, (store) =>
+            store.acquireOperation("vaporize", ["warm"], "replacement", 300_000),
+          ),
+        ),
+      );
+      assert.deepInclude(failure(freshResult), {
+        code: "conflict",
+        message: "Session is already running resume",
+      });
+      assert.deepStrictEqual(
+        yield* withStore(
+          freshStorage,
+          Effect.flatMap(SessionStore, (store) => store.requireRecord),
+        ),
+        fresh,
+      );
+
+      const expiredStorage = new MemorySessionRecordStorage(
+        record({
+          operation: {
+            kind: "resume",
+            nonce: "expired",
+            startedAt: new Date(NOW - 300_000).toISOString(),
+          },
+        }),
+      );
+      const replacement = yield* withStore(
+        expiredStorage,
+        Effect.flatMap(SessionStore, (store) =>
+          store.acquireOperation("vaporize", ["warm"], "replacement", 300_000),
+        ),
+      );
+      assert.deepStrictEqual(replacement, {
+        kind: "vaporize",
+        nonce: "replacement",
+        startedAt: "2026-04-05T06:07:08.000Z",
+      });
+      assert.deepInclude(
+        yield* withStore(
+          expiredStorage,
+          Effect.flatMap(SessionStore, (store) => store.requireRecord),
+        ),
+        { operation: replacement, updatedAt: replacement.startedAt },
+      );
+    }),
+  );
+
   it.effect("rejects stale nonces and releases only the held lease", () =>
     Effect.gen(function* () {
       const held = record({

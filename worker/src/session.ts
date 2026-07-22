@@ -67,6 +67,7 @@ const TERMINAL_ATTACHMENT_TTL_MS = 45_000;
 const TERMINAL_ATTACHMENT_RETRY_SECONDS = 2;
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
+const ABANDONED_OPERATION_MS = 5 * 60_000;
 const MANAGED_STOP_RETRY_SECONDS = 2;
 
 const TerminalAttachmentLeaseSchema = Schema.Struct({
@@ -443,12 +444,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const existing = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
     if (!existing) throw notFound("unknown");
     if (existing.status === "gone") return { id: existing.id, status: "gone" };
-    const operation = await this.acquireOperation("vaporize", [
-      "booting",
-      "warm",
-      "sleeping",
-      "failed",
-    ]);
+    const operation = await this.acquireOperation(
+      "vaporize",
+      ["booting", "warm", "sleeping", "failed"],
+      ABANDONED_OPERATION_MS,
+    );
     const record = await this.requireRecord();
 
     try {
@@ -975,10 +975,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private async acquireOperation(
     kind: OperationKind,
     allowed: SessionStatus[],
+    replaceOperationOlderThanMs?: number,
   ): Promise<NonNullable<SessionRecord["operation"]>> {
     return this.runSessionStore(
       Effect.flatMap(SessionStore, (store) =>
-        store.acquireOperation(kind, allowed, crypto.randomUUID()),
+        store.acquireOperation(kind, allowed, crypto.randomUUID(), replaceOperationOlderThanMs),
       ),
     );
   }
