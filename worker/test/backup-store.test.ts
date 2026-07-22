@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { BackupOptions, RestoreBackupResult } from "@cloudflare/sandbox";
-import { Effect, Result } from "effect";
+import { Effect, Fiber, Result } from "effect";
+import { TestClock } from "effect/testing";
 import {
   BackupStore,
   BackupStoreFailure,
@@ -23,10 +24,15 @@ class FakeBackupCapabilities implements BackupCapabilities {
   readonly deleteCalls: ReadonlyArray<string>[] = [];
   readonly pages: BackupObjectPage[] = [];
   fail?: "create" | "delete" | "list" | "restore";
+  createFailuresRemaining = 0;
 
   createBackup = async (options: BackupOptions): Promise<DirectoryBackup> => {
     this.createCalls.push(options);
     if (this.fail === "create") return Promise.reject("provider create details");
+    if (this.createFailuresRemaining > 0) {
+      this.createFailuresRemaining -= 1;
+      return Promise.reject("provider create details");
+    }
     return backup;
   };
 
@@ -84,6 +90,28 @@ describe("BackupStore", () => {
     }),
   );
 
+  it.effect("retries one first-create failure after a bounded delay", () =>
+    Effect.gen(function* () {
+      const capabilities = new FakeBackupCapabilities();
+      capabilities.createFailuresRemaining = 1;
+      const options: BackupOptions = { dir: backup.dir, localBucket: true };
+      const fiber = yield* Effect.forkChild(
+        withStore(
+          capabilities,
+          Effect.flatMap(BackupStore, (store) => store.create(options)),
+        ),
+      );
+
+      yield* TestClock.adjust("999 millis");
+      assert.strictEqual(capabilities.createCalls.length, 1);
+      yield* TestClock.adjust("1 millis");
+      const created = yield* Fiber.join(fiber);
+
+      assert.strictEqual(created, backup);
+      assert.deepStrictEqual(capabilities.createCalls, [options, options]);
+    }),
+  );
+
   it.effect("deletes every paginated object under only the requested backup prefix", () =>
     Effect.gen(function* () {
       const capabilities = new FakeBackupCapabilities();
@@ -121,9 +149,12 @@ describe("BackupStore", () => {
             : operation === "restore"
               ? Effect.flatMap(BackupStore, (store) => store.restore(backup))
               : Effect.flatMap(BackupStore, (store) => store.delete(backup.id));
-        const result = yield* Effect.result(withStore(capabilities, effect));
+        const fiber = yield* Effect.forkChild(Effect.result(withStore(capabilities, effect)));
+        yield* TestClock.adjust("1 second");
+        const result = yield* Fiber.join(fiber);
         assert.deepStrictEqual(failure(result), new BackupStoreFailure({ operation }));
         assert.ok(!JSON.stringify(failure(result)).includes("provider"));
+        if (operation === "create") assert.strictEqual(capabilities.createCalls.length, 2);
       }
     }),
   );

@@ -1,8 +1,9 @@
 import type { BackupOptions, RestoreBackupResult } from "@cloudflare/sandbox";
-import { Context, Data, Effect, Layer } from "effect";
+import { Context, Data, Effect, Layer, Schedule } from "effect";
 import type { DirectoryBackup } from "./contracts";
 
 type BackupOperation = "create" | "delete" | "list" | "restore";
+const CREATE_RETRY_DELAY = "1 second";
 
 export class BackupStoreFailure extends Data.TaggedError("BackupStoreFailure")<{
   readonly operation: BackupOperation;
@@ -42,7 +43,13 @@ const makeBackupStore = (capabilities: BackupCapabilities): BackupStoreShape => 
       Effect.tryPromise({
         try: () => capabilities.createBackup(options),
         catch: () => failure("create"),
-      }),
+      }).pipe(
+        // The SDK uses a fresh session and cleans partial R2 objects before a create rejection.
+        Effect.retry({
+          schedule: Schedule.spaced(CREATE_RETRY_DELAY),
+          times: 1,
+        }),
+      ),
     restore: (backup) =>
       Effect.tryPromise({
         try: () => capabilities.restoreBackup(backup),
