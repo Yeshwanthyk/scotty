@@ -5,7 +5,6 @@ import type { Bindings } from "./bindings";
 import {
   conflict,
   notFound,
-  SESSION_KV_PREFIX,
   SESSION_ROOT,
   ScottyError,
   toProjection,
@@ -44,6 +43,11 @@ import {
   SessionStore,
   sessionStoreLayer,
 } from "./session-store";
+import {
+  kvSessionProjectionStorage,
+  projectSessionBestEffort,
+  sessionProjectionLayer,
+} from "./session-projection";
 
 const RECORD_KEY = "scotty:session";
 const CREDENTIAL_KEY = "scotty:credential";
@@ -294,7 +298,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       await this.destroy();
       for (const backupId of new Set(record.ownedBackupIds)) await this.deleteBackup(backupId);
       await this.ctx.storage.delete(CREDENTIAL_KEY);
-      await this.env.SESSIONS.delete(`${SESSION_KV_PREFIX}${record.id}`);
       const gone: SessionRecord = {
         ...record,
         status: "gone",
@@ -307,6 +310,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         updatedAt: new Date().toISOString(),
       };
       await this.ctx.storage.put(RECORD_KEY, gone);
+      await this.project(gone);
       return { id: record.id, status: "gone" };
     } catch (error) {
       await this.releaseOperation(operation.nonce);
@@ -798,13 +802,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private async project(record: SessionRecord): Promise<void> {
-    if (record.status === "gone") {
-      await this.env.SESSIONS.delete(`${SESSION_KV_PREFIX}${record.id}`);
-      return;
-    }
-    await this.env.SESSIONS.put(
-      `${SESSION_KV_PREFIX}${record.id}`,
-      JSON.stringify(toProjection(record, new Date())),
+    const layer = sessionProjectionLayer(kvSessionProjectionStorage(this.env.SESSIONS));
+    await Effect.runPromise(
+      projectSessionBestEffort(record).pipe(Effect.provide(layer), Effect.scoped),
     );
   }
 

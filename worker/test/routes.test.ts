@@ -209,12 +209,12 @@ describe("real Hono boundary", () => {
 
   it("lists only fully decoded KV projections and preserves valid optional fields", async () => {
     const values = new Map<string, unknown>([
-      ["session:valid", projection],
+      [`session:${projection.id}`, projection],
       ["session:malformed", { ...projection, id: "malformed", backupId: 123 }],
     ]);
     const sessions = {
       list: async () => ({
-        keys: [{ name: "session:valid" }, { name: "session:malformed" }],
+        keys: [{ name: `session:${projection.id}` }, { name: "session:malformed" }],
         list_complete: true,
         cacheStatus: null,
       }),
@@ -236,6 +236,23 @@ describe("real Hono boundary", () => {
       failure: projection.failure,
     });
     expect(body[0]).not.toHaveProperty("secret");
+  });
+
+  it("preserves the generic internal response for provider-level KV list failure", async () => {
+    const sessions = {
+      list: async () => Promise.reject("list failed"),
+    } as KVNamespace;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const response = await app.request(
+      "/api/sessions",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: sessions },
+    );
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "internal", message: "Internal error" },
+    });
+    logged.mockRestore();
   });
 
   it("exchanges a query token for a hardened cookie and clean redirect", async () => {

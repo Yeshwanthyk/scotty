@@ -3,18 +3,19 @@ import { Hono } from "hono";
 import type { Bindings } from "./bindings";
 import {
   badRequest,
-  decodeSessionProjection,
   isRecord,
   parseCreateInput,
   parsePrInput,
   parseSessionId,
-  SESSION_KV_PREFIX,
   ScottyError,
-  toSessionView,
-  type SessionProjection,
 } from "./contracts";
-import { Option } from "effect";
+import { Effect, Result } from "effect";
 import { requireAuth, setAuthCookie } from "./auth";
+import {
+  kvSessionProjectionStorage,
+  listSessionProjections,
+  sessionProjectionLayer,
+} from "./session-projection";
 import { Sandbox as ScottySandbox } from "./session";
 
 export { ContainerProxy, ScottySandbox };
@@ -59,19 +60,18 @@ app.post("/api/sessions", async (c) => {
 });
 
 app.get("/api/sessions", async (c) => {
-  const projections: SessionProjection[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await c.env.SESSIONS.list({ prefix: SESSION_KV_PREFIX, cursor });
-    const values = await Promise.all(page.keys.map((key) => c.env.SESSIONS.get(key.name, "json")));
-    for (const value of values) {
-      const projection = decodeSessionProjection(value);
-      if (Option.isSome(projection)) projections.push(projection.value);
-    }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  projections.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  return c.json(projections.map((projection) => toSessionView(projection, Date.now())));
+  const layer = sessionProjectionLayer(kvSessionProjectionStorage(c.env.SESSIONS));
+  const result = await Effect.runPromise(
+    listSessionProjections.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
+  );
+  return c.json(
+    Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (sessions) => sessions,
+    }),
+  );
 });
 
 app.get("/api/sessions/:id", async (c) => {
