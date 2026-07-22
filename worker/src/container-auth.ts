@@ -4,6 +4,10 @@ import { sentinelAuthJson, type StoredCredential } from "./egress";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
+const CODEX_CONFIG = `[projects."/tmp"]
+trust_level = "trusted"
+`;
+
 interface ContainerAuthShape {
   readonly seed: (
     id: SessionRecord["id"],
@@ -22,10 +26,12 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       seed: Effect.fnUntraced(function* (id, credential) {
         const codexHome = `${sessionRoot(id)}/.codex`;
         const authPath = `${codexHome}/auth.json`;
+        const configPath = `${codexHome}/config.toml`;
         yield* runtime.mkdir(codexHome, { recursive: true });
         yield* runtime.writeFile(authPath, sentinelAuthJson(credential));
+        yield* runtime.writeFile(configPath, CODEX_CONFIG);
         yield* runtime.execChecked(
-          `chmod 700 ${shellQuote(codexHome)} && chmod 600 ${shellQuote(authPath)}`,
+          `chmod 700 ${shellQuote(codexHome)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)}`,
         );
         yield* runtime.setEnvVars(agentEnv(id, credential));
       }),

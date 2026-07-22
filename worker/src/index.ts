@@ -84,6 +84,11 @@ app.post("/api/sessions/:id/snapshot", async (c) => {
   return c.json(await sessionSandbox(c.env, id).snapshotScottySession());
 });
 
+app.post("/api/sessions/:id/sleep", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).sleepScottySession());
+});
+
 app.post("/api/sessions/:id/resume", async (c) => {
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).resumeScottySession());
@@ -117,7 +122,9 @@ app.delete("/api/sessions/:id", async (c) => {
 
 app.get("/api/sessions/:id/pty", async (c) => {
   const id = parseSessionId(c.req.param("id"));
-  const status = await sessionSandbox(c.env, id).getScottySession();
+  const clientId = parseTerminalClientId(c.req.query("client"));
+  const sandbox = sessionSandbox(c.env, id);
+  const status = await sandbox.getScottySession();
   if (status.status !== "warm") {
     throw new ScottyError("wrong_state", `Session is ${status.status}`, {
       httpStatus: 409,
@@ -130,12 +137,37 @@ app.get("/api/sessions/:id/pty", async (c) => {
   }
   const cols = positiveInteger(c.req.query("cols"), 80);
   const rows = positiveInteger(c.req.query("rows"), 24);
-  const terminalSession = await sessionSandbox(c.env, id).getSession("scotty-web");
-  return terminalSession.terminal(c.req.raw, {
-    cols,
-    rows,
-    shell: "/usr/local/bin/scotty-attach",
-  });
+  const terminalSessionId = await sandbox.prepareTerminalAttachment(clientId);
+  try {
+    const terminalSession = await sandbox.getSession(terminalSessionId);
+    const response = await terminalSession.terminal(c.req.raw, {
+      cols,
+      rows,
+      shell: "/usr/local/bin/scotty-attach",
+    });
+    return bridgeTerminalWebSocket(
+      response,
+      () => sandbox.releaseTerminalAttachment(clientId),
+      (task) => c.executionCtx.waitUntil(task),
+    );
+  } catch (error) {
+    await sandbox.releaseTerminalAttachment(clientId).catch(() => undefined);
+    throw error;
+  }
+});
+
+app.delete("/api/sessions/:id/pty/:client", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  const clientId = parseTerminalClientId(c.req.param("client"));
+  await sessionSandbox(c.env, id).releaseTerminalAttachment(clientId);
+  return c.json({ ok: true });
+});
+
+app.post("/api/sessions/:id/pty/:client/heartbeat", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  const clientId = parseTerminalClientId(c.req.param("client"));
+  await sessionSandbox(c.env, id).touchTerminalAttachment(clientId);
+  return c.json({ ok: true });
 });
 
 app.get("/s/:id", async (c) => {
@@ -148,6 +180,16 @@ app.get("/s/:id", async (c) => {
     return c.redirect(`${url.pathname}${url.search}`, 302);
   }
   return terminalAsset(c.env, c.req.raw);
+});
+
+app.get("/sessions", async (c) => {
+  await requireAuth(c.req.raw, c.env.SCOTTY_TOKEN, true);
+  const url = new URL(c.req.url);
+  if (url.searchParams.has("t")) {
+    setAuthCookie(c);
+    return c.redirect("/sessions", 302);
+  }
+  return secureAsset(c.env, c.req.raw, "/sessions.html");
 });
 
 app.get(
@@ -182,6 +224,71 @@ function positiveInteger(value: string | undefined, fallback: number): number {
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1_000)
     throw badRequest("Invalid terminal dimensions");
   return parsed;
+}
+
+function parseTerminalClientId(value: string | undefined): string {
+  if (!value || !/^[0-9a-f]{12}$/u.test(value)) throw badRequest("Invalid terminal client id");
+  return value;
+}
+
+function bridgeTerminalWebSocket(
+  response: Response,
+  cleanup: () => Promise<void>,
+  waitUntil: (task: Promise<void>) => void,
+): Response {
+  const upstream = response.webSocket;
+  if (!upstream)
+    throw new ScottyError("upstream", "Terminal did not return a WebSocket", {
+      httpStatus: 502,
+      exitCode: 4,
+    });
+  const [client, server] = Object.values(new WebSocketPair());
+  let settled = false;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    waitUntil(cleanup().catch(() => undefined));
+  };
+  const closeCode = (code: number) => (code === 1005 || code === 1006 ? 1000 : code);
+
+  upstream.accept();
+  server.accept();
+  server.addEventListener("message", async (event) => {
+    try {
+      upstream.send(event.data instanceof Blob ? await event.data.arrayBuffer() : event.data);
+    } catch {
+      server.close(1011, "Terminal forwarding failed");
+    }
+  });
+  upstream.addEventListener("message", async (event) => {
+    try {
+      server.send(event.data instanceof Blob ? await event.data.arrayBuffer() : event.data);
+    } catch {
+      upstream.close(1011, "Terminal forwarding failed");
+    }
+  });
+  server.addEventListener("close", (event) => {
+    settle();
+    upstream.close(closeCode(event.code), event.reason);
+  });
+  upstream.addEventListener("close", (event) => {
+    settle();
+    server.close(closeCode(event.code), event.reason);
+  });
+  server.addEventListener("error", () => {
+    settle();
+    upstream.close(1011, "Terminal client failed");
+  });
+  upstream.addEventListener("error", () => {
+    settle();
+    server.close(1011, "Terminal upstream failed");
+  });
+
+  return new Response(null, {
+    status: response.status,
+    headers: response.headers,
+    webSocket: client,
+  });
 }
 
 function normalizeError(error: unknown): ScottyError {
@@ -219,8 +326,12 @@ function normalizeError(error: unknown): ScottyError {
 }
 
 async function terminalAsset(env: Bindings, request: Request): Promise<Response> {
+  return secureAsset(env, request, "/terminal.html");
+}
+
+async function secureAsset(env: Bindings, request: Request, pathname: string): Promise<Response> {
   const url = new URL(request.url);
-  url.pathname = "/terminal.html";
+  url.pathname = pathname;
   url.search = "";
   const asset = await env.ASSETS.fetch(new Request(url, request));
   const headers = new Headers(asset.headers);

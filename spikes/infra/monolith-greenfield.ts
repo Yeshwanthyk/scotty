@@ -26,7 +26,7 @@ export const MONOLITH_GREENFIELD_TOPOLOGY = {
   assets: {
     directory: "worker/public",
     binding: "ASSETS",
-    runWorkerFirst: ["/api/*", "/s/*", "/terminal", "/health"],
+    runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/terminal", "/health"],
     htmlHandling: "none",
     notFoundHandling: "404-page",
   },

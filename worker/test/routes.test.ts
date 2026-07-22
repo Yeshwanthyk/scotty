@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   getScottySession: vi.fn(),
+  prepareTerminalAttachment: vi.fn(),
+  releaseTerminalAttachment: vi.fn(),
+  touchTerminalAttachment: vi.fn(),
+  getSession: vi.fn(),
   snapshotScottySession: vi.fn(),
+  sleepScottySession: vi.fn(),
   resumeScottySession: vi.fn(),
   publishScottySession: vi.fn(),
   prepareDownArchive: vi.fn(),
@@ -184,6 +189,12 @@ describe("real Hono boundary", () => {
       },
       {
         method: "POST",
+        path: "/api/sessions/a0b1c2d3e4f5/sleep",
+        mock: sandbox.sleepScottySession,
+        output: { id: "a0b1c2d3e4f5", status: "sleeping", backupId: "backup-1" },
+      },
+      {
+        method: "POST",
         path: "/api/sessions/a0b1c2d3e4f5/resume",
         mock: sandbox.resumeScottySession,
         output: { id: "a0b1c2d3e4f5", status: "warm", branch: "scotty/a0b1c2d3e4f5" },
@@ -277,6 +288,49 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
+  it("serves the authenticated session manager and exchanges query auth cleanly", async () => {
+    const exchanged = await app.request(`/sessions?t=${TOKEN}`, undefined, env());
+    expect(exchanged.status).toBe(302);
+    expect(exchanged.headers.get("location")).toBe("/sessions");
+    expect(exchanged.headers.get("set-cookie")).toContain("__Host-scotty=");
+
+    const response = await app.request(
+      "/sessions",
+      { headers: { cookie: `__Host-scotty=${TOKEN}` } },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  });
+
+  it("requires bounded terminal client ids and releases per-client execution sessions", async () => {
+    const invalid = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/pty?client=INVALID",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(invalid.status).toBe(400);
+
+    sandbox.releaseTerminalAttachment.mockResolvedValueOnce(undefined);
+    const released = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/pty/123456abcdef",
+      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(released.status).toBe(200);
+    expect(sandbox.releaseTerminalAttachment).toHaveBeenCalledWith("123456abcdef");
+
+    sandbox.touchTerminalAttachment.mockResolvedValueOnce(undefined);
+    const heartbeat = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/pty/123456abcdef/heartbeat",
+      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(heartbeat.status).toBe(200);
+    expect(sandbox.touchTerminalAttachment).toHaveBeenCalledWith("123456abcdef");
   });
 
   it("does not serve the terminal client without a canonical session URL", async () => {

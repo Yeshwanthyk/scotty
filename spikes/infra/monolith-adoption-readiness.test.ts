@@ -94,7 +94,7 @@ const topology = (): Chunk2Topology => ({
     assets: {
       binding: "ASSETS",
       directory: "worker/public",
-      runWorkerFirst: ["/api/*", "/s/*", "/terminal", "/health"],
+      runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/terminal", "/health"],
       htmlHandling: "none",
       notFoundHandling: "404-page",
     },

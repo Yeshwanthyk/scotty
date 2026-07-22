@@ -1,6 +1,6 @@
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 import type { ExecResult } from "@cloudflare/sandbox";
-import { Effect, Layer, Option, Result } from "effect";
+import { Effect, Layer, Option, Result, Schema } from "effect";
 import { Agent, type AgentLaunch, agentLayer } from "./agent";
 import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
@@ -13,6 +13,8 @@ import {
 } from "./credential-vault";
 import {
   conflict,
+  hasCommittedManagedStop,
+  isRecord,
   notFound,
   ScottyError,
   toProjection,
@@ -59,11 +61,54 @@ import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
 import { type PreparedWorkspace, sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
 const RECORD_KEY = "scotty:session";
+const TERMINAL_ATTACHMENTS_KEY = "scotty:terminal-attachments";
+const MAX_TERMINAL_ATTACHMENTS = 8;
+const TERMINAL_ATTACHMENT_TTL_MS = 45_000;
+const TERMINAL_ATTACHMENT_RETRY_SECONDS = 2;
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
+const MANAGED_STOP_RETRY_SECONDS = 2;
+
+const TerminalAttachmentLeaseSchema = Schema.Struct({
+  sessionId: Schema.String,
+  status: Schema.Literals(["creating", "active", "releasing"]),
+  lastSeenAt: Schema.String,
+  createSettled: Schema.Boolean,
+});
+const TerminalAttachmentLeasesSchema = Schema.Array(TerminalAttachmentLeaseSchema);
+const decodeTerminalAttachmentLeases = Schema.decodeUnknownOption(TerminalAttachmentLeasesSchema);
+type TerminalAttachmentLease = typeof TerminalAttachmentLeaseSchema.Type;
 
 interface HardCapPayload {
   hardCapAt: string;
+}
+
+interface ManagedStopPayload {
+  nonce: string;
+  armedAt: string;
+}
+
+interface TerminalAttachmentPayload {
+  sessionId: string;
+  condition?:
+    | { kind: "always" }
+    | { kind: "observedAt"; value: string }
+    | { kind: "staleBefore"; value: string };
+}
+
+interface TerminalAttachmentExpiryPayload {
+  sessionId: string;
+  observedAt: string;
+}
+
+class ManagedStopArmedError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("Managed stop reconciliation is armed");
+    this.name = "ManagedStopArmedError";
+    this.cause = cause;
+  }
 }
 
 export class Sandbox extends BaseSandbox<Bindings> {
@@ -137,6 +182,96 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return toSessionView(toProjection(record, new Date()), Date.now());
   }
 
+  async prepareTerminalAttachment(clientId: string): Promise<string> {
+    const record = await this.requireRecord();
+    if (record.status !== "warm") throw wrongState(record.status, "attach");
+    const sessionId = `scotty-web-${clientId}`;
+    const credential = await this.requireCredential();
+    await this.reconcileExpiredTerminalAttachments();
+    const now = new Date().toISOString();
+    await this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
+      sessionId,
+      observedAt: now,
+    } satisfies TerminalAttachmentExpiryPayload);
+    await this.ctx.storage.transaction(async (transaction) => {
+      const attachments = this.decodeTerminalAttachments(
+        await transaction.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
+      );
+      if (attachments.some((attachment) => attachment.sessionId === sessionId))
+        throw conflict("Terminal attachment already exists");
+      if (attachments.length >= MAX_TERMINAL_ATTACHMENTS)
+        throw conflict("Too many terminal attachments");
+      await transaction.put(TERMINAL_ATTACHMENTS_KEY, [
+        ...attachments,
+        {
+          sessionId,
+          status: "creating",
+          lastSeenAt: now,
+          createSettled: false,
+        } satisfies TerminalAttachmentLease,
+      ]);
+    });
+    try {
+      await this.createSession({
+        id: sessionId,
+        cwd: sessionRoot(record.id),
+        env: agentEnv(record.id, credential),
+      });
+      const activated = await this.updateTerminalAttachment(sessionId, (attachment) => ({
+        ...attachment,
+        status: attachment.status === "creating" ? "active" : attachment.status,
+        lastSeenAt: now,
+        createSettled: true,
+      }));
+      if (activated?.status !== "active")
+        throw conflict("Terminal attachment was released during creation");
+      return sessionId;
+    } catch (error) {
+      await this.requestTerminalAttachmentRelease(sessionId);
+      throw error;
+    }
+  }
+
+  async releaseTerminalAttachment(clientId: string): Promise<void> {
+    await this.requestTerminalAttachmentRelease(`scotty-web-${clientId}`);
+  }
+
+  async touchTerminalAttachment(clientId: string): Promise<void> {
+    const sessionId = `scotty-web-${clientId}`;
+    const observedAt = new Date().toISOString();
+    await this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
+      sessionId,
+      observedAt,
+    } satisfies TerminalAttachmentExpiryPayload);
+    await this.updateTerminalAttachment(sessionId, (attachment) => ({
+      ...attachment,
+      lastSeenAt: observedAt,
+    }));
+  }
+
+  async expireTerminalAttachment(payload: TerminalAttachmentExpiryPayload): Promise<void> {
+    await this.requestTerminalAttachmentRelease(payload.sessionId, {
+      kind: "observedAt",
+      value: payload.observedAt,
+    });
+  }
+
+  async finalizeTerminalAttachment(payload: TerminalAttachmentPayload): Promise<void> {
+    const attachment = await this.updateTerminalAttachment(
+      payload.sessionId,
+      (current) => ({ ...current, status: "releasing" }),
+      (current) =>
+        current.status === "releasing" ||
+        this.terminalReleaseConditionMatches(current, payload.condition),
+    );
+    if (!attachment) return;
+    await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
+      sessionId: payload.sessionId,
+      condition: { kind: "always" },
+    } satisfies TerminalAttachmentPayload);
+    await this.finishTerminalAttachmentRelease(attachment);
+  }
+
   async snapshotScottySession(): Promise<SessionView> {
     const operation = await this.acquireOperation("snapshot", ["warm"]);
     try {
@@ -145,6 +280,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
     } catch (error) {
       await this.releaseOperation(operation.nonce);
       throw this.upstreamError("Snapshot failed", error);
+    }
+  }
+
+  async sleepScottySession(): Promise<SessionView> {
+    const operation = await this.acquireOperation("snapshot", ["warm"]);
+    try {
+      await this.checkpoint(operation.nonce, false, false);
+      const record = await this.stopAfterCheckpoint(operation.nonce);
+      return toSessionView(toProjection(record, new Date()), Date.now());
+    } catch (error) {
+      if (
+        !(error instanceof ManagedStopArmedError) &&
+        !(await this.isManagedStopPending(operation.nonce))
+      )
+        await this.releaseOperationIfHeld(operation.nonce);
+      throw this.upstreamError("Session stop failed", error);
     }
   }
 
@@ -166,6 +317,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
     try {
       await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.restore(backup)));
+      await this.ctx.storage.delete(TERMINAL_ATTACHMENTS_KEY);
       const credential = await this.requireCredential();
       await this.seedContainerAuth(record, credential);
       await this.runAgent({ kind: "resume", threadId: record.codexThreadId }, record.id);
@@ -395,12 +547,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return;
     }
 
-    let operation: SessionRecord["operation"];
+    let operation: SessionRecord["operation"] = null;
     try {
       operation = await this.acquireOperation("snapshot", ["warm", "booting"]);
       await this.checkpoint(operation.nonce, false, false);
       await this.stopAfterCheckpoint(operation.nonce);
-    } catch {
+    } catch (error) {
+      if (
+        operation &&
+        (error instanceof ManagedStopArmedError ||
+          (await this.isManagedStopPending(operation.nonce)))
+      )
+        return;
       const current = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
       if (current) await this.markHardCapFailure(current, "Hard-cap checkpoint or shutdown failed");
     }
@@ -415,7 +573,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       await this.checkpoint(operation.nonce, false, false);
       await this.stopAfterCheckpoint(operation.nonce);
     } catch (error) {
-      if (operation) await this.releaseOperationIfHeld(operation.nonce);
+      if (
+        operation &&
+        !(error instanceof ManagedStopArmedError) &&
+        !(await this.isManagedStopPending(operation.nonce))
+      )
+        await this.releaseOperationIfHeld(operation.nonce);
       console.error("Managed idle checkpoint failed", {
         sessionId: record.id,
         error: errorName(error),
@@ -425,28 +588,100 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   override async onStop(): Promise<void> {
     await super.onStop();
+    let next: SessionRecord | undefined;
+    await this.ctx.storage.transaction(async (transaction) => {
+      const record = await transaction.get<SessionRecord>(RECORD_KEY);
+      if (
+        !record ||
+        record.status === "sleeping" ||
+        record.status === "failed" ||
+        record.status === "gone" ||
+        record.operation?.kind === "vaporize"
+      )
+        return;
+      const checkpointCommitted = hasCommittedManagedStop(record);
+      next = checkpointCommitted
+        ? {
+            ...record,
+            status: "sleeping",
+            operation: null,
+            failure: undefined,
+            updatedAt: new Date().toISOString(),
+          }
+        : {
+            ...record,
+            status: "failed",
+            operation: null,
+            failure: {
+              code: "runtime_stopped",
+              message: "Sandbox runtime stopped before a managed checkpoint",
+              recoverable: Boolean(record.backup?.current),
+            },
+            updatedAt: new Date().toISOString(),
+          };
+      await transaction.put(RECORD_KEY, next);
+      await transaction.delete(TERMINAL_ATTACHMENTS_KEY);
+    });
+    if (next) await this.project(next);
+  }
+
+  async finalizeManagedStop(payload: ManagedStopPayload): Promise<void> {
     const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
     if (
-      !record ||
-      record.status === "sleeping" ||
-      record.status === "failed" ||
-      record.status === "gone"
-    )
+      record?.operation?.nonce === payload.nonce &&
+      record.operation.checkpointedBackupId === record.backup?.current.id &&
+      !record.operation.stopRequestedAt
+    ) {
+      if (Date.now() - Date.parse(payload.armedAt) < 30_000) {
+        await this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload);
+        return;
+      }
+      await this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload);
+      let rollbackClaimed = false;
+      await this.ctx.storage.transaction(async (transaction) => {
+        const current = await transaction.get<SessionRecord>(RECORD_KEY);
+        if (
+          current?.operation?.nonce !== payload.nonce ||
+          current.operation.stopRequestedAt ||
+          current.operation.checkpointedBackupId !== current.backup?.current.id
+        )
+          return;
+        if (current.operation.stopRollbackAt) {
+          rollbackClaimed = true;
+          return;
+        }
+        rollbackClaimed = true;
+        await transaction.put(RECORD_KEY, {
+          ...current,
+          operation: { ...current.operation, stopRollbackAt: new Date().toISOString() },
+          updatedAt: new Date().toISOString(),
+        });
+      });
+      if (!rollbackClaimed) return;
+      try {
+        await this.execChecked(resumeAgentCommand(), { timeout: 10_000 });
+        await this.releaseOperationIfHeld(payload.nonce);
+      } catch {
+        await this.updateForOperation(payload.nonce, (current) => ({
+          ...current,
+          operation: current.operation && {
+            kind: current.operation.kind,
+            nonce: current.operation.nonce,
+            startedAt: current.operation.startedAt,
+            checkpointedBackupId: current.operation.checkpointedBackupId,
+          },
+          updatedAt: new Date().toISOString(),
+        })).catch(() => undefined);
+      }
       return;
-    if (record.operation?.kind === "vaporize" || record.operation?.kind === "snapshot") return;
-    const failed: SessionRecord = {
-      ...record,
-      status: "failed",
-      operation: null,
-      failure: {
-        code: "runtime_stopped",
-        message: "Sandbox runtime stopped before a managed checkpoint",
-        recoverable: Boolean(record.backup?.current),
-      },
-      updatedAt: new Date().toISOString(),
-    };
-    await this.ctx.storage.put(RECORD_KEY, failed);
-    await this.project(failed);
+    }
+    if (!(await this.isManagedStopPending(payload.nonce))) return;
+    await this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload);
+    try {
+      await this.stop();
+    } catch (error) {
+      console.error("Managed stop reconciliation failed", { error: errorName(error) });
+    }
   }
 
   private async seedCredential(id: string): Promise<StoredCredential> {
@@ -531,7 +766,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const priorPrevious = record.backup?.previous;
       const updated = await this.updateForOperation(nonce, (current) => ({
         ...current,
-        operation: releaseLease ? null : current.operation,
+        operation: releaseLease
+          ? null
+          : current.operation && {
+              ...current.operation,
+              checkpointedBackupId: backup.id,
+            },
         backup: { current: backup, previous: current.backup?.current },
         ownedBackupIds: [...new Set([...current.ownedBackupIds, backup.id])],
         backupExpiresAt: new Date(Date.now() + BACKUP_TTL_SECONDS * 1000).toISOString(),
@@ -553,19 +793,177 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private async stopAfterCheckpoint(nonce: string): Promise<SessionRecord> {
+    const payload = { nonce, armedAt: new Date().toISOString() } satisfies ManagedStopPayload;
+    await this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload);
     try {
+      await this.updateForOperation(nonce, (record) => {
+        if (record.operation?.stopRollbackAt) throw conflict("Managed stop rollback started");
+        return {
+          ...record,
+          operation: record.operation && {
+            ...record.operation,
+            stopRequestedAt: new Date().toISOString(),
+          },
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      await this.releaseAllTerminalAttachments();
       await this.stop();
     } catch (error) {
-      await this.exec(resumeAgentCommand(), { timeout: 10_000 }).catch(() => undefined);
-      throw error;
+      const current = await this.requireRecord();
+      if (current.status === "sleeping") return current;
+      throw new ManagedStopArmedError(error);
     }
-    return this.updateForOperation(nonce, (record) => ({
-      ...record,
-      status: "sleeping",
-      operation: null,
-      failure: undefined,
-      updatedAt: new Date().toISOString(),
-    }));
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const stopped = await this.requireRecord();
+      if (stopped.status === "sleeping") return stopped;
+      if (stopped.status === "failed") throw wrongState(stopped.status, "stop");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await this.stop().catch((error) => {
+        throw new ManagedStopArmedError(error);
+      });
+    }
+    throw new ScottyError("upstream", "Session shutdown is still completing", {
+      httpStatus: 502,
+      exitCode: 4,
+    });
+  }
+
+  private async isManagedStopPending(nonce: string): Promise<boolean> {
+    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    return (
+      (record?.status === "warm" || record?.status === "booting") &&
+      record.operation?.nonce === nonce &&
+      Boolean(record.operation.stopRequestedAt)
+    );
+  }
+
+  private async releaseAllTerminalAttachments(): Promise<void> {
+    const attachments = await this.readTerminalAttachments();
+    await Promise.all(
+      attachments.map((attachment) => this.requestTerminalAttachmentRelease(attachment.sessionId)),
+    );
+  }
+
+  private decodeTerminalAttachments(stored: unknown): TerminalAttachmentLease[] {
+    return Option.getOrElse(decodeTerminalAttachmentLeases(stored), () => []).filter((attachment) =>
+      /^scotty-web-[0-9a-f]{12}$/u.test(attachment.sessionId),
+    );
+  }
+
+  private async readTerminalAttachments(): Promise<TerminalAttachmentLease[]> {
+    return this.decodeTerminalAttachments(
+      await this.ctx.storage.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
+    );
+  }
+
+  private async updateTerminalAttachment(
+    sessionId: string,
+    update: (attachment: TerminalAttachmentLease) => TerminalAttachmentLease,
+    predicate: (attachment: TerminalAttachmentLease) => boolean = () => true,
+  ): Promise<TerminalAttachmentLease | undefined> {
+    let updated: TerminalAttachmentLease | undefined;
+    await this.ctx.storage.transaction(async (transaction) => {
+      const attachments = this.decodeTerminalAttachments(
+        await transaction.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
+      );
+      const next = attachments.map((attachment) => {
+        if (attachment.sessionId !== sessionId || !predicate(attachment)) return attachment;
+        updated = update(attachment);
+        return updated;
+      });
+      if (updated) await transaction.put(TERMINAL_ATTACHMENTS_KEY, next);
+    });
+    return updated;
+  }
+
+  private async removeTerminalAttachment(sessionId: string): Promise<void> {
+    await this.ctx.storage.transaction(async (transaction) => {
+      const attachments = this.decodeTerminalAttachments(
+        await transaction.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
+      );
+      await transaction.put(
+        TERMINAL_ATTACHMENTS_KEY,
+        attachments.filter((attachment) => attachment.sessionId !== sessionId),
+      );
+    });
+  }
+
+  private async finishTerminalAttachmentRelease(
+    attachment: TerminalAttachmentLease,
+  ): Promise<void> {
+    let settled = attachment;
+    if (!settled.createSettled) {
+      const record = await this.requireRecord();
+      if (record.status !== "warm") {
+        await this.removeTerminalAttachment(settled.sessionId);
+        return;
+      }
+      const credential = await this.requireCredential();
+      try {
+        await this.createSession({
+          id: settled.sessionId,
+          cwd: sessionRoot(record.id),
+          env: agentEnv(record.id, credential),
+        });
+      } catch (error) {
+        if (!isRecord(error) || error.code !== "SESSION_ALREADY_EXISTS") return;
+      }
+      const updated = await this.updateTerminalAttachment(
+        settled.sessionId,
+        (current) => ({ ...current, createSettled: true }),
+        (current) => current.status === "releasing",
+      );
+      if (!updated) return;
+      settled = updated;
+    }
+    try {
+      const { sessions } = await this.client.utils.listSessions();
+      if (!sessions.includes(settled.sessionId)) {
+        await this.removeTerminalAttachment(settled.sessionId);
+        return;
+      }
+      await this.deleteSession(settled.sessionId);
+      await this.removeTerminalAttachment(settled.sessionId);
+    } catch {}
+  }
+
+  private async requestTerminalAttachmentRelease(
+    sessionId: string,
+    condition: TerminalAttachmentPayload["condition"] = { kind: "always" },
+  ): Promise<void> {
+    await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
+      sessionId,
+      condition,
+    } satisfies TerminalAttachmentPayload);
+    const updated = await this.updateTerminalAttachment(
+      sessionId,
+      (attachment) => ({ ...attachment, status: "releasing" }),
+      (attachment) => this.terminalReleaseConditionMatches(attachment, condition),
+    );
+    if (updated) await this.finishTerminalAttachmentRelease(updated);
+  }
+
+  private terminalReleaseConditionMatches(
+    attachment: TerminalAttachmentLease,
+    condition: TerminalAttachmentPayload["condition"] = { kind: "always" },
+  ): boolean {
+    if (condition.kind === "observedAt") return attachment.lastSeenAt === condition.value;
+    if (condition.kind === "staleBefore")
+      return Date.parse(attachment.lastSeenAt) <= Date.parse(condition.value);
+    return true;
+  }
+
+  private async reconcileExpiredTerminalAttachments(): Promise<void> {
+    const cutoff = Date.now() - TERMINAL_ATTACHMENT_TTL_MS;
+    const attachments = await this.readTerminalAttachments();
+    for (const attachment of attachments) {
+      if (Date.parse(attachment.lastSeenAt) > cutoff || attachment.status === "releasing") continue;
+      await this.requestTerminalAttachmentRelease(attachment.sessionId, {
+        kind: "staleBefore",
+        value: new Date(cutoff).toISOString(),
+      });
+    }
   }
 
   private async scheduleHardCap(hardCapAt: string): Promise<void> {

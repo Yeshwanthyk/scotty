@@ -7,6 +7,7 @@ import {
   decodePublicError,
   decodeSessionProjection,
   decodeSessionRecord,
+  hasCommittedManagedStop,
   notFound,
   parseCreateInput,
   parsePrInput,
@@ -177,6 +178,47 @@ describe("persisted session schemas", () => {
     assert.ok(Option.isSome(decoded));
     assert.ok(!("secret" in decoded.value));
     assert.ok(Option.isNone(decodeSessionProjection({ ...projection, status: "unknown" })));
+  });
+
+  it("requires an explicit stop request and matching committed backup before sleeping", () => {
+    const warm = { ...persistedRecord, status: "warm" as const };
+    assert.isFalse(hasCommittedManagedStop({ ...warm, operation: null }));
+    assert.isFalse(
+      hasCommittedManagedStop({
+        ...warm,
+        backup: undefined,
+        operation: {
+          kind: "snapshot",
+          nonce: "snapshot-1",
+          startedAt: warm.updatedAt,
+          checkpointedBackupId: undefined,
+          stopRequestedAt: warm.updatedAt,
+        },
+      }),
+    );
+    assert.isFalse(
+      hasCommittedManagedStop({
+        ...warm,
+        operation: {
+          kind: "snapshot",
+          nonce: "snapshot-1",
+          startedAt: warm.updatedAt,
+          checkpointedBackupId: "backup-1",
+        },
+      }),
+    );
+    assert.isTrue(
+      hasCommittedManagedStop({
+        ...warm,
+        operation: {
+          kind: "snapshot",
+          nonce: "snapshot-1",
+          startedAt: warm.updatedAt,
+          checkpointedBackupId: "backup-1",
+          stopRequestedAt: warm.updatedAt,
+        },
+      }),
+    );
   });
 });
 

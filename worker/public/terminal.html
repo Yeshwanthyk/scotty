@@ -68,7 +68,7 @@
       .app {
         display: grid;
         grid-template-rows: var(--header-height) minmax(0, 1fr);
-        height: 100dvh;
+        height: var(--app-height, 100dvh);
         min-height: 320px;
         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
           env(safe-area-inset-left);
@@ -94,7 +94,9 @@
         align-items: baseline;
         gap: 10px;
         min-width: 0;
+        color: inherit;
         font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        text-decoration: none;
       }
 
       .wordmark {
@@ -215,6 +217,7 @@
       }
 
       .terminal-host {
+        position: relative;
         width: 100%;
         height: 100%;
         min-width: 0;
@@ -222,10 +225,15 @@
         overflow: hidden;
         padding: 12px;
         outline: none;
+        touch-action: none;
       }
 
       .terminal-host canvas {
-        max-width: 100%;
+        display: block;
+      }
+
+      .mobile-keys {
+        display: none;
       }
 
       .veil {
@@ -341,6 +349,10 @@
         :root {
           --header-height: 58px;
         }
+        .app {
+          grid-template-rows: var(--header-height) minmax(0, 1fr) 50px;
+          min-height: 0;
+        }
         .masthead {
           gap: 10px;
           padding-inline: 12px;
@@ -369,14 +381,45 @@
           padding-inline: 11px;
         }
         .stage {
-          margin: 6px;
-          border-radius: 5px;
+          margin: 0;
+          border-radius: 0;
+          box-shadow: none;
         }
         .terminal-host {
-          padding: 8px;
+          padding: 8px 6px;
         }
         .veil {
           padding: 18px;
+        }
+        .mobile-keys {
+          display: grid;
+          grid-template-columns: repeat(7, minmax(44px, 1fr));
+          gap: 1px;
+          min-width: 0;
+          padding: 3px max(3px, env(safe-area-inset-right)) 3px max(3px, env(safe-area-inset-left));
+          overflow-x: auto;
+          background: var(--line);
+        }
+        .mobile-key {
+          min-width: 44px;
+          min-height: 44px;
+          padding: 0 8px;
+          border: 0;
+          background: var(--shell);
+          color: var(--ink);
+          font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+          font-size: 0.76rem;
+        }
+        .mobile-key:active,
+        .mobile-key[aria-pressed="true"] {
+          background: oklch(25% 0.035 220);
+          color: var(--beam);
+        }
+        .mobile-key:focus-visible {
+          position: relative;
+          z-index: 1;
+          outline: 2px solid var(--focus);
+          outline-offset: -2px;
         }
       }
 
@@ -421,10 +464,10 @@
   <body>
     <main class="app" id="app" data-state="initializing">
       <header class="masthead">
-        <div class="identity" aria-label="Scotty remote terminal">
+        <a class="identity" href="/sessions" aria-label="Back to Scotty sessions">
           <span class="wordmark">SCOTTY</span>
           <span class="session-label" id="session-label">/ identifying</span>
-        </div>
+        </a>
         <div class="status-cluster" role="status" aria-live="polite" aria-atomic="true">
           <span class="signal" aria-hidden="true"></span>
           <span class="status-text" id="status-text">Loading terminal</span>
@@ -445,6 +488,17 @@
           </div>
         </div>
       </section>
+      <div class="mobile-keys" aria-label="Terminal keys">
+        <button class="mobile-key" type="button" data-key="escape">Esc</button>
+        <button class="mobile-key" type="button" data-key="tab">Tab</button>
+        <button class="mobile-key" type="button" id="control-key" aria-pressed="false">Ctrl</button>
+        <button class="mobile-key" type="button" data-key="left" aria-label="Left arrow">←</button>
+        <button class="mobile-key" type="button" data-key="down" aria-label="Down arrow">↓</button>
+        <button class="mobile-key" type="button" data-key="up" aria-label="Up arrow">↑</button>
+        <button class="mobile-key" type="button" data-key="right" aria-label="Right arrow">
+          →
+        </button>
+      </div>
       <p class="sr-only" id="announcer" aria-live="assertive"></p>
     </main>
 
@@ -454,6 +508,8 @@
       const app = document.querySelector("#app");
       const action = document.querySelector("#action");
       const announcer = document.querySelector("#announcer");
+      const controlKey = document.querySelector("#control-key");
+      const mobileKeys = document.querySelector(".mobile-keys");
       const sessionLabel = document.querySelector("#session-label");
       const statusText = document.querySelector("#status-text");
       const terminalHost = document.querySelector("#terminal");
@@ -467,6 +523,14 @@
       const apiId = sessionId ? encodeURIComponent(sessionId) : "";
       const encoder = new TextEncoder();
       const reconnectDelays = [750, 1500, 3000, 6000, 10000, 15000];
+      const mobileKeyData = {
+        escape: "\x1b",
+        tab: "\t",
+        left: "\x1b[D",
+        down: "\x1b[B",
+        up: "\x1b[A",
+        right: "\x1b[C",
+      };
 
       let terminal;
       let fitAddon;
@@ -476,9 +540,17 @@
       let reconnectTimer;
       let reconnectTicker;
       let reconnectDeadline = 0;
+      let heartbeatTimer;
+      let activeClientId;
       let intentionalClose = false;
       let currentState = "initializing";
       let lastAnnounced = "";
+      let controlPending = false;
+
+      function getTerminalClientId() {
+        const bytes = crypto.getRandomValues(new Uint8Array(6));
+        return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      }
 
       sessionLabel.textContent = sessionId ? `/ ${sessionId}` : "/ invalid session";
       document.title = sessionId ? `${sessionId} · Scotty` : "Invalid session · Scotty";
@@ -592,10 +664,11 @@
         };
       }
 
-      function websocketUrl() {
+      function websocketUrl(clientId) {
         const protocol = location.protocol === "https:" ? "wss:" : "ws:";
         const size = dimensions();
         const url = new URL(`${protocol}//${location.host}/api/sessions/${apiId}/pty`);
+        url.searchParams.set("client", clientId);
         url.searchParams.set("cols", String(size.cols));
         url.searchParams.set("rows", String(size.rows));
         return url.href;
@@ -607,25 +680,42 @@
         socket.send(JSON.stringify({ type: "resize", cols, rows }));
       }
 
+      function sendInput(data) {
+        if (!ready || socket?.readyState !== WebSocket.OPEN) return;
+        socket.send(encoder.encode(data));
+      }
+
       function closeSocket() {
         intentionalClose = true;
         ready = false;
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
         if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "client reconnect");
         socket = undefined;
       }
 
+      function startHeartbeat(clientId) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = setInterval(() => {
+          if (!ready || activeClientId !== clientId) return;
+          fetch(`/api/sessions/${apiId}/pty/${clientId}/heartbeat`, {
+            method: "POST",
+            credentials: "same-origin",
+            cache: "no-store",
+          }).catch(() => undefined);
+        }, 15000);
+      }
+
       async function readSessionStatus() {
         try {
-          const response = await fetch("/api/sessions", {
+          const response = await fetch(`/api/sessions/${apiId}`, {
             credentials: "same-origin",
             headers: { Accept: "application/json" },
             cache: "no-store",
           });
           if (!response.ok) return undefined;
           const body = await response.json();
-          const sessions = Array.isArray(body) ? body : body.sessions;
-          if (!Array.isArray(sessions)) return undefined;
-          return sessions.find((session) => session?.id === sessionId)?.status;
+          return typeof body?.status === "string" ? body.status : undefined;
         } catch {
           return undefined;
         }
@@ -719,35 +809,43 @@
         setState(reconnectAttempt ? "reconnecting" : "connecting");
 
         try {
-          socket = new WebSocket(websocketUrl());
+          const clientId = getTerminalClientId();
+          const connection = new WebSocket(websocketUrl(clientId));
+          socket = connection;
+          activeClientId = clientId;
+          connection.binaryType = "arraybuffer";
+          connection.addEventListener("message", async (event) => {
+            // Sandbox can replay buffered binary output before the ready control frame.
+            if (event.data instanceof ArrayBuffer) {
+              terminal.write(new Uint8Array(event.data));
+              return;
+            }
+            if (event.data instanceof Blob) {
+              terminal.write(new Uint8Array(await event.data.arrayBuffer()));
+              return;
+            }
+            if (typeof event.data === "string") {
+              handleControlFrame(event.data);
+              if (ready && socket === connection) startHeartbeat(clientId);
+            }
+          });
+          connection.addEventListener("close", () => {
+            if (connection !== socket) return;
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = undefined;
+            activeClientId = undefined;
+            ready = false;
+            if (!intentionalClose) scheduleReconnect();
+          });
+          connection.addEventListener("error", () => {
+            // close follows error in browsers and owns the reconnect path.
+            ready = false;
+          });
         } catch {
           setState("failed");
           scheduleReconnect();
           return;
         }
-
-        socket.binaryType = "arraybuffer";
-        socket.addEventListener("message", async (event) => {
-          // Sandbox can replay buffered binary output before the ready control frame.
-          if (event.data instanceof ArrayBuffer) {
-            terminal.write(new Uint8Array(event.data));
-            return;
-          }
-          if (event.data instanceof Blob) {
-            terminal.write(new Uint8Array(await event.data.arrayBuffer()));
-            return;
-          }
-          if (typeof event.data === "string") handleControlFrame(event.data);
-        });
-        socket.addEventListener("close", (event) => {
-          if (event.currentTarget !== socket) return;
-          ready = false;
-          if (!intentionalClose) scheduleReconnect();
-        });
-        socket.addEventListener("error", () => {
-          // close follows error in browsers and owns the reconnect path.
-          ready = false;
-        });
       }
 
       async function resume() {
@@ -762,19 +860,10 @@
             headers: { Accept: "application/json" },
           });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-          const startedAt = Date.now();
-          while (Date.now() - startedAt < 120000) {
-            const status = await readSessionStatus();
-            if (status === "warm") {
-              reconnectAttempt = 0;
-              connect();
-              return;
-            }
-            if (status === "failed" || status === "gone") throw new Error("resume failed");
-            await new Promise((resolve) => setTimeout(resolve, 1200));
-          }
-          throw new Error("resume timed out");
+          const result = await response.json();
+          if (result?.status !== "warm") throw new Error("resume failed");
+          reconnectAttempt = 0;
+          connect();
         } catch {
           setState("failed");
         }
@@ -791,6 +880,19 @@
 
       terminalHost.addEventListener("pointerdown", () => {
         if (currentState === "connected") terminal.focus();
+      });
+
+      mobileKeys.addEventListener("pointerdown", (event) => event.preventDefault());
+      mobileKeys.addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button || currentState !== "connected") return;
+        if (button === controlKey) {
+          controlPending = !controlPending;
+          controlKey.setAttribute("aria-pressed", String(controlPending));
+          return;
+        }
+        sendInput(mobileKeyData[button.dataset.key] || "");
+        terminal.focus();
       });
 
       window.addEventListener("online", () => {
@@ -813,8 +915,29 @@
       window.addEventListener("pagehide", () => {
         intentionalClose = true;
         clearReconnectTimers();
+        clearInterval(heartbeatTimer);
         if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "page hidden");
+        if (activeClientId)
+          fetch(`/api/sessions/${apiId}/pty/${activeClientId}`, {
+            method: "DELETE",
+            credentials: "same-origin",
+            keepalive: true,
+          }).catch(() => undefined);
       });
+      function fitVisualViewport() {
+        if (window.visualViewport)
+          document.documentElement.style.setProperty(
+            "--app-height",
+            `${window.visualViewport.height}px`,
+          );
+        requestAnimationFrame(() => {
+          if (!terminal) return;
+          dimensions();
+          sendResize();
+        });
+      }
+      window.visualViewport?.addEventListener("resize", fitVisualViewport);
+      fitVisualViewport();
 
       if (!sessionId) {
         setState("failed");
@@ -862,7 +985,13 @@
           terminal.open(terminalHost);
           fitAddon.observeResize();
           terminal.onData((data) => {
-            if (ready && socket?.readyState === WebSocket.OPEN) socket.send(encoder.encode(data));
+            if (controlPending && data.length === 1) {
+              const code = data.toUpperCase().charCodeAt(0);
+              if (code >= 64 && code <= 95) data = String.fromCharCode(code - 64);
+              controlPending = false;
+              controlKey.setAttribute("aria-pressed", "false");
+            }
+            sendInput(data);
           });
           terminal.onResize(({ cols, rows }) => sendResize(cols, rows));
 

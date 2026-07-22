@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { ExecResult } from "@cloudflare/sandbox";
-import { Effect, Layer, Result } from "effect";
-import { Agent, type AgentFailure, type AgentLaunch, agentLayer } from "../src/agent";
+import { Effect, Layer } from "effect";
+import { Agent, type AgentLaunch, agentLayer } from "../src/agent";
 import { agentEnv } from "../src/container-auth";
 import {
   credentialVaultLayer,
@@ -10,7 +10,6 @@ import {
 } from "../src/credential-vault";
 import type { StoredCredential } from "../src/egress";
 import {
-  SandboxRuntimeFailure,
   sandboxRuntimeLayer,
   shellQuote,
   type SandboxExecOptions,
@@ -117,11 +116,6 @@ const launchWith = (
   return Effect.flatMap(Agent, (agent) => agent.launch(ID, launch)).pipe(Effect.provide(layer));
 };
 
-const failure = <A>(result: Result.Result<A, AgentFailure>): AgentFailure => {
-  assert.ok(Result.isFailure(result));
-  return result.failure;
-};
-
 const expectedCalls = (agentCommand: string): AgentCall[] => {
   const env = agentEnv(ID, credential);
   return [
@@ -132,13 +126,8 @@ const expectedCalls = (agentCommand: string): AgentCall[] => {
     },
     {
       operation: "exec",
-      command: `tmux new-session -d -s agent -c '/workspace/${ID}' '${agentCommand.replaceAll("'", "'\\''")}'`,
+      command: `tmux new-session -d -s agent -c '/workspace/${ID}' '${agentCommand.replaceAll("'", "'\\''")}' && tmux set-option -t agent window-size smallest`,
       options: { env, timeout: 30_000 },
-    },
-    { operation: "deleteSession", sessionId: "scotty-web" },
-    {
-      operation: "createSession",
-      options: { id: "scotty-web", cwd: `/workspace/${ID}`, env },
     },
   ];
 };
@@ -155,17 +144,17 @@ describe("Agent", () => {
         [
           { kind: "start", prompt: "fix tests" },
           false,
-          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox 'fix tests'`,
+          "exec codex --dangerously-bypass-approvals-and-sandbox 'fix tests'",
         ],
         [
           { kind: "resume", threadId: "thread-123" },
           false,
-          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox resume 'thread-123'`,
+          "exec codex --dangerously-bypass-approvals-and-sandbox resume 'thread-123'",
         ],
         [
           { kind: "resume" },
           false,
-          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox resume --last`,
+          "exec codex --dangerously-bypass-approvals-and-sandbox resume --last",
         ],
       ];
 
@@ -184,11 +173,11 @@ describe("Agent", () => {
       for (const [launch, command] of [
         [
           { kind: "start", prompt: hostilePrompt },
-          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox ${shellQuote(hostilePrompt)}`,
+          `exec codex --dangerously-bypass-approvals-and-sandbox ${shellQuote(hostilePrompt)}`,
         ],
         [
           { kind: "resume", threadId: hostileThread },
-          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(hostileThread)}`,
+          `exec codex --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(hostileThread)}`,
         ],
       ] satisfies ReadonlyArray<readonly [AgentLaunch, string]>) {
         const capabilities = new CapturingAgentCapabilities();
@@ -198,45 +187,7 @@ describe("Agent", () => {
     }),
   );
 
-  it.effect("ignores named-session deletion failure before creating its replacement", () =>
-    Effect.gen(function* () {
-      const capabilities = new CapturingAgentCapabilities();
-      capabilities.reject = "deleteSession";
-
-      yield* launchWith(capabilities, { kind: "resume" });
-
-      assert.deepStrictEqual(
-        capabilities.calls.map((call) => call.operation),
-        ["exec", "exec", "deleteSession", "createSession"],
-      );
-    }),
-  );
-
-  it.effect("fails redacted when named-session creation fails after tmux starts", () =>
-    Effect.gen(function* () {
-      const capabilities = new CapturingAgentCapabilities();
-      capabilities.reject = "createSession";
-
-      const result = yield* Effect.result(launchWith(capabilities, { kind: "start" }));
-      const error = failure(result);
-
-      assert.deepStrictEqual(
-        error,
-        new SandboxRuntimeFailure({
-          reason: "transport",
-          message: "Sandbox session creation transport failed",
-        }),
-      );
-      assert.deepStrictEqual(
-        capabilities.calls.map((call) => call.operation),
-        ["exec", "exec", "deleteSession", "createSession"],
-      );
-      assert.ok(!JSON.stringify(error).includes("provider"));
-      assert.ok(!JSON.stringify(error).includes("honeypot-secret"));
-    }),
-  );
-
-  it.effect("reconstructs the service without retaining named-session capability state", () =>
+  it.effect("reconstructs the service without retaining capability state", () =>
     Effect.gen(function* () {
       const first = new CapturingAgentCapabilities();
       const second = new CapturingAgentCapabilities();

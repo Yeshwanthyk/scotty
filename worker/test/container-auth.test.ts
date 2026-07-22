@@ -149,8 +149,15 @@ describe("ContainerAuth", () => {
           content: expectedAuth,
         },
         {
+          operation: "writeFile",
+          path: `/workspace/${ID}/.codex/config.toml`,
+          content: `[projects."/tmp"]
+trust_level = "trusted"
+`,
+        },
+        {
           operation: "exec",
-          command: `chmod 700 '/workspace/${ID}/.codex' && chmod 600 '/workspace/${ID}/.codex/auth.json'`,
+          command: `chmod 700 '/workspace/${ID}/.codex' && chmod 600 '/workspace/${ID}/.codex/auth.json' '/workspace/${ID}/.codex/config.toml'`,
           options: undefined,
         },
         {
@@ -198,8 +205,8 @@ describe("ContainerAuth", () => {
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 4);
-      assert.strictEqual(second.calls.length, 4);
+      assert.strictEqual(first.calls.length, 5);
+      assert.strictEqual(second.calls.length, 5);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),

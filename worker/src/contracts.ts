@@ -31,6 +31,9 @@ export const SessionOperationSchema = Schema.Struct({
   kind: OperationKindSchema,
   nonce: Schema.String,
   startedAt: Schema.String,
+  checkpointedBackupId: Schema.optionalKey(Schema.String),
+  stopRequestedAt: Schema.optionalKey(Schema.String),
+  stopRollbackAt: Schema.optionalKey(Schema.String),
 });
 export type SessionOperation = typeof SessionOperationSchema.Type;
 
@@ -82,6 +85,17 @@ export const SessionRecordSchema = Schema.Struct({
   failure: Schema.optional(SessionFailureSchema),
 });
 export type SessionRecord = typeof SessionRecordSchema.Type;
+
+export function hasCommittedManagedStop(record: SessionRecord): boolean {
+  const operation = record.operation;
+  const backupId = record.backup?.current.id;
+  return (
+    operation?.kind === "snapshot" &&
+    Boolean(operation.stopRequestedAt) &&
+    Boolean(operation.checkpointedBackupId) &&
+    operation.checkpointedBackupId === backupId
+  );
+}
 
 export const decodeSessionRecord = Schema.decodeUnknownEffect(SessionRecordSchema, {
   onExcessProperty: "error",

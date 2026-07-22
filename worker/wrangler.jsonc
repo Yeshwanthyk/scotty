@@ -10,7 +10,7 @@
   "assets": {
     "binding": "ASSETS",
     "directory": "./public",
-    "run_worker_first": ["/api/*", "/s/*", "/terminal", "/health"],
+    "run_worker_first": ["/api/*", "/s/*", "/sessions", "/terminal", "/health"],
     "html_handling": "none",
     "not_found_handling": "404-page",
   },
