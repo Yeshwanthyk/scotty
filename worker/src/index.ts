@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import type { Bindings } from "./bindings";
 import {
   badRequest,
+  decodeSessionProjection,
   isRecord,
   parseCreateInput,
   parsePrInput,
@@ -11,8 +12,8 @@ import {
   ScottyError,
   toSessionView,
   type SessionProjection,
-  type SessionStatus,
 } from "./contracts";
+import { Option } from "effect";
 import { requireAuth, setAuthCookie } from "./auth";
 import { Sandbox as ScottySandbox } from "./session";
 
@@ -64,13 +65,13 @@ app.get("/api/sessions", async (c) => {
     const page = await c.env.SESSIONS.list({ prefix: SESSION_KV_PREFIX, cursor });
     const values = await Promise.all(page.keys.map((key) => c.env.SESSIONS.get(key.name, "json")));
     for (const value of values) {
-      const projection = parseProjection(value);
-      if (projection) projections.push(projection);
+      const projection = decodeSessionProjection(value);
+      if (Option.isSome(projection)) projections.push(projection.value);
     }
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
   projections.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  return c.json(projections.map((projection) => toSessionView(projection)));
+  return c.json(projections.map((projection) => toSessionView(projection, Date.now())));
 });
 
 app.get("/api/sessions/:id", async (c) => {
@@ -210,64 +211,6 @@ function normalizeError(error: unknown): ScottyError {
     name: error instanceof Error ? error.name : "UnknownError",
   });
   return new ScottyError("internal", "Internal error", { httpStatus: 500, exitCode: 1 });
-}
-
-const isSessionStatus = (value: string): value is SessionStatus =>
-  ["booting", "warm", "sleeping", "failed", "gone"].includes(value);
-
-function parseProjection(value: unknown): SessionProjection | null {
-  if (!isRecord(value) || value.version !== 1) return null;
-  if (
-    typeof value.id !== "string" ||
-    typeof value.status !== "string" ||
-    !isSessionStatus(value.status) ||
-    typeof value.repo !== "string" ||
-    typeof value.defaultBranch !== "string" ||
-    typeof value.branch !== "string" ||
-    typeof value.createdAt !== "string" ||
-    typeof value.updatedAt !== "string" ||
-    typeof value.hardCapAt !== "string" ||
-    typeof value.projectedAt !== "string"
-  ) {
-    return null;
-  }
-  if (
-    (value.backupId !== undefined && typeof value.backupId !== "string") ||
-    (value.codexThreadId !== undefined && typeof value.codexThreadId !== "string")
-  ) {
-    return null;
-  }
-  let failure;
-  if (value.failure !== undefined) {
-    if (
-      !isRecord(value.failure) ||
-      typeof value.failure.code !== "string" ||
-      typeof value.failure.message !== "string" ||
-      typeof value.failure.recoverable !== "boolean"
-    ) {
-      return null;
-    }
-    failure = {
-      code: value.failure.code,
-      message: value.failure.message,
-      recoverable: value.failure.recoverable,
-    };
-  }
-  return {
-    version: 1,
-    id: value.id,
-    status: value.status,
-    repo: value.repo,
-    defaultBranch: value.defaultBranch,
-    branch: value.branch,
-    backupId: value.backupId,
-    codexThreadId: value.codexThreadId,
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
-    hardCapAt: value.hardCapAt,
-    projectedAt: value.projectedAt,
-    failure,
-  };
 }
 
 async function terminalAsset(env: Bindings, request: Request): Promise<Response> {

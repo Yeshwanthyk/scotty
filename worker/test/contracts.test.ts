@@ -1,34 +1,54 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, it } from "@effect/vitest";
+import { Effect, Option, Result } from "effect";
 import { isAuthorizedRequest } from "../src/auth";
 import {
+  badRequest,
+  conflict,
+  decodePublicError,
+  decodeSessionProjection,
+  decodeSessionRecord,
+  notFound,
   parseCreateInput,
+  parsePrInput,
   parseSessionId,
+  ScottyError,
   toProjection,
   toSessionView,
+  wrongState,
   type SessionRecord,
 } from "../src/contracts";
 import { parseCodexCredential, sentinelAuthJson, type StoredCredential } from "../src/egress";
 
 describe("request contracts", () => {
   it("parses and bounds create input", () => {
-    expect(parseCreateInput({ prompt: "ship it" })).toMatchObject({
+    assert.deepStrictEqual(parseCreateInput({ prompt: "ship it" }), {
       prompt: "ship it",
       repo: "anomalyco/rift",
       hardCapSeconds: 14_400,
     });
-    expect(parseCreateInput({ prompt: "ship it", cap: "90m" })).toEqual({
+    assert.deepStrictEqual(parseCreateInput({ prompt: "ship it", cap: "90m" }), {
       prompt: "ship it",
       repo: "anomalyco/rift",
       hardCapSeconds: 14_400,
     });
-    expect(() => parseCreateInput({ prompt: "", repo: "bad" })).toThrow(/prompt/u);
-    expect(() => parseCreateInput({ prompt: "x", hardCapSeconds: 30 })).toThrow(/hardCapSeconds/u);
+    assert.throws(() => parseCreateInput({}), /prompt must be a non-empty string/u);
+    assert.throws(() => parseCreateInput({ prompt: "", repo: "bad" }), /prompt/u);
+    assert.throws(() => parseCreateInput({ prompt: "x", hardCapSeconds: 30 }), /hardCapSeconds/u);
+  });
+
+  it("preserves PR title omission, trimming, and errors", () => {
+    assert.deepStrictEqual(parsePrInput(undefined), {});
+    assert.deepStrictEqual(parsePrInput(null), {});
+    assert.deepStrictEqual(parsePrInput({ ignored: true }), {});
+    assert.deepStrictEqual(parsePrInput({ title: " ship it " }), { title: "ship it" });
+    assert.throws(() => parsePrInput([]), /Request body must be a JSON object/u);
+    assert.throws(() => parsePrInput({ title: "" }), /title must be a non-empty string/u);
   });
 
   it("accepts only normalized session ids", () => {
-    expect(parseSessionId("a0b1c2d3e4f5")).toBe("a0b1c2d3e4f5");
-    expect(() => parseSessionId("../escape")).toThrow(/session id/u);
-    expect(() => parseSessionId("ABCDEF")).toThrow(/session id/u);
+    assert.strictEqual(parseSessionId("a0b1c2d3e4f5"), "a0b1c2d3e4f5");
+    assert.throws(() => parseSessionId("../escape"), /session id/u);
+    assert.throws(() => parseSessionId("ABCDEF"), /session id/u);
   });
 
   it("derives projection freshness without exposing operations", () => {
@@ -48,8 +68,8 @@ describe("request contracts", () => {
       ownedBackupIds: [],
     };
     const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));
-    expect(projection).not.toHaveProperty("operation");
-    expect(toSessionView(projection, Date.parse("2026-01-01T01:00:00.000Z"))).toMatchObject({
+    assert.ok(!("operation" in projection));
+    assert.deepInclude(toSessionView(projection, Date.parse("2026-01-01T01:00:00.000Z")), {
       ageSeconds: 3_600,
       capRemainingSeconds: 10_800,
     });
@@ -68,11 +88,111 @@ describe("request contracts", () => {
       hardCapAt: "2026-01-01T00:00:03.998Z",
       projectedAt: "2026-01-01T00:00:00.000Z",
     };
-    expect(toSessionView(projection, Date.parse("2026-01-01T00:00:01.999Z"))).toMatchObject({
+    assert.deepInclude(toSessionView(projection, Date.parse("2026-01-01T00:00:01.999Z")), {
       ageSeconds: 1,
       capRemainingSeconds: 1,
     });
   });
+});
+
+const persistedRecord = {
+  version: 1,
+  id: "a0b1c2d3e4f5",
+  status: "sleeping",
+  operation: null,
+  repo: "anomalyco/rift",
+  repoExistsAtCreate: true,
+  defaultBranch: "dev",
+  branch: "scotty/a0b1c2d3e4f5",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:01:00.000Z",
+  hardCapAt: "2026-01-01T04:00:00.000Z",
+  hardCapDurationSeconds: 14_400,
+  ownedBackupIds: ["backup-1"],
+  backup: {
+    current: { id: "backup-1", dir: "/workspace/a0b1c2d3e4f5", localBucket: true },
+  },
+} as const;
+
+describe("persisted session schemas", () => {
+  it.effect("decodes an exact authoritative version 1 record", () =>
+    Effect.gen(function* () {
+      const decoded = yield* decodeSessionRecord(persistedRecord);
+      assert.deepStrictEqual(decoded, persistedRecord);
+      const withPersistedUndefined = {
+        ...persistedRecord,
+        backup: { ...persistedRecord.backup, previous: undefined },
+        backupExpiresAt: undefined,
+        codexThreadId: undefined,
+        failure: undefined,
+      };
+      assert.deepStrictEqual(
+        yield* decodeSessionRecord(withPersistedUndefined),
+        withPersistedUndefined,
+      );
+    }),
+  );
+
+  it.effect("fails closed for missing, malformed, and excess authoritative state", () =>
+    Effect.gen(function* () {
+      for (const malformed of [
+        { ...persistedRecord, status: "unknown" },
+        { ...persistedRecord, operation: undefined },
+        { ...persistedRecord, secret: "excess" },
+        {
+          ...persistedRecord,
+          backup: { current: { ...persistedRecord.backup.current, secret: "nested excess" } },
+        },
+      ]) {
+        const decoded = yield* Effect.result(decodeSessionRecord(malformed));
+        assert.ok(Result.isFailure(decoded));
+      }
+    }),
+  );
+
+  it("strips projection extras and skips malformed projections", () => {
+    const projection = {
+      version: 1,
+      id: persistedRecord.id,
+      status: persistedRecord.status,
+      repo: persistedRecord.repo,
+      defaultBranch: persistedRecord.defaultBranch,
+      branch: persistedRecord.branch,
+      createdAt: persistedRecord.createdAt,
+      updatedAt: persistedRecord.updatedAt,
+      hardCapAt: persistedRecord.hardCapAt,
+      projectedAt: persistedRecord.updatedAt,
+      secret: "strip me",
+    };
+    const decoded = decodeSessionProjection(projection);
+    assert.ok(Option.isSome(decoded));
+    assert.ok(!("secret" in decoded.value));
+    assert.ok(Option.isNone(decodeSessionProjection({ ...projection, status: "unknown" })));
+  });
+});
+
+describe("public errors", () => {
+  it.effect("keeps code, status, exit, message, and hint correlations", () =>
+    Effect.gen(function* () {
+      const publicErrors = [
+        badRequest("Bad input", "Fix it"),
+        new ScottyError("auth", "Authentication required", { httpStatus: 401, exitCode: 4 }),
+        notFound("abc123"),
+        wrongState("warm", "resume", "Wait"),
+        conflict("Busy"),
+        new ScottyError("upstream", "Upstream failed", { httpStatus: 502, exitCode: 1 }),
+        new ScottyError("internal", "Internal error", { httpStatus: 500, exitCode: 1 }),
+      ];
+      for (const error of publicErrors) {
+        const decoded = yield* decodePublicError(error);
+        assert.strictEqual(decoded.code, error.code);
+        assert.strictEqual(decoded.httpStatus, error.httpStatus);
+        assert.strictEqual(decoded.exitCode, error.exitCode);
+        assert.strictEqual(decoded.message, error.message);
+        assert.strictEqual(decoded.hint, error.hint);
+      }
+    }),
+  );
 });
 
 describe("credential boundary", () => {
@@ -96,38 +216,42 @@ describe("credential boundary", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
     const containerAuth = sentinelAuthJson(stored);
-    expect(containerAuth).toContain(stored.codexSentinel);
-    expect(containerAuth).not.toContain(realAccess);
-    expect(containerAuth).not.toContain(realRefresh);
-    expect(containerAuth).not.toContain("account-real");
+    assert.ok(containerAuth.includes(stored.codexSentinel));
+    assert.ok(!containerAuth.includes(realAccess));
+    assert.ok(!containerAuth.includes(realRefresh));
+    assert.ok(!containerAuth.includes("account-real"));
   });
 
   it("rejects incomplete auth bundles", () => {
-    expect(() => parseCodexCredential("{}")).toThrow(/must contain/u);
-    expect(() => parseCodexCredential("{")).toThrow(/valid JSON/u);
+    assert.throws(() => parseCodexCredential("{}"), /must contain/u);
+    assert.throws(() => parseCodexCredential("{"), /valid JSON/u);
   });
 });
 
 describe("Worker authentication", () => {
   it("accepts bearer and cookie credentials without accepting query credentials by default", async () => {
     const token = "test-token-1234567890";
-    await expect(
-      isAuthorizedRequest(
+    assert.strictEqual(
+      await isAuthorizedRequest(
         new Request("https://scotty.test/api", { headers: { authorization: `Bearer ${token}` } }),
         token,
       ),
-    ).resolves.toBe(true);
-    await expect(
-      isAuthorizedRequest(
+      true,
+    );
+    assert.strictEqual(
+      await isAuthorizedRequest(
         new Request("https://scotty.test/api", { headers: { cookie: `__Host-scotty=${token}` } }),
         token,
       ),
-    ).resolves.toBe(true);
-    await expect(
-      isAuthorizedRequest(new Request(`https://scotty.test/api?t=${token}`), token),
-    ).resolves.toBe(false);
-    await expect(
-      isAuthorizedRequest(new Request(`https://scotty.test/api?t=${token}`), token, true),
-    ).resolves.toBe(true);
+      true,
+    );
+    assert.strictEqual(
+      await isAuthorizedRequest(new Request(`https://scotty.test/api?t=${token}`), token),
+      false,
+    );
+    assert.strictEqual(
+      await isAuthorizedRequest(new Request(`https://scotty.test/api?t=${token}`), token, true),
+      true,
+    );
   });
 });

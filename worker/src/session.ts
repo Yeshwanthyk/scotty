@@ -101,7 +101,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         updatedAt: new Date().toISOString(),
       }));
       await this.schedule(5, "captureThreadId");
-      return toSessionView(toProjection(ready));
+      return toSessionView(toProjection(ready, new Date()), Date.now());
     } catch (error) {
       const failed = await this.failOperation(
         nonce,
@@ -120,14 +120,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async getScottySession(): Promise<SessionView> {
     const record = await this.requireRecord();
-    return toSessionView(toProjection(record));
+    return toSessionView(toProjection(record, new Date()), Date.now());
   }
 
   async snapshotScottySession(): Promise<SessionView> {
     const operation = await this.acquireOperation("snapshot", ["warm"]);
     try {
       const record = await this.checkpoint(operation.nonce, true);
-      return toSessionView(toProjection(record));
+      return toSessionView(toProjection(record, new Date()), Date.now());
     } catch (error) {
       await this.releaseOperation(operation.nonce);
       throw this.upstreamError("Snapshot failed", error);
@@ -166,7 +166,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         updatedAt: new Date().toISOString(),
       }));
       await this.schedule(5, "captureThreadId");
-      return toSessionView(toProjection(ready));
+      return toSessionView(toProjection(ready, new Date()), Date.now());
     } catch (error) {
       await this.failOperation(operation.nonce, "resume_failed", "Session restore failed", true);
       try {
@@ -796,7 +796,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
     await this.env.SESSIONS.put(
       `${SESSION_KV_PREFIX}${record.id}`,
-      JSON.stringify(toProjection(record)),
+      JSON.stringify(toProjection(record, new Date())),
     );
   }
 

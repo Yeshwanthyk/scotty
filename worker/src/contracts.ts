@@ -1,4 +1,5 @@
-import type { DirectoryBackup } from "@cloudflare/sandbox";
+import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
+import { Option, Schema } from "effect";
 
 export const DEFAULT_REPO = "anomalyco/rift";
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
@@ -7,123 +8,245 @@ export const MAX_HARD_CAP_SECONDS = 24 * 60 * 60;
 export const SESSION_ROOT = "/workspace";
 export const SESSION_KV_PREFIX = "session:";
 
-export type SessionStatus = "booting" | "warm" | "sleeping" | "failed" | "gone";
-export type OperationKind = "create" | "snapshot" | "resume" | "pr" | "down" | "vaporize";
+export const SessionStatusSchema = Schema.Literals([
+  "booting",
+  "warm",
+  "sleeping",
+  "failed",
+  "gone",
+]);
+export type SessionStatus = typeof SessionStatusSchema.Type;
 
-export interface SessionOperation {
-  kind: OperationKind;
-  nonce: string;
-  startedAt: string;
-}
+export const OperationKindSchema = Schema.Literals([
+  "create",
+  "snapshot",
+  "resume",
+  "pr",
+  "down",
+  "vaporize",
+]);
+export type OperationKind = typeof OperationKindSchema.Type;
 
-export interface SessionFailure {
-  code: string;
-  message: string;
-  recoverable: boolean;
-}
+export const SessionOperationSchema = Schema.Struct({
+  kind: OperationKindSchema,
+  nonce: Schema.String,
+  startedAt: Schema.String,
+});
+export type SessionOperation = typeof SessionOperationSchema.Type;
 
-export interface SessionRecord {
-  version: 1;
-  id: string;
-  status: SessionStatus;
-  operation: SessionOperation | null;
-  repo: string;
-  repoExistsAtCreate: boolean;
-  defaultBranch: string;
-  branch: string;
-  createdAt: string;
-  updatedAt: string;
-  hardCapAt: string;
-  hardCapDurationSeconds: number;
-  ownedBackupIds: string[];
-  backupExpiresAt?: string;
-  backup?: {
-    current: DirectoryBackup;
-    previous?: DirectoryBackup;
-  };
-  codexThreadId?: string;
-  failure?: SessionFailure;
-}
+export const SessionFailureSchema = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  recoverable: Schema.Boolean,
+});
+export type SessionFailure = typeof SessionFailureSchema.Type;
 
-export interface SessionProjection {
-  version: 1;
-  id: string;
-  status: SessionStatus;
-  repo: string;
-  defaultBranch: string;
-  branch: string;
-  backupId?: string;
-  codexThreadId?: string;
-  createdAt: string;
-  updatedAt: string;
-  hardCapAt: string;
-  projectedAt: string;
-  failure?: SessionFailure;
-}
+export const DirectoryBackupSchema = Schema.Struct({
+  id: Schema.String,
+  dir: Schema.String,
+  localBucket: Schema.optional(Schema.Boolean),
+});
+export type DirectoryBackup = typeof DirectoryBackupSchema.Type;
 
-export interface SessionView extends SessionProjection {
-  ageSeconds: number;
-  capRemainingSeconds: number;
-}
+type Assert<T extends true> = T;
+export type DirectoryBackupSdkCompatibility = Assert<
+  DirectoryBackup extends SandboxDirectoryBackup
+    ? SandboxDirectoryBackup extends DirectoryBackup
+      ? true
+      : false
+    : false
+>;
 
-export interface CreateSessionInput {
-  prompt: string;
-  repo: string;
-  hardCapSeconds: number;
-}
+export const SessionRecordSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  id: Schema.String,
+  status: SessionStatusSchema,
+  operation: Schema.NullOr(SessionOperationSchema),
+  repo: Schema.String,
+  repoExistsAtCreate: Schema.Boolean,
+  defaultBranch: Schema.String,
+  branch: Schema.String,
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  hardCapAt: Schema.String,
+  hardCapDurationSeconds: Schema.Number,
+  ownedBackupIds: Schema.Array(Schema.String),
+  backupExpiresAt: Schema.optional(Schema.String),
+  backup: Schema.optional(
+    Schema.Struct({
+      current: DirectoryBackupSchema,
+      previous: Schema.optional(DirectoryBackupSchema),
+    }),
+  ),
+  codexThreadId: Schema.optional(Schema.String),
+  failure: Schema.optional(SessionFailureSchema),
+});
+export type SessionRecord = typeof SessionRecordSchema.Type;
 
-export interface PrInput {
-  title?: string;
-}
+export const decodeSessionRecord = Schema.decodeUnknownEffect(SessionRecordSchema, {
+  onExcessProperty: "error",
+});
 
-export interface PrResult {
-  prUrl?: string;
-  branchUrl: string;
-  created: boolean;
-}
+export const SessionProjectionSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  id: Schema.String,
+  status: SessionStatusSchema,
+  repo: Schema.String,
+  defaultBranch: Schema.String,
+  branch: Schema.String,
+  backupId: Schema.optionalKey(Schema.String),
+  codexThreadId: Schema.optionalKey(Schema.String),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  hardCapAt: Schema.String,
+  projectedAt: Schema.String,
+  failure: Schema.optionalKey(SessionFailureSchema),
+});
+export type SessionProjection = typeof SessionProjectionSchema.Type;
 
-export interface DownManifest {
-  version: 1;
-  id: string;
-  repo: string;
-  branch: string;
-  sha: string;
-  codexThreadId?: string;
-  rolloutFile?: string;
-}
+export const decodeSessionProjection = Schema.decodeUnknownOption(SessionProjectionSchema);
 
-export interface DownArchive {
-  path: string;
-  filename: string;
-  manifest: DownManifest;
-}
+export const SessionViewSchema = Schema.Struct({
+  ...SessionProjectionSchema.fields,
+  ageSeconds: Schema.Number,
+  capRemainingSeconds: Schema.Number,
+});
+export type SessionView = typeof SessionViewSchema.Type;
 
-export type ApiErrorCode =
-  | "bad_request"
-  | "auth"
-  | "not_found"
-  | "wrong_state"
-  | "conflict"
-  | "upstream"
-  | "internal";
+export const CreateSessionInputSchema = Schema.Struct({
+  prompt: Schema.String,
+  repo: Schema.String,
+  hardCapSeconds: Schema.Number,
+});
+export type CreateSessionInput = typeof CreateSessionInputSchema.Type;
 
-export class ScottyError extends Error {
-  readonly code: ApiErrorCode;
-  readonly httpStatus: number;
-  readonly exitCode: 1 | 2 | 3 | 4 | 5;
-  readonly hint?: string;
+export const PrInputSchema = Schema.Struct({
+  title: Schema.optionalKey(Schema.String),
+});
+export type PrInput = typeof PrInputSchema.Type;
 
+export const PrResultSchema = Schema.Struct({
+  prUrl: Schema.optionalKey(Schema.String),
+  branchUrl: Schema.String,
+  created: Schema.Boolean,
+});
+export type PrResult = typeof PrResultSchema.Type;
+
+export const DownManifestSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  id: Schema.String,
+  repo: Schema.String,
+  branch: Schema.String,
+  sha: Schema.String,
+  codexThreadId: Schema.optionalKey(Schema.String),
+  rolloutFile: Schema.optionalKey(Schema.String),
+});
+export type DownManifest = typeof DownManifestSchema.Type;
+
+export const DownArchiveSchema = Schema.Struct({
+  path: Schema.String,
+  filename: Schema.String,
+  manifest: DownManifestSchema,
+});
+export type DownArchive = typeof DownArchiveSchema.Type;
+
+export const ApiErrorCodeSchema = Schema.Literals([
+  "bad_request",
+  "auth",
+  "not_found",
+  "wrong_state",
+  "conflict",
+  "upstream",
+  "internal",
+]);
+export type ApiErrorCode = typeof ApiErrorCodeSchema.Type;
+
+const PublicErrorMessageFields = {
+  message: Schema.String,
+  hint: Schema.optionalKey(Schema.String),
+};
+
+export const PublicErrorSchema = Schema.Union([
+  Schema.Struct({
+    ...PublicErrorMessageFields,
+    code: Schema.Literal("bad_request"),
+    httpStatus: Schema.Literal(400),
+    exitCode: Schema.Literal(2),
+  }),
+  Schema.Struct({
+    ...PublicErrorMessageFields,
+    code: Schema.Literal("auth"),
+    httpStatus: Schema.Literal(401),
+    exitCode: Schema.Literal(4),
+  }),
+  Schema.Struct({
+    ...PublicErrorMessageFields,
+    code: Schema.Literal("not_found"),
+    httpStatus: Schema.Literal(404),
+    exitCode: Schema.Literal(3),
+  }),
+  Schema.Struct({
+    ...PublicErrorMessageFields,
+    code: Schema.Literal("wrong_state"),
+    httpStatus: Schema.Literal(409),
+    exitCode: Schema.Literal(5),
+  }),
+  Schema.Struct({
+    ...PublicErrorMessageFields,
+    code: Schema.Literal("conflict"),
+    httpStatus: Schema.Literal(409),
+    exitCode: Schema.Literal(5),
+  }),
+  Schema.Struct({
+    ...PublicErrorMessageFields,
+    code: Schema.Literal("upstream"),
+    httpStatus: Schema.Literal(502),
+    exitCode: Schema.Literal(1),
+  }),
+  Schema.Struct({
+    ...PublicErrorMessageFields,
+    code: Schema.Literal("internal"),
+    httpStatus: Schema.Literal(500),
+    exitCode: Schema.Literal(1),
+  }),
+]);
+export type PublicError = typeof PublicErrorSchema.Type;
+export const decodePublicError = Schema.decodeUnknownEffect(PublicErrorSchema);
+
+export const ErrorEnvelopeSchema = Schema.Struct({
+  error: Schema.Struct({
+    code: ApiErrorCodeSchema,
+    message: Schema.String,
+    hint: Schema.optionalKey(Schema.String),
+  }),
+});
+export type ErrorEnvelope = typeof ErrorEnvelopeSchema.Type;
+export const decodeErrorEnvelope = Schema.decodeUnknownEffect(ErrorEnvelopeSchema);
+
+const ScottyErrorFields = {
+  code: ApiErrorCodeSchema,
+  message: Schema.String,
+  httpStatus: Schema.Number,
+  exitCode: Schema.Literals([1, 2, 3, 4, 5]),
+  hint: Schema.optionalKey(Schema.String),
+};
+
+export class ScottyError extends Schema.TaggedErrorClass<ScottyError>("ScottyError")(
+  "ScottyError",
+  ScottyErrorFields,
+) {
   constructor(
     code: ApiErrorCode,
     message: string,
     options: { httpStatus: number; exitCode: 1 | 2 | 3 | 4 | 5; hint?: string },
   ) {
-    super(message);
-    this.name = "ScottyError";
-    this.code = code;
-    this.httpStatus = options.httpStatus;
-    this.exitCode = options.exitCode;
-    this.hint = options.hint;
+    super({
+      code,
+      message,
+      httpStatus: options.httpStatus,
+      exitCode: options.exitCode,
+      ...(options.hint === undefined ? {} : { hint: options.hint }),
+    });
   }
 }
 
@@ -150,15 +273,24 @@ export function conflict(message: string): ScottyError {
   return new ScottyError("conflict", message, { httpStatus: 409, exitCode: 5 });
 }
 
+const RawCreateSessionInputSchema = Schema.Struct({
+  prompt: Schema.optionalKey(Schema.Unknown),
+  repo: Schema.optionalKey(Schema.Unknown),
+  hardCapSeconds: Schema.optionalKey(Schema.Unknown),
+});
+const decodeRawCreateSessionInput = Schema.decodeUnknownOption(RawCreateSessionInputSchema);
+
 export function parseCreateInput(value: unknown): CreateSessionInput {
-  if (!isRecord(value)) throw badRequest("Request body must be a JSON object");
-  const prompt = readNonEmptyString(value.prompt, "prompt", 64_000);
-  const repo = value.repo === undefined ? DEFAULT_REPO : parseRepo(value.repo);
+  const decoded = decodeRawCreateSessionInput(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
+  const prompt = readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
+  const repo = decoded.value.repo === undefined ? DEFAULT_REPO : parseRepo(decoded.value.repo);
   const hardCapSeconds =
-    value.hardCapSeconds === undefined
+    decoded.value.hardCapSeconds === undefined
       ? DEFAULT_HARD_CAP_SECONDS
       : readInteger(
-          value.hardCapSeconds,
+          decoded.value.hardCapSeconds,
           "hardCapSeconds",
           MIN_HARD_CAP_SECONDS,
           MAX_HARD_CAP_SECONDS,
@@ -166,14 +298,24 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
   return { prompt, repo, hardCapSeconds };
 }
 
+const RawPrInputSchema = Schema.NullOr(
+  Schema.Struct({
+    title: Schema.optionalKey(Schema.Unknown),
+  }),
+);
+const decodeRawPrInput = Schema.decodeUnknownOption(RawPrInputSchema);
+
 export function parsePrInput(value: unknown): PrInput {
-  if (value === undefined || value === null) return {};
-  if (!isRecord(value)) throw badRequest("Request body must be a JSON object");
-  if (value.title === undefined) return {};
-  return { title: readNonEmptyString(value.title, "title", 256) };
+  if (value === undefined) return {};
+  const decoded = decodeRawPrInput(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
+  if (decoded.value === null || decoded.value.title === undefined) return {};
+  return { title: readNonEmptyString(decoded.value.title, "title", 256) };
 }
 
 export function parseSessionId(value: string): string {
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono path parser preserves the existing thrown ScottyError contract
   if (!/^[a-z0-9][a-z0-9-]{5,31}$/.test(value)) throw badRequest("Invalid session id");
   return value;
 }
@@ -181,12 +323,13 @@ export function parseSessionId(value: string): string {
 export function parseRepo(value: unknown): string {
   const repo = readNonEmptyString(value, "repo", 200);
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest("repo must be in owner/name form");
   }
   return repo;
 }
 
-export function toProjection(record: SessionRecord, now = new Date()): SessionProjection {
+export function toProjection(record: SessionRecord, now: Date): SessionProjection {
   return {
     version: 1,
     id: record.id,
@@ -204,7 +347,7 @@ export function toProjection(record: SessionRecord, now = new Date()): SessionPr
   };
 }
 
-export function toSessionView(projection: SessionProjection, nowMs = Date.now()): SessionView {
+export function toSessionView(projection: SessionProjection, nowMs: number): SessionView {
   return {
     ...projection,
     ageSeconds: Math.max(0, Math.floor((nowMs - Date.parse(projection.createdAt)) / 1000)),
@@ -217,15 +360,20 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function readNonEmptyString(value: unknown, field: string, maxLength: number): string {
-  if (typeof value !== "string" || value.trim().length === 0)
+  if (typeof value !== "string" || value.trim().length === 0) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest(`${field} must be a non-empty string`);
-  if (value.length > maxLength)
+  }
+  if (value.length > maxLength) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest(`${field} must be at most ${maxLength} characters`);
+  }
   return value.trim();
 }
 
 function readInteger(value: unknown, field: string, min: number, max: number): number {
   if (!Number.isInteger(value) || typeof value !== "number" || value < min || value > max) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest(`${field} must be an integer between ${min} and ${max}`);
   }
   return value;

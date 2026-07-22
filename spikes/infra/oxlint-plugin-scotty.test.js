@@ -476,6 +476,7 @@ describe("Scotty Oxlint policy integration", () => {
       {
         files: [
           "alchemy.run.ts",
+          "worker/src/contracts.ts",
           "spikes/infra/account-secrets-store-canary.run.ts",
           "spikes/infra/account-secrets-store-canary.ts",
           "spikes/infra/external-sandbox-container-binding.ts",
