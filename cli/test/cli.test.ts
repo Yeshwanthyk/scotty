@@ -187,6 +187,32 @@ describe("configuration and transport", () => {
     expect(h.json()).toEqual([]);
   });
 
+  test("config fields decode independently and unknown fields are ignored", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        host: { wrong: true },
+        token: "config-token",
+        credentialBundle: "must-not-leak",
+      }),
+    );
+    let request: Request | undefined;
+    const h = harness({
+      home,
+      env: { SCOTTY_HOST: "https://env.example" },
+      fetch: async (input, init) => {
+        request = new Request(input, init);
+        return Response.json([]);
+      },
+    });
+
+    expect(await main(["ls"], h.deps)).toBe(EXIT.OK);
+    expect(request?.url).toBe("https://env.example/api/sessions");
+    expect(request?.headers.get("authorization")).toBe("Bearer config-token");
+    expect(h.stdout.join("")).not.toContain("must-not-leak");
+  });
+
   test("init writes a 0600 config without echoing the token", async () => {
     const home = await temporaryDirectory();
     const h = harness({ home });
@@ -285,6 +311,46 @@ describe("configuration and transport", () => {
     ]);
     expect(h.stdout.join("")).not.toContain("must-not-leak");
   });
+
+  test("ls omits invalid optionals and applies failure defaults field by field", async () => {
+    const session = {
+      id: "s1",
+      status: "failed",
+      repo: "anomalyco/rift",
+      defaultBranch: "dev",
+      branch: "scotty/s1",
+      createdAt: "2026-07-20T12:00:00Z",
+      updatedAt: "2026-07-20T12:01:00Z",
+      hardCapAt: "2026-07-20T16:00:00Z",
+      ageSeconds: 60,
+      capRemainingSeconds: 14340,
+      projectedAt: null,
+      codexThreadId: 42,
+      failure: { code: 9, message: null, recoverable: "yes", secret: "must-not-leak" },
+      secret: "must-not-leak",
+    };
+    const h = harness({ fetch: async () => Response.json([session]) });
+
+    expect(
+      await main(["ls", "--host", "https://worker.example", "--token", "secret"], h.deps),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual([
+      {
+        id: "s1",
+        status: "failed",
+        repo: "anomalyco/rift",
+        defaultBranch: "dev",
+        branch: "scotty/s1",
+        createdAt: "2026-07-20T12:00:00Z",
+        updatedAt: "2026-07-20T12:01:00Z",
+        hardCapAt: "2026-07-20T16:00:00Z",
+        ageSeconds: 60,
+        capRemainingSeconds: 14340,
+        failure: { code: "unknown", message: "Session failed", recoverable: false },
+      },
+    ]);
+    expect(h.stdout.join("")).not.toContain("must-not-leak");
+  });
 });
 
 describe("commands and schemas", () => {
@@ -309,6 +375,68 @@ describe("commands and schemas", () => {
       ).toBe(exit);
       expect(h.error()).toEqual({ error: { code: errorCode, message: "failed", hint: "act" } });
     }
+  });
+
+  test("preserves arbitrary error codes, status precedence, fallback, and redaction", async () => {
+    for (const [status, reply, exit, expected] of [
+      [
+        418,
+        { error: { code: "custom_teapot", message: "failed", hint: "act" } },
+        EXIT.GENERIC,
+        "custom_teapot",
+      ],
+      [
+        403,
+        { error: { code: "custom_denied", message: "failed", hint: "act" } },
+        EXIT.AUTH,
+        "custom_denied",
+      ],
+      [422, { error: { code: 12, message: null, hint: [] } }, EXIT.USAGE, "http_422"],
+    ] as const) {
+      const h = harness({ fetch: async () => Response.json(reply, { status }) });
+      expect(
+        await main(
+          ["resume", "s1", "--host", "https://worker.example", "--token", "secret"],
+          h.deps,
+        ),
+      ).toBe(exit);
+      expect(h.error().error.code).toBe(expected);
+      expect(h.stdout.join("")).toBe("");
+    }
+
+    const secret = "server-echoed-token";
+    const redacted = harness({
+      fetch: async () =>
+        Response.json(
+          { error: { code: "custom", message: `failed ${secret}`, hint: `remove ${secret}` } },
+          { status: 500 },
+        ),
+    });
+    expect(
+      await main(
+        ["resume", "s1", "--host", "https://worker.example", "--token", secret],
+        redacted.deps,
+      ),
+    ).toBe(EXIT.GENERIC);
+    expect(redacted.stderr.join("")).not.toContain(secret);
+    expect(redacted.error().error).toEqual({
+      code: "custom",
+      message: "failed [REDACTED]",
+      hint: "remove [REDACTED]",
+    });
+
+    const redactedCode = harness({
+      fetch: async () =>
+        Response.json({ error: { code: secret, message: "failed", hint: "act" } }, { status: 500 }),
+    });
+    expect(
+      await main(
+        ["resume", "s1", "--host", "https://worker.example", "--token", secret],
+        redactedCode.deps,
+      ),
+    ).toBe(EXIT.GENERIC);
+    expect(redactedCode.stderr.join("")).not.toContain(secret);
+    expect(redactedCode.error().error.code).toBe("[REDACTED]");
   });
 
   test("snapshot, resume, and pr emit minimal stable schemas", async () => {
@@ -357,12 +485,99 @@ describe("commands and schemas", () => {
     }
   });
 
+  test("operation optionals omit nulls and missing response IDs use the requested ID", async () => {
+    for (const [args, reply, expected] of [
+      [
+        ["snapshot", "requested"],
+        { status: "warm", id: null, backupId: null, url: null, branch: null, ignored: true },
+        { id: "requested", status: "warm" },
+      ],
+      [
+        ["resume", "requested"],
+        { status: "warm", url: null, branch: null, backupId: null, ignored: true },
+        { id: "requested", status: "warm" },
+      ],
+      [
+        ["pr", "requested"],
+        { prUrl: null, branchUrl: "https://github.test/tree/scotty/requested", created: false },
+        { branchUrl: "https://github.test/tree/scotty/requested", created: false },
+      ],
+    ] as const) {
+      const h = harness({ fetch: async () => Response.json(reply) });
+      expect(
+        await main([...args, "--host", "https://worker.example", "--token", "secret"], h.deps),
+      ).toBe(EXIT.OK);
+      expect(h.json()).toEqual(expected);
+    }
+  });
+
+  test("up strips same-origin tokens and rejects cross-origin terminal URLs", async () => {
+    const tokenized = harness({
+      fetch: async () =>
+        Response.json({
+          id: "s1",
+          url: "https://worker.example/s/s1?t=server-secret#fragment",
+          branch: "scotty/s1",
+          status: "warm",
+          internal: "must-not-leak",
+        }),
+    });
+    expect(
+      await main(
+        ["up", "fix", "--detach", "--host", "https://worker.example", "--token", "secret"],
+        tokenized.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(tokenized.json()).toEqual({
+      id: "s1",
+      url: "https://worker.example/s/s1",
+      branch: "scotty/s1",
+      status: "warm",
+    });
+
+    const crossOrigin = harness({
+      fetch: async () =>
+        Response.json({
+          id: "s1",
+          url: "https://attacker.example/s/s1?t=secret",
+          branch: "scotty/s1",
+          status: "warm",
+        }),
+    });
+    expect(
+      await main(
+        ["up", "fix", "--detach", "--host", "https://worker.example", "--token", "secret"],
+        crossOrigin.deps,
+      ),
+    ).toBe(EXIT.GENERIC);
+    expect(crossOrigin.stdout.join("")).toBe("");
+    expect(crossOrigin.error().error.code).toBe("invalid_response");
+
+    const userInfo = harness({
+      fetch: async () =>
+        Response.json({
+          id: "s1",
+          url: "https://url-secret@worker.example/s/s1",
+          branch: "scotty/s1",
+          status: "warm",
+        }),
+    });
+    expect(
+      await main(
+        ["up", "fix", "--detach", "--host", "https://worker.example", "--token", "secret"],
+        userInfo.deps,
+      ),
+    ).toBe(EXIT.GENERIC);
+    expect(userInfo.stdout.join("")).toBe("");
+    expect(userInfo.stderr.join("")).not.toContain("url-secret");
+  });
+
   test("non-TTY vaporize never prompts and sends DELETE", async () => {
     let method = "";
     const h = harness({
       fetch: async (_input, init) => {
         method = init?.method || "GET";
-        return Response.json({ id: "s1", status: "gone" });
+        return Response.json({ id: "s1", status: "gone", credential: "must-not-leak" });
       },
     });
     expect(
@@ -374,6 +589,24 @@ describe("commands and schemas", () => {
     expect(method).toBe("DELETE");
     expect(h.prompts()).toBe(0);
     expect(h.json()).toEqual({ id: "s1", status: "gone" });
+    expect(h.stdout.join("")).not.toContain("must-not-leak");
+  });
+
+  test("vaporize requires the exact requested ID and literal gone status", async () => {
+    for (const reply of [
+      { id: "different", status: "gone" },
+      { id: "s1", status: "sleeping" },
+    ]) {
+      const h = harness({ fetch: async () => Response.json(reply) });
+      expect(
+        await main(
+          ["vaporize", "s1", "--yes", "--host", "https://worker.example", "--token", "secret"],
+          h.deps,
+        ),
+      ).toBe(EXIT.GENERIC);
+      expect(h.stdout.join("")).toBe("");
+      expect(h.error().error.code).toBe("invalid_response");
+    }
   });
 
   test("attach opens a tokenized URL but never prints the token", async () => {
@@ -433,10 +666,15 @@ describe("beam down and embedded skill", () => {
         "metadata.json",
         new TextEncoder().encode(
           JSON.stringify({
+            version: 1,
+            id: "s1",
+            repo: "anomalyco/rift",
             branch: "scotty/s1",
             sha,
             codexThreadId: threadId,
             rolloutFile: `rollout-2026-07-20T12-00-00-${threadId}.jsonl`,
+            rolloutPath: `sessions/2026/07/20/rollout-2026-07-20T12-00-00-${threadId}.jsonl`,
+            internal: "must-not-leak",
           }),
         ),
       ],
@@ -470,6 +708,81 @@ describe("beam down and embedded skill", () => {
     expect(result.resumeCmd).toContain(`codex resume '${threadId}' -C`);
     expect((await stat(result.rolloutPath)).mode & 0o777).toBe(0o600);
     expect(await readFile(result.rolloutPath, "utf8")).toBe('{"type":"session_meta"}\n');
+    expect(h.stdout.join("")).not.toContain("must-not-leak");
+  });
+
+  test("down accepts legacy JSON rollout metadata", async () => {
+    const home = await temporaryDirectory();
+    const cwd = await temporaryDirectory();
+    const threadId = "019c7714-3b77-74d1-9866-e1f484aae2ab";
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const rolloutName = `rollout-2026-07-20T12-00-00-${threadId}.jsonl`;
+    const h = harness({
+      home,
+      cwd,
+      fetch: async () =>
+        Response.json({
+          branch: "scotty/s1",
+          sha,
+          rolloutBase64: Buffer.from('{"type":"session_meta"}\n').toString("base64"),
+          rolloutName,
+          unknownCredential: "must-not-leak",
+        }),
+      run: async (command) => ({
+        exitCode: 0,
+        stdout: command[1] === "rev-parse" ? `${sha}\n` : "",
+        stderr: "",
+      }),
+    });
+
+    expect(
+      await main(["down", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
+    ).toBe(EXIT.OK);
+    const result = h.json();
+    expect(result).toEqual({
+      branch: "scotty/s1",
+      sha,
+      rolloutPath: join(home, ".codex", "sessions", "2026", "07", "20", rolloutName),
+      resumeCmd: `codex resume '${threadId}' -C '${cwd}'`,
+    });
+    expect(h.stdout.join("")).not.toContain("must-not-leak");
+  });
+
+  test("down emits explicit null rollout fields when the production manifest has no rollout", async () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const archive = tarFile([
+      [
+        "metadata.json",
+        new TextEncoder().encode(
+          JSON.stringify({
+            version: 1,
+            id: "s1",
+            repo: "anomalyco/rift",
+            branch: "scotty/s1",
+            sha,
+          }),
+        ),
+      ],
+    ]);
+    const h = harness({
+      fetch: async () =>
+        new Response(archive, { headers: { "content-type": "application/x-tar" } }),
+      run: async (command) => ({
+        exitCode: 0,
+        stdout: command[1] === "rev-parse" ? `${sha}\n` : "",
+        stderr: "",
+      }),
+    });
+
+    expect(
+      await main(["down", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual({
+      branch: "scotty/s1",
+      sha,
+      rolloutPath: null,
+      resumeCmd: null,
+    });
   });
 
   test("down rejects an unsafe branch before invoking git", async () => {

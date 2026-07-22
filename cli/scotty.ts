@@ -3,6 +3,7 @@
 import { chmod, mkdir, open, readFile, rename } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { Option, Schema } from "effect";
 
 export const EXIT = {
   OK: 0,
@@ -31,19 +32,16 @@ export interface CliDependencies {
   run: (command: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 }
 
-interface Config {
-  host?: string;
-  token?: string;
-}
+const ConfigSchema = Schema.Struct({
+  host: Schema.optionalKey(Schema.String),
+  token: Schema.optionalKey(Schema.String),
+});
+type Config = typeof ConfigSchema.Type;
 
 interface GlobalOptions {
   json: boolean;
   host?: string;
   token?: string;
-}
-
-interface ApiErrorShape {
-  error?: { code?: unknown; message?: unknown; hint?: unknown };
 }
 
 export class CliError extends Error {
@@ -61,6 +59,85 @@ const VERSION = "1.0.0";
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const MUTATION_REQUEST_TIMEOUT_MS = 5 * 60_000;
+
+const RawConfigSchema = Schema.Struct({
+  host: Schema.optionalKey(Schema.Unknown),
+  token: Schema.optionalKey(Schema.Unknown),
+});
+const UpResponseSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  url: Schema.NonEmptyString,
+  branch: Schema.NonEmptyString,
+  status: Schema.NonEmptyString,
+});
+const OperationResponseSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.Unknown),
+  url: Schema.optionalKey(Schema.Unknown),
+  branch: Schema.optionalKey(Schema.Unknown),
+  backupId: Schema.optionalKey(Schema.Unknown),
+  status: Schema.NonEmptyString,
+});
+const PrResponseSchema = Schema.Struct({
+  prUrl: Schema.optionalKey(Schema.Unknown),
+  branchUrl: Schema.NonEmptyString,
+  created: Schema.Boolean,
+});
+const RawSessionFailureSchema = Schema.Struct({
+  code: Schema.optionalKey(Schema.Unknown),
+  message: Schema.optionalKey(Schema.Unknown),
+  recoverable: Schema.optionalKey(Schema.Unknown),
+});
+const SessionResponseSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.NonEmptyString,
+  repo: Schema.NonEmptyString,
+  defaultBranch: Schema.NonEmptyString,
+  branch: Schema.NonEmptyString,
+  createdAt: Schema.NonEmptyString,
+  updatedAt: Schema.NonEmptyString,
+  hardCapAt: Schema.NonEmptyString,
+  ageSeconds: Schema.Finite,
+  capRemainingSeconds: Schema.Finite,
+  projectedAt: Schema.optionalKey(Schema.Unknown),
+  codexThreadId: Schema.optionalKey(Schema.Unknown),
+  failure: Schema.optionalKey(Schema.Unknown),
+});
+const SessionsResponseSchema = Schema.Array(SessionResponseSchema);
+const ErrorEnvelopeSchema = Schema.Struct({ error: Schema.optionalKey(Schema.Unknown) });
+const ErrorFieldsSchema = Schema.Struct({
+  code: Schema.optionalKey(Schema.Unknown),
+  message: Schema.optionalKey(Schema.Unknown),
+  hint: Schema.optionalKey(Schema.Unknown),
+});
+const DownMetadataSchema = Schema.Struct({
+  branch: Schema.NonEmptyString,
+  sha: Schema.NonEmptyString,
+  codexThreadId: Schema.optionalKey(Schema.Unknown),
+  rolloutFile: Schema.optionalKey(Schema.Unknown),
+  rolloutPath: Schema.optionalKey(Schema.Unknown),
+  rolloutBase64: Schema.optionalKey(Schema.Unknown),
+  rolloutName: Schema.optionalKey(Schema.Unknown),
+});
+const VaporizeResponseSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.Literal("gone"),
+});
+
+type SessionResponse = typeof SessionResponseSchema.Type;
+
+const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+const decodeRawConfig = Schema.decodeUnknownOption(RawConfigSchema);
+const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
+const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
+const decodePrResponse = Schema.decodeUnknownOption(PrResponseSchema);
+const decodeRawSessionFailure = Schema.decodeUnknownOption(RawSessionFailureSchema);
+const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema);
+const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchema);
+const decodeErrorFields = Schema.decodeUnknownOption(ErrorFieldsSchema);
+const decodeDownMetadata = Schema.decodeUnknownOption(DownMetadataSchema);
+const decodeVaporizeResponse = Schema.decodeUnknownOption(VaporizeResponseSchema);
+const decodeString = Schema.decodeUnknownOption(Schema.String);
+const decodeNonEmptyString = Schema.decodeUnknownOption(Schema.NonEmptyString);
 
 const COMMAND_HELP: Record<string, string> = {
   init: `Usage: scotty init [--host URL] [--token TOKEN] [--json]\n\nFlags:\n  --host URL      Worker origin\n  --token TOKEN    Scotty bearer token\n  --json           Emit JSON\n\nExamples:\n  scotty init\n  scotty init --host https://scotty.example.workers.dev --token "$SCOTTY_TOKEN"`,
@@ -158,6 +235,7 @@ function defaultDependencies(): CliDependencies {
             : ["xdg-open", url];
       const child = Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
       const code = await child.exited;
+      // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native browser opener callback must reject its Promise for the CLI host adapter
       if (code !== 0) throw new Error(`browser opener exited ${code}`);
     },
     run: async (command) => {
@@ -176,60 +254,17 @@ function outputJson(write: Writer, value: unknown): void {
   write(`${JSON.stringify(value)}\n`);
 }
 
-function asRecord(value: unknown): JsonObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new CliError(
-      "invalid_response",
-      "Server returned an invalid response",
-      "Check that the CLI and Worker versions match.",
-      EXIT.GENERIC,
-    );
-  }
-  return value as JsonObject;
+function invalidResponse(message = "Server returned an invalid response"): CliError {
+  return new CliError(
+    "invalid_response",
+    message,
+    "Check that the CLI and Worker versions match.",
+    EXIT.GENERIC,
+  );
 }
 
-function requireString(record: JsonObject, key: string): string {
-  const value = record[key];
-  if (typeof value !== "string" || value.length === 0) {
-    throw new CliError(
-      "invalid_response",
-      `Server response is missing ${key}`,
-      "Check that the CLI and Worker versions match.",
-      EXIT.GENERIC,
-    );
-  }
-  return value;
-}
-
-function optionalString(record: JsonObject, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function requireBoolean(record: JsonObject, key: string): boolean {
-  const value = record[key];
-  if (typeof value !== "boolean") {
-    throw new CliError(
-      "invalid_response",
-      `Server response has invalid ${key}`,
-      "Check that the CLI and Worker versions match.",
-      EXIT.GENERIC,
-    );
-  }
-  return value;
-}
-
-function requireNumber(record: JsonObject, key: string): number {
-  const value = record[key];
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new CliError(
-      "invalid_response",
-      `Server response has invalid ${key}`,
-      "Check that the CLI and Worker versions match.",
-      EXIT.GENERIC,
-    );
-  }
-  return value;
+function optionalString(value: unknown): string | undefined {
+  return Option.getOrUndefined(decodeNonEmptyString(value));
 }
 
 function parseGlobal(args: string[]): { args: string[]; options: GlobalOptions } {
@@ -322,15 +357,9 @@ async function readConfig(path: string): Promise<Config> {
       EXIT.GENERIC,
     );
   }
-  try {
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      throw new Error("not object");
-    return {
-      host: typeof parsed.host === "string" ? parsed.host : undefined,
-      token: typeof parsed.token === "string" ? parsed.token : undefined,
-    };
-  } catch {
+  const json = decodeJsonValue(text);
+  const raw = Option.isSome(json) ? decodeRawConfig(json.value) : Option.none();
+  if (Option.isNone(raw)) {
     throw new CliError(
       "invalid_config",
       "Scotty config is not valid JSON",
@@ -338,6 +367,13 @@ async function readConfig(path: string): Promise<Config> {
       EXIT.USAGE,
     );
   }
+  const host = Option.getOrUndefined(decodeString(raw.value.host));
+  const token = Option.getOrUndefined(decodeString(raw.value.token));
+  const config = {
+    ...(host === undefined ? {} : { host }),
+    ...(token === undefined ? {} : { token }),
+  };
+  return config;
 }
 
 async function secureWrite(path: string, data: string): Promise<void> {
@@ -380,22 +416,26 @@ function sanitizeUrl(raw: string, host: string, id?: string): string {
   try {
     const base = new URL(host);
     const url = new URL(raw, base);
-    if (url.origin !== base.origin) throw new Error("cross-origin URL");
+    if (url.origin !== base.origin || url.username || url.password)
+      throw invalidResponse("Worker returned an unsafe terminal URL");
     url.search = "";
     url.hash = "";
     return url.toString().replace(/\/$/, "");
-  } catch {
-    return id ? `${host}/s/${encodeURIComponent(id)}` : host;
+  } catch (error) {
+    if (error instanceof CliError) throw error;
+    throw invalidResponse(
+      id ? `Worker returned an invalid terminal URL for ${id}` : "Worker returned an invalid URL",
+    );
   }
 }
 
 function browserUrl(raw: string | undefined, host: string, token: string, id: string): string {
   const base = new URL(host);
   const url = new URL(raw || `${host}/s/${encodeURIComponent(id)}`, base);
-  if (url.origin !== base.origin)
+  if (url.origin !== base.origin || url.username || url.password)
     throw new CliError(
       "invalid_response",
-      "Worker returned a cross-origin terminal URL",
+      "Worker returned an unsafe terminal URL",
       "Check the configured Worker host.",
       EXIT.GENERIC,
     );
@@ -479,25 +519,25 @@ async function apiRequest(
     });
     const bytes = await readLimited(response);
     if (!response.ok) {
-      let body: ApiErrorShape = {};
-      try {
-        body = JSON.parse(new TextDecoder().decode(bytes));
-      } catch {
-        /* handled below */
-      }
-      const serverError = body.error;
-      const code =
-        typeof serverError?.code === "string" ? serverError.code : `http_${response.status}`;
+      const json = decodeJsonValue(new TextDecoder().decode(bytes));
+      const envelope = Option.isSome(json) ? decodeErrorEnvelope(json.value) : Option.none();
+      const fields =
+        Option.isSome(envelope) && envelope.value.error !== undefined
+          ? decodeErrorFields(envelope.value.error)
+          : Option.none();
+      const code = Option.isSome(fields)
+        ? (Option.getOrUndefined(decodeString(fields.value.code)) ?? `http_${response.status}`)
+        : `http_${response.status}`;
       const message =
-        typeof serverError?.message === "string"
-          ? serverError.message
-          : `Request failed with HTTP ${response.status}`;
+        (Option.isSome(fields)
+          ? Option.getOrUndefined(decodeString(fields.value.message))
+          : undefined) ?? `Request failed with HTTP ${response.status}`;
       const hint =
-        typeof serverError?.hint === "string"
-          ? serverError.hint
-          : "Check the session state and Worker logs.";
+        (Option.isSome(fields)
+          ? Option.getOrUndefined(decodeString(fields.value.hint))
+          : undefined) ?? "Check the session state and Worker logs.";
       throw new CliError(
-        code,
+        redact(code, [auth.token]),
         redact(message, [auth.token]),
         redact(hint, [auth.token]),
         statusExit(response.status, code),
@@ -519,16 +559,9 @@ async function apiRequest(
 }
 
 function decodeJson(bytes: Uint8Array): unknown {
-  try {
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    throw new CliError(
-      "invalid_response",
-      "Server returned invalid JSON",
-      "Check that the CLI and Worker versions match.",
-      EXIT.GENERIC,
-    );
-  }
+  const decoded = decodeJsonValue(new TextDecoder().decode(bytes));
+  if (Option.isNone(decoded)) throw invalidResponse("Server returned invalid JSON");
+  return decoded.value;
 }
 
 async function requestJson(
@@ -544,52 +577,55 @@ async function requestJson(
 function stableUp(
   value: unknown,
   host: string,
-): { id: string; url: string; branch: string; status: string } {
-  const record = asRecord(value);
-  const id = requireString(record, "id");
+): { output: { id: string; url: string; branch: string; status: string }; terminalUrl: string } {
+  const decoded = decodeUpResponse(value);
+  if (Option.isNone(decoded)) throw invalidResponse();
   return {
-    id,
-    url: sanitizeUrl(requireString(record, "url"), host, id),
-    branch: requireString(record, "branch"),
-    status: requireString(record, "status"),
+    output: {
+      id: decoded.value.id,
+      url: sanitizeUrl(decoded.value.url, host, decoded.value.id),
+      branch: decoded.value.branch,
+      status: decoded.value.status,
+    },
+    terminalUrl: decoded.value.url,
   };
 }
 
 function stablePr(value: unknown): { prUrl?: string; branchUrl: string; created: boolean } {
-  const record = asRecord(value);
+  const decoded = decodePrResponse(value);
+  if (Option.isNone(decoded)) throw invalidResponse();
   const result: { prUrl?: string; branchUrl: string; created: boolean } = {
-    branchUrl: requireString(record, "branchUrl"),
-    created: requireBoolean(record, "created"),
+    branchUrl: decoded.value.branchUrl,
+    created: decoded.value.created,
   };
-  const prUrl = optionalString(record, "prUrl");
+  const prUrl = optionalString(decoded.value.prUrl);
   if (prUrl) result.prUrl = prUrl;
   return result;
 }
 
-function stableSession(value: unknown): JsonObject {
-  const record = asRecord(value);
+function stableSession(record: SessionResponse): JsonObject {
   const result: JsonObject = {
-    id: requireString(record, "id"),
-    status: requireString(record, "status"),
-    repo: requireString(record, "repo"),
-    defaultBranch: requireString(record, "defaultBranch"),
-    branch: requireString(record, "branch"),
-    createdAt: requireString(record, "createdAt"),
-    updatedAt: requireString(record, "updatedAt"),
-    hardCapAt: requireString(record, "hardCapAt"),
-    ageSeconds: requireNumber(record, "ageSeconds"),
-    capRemainingSeconds: requireNumber(record, "capRemainingSeconds"),
+    id: record.id,
+    status: record.status,
+    repo: record.repo,
+    defaultBranch: record.defaultBranch,
+    branch: record.branch,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    hardCapAt: record.hardCapAt,
+    ageSeconds: record.ageSeconds,
+    capRemainingSeconds: record.capRemainingSeconds,
   };
-  const projectedAt = optionalString(record, "projectedAt");
-  const codexThreadId = optionalString(record, "codexThreadId");
+  const projectedAt = optionalString(record.projectedAt);
+  const codexThreadId = optionalString(record.codexThreadId);
   if (projectedAt) result.projectedAt = projectedAt;
   if (codexThreadId) result.codexThreadId = codexThreadId;
-  if (record.failure && typeof record.failure === "object" && !Array.isArray(record.failure)) {
-    const failure = record.failure as JsonObject;
+  const failure = decodeRawSessionFailure(record.failure);
+  if (Option.isSome(failure)) {
     result.failure = {
-      code: typeof failure.code === "string" ? failure.code : "unknown",
-      message: typeof failure.message === "string" ? failure.message : "Session failed",
-      recoverable: failure.recoverable === true,
+      code: Option.getOrUndefined(decodeString(failure.value.code)) ?? "unknown",
+      message: Option.getOrUndefined(decodeString(failure.value.message)) ?? "Session failed",
+      recoverable: failure.value.recoverable === true,
     };
   }
   return result;
@@ -751,13 +787,10 @@ async function handleDown(
     `/api/sessions/${encodeURIComponent(id)}/down`,
   );
   const contentType = response.headers.get("content-type") || "";
-  let metadata: JsonObject;
+  let metadataValue: unknown;
   let rollout: { path: string; bytes: Uint8Array } | undefined;
   if (contentType.includes("json")) {
-    metadata = asRecord(decodeJson(bytes));
-    const encoded = optionalString(metadata, "rolloutBase64");
-    const name = optionalString(metadata, "rolloutName");
-    if (encoded && name) rollout = { path: name, bytes: Uint8Array.fromBase64(encoded) };
+    metadataValue = decodeJson(bytes);
   } else {
     const files = parseTar(bytes);
     const metadataBytes = files.get("metadata.json");
@@ -768,7 +801,7 @@ async function handleDown(
         "Retry down or inspect the Worker.",
         EXIT.GENERIC,
       );
-    metadata = asRecord(decodeJson(metadataBytes));
+    metadataValue = decodeJson(metadataBytes);
     const rolloutEntries = [...files.entries()].filter(([path]) => path.endsWith(".jsonl"));
     if (rolloutEntries.length > 1)
       throw new CliError(
@@ -780,8 +813,16 @@ async function handleDown(
     const rolloutEntry = rolloutEntries[0];
     if (rolloutEntry) rollout = { path: rolloutEntry[0], bytes: rolloutEntry[1] };
   }
-  const declaredRolloutPath = optionalString(metadata, "rolloutPath");
-  const declaredRolloutFile = optionalString(metadata, "rolloutFile");
+  const decodedMetadata = decodeDownMetadata(metadataValue);
+  if (Option.isNone(decodedMetadata)) throw invalidResponse();
+  const metadata = decodedMetadata.value;
+  if (contentType.includes("json")) {
+    const encoded = optionalString(metadata.rolloutBase64);
+    const name = optionalString(metadata.rolloutName);
+    if (encoded && name) rollout = { path: name, bytes: Uint8Array.fromBase64(encoded) };
+  }
+  const declaredRolloutPath = optionalString(metadata.rolloutPath);
+  const declaredRolloutFile = optionalString(metadata.rolloutFile);
   for (const declared of [declaredRolloutPath, declaredRolloutFile]) {
     if (declared && !safeRelativePath(declared))
       throw new CliError(
@@ -799,8 +840,7 @@ async function handleDown(
       );
   }
   if (rollout && declaredRolloutPath) rollout.path = declaredRolloutPath;
-  const branch = requireString(metadata, "branch");
-  const sha = requireString(metadata, "sha");
+  const { branch, sha } = metadata;
   if (!validGitRef(branch))
     throw new CliError(
       "invalid_response",
@@ -839,7 +879,7 @@ async function handleDown(
     try {
       rolloutPath = rolloutDestination(deps.home, rollout.path);
       await secureWrite(rolloutPath, new TextDecoder().decode(rollout.bytes));
-      const threadId = optionalString(metadata, "codexThreadId") ?? rolloutThreadId(rolloutPath);
+      const threadId = optionalString(metadata.codexThreadId) ?? rolloutThreadId(rolloutPath);
       if (threadId)
         resumeCmd = `codex resume ${shellQuote(threadId)} -C ${shellQuote(resolve(deps.cwd))}`;
     } catch (error) {
@@ -1018,14 +1058,10 @@ async function execute(rawArgs: string[], deps: CliDependencies): Promise<number
     if (args.length) throw usage(`Unexpected argument: ${args[0]}`);
     const auth = await credentials(options, deps);
     const value = await requestJson(deps, auth, "/api/sessions");
-    if (!Array.isArray(value))
-      throw new CliError(
-        "invalid_response",
-        "Server response is not a session array",
-        "Check that the CLI and Worker versions match.",
-        EXIT.GENERIC,
-      );
-    const sessions = value.map(stableSession);
+    const decoded = decodeSessionsResponse(value);
+    if (Option.isNone(decoded))
+      throw invalidResponse("Server response is not a valid session array");
+    const sessions = decoded.value.map(stableSession);
     if (autoJson) outputJson(deps.stdout, sessions);
     else
       deps.stdout(
@@ -1054,11 +1090,10 @@ async function execute(rawArgs: string[], deps: CliDependencies): Promise<number
       method: "POST",
       body: JSON.stringify(body),
     });
-    const result = stableUp(raw, auth.host);
+    const decoded = stableUp(raw, auth.host);
+    const result = decoded.output;
     if (!detach)
-      await deps.openBrowser(
-        browserUrl(optionalString(asRecord(raw), "url"), auth.host, auth.token, result.id),
-      );
+      await deps.openBrowser(browserUrl(decoded.terminalUrl, auth.host, auth.token, result.id));
     if (autoJson) outputJson(deps.stdout, result);
     else deps.stdout(humanResult(command, result));
     return EXIT.OK;
@@ -1098,23 +1133,22 @@ async function execute(rawArgs: string[], deps: CliDependencies): Promise<number
   let result: JsonObject;
   if (command === "pr") result = stablePr(raw);
   else if (command === "vaporize") {
-    const record = asRecord(raw);
-    const responseId = requireString(record, "id");
-    const status = requireString(record, "status");
-    if (responseId !== id || status !== "gone")
+    const decoded = decodeVaporizeResponse(raw);
+    if (Option.isNone(decoded) || decoded.value.id !== id)
       throw new CliError(
         "invalid_response",
         "Server returned an invalid vaporize result",
         "Inspect the Worker before assuming resources were deleted.",
         EXIT.GENERIC,
       );
-    result = { id: responseId, status };
+    result = { id: id, status: "gone" };
   } else {
-    const record = asRecord(raw);
-    result = { id: optionalString(record, "id") ?? id, status: requireString(record, "status") };
-    const url = optionalString(record, "url");
-    const branch = optionalString(record, "branch");
-    const backupId = optionalString(record, "backupId");
+    const decoded = decodeOperationResponse(raw);
+    if (Option.isNone(decoded)) throw invalidResponse();
+    result = { id: optionalString(decoded.value.id) ?? id, status: decoded.value.status };
+    const url = optionalString(decoded.value.url);
+    const branch = optionalString(decoded.value.branch);
+    const backupId = optionalString(decoded.value.backupId);
     if (url) result.url = sanitizeUrl(url, auth.host, id);
     if (branch) result.branch = branch;
     if (backupId) result.backupId = backupId;
