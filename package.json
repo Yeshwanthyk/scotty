@@ -22,6 +22,7 @@
     "test:cli": "bun test cli/test",
     "test:e2e": "npm run test:e2e:offline",
     "test:e2e:offline": "node --test e2e/tests/cli-lifecycle.test.mjs e2e/tests/protocol-security.test.mjs",
+    "test:e2e:deployed-routes": "node --test e2e/tests/deployed-routes.test.mjs",
     "test:e2e:deployed": "SCOTTY_E2E_EXPLICIT=1 node --test e2e/tests/deployed.test.mjs",
     "test:all": "npm run test:contracts && npm run test:worker && npm run test:cli && npm run test:e2e:offline",
     "probe:dry-run": "wrangler deploy --dry-run --config spikes/wrangler.jsonc",

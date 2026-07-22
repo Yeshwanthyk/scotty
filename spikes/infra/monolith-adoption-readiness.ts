@@ -78,6 +78,7 @@ export const CHUNK2_WRANGLER_PARITY = {
     binding: "ASSETS",
     directory: "worker/public",
     runWorkerFirst: ["/api/*", "/s/*", "/terminal", "/health"],
+    htmlHandling: "none",
     notFoundHandling: "404-page",
   },
   durableObject: {
@@ -154,6 +155,7 @@ export interface Chunk2WorkerTopology {
     readonly binding: string;
     readonly directory: string;
     readonly runWorkerFirst: readonly string[];
+    readonly htmlHandling: string;
     readonly notFoundHandling: string;
   };
   readonly outputKeys: readonly string[];
@@ -583,7 +585,15 @@ const normalizeTopology = (value: unknown, path: string): Chunk2Topology => {
   )
     return failShape(`${path}.worker is malformed`);
   const assets = record(worker.assets, `${path}.worker.assets`);
-  if (!exactKeys(assets, ["binding", "directory", "runWorkerFirst", "notFoundHandling"]))
+  if (
+    !exactKeys(assets, [
+      "binding",
+      "directory",
+      "runWorkerFirst",
+      "htmlHandling",
+      "notFoundHandling",
+    ])
+  )
     return failShape(`${path}.worker.assets is malformed`);
   const durableObject = record(input.durableObject, `${path}.durableObject`);
   if (
@@ -633,6 +643,7 @@ const normalizeTopology = (value: unknown, path: string): Chunk2Topology => {
         binding: string(assets.binding, `${path}.assets.binding`),
         directory: string(assets.directory, `${path}.assets.directory`),
         runWorkerFirst: strings(assets.runWorkerFirst, `${path}.assets.runWorkerFirst`),
+        htmlHandling: string(assets.htmlHandling, `${path}.assets.htmlHandling`),
         notFoundHandling: string(assets.notFoundHandling, `${path}.assets.notFoundHandling`),
       },
       outputKeys: strings(worker.outputKeys, `${path}.worker.outputKeys`),

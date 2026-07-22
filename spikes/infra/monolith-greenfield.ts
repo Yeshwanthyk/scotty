@@ -27,6 +27,7 @@ export const MONOLITH_GREENFIELD_TOPOLOGY = {
     directory: "worker/public",
     binding: "ASSETS",
     runWorkerFirst: ["/api/*", "/s/*", "/terminal", "/health"],
+    htmlHandling: "none",
     notFoundHandling: "404-page",
   },
   durableObject: {
@@ -138,6 +139,7 @@ export const monolithGreenfieldProgram = Effect.fnUntraced(function* (
     directory: MONOLITH_GREENFIELD_TOPOLOGY.assets.directory,
     binding: MONOLITH_GREENFIELD_TOPOLOGY.assets.binding,
     runWorkerFirst: [...MONOLITH_GREENFIELD_TOPOLOGY.assets.runWorkerFirst],
+    htmlHandling: MONOLITH_GREENFIELD_TOPOLOGY.assets.htmlHandling,
     notFoundHandling: MONOLITH_GREENFIELD_TOPOLOGY.assets.notFoundHandling,
   };
   const worker = yield* Cloudflare.Worker(MONOLITH_GREENFIELD_TOPOLOGY.worker.logicalId, {

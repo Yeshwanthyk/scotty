@@ -167,6 +167,7 @@ describe("monolith greenfield topology", () => {
         directory: "worker/public",
         binding: "ASSETS",
         runWorkerFirst: ["/api/*", "/s/*", "/terminal", "/health"],
+        htmlHandling: "none",
         notFoundHandling: "404-page",
       },
       durableObject: {
