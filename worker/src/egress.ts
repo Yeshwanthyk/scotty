@@ -286,14 +286,14 @@ export async function proxyGitHub(
   if (!presented) return passThrough(request);
 
   const credential = await credentialForSentinel(presented, env, context);
-  if (!credential || presented !== credential.githubSentinel || !env.GH_TOKEN) return forbidden();
+  if (!credential || presented !== credential.githubSentinel) return forbidden();
 
   const headers = sanitizedHeaders(request.headers);
   const original = request.headers.get("authorization") ?? "";
   if (original.startsWith("Basic ")) {
-    headers.set("authorization", `Basic ${btoa(`x-access-token:${env.GH_TOKEN}`)}`);
+    headers.set("authorization", `Basic ${btoa(`x-access-token:${credential.githubToken}`)}`);
   } else {
-    headers.set("authorization", `Bearer ${env.GH_TOKEN}`);
+    headers.set("authorization", `Bearer ${credential.githubToken}`);
   }
   return forward(request, new URL(request.url), headers);
 }

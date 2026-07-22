@@ -4,6 +4,12 @@ import { Effect, Result } from "effect";
 import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
 import {
+  CredentialVault,
+  type CredentialVaultFailure,
+  credentialVaultLayer,
+  durableObjectCredentialVaultStorage,
+} from "./credential-vault";
+import {
   conflict,
   notFound,
   SESSION_ROOT,
@@ -24,11 +30,8 @@ import {
 import {
   ALLOWED_HOSTS,
   CODEX_SENTINEL_PREFIX,
-  decodeCredentialPatch,
-  decodeStoredCredential,
   GITHUB_SENTINEL_PREFIX,
   denyOutbound,
-  parseCodexCredential,
   passThrough,
   proxyChatGpt,
   proxyGitHub,
@@ -51,7 +54,6 @@ import {
 } from "./session-projection";
 
 const RECORD_KEY = "scotty:session";
-const CREDENTIAL_KEY = "scotty:credential";
 const WEB_SESSION_ID = "scotty-web";
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
@@ -300,7 +302,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       for (const backupId of new Set(record.ownedBackupIds)) {
         await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.delete(backupId)));
       }
-      await this.ctx.storage.delete(CREDENTIAL_KEY);
+      await this.runCredentialVault(Effect.flatMap(CredentialVault, (vault) => vault.delete));
       const gone: SessionRecord = {
         ...record,
         status: "gone",
@@ -322,35 +324,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async readCredentialForProxy(sentinel: string): Promise<StoredCredential | null> {
-    const stored = await this.ctx.storage.get(CREDENTIAL_KEY);
-    if (stored === undefined) return null;
-    const credential = decodeStoredCredential(stored);
-    if (sentinel !== credential.codexSentinel && sentinel !== credential.githubSentinel)
-      return null;
-    return credential;
+    return this.runCredentialVault(
+      Effect.flatMap(CredentialVault, (vault) => vault.readForProxy(sentinel)),
+    );
   }
 
   async beginCredentialRefresh(sentinel: string): Promise<CredentialRefreshLease | null> {
-    let result: CredentialRefreshLease | null = null;
-    await this.ctx.storage.transaction(async (transaction) => {
-      const stored = await transaction.get(CREDENTIAL_KEY);
-      if (stored === undefined) return;
-      const credential = decodeStoredCredential(stored);
-      if (credential.codexSentinel !== sentinel || !credential.codex.tokens?.refresh_token) return;
-      if (
-        credential.refreshLease &&
-        Date.now() - Date.parse(credential.refreshLease.startedAt) < 60_000
-      )
-        return;
-      const nonce = crypto.randomUUID();
-      const next: StoredCredential = {
-        ...credential,
-        refreshLease: { nonce, startedAt: new Date().toISOString() },
-      };
-      await transaction.put(CREDENTIAL_KEY, next);
-      result = { credential: next, nonce };
-    });
-    return result;
+    return this.runCredentialVault(
+      Effect.flatMap(CredentialVault, (vault) => vault.beginRefresh(sentinel, crypto.randomUUID())),
+    );
   }
 
   async persistRotatedCredential(
@@ -358,48 +340,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
     patch: CredentialPatch,
     nonce: string,
   ): Promise<void> {
-    const decodedPatch = decodeCredentialPatch(patch);
-    await this.ctx.storage.transaction(async (transaction) => {
-      const stored = await transaction.get(CREDENTIAL_KEY);
-      // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential RPC callback preserves its existing Promise rejection contract until Chunk 5
-      if (stored === undefined) throw new Error("Session credential bundle is missing");
-      const credential = decodeStoredCredential(stored);
-      // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential RPC callback preserves its existing Promise rejection contract until Chunk 5
-      if (credential.codexSentinel !== sentinel) throw new Error("Credential sentinel mismatch");
-      if (credential.refreshLease?.nonce !== nonce)
-        // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential RPC callback preserves its existing Promise rejection contract until Chunk 5
-        throw new Error("Credential refresh lease mismatch");
-      const tokens = credential.codex.tokens;
-      // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential RPC callback preserves its existing Promise rejection contract until Chunk 5
-      if (!tokens) throw new Error("Credential is not refreshable");
-      const { refreshLease: _refreshLease, ...withoutLease } = credential;
-      const next: StoredCredential = {
-        ...withoutLease,
-        codex: {
-          ...credential.codex,
-          tokens: {
-            ...tokens,
-            id_token: decodedPatch.idToken ?? tokens.id_token,
-            access_token: decodedPatch.accessToken ?? tokens.access_token,
-            refresh_token: decodedPatch.refreshToken ?? tokens.refresh_token,
-          },
-          last_refresh: new Date().toISOString(),
-        },
-        updatedAt: new Date().toISOString(),
-      };
-      await transaction.put(CREDENTIAL_KEY, next);
-    });
+    await this.runCredentialVault(
+      Effect.flatMap(CredentialVault, (vault) => vault.persistRotation(sentinel, patch, nonce)),
+    );
   }
 
   async cancelCredentialRefresh(sentinel: string, nonce: string): Promise<void> {
-    await this.ctx.storage.transaction(async (transaction) => {
-      const stored = await transaction.get(CREDENTIAL_KEY);
-      if (stored === undefined) return;
-      const credential = decodeStoredCredential(stored);
-      if (credential.codexSentinel !== sentinel || credential.refreshLease?.nonce !== nonce) return;
-      const { refreshLease: _refreshLease, ...next } = credential;
-      await transaction.put(CREDENTIAL_KEY, next);
-    });
+    await this.runCredentialVault(
+      Effect.flatMap(CredentialVault, (vault) => vault.cancelRefresh(sentinel, nonce)),
+    );
   }
 
   async captureThreadId(payload: { attempt?: number } = {}): Promise<void> {
@@ -494,24 +443,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private async seedCredential(id: string): Promise<StoredCredential> {
-    const existing = await this.ctx.storage.get(CREDENTIAL_KEY);
-    if (existing !== undefined) return decodeStoredCredential(existing);
-    const now = new Date().toISOString();
-    const credential: StoredCredential = {
-      codex: parseCodexCredential(this.env.CODEX_AUTH_JSON),
-      codexSentinel: `${CODEX_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
-      githubSentinel: `${GITHUB_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
-      updatedAt: now,
-    };
-    await this.ctx.storage.put(CREDENTIAL_KEY, credential);
-    return credential;
+    return this.runCredentialVault(
+      Effect.flatMap(CredentialVault, (vault) =>
+        vault.seed({
+          codexAuthJson: this.env.CODEX_AUTH_JSON,
+          codexSentinel: `${CODEX_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
+          githubSentinel: `${GITHUB_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
+        }),
+      ),
+    );
   }
 
   private async requireCredential(): Promise<StoredCredential> {
-    const credential = await this.ctx.storage.get(CREDENTIAL_KEY);
-    // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential host adapter preserves its existing Promise rejection contract until Chunk 5
-    if (credential === undefined) throw new Error("Session credential bundle is missing");
-    return decodeStoredCredential(credential);
+    return this.runCredentialVault(Effect.flatMap(CredentialVault, (vault) => vault.require));
   }
 
   private async prepareWorktree(
@@ -832,6 +776,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
         })),
       deleteObjects: (keys) => this.env.BACKUP_BUCKET.delete([...keys]),
     });
+    const result = await Effect.runPromise(
+      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
+  }
+
+  private async runCredentialVault<A>(
+    program: Effect.Effect<A, CredentialVaultFailure, CredentialVault>,
+  ): Promise<A> {
+    const layer = credentialVaultLayer(
+      durableObjectCredentialVaultStorage(this.ctx.storage),
+      this.env.GH_TOKEN,
+    );
     const result = await Effect.runPromise(
       program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
     );

@@ -178,12 +178,29 @@ export const CredentialRefreshLeaseValueSchema = Schema.Struct({
 
 export const StoredCredentialSchema = Schema.Struct({
   codex: CodexCredentialBundleSchema,
+  githubToken: Schema.NonEmptyString,
   codexSentinel: Schema.NonEmptyString,
   githubSentinel: Schema.NonEmptyString,
   updatedAt: Schema.NonEmptyString,
   refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
 });
 export type StoredCredential = typeof StoredCredentialSchema.Type;
+
+export const LegacyStoredCredentialSchema = Schema.Struct({
+  codex: CodexCredentialBundleSchema,
+  codexSentinel: Schema.NonEmptyString,
+  githubSentinel: Schema.NonEmptyString,
+  updatedAt: Schema.NonEmptyString,
+  refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
+});
+export type LegacyStoredCredential = typeof LegacyStoredCredentialSchema.Type;
+
+export const CredentialSeedSchema = Schema.Struct({
+  codexAuthJson: Schema.NonEmptyString,
+  codexSentinel: Schema.NonEmptyString,
+  githubSentinel: Schema.NonEmptyString,
+});
+export type CredentialSeed = typeof CredentialSeedSchema.Type;
 
 export const CredentialRefreshLeaseSchema = Schema.Struct({
   credential: StoredCredentialSchema,
@@ -243,10 +260,22 @@ export const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJson
 export const decodeRawCodexCredential = Schema.decodeUnknownOption(RawCodexCredentialSchema);
 export const decodeRawCodexTokenSet = Schema.decodeUnknownOption(RawCodexTokenSetSchema);
 export const decodeStoredCredentialOption = Schema.decodeUnknownOption(StoredCredentialSchema);
+export const decodeStoredCredentialResult = Schema.decodeUnknownResult(StoredCredentialSchema, {
+  onExcessProperty: "error",
+});
+export const decodeLegacyStoredCredentialResult = Schema.decodeUnknownResult(
+  LegacyStoredCredentialSchema,
+  { onExcessProperty: "error" },
+);
+export const decodeCredentialSeedResult = Schema.decodeUnknownResult(CredentialSeedSchema, {
+  onExcessProperty: "error",
+});
+export const decodeNonEmptyStringResult = Schema.decodeUnknownResult(Schema.NonEmptyString);
 export const decodeCredentialRefreshLeaseOption = Schema.decodeUnknownOption(
   Schema.NullOr(CredentialRefreshLeaseSchema),
 );
 export const decodeCredentialPatchOption = Schema.decodeUnknownOption(CredentialPatchSchema);
+export const decodeCredentialPatchResult = Schema.decodeUnknownResult(CredentialPatchSchema);
 export const decodeOAuthRefreshRequestOption =
   Schema.decodeUnknownOption(OAuthRefreshRequestSchema);
 export const decodeRawOAuthUpstreamSuccess = Schema.decodeUnknownOption(

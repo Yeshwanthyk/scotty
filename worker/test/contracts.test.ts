@@ -207,6 +207,7 @@ describe("public errors", () => {
 describe("credential boundary", () => {
   const storedCredential = (codex: StoredCredential["codex"]): StoredCredential => ({
     codex,
+    githubToken: "real-github-token",
     codexSentinel: "scotty-codex-session-sentinel",
     githubSentinel: "scotty-github-session-sentinel",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -353,22 +354,26 @@ describe("credential boundary", () => {
   it("emits sentinel-only auth and OAuth success without disclosing honeypot secrets", () => {
     const realAccess = "honeypot-real-access";
     const realRefresh = "honeypot-real-refresh";
-    const stored = storedCredential(
-      parseCodexCredential(
-        JSON.stringify({
-          tokens: {
-            access_token: realAccess,
-            refresh_token: realRefresh,
-            account_id: "honeypot-account",
-          },
-        }),
+    const realGithub = "honeypot-real-github";
+    const stored = {
+      ...storedCredential(
+        parseCodexCredential(
+          JSON.stringify({
+            tokens: {
+              access_token: realAccess,
+              refresh_token: realRefresh,
+              account_id: "honeypot-account",
+            },
+          }),
+        ),
       ),
-    );
+      githubToken: realGithub,
+    };
     const containerAuth = sentinelAuthJson(stored);
     const refreshResult = JSON.stringify(oauthContainerResult(stored));
     assert.ok(containerAuth.includes(stored.codexSentinel));
     assert.ok(refreshResult.includes(stored.codexSentinel));
-    for (const secret of [realAccess, realRefresh, "honeypot-account"]) {
+    for (const secret of [realAccess, realRefresh, realGithub, "honeypot-account"]) {
       assert.ok(!containerAuth.includes(secret));
       assert.ok(!refreshResult.includes(secret));
     }

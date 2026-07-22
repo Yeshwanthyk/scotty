@@ -478,6 +478,7 @@ describe("Scotty Oxlint policy integration", () => {
           "alchemy.run.ts",
           "worker/src/backup-store.ts",
           "worker/src/contracts.ts",
+          "worker/src/credential-vault.ts",
           "worker/src/session-projection.ts",
           "worker/src/session-store.ts",
           "spikes/infra/account-secrets-store-canary.run.ts",
