@@ -1,6 +1,7 @@
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Layer, Option, Result } from "effect";
+import { Agent, type AgentLaunch, agentLayer } from "./agent";
 import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
 import { agentEnv, ContainerAuth, containerAuthLayer } from "./container-auth";
@@ -58,7 +59,6 @@ import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
 import { type PreparedWorkspace, sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
 const RECORD_KEY = "scotty:session";
-const WEB_SESSION_ID = "scotty-web";
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
 
@@ -103,7 +103,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const credential = await this.seedCredential(id);
       const worktree = await this.prepareWorkspace(initial, credential.githubSentinel);
       await this.seedContainerAuth(initial, credential);
-      await this.startAgent(initial, input.prompt);
+      await this.runAgent({ kind: "start", prompt: input.prompt }, initial.id);
       await this.scheduleHardCap(initial.hardCapAt);
 
       const ready = await this.updateForOperation(nonce, (record) => ({
@@ -168,7 +168,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.restore(backup)));
       const credential = await this.requireCredential();
       await this.seedContainerAuth(record, credential);
-      await this.startAgent(record, undefined, record.codexThreadId, true);
+      await this.runAgent({ kind: "resume", threadId: record.codexThreadId }, record.id);
       const hardCapAt = new Date(Date.now() + record.hardCapDurationSeconds * 1000).toISOString();
       await this.scheduleHardCap(hardCapAt);
       const ready = await this.updateForOperation(operation.nonce, (current) => ({
@@ -504,37 +504,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       onSuccess: (value) => value,
     });
   }
-
-  private async startAgent(
-    record: SessionRecord,
-    prompt?: string,
-    resumeThreadId?: string,
-    resume = false,
-  ): Promise<void> {
-    const root = sessionRoot(record.id);
-    const credential = await this.requireCredential();
-    const env = agentEnv(record.id, credential);
-    await this.exec("tmux kill-session -t agent 2>/dev/null || true", { env });
-
-    let agentCommand: string;
-    if (this.env.SCOTTY_FAKE_AGENT === "1") {
-      agentCommand = `printf '\\033[1;36mScotty fake agent ready\\033[0m\\n'; exec bash`;
-    } else if (resume) {
-      agentCommand = resumeThreadId
-        ? `exec codex --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(resumeThreadId)}`
-        : "exec codex --dangerously-bypass-approvals-and-sandbox resume --last";
-    } else {
-      agentCommand = `exec codex --dangerously-bypass-approvals-and-sandbox ${shellQuote(prompt ?? "")}`;
-    }
-
-    await this.execChecked(
-      `tmux new-session -d -s agent -c ${shellQuote(root)} ${shellQuote(agentCommand)}`,
-      { env, timeout: 30_000 },
-    );
-    await this.deleteSession(WEB_SESSION_ID).catch(() => undefined);
-    await this.createSession({ id: WEB_SESSION_ID, cwd: root, env });
-  }
-
   private async checkpoint(
     nonce: string,
     resumeAgent: boolean,
@@ -756,6 +725,30 @@ export class Sandbox extends BaseSandbox<Bindings> {
     });
   }
 
+  private async runAgent(launch: AgentLaunch, id: SessionRecord["id"]): Promise<void> {
+    const dependencies = Layer.merge(
+      this.sandboxRuntimeLayer(),
+      credentialVaultLayer(
+        durableObjectCredentialVaultStorage(this.ctx.storage),
+        this.env.GH_TOKEN,
+      ),
+    );
+    const layer = agentLayer(this.env.SCOTTY_FAKE_AGENT === "1").pipe(Layer.provide(dependencies));
+    const result = await Effect.runPromise(
+      Effect.flatMap(Agent, (agent) => agent.launch(id, launch)).pipe(
+        Effect.provide(layer),
+        Effect.scoped,
+        Effect.result,
+      ),
+    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
+  }
+
   private async execChecked(
     command: string,
     options: { env?: Record<string, string>; timeout?: number } = {},
@@ -806,6 +799,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private sandboxRuntimeLayer(): Layer.Layer<SandboxRuntime> {
     return sandboxRuntimeLayer({
       exec: (command, options) => this.exec(command, options),
+      createSession: (options) => this.createSession(options),
+      deleteSession: (sessionId) => this.deleteSession(sessionId),
       mkdir: (path, options) => this.mkdir(path, options),
       writeFile: (path, content) => this.writeFile(path, content),
       setEnvVars: (envVars) => this.setEnvVars(envVars),

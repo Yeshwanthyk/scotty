@@ -9,6 +9,7 @@ import {
   shellQuote,
   type SandboxExecOptions,
   type SandboxRuntimeCapabilities,
+  type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
 
 const successResult = (command: string): ExecResult => ({
@@ -40,6 +41,12 @@ class FakeSandboxRuntimeCapabilities implements SandboxRuntimeCapabilities {
     return Promise.resolve(this.result);
   };
 
+  createSession = (_options: SandboxSessionOptions): Promise<void> =>
+    this.rejection === undefined ? Promise.resolve() : Promise.reject(this.rejection);
+
+  deleteSession = (_sessionId: string): Promise<void> =>
+    this.rejection === undefined ? Promise.resolve() : Promise.reject(this.rejection);
+
   mkdir = (): Promise<{ success: true; path: string; message: string }> =>
     Promise.resolve({ success: true, path: "/unused", message: "ok" });
 
@@ -59,6 +66,12 @@ const execChecked = (command: string, options?: SandboxExecOptions) =>
 
 const exec = (command: string, options?: SandboxExecOptions) =>
   Effect.flatMap(SandboxRuntime, (runtime) => runtime.exec(command, options));
+
+const createSession = (options: SandboxSessionOptions) =>
+  Effect.flatMap(SandboxRuntime, (runtime) => runtime.createSession(options));
+
+const deleteSession = (sessionId: string) =>
+  Effect.flatMap(SandboxRuntime, (runtime) => runtime.deleteSession(sessionId));
 
 const failure = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRuntimeFailure => {
   assert.ok(Result.isFailure(result));
@@ -147,6 +160,25 @@ describe("SandboxRuntime", () => {
     }),
   );
 
+  it.effect("maps named-session transport rejections to operation-specific redacted failures", () =>
+    Effect.gen(function* () {
+      const providerDetail = "provider leaked github_pat_provider-secret";
+      for (const [operation, message] of [
+        [createSession({ id: "scotty-web" }), "Sandbox session creation transport failed"],
+        [deleteSession("scotty-web"), "Sandbox session deletion transport failed"],
+      ] as const) {
+        const capabilities = new FakeSandboxRuntimeCapabilities();
+        capabilities.rejection = new Error(providerDetail);
+        const result = yield* Effect.result(withRuntime(capabilities, operation));
+        const error = failure(result);
+
+        assert.deepStrictEqual(error, new SandboxRuntimeFailure({ reason: "transport", message }));
+        assert.ok(!JSON.stringify(error).includes("provider"));
+        assert.ok(!JSON.stringify(error).includes("github_pat_"));
+      }
+    }),
+  );
+
   it.effect("maps nonzero exit stderr to a redacted typed failure", () =>
     Effect.gen(function* () {
       const capabilities = new FakeSandboxRuntimeCapabilities();
@@ -197,6 +229,8 @@ describe("SandboxRuntime", () => {
             return result;
           });
         },
+        createSession: () => Promise.resolve(),
+        deleteSession: () => Promise.resolve(),
         mkdir: () => Promise.resolve({ success: true, path: "/unused", message: "ok" }),
         writeFile: () => Promise.resolve({ success: true, path: "/unused", bytesWritten: 0 }),
         setEnvVars: () => Promise.resolve(),

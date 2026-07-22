@@ -1,7 +1,8 @@
-import type { ExecOptions, ExecResult } from "@cloudflare/sandbox";
+import type { ExecOptions, ExecResult, SessionOptions } from "@cloudflare/sandbox";
 import { Context, Data, Effect, Layer, Predicate } from "effect";
 
 export type SandboxExecOptions = Pick<ExecOptions, "cwd" | "env" | "timeout">;
+export type SandboxSessionOptions = Pick<SessionOptions, "id" | "cwd" | "env">;
 
 type SandboxRuntimeFailureReason = "nonzero_exit" | "transport";
 
@@ -12,6 +13,8 @@ export class SandboxRuntimeFailure extends Data.TaggedError("SandboxRuntimeFailu
 
 export interface SandboxRuntimeCapabilities {
   readonly exec: (command: string, options?: SandboxExecOptions) => Promise<ExecResult>;
+  readonly createSession: (options: SandboxSessionOptions) => Promise<unknown>;
+  readonly deleteSession: (sessionId: string) => Promise<unknown>;
   readonly mkdir: (path: string, options?: { readonly recursive?: boolean }) => Promise<unknown>;
   readonly writeFile: (path: string, content: string) => Promise<unknown>;
   readonly setEnvVars: (envVars: Record<string, string | undefined>) => Promise<void>;
@@ -26,6 +29,10 @@ interface SandboxRuntimeShape {
     command: string,
     options?: SandboxExecOptions,
   ) => Effect.Effect<ExecResult, SandboxRuntimeFailure>;
+  readonly createSession: (
+    options: SandboxSessionOptions,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly deleteSession: (sessionId: string) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly mkdir: (
     path: string,
     options?: { readonly recursive?: boolean },
@@ -59,6 +66,14 @@ const makeSandboxRuntime = (capabilities: SandboxRuntimeCapabilities): SandboxRu
       }
       return result;
     }),
+    createSession: (options) =>
+      transportVoid("Sandbox session creation transport failed", () =>
+        capabilities.createSession(options),
+      ),
+    deleteSession: (sessionId) =>
+      transportVoid("Sandbox session deletion transport failed", () =>
+        capabilities.deleteSession(sessionId),
+      ),
     mkdir: (path, options) =>
       transportVoid("Sandbox directory transport failed", () => capabilities.mkdir(path, options)),
     writeFile: (path, content) =>

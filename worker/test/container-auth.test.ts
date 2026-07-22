@@ -8,6 +8,7 @@ import {
   sandboxRuntimeLayer,
   type SandboxExecOptions,
   type SandboxRuntimeCapabilities,
+  type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
 import { sessionRoot } from "../src/workspace";
 
@@ -73,6 +74,10 @@ class CapturingSandboxCapabilities implements SandboxRuntimeCapabilities {
       timestamp: "2026-07-22T01:02:03.000Z",
     });
   };
+
+  createSession = (_options: SandboxSessionOptions): Promise<void> => Promise.resolve();
+
+  deleteSession = (_sessionId: string): Promise<void> => Promise.resolve();
 
   mkdir = (path: string, options?: { readonly recursive?: boolean }): Promise<unknown> => {
     this.calls.push({ operation: "mkdir", path, recursive: options?.recursive });
