@@ -44,6 +44,13 @@ import {
   sessionStoreLayer,
 } from "./session-store";
 import {
+  errorName,
+  SandboxRuntime,
+  type SandboxRuntimeFailure,
+  sandboxRuntimeLayer,
+  shellQuote,
+} from "./sandbox-runtime";
+import {
   kvSessionProjectionStorage,
   projectSessionBestEffort,
   sessionProjectionLayer,
@@ -805,10 +812,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
     command: string,
     options: { env?: Record<string, string>; timeout?: number } = {},
   ): Promise<ExecResult> {
-    const result = await this.exec(command, options);
-    // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: official Sandbox SDK command adapter preserves its existing Promise rejection contract until Chunk 6
-    if (!result.success) throw new Error(redactCommandFailure(result.stderr || result.stdout));
-    return result;
+    return this.runSandboxRuntime(
+      Effect.flatMap(SandboxRuntime, (runtime) => runtime.execChecked(command, options)),
+    );
+  }
+
+  private async runSandboxRuntime<A>(
+    program: Effect.Effect<A, SandboxRuntimeFailure, SandboxRuntime>,
+  ): Promise<A> {
+    const layer = sandboxRuntimeLayer({ exec: (command, options) => this.exec(command, options) });
+    const result = await Effect.runPromise(
+      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
   }
 
   private sessionRoot(id: string): string {
@@ -836,25 +857,10 @@ function resumeAgentCommand(): string {
   return 'pid=$(tmux list-panes -t agent -F \'#{pane_pid}\' 2>/dev/null | head -1); [ -z "$pid" ] && exit 0; pgid=$(ps -o pgid= -p "$pid" | tr -d \' \'); [ -z "$pgid" ] || kill -CONT -- -"$pgid"';
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 function randomToken(bytes: number): string {
   const data = new Uint8Array(bytes);
   crypto.getRandomValues(data);
   return Array.from(data, (value) => value.toString(16).padStart(2, "0")).join("");
-}
-
-function redactCommandFailure(value: string): string {
-  return value
-    .replaceAll(/scotty-(?:codex|github)-[A-Za-z0-9-]+/gu, "[sentinel]")
-    .replaceAll(/(?:ghp_|github_pat_)[A-Za-z0-9_]+/gu, "[credential]")
-    .slice(0, 1_000);
-}
-
-function errorName(error: unknown): string {
-  return error instanceof Error ? error.name : "UnknownError";
 }
 
 function basename(path: string): string {
