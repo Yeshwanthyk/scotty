@@ -86,6 +86,9 @@ export type SessionRecord = typeof SessionRecordSchema.Type;
 export const decodeSessionRecord = Schema.decodeUnknownEffect(SessionRecordSchema, {
   onExcessProperty: "error",
 });
+export const decodeSessionRecordResult = Schema.decodeUnknownResult(SessionRecordSchema, {
+  onExcessProperty: "error",
+});
 
 export const SessionProjectionSchema = Schema.Struct({
   version: Schema.Literal(1),

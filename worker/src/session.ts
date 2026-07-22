@@ -1,5 +1,6 @@
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 import type { ExecResult } from "@cloudflare/sandbox";
+import { Effect, Result } from "effect";
 import type { Bindings } from "./bindings";
 import {
   conflict,
@@ -38,6 +39,11 @@ import {
   type CredentialRefreshLease,
   type StoredCredential,
 } from "./egress";
+import {
+  durableObjectSessionRecordStorage,
+  SessionStore,
+  sessionStoreLayer,
+} from "./session-store";
 
 const RECORD_KEY = "scotty:session";
 const CREDENTIAL_KEY = "scotty:credential";
@@ -224,6 +230,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           { env, timeout: 120_000 },
         );
         const prUrl = created.stdout.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/u)?.[0];
+        // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native Sandbox command callback preserves its existing Promise rejection contract until Chunk 6
         if (!prUrl) throw new Error("gh did not return a pull request URL");
         result = { prUrl, branchUrl, created: true };
       }
@@ -347,12 +354,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const decodedPatch = decodeCredentialPatch(patch);
     await this.ctx.storage.transaction(async (transaction) => {
       const stored = await transaction.get(CREDENTIAL_KEY);
+      // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential RPC callback preserves its existing Promise rejection contract until Chunk 5
       if (stored === undefined) throw new Error("Session credential bundle is missing");
       const credential = decodeStoredCredential(stored);
+      // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential RPC callback preserves its existing Promise rejection contract until Chunk 5
       if (credential.codexSentinel !== sentinel) throw new Error("Credential sentinel mismatch");
       if (credential.refreshLease?.nonce !== nonce)
+        // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential RPC callback preserves its existing Promise rejection contract until Chunk 5
         throw new Error("Credential refresh lease mismatch");
       const tokens = credential.codex.tokens;
+      // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential RPC callback preserves its existing Promise rejection contract until Chunk 5
       if (!tokens) throw new Error("Credential is not refreshable");
       const { refreshLease: _refreshLease, ...withoutLease } = credential;
       const next: StoredCredential = {
@@ -491,6 +502,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private async requireCredential(): Promise<StoredCredential> {
     const credential = await this.ctx.storage.get(CREDENTIAL_KEY);
+    // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native credential host adapter preserves its existing Promise rejection contract until Chunk 5
     if (credential === undefined) throw new Error("Session credential bundle is missing");
     return decodeStoredCredential(credential);
   }
@@ -687,53 +699,37 @@ export class Sandbox extends BaseSandbox<Bindings> {
     kind: OperationKind,
     allowed: SessionStatus[],
   ): Promise<NonNullable<SessionRecord["operation"]>> {
-    const nonce = crypto.randomUUID();
-    let operation: NonNullable<SessionRecord["operation"]> | undefined;
-    await this.ctx.storage.transaction(async (transaction) => {
-      const record = await transaction.get<SessionRecord>(RECORD_KEY);
-      if (!record) throw notFound("unknown");
-      if (!allowed.includes(record.status)) throw wrongState(record.status, kind);
-      if (record.operation) throw conflict(`Session is already running ${record.operation.kind}`);
-      operation = { kind, nonce, startedAt: new Date().toISOString() };
-      await transaction.put(RECORD_KEY, {
-        ...record,
-        operation,
-        updatedAt: new Date().toISOString(),
-      });
-    });
-    if (!operation) throw new Error("Failed to acquire session operation");
-    return operation;
+    return this.runSessionStore(
+      Effect.flatMap(SessionStore, (store) =>
+        store.acquireOperation(kind, allowed, crypto.randomUUID()),
+      ),
+    );
   }
 
   private async updateForOperation(
     nonce: string,
     update: (record: SessionRecord) => SessionRecord,
   ): Promise<SessionRecord> {
-    let next: SessionRecord | undefined;
-    await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<SessionRecord>(RECORD_KEY);
-      if (!current) throw notFound("unknown");
-      if (current.operation?.nonce !== nonce) throw conflict("Session operation lease changed");
-      next = update(current);
-      await transaction.put(RECORD_KEY, next);
-    });
-    if (!next) throw new Error("Session update failed");
+    const next = await this.runSessionStore(
+      Effect.flatMap(SessionStore, (store) => store.updateForOperation(nonce, update)),
+    );
     await this.project(next);
     return next;
   }
 
   private async releaseOperation(nonce: string): Promise<SessionRecord> {
-    return this.updateForOperation(nonce, (record) => ({
-      ...record,
-      operation: null,
-      updatedAt: new Date().toISOString(),
-    }));
+    const next = await this.runSessionStore(
+      Effect.flatMap(SessionStore, (store) => store.releaseOperation(nonce)),
+    );
+    await this.project(next);
+    return next;
   }
 
   private async releaseOperationIfHeld(nonce: string): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (record?.operation?.nonce !== nonce) return;
-    await this.releaseOperation(nonce).catch(() => undefined);
+    const next = await this.runSessionStore(
+      Effect.flatMap(SessionStore, (store) => store.releaseOperationIfHeld(nonce)),
+    );
+    if (next) await this.project(next).catch(() => undefined);
   }
 
   private async failOperation(
@@ -742,13 +738,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
     message: string,
     recoverable: boolean,
   ): Promise<SessionRecord> {
-    return this.updateForOperation(nonce, (record) => ({
-      ...record,
-      status: "failed",
-      operation: null,
-      failure: { code, message, recoverable: recoverable && Boolean(record.backup?.current) },
-      updatedAt: new Date().toISOString(),
-    }));
+    const next = await this.runSessionStore(
+      Effect.flatMap(SessionStore, (store) =>
+        store.failOperation(nonce, code, message, recoverable),
+      ),
+    );
+    await this.project(next);
+    return next;
   }
 
   async retryHardCapDestroy(sessionId: string): Promise<void> {
@@ -783,9 +779,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private async requireRecord(): Promise<SessionRecord> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!record || record.status === "gone") throw notFound(record?.id ?? "unknown");
-    return record;
+    return this.runSessionStore(Effect.flatMap(SessionStore, (store) => store.requireRecord));
+  }
+
+  private async runSessionStore<A>(
+    program: Effect.Effect<A, ScottyError, SessionStore>,
+  ): Promise<A> {
+    const layer = sessionStoreLayer(durableObjectSessionRecordStorage(this.ctx.storage));
+    const result = await Effect.runPromise(
+      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
   }
 
   private async project(record: SessionRecord): Promise<void> {
@@ -814,6 +823,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     options: { env?: Record<string, string>; timeout?: number } = {},
   ): Promise<ExecResult> {
     const result = await this.exec(command, options);
+    // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: official Sandbox SDK command adapter preserves its existing Promise rejection contract until Chunk 6
     if (!result.success) throw new Error(redactCommandFailure(result.stderr || result.stdout));
     return result;
   }
