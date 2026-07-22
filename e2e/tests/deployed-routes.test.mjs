@@ -33,6 +33,15 @@ test(
     assert.equal(terminal.headers.get("cache-control"), "no-store");
     const html = await terminal.text();
     assert.match(html, /\^\\\/s\\\/\(\[0-9a-f\]\{12\}\)/u);
+    assert.match(html, /Ghostty\.load\("\/vendor\/ghostty-web\/ghostty-vt\.wasm"\)/u);
     assert.doesNotMatch(html, /lastIndexOf\("s"\)/u);
+
+    const wasm = await fetch(`${host}/vendor/ghostty-web/ghostty-vt.wasm`);
+    assert.equal(wasm.status, 200);
+    assert.match(wasm.headers.get("content-type") ?? "", /application\/wasm/iu);
+    assert.deepEqual(
+      new Uint8Array((await wasm.arrayBuffer()).slice(0, 4)),
+      new Uint8Array([0x00, 0x61, 0x73, 0x6d]),
+    );
   },
 );

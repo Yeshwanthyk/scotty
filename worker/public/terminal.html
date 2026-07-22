@@ -449,7 +449,7 @@
     </main>
 
     <script type="module">
-      import { FitAddon, Terminal, init } from "/vendor/ghostty-web/ghostty-web.js";
+      import { FitAddon, Ghostty, Terminal } from "/vendor/ghostty-web/ghostty-web.js";
 
       const app = document.querySelector("#app");
       const action = document.querySelector("#action");
@@ -823,8 +823,9 @@
         action.hidden = true;
       } else {
         try {
-          await init();
+          const ghostty = await Ghostty.load("/vendor/ghostty-web/ghostty-vt.wasm");
           terminal = new Terminal({
+            ghostty,
             cursorBlink: !matchMedia("(prefers-reduced-motion: reduce)").matches,
             cursorStyle: "block",
             fontFamily: '"SFMono-Regular", "Cascadia Mono", "Liberation Mono", Consolas, monospace',
