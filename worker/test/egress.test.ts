@@ -324,6 +324,7 @@ describe("pass-through policy", () => {
         "codeload.github.com",
         "objects.githubusercontent.com",
         "raw.githubusercontent.com",
+        "*.oaiusercontent.com",
         "registry.npmjs.org",
         "pypi.org",
         "files.pythonhosted.org",
@@ -331,11 +332,13 @@ describe("pass-through policy", () => {
         "static.crates.io",
         "index.crates.io",
       ]);
-      for (const host of passThroughHosts)
+      for (const host of passThroughHosts) {
+        const requestHost = host === "*.oaiusercontent.com" ? "signed.oaiusercontent.com" : host;
         assert.equal(
-          (yield* run(passThroughProgram(new Request(`https://${host}/asset`)))).status,
+          (yield* run(passThroughProgram(new Request(`https://${requestHost}/asset`)))).status,
           200,
         );
+      }
     }),
   );
 

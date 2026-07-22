@@ -581,7 +581,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             dir: root,
             name: `scotty-${record.id}-${Date.now()}`,
             ttl: BACKUP_TTL_SECONDS,
-            localBucket: this.env.SCOTTY_LOCAL_BACKUP === "1",
+            localBucket: true,
             compression: { format: "zstd" },
           }),
         ),
