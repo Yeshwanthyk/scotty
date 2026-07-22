@@ -6,6 +6,7 @@ import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbo
 import { sessionRoot } from "./workspace";
 
 const WEB_SESSION_ID = "scotty-web";
+const TRUST_CONTAINER_GIT_ROOT = `-c 'projects."/tmp".trust_level="trusted"'`;
 
 export type AgentLaunch =
   | { readonly kind: "start"; readonly prompt?: string }
@@ -50,8 +51,8 @@ export const agentLayer = (
 function agentCommand(fakeAgent: boolean, launch: AgentLaunch): string {
   if (fakeAgent) return `printf '\\033[1;36mScotty fake agent ready\\033[0m\\n'; exec bash`;
   if (launch.kind === "start")
-    return `exec codex --dangerously-bypass-approvals-and-sandbox ${shellQuote(launch.prompt ?? "")}`;
+    return `exec codex ${TRUST_CONTAINER_GIT_ROOT} --dangerously-bypass-approvals-and-sandbox ${shellQuote(launch.prompt ?? "")}`;
   return launch.threadId
-    ? `exec codex --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(launch.threadId)}`
-    : "exec codex --dangerously-bypass-approvals-and-sandbox resume --last";
+    ? `exec codex ${TRUST_CONTAINER_GIT_ROOT} --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(launch.threadId)}`
+    : `exec codex ${TRUST_CONTAINER_GIT_ROOT} --dangerously-bypass-approvals-and-sandbox resume --last`;
 }

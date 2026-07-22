@@ -155,17 +155,17 @@ describe("Agent", () => {
         [
           { kind: "start", prompt: "fix tests" },
           false,
-          "exec codex --dangerously-bypass-approvals-and-sandbox 'fix tests'",
+          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox 'fix tests'`,
         ],
         [
           { kind: "resume", threadId: "thread-123" },
           false,
-          "exec codex --dangerously-bypass-approvals-and-sandbox resume 'thread-123'",
+          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox resume 'thread-123'`,
         ],
         [
           { kind: "resume" },
           false,
-          "exec codex --dangerously-bypass-approvals-and-sandbox resume --last",
+          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox resume --last`,
         ],
       ];
 
@@ -184,11 +184,11 @@ describe("Agent", () => {
       for (const [launch, command] of [
         [
           { kind: "start", prompt: hostilePrompt },
-          `exec codex --dangerously-bypass-approvals-and-sandbox ${shellQuote(hostilePrompt)}`,
+          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox ${shellQuote(hostilePrompt)}`,
         ],
         [
           { kind: "resume", threadId: hostileThread },
-          `exec codex --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(hostileThread)}`,
+          `exec codex -c 'projects."/tmp".trust_level="trusted"' --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(hostileThread)}`,
         ],
       ] satisfies ReadonlyArray<readonly [AgentLaunch, string]>) {
         const capabilities = new CapturingAgentCapabilities();
