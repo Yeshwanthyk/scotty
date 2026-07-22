@@ -228,6 +228,23 @@ describe("configuration and transport", () => {
       await main(["ls", "--host", "https://worker.example", "--token", "secret"], malformed.deps),
     ).toBe(EXIT.GENERIC);
     expect(malformed.error().error.code).toBe("invalid_response");
+
+    const malformedFailure = harness({
+      fetch: async () => new Response("not json", { status: 502 }),
+    });
+    expect(
+      await main(
+        ["ls", "--host", "https://worker.example", "--token", "secret"],
+        malformedFailure.deps,
+      ),
+    ).toBe(EXIT.GENERIC);
+    expect(malformedFailure.error()).toEqual({
+      error: {
+        code: "http_502",
+        message: "Request failed with HTTP 502",
+        hint: "Check the session state and Worker logs.",
+      },
+    });
   });
 
   test("ls exposes only the stable public projection", async () => {
@@ -415,7 +432,12 @@ describe("beam down and embedded skill", () => {
       [
         "metadata.json",
         new TextEncoder().encode(
-          JSON.stringify({ branch: "scotty/s1", sha, codexThreadId: threadId }),
+          JSON.stringify({
+            branch: "scotty/s1",
+            sha,
+            codexThreadId: threadId,
+            rolloutFile: `rollout-2026-07-20T12-00-00-${threadId}.jsonl`,
+          }),
         ),
       ],
       [

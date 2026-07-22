@@ -50,7 +50,7 @@ function publicRecord(record, now = Date.now()) {
     if (record[key] !== undefined) result[key] = record[key];
   }
   result.ageSeconds = Math.max(0, Math.floor((now - Date.parse(record.createdAt)) / 1000));
-  result.capRemainingSeconds = Math.max(0, Math.ceil((Date.parse(record.hardCapAt) - now) / 1000));
+  result.capRemainingSeconds = Math.max(0, Math.floor((Date.parse(record.hardCapAt) - now) / 1000));
   return result;
 }
 
@@ -68,12 +68,6 @@ function readBody(request) {
     });
     request.on("error", reject);
   });
-}
-
-function durationMs(value = "4h") {
-  const match = /^(\d+)(s|m|h)$/.exec(value);
-  if (!match) return 4 * 60 * 60 * 1000;
-  return Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[match[2]];
 }
 
 function websocketAccept(key) {
@@ -290,10 +284,12 @@ export class FakeWorkerService {
     if (request.method === "POST" && url.pathname === "/api/sessions") {
       const body = await readBody(request);
       if (typeof body.prompt !== "string" || !body.prompt.trim())
-        return error(400, "bad_usage", "prompt is required", "Pass a non-empty prompt");
+        return error(400, "bad_request", "prompt must be a non-empty string");
       const id = `e2e-${String(++this.counter).padStart(4, "0")}`;
       const now = new Date();
-      const cap = body.cap ?? url.searchParams.get("cap") ?? "4h";
+      const hardCapSeconds = Number.isInteger(body.hardCapSeconds)
+        ? body.hardCapSeconds
+        : 4 * 60 * 60;
       const record = {
         version: 1,
         id,
@@ -304,7 +300,7 @@ export class FakeWorkerService {
         branch: `scotty/${id}`,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
-        hardCapAt: new Date(now.getTime() + durationMs(cap)).toISOString(),
+        hardCapAt: new Date(now.getTime() + hardCapSeconds * 1000).toISOString(),
         projectedAt: now.toISOString(),
         codexThreadId: "019f8e2a-11aa-7000-8000-000000000001",
         rolloutEntries: null,
@@ -332,7 +328,7 @@ export class FakeWorkerService {
           branch: record.branch,
           status: record.status,
         },
-        201,
+        200,
       );
     }
 
@@ -378,6 +374,11 @@ export class FakeWorkerService {
     }
     if (request.method === "POST" && action === "pr") {
       if (record.status !== "warm") return this.#wrongState(record, "pr", "warm");
+      const body = await readBody(request).catch(() => ({}));
+      record.prTitle =
+        typeof body.title === "string" && body.title.trim()
+          ? body.title.trim()
+          : `Scotty session ${record.id}`;
       return json({
         prUrl: `https://github.com/${record.repo}/pull/42`,
         branchUrl: `https://github.com/${record.repo}/tree/${record.branch}`,
@@ -394,12 +395,12 @@ export class FakeWorkerService {
         branch: record.branch,
         sha: record.sha ?? "0123456789abcdef0123456789abcdef01234567",
         codexThreadId: record.codexThreadId,
-        rolloutPath: `sessions/2026/07/20/rollout-2026-07-20T12-00-00-${record.codexThreadId}.jsonl`,
+        rolloutFile: `rollout-2026-07-20T12-00-00-${record.codexThreadId}.jsonl`,
       };
       const entries = record.rolloutEntries ?? [
         { name: "metadata.json", body: JSON.stringify(metadata, null, 2) },
         {
-          name: `rollout/${path.basename(metadata.rolloutPath)}`,
+          name: `rollout/${metadata.rolloutFile}`,
           body: FIXTURE_ROLLOUT,
           mode: 0o600,
         },
@@ -451,7 +452,7 @@ export class FakeWorkerService {
     };
     this.backups.set(backupId, backup);
     record.backup = {
-      current: { id: backupId },
+      current: { id: backupId, dir: `/workspace/${record.id}` },
       ...(record.backup?.current ? { previous: record.backup.current } : {}),
     };
     record.updatedAt = new Date().toISOString();

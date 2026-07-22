@@ -16,6 +16,11 @@ describe("request contracts", () => {
       repo: "anomalyco/rift",
       hardCapSeconds: 14_400,
     });
+    expect(parseCreateInput({ prompt: "ship it", cap: "90m" })).toEqual({
+      prompt: "ship it",
+      repo: "anomalyco/rift",
+      hardCapSeconds: 14_400,
+    });
     expect(() => parseCreateInput({ prompt: "", repo: "bad" })).toThrow(/prompt/u);
     expect(() => parseCreateInput({ prompt: "x", hardCapSeconds: 30 })).toThrow(/hardCapSeconds/u);
   });
@@ -47,6 +52,25 @@ describe("request contracts", () => {
     expect(toSessionView(projection, Date.parse("2026-01-01T01:00:00.000Z"))).toMatchObject({
       ageSeconds: 3_600,
       capRemainingSeconds: 10_800,
+    });
+  });
+
+  it("floors partial seconds in session views", () => {
+    const projection = {
+      version: 1 as const,
+      id: "a0b1c2d3e4f5",
+      status: "warm" as const,
+      repo: "anomalyco/rift",
+      defaultBranch: "dev",
+      branch: "scotty/a0b1c2d3e4f5",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      hardCapAt: "2026-01-01T00:00:03.998Z",
+      projectedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(toSessionView(projection, Date.parse("2026-01-01T00:00:01.999Z"))).toMatchObject({
+      ageSeconds: 1,
+      capRemainingSeconds: 1,
     });
   });
 });

@@ -1,4 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const sandbox = vi.hoisted(() => ({
+  createScottySession: vi.fn(),
+  getScottySession: vi.fn(),
+  snapshotScottySession: vi.fn(),
+  resumeScottySession: vi.fn(),
+  publishScottySession: vi.fn(),
+  prepareDownArchive: vi.fn(),
+  readFileStream: vi.fn(),
+  vaporizeScottySession: vi.fn(),
+}));
+
+vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@cloudflare/sandbox")>()),
+  getSandbox: vi.fn(() => sandbox),
+}));
+
 import app from "../src/index";
 import type { Bindings } from "../src/bindings";
 
@@ -44,24 +61,150 @@ const projection = {
 };
 
 describe("real Hono boundary", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("rejects unauthenticated API requests before touching bindings", async () => {
     const response = await app.request("/api/sessions", undefined, env());
     expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toMatchObject({ error: { code: "auth" } });
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "auth",
+        message: "Authentication required",
+        hint: "Run scotty init or provide --token/SCOTTY_TOKEN",
+      },
+    });
   });
 
-  it("rejects malformed create input at the HTTP boundary", async () => {
+  it("preserves the create status, output shape, and ignored legacy cap", async () => {
+    sandbox.createScottySession.mockResolvedValue({
+      branch: "scotty/a0b1c2d3e4f5",
+      status: "warm",
+    });
     const response = await app.request(
       "/api/sessions",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ prompt: "", repo: "../escape" }),
+        body: JSON.stringify({ prompt: " ship it ", cap: "90m" }),
+      },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    if (!body || typeof body !== "object" || !("id" in body))
+      throw new TypeError("Expected create response object");
+    expect(body).toEqual({
+      id: expect.stringMatching(/^[0-9a-f]{12}$/u),
+      url: expect.stringMatching(new RegExp(`^http://localhost/s/[0-9a-f]{12}\\?t=${TOKEN}$`, "u")),
+      branch: "scotty/a0b1c2d3e4f5",
+      status: "warm",
+    });
+    expect(sandbox.createScottySession).toHaveBeenCalledWith(
+      { prompt: "ship it", repo: "anomalyco/rift", hardCapSeconds: 14_400 },
+      body.id,
+    );
+  });
+
+  it("preserves exact malformed create error envelopes", async () => {
+    const response = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: "{",
       },
       env(),
     );
     expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({ error: { code: "bad_request" } });
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "Request body must be valid JSON" },
+    });
+  });
+
+  it("treats malformed PR JSON as an omitted title and preserves the result shape", async () => {
+    sandbox.publishScottySession.mockResolvedValue({
+      prUrl: "https://github.com/owner/repo/pull/1",
+      branchUrl: "https://github.com/owner/repo/tree/scotty/a0b1c2d3e4f5",
+      created: true,
+    });
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/pr",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: "{",
+      },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      prUrl: "https://github.com/owner/repo/pull/1",
+      branchUrl: "https://github.com/owner/repo/tree/scotty/a0b1c2d3e4f5",
+      created: true,
+    });
+    expect(sandbox.publishScottySession).toHaveBeenCalledWith({});
+  });
+
+  it("preserves beam-down streaming status, headers, and filename", async () => {
+    sandbox.prepareDownArchive.mockResolvedValue({
+      path: "/tmp/scotty-a0b1c2d3e4f5.tar",
+      filename: "scotty-a0b1c2d3e4f5.tar",
+      manifest: {},
+    });
+    sandbox.readFileStream.mockResolvedValue(new Blob(["archive"]).stream());
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/down",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/x-tar");
+    expect(response.headers.get("content-disposition")).toBe(
+      'attachment; filename="scotty-a0b1c2d3e4f5.tar"',
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe("archive");
+  });
+
+  it("preserves 200 pass-through output for ordinary session command routes", async () => {
+    const cases = [
+      {
+        method: "GET",
+        path: "/api/sessions/a0b1c2d3e4f5",
+        mock: sandbox.getScottySession,
+        output: { id: "a0b1c2d3e4f5", status: "warm", ageSeconds: 1 },
+      },
+      {
+        method: "POST",
+        path: "/api/sessions/a0b1c2d3e4f5/snapshot",
+        mock: sandbox.snapshotScottySession,
+        output: { id: "a0b1c2d3e4f5", status: "warm", backupId: "backup-1" },
+      },
+      {
+        method: "POST",
+        path: "/api/sessions/a0b1c2d3e4f5/resume",
+        mock: sandbox.resumeScottySession,
+        output: { id: "a0b1c2d3e4f5", status: "warm", branch: "scotty/a0b1c2d3e4f5" },
+      },
+      {
+        method: "DELETE",
+        path: "/api/sessions/a0b1c2d3e4f5",
+        mock: sandbox.vaporizeScottySession,
+        output: { id: "a0b1c2d3e4f5", status: "gone" },
+      },
+    ] as const;
+    for (const entry of cases) {
+      entry.mock.mockResolvedValueOnce(entry.output);
+      const response = await app.request(
+        entry.path,
+        { method: entry.method, headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual(entry.output);
+    }
   });
 
   it("lists only fully decoded KV projections and preserves valid optional fields", async () => {

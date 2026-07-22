@@ -9,7 +9,7 @@ async function create(service, prompt = "protocol fixture") {
     headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
     body: JSON.stringify({ prompt }),
   });
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 200);
   return response.json();
 }
 
@@ -67,6 +67,51 @@ test("query token is exchanged for a hardened cookie and stripped by redirect", 
   const authenticated = await fetch(`${service.url}/s/${session.id}`, { headers: { cookie } });
   assert.equal(authenticated.status, 200);
   assert.doesNotMatch(await authenticated.text(), new RegExp(service.token));
+});
+
+test("fake protocol matches production cap parsing, floor rounding, and backup handles", async (t) => {
+  const service = await new FakeWorkerService().start();
+  t.after(() => service.stop());
+  const response = await fetch(`${service.url}/api/sessions`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "contract fixture", cap: "1h", hardCapSeconds: 90 }),
+  });
+  assert.equal(response.status, 200);
+  const session = await response.json();
+  const record = service.sessions.get(session.id);
+  assert.ok(Date.parse(record.hardCapAt) - Date.parse(record.createdAt) >= 90_000);
+  assert.ok(Date.parse(record.hardCapAt) - Date.parse(record.createdAt) < 91_000);
+
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const list = await fetch(`${service.url}/api/sessions`, {
+    headers: { authorization: `Bearer ${service.token}` },
+  });
+  const [view] = await list.json();
+  assert.ok(view.capRemainingSeconds < 90);
+
+  const snapshot = await fetch(`${service.url}/api/sessions/${session.id}/snapshot`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${service.token}` },
+  });
+  assert.equal(snapshot.status, 200);
+  assert.deepEqual(record.backup.current, {
+    id: record.backup.current.id,
+    dir: `/workspace/${session.id}`,
+  });
+});
+
+test("malformed PR JSON preserves the production default title", async (t) => {
+  const service = await new FakeWorkerService().start();
+  t.after(() => service.stop());
+  const session = await create(service);
+  const response = await fetch(`${service.url}/api/sessions/${session.id}/pr`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
+    body: "{",
+  });
+  assert.equal(response.status, 200);
+  assert.equal(service.sessions.get(session.id).prTitle, `Scotty session ${session.id}`);
 });
 
 test("PTY auth, binary-before-ready, resize, and reconnect preserve the named runtime", async (t) => {
