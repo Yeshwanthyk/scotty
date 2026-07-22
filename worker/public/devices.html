@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#090d12" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Scotty devices</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --space: oklch(13% 0.012 248);
+        --shell: oklch(16% 0.014 248);
+        --panel: #0b1016;
+        --ink: oklch(93% 0.012 220);
+        --muted: oklch(70% 0.025 230);
+        --quiet: oklch(53% 0.024 235);
+        --line: oklch(30% 0.025 235);
+        --beam: oklch(79% 0.115 200);
+        --danger: oklch(70% 0.16 25);
+        --focus: oklch(84% 0.13 197);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        min-width: 280px;
+        min-height: 100vh;
+        min-height: 100dvh;
+        margin: 0;
+        background: var(--space);
+        color: var(--ink);
+      }
+      button,
+      input,
+      a {
+        font: inherit;
+      }
+      .masthead {
+        border-bottom: 1px solid var(--line);
+        background: var(--shell);
+      }
+      .masthead-inner,
+      main {
+        width: min(100%, 920px);
+        margin-inline: auto;
+      }
+      .masthead-inner {
+        display: flex;
+        min-height: 58px;
+        align-items: center;
+        justify-content: space-between;
+        padding: max(7px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 7px
+          max(16px, env(safe-area-inset-left));
+      }
+      .identity {
+        color: var(--ink);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 0.78rem;
+        font-weight: 720;
+        letter-spacing: 0.09em;
+        text-decoration: none;
+      }
+      .identity span {
+        margin-left: 10px;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 500;
+        letter-spacing: 0;
+      }
+      main {
+        padding: 28px max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom))
+          max(16px, env(safe-area-inset-left));
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(1.35rem, 4vw, 1.75rem);
+        letter-spacing: -0.03em;
+      }
+      .intro {
+        margin: 6px 0 22px;
+        color: var(--muted);
+        font-size: 0.84rem;
+        line-height: 1.5;
+      }
+      .panel {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--panel);
+      }
+      .panel + .panel {
+        margin-top: 14px;
+      }
+      .panel-heading {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      h2 {
+        margin: 0;
+        font-size: 0.98rem;
+        letter-spacing: -0.015em;
+      }
+      .panel-copy {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 0.77rem;
+        line-height: 1.5;
+      }
+      .issue-row {
+        display: grid;
+        grid-template-columns: minmax(150px, 1fr) auto;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      input {
+        min-width: 0;
+        min-height: 44px;
+        padding: 0 11px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        outline: none;
+        background: var(--shell);
+        color: var(--ink);
+      }
+      input:focus {
+        border-color: var(--focus);
+        box-shadow: 0 0 0 3px oklch(79% 0.115 200 / 0.12);
+      }
+      .button {
+        display: inline-flex;
+        min-height: 44px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: var(--shell);
+        color: var(--ink);
+        font-size: 0.77rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .button-primary {
+        border-color: transparent;
+        background: var(--beam);
+        color: oklch(18% 0.024 220);
+      }
+      .button-danger {
+        color: var(--danger);
+      }
+      .button:disabled {
+        cursor: wait;
+        opacity: 0.55;
+      }
+      .pairing {
+        display: grid;
+        grid-template-columns: minmax(190px, 260px) minmax(0, 1fr);
+        gap: 20px;
+        align-items: center;
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+      .pairing[hidden] {
+        display: none;
+      }
+      .qr-shell {
+        width: 100%;
+        padding: 10px;
+        border-radius: 6px;
+        background: white;
+      }
+      #qr {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1;
+        image-rendering: pixelated;
+      }
+      .pairing-url {
+        display: block;
+        margin: 10px 0;
+        overflow-wrap: anywhere;
+        color: var(--muted);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 0.68rem;
+        line-height: 1.5;
+      }
+      .expires {
+        color: var(--muted);
+        font-size: 0.73rem;
+      }
+      .clients {
+        margin: 14px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+      .client {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: center;
+        padding: 13px 0;
+        border-top: 1px solid var(--line);
+      }
+      .client:first-child {
+        border-top: 0;
+      }
+      .client-label {
+        margin: 0;
+        font-size: 0.87rem;
+        font-weight: 680;
+      }
+      .current {
+        margin-left: 7px;
+        color: var(--beam);
+        font-size: 0.67rem;
+        font-weight: 750;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .client-meta {
+        margin-top: 4px;
+        overflow: hidden;
+        color: var(--muted);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 0.66rem;
+        line-height: 1.55;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .state,
+      .error {
+        padding: 18px 0 4px;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+      .error {
+        color: var(--danger);
+      }
+      @media (max-width: 620px) {
+        .pairing {
+          grid-template-columns: 1fr;
+        }
+        .qr-shell {
+          width: min(100%, 290px);
+          margin-inline: auto;
+        }
+      }
+      @media (max-width: 430px) {
+        .identity span {
+          display: none;
+        }
+        .issue-row {
+          grid-template-columns: 1fr;
+        }
+        .client {
+          grid-template-columns: 1fr;
+        }
+        .client .button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="masthead">
+      <div class="masthead-inner">
+        <a class="identity" href="/sessions">SCOTTY <span>session control</span></a>
+        <a class="button" href="/sessions">Sessions</a>
+      </div>
+    </header>
+    <main>
+      <h1>Registered devices</h1>
+      <p class="intro">
+        Each browser gets its own revocable credential. Pairing links work once and expire after
+        five minutes.
+      </p>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Pair another browser</h2>
+            <p class="panel-copy">Scan on your phone, or copy the link into Helium.</p>
+          </div>
+        </div>
+        <div class="issue-row">
+          <input id="pair-label" maxlength="80" placeholder="Phone, Helium, tablet…" />
+          <button class="button button-primary" id="issue" type="button">Create pairing</button>
+        </div>
+        <div class="pairing" id="pairing" hidden>
+          <div class="qr-shell"><canvas id="qr"></canvas></div>
+          <div>
+            <h2>Open this on the new device</h2>
+            <code class="pairing-url" id="pairing-url"></code>
+            <button class="button" id="copy" type="button">Copy pairing link</button>
+            <p class="expires" id="expires"></p>
+          </div>
+        </div>
+        <div class="error" id="issue-error" role="alert" hidden></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Browsers with access</h2>
+            <p class="panel-copy">Revocation takes effect on the next request or heartbeat.</p>
+          </div>
+          <button class="button" id="refresh" type="button">Refresh</button>
+        </div>
+        <div class="state" id="loading">Loading registered browsers…</div>
+        <ul class="clients" id="clients"></ul>
+        <div class="error" id="clients-error" role="alert" hidden></div>
+      </section>
+    </main>
+    <script>
+      (() => {
+        "use strict";
+        const clients = document.querySelector("#clients");
+        const clientsError = document.querySelector("#clients-error");
+        const copyButton = document.querySelector("#copy");
+        const expires = document.querySelector("#expires");
+        const issueButton = document.querySelector("#issue");
+        const issueError = document.querySelector("#issue-error");
+        const label = document.querySelector("#pair-label");
+        const loading = document.querySelector("#loading");
+        const pairing = document.querySelector("#pairing");
+        const pairingUrl = document.querySelector("#pairing-url");
+        const qr = document.querySelector("#qr");
+        const refreshButton = document.querySelector("#refresh");
+        const confirmed = new Set();
+        let currentPairingUrl = "";
+        let expiryTimer;
+
+        function age(iso) {
+          const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+          if (seconds < 60) return `${seconds}s ago`;
+          if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+          if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+          return `${Math.floor(seconds / 86400)}d ago`;
+        }
+
+        async function errorMessage(response, fallback) {
+          try {
+            const body = await response.json();
+            return body?.error?.message || fallback;
+          } catch {
+            return fallback;
+          }
+        }
+
+        function renderQr(matrix) {
+          if (!matrix || !Number.isInteger(matrix.size) || !Array.isArray(matrix.rows))
+            return false;
+          const quiet = 4;
+          const modules = matrix.size + quiet * 2;
+          const scale = Math.max(4, Math.floor(320 / modules));
+          qr.width = modules * scale;
+          qr.height = modules * scale;
+          const context = qr.getContext("2d");
+          context.fillStyle = "#fff";
+          context.fillRect(0, 0, qr.width, qr.height);
+          context.fillStyle = "#071018";
+          matrix.rows.forEach((row, y) => {
+            if (typeof row !== "string" || row.length !== matrix.size) return;
+            for (let x = 0; x < row.length; x += 1) {
+              if (row[x] === "1")
+                context.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
+            }
+          });
+          return true;
+        }
+
+        function updateExpiry(expiresAt) {
+          clearInterval(expiryTimer);
+          const update = () => {
+            const seconds = Math.max(0, Math.ceil((Date.parse(expiresAt) - Date.now()) / 1000));
+            expires.textContent = seconds
+              ? `Expires in ${seconds}s · works once`
+              : "Expired · create a fresh pairing";
+          };
+          update();
+          expiryTimer = setInterval(update, 1000);
+        }
+
+        async function issuePairing() {
+          if (issueButton.disabled) return;
+          issueButton.disabled = true;
+          issueButton.textContent = "Creating…";
+          issueError.hidden = true;
+          try {
+            const response = await fetch("/api/auth/pairings", {
+              method: "POST",
+              credentials: "same-origin",
+              cache: "no-store",
+              headers: { Accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ...(label.value.trim() ? { label: label.value.trim() } : {}),
+              }),
+            });
+            if (!response.ok)
+              throw new Error(await errorMessage(response, "Couldn't create a pairing link."));
+            const body = await response.json();
+            if (typeof body?.url !== "string" || !renderQr(body.qr))
+              throw new Error("Scotty returned an invalid pairing.");
+            currentPairingUrl = body.url;
+            pairingUrl.textContent = body.url;
+            pairing.hidden = false;
+            updateExpiry(body.expiresAt);
+          } catch (error) {
+            issueError.textContent =
+              error instanceof Error ? error.message : "Couldn't create a pairing link.";
+            issueError.hidden = false;
+          } finally {
+            issueButton.disabled = false;
+            issueButton.textContent = "Create pairing";
+          }
+        }
+
+        function clientElement(client) {
+          const item = document.createElement("li");
+          item.className = "client";
+          const identity = document.createElement("div");
+          const title = document.createElement("p");
+          title.className = "client-label";
+          title.textContent = client.label || "Browser";
+          if (client.current) {
+            const current = document.createElement("span");
+            current.className = "current";
+            current.textContent = "This browser";
+            title.append(current);
+          }
+          const meta = document.createElement("div");
+          meta.className = "client-meta";
+          meta.textContent = `${client.id} · last used ${age(client.lastSeenAt)}`;
+          identity.append(title, meta);
+          item.append(identity);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "button button-danger";
+          button.dataset.id = client.id;
+          button.textContent = client.current
+            ? "Current"
+            : confirmed.has(client.id)
+              ? "Confirm revoke"
+              : "Revoke";
+          button.disabled = Boolean(client.current);
+          item.append(button);
+          return item;
+        }
+
+        async function loadClients() {
+          refreshButton.disabled = true;
+          clientsError.hidden = true;
+          try {
+            const response = await fetch("/api/auth/clients", {
+              credentials: "same-origin",
+              cache: "no-store",
+              headers: { Accept: "application/json" },
+            });
+            if (!response.ok)
+              throw new Error(await errorMessage(response, "Couldn't load registered browsers."));
+            const body = await response.json();
+            if (!Array.isArray(body)) throw new Error("Scotty returned an invalid client list.");
+            clients.replaceChildren(...body.map(clientElement));
+            loading.hidden = true;
+          } catch (error) {
+            clientsError.textContent =
+              error instanceof Error ? error.message : "Couldn't load registered browsers.";
+            clientsError.hidden = false;
+          } finally {
+            refreshButton.disabled = false;
+          }
+        }
+
+        async function revoke(id, button) {
+          if (!confirmed.has(id)) {
+            confirmed.add(id);
+            button.textContent = "Confirm revoke";
+            return;
+          }
+          button.disabled = true;
+          button.textContent = "Revoking…";
+          try {
+            const response = await fetch(`/api/auth/clients/${encodeURIComponent(id)}`, {
+              method: "DELETE",
+              credentials: "same-origin",
+              cache: "no-store",
+              headers: { Accept: "application/json" },
+            });
+            if (!response.ok)
+              throw new Error(await errorMessage(response, "Couldn't revoke this browser."));
+            confirmed.delete(id);
+            await loadClients();
+          } catch (error) {
+            clientsError.textContent =
+              error instanceof Error ? error.message : "Couldn't revoke this browser.";
+            clientsError.hidden = false;
+            button.disabled = false;
+            button.textContent = "Confirm revoke";
+          }
+        }
+
+        issueButton.addEventListener("click", () => void issuePairing());
+        refreshButton.addEventListener("click", () => void loadClients());
+        copyButton.addEventListener("click", async () => {
+          if (!currentPairingUrl) return;
+          try {
+            await navigator.clipboard.writeText(currentPairingUrl);
+            copyButton.textContent = "Copied";
+            setTimeout(() => (copyButton.textContent = "Copy pairing link"), 1500);
+          } catch {
+            copyButton.textContent = "Copy failed";
+          }
+        });
+        clients.addEventListener("click", (event) => {
+          const button = event.target.closest("button[data-id]");
+          if (button) void revoke(button.dataset.id, button);
+        });
+        void loadClients();
+      })();
+    </script>
+  </body>
+</html>

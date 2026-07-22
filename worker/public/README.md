@@ -1,12 +1,15 @@
 # Scotty browser terminal assets
 
-`terminal.html` is a standalone browser client for the raw Cloudflare Sandbox terminal WebSocket protocol. The Worker is expected to serve it at `/s/:id`, authenticate the initial `?t=` request, set a `Secure; HttpOnly; SameSite` cookie, and redirect to the token-free URL before returning the page. The client never extracts, stores, sends, or logs an authentication token. A defensive head script only removes a stray `t` query key before subresources can load.
+`terminal.html` is a standalone browser client for the raw Cloudflare Sandbox terminal WebSocket protocol. The Worker serves it at `/s/:id` only after registered-browser authentication. During migration, an old root-token cookie or `?t=` bootstrap link is exchanged once for an independent `Secure; HttpOnly; SameSite=Strict` browser credential and redirected to the clean URL. The client never reads the browser credential.
+
+`devices.html` is the administrator-only registered-browser manager. It creates five-minute one-use pairing links and renders their QR matrix locally. `pair.html` removes the link fragment before consuming it and receives a browser-specific credential cookie.
 
 The page assumes these same-origin endpoints:
 
 - `GET /api/sessions` returns either an array of session projections or `{ "sessions": [...] }` with `id` and `status` fields.
 - `POST /api/sessions/:id/resume` starts restore/resume and returns a successful HTTP status when accepted.
-- `GET /api/sessions/:id/pty?cols=N&rows=N` upgrades to the Sandbox terminal WebSocket using the HttpOnly cookie.
+- `POST /api/sessions/:id/pty-ticket` uses the HttpOnly cookie to mint a five-minute one-use ticket.
+- `GET /api/sessions/:id/pty?cols=N&rows=N&ticket=…` atomically consumes that ticket and upgrades to the Sandbox terminal WebSocket.
 
 The WebSocket uses binary UTF-8 in both directions for terminal I/O. Text frames are JSON controls: server `ready`, `exit`, and `error`; client `resize`. Buffered binary output is rendered even when it arrives before `ready`. Input is only sent after `ready`.
 

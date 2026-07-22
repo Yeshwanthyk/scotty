@@ -71,6 +71,11 @@ bun build cli/scotty.ts --compile --outfile dist/scotty
 ./dist/scotty vaporize <id> --yes
 ```
 
+The CLI token is also the browser bootstrap/recovery credential. Open a browser once through
+`scotty attach`, then use **Devices** on `/sessions` to create a five-minute one-use QR/link for
+Helium, a phone, or another browser profile. Every paired browser gets an independent revocable
+cookie; ordinary session links stay clean.
+
 Run `scotty skills` for the embedded agent-facing command and state-machine reference.
 
 ## E2E

@@ -546,6 +546,7 @@
       let currentState = "initializing";
       let lastAnnounced = "";
       let controlPending = false;
+      let connectGeneration = 0;
 
       function getTerminalClientId() {
         const bytes = crypto.getRandomValues(new Uint8Array(6));
@@ -596,6 +597,11 @@
           "Waiting for a network connection",
           "Scotty will reconnect when this device is back online.",
         ],
+        revoked: [
+          "ACCESS REVOKED",
+          "This browser no longer has access",
+          "Open a fresh one-time pairing link from an administrator browser to reconnect.",
+        ],
       };
 
       function announce(message) {
@@ -644,6 +650,7 @@
           failed: "Connection failed",
           exited: detail || "Terminal exited",
           offline: "Network offline",
+          revoked: "Access revoked",
         };
         statusText.textContent = labels[nextState] || labels.failed;
         announce(statusText.textContent);
@@ -664,13 +671,14 @@
         };
       }
 
-      function websocketUrl(clientId) {
+      function websocketUrl(clientId, ticket) {
         const protocol = location.protocol === "https:" ? "wss:" : "ws:";
         const size = dimensions();
         const url = new URL(`${protocol}//${location.host}/api/sessions/${apiId}/pty`);
         url.searchParams.set("client", clientId);
         url.searchParams.set("cols", String(size.cols));
         url.searchParams.set("rows", String(size.rows));
+        url.searchParams.set("ticket", ticket);
         return url.href;
       }
 
@@ -686,6 +694,7 @@
       }
 
       function closeSocket() {
+        connectGeneration += 1;
         intentionalClose = true;
         ready = false;
         clearInterval(heartbeatTimer);
@@ -702,8 +711,33 @@
             method: "POST",
             credentials: "same-origin",
             cache: "no-store",
-          }).catch(() => undefined);
+          })
+            .then((response) => {
+              if (response.status !== 401 && response.status !== 403) return;
+              intentionalClose = true;
+              closeSocket();
+              setState("revoked");
+            })
+            .catch(() => undefined);
         }, 15000);
+      }
+
+      async function issueTerminalTicket() {
+        const response = await fetch(`/api/sessions/${apiId}/pty-ticket`, {
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: { Accept: "application/json" },
+        });
+        if (response.status === 401 || response.status === 403) {
+          intentionalClose = true;
+          setState("revoked");
+          return undefined;
+        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const body = await response.json();
+        if (typeof body?.credential !== "string") throw new Error("Invalid terminal ticket");
+        return body.credential;
       }
 
       async function readSessionStatus() {
@@ -798,19 +832,28 @@
         }
       }
 
-      function connect() {
+      async function connect() {
         if (!terminal || !navigator.onLine) {
           setState("offline");
           return;
         }
 
         closeSocket();
+        const generation = connectGeneration;
         intentionalClose = false;
         setState(reconnectAttempt ? "reconnecting" : "connecting");
 
         try {
           const clientId = getTerminalClientId();
-          const connection = new WebSocket(websocketUrl(clientId));
+          const ticket = await issueTerminalTicket();
+          if (
+            !ticket ||
+            generation !== connectGeneration ||
+            intentionalClose ||
+            currentState === "revoked"
+          )
+            return;
+          const connection = new WebSocket(websocketUrl(clientId, ticket));
           socket = connection;
           activeClientId = clientId;
           connection.binaryType = "arraybuffer";

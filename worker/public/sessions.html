@@ -76,6 +76,12 @@
           max(16px, env(safe-area-inset-left));
       }
 
+      .masthead-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
       .identity {
         min-width: 0;
         font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -376,7 +382,10 @@
         <div class="identity">
           <span class="wordmark">SCOTTY</span><span class="section-label">session control</span>
         </div>
-        <button class="button" id="refresh" type="button">Refresh</button>
+        <div class="masthead-actions">
+          <a class="button" id="devices" href="/devices" hidden>Devices</a>
+          <button class="button" id="refresh" type="button">Refresh</button>
+        </div>
       </div>
     </header>
 
@@ -404,6 +413,7 @@
 
         const POLL_INTERVAL = 5000;
         const content = document.querySelector("#content");
+        const devicesLink = document.querySelector("#devices");
         const summary = document.querySelector("#summary");
         const notice = document.querySelector("#notice");
         const noticeText = document.querySelector("#notice-text");
@@ -657,6 +667,17 @@
         });
         refreshButton.addEventListener("click", () => void refresh());
         retryButton.addEventListener("click", () => void refresh());
+
+        fetch("/api/auth/me", {
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: { Accept: "application/json" },
+        })
+          .then((response) => (response.ok ? response.json() : undefined))
+          .then((me) => {
+            devicesLink.hidden = !Array.isArray(me?.scopes) || !me.scopes.includes("access:read");
+          })
+          .catch(() => undefined);
 
         schedulePoll();
         void refresh();

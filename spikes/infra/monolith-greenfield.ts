@@ -26,7 +26,7 @@ export const MONOLITH_GREENFIELD_TOPOLOGY = {
   assets: {
     directory: "worker/public",
     binding: "ASSETS",
-    runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/terminal", "/health"],
+    runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/devices", "/pair", "/terminal", "/health"],
     htmlHandling: "none",
     notFoundHandling: "404-page",
   },
@@ -34,6 +34,12 @@ export const MONOLITH_GREENFIELD_TOPOLOGY = {
     logicalId: "Sandbox",
     bindingName: "SANDBOX",
     className: "ScottySandbox",
+    scriptName: MONOLITH_GREENFIELD_WORKER_NAME,
+  },
+  authDurableObject: {
+    logicalId: "AuthRegistry",
+    bindingName: "AUTH",
+    className: "ScottyAuthRegistry",
     scriptName: MONOLITH_GREENFIELD_WORKER_NAME,
   },
   container: {
@@ -135,6 +141,13 @@ export const monolithGreenfieldProgram = Effect.fnUntraced(function* (
       scriptName: MONOLITH_GREENFIELD_TOPOLOGY.durableObject.scriptName,
     },
   );
+  const authDurableObject = Cloudflare.DurableObject(
+    MONOLITH_GREENFIELD_TOPOLOGY.authDurableObject.logicalId,
+    {
+      className: MONOLITH_GREENFIELD_TOPOLOGY.authDurableObject.className,
+      scriptName: MONOLITH_GREENFIELD_TOPOLOGY.authDurableObject.scriptName,
+    },
+  );
   const assetConfig = {
     directory: MONOLITH_GREENFIELD_TOPOLOGY.assets.directory,
     binding: MONOLITH_GREENFIELD_TOPOLOGY.assets.binding,
@@ -153,6 +166,7 @@ export const monolithGreenfieldProgram = Effect.fnUntraced(function* (
     },
     observability: { enabled: MONOLITH_GREENFIELD_TOPOLOGY.worker.observability },
     env: {
+      AUTH: authDurableObject,
       SANDBOX: durableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,

@@ -166,7 +166,15 @@ describe("monolith greenfield topology", () => {
       assets: {
         directory: "worker/public",
         binding: "ASSETS",
-        runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/terminal", "/health"],
+        runWorkerFirst: [
+          "/api/*",
+          "/s/*",
+          "/sessions",
+          "/devices",
+          "/pair",
+          "/terminal",
+          "/health",
+        ],
         htmlHandling: "none",
         notFoundHandling: "404-page",
       },
@@ -174,6 +182,12 @@ describe("monolith greenfield topology", () => {
         logicalId: "Sandbox",
         bindingName: "SANDBOX",
         className: "ScottySandbox",
+        scriptName: "scotty-worker",
+      },
+      authDurableObject: {
+        logicalId: "AuthRegistry",
+        bindingName: "AUTH",
+        className: "ScottyAuthRegistry",
         scriptName: "scotty-worker",
       },
       container: {
@@ -215,6 +229,7 @@ describe("monolith greenfield source contract", () => {
     assert.match(source, /assets: assetConfig/u);
     assert.notMatch(source, /readAssets|assetHash/u);
     assert.match(source, /SANDBOX: durableObject/u);
+    assert.match(source, /AUTH: authDurableObject/u);
     assert.match(source, /SESSIONS: sessions/u);
     assert.match(source, /BACKUP_BUCKET: backups/u);
     assert.match(source, /\.\.\.MONOLITH_GREENFIELD_TOPOLOGY\.vars/u);

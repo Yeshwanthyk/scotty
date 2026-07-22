@@ -1,6 +1,8 @@
+import type { ScottyAuthRegistryNamespace } from "./auth-object";
 import type { Sandbox } from "./session";
 
 export interface Bindings {
+  AUTH: ScottyAuthRegistryNamespace;
   SANDBOX: DurableObjectNamespace<Sandbox>;
   SESSIONS: KVNamespace;
   BACKUP_BUCKET: R2Bucket;

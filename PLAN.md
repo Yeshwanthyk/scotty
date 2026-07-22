@@ -54,7 +54,7 @@ scotty/
 - **Terminal**: use the Sandbox SDK **native PTY/terminal API** (shipped Feb 2026) — do NOT run ttyd. Browser side uses `ghostty-web` (npm, xterm.js-compatible API) wired to the terminal websocket. If the SDK's xterm addon assumes xterm.js exactly, wiring raw WS ↔ ghostty-web write/onData is acceptable.
 - **Snapshots**: Sandbox `createBackup()` / `restoreBackup()` (SquashFS → R2). Use `/workspace/<id>` (an SDK-supported backup root) and set `CODEX_HOME=/workspace/<id>/.codex`, so one snapshot includes the worktree and rollouts. auth.json in the snapshot is only the sentinel — real tokens live in DO storage (see Credential safety).
 - **Instance type**: `standard-2` default; make it a config constant.
-- **Auth for web/API v1**: single-user. Random bearer token generated at deploy (`SCOTTY_TOKEN` secret). CLI sends it as `Authorization: Bearer`; web URL embeds it as `?t=` (checked by Worker before upgrading the PTY websocket). No Cloudflare Access in v1.
+- **Auth for web/API v1**: single-user. The deploy-time `SCOTTY_TOKEN` remains the CLI/bootstrap recovery credential. A singleton Auth Durable Object owns one-use pairing grants, independent browser registrations, revocation, and short-lived one-use PTY tickets. Browser credentials are opaque, stored only as SHA-256 digests in the Auth DO, and carried in a Secure HttpOnly SameSite cookie. No Cloudflare Access in v1.
 - **Domain**: start on `*.workers.dev` (native terminal WS goes through the Worker, no wildcard subdomain needed). `exposePort` previews are out of scope for v1.
 
 ## Credential safety (crabfleet/Cloudflare-example grade — REQUIRED, not optional)
@@ -79,9 +79,9 @@ Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.c
 
 **4. Scotty's own tokens.**
 
-- `SCOTTY_TOKEN` grants full control of sessions (and thus code execution) — treat like a password. CLI stores it 0600 in `~/.scotty.json`.
-- Web URL `?t=` lands in browser history: acceptable single-user v1, but the Worker must also accept the token via cookie — the `/s/:id` page sets an HttpOnly cookie on first load and strips `?t=` from the URL via `history.replaceState`.
-- PTY websocket upgrade requires the token (cookie or query) — no unauthenticated path to a shell, ever.
+- `SCOTTY_TOKEN` grants full control of sessions (and thus code execution) — treat like a password. CLI stores it 0600 in `~/.scotty.json`. During the compatibility window, an old root-token browser cookie or `?t=` bootstrap link is exchanged once for an administrator browser registration and redirected to a clean URL; the root token is never copied into the replacement cookie.
+- `/devices` creates five-minute one-use `/pair#token=…` links. The fragment is removed before the browser makes the consume request. Each target browser receives its own 30-day credential and can be revoked without affecting other browsers.
+- PTY websocket upgrades use five-minute one-use tickets bound to both the registered browser and session. Revoking a browser removes outstanding tickets; existing sockets lose their heartbeat and are cleaned up by the existing lease bound.
 
 **5. Hygiene rules for implementers.**
 
@@ -107,7 +107,7 @@ Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.c
 4. Set `CODEX_HOME=/workspace/<id>/.codex`. Write **sentinel** auth.json (`scotty-sentinel-<id>`) there; store the real bundle in DO storage.
 5. `tmux new-session -d -s agent -c /workspace/<id>` then send-keys `codex "<prompt>"` (interactive TUI; prompt passed as initial input). Capture codex thread id later from `$CODEX_HOME/sessions` (newest rollout file's UUID) and store in KV.
 6. Schedule `enforceHardCap` for `now + HARD_CAP_MS` (default 4h, override via `?cap=`).
-7. KV → `status=warm`, respond `{id, url: https://<host>/s/<id>?t=<token>}`.
+7. KV → `status=warm`, respond with the clean URL `{id, url: https://<host>/s/<id>}`.
 
 **idle sleep**: `sleepAfter: "60m"` on the Sandbox. Override `onActivityExpired()` to quiesce the tmux agent, `createBackup({dir: "/workspace/<id>"})`, durably store the handle, publish `status=sleeping`, then stop. `onStop()` is cleanup-only because it runs after shutdown.
 
@@ -189,7 +189,7 @@ AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
 
 - Single HTML file served by the Worker at `/s/:id`.
 - Loads ghostty-web (bundle it into the Worker assets; no CDN).
-- Connects to `wss://<host>/api/sessions/:id/pty?t=<token>`; Worker validates token, bridges to Sandbox PTY (which attaches `tmux attach -t agent`).
+- Requests a one-use PTY ticket with the browser cookie, then connects to `wss://<host>/api/sessions/:id/pty?ticket=<short-lived-ticket>`; Worker atomically consumes the ticket and bridges to Sandbox PTY (which attaches `tmux attach -t agent`).
 - Reconnect on drop with backoff. Show session id + status (warm/sleeping) in a slim header; if sleeping, show a "Resume" button that calls the resume endpoint then reconnects.
 
 ## Phases

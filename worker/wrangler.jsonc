@@ -10,7 +10,15 @@
   "assets": {
     "binding": "ASSETS",
     "directory": "./public",
-    "run_worker_first": ["/api/*", "/s/*", "/sessions", "/terminal", "/health"],
+    "run_worker_first": [
+      "/api/*",
+      "/s/*",
+      "/sessions",
+      "/devices",
+      "/pair",
+      "/terminal",
+      "/health",
+    ],
     "html_handling": "none",
     "not_found_handling": "404-page",
   },
@@ -20,12 +28,20 @@
         "name": "SANDBOX",
         "class_name": "ScottySandbox",
       },
+      {
+        "name": "AUTH",
+        "class_name": "ScottyAuthRegistry",
+      },
     ],
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["ScottySandbox"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ScottyAuthRegistry"],
     },
   ],
   "containers": [

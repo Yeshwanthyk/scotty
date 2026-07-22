@@ -1,16 +1,30 @@
 import { ContainerProxy, getSandbox } from "@cloudflare/sandbox";
 import { Hono } from "hono";
+import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
 import {
   badRequest,
+  decodeJsonValue,
   isRecord,
   parseCreateInput,
   parsePrInput,
   parseSessionId,
   ScottyError,
 } from "./contracts";
-import { Effect, Result } from "effect";
-import { requireAuth, setAuthCookie } from "./auth";
+import { Effect, Option, Result, Schema } from "effect";
+import {
+  authRegistry,
+  clearClientAuthCookie,
+  type AuthPrincipal,
+  type AuthVariables,
+  registerRootBrowser,
+  requestClientCredential,
+  requireAuthRequest,
+  requireAuthScope,
+  setClientAuthCookie,
+  unwrapAuthRpc,
+} from "./auth";
+import { ScottyAuthRegistry } from "./auth-object";
 import {
   kvSessionProjectionStorage,
   listSessionProjections,
@@ -18,9 +32,9 @@ import {
 } from "./session-projection";
 import { Sandbox as ScottySandbox } from "./session";
 
-export { ContainerProxy, ScottySandbox };
+export { ContainerProxy, ScottyAuthRegistry, ScottySandbox };
 
-const app = new Hono<{ Bindings: Bindings }>();
+const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -37,12 +51,107 @@ app.onError((error, c) => {
 });
 
 app.use("/api/*", async (c, next) => {
-  const allowQuery = new URL(c.req.url).pathname.endsWith("/pty");
-  await requireAuth(c.req.raw, c.env.SCOTTY_TOKEN, allowQuery);
+  const url = new URL(c.req.url);
+  if (c.req.method === "POST" && url.pathname === "/api/auth/pairings/consume") {
+    await next();
+    return;
+  }
+
+  const terminalTicket =
+    c.req.method === "GET" &&
+    url.pathname.endsWith("/pty") &&
+    c.req.header("upgrade")?.toLowerCase() === "websocket"
+      ? url.searchParams.get("ticket")
+      : undefined;
+  let principal: AuthPrincipal;
+  if (terminalTicket) {
+    const id = parseSessionIdFromTerminalPath(url.pathname);
+    const client = unwrapAuthRpc(
+      await authRegistry(c.env).consumeTerminalTicket(terminalTicket, id),
+    );
+    principal = {
+      kind: "client",
+      source: "ticket",
+      client,
+      scopes: client.scopes,
+    };
+  } else {
+    principal = await requireAuthRequest(c.req.raw, c.env, url.pathname.endsWith("/pty"));
+  }
+  c.set("auth", principal);
   await next();
 });
 
+app.post("/api/auth/pairings/consume", async (c) => {
+  requireSameOrigin(c.req.raw);
+  const input = parsePairingConsumeInput(await readJsonBody(c.req.raw));
+  const issued = unwrapAuthRpc(
+    await authRegistry(c.env).consumePairing(input.token, input.label, c.req.header("user-agent")),
+  );
+  setClientAuthCookie(c, issued);
+  return c.json({ client: issued.client });
+});
+
+app.get("/api/auth/me", (c) => {
+  const principal = c.get("auth");
+  return c.json({
+    kind: principal.kind,
+    scopes: principal.scopes,
+    ...(principal.kind === "client" ? { client: principal.client } : {}),
+  });
+});
+
+app.post("/api/auth/pairings", async (c) => {
+  requireAuthScope(c.get("auth"), "access:write");
+  const input = parsePairingIssueInput(await readOptionalJsonBody(c.req.raw));
+  const pairing = unwrapAuthRpc(await authRegistry(c.env).issuePairing(input.label));
+  const pairingUrl = `${new URL(c.req.url).origin}/pair#token=${encodeURIComponent(
+    pairing.credential,
+  )}`;
+  return c.json({
+    id: pairing.id,
+    url: pairingUrl,
+    expiresAt: pairing.expiresAt,
+    qr: qrMatrix(pairingUrl),
+  });
+});
+
+app.get("/api/auth/clients", async (c) => {
+  const principal = c.get("auth");
+  requireAuthScope(principal, "access:read");
+  return c.json(
+    unwrapAuthRpc(
+      await authRegistry(c.env).listClients(
+        principal.kind === "client" ? principal.client.id : undefined,
+      ),
+    ),
+  );
+});
+
+app.delete("/api/auth/clients/:id", async (c) => {
+  const principal = c.get("auth");
+  requireAuthScope(principal, "access:write");
+  const clientId = parseAuthClientId(c.req.param("id"));
+  unwrapAuthRpc(
+    await authRegistry(c.env).revokeClient(
+      clientId,
+      principal.kind === "client" ? principal.client.id : undefined,
+    ),
+  );
+  return c.json({ ok: true });
+});
+
+app.post("/api/auth/logout", async (c) => {
+  const principal = c.get("auth");
+  if (principal.kind === "client") {
+    unwrapAuthRpc(await authRegistry(c.env).revokeClient(principal.client.id));
+  }
+  clearClientAuthCookie(c);
+  return c.json({ ok: true });
+});
+
 app.post("/api/sessions", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
   const body: unknown = await c.req.json().catch(() => {
     throw badRequest("Request body must be valid JSON");
   });
@@ -53,13 +162,14 @@ app.post("/api/sessions", async (c) => {
   const origin = new URL(c.req.url).origin;
   return c.json({
     id,
-    url: `${origin}/s/${id}?t=${encodeURIComponent(c.env.SCOTTY_TOKEN)}`,
+    url: `${origin}/s/${id}`,
     branch: session.branch,
     status: session.status,
   });
 });
 
 app.get("/api/sessions", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
   const layer = sessionProjectionLayer(kvSessionProjectionStorage(c.env.SESSIONS));
   const result = await Effect.runPromise(
     listSessionProjections.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
@@ -75,32 +185,38 @@ app.get("/api/sessions", async (c) => {
 });
 
 app.get("/api/sessions/:id", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).getScottySession());
 });
 
 app.post("/api/sessions/:id/snapshot", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).snapshotScottySession());
 });
 
 app.post("/api/sessions/:id/sleep", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).sleepScottySession());
 });
 
 app.post("/api/sessions/:id/resume", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).resumeScottySession());
 });
 
 app.post("/api/sessions/:id/pr", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
   const body: unknown = await c.req.json().catch(() => ({}));
   return c.json(await sessionSandbox(c.env, id).publishScottySession(parsePrInput(body)));
 });
 
 app.get("/api/sessions/:id/down", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
   const sandbox = sessionSandbox(c.env, id);
   const archive = await sandbox.prepareDownArchive();
@@ -116,11 +232,30 @@ app.get("/api/sessions/:id/down", async (c) => {
 });
 
 app.delete("/api/sessions/:id", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).vaporizeScottySession());
 });
 
+app.post("/api/sessions/:id/pty-ticket", async (c) => {
+  const principal = c.get("auth");
+  requireAuthScope(principal, "terminal:connect");
+  const id = parseSessionId(c.req.param("id"));
+  const credential =
+    principal.kind === "client" && principal.source === "cookie"
+      ? principal.credential
+      : requestClientCredential(c.req.raw);
+  if (!credential) {
+    throw new ScottyError("auth", "Pair this browser before opening a terminal", {
+      httpStatus: 401,
+      exitCode: 4,
+    });
+  }
+  return c.json(unwrapAuthRpc(await authRegistry(c.env).issueTerminalTicket(credential, id)));
+});
+
 app.get("/api/sessions/:id/pty", async (c) => {
+  requireAuthScope(c.get("auth"), "terminal:connect");
   const id = parseSessionId(c.req.param("id"));
   const clientId = parseTerminalClientId(c.req.query("client"));
   const sandbox = sessionSandbox(c.env, id);
@@ -157,6 +292,7 @@ app.get("/api/sessions/:id/pty", async (c) => {
 });
 
 app.delete("/api/sessions/:id/pty/:client", async (c) => {
+  requireAuthScope(c.get("auth"), "terminal:connect");
   const id = parseSessionId(c.req.param("id"));
   const clientId = parseTerminalClientId(c.req.param("client"));
   await sessionSandbox(c.env, id).releaseTerminalAttachment(clientId);
@@ -164,6 +300,7 @@ app.delete("/api/sessions/:id/pty/:client", async (c) => {
 });
 
 app.post("/api/sessions/:id/pty/:client/heartbeat", async (c) => {
+  requireAuthScope(c.get("auth"), "terminal:connect");
   const id = parseSessionId(c.req.param("id"));
   const clientId = parseTerminalClientId(c.req.param("client"));
   await sessionSandbox(c.env, id).touchTerminalAttachment(clientId);
@@ -173,24 +310,39 @@ app.post("/api/sessions/:id/pty/:client/heartbeat", async (c) => {
 app.get("/s/:id", async (c) => {
   parseSessionId(c.req.param("id"));
   const url = new URL(c.req.url);
-  await requireAuth(c.req.raw, c.env.SCOTTY_TOKEN, true);
-  if (url.searchParams.has("t")) {
-    setAuthCookie(c);
-    url.searchParams.delete("t");
-    return c.redirect(`${url.pathname}${url.search}`, 302);
+  const principal = await requireAuthRequest(c.req.raw, c.env, true);
+  if (principal.kind === "root") {
+    await registerRootBrowser(c, principal);
+    return c.redirect(url.pathname, 302);
   }
+  if (url.searchParams.has("t")) return c.redirect(url.pathname, 302);
   return terminalAsset(c.env, c.req.raw);
 });
 
 app.get("/sessions", async (c) => {
-  await requireAuth(c.req.raw, c.env.SCOTTY_TOKEN, true);
   const url = new URL(c.req.url);
-  if (url.searchParams.has("t")) {
-    setAuthCookie(c);
+  const principal = await requireAuthRequest(c.req.raw, c.env, true);
+  if (principal.kind === "root") {
+    await registerRootBrowser(c, principal);
     return c.redirect("/sessions", 302);
   }
+  if (url.searchParams.has("t")) return c.redirect("/sessions", 302);
   return secureAsset(c.env, c.req.raw, "/sessions.html");
 });
+
+app.get("/devices", async (c) => {
+  const url = new URL(c.req.url);
+  const principal = await requireAuthRequest(c.req.raw, c.env, true);
+  if (principal.kind === "root") {
+    await registerRootBrowser(c, principal);
+    return c.redirect("/devices", 302);
+  }
+  if (url.searchParams.has("t")) return c.redirect("/devices", 302);
+  requireAuthScope(principal, "access:read");
+  return secureAsset(c.env, c.req.raw, "/devices.html");
+});
+
+app.get("/pair", (c) => secureAsset(c.env, c.req.raw, "/pair.html"));
 
 app.get(
   "/terminal",
@@ -202,6 +354,80 @@ app.get("/health", (c) => c.json({ ok: true }));
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default app;
+
+const PairingConsumeInputSchema = Schema.Struct({
+  token: Schema.NonEmptyString,
+  label: Schema.optionalKey(Schema.NonEmptyString),
+});
+const PairingIssueInputSchema = Schema.Struct({
+  label: Schema.optionalKey(Schema.NonEmptyString),
+});
+const decodePairingConsumeInput = Schema.decodeUnknownOption(PairingConsumeInputSchema, {
+  onExcessProperty: "error",
+});
+const decodePairingIssueInput = Schema.decodeUnknownOption(PairingIssueInputSchema, {
+  onExcessProperty: "error",
+});
+
+function parsePairingConsumeInput(value: unknown): {
+  readonly token: string;
+  readonly label: string;
+} {
+  const decoded = decodePairingConsumeInput(value);
+  if (Option.isNone(decoded)) throw badRequest("Pairing request is invalid");
+  return { token: decoded.value.token, label: decoded.value.label ?? "Paired browser" };
+}
+
+function parsePairingIssueInput(value: unknown): { readonly label?: string } {
+  const decoded = decodePairingIssueInput(value);
+  if (Option.isNone(decoded)) throw badRequest("Pairing request is invalid");
+  return decoded.value;
+}
+
+async function readJsonBody(request: Request): Promise<unknown> {
+  const text = await request.text();
+  const decoded = decodeJsonValue(text);
+  if (Option.isNone(decoded)) throw badRequest("Request body must be valid JSON");
+  return decoded.value;
+}
+
+async function readOptionalJsonBody(request: Request): Promise<unknown> {
+  const text = await request.text();
+  if (!text.trim()) return {};
+  const decoded = decodeJsonValue(text);
+  if (Option.isNone(decoded)) throw badRequest("Request body must be valid JSON");
+  return decoded.value;
+}
+
+function requireSameOrigin(request: Request): void {
+  const expected = new URL(request.url).origin;
+  if (request.headers.get("origin") === expected) return;
+  throw badRequest("Pairing request must come from this Scotty origin");
+}
+
+function parseAuthClientId(value: string): string {
+  if (!/^[0-9a-f]{12}$/u.test(value)) throw badRequest("Invalid registered client id");
+  return value;
+}
+
+function parseSessionIdFromTerminalPath(pathname: string): string {
+  const match = /^\/api\/sessions\/([^/]+)\/pty$/u.exec(pathname);
+  if (!match?.[1]) throw badRequest("Invalid terminal path");
+  return parseSessionId(match[1]);
+}
+
+function qrMatrix(value: string): { readonly size: number; readonly rows: ReadonlyArray<string> } {
+  const code = qrcode(0, "M");
+  code.addData(value);
+  code.make();
+  const size = code.getModuleCount();
+  return {
+    size,
+    rows: Array.from({ length: size }, (_, row) =>
+      Array.from({ length: size }, (_, column) => (code.isDark(row, column) ? "1" : "0")).join(""),
+    ),
+  };
+}
 
 function sessionSandbox(env: Bindings, id: string): ScottySandbox {
   return getSandbox(env.SANDBOX, id, {

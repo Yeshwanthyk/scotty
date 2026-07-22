@@ -45,13 +45,14 @@ Preserve unless explicitly approved otherwise:
 - HTTP methods and routes currently registered in `worker/src/index.ts`.
 - Error envelope `{ "error": { "code", "message", "hint" } }` and HTTP statuses.
 - CLI JSON keys, TTY behavior, stdout/stderr placement, and exit codes `0`–`5`.
-- PTY framing, resize, reconnect, binary output, token-to-cookie handoff, and streamed beam-down behavior.
+- PTY framing, resize, reconnect, binary output, registered-browser pairing/cookie handoff, one-use PTY tickets, and streamed beam-down behavior.
 - Persisted `SessionRecord` version `1`, storage keys, statuses, operation lease, and nonce semantics.
 - `/workspace/<id>`, branch `scotty/<id>`, tmux session `agent`, and execution session `scotty-web`.
 
 ### State ownership remains unchanged
 
 - The Sandbox Durable Object storage owns the authoritative session record, operation lease, real credential bundle, refresh lease, and hard-cap metadata.
+- The singleton Auth Durable Object owns browser registrations, one-use pairing grants, revocation, and one-use PTY tickets. It persists credential digests only and is not associated with the Sandbox container.
 - KV is only an eventually consistent, non-secret list projection. It never authorizes a transition.
 - R2 stores immutable backups. The authoritative DO record decides which backup is current and recoverable.
 - The container filesystem is disposable state restored from a DO-approved backup.
@@ -69,7 +70,34 @@ Preserve unless explicitly approved otherwise:
 
 ## Target architecture
 
-The Sandbox SDK's required base class cannot also extend Alchemy's generated Durable Object bridge. Use two Alchemy-managed Workers so the ordinary API can be fully Effect-native while the SDK host remains a minimal external-class island.
+### Current simplification decision — 2026-07-22
+
+For the current milestone, keep one Alchemy-managed Worker that contains the
+public Hono API and exports `ScottySandbox` plus `ContainerProxy`. Treat Hono,
+Cloudflare `Request`/`Response`/WebSocket/stream handling, and required Sandbox
+SDK callbacks as host adapters. They should delegate application workflows into
+Effect services, but they do not need to become Effect APIs themselves.
+
+This deliberately defers the two-Worker split and the Effect-native Alchemy
+HTTP bridge described below. For the current milestone, a separate API Worker
+and Hono removal are not completion gates. Chunk 7 instead means making the
+existing monolith's route and Sandbox boundaries thin, explicit, scope-safe,
+and covered by parity tests. Alchemy must still remain the sole infrastructure
+owner after cutover; this decision does not preserve Wrangler as a second
+deployment model.
+
+The accepted trade-offs are one shared deployment/blast radius, one extra set
+of privileged bindings visible to the public Worker module, and no claim that
+the HTTP edge itself uses Alchemy's Effect-native bridge. Revisit the split only
+when independent API/Sandbox deployment, a stricter least-privilege boundary,
+an Alchemy bridge requirement, or a demonstrated stream/WebSocket lifetime
+problem justifies the extra Worker and RPC hop. The two-Worker material below is
+retained as that deferred design reference, not current required work.
+
+The deferred design was motivated by the Sandbox SDK's required base class not
+also extending Alchemy's generated Durable Object bridge. It uses two
+Alchemy-managed Workers so the ordinary API can be fully Effect-native while
+the SDK host remains a minimal external-class island.
 
 ```diagram
 ┌────────────────────────────── Alchemy Stack ────────────────────────────────┐
@@ -519,12 +547,18 @@ The official Sandbox SDK remains the implementation; Scotty writes Effect wrappe
 
 ### Chunk 7 — build the two-Worker topology in a shadow stage
 
+**Status:** Deferred by the 2026-07-22 simplification decision. For the current
+milestone, harden the existing monolithic Worker boundary instead: keep Hono and
+the required native Sandbox/transport callbacks thin, delegate workflows into
+Effect, and pass the same route, auth, stream, upgrade, and scope-safety parity
+tests. The remainder of this chunk records the deferred split design.
+
 **JSON API:** define with `HttpApi` and handler layers.
 
 **Special routes:** use `HttpRouter`/raw Effect HTTP response support for:
 
 - terminal page and assets;
-- token-to-cookie redirect;
+- compatibility root-token-to-registered-browser redirect, fragment pairing, and PTY ticket consume;
 - PTY/WebSocket upgrade;
 - streamed beam-down tar;
 - any Sandbox callback requiring exact native object identity.
@@ -589,7 +623,7 @@ Finish the one-model conversion by migrating asynchronous CLI transport, filesys
 After an Alchemy canary and one stable release:
 
 - remove `worker/wrangler.jsonc` and Wrangler deploy/dev scripts;
-- remove Hono and manual binding types replaced by Alchemy;
+- keep Hono only as the thin monolithic host adapter and remove manual binding/runtime code replaced by Alchemy or Effect services;
 - remove compatibility shims and duplicate tests that no longer execute production paths;
 - keep Cloudflare types/packages still required by the official Sandbox SDK and Alchemy build;
 - document Alchemy login/profile, plan, deploy, stage, CI serialization, rollback, and destroy safety;
@@ -706,10 +740,12 @@ Pinned source and tests outrank docs and this packet when an API differs.
 
 ## Definition of done
 
-The conversion is complete only when:
+For the current milestone, the simplification decision above supersedes the
+separate API Worker and Hono-removal requirements in this list. The conversion
+is complete only when:
 
 - Alchemy is the sole Cloudflare infrastructure/deployment model;
-- the API Worker, HTTP API, resources, services, errors, clocks, retries, and CLI async core are Effect-native;
+- the monolithic Worker's Hono routes are thin host adapters, while application workflows, resources, services, errors, clocks, retries, and CLI async core are Effect-native;
 - the official Sandbox subclass contains only mandatory host adapters over scoped Effects;
 - a public Alchemy binding helper associates the external Sandbox DO/Container, and the custom secret provider writes secrets without plaintext state;
 - DO storage remains authoritative and all untrusted/persisted data is schema-decoded;
@@ -717,7 +753,7 @@ The conversion is complete only when:
 - no real credential appears in any forbidden surface, including Alchemy state;
 - local checks and adapter contracts pass;
 - the full deployed canary passes and a following Alchemy plan is a no-op;
-- Wrangler, Hono, and duplicate manual binding/runtime code are removed;
+- Wrangler and duplicate manual binding/runtime code are removed, and Hono contains no application workflow logic;
 - public HTTP, CLI, persistence, terminal, and security contracts remain compatible.
 
 Until the deployed Alchemy canary passes, describe the work as planned or locally verified—not production proven.

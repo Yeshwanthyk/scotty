@@ -10,7 +10,7 @@ These normalize `PLAN.md` against the current Sandbox SDK contracts before code 
 2. Set `CODEX_HOME=/workspace/<session-id>/.codex`. One backup then contains both the worktree and rollout files; it contains only sentinel auth data.
 3. Override `onActivityExpired()` to quiesce, back up, and stop. `onStop()` runs after shutdown and is cleanup-only.
 4. Use `Container.schedule()` for the hard-cap callback; do not replace the SDK's lifecycle `alarm()` implementation.
-5. Use the global `SCOTTY_TOKEN` for v1. Do not persist a per-session `webToken` in KV.
+5. Keep `SCOTTY_TOKEN` as the CLI/bootstrap recovery credential. Browser authority lives in the singleton Auth DO; do not persist browser credentials or a per-session `webToken` in KV.
 6. The Cloudflare Codex example proves sentinel injection, but not rotated ChatGPT OAuth persistence. Token refresh and DO persistence need a contract test before real credentials are used.
 7. Build the terminal/create path with a fake agent first. The real Codex end-to-end gate depends on credential isolation, reversing the unsafe implication of Phase 1 preceding Phase 1.5.
 
@@ -22,7 +22,7 @@ These normalize `PLAN.md` against the current Sandbox SDK contracts before code 
 - **KV:** list/read projection only. It may lag; it must never authorize a transition.
 - **R2:** immutable backup objects. The DO stores the active and previous backup handles.
 - **Container filesystem:** disposable working state. `/workspace/<id>` is recovered from R2.
-- **Worker secrets:** initial `CODEX_AUTH_JSON`, `GH_TOKEN`, and `SCOTTY_TOKEN`. An existing DO credential bundle is never overwritten from the seed.
+- **Worker secrets:** initial `CODEX_AUTH_JSON`, `GH_TOKEN`, and `SCOTTY_TOKEN`. An existing DO credential bundle is never overwritten from the seed. Browser pairing grants, client digests, and PTY ticket digests live only in the retained singleton Auth DO.
 
 ```ts
 type SessionStatus = "booting" | "warm" | "sleeping" | "failed" | "gone";
@@ -201,12 +201,12 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 - **Proof:** inside-container `env`, auth file, process list, Git config, snapshots, logs, and API responses contain only sentinels; blocked HTTP/HTTPS/raw TCP fail; forced refresh changes the DO bundle and survives restart.
 - **Risk:** validate redirects so injected headers never cross to a non-allowlisted host.
 
-#### J. Cookie handoff and authenticated reconnect — 0.5 day
+#### J. Registered-browser handoff and authenticated reconnect — 0.5 day
 
 - **Depends on:** H.
-- **Deliver:** first `/s/:id?t=` request validates `SCOTTY_TOKEN`, sets Secure HttpOnly SameSite cookie, redirects to a token-free URL, and requires cookie or token on PTY upgrade.
-- **Files:** `worker/src/auth.ts`, `worker/src/index.ts`, `worker/public/terminal.html`.
-- **Proof:** browser history and subsequent requests contain no query token; unauthenticated page and WebSocket access fail.
+- **Deliver:** compatibility root-token requests atomically upgrade to an administrator browser credential; `/devices` issues five-minute one-use fragment pairing links; target browsers get independent 30-day Secure HttpOnly SameSite cookies; PTY upgrades consume five-minute tickets bound to the browser and session.
+- **Files:** `worker/src/auth-registry.ts`, `worker/src/auth-object.ts`, `worker/src/auth.ts`, `worker/src/index.ts`, `worker/public/pair.html`, `worker/public/devices.html`, `worker/public/terminal.html`.
+- **Proof:** the Auth DO persists digests only; concurrent pairing/ticket consume has exactly one winner; browser history and ordinary session URLs contain no root token; revoked clients fail HTTP immediately and active PTYs within the lease bound; unauthenticated page and WebSocket access fail.
 
 #### K. Live Codex start and thread capture — 0.5–1 day
 
