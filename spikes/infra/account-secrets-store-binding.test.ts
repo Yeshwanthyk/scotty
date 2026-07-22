@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { assert, describe, it } from "@effect/vitest";
 import type { WorkerBinding } from "alchemy/Cloudflare";
+import * as Output from "alchemy/Output";
 import {
   accountSecretsStoreWorkerBinding,
   appendAccountSecretsStoreWorkerBinding,
@@ -38,6 +39,18 @@ describe("Account Secrets Store Worker binding", () => {
     assert.notInclude(JSON.stringify(binding), secret.keyedDigest);
     assert.notInclude(JSON.stringify(binding), secret.ownerReference);
     assert.notInclude(JSON.stringify(binding), secret.secretId);
+  });
+
+  it("preserves unresolved identifiers so the Worker depends on the managed secret", () => {
+    const bindingName = Output.literal("CODEX_AUTH_JSON");
+    const storeId = Output.literal("store-id");
+    const secretName = Output.literal("codex-auth-json");
+
+    const binding = accountSecretsStoreWorkerBinding({ bindingName, storeId, secretName });
+
+    assert.strictEqual(binding.name, bindingName);
+    assert.strictEqual(binding.storeId, storeId);
+    assert.strictEqual(binding.secretName, secretName);
   });
 
   it("appends without changing existing desired bindings", () => {

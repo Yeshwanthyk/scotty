@@ -368,19 +368,35 @@ Deploy the current official `ScottySandbox` class and Dockerfile through Alchemy
 
 ### Chunk 2 — adopt the current monolith without moving authority
 
-**Status:** Blocked at the offline readiness boundary on pinned Alchemy
-`2.0.0-beta.63`. No deployable `alchemy.run.ts` is present and Wrangler remains
-the sole production owner. Cold adoption records no old resource bindings, so
-the existing Container-to-Durable-Object association can plan as a Container
-replacement. Existing Worker/DO foreign adoption, reuse of the `v1` SQLite
-namespace without re-emitting `new_sqlite_classes`, persistence of retain-only
-policy updates, Wrangler Container application identity, and the live Wrangler-
-created KV title also require read-only inventory and clone proof. R2
-`lifecycleRules` must be omitted during adoption rather than set to `[]`.
+**Status:** The authenticated inventory on 2026-07-22 found no production-named
+Scotty Worker, Durable Object namespace, Container application, KV namespace,
+or R2 bucket, so Chunk 2 proceeded as guarded greenfield creation rather than
+foreign adoption. `alchemy.run.ts` deployed the retained Worker/DO/Container/KV/
+R2 topology through pinned Alchemy beta.63. A real authenticated session cloned
+the Scotty repository, reached `warm`, started Codex, and was then vaporized;
+health, unauthorized, authenticated-list, and secret-preservation checks passed.
+
+Cloudflare Account Secrets Store is not used for production credentials: its
+1 KiB value limit cannot hold the real 4.6 KiB Codex OAuth file, and its Worker
+bindings are asynchronous rather than strings. Matching Crabfleet's proven
+boundary, real `CODEX_AUTH_JSON`, `GH_TOKEN`, and `SCOTTY_TOKEN` values are
+installed as ordinary Worker secrets through stdin after greenfield creation.
+Alchemy declares name-only `inherit` bindings so later Worker uploads preserve
+those values without putting plaintext in props, state, plans, or logs. The
+pinned provider does not request strict inheritance, so a missing secret can be
+silently omitted; check all three live binding names before a mutating deploy
+until a pinned public strict-inheritance fix is available.
+
+Precomputed asset hashes are intentionally omitted. Beta.63 can persist the
+hash of a pre-created Worker before uploading its asset manifest, causing retry
+to keep nonexistent assets. Reading assets during each Worker reconcile is less
+efficient but converges safely after partial creation. The final plan reports a
+Worker update for this conservative read plus no-ops for Container, KV, and R2.
 
 The fail-closed parity and plan contract is recorded in
 `spikes/infra/monolith-adoption-readiness.ts`; the exact local Cloudflare
-confirmation gate is `spikes/infra/monolith-adoption-readiness.md`. Do not work
+confirmation gate is `spikes/infra/monolith-adoption-readiness.md` and remains
+the required path if a future account already has the named topology. Do not work
 around the block by guessing physical identities, seeding Alchemy state,
 omitting the existing Container association, accepting retain-on-replace, or
 placing secret plaintext/`Config.redacted` values in Alchemy inputs.

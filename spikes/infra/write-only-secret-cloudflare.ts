@@ -10,6 +10,7 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import {
   localCodexSecretOwnerKeyLayer,
   localCodexSecretSourceLayer,
+  localProductionSecretSourceLayer,
 } from "./local-secret-source.ts";
 import {
   type DestinationAccountKey,
@@ -512,5 +513,19 @@ export const localCodexCloudflareWriteOnlySecretProviderLayer = (
 ) =>
   cloudflareWriteOnlySecretProviderLayer(
     localCodexSecretSourceLayer(environment, expectedUid),
+    localCodexSecretOwnerKeyLayer(environment, expectedUid),
+  );
+
+/**
+ * Complete guarded production composition for all three local source IDs.
+ * The source and owner key stay local-only; provider inputs and persisted
+ * state contain identifiers and keyed digests, never secret plaintext.
+ */
+export const localProductionCloudflareWriteOnlySecretProviderLayer = (
+  environment: Readonly<Record<string, string | undefined>>,
+  expectedUid: number,
+) =>
+  cloudflareWriteOnlySecretProviderLayer(
+    localProductionSecretSourceLayer(environment, expectedUid),
     localCodexSecretOwnerKeyLayer(environment, expectedUid),
   );

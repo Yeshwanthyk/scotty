@@ -1,11 +1,16 @@
 import { createHash, createHmac } from "node:crypto";
 import { constants } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
+import * as NodeChildProcessSpawner from "@effect/platform-node/NodeChildProcessSpawner";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   SECRET_VALUE_MAX_BYTES,
   SecretOwnerKey,
@@ -14,11 +19,14 @@ import {
 } from "./write-only-secret.ts";
 
 export const CODEX_AUTH_SOURCE_ID = "scotty/codex-auth";
+export const GITHUB_TOKEN_SOURCE_ID = "scotty/github-token";
+export const SCOTTY_TOKEN_SOURCE_ID = "scotty/http-auth";
 export const RETAIN_PREVIOUS_OWNER_KEY = "SCOTTY_RETAIN_PREVIOUS_OWNER_KEY";
 export const MAX_PREVIOUS_OWNER_KEYS = 1;
 
 export interface LocalSecretPaths {
   readonly codexAuthPath: string;
+  readonly scottyTokenPath?: string;
   readonly rootKeyPath: string;
   readonly recoveryReceiptPath?: string;
   readonly previousRootKeyPaths?: readonly string[];
@@ -30,9 +38,13 @@ export class LocalSecretSourceFailure extends Data.TaggedError("LocalSecretSourc
     | "configure"
     | "resolve"
     | "read-auth"
+    | "read-github"
     | "read-root"
+    | "read-scotty"
     | "decode-auth"
+    | "decode-github"
     | "decode-root"
+    | "decode-scotty"
     | "verify-recovery";
   readonly code:
     | "unknown-source"
@@ -42,8 +54,11 @@ export class LocalSecretSourceFailure extends Data.TaggedError("LocalSecretSourc
     | "insecure-mode"
     | "value-too-large"
     | "read-failed"
+    | "command-failed"
     | "invalid-auth"
+    | "invalid-github"
     | "invalid-root"
+    | "invalid-scotty"
     | "ci-forbidden"
     | "invalid-path"
     | "recovery-required"
@@ -61,6 +76,10 @@ const ApiKeyAuth = Schema.Struct({ OPENAI_API_KEY: NonEmpty });
 const TokenAuth = Schema.Struct({ tokens: Schema.Struct({ access_token: NonEmpty }) });
 const CodexAuth = Schema.Union([ApiKeyAuth, TokenAuth]);
 const decodeCodexAuth = Schema.decodeUnknownEffect(Schema.fromJsonString(CodexAuth));
+const GithubToken = Schema.String.check(Schema.isPattern(/^\S+$/u));
+const decodeGithubToken = Schema.decodeUnknownEffect(GithubToken);
+const ScottyToken = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64,}$/u));
+const decodeScottyToken = Schema.decodeUnknownEffect(ScottyToken);
 const RecoveryReceipt = Schema.Struct({
   version: Schema.Literal(1),
   rootKeyFingerprint: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
@@ -68,7 +87,9 @@ const RecoveryReceipt = Schema.Struct({
 });
 const decodeRecoveryReceipt = Schema.decodeUnknownEffect(Schema.fromJsonString(RecoveryReceipt));
 
-const close = (handle: FileHandle, operation: "read-auth" | "read-root") =>
+type ReadOperation = "read-auth" | "read-root" | "read-scotty";
+
+const close = (handle: FileHandle, operation: ReadOperation) =>
   Effect.tryPromise({
     try: () => handle.close(),
     catch: () => fail(operation, "read-failed"),
@@ -78,7 +99,7 @@ const readSecureFile = Effect.fnUntraced(function* (
   path: string,
   expectedUid: number,
   maximumBytes: number,
-  operation: "read-auth" | "read-root",
+  operation: ReadOperation,
 ) {
   const handle = yield* Effect.acquireRelease(
     Effect.tryPromise({
@@ -138,6 +159,67 @@ const readRoot = Effect.fnUntraced(function* (config: LocalSecretPaths, rootKeyP
   return { root, keys: deriveLocalSecretKeys(root) } as const;
 });
 
+const validateGithubToken = (stdout: string) => {
+  const plaintext = stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout;
+  if (Buffer.byteLength(plaintext) > SECRET_VALUE_MAX_BYTES) {
+    return Effect.fail(fail("read-github", "value-too-large"));
+  }
+  return decodeGithubToken(plaintext).pipe(
+    Effect.mapError(() => fail("decode-github", "invalid-github")),
+  );
+};
+
+const validateScottyToken = (plaintext: string) =>
+  decodeScottyToken(plaintext).pipe(Effect.mapError(() => fail("decode-scotty", "invalid-scotty")));
+
+const readGithubToken = Effect.fnUntraced(function* (
+  environment: Readonly<Record<string, string | undefined>>,
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+) {
+  const command = ChildProcess.make("gh", ["auth", "token"], {
+    env: {
+      HOME: environment.HOME,
+      PATH: environment.PATH,
+      XDG_CONFIG_HOME: environment.XDG_CONFIG_HOME,
+      GH_CONFIG_DIR: environment.GH_CONFIG_DIR,
+    },
+    extendEnv: false,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const stdout = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* spawner.spawn(command);
+      const collected = yield* handle.stdout.pipe(
+        Stream.runFold(
+          () => ({ bytes: Buffer.alloc(0), oversized: false }),
+          (state, chunk) =>
+            state.oversized || state.bytes.length + chunk.length > SECRET_VALUE_MAX_BYTES + 1
+              ? { bytes: state.bytes, oversized: true }
+              : { bytes: Buffer.concat([state.bytes, chunk]), oversized: false },
+        ),
+        Effect.mapError(() => fail("read-github", "command-failed")),
+      );
+      const exitCode = yield* handle.exitCode.pipe(
+        Effect.mapError(() => fail("read-github", "command-failed")),
+      );
+      if (exitCode !== ChildProcessSpawner.ExitCode(0)) {
+        return yield* fail("read-github", "command-failed");
+      }
+      if (collected.oversized) {
+        return yield* fail("read-github", "value-too-large");
+      }
+      return collected.bytes.toString("utf8");
+    }),
+  ).pipe(
+    Effect.mapError((error) =>
+      error instanceof LocalSecretSourceFailure ? error : fail("read-github", "command-failed"),
+    ),
+  );
+  return yield* validateGithubToken(stdout);
+});
+
 const verifyRecoveryReceipt = Effect.fnUntraced(function* (
   config: LocalSecretPaths,
   rootKeyPath: string,
@@ -180,6 +262,53 @@ const resolve = Effect.fnUntraced(function* (
   yield* decodeCodexAuth(plaintext).pipe(
     Effect.mapError(() => fail("decode-auth", "invalid-auth")),
   );
+  return {
+    plaintext,
+    keyedDigest: keyedSecretDigest(plaintext, keys.digestKey),
+  } satisfies SecretSnapshot;
+});
+
+const resolveProduction = Effect.fnUntraced(function* (
+  config: LocalSecretPaths,
+  environment: Readonly<Record<string, string | undefined>>,
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  sourceId: string,
+) {
+  if (
+    sourceId !== CODEX_AUTH_SOURCE_ID &&
+    sourceId !== GITHUB_TOKEN_SOURCE_ID &&
+    sourceId !== SCOTTY_TOKEN_SOURCE_ID
+  ) {
+    return yield* fail("resolve", "unknown-source");
+  }
+
+  const { keys } = yield* readRoot(config, config.rootKeyPath);
+  let plaintext: string;
+  if (sourceId === CODEX_AUTH_SOURCE_ID) {
+    plaintext = yield* readSecureFile(
+      config.codexAuthPath,
+      config.expectedUid,
+      SECRET_VALUE_MAX_BYTES,
+      "read-auth",
+    ).pipe(Effect.scoped);
+    yield* decodeCodexAuth(plaintext).pipe(
+      Effect.mapError(() => fail("decode-auth", "invalid-auth")),
+    );
+  } else if (sourceId === GITHUB_TOKEN_SOURCE_ID) {
+    plaintext = yield* readGithubToken(environment, spawner);
+  } else {
+    if (config.scottyTokenPath === undefined) {
+      return yield* fail("configure", "invalid-path");
+    }
+    plaintext = yield* readSecureFile(
+      config.scottyTokenPath,
+      config.expectedUid,
+      SECRET_VALUE_MAX_BYTES,
+      "read-scotty",
+    ).pipe(Effect.scoped);
+    plaintext = yield* validateScottyToken(plaintext);
+  }
+
   return {
     plaintext,
     keyedDigest: keyedSecretDigest(plaintext, keys.digestKey),
@@ -243,6 +372,36 @@ export const localCodexSecretSourceLayer = (
       localSecretSourceLayer(config, CODEX_AUTH_SOURCE_ID),
     ),
   );
+
+const nodeChildProcessSpawnerLayer = NodeChildProcessSpawner.layer.pipe(
+  Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)),
+);
+
+const localProductionSecretPathsFromEnvironment = Effect.fnUntraced(function* (
+  environment: Readonly<Record<string, string | undefined>>,
+  expectedUid: number,
+) {
+  const config = yield* localCodexSecretPathsFromEnvironment(environment, expectedUid);
+  return {
+    ...config,
+    scottyTokenPath: `${dirname(config.rootKeyPath)}/scotty-token`,
+  } satisfies LocalSecretPaths;
+});
+
+/** Lazy production source for the exact Codex, GitHub, and Scotty source IDs. */
+export const localProductionSecretSourceLayer = (
+  environment: Readonly<Record<string, string | undefined>>,
+  expectedUid: number,
+): Layer.Layer<SecretSource, LocalSecretSourceFailure> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const config = yield* localProductionSecretPathsFromEnvironment(environment, expectedUid);
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      return Layer.succeed(SecretSource)({
+        resolve: (sourceId) => resolveProduction(config, environment, spawner, sourceId),
+      });
+    }),
+  ).pipe(Layer.provide(nodeChildProcessSpawnerLayer));
 
 /** Disposable synthetic-canary/test boundary; never use for real credentials. */
 export const disposableLocalSecretSourceLayer = (

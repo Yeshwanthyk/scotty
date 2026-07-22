@@ -475,10 +475,12 @@ describe("Scotty Oxlint policy integration", () => {
     assert.deepEqual(config.overrides, [
       {
         files: [
+          "alchemy.run.ts",
           "spikes/infra/account-secrets-store-canary.run.ts",
           "spikes/infra/account-secrets-store-canary.ts",
           "spikes/infra/external-sandbox-container-binding.ts",
           "spikes/infra/local-secret-source.ts",
+          "spikes/infra/monolith-greenfield.ts",
           "spikes/infra/sandbox-sdk-canary.ts",
           "spikes/infra/write-only-secret-cloudflare.ts",
           "spikes/infra/write-only-secret.ts",
