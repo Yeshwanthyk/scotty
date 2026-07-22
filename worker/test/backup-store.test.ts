@@ -139,7 +139,12 @@ describe("BackupStore", () => {
 
   it.effect("maps provider failures to fixed redacted typed failures", () =>
     Effect.gen(function* () {
-      for (const operation of ["create", "restore", "list", "delete"] as const) {
+      for (const [operation, expectedCreateCalls] of [
+        ["create", 2],
+        ["restore", 0],
+        ["list", 0],
+        ["delete", 0],
+      ] as const) {
         const capabilities = new FakeBackupCapabilities();
         capabilities.fail = operation;
         if (operation === "delete") capabilities.pages.push({ keys: ["backups/backup-1/a"] });
@@ -154,7 +159,7 @@ describe("BackupStore", () => {
         const result = yield* Fiber.join(fiber);
         assert.deepStrictEqual(failure(result), new BackupStoreFailure({ operation }));
         assert.ok(!JSON.stringify(failure(result)).includes("provider"));
-        if (operation === "create") assert.strictEqual(capabilities.createCalls.length, 2);
+        assert.strictEqual(capabilities.createCalls.length, expectedCreateCalls);
       }
     }),
   );
