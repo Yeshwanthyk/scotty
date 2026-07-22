@@ -1,8 +1,9 @@
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 import type { ExecResult } from "@cloudflare/sandbox";
-import { Effect, Result } from "effect";
+import { Effect, Layer, Result } from "effect";
 import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
+import { agentEnv, ContainerAuth, containerAuthLayer, sessionRoot } from "./container-auth";
 import {
   CredentialVault,
   type CredentialVaultFailure,
@@ -33,7 +34,6 @@ import {
   GITHUB_SENTINEL_PREFIX,
   denyOutbound,
   makeOutboundByHost,
-  sentinelAuthJson,
   type CredentialPatch,
   type CredentialRefreshLease,
   type StoredCredential,
@@ -200,7 +200,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const operation = await this.acquireOperation("pr", ["warm"]);
     const record = await this.requireRecord();
     const credential = await this.requireCredential();
-    const env = this.agentEnv(record, credential);
+    const env = agentEnv(record.id, credential);
     const root = this.sessionRoot(record.id);
     const repoUrl = `https://github.com/${record.repo}.git`;
 
@@ -516,14 +516,20 @@ export class Sandbox extends BaseSandbox<Bindings> {
     record: SessionRecord,
     credential: StoredCredential,
   ): Promise<void> {
-    const root = this.sessionRoot(record.id);
-    const codexHome = `${root}/.codex`;
-    await this.mkdir(codexHome, { recursive: true });
-    await this.writeFile(`${codexHome}/auth.json`, sentinelAuthJson(credential));
-    await this.execChecked(
-      `chmod 700 ${shellQuote(codexHome)} && chmod 600 ${shellQuote(`${codexHome}/auth.json`)}`,
+    const layer = containerAuthLayer.pipe(Layer.provide(this.sandboxRuntimeLayer()));
+    const result = await Effect.runPromise(
+      Effect.flatMap(ContainerAuth, (auth) => auth.seed(record.id, credential)).pipe(
+        Effect.provide(layer),
+        Effect.scoped,
+        Effect.result,
+      ),
     );
-    await this.setEnvVars(this.agentEnv(record, credential));
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
   }
 
   private async startAgent(
@@ -534,7 +540,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ): Promise<void> {
     const root = this.sessionRoot(record.id);
     const credential = await this.requireCredential();
-    const env = this.agentEnv(record, credential);
+    const env = agentEnv(record.id, credential);
     await this.exec("tmux kill-session -t agent 2>/dev/null || true", { env });
 
     let agentCommand: string;
@@ -554,19 +560,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     await this.deleteSession(WEB_SESSION_ID).catch(() => undefined);
     await this.createSession({ id: WEB_SESSION_ID, cwd: root, env });
-  }
-
-  private agentEnv(record: SessionRecord, credential: StoredCredential): Record<string, string> {
-    return {
-      CODEX_HOME: `${this.sessionRoot(record.id)}/.codex`,
-      OPENAI_API_KEY: credential.codexSentinel,
-      GH_TOKEN: credential.githubSentinel,
-      GITHUB_SENTINEL: credential.githubSentinel,
-      GIT_TERMINAL_PROMPT: "0",
-      TERM: "xterm-256color",
-      LANG: "C.UTF-8",
-      LC_ALL: "C.UTF-8",
-    };
   }
 
   private async checkpoint(
@@ -820,9 +813,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private async runSandboxRuntime<A>(
     program: Effect.Effect<A, SandboxRuntimeFailure, SandboxRuntime>,
   ): Promise<A> {
-    const layer = sandboxRuntimeLayer({ exec: (command, options) => this.exec(command, options) });
     const result = await Effect.runPromise(
-      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
+      program.pipe(Effect.provide(this.sandboxRuntimeLayer()), Effect.scoped, Effect.result),
     );
     return Result.match(result, {
       onFailure: (error) => {
@@ -832,8 +824,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
     });
   }
 
+  private sandboxRuntimeLayer(): Layer.Layer<SandboxRuntime> {
+    return sandboxRuntimeLayer({
+      exec: (command, options) => this.exec(command, options),
+      mkdir: (path, options) => this.mkdir(path, options),
+      writeFile: (path, content) => this.writeFile(path, content),
+      setEnvVars: (envVars) => this.setEnvVars(envVars),
+    });
+  }
+
   private sessionRoot(id: string): string {
-    return `${SESSION_ROOT}/${id}`;
+    return sessionRoot(id);
   }
 
   private upstreamError(message: string, error: unknown, sessionId?: string): ScottyError {

@@ -12,6 +12,9 @@ export class SandboxRuntimeFailure extends Data.TaggedError("SandboxRuntimeFailu
 
 export interface SandboxRuntimeCapabilities {
   readonly exec: (command: string, options?: SandboxExecOptions) => Promise<ExecResult>;
+  readonly mkdir: (path: string, options?: { readonly recursive?: boolean }) => Promise<unknown>;
+  readonly writeFile: (path: string, content: string) => Promise<unknown>;
+  readonly setEnvVars: (envVars: Record<string, string | undefined>) => Promise<void>;
 }
 
 interface SandboxRuntimeShape {
@@ -19,6 +22,14 @@ interface SandboxRuntimeShape {
     command: string,
     options?: SandboxExecOptions,
   ) => Effect.Effect<ExecResult, SandboxRuntimeFailure>;
+  readonly mkdir: (
+    path: string,
+    options?: { readonly recursive?: boolean },
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly writeFile: (path: string, content: string) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly setEnvVars: (
+    envVars: Record<string, string | undefined>,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
 export class SandboxRuntime extends Context.Service<SandboxRuntime, SandboxRuntimeShape>()(
@@ -50,7 +61,22 @@ const makeSandboxRuntime = (capabilities: SandboxRuntimeCapabilities): SandboxRu
       }
       return result;
     }),
+    mkdir: (path, options) =>
+      transportVoid("Sandbox directory transport failed", () => capabilities.mkdir(path, options)),
+    writeFile: (path, content) =>
+      transportVoid("Sandbox file transport failed", () => capabilities.writeFile(path, content)),
+    setEnvVars: (envVars) =>
+      transportVoid("Sandbox environment transport failed", () => capabilities.setEnvVars(envVars)),
   });
+
+const transportVoid = (
+  message: string,
+  operation: () => Promise<unknown>,
+): Effect.Effect<void, SandboxRuntimeFailure> =>
+  Effect.tryPromise({
+    try: operation,
+    catch: () => new SandboxRuntimeFailure({ reason: "transport", message }),
+  }).pipe(Effect.asVoid);
 
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;

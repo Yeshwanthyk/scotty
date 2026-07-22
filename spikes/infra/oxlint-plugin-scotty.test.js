@@ -477,6 +477,7 @@ describe("Scotty Oxlint policy integration", () => {
         files: [
           "alchemy.run.ts",
           "worker/src/backup-store.ts",
+          "worker/src/container-auth.ts",
           "worker/src/contracts.ts",
           "worker/src/credential-vault.ts",
           "worker/src/egress.ts",

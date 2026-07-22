@@ -39,6 +39,14 @@ class FakeSandboxRuntimeCapabilities implements SandboxRuntimeCapabilities {
     if (this.rejection !== undefined) return Promise.reject(this.rejection);
     return Promise.resolve(this.result);
   };
+
+  mkdir = (): Promise<{ success: true; path: string; message: string }> =>
+    Promise.resolve({ success: true, path: "/unused", message: "ok" });
+
+  writeFile = (): Promise<{ success: true; path: string; bytesWritten: number }> =>
+    Promise.resolve({ success: true, path: "/unused", bytesWritten: 0 });
+
+  setEnvVars = (): Promise<void> => Promise.resolve();
 }
 
 const withRuntime = <A, E>(
@@ -152,6 +160,9 @@ describe("SandboxRuntime", () => {
             return result;
           });
         },
+        mkdir: () => Promise.resolve({ success: true, path: "/unused", message: "ok" }),
+        writeFile: () => Promise.resolve({ success: true, path: "/unused", bytesWritten: 0 }),
+        setEnvVars: () => Promise.resolve(),
       };
       const fiber = yield* withRuntime(capabilities, execChecked("long-running")).pipe(
         Effect.forkChild({ startImmediately: true }),
