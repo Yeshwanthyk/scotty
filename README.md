@@ -71,6 +71,10 @@ bun build cli/scotty.ts --compile --outfile dist/scotty
 ./dist/scotty vaporize <id> --yes
 ```
 
+### Attach to a terminal
+
+Run `scotty attach <id>` to open an existing session. Terminal URLs use the canonical `/s/<id>` form. Create separate session IDs to run parallel agents on independent branches.
+
 Run `scotty skills` for the embedded agent-facing command and state-machine reference.
 
 ## E2E
