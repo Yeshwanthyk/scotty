@@ -77,7 +77,7 @@ export const CHUNK2_WRANGLER_PARITY = {
   assets: {
     binding: "ASSETS",
     directory: "worker/public",
-    runWorkerFirst: ["/api/*", "/s/*", "/health"],
+    runWorkerFirst: ["/api/*", "/s/*", "/terminal", "/health"],
     notFoundHandling: "404-page",
   },
   durableObject: {
