@@ -7,6 +7,7 @@ export const PRODUCTION_CONTAINER_APPLICATION_NAME =
 const HARD_CAP_GRACE_MS = 30_000;
 const SESSION_ID = /^[0-9a-f]{12}$/u;
 const ACTIVE_SESSION_STATUSES = new Set(["booting", "warm"]);
+const HEALTHY_APPLICATION_STATES = new Set(["active", "ready"]);
 const KNOWN_ACTIVE_INSTANCE_STATES = new Set(["running", "scheduling", "starting"]);
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -38,7 +39,7 @@ export function reconcileContainerInventory({
   }
 
   const application = productionApplications[0];
-  if (application && application.state !== "active") {
+  if (application && !HEALTHY_APPLICATION_STATES.has(String(application.state))) {
     issues.push({
       code: "production_application_inactive",
       message: `Production Container application is ${String(application.state)}.`,
