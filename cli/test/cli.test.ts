@@ -143,6 +143,41 @@ describe("configuration and transport", () => {
     expect(invalid.error().error.code).toBe("bad_usage");
   });
 
+  test("up reuses a pending idempotency key after an ambiguous network failure", async () => {
+    const home = await temporaryDirectory();
+    const keys: string[] = [];
+    let requests = 0;
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      keys.push(request.headers.get("idempotency-key") ?? "");
+      requests += 1;
+      if (requests === 1) throw new Error("connection dropped after create");
+      return Response.json({
+        id: "s1",
+        url: "https://worker.example/s/s1",
+        branch: "scotty/s1",
+        status: "warm",
+      });
+    };
+    const args = [
+      "up",
+      "fix it",
+      "--detach",
+      "--host",
+      "https://worker.example",
+      "--token",
+      "secret",
+    ];
+
+    expect(await main(args, harness({ home, fetch }).deps)).toBe(EXIT.GENERIC);
+    expect(await main(args, harness({ home, fetch }).deps)).toBe(EXIT.OK);
+    expect(await main(args, harness({ home, fetch }).deps)).toBe(EXIT.OK);
+
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[1]);
+  });
+
   test("env overrides config and config is the final fallback", async () => {
     const home = await temporaryDirectory();
     await writeFile(

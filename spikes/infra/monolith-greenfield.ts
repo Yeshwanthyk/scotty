@@ -7,6 +7,8 @@ export const MONOLITH_GREENFIELD_STAGE = "production";
 export const MONOLITH_GREENFIELD_WORKER_NAME = "scotty-worker";
 export const MONOLITH_GREENFIELD_KV_TITLE = "scotty-sessions";
 export const MONOLITH_GREENFIELD_BACKUP_BUCKET_NAME = "scotty-backups";
+export const MONOLITH_GREENFIELD_CONTAINER_APPLICATION_NAME =
+  "scotty-sandboxcontainer-production-ytkhty6mswuofjo5";
 export const MONOLITH_GREENFIELD_INHERITED_SECRETS = [
   "CODEX_AUTH_JSON",
   "GH_TOKEN",
@@ -42,6 +44,7 @@ export const MONOLITH_GREENFIELD_TOPOLOGY = {
   },
   container: {
     logicalId: "SandboxContainer",
+    name: MONOLITH_GREENFIELD_CONTAINER_APPLICATION_NAME,
     context: "worker/container",
     dockerfile: "worker/container/Dockerfile",
     instanceType: "standard-2",
@@ -175,6 +178,7 @@ export const monolithGreenfieldProgram = Effect.fnUntraced(function* (
   const container = yield* Cloudflare.Containers.ContainerPlatform(
     MONOLITH_GREENFIELD_TOPOLOGY.container.logicalId,
     {
+      name: MONOLITH_GREENFIELD_TOPOLOGY.container.name,
       context: MONOLITH_GREENFIELD_TOPOLOGY.container.context,
       dockerfile: MONOLITH_GREENFIELD_TOPOLOGY.container.dockerfile,
       instanceType: MONOLITH_GREENFIELD_TOPOLOGY.container.instanceType,

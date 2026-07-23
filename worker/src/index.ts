@@ -10,7 +10,9 @@ import {
   parsePrInput,
   parseSessionId,
   ScottyError,
+  type CreateSessionInput,
 } from "./contracts";
+import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import { Effect, Option, Result, Schema } from "effect";
 import {
   authRegistry,
@@ -156,9 +158,12 @@ app.post("/api/sessions", async (c) => {
     throw badRequest("Request body must be valid JSON");
   });
   const input = parseCreateInput(body);
-  const id = createSessionId();
+  const idempotency = await createSessionIdempotency(c.req.header("idempotency-key"), input);
+  const id = idempotency?.keyDigest.slice(0, 12) ?? createSessionId();
   const sandbox = sessionSandbox(c.env, id);
-  const session = await sandbox.createScottySession(input, id);
+  const session = idempotency
+    ? await sandbox.createScottySession(input, id, idempotency)
+    : await sandbox.createScottySession(input, id);
   const origin = new URL(c.req.url).origin;
   return c.json({
     id,
@@ -220,7 +225,7 @@ app.get("/api/sessions/:id/down", async (c) => {
   const id = parseSessionId(c.req.param("id"));
   const sandbox = sessionSandbox(c.env, id);
   const archive = await sandbox.prepareDownArchive();
-  const stream = await sandbox.readFileStream(archive.path);
+  const stream = await sandbox.readScottyArchiveStream(archive.path);
   return new Response(stream, {
     headers: {
       "content-type": "application/x-tar",
@@ -274,7 +279,7 @@ app.get("/api/sessions/:id/pty", async (c) => {
   const rows = positiveInteger(c.req.query("rows"), 24);
   const terminalSessionId = await sandbox.prepareTerminalAttachment(clientId);
   try {
-    const terminalSession = await sandbox.getSession(terminalSessionId);
+    const terminalSession = await sandbox.getScottyTerminalSession(terminalSessionId);
     const response = await terminalSession.terminal(c.req.raw, {
       cols,
       rows,
@@ -444,6 +449,24 @@ function createSessionId(): string {
   const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function createSessionIdempotency(
+  key: string | undefined,
+  input: CreateSessionInput,
+): Promise<CreateIdempotencyMetadata | undefined> {
+  if (key === undefined) return undefined;
+  if (!/^[A-Za-z0-9._:-]{16,128}$/u.test(key)) throw badRequest("Invalid idempotency key");
+  const [keyDigest, inputDigest] = await Promise.all([
+    sha256Hex(key),
+    sha256Hex(JSON.stringify([input.prompt, input.repo, input.hardCapSeconds])),
+  ]);
+  return { keyDigest, inputDigest };
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {

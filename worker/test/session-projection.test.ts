@@ -5,6 +5,7 @@ import type { SessionRecord } from "../src/contracts";
 import {
   listSessionProjections,
   projectSessionBestEffort,
+  removeSessionProjection,
   SessionProjection,
   SessionProjectionFailure,
   sessionProjectionLayer,
@@ -157,6 +158,25 @@ describe("SessionProjection", () => {
         listResult.failure,
         new SessionProjectionFailure({ operation: "list" }),
       );
+    }),
+  );
+
+  it.effect("requires confirmed projection removal for destructive cleanup", () =>
+    Effect.gen(function* () {
+      const storage = new MemorySessionProjectionStorage();
+      storage.values.set("session:a0b1c2d3e4f5", { stale: true });
+      storage.fail = "delete";
+
+      const failed = yield* Effect.result(
+        withProjection(storage, removeSessionProjection("a0b1c2d3e4f5")),
+      );
+      assert.ok(Result.isFailure(failed));
+      assert.deepStrictEqual(failed.failure, new SessionProjectionFailure({ operation: "delete" }));
+      assert.deepStrictEqual(storage.values.get("session:a0b1c2d3e4f5"), { stale: true });
+
+      storage.fail = undefined;
+      yield* withProjection(storage, removeSessionProjection("a0b1c2d3e4f5"));
+      assert.strictEqual(storage.values.size, 0);
     }),
   );
 

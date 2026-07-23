@@ -4,6 +4,7 @@ import {
   assertMonolithGreenfieldConfig,
   expectedMonolithGreenfieldApproval,
   MONOLITH_GREENFIELD_BACKUP_BUCKET_NAME,
+  MONOLITH_GREENFIELD_CONTAINER_APPLICATION_NAME,
   MONOLITH_GREENFIELD_INHERITED_SECRETS,
   MONOLITH_GREENFIELD_KV_TITLE,
   MONOLITH_GREENFIELD_STAGE,
@@ -148,6 +149,10 @@ describe("monolith greenfield topology", () => {
     assert.strictEqual(MONOLITH_GREENFIELD_WORKER_NAME, "scotty-worker");
     assert.strictEqual(MONOLITH_GREENFIELD_KV_TITLE, "scotty-sessions");
     assert.strictEqual(MONOLITH_GREENFIELD_BACKUP_BUCKET_NAME, "scotty-backups");
+    assert.strictEqual(
+      MONOLITH_GREENFIELD_CONTAINER_APPLICATION_NAME,
+      "scotty-sandboxcontainer-production-ytkhty6mswuofjo5",
+    );
     assert.deepEqual(MONOLITH_GREENFIELD_INHERITED_SECRETS, [
       "CODEX_AUTH_JSON",
       "GH_TOKEN",
@@ -190,6 +195,7 @@ describe("monolith greenfield topology", () => {
       },
       container: {
         logicalId: "SandboxContainer",
+        name: "scotty-sandboxcontainer-production-ytkhty6mswuofjo5",
         context: "worker/container",
         dockerfile: "worker/container/Dockerfile",
         instanceType: "standard-2",
@@ -237,6 +243,7 @@ describe("monolith greenfield source contract", () => {
       /flags: \[\.\.\.MONOLITH_GREENFIELD_TOPOLOGY\.worker\.compatibilityFlags\]/u,
     );
     assert.match(source, /context: MONOLITH_GREENFIELD_TOPOLOGY\.container\.context/u);
+    assert.match(source, /name: MONOLITH_GREENFIELD_TOPOLOGY\.container\.name/u);
     assert.match(source, /dockerfile: MONOLITH_GREENFIELD_TOPOLOGY\.container\.dockerfile/u);
     assert.match(source, /instanceType: MONOLITH_GREENFIELD_TOPOLOGY\.container\.instanceType/u);
     assert.match(source, /maxInstances: MONOLITH_GREENFIELD_TOPOLOGY\.container\.maxInstances/u);
