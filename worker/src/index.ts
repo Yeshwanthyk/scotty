@@ -344,6 +344,8 @@ app.get("/devices", async (c) => {
 
 app.get("/pair", (c) => secureAsset(c.env, c.req.raw, "/pair.html"));
 
+app.get("/", (c) => c.redirect("/sessions", 302));
+
 app.get(
   "/terminal",
   () => new Response("Open a session with scotty attach ID or use its /s/ID URL.", { status: 404 }),

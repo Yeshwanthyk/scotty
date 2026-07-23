@@ -47,8 +47,8 @@ export const agentLayer = (
 function agentCommand(fakeAgent: boolean, launch: AgentLaunch): string {
   if (fakeAgent) return `printf '\\033[1;36mScotty fake agent ready\\033[0m\\n'; exec bash`;
   if (launch.kind === "start")
-    return `exec codex --dangerously-bypass-approvals-and-sandbox ${shellQuote(launch.prompt ?? "")}`;
+    return `exec codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox ${shellQuote(launch.prompt ?? "")}`;
   return launch.threadId
-    ? `exec codex --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(launch.threadId)}`
-    : "exec codex --dangerously-bypass-approvals-and-sandbox resume --last";
+    ? `exec codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume ${shellQuote(launch.threadId)}`
+    : "exec codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume --last";
 }

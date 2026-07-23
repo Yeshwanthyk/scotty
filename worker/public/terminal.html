@@ -66,6 +66,7 @@
       }
 
       .app {
+        position: relative;
         display: grid;
         grid-template-rows: var(--header-height) minmax(0, 1fr);
         height: var(--app-height, 100dvh);
@@ -236,6 +237,46 @@
         display: none;
       }
 
+      .latest-output {
+        position: absolute;
+        z-index: 3;
+        right: 16px;
+        bottom: 16px;
+        min-width: 80px;
+        min-height: 40px;
+        padding: 0 13px;
+        border: 0;
+        border-radius: 20px;
+        background: var(--beam);
+        box-shadow:
+          0 0 0 1px oklch(94% 0.03 200 / 0.15),
+          0 5px 18px oklch(3% 0.01 245 / 0.48);
+        color: oklch(18% 0.024 220);
+        font-size: 0.75rem;
+        font-weight: 720;
+        cursor: pointer;
+        transition-property: background-color, scale, opacity;
+        transition-duration: 160ms;
+        transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      .latest-output:hover {
+        background: oklch(86% 0.12 197);
+      }
+
+      .latest-output:active {
+        scale: 0.96;
+      }
+
+      .latest-output:focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
+      }
+
+      .latest-output[hidden] {
+        display: none;
+      }
+
       .veil {
         position: absolute;
         inset: 0;
@@ -350,8 +391,11 @@
           --header-height: 58px;
         }
         .app {
-          grid-template-rows: var(--header-height) minmax(0, 1fr) auto;
+          grid-template-rows: var(--header-height) minmax(0, 1fr);
           min-height: 0;
+          padding-right: 0;
+          padding-bottom: 0;
+          padding-left: 0;
         }
         .masthead {
           gap: 10px;
@@ -382,6 +426,7 @@
         }
         .stage {
           margin: 0;
+          padding-bottom: calc(61px + env(safe-area-inset-bottom));
           border-radius: 0;
           box-shadow: none;
         }
@@ -392,6 +437,11 @@
           padding: 18px;
         }
         .mobile-input {
+          position: absolute;
+          z-index: 4;
+          right: env(safe-area-inset-right);
+          bottom: env(safe-area-inset-bottom);
+          left: env(safe-area-inset-left);
           display: grid;
           align-content: end;
           min-width: 0;
@@ -401,10 +451,18 @@
         }
         .terminal-keys {
           display: flex;
+          width: max-content;
+          max-width: 100%;
+          justify-self: start;
           gap: 6px;
-          margin: -1px -1px 5px;
-          padding: 1px;
+          margin: 0 0 6px;
+          padding: 4px;
           overflow-x: auto;
+          border-radius: 12px;
+          background: oklch(18% 0.016 245 / 0.98);
+          box-shadow:
+            0 0 0 1px oklch(93% 0.02 220 / 0.09),
+            0 8px 22px oklch(3% 0.01 245 / 0.5);
           overscroll-behavior-inline: contain;
           scrollbar-width: none;
           -webkit-overflow-scrolling: touch;
@@ -417,16 +475,20 @@
         }
         .mobile-key {
           min-width: 46px;
-          min-height: 40px;
+          min-height: 44px;
           flex: 0 0 auto;
           padding: 0 10px;
-          border: 1px solid var(--line);
+          border: 0;
           border-radius: 8px;
           background: var(--terminal);
           color: var(--ink);
           font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
           font-size: 0.75rem;
           font-weight: 620;
+          box-shadow: 0 0 0 1px oklch(93% 0.02 220 / 0.1);
+          transition-property: background-color, color, scale;
+          transition-duration: 140ms;
+          transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
         }
         .mobile-key-wide {
           min-width: 82px;
@@ -434,12 +496,22 @@
         .mobile-key:active {
           background: oklch(25% 0.035 220);
           color: var(--beam);
+          scale: 0.96;
         }
         .mobile-key:focus-visible {
           position: relative;
           z-index: 1;
           outline: 2px solid var(--focus);
           outline-offset: -2px;
+        }
+        .font-size-output {
+          display: grid;
+          min-width: 28px;
+          place-items: center;
+          color: var(--muted);
+          font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+          font-size: 0.68rem;
+          font-variant-numeric: tabular-nums;
         }
         .prompt-composer {
           display: grid;
@@ -461,6 +533,9 @@
           border-radius: 10px;
           background: transparent;
           color: var(--muted);
+          transition-property: background-color, color, scale, box-shadow;
+          transition-duration: 150ms;
+          transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
         }
         .composer-button:active {
           scale: 0.96;
@@ -523,6 +598,11 @@
           cursor: not-allowed;
           opacity: 0.42;
         }
+        .latest-output {
+          right: max(10px, env(safe-area-inset-right));
+          bottom: calc(70px + env(safe-area-inset-bottom));
+          min-height: 44px;
+        }
       }
 
       @media (max-width: 380px) {
@@ -580,6 +660,7 @@
 
       <section class="stage" aria-label="Remote Codex terminal">
         <div class="terminal-host" id="terminal" aria-label="Interactive remote terminal"></div>
+        <button class="latest-output" id="latest-output" type="button" hidden>Latest ↓</button>
         <div class="veil" id="veil">
           <div class="state-card">
             <div class="state-mark" id="state-mark">ACQUIRING BEAM</div>
@@ -600,7 +681,6 @@
           <button class="mobile-key mobile-key-wide" type="button" data-key="interrupt">
             Ctrl-C
           </button>
-          <button class="mobile-key" type="button" data-key="enter" aria-label="Enter">↵</button>
           <button class="mobile-key" type="button" data-key="left" aria-label="Left arrow">
             ←
           </button>
@@ -610,6 +690,25 @@
           <button class="mobile-key" type="button" data-key="up" aria-label="Up arrow">↑</button>
           <button class="mobile-key" type="button" data-key="right" aria-label="Right arrow">
             →
+          </button>
+          <button
+            class="mobile-key"
+            type="button"
+            data-action="font-down"
+            aria-label="Decrease terminal text size"
+          >
+            A−
+          </button>
+          <output class="font-size-output" id="font-size-output" aria-label="Terminal text size"
+            >14</output
+          >
+          <button
+            class="mobile-key"
+            type="button"
+            data-action="font-up"
+            aria-label="Increase terminal text size"
+          >
+            A+
           </button>
         </div>
         <form class="prompt-composer" id="prompt-composer">
@@ -690,6 +789,7 @@
         mobileKeyData,
         sgrMouse,
         terminalCell,
+        terminalFontSize,
         terminalPrompt,
         wheelButton,
         wheelSteps,
@@ -700,6 +800,7 @@
       const announcer = document.querySelector("#announcer");
       const cancelPrompt = document.querySelector("#cancel-prompt");
       const keysToggle = document.querySelector("#keys-toggle");
+      const latestOutput = document.querySelector("#latest-output");
       const mobileInput = document.querySelector("#mobile-input");
       const promptComposer = document.querySelector("#prompt-composer");
       const promptInput = document.querySelector("#prompt-input");
@@ -708,6 +809,7 @@
       const statusText = document.querySelector("#status-text");
       const terminalHost = document.querySelector("#terminal");
       const terminalKeys = document.querySelector("#terminal-keys");
+      const fontSizeOutput = document.querySelector("#font-size-output");
       const veil = document.querySelector("#veil");
       const stateMark = document.querySelector("#state-mark");
       const stateTitle = document.querySelector("#state-title");
@@ -718,6 +820,8 @@
       const apiId = sessionId ? encodeURIComponent(sessionId) : "";
       const encoder = new TextEncoder();
       const reconnectDelays = [750, 1500, 3000, 6000, 10000, 15000];
+      const mobileLayout = matchMedia("(max-width: 560px)");
+      const fontSizeStorageKey = "scotty-terminal-font-size";
       let terminal;
       let fitAddon;
       let socket;
@@ -734,6 +838,22 @@
       let connectGeneration = 0;
       let touchGesture;
       let suppressTouchFocus = false;
+      let viewportBaselineWidth = window.visualViewport?.width || window.innerWidth;
+      let viewportBaselineHeight = window.visualViewport?.height || window.innerHeight;
+      let viewportFitFrame;
+
+      function readFontSize() {
+        try {
+          return terminalFontSize(
+            localStorage.getItem(fontSizeStorageKey),
+            mobileLayout.matches ? 14 : 13,
+          );
+        } catch {
+          return mobileLayout.matches ? 14 : 13;
+        }
+      }
+
+      let currentFontSize = readFontSize();
 
       function getTerminalClientId() {
         const bytes = crypto.getRandomValues(new Uint8Array(6));
@@ -817,6 +937,7 @@
         if (!connected) {
           promptInput.blur();
           setTerminalKeysOpen(false);
+          latestOutput.hidden = true;
         }
         updatePromptState();
 
@@ -857,8 +978,13 @@
         reconnectTicker = undefined;
       }
 
-      function dimensions() {
-        fitAddon.fit();
+      function dimensions(fitRows = true) {
+        const proposed = fitAddon.proposeDimensions();
+        if (proposed) {
+          const cols = Math.max(1, proposed.cols);
+          const rows = Math.max(1, fitRows ? proposed.rows : terminal.rows || proposed.rows);
+          if (cols !== terminal.cols || rows !== terminal.rows) terminal.resize(cols, rows);
+        }
         return {
           cols: Math.max(1, terminal.cols || 80),
           rows: Math.max(1, terminal.rows || 24),
@@ -891,11 +1017,6 @@
         terminalKeys.hidden = !open;
         keysToggle.setAttribute("aria-expanded", String(open));
         keysToggle.setAttribute("aria-label", open ? "Hide terminal keys" : "Show terminal keys");
-        requestAnimationFrame(() => {
-          if (!terminal) return;
-          dimensions();
-          sendResize();
-        });
       }
 
       function updatePromptState() {
@@ -903,15 +1024,38 @@
       }
 
       function sizePrompt() {
-        const previousHeight = promptInput.offsetHeight;
         promptInput.style.height = "0px";
         promptInput.style.height = `${Math.min(112, Math.max(44, promptInput.scrollHeight))}px`;
         updatePromptState();
-        if (promptInput.offsetHeight === previousHeight) return;
+      }
+
+      function setFontSize(value) {
+        const nextFontSize = terminalFontSize(value, currentFontSize);
+        currentFontSize = nextFontSize;
+        fontSizeOutput.value = String(nextFontSize);
+        fontSizeOutput.textContent = String(nextFontSize);
+        if (!terminal) return;
+        terminal.options.fontSize = nextFontSize;
+        try {
+          localStorage.setItem(fontSizeStorageKey, String(nextFontSize));
+        } catch {
+          // Private browsing can disable persistent storage; the in-memory setting still works.
+        }
         requestAnimationFrame(() => {
-          if (!terminal) return;
-          dimensions();
+          dimensions(true);
           sendResize();
+        });
+        announce(`Terminal text ${nextFontSize} pixels`);
+      }
+
+      function writeTerminalOutput(data) {
+        const viewport = terminal.getViewportY();
+        const scrollback = terminal.getScrollbackLength();
+        terminal.write(data, () => {
+          if (viewport <= 0) return;
+          const addedLines = Math.max(0, terminal.getScrollbackLength() - scrollback);
+          terminal.scrollToLine(Math.min(terminal.getScrollbackLength(), viewport + addedLines));
+          latestOutput.hidden = false;
         });
       }
 
@@ -1128,11 +1272,11 @@
           connection.addEventListener("message", async (event) => {
             // Sandbox can replay buffered binary output before the ready control frame.
             if (event.data instanceof ArrayBuffer) {
-              terminal.write(new Uint8Array(event.data));
+              writeTerminalOutput(new Uint8Array(event.data));
               return;
             }
             if (event.data instanceof Blob) {
-              terminal.write(new Uint8Array(await event.data.arrayBuffer()));
+              writeTerminalOutput(new Uint8Array(await event.data.arrayBuffer()));
               return;
             }
             if (typeof event.data === "string") {
@@ -1280,7 +1424,20 @@
           terminal.focus();
           return;
         }
+        if (button.dataset.action === "font-down") {
+          setFontSize(currentFontSize - 1);
+          return;
+        }
+        if (button.dataset.action === "font-up") {
+          setFontSize(currentFontSize + 1);
+          return;
+        }
         sendInput(mobileKeyData[button.dataset.key] || "");
+      });
+
+      latestOutput.addEventListener("click", () => {
+        terminal.scrollToBottom();
+        latestOutput.hidden = true;
       });
 
       promptInput.addEventListener("input", sizePrompt);
@@ -1330,19 +1487,29 @@
           }).catch(() => undefined);
       });
       function fitVisualViewport() {
-        if (window.visualViewport) {
-          document.documentElement.style.setProperty(
-            "--app-height",
-            `${window.visualViewport.height}px`,
-          );
+        const viewport = window.visualViewport;
+        if (viewport) {
+          document.documentElement.style.setProperty("--app-height", `${viewport.height}px`);
         }
-        requestAnimationFrame(() => {
+        cancelAnimationFrame(viewportFitFrame);
+        viewportFitFrame = requestAnimationFrame(() => {
           if (!terminal) return;
-          dimensions();
+          const width = viewport?.width || window.innerWidth;
+          const height = viewport?.height || window.innerHeight;
+          const widthChanged = Math.abs(width - viewportBaselineWidth) > 16;
+          if (widthChanged) {
+            viewportBaselineWidth = width;
+            viewportBaselineHeight = height;
+          } else if (height > viewportBaselineHeight) {
+            viewportBaselineHeight = height;
+          }
+          const softwareKeyboardOpen = mobileLayout.matches && height < viewportBaselineHeight - 96;
+          dimensions(!softwareKeyboardOpen);
           sendResize();
         });
       }
       window.visualViewport?.addEventListener("resize", fitVisualViewport);
+      window.addEventListener("resize", fitVisualViewport);
       fitVisualViewport();
 
       if (!sessionId) {
@@ -1357,8 +1524,9 @@
             ghostty,
             cursorBlink: !matchMedia("(prefers-reduced-motion: reduce)").matches,
             cursorStyle: "block",
-            fontFamily: '"SFMono-Regular", "Cascadia Mono", "Liberation Mono", Consolas, monospace',
-            fontSize: matchMedia("(max-width: 560px)").matches ? 12 : 13,
+            fontFamily:
+              '"Berkeley Mono", "SFMono-Regular", "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+            fontSize: currentFontSize,
             scrollback: 6000,
             smoothScrollDuration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 110,
             theme: {
@@ -1392,11 +1560,14 @@
           terminal.attachCustomWheelEventHandler((event) =>
             sendTrackedWheel(event.deltaY, event.clientX, event.clientY),
           );
-          fitAddon.observeResize();
           terminal.onData((data) => {
             sendInput(data);
           });
           terminal.onResize(({ cols, rows }) => sendResize(cols, rows));
+          terminal.onScroll((viewportY) => {
+            if (viewportY <= 0) latestOutput.hidden = true;
+          });
+          setFontSize(currentFontSize);
 
           requestAnimationFrame(async () => {
             dimensions();
