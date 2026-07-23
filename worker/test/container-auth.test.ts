@@ -151,7 +151,10 @@ describe("ContainerAuth", () => {
         {
           operation: "writeFile",
           path: `/workspace/${ID}/.codex/config.toml`,
-          content: `[features]
+          content: `model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[features]
 plugins = false
 
 [mcp_servers]

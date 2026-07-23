@@ -32,10 +32,12 @@ describe("terminal input", () => {
   });
 
   it("exposes one-tap mobile terminal controls", () => {
-    assert.strictEqual(mobileKeyData.interrupt, "\x03");
-    assert.strictEqual(mobileKeyData.enter, "\r");
-    assert.strictEqual(mobileKeyData.escape, "\x1b");
-    assert.strictEqual(mobileKeyData.up, "\x1b[A");
+    assert.deepStrictEqual(mobileKeyData, {
+      escape: "\x1b",
+      tab: "\t",
+      interrupt: "\x03",
+      enter: "\r",
+    });
   });
 
   it("keeps composed prompts intact while rejecting empty submissions", () => {

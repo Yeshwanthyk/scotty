@@ -450,33 +450,25 @@
           background: var(--shell);
         }
         .terminal-keys {
-          display: flex;
-          width: max-content;
-          max-width: 100%;
-          justify-self: start;
+          display: grid;
+          width: 100%;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
           gap: 6px;
           margin: 0 0 6px;
           padding: 4px;
-          overflow-x: auto;
           border-radius: 12px;
           background: oklch(18% 0.016 245 / 0.98);
           box-shadow:
             0 0 0 1px oklch(93% 0.02 220 / 0.09),
             0 8px 22px oklch(3% 0.01 245 / 0.5);
-          overscroll-behavior-inline: contain;
-          scrollbar-width: none;
-          -webkit-overflow-scrolling: touch;
-        }
-        .terminal-keys::-webkit-scrollbar {
-          display: none;
         }
         .terminal-keys[hidden] {
           display: none;
         }
         .mobile-key {
-          min-width: 46px;
+          width: 100%;
+          min-width: 0;
           min-height: 44px;
-          flex: 0 0 auto;
           padding: 0 10px;
           border: 0;
           border-radius: 8px;
@@ -490,9 +482,6 @@
           transition-duration: 140ms;
           transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
         }
-        .mobile-key-wide {
-          min-width: 82px;
-        }
         .mobile-key:active {
           background: oklch(25% 0.035 220);
           color: var(--beam);
@@ -503,15 +492,6 @@
           z-index: 1;
           outline: 2px solid var(--focus);
           outline-offset: -2px;
-        }
-        .font-size-output {
-          display: grid;
-          min-width: 28px;
-          place-items: center;
-          color: var(--muted);
-          font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-          font-size: 0.68rem;
-          font-variant-numeric: tabular-nums;
         }
         .prompt-composer {
           display: grid;
@@ -673,43 +653,10 @@
       </section>
       <div class="mobile-input" id="mobile-input">
         <div class="terminal-keys" id="terminal-keys" aria-label="Terminal keys" hidden>
-          <button class="mobile-key mobile-key-wide" type="button" data-action="raw-input">
-            Raw input
-          </button>
           <button class="mobile-key" type="button" data-key="escape">Esc</button>
           <button class="mobile-key" type="button" data-key="tab">Tab</button>
-          <button class="mobile-key mobile-key-wide" type="button" data-key="interrupt">
-            Ctrl-C
-          </button>
-          <button class="mobile-key" type="button" data-key="left" aria-label="Left arrow">
-            ←
-          </button>
-          <button class="mobile-key" type="button" data-key="down" aria-label="Down arrow">
-            ↓
-          </button>
-          <button class="mobile-key" type="button" data-key="up" aria-label="Up arrow">↑</button>
-          <button class="mobile-key" type="button" data-key="right" aria-label="Right arrow">
-            →
-          </button>
-          <button
-            class="mobile-key"
-            type="button"
-            data-action="font-down"
-            aria-label="Decrease terminal text size"
-          >
-            A−
-          </button>
-          <output class="font-size-output" id="font-size-output" aria-label="Terminal text size"
-            >14</output
-          >
-          <button
-            class="mobile-key"
-            type="button"
-            data-action="font-up"
-            aria-label="Increase terminal text size"
-          >
-            A+
-          </button>
+          <button class="mobile-key" type="button" data-key="interrupt">Ctrl-C</button>
+          <button class="mobile-key" type="button" data-key="enter">Enter</button>
         </div>
         <form class="prompt-composer" id="prompt-composer">
           <button
@@ -809,7 +756,6 @@
       const statusText = document.querySelector("#status-text");
       const terminalHost = document.querySelector("#terminal");
       const terminalKeys = document.querySelector("#terminal-keys");
-      const fontSizeOutput = document.querySelector("#font-size-output");
       const veil = document.querySelector("#veil");
       const stateMark = document.querySelector("#state-mark");
       const stateTitle = document.querySelector("#state-title");
@@ -1032,8 +978,6 @@
       function setFontSize(value) {
         const nextFontSize = terminalFontSize(value, currentFontSize);
         currentFontSize = nextFontSize;
-        fontSizeOutput.value = String(nextFontSize);
-        fontSizeOutput.textContent = String(nextFontSize);
         if (!terminal) return;
         terminal.options.fontSize = nextFontSize;
         try {
@@ -1419,19 +1363,6 @@
       terminalKeys.addEventListener("click", (event) => {
         const button = event.target.closest("button");
         if (!button || currentState !== "connected") return;
-        if (button.dataset.action === "raw-input") {
-          setTerminalKeysOpen(false);
-          terminal.focus();
-          return;
-        }
-        if (button.dataset.action === "font-down") {
-          setFontSize(currentFontSize - 1);
-          return;
-        }
-        if (button.dataset.action === "font-up") {
-          setFontSize(currentFontSize + 1);
-          return;
-        }
         sendInput(mobileKeyData[button.dataset.key] || "");
       });
 

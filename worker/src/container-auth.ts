@@ -4,7 +4,10 @@ import { sentinelAuthJson, type StoredCredential } from "./egress";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
-const codexConfig = (id: SessionRecord["id"]): string => `[features]
+const codexConfig = (id: SessionRecord["id"]): string => `model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[features]
 plugins = false
 
 [mcp_servers]
