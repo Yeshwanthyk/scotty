@@ -32,6 +32,12 @@ import {
   listSessionProjections,
   sessionProjectionLayer,
 } from "./session-projection";
+import {
+  kvRepoProjectionStorage,
+  listRepoProjections,
+  repoProjectionLayer,
+  trackRepoBestEffort,
+} from "./repo-projection";
 import { Sandbox as ScottySandbox } from "./session";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottySandbox };
@@ -164,6 +170,13 @@ app.post("/api/sessions", async (c) => {
   const session = idempotency
     ? await sandbox.createScottySession(input, id, idempotency)
     : await sandbox.createScottySession(input, id);
+  const repoLayer = repoProjectionLayer(kvRepoProjectionStorage(c.env.SESSIONS));
+  await Effect.runPromise(
+    trackRepoBestEffort(session.repo, session.defaultBranch).pipe(
+      Effect.provide(repoLayer),
+      Effect.scoped,
+    ),
+  );
   const origin = new URL(c.req.url).origin;
   return c.json({
     id,
@@ -171,6 +184,22 @@ app.post("/api/sessions", async (c) => {
     branch: session.branch,
     status: session.status,
   });
+});
+
+app.get("/api/repos", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const layer = repoProjectionLayer(kvRepoProjectionStorage(c.env.SESSIONS));
+  const result = await Effect.runPromise(
+    listRepoProjections.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
+  );
+  return c.json(
+    Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (repositories) => repositories,
+    }),
+  );
 });
 
 app.get("/api/sessions", async (c) => {

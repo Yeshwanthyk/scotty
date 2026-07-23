@@ -117,6 +117,8 @@ describe("real Hono boundary", () => {
   it("preserves the create status, output shape, and ignored legacy cap", async () => {
     sandbox.createScottySession.mockResolvedValue({
       branch: "scotty/a0b1c2d3e4f5",
+      repo: "anomalyco/rift",
+      defaultBranch: "dev",
       status: "warm",
     });
     const response = await app.request(
@@ -147,6 +149,8 @@ describe("real Hono boundary", () => {
   it("maps repeated create keys to one Sandbox identity", async () => {
     sandbox.createScottySession.mockResolvedValue({
       branch: "scotty/replayed",
+      repo: "anomalyco/rift",
+      defaultBranch: "dev",
       status: "booting",
     });
     const request = {
@@ -189,6 +193,42 @@ describe("real Hono boundary", () => {
       firstBody.id,
       expect.any(Object),
     );
+  });
+
+  it("tracks the returned repository without making KV authoritative for create", async () => {
+    sandbox.createScottySession.mockResolvedValue({
+      branch: "scotty/a0b1c2d3e4f5",
+      repo: "owner/repo",
+      defaultBranch: "main",
+      status: "warm",
+    });
+    const put = vi.fn(async () => undefined);
+    const tracked = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "ship it", repo: "owner/repo" }),
+      },
+      { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
+    );
+    expect(tracked.status).toBe(200);
+    expect(put).toHaveBeenCalledWith(
+      "repo:owner/repo",
+      expect.stringContaining('"repo":"owner/repo","defaultBranch":"main","lastUsedAt":'),
+    );
+
+    put.mockRejectedValueOnce("KV unavailable");
+    const unavailable = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "ship it", repo: "owner/repo" }),
+      },
+      { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
+    );
+    expect(unavailable.status).toBe(200);
   });
 
   it("rejects malformed create idempotency keys before touching a Sandbox", async () => {
@@ -344,6 +384,66 @@ describe("real Hono boundary", () => {
       failure: projection.failure,
     });
     expect(body[0]).not.toHaveProperty("secret");
+  });
+
+  it("lists tracked repositories most-recent first without storage-only fields", async () => {
+    const values = new Map<string, unknown>([
+      [
+        "repo:owner/older",
+        {
+          version: 1,
+          repo: "owner/older",
+          defaultBranch: "main",
+          lastUsedAt: "2026-07-22T12:00:00.000Z",
+          secret: "must-not-survive",
+        },
+      ],
+      [
+        "repo:owner/newer",
+        {
+          version: 1,
+          repo: "owner/newer",
+          defaultBranch: "dev",
+          lastUsedAt: "2026-07-23T12:00:00.000Z",
+        },
+      ],
+      [
+        "repo:owner/malformed",
+        {
+          version: 1,
+          repo: "owner/malformed",
+          defaultBranch: 123,
+          lastUsedAt: "2026-07-23T13:00:00.000Z",
+        },
+      ],
+    ]);
+    const sessions = {
+      list: async () => ({
+        keys: [...values.keys()].map((name) => ({ name })),
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      get: async (name: string) => values.get(name) ?? null,
+    } as KVNamespace;
+
+    const response = await app.request(
+      "/api/repos",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: sessions },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      {
+        repo: "owner/newer",
+        defaultBranch: "dev",
+        lastUsedAt: "2026-07-23T12:00:00.000Z",
+      },
+      {
+        repo: "owner/older",
+        defaultBranch: "main",
+        lastUsedAt: "2026-07-22T12:00:00.000Z",
+      },
+    ]);
   });
 
   it("preserves the generic internal response for provider-level KV list failure", async () => {
