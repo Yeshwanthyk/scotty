@@ -4,7 +4,12 @@ import { sentinelAuthJson, type StoredCredential } from "./egress";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
-const CODEX_CONFIG = `[projects."/tmp"]
+const codexConfig = (id: SessionRecord["id"]): string => `[features]
+plugins = false
+
+[mcp_servers]
+
+[projects.${JSON.stringify(sessionRoot(id))}]
 trust_level = "trusted"
 `;
 
@@ -29,7 +34,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         const configPath = `${codexHome}/config.toml`;
         yield* runtime.mkdir(codexHome, { recursive: true });
         yield* runtime.writeFile(authPath, sentinelAuthJson(credential));
-        yield* runtime.writeFile(configPath, CODEX_CONFIG);
+        yield* runtime.writeFile(configPath, codexConfig(id));
         yield* runtime.execChecked(
           `chmod 700 ${shellQuote(codexHome)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)}`,
         );

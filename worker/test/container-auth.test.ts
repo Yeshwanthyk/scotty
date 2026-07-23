@@ -151,7 +151,12 @@ describe("ContainerAuth", () => {
         {
           operation: "writeFile",
           path: `/workspace/${ID}/.codex/config.toml`,
-          content: `[projects."/tmp"]
+          content: `[features]
+plugins = false
+
+[mcp_servers]
+
+[projects."/workspace/${ID}"]
 trust_level = "trusted"
 `,
         },
