@@ -51,11 +51,14 @@ npx wrangler secret put GH_TOKEN
 npx wrangler secret put R2_ACCESS_KEY_ID
 npx wrangler secret put R2_SECRET_ACCESS_KEY
 npx wrangler secret put CLOUDFLARE_ACCOUNT_ID
-
-npx wrangler deploy
 ```
 
 Use a fine-grained GitHub PAT restricted to managed repositories. Add an R2 lifecycle rule for the `backups/` prefix; SDK backup TTL is metadata and does not itself remove expired objects.
+
+Production infrastructure has one owner: the serialized Alchemy workflow in
+`.github/workflows/deploy-production.yml`. Do not run a production Wrangler or laptop Alchemy
+deploy. Before and after a deployment, `npm run audit:containers` proves that the single pinned
+Container application and the authoritative session list agree on every active instance.
 
 ## CLI
 

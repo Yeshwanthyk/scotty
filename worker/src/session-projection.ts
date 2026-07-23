@@ -60,6 +60,11 @@ export const projectSessionBestEffort = (
     record.status === "gone" ? projection.remove(record.id) : projection.project(record),
   ).pipe(Effect.ignore);
 
+export const removeSessionProjection = (
+  id: string,
+): Effect.Effect<void, SessionProjectionFailure, SessionProjection> =>
+  Effect.flatMap(SessionProjection, (projection) => projection.remove(id));
+
 export const listSessionProjections: Effect.Effect<
   ReadonlyArray<SessionView>,
   SessionProjectionFailure,
