@@ -3,10 +3,6 @@ export const mobileKeyData = Object.freeze({
   tab: "\t",
   interrupt: "\x03",
   enter: "\r",
-  left: "\x1b[D",
-  down: "\x1b[B",
-  up: "\x1b[A",
-  right: "\x1b[C",
 });
 
 export function terminalPrompt(value) {
