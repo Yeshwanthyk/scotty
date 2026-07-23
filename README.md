@@ -18,7 +18,8 @@ Residual limitation: any allowed package registry is still a potential source/pr
 
 ## Local checks
 
-Requirements: Node 22+, npm, Bun, Docker, and Wrangler authentication only for deployed probes.
+Requirements: Node 22+, npm, Bun, Docker, and Cloudflare authentication only for deployed probes
+or production deployment.
 
 ```sh
 npm install
@@ -55,10 +56,12 @@ npx wrangler secret put CLOUDFLARE_ACCOUNT_ID
 
 Use a fine-grained GitHub PAT restricted to managed repositories. Add an R2 lifecycle rule for the `backups/` prefix; SDK backup TTL is metadata and does not itself remove expired objects.
 
-Production infrastructure has one owner: the serialized Alchemy workflow in
-`.github/workflows/deploy-production.yml`. Do not run a production Wrangler or laptop Alchemy
-deploy. Before and after a deployment, `npm run audit:containers` proves that the single pinned
-Container application and the authoritative session list agree on every active instance.
+Production infrastructure has one owner: the guarded local command `npm run deploy:production`.
+Configure the local Alchemy OAuth profile once with `npx alchemy login --configure`. The command
+refuses CI, takes an exclusive local lock, requires a clean `main` exactly matching `origin/main`,
+runs the full check suite, audits the pinned production account and Worker, revalidates the exact
+commit immediately before mutation, deploys through Alchemy, and audits the result even if
+deployment fails. Do not bypass it with a raw production Wrangler or Alchemy command.
 
 ## CLI
 
