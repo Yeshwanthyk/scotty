@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 
 export const PRODUCTION_CONTAINER_APPLICATION_NAME =
   "scotty-sandboxcontainer-production-ytkhty6mswuofjo5";
+export const PRODUCTION_CONTAINER_APPLICATION_ID = "a030af24-612c-4eb0-81cd-873740807d1d";
 
 const HARD_CAP_GRACE_MS = 30_000;
 const SESSION_ID = /^[0-9a-f]{12}$/u;
@@ -11,6 +12,9 @@ const HEALTHY_APPLICATION_STATES = new Set(["active", "ready"]);
 const KNOWN_ACTIVE_INSTANCE_STATES = new Set(["running", "scheduling", "starting"]);
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+export const isHealthyContainerApplicationState = (state) =>
+  HEALTHY_APPLICATION_STATES.has(String(state));
 
 export function reconcileContainerInventory({
   applications,
@@ -39,7 +43,13 @@ export function reconcileContainerInventory({
   }
 
   const application = productionApplications[0];
-  if (application && !HEALTHY_APPLICATION_STATES.has(String(application.state))) {
+  if (application && application.id !== PRODUCTION_CONTAINER_APPLICATION_ID) {
+    issues.push({
+      code: "production_application_identity",
+      message: `Production Container application ID is ${String(application.id)} instead of ${PRODUCTION_CONTAINER_APPLICATION_ID}.`,
+    });
+  }
+  if (application && !isHealthyContainerApplicationState(application.state)) {
     issues.push({
       code: "production_application_inactive",
       message: `Production Container application is ${String(application.state)}.`,

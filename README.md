@@ -60,8 +60,11 @@ Production infrastructure has one owner: the guarded local command `npm run depl
 Configure the local Alchemy OAuth profile once with `npx alchemy login --configure`. The command
 refuses CI, takes an exclusive local lock, requires a clean `main` exactly matching `origin/main`,
 runs the full check suite, audits the pinned production account and Worker, revalidates the exact
-commit immediately before mutation, deploys through Alchemy, and audits the result even if
-deployment fails. Do not bypass it with a raw production Wrangler or Alchemy command.
+commit immediately before mutation, deploys through Alchemy, waits for any asynchronous Container
+rollout resource to report `completed` with its target version and healthy capacity (or requires
+Alchemy to report a terminal no-op). An update without a rollout must remain unchanged for the
+bounded control-plane observation window. The command audits the result even if deployment fails.
+Do not bypass it with a raw production Wrangler or Alchemy command.
 
 ## CLI
 
