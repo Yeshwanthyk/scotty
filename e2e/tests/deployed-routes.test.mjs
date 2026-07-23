@@ -9,7 +9,7 @@ const skipReason =
 test(
   "deployed edge routes only serve terminals from canonical session URLs",
   { skip: skipReason },
-  async () => {
+  async (context) => {
     const legacy = await fetch(`${host}/terminal`, { redirect: "manual" });
     assert.equal(legacy.status, 404);
     assert.equal(await legacy.text(), "Open a session with scotty attach ID or use its /s/ID URL.");
@@ -24,9 +24,18 @@ test(
     assert.match(cookie ?? "", /HttpOnly/iu);
     assert.match(cookie ?? "", /Secure/iu);
     assert.match(cookie ?? "", /SameSite=Strict/iu);
+    const browserCookie = cookie?.split(";", 1)[0];
+    assert.ok(browserCookie);
+    context.after(async () => {
+      const logout = await fetch(`${host}/api/auth/logout`, {
+        method: "POST",
+        headers: { cookie: browserCookie },
+      });
+      assert.equal(logout.status, 200);
+    });
 
     const terminal = await fetch(`${host}/s/000000000000`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { cookie: browserCookie },
     });
     assert.equal(terminal.status, 200);
     assert.match(terminal.headers.get("content-type") ?? "", /text\/html/iu);
