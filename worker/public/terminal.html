@@ -391,6 +391,10 @@
           --header-height: 58px;
         }
         .app {
+          position: absolute;
+          top: var(--app-top, 0);
+          left: var(--app-left, 0);
+          width: var(--app-width, 100%);
           grid-template-rows: var(--header-height) minmax(0, 1fr);
           min-height: 0;
           padding-right: 0;
@@ -445,9 +449,13 @@
           display: grid;
           align-content: end;
           min-width: 0;
-          padding: 5px 7px 6px;
-          border-top: 1px solid var(--line);
-          background: var(--shell);
+          padding: 7px 8px 8px;
+          background: linear-gradient(to top, var(--space) 0 76%, transparent);
+        }
+        .app[data-keyboard="open"] .mobile-input {
+          right: 0;
+          bottom: 0;
+          left: 0;
         }
         .terminal-keys {
           display: grid;
@@ -496,12 +504,25 @@
         .prompt-composer {
           display: grid;
           grid-template-columns: 44px minmax(0, 1fr) 44px;
+          grid-template-areas: "leading prompt send";
           align-items: center;
-          gap: 6px;
+          gap: 2px;
           min-width: 0;
+          padding: 4px;
+          border-radius: 16px;
+          background: oklch(17% 0.016 245 / 0.98);
+          box-shadow:
+            0 0 0 1px oklch(93% 0.02 220 / 0.1),
+            0 8px 24px oklch(3% 0.01 245 / 0.52);
+          transition-property: background-color, box-shadow;
+          transition-duration: 160ms;
+          transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
         }
-        .mobile-input[data-focused="true"] .prompt-composer {
-          grid-template-columns: minmax(0, 1fr) 44px 44px;
+        .prompt-composer:focus-within {
+          background: oklch(18.5% 0.019 235 / 0.99);
+          box-shadow:
+            0 0 0 1px oklch(79% 0.115 200 / 0.62),
+            0 10px 28px oklch(3% 0.01 245 / 0.58);
         }
         .composer-button {
           display: grid;
@@ -510,12 +531,12 @@
           place-items: center;
           padding: 0;
           border: 0;
-          border-radius: 10px;
+          border-radius: 12px;
           background: transparent;
           color: var(--muted);
-          transition-property: background-color, color, scale, box-shadow;
+          transition-property: background-color, color, scale, box-shadow, opacity, filter;
           transition-duration: 150ms;
-          transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+          transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
         }
         .composer-button:active {
           scale: 0.96;
@@ -525,34 +546,47 @@
           outline-offset: -2px;
         }
         .keys-toggle {
-          border: 1px solid var(--line);
-          background: var(--terminal);
+          grid-area: leading;
         }
         .keys-toggle[aria-expanded="true"] {
-          border-color: oklch(56% 0.08 205);
+          background: oklch(25% 0.035 220);
           color: var(--beam);
         }
         .cancel-prompt {
-          display: none;
+          grid-area: leading;
+          visibility: hidden;
           color: var(--muted);
+          filter: blur(4px);
+          opacity: 0;
+          scale: 0.25;
+          pointer-events: none;
         }
         .mobile-input[data-focused="true"] .keys-toggle {
-          display: none;
+          visibility: hidden;
+          filter: blur(4px);
+          opacity: 0;
+          scale: 0.25;
+          pointer-events: none;
         }
         .mobile-input[data-focused="true"] .cancel-prompt {
-          display: grid;
+          visibility: visible;
+          filter: blur(0);
+          opacity: 1;
+          scale: 1;
+          pointer-events: auto;
         }
         .prompt-input {
+          grid-area: prompt;
           width: 100%;
           height: 44px;
           min-height: 44px;
           max-height: 112px;
           padding: 10px 12px;
           overflow-y: auto;
-          border: 1px solid var(--line);
-          border-radius: 10px;
+          border: 0;
+          border-radius: 12px;
           outline: none;
-          background: var(--terminal);
+          background: transparent;
           color: var(--ink);
           font: inherit;
           font-size: 16px;
@@ -565,10 +599,10 @@
           opacity: 1;
         }
         .prompt-input:focus {
-          border-color: var(--beam);
-          box-shadow: 0 0 0 1px var(--beam);
+          box-shadow: none;
         }
         .send-prompt {
+          grid-area: send;
           background: var(--beam);
           color: oklch(18% 0.024 220);
         }
@@ -738,6 +772,7 @@
         terminalCell,
         terminalFontSize,
         terminalPrompt,
+        visualViewportFrame,
         wheelButton,
         wheelSteps,
       } from "/terminal-input.js";
@@ -787,6 +822,8 @@
       let viewportBaselineWidth = window.visualViewport?.width || window.innerWidth;
       let viewportBaselineHeight = window.visualViewport?.height || window.innerHeight;
       let viewportFitFrame;
+      let viewportSettleTimer;
+      let viewportFinalTimer;
 
       function readFontSize() {
         try {
@@ -1374,9 +1411,12 @@
       promptInput.addEventListener("input", sizePrompt);
       promptInput.addEventListener("focus", () => {
         mobileInput.dataset.focused = "true";
+        setTerminalKeysOpen(false);
+        fitVisualViewport();
       });
       promptInput.addEventListener("blur", () => {
         delete mobileInput.dataset.focused;
+        fitVisualViewport();
       });
       promptInput.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -1417,29 +1457,51 @@
             keepalive: true,
           }).catch(() => undefined);
       });
-      function fitVisualViewport() {
+      function syncVisualViewport() {
         const viewport = window.visualViewport;
-        if (viewport) {
-          document.documentElement.style.setProperty("--app-height", `${viewport.height}px`);
+        const width = viewport?.width || window.innerWidth;
+        const height = viewport?.height || window.innerHeight;
+        const widthChanged = Math.abs(width - viewportBaselineWidth) > 16;
+        if (widthChanged) {
+          viewportBaselineWidth = width;
+          viewportBaselineHeight = height;
+        } else if (height > viewportBaselineHeight) {
+          viewportBaselineHeight = height;
         }
+        const promptFocused = document.activeElement === promptInput;
+        const softwareKeyboardOpen =
+          mobileLayout.matches &&
+          promptFocused &&
+          (height < viewportBaselineHeight - 96 || (viewport?.offsetTop || 0) > 0);
+        const frame = visualViewportFrame(
+          viewport,
+          window.innerWidth,
+          window.innerHeight,
+          softwareKeyboardOpen,
+        );
+        document.documentElement.style.setProperty("--app-top", `${frame.top}px`);
+        document.documentElement.style.setProperty("--app-left", `${frame.left}px`);
+        document.documentElement.style.setProperty("--app-width", `${frame.width}px`);
+        document.documentElement.style.setProperty("--app-height", `${frame.height}px`);
+        app.dataset.keyboard = softwareKeyboardOpen ? "open" : "closed";
+
         cancelAnimationFrame(viewportFitFrame);
         viewportFitFrame = requestAnimationFrame(() => {
           if (!terminal) return;
-          const width = viewport?.width || window.innerWidth;
-          const height = viewport?.height || window.innerHeight;
-          const widthChanged = Math.abs(width - viewportBaselineWidth) > 16;
-          if (widthChanged) {
-            viewportBaselineWidth = width;
-            viewportBaselineHeight = height;
-          } else if (height > viewportBaselineHeight) {
-            viewportBaselineHeight = height;
-          }
-          const softwareKeyboardOpen = mobileLayout.matches && height < viewportBaselineHeight - 96;
           dimensions(!softwareKeyboardOpen);
           sendResize();
         });
       }
+      function fitVisualViewport() {
+        syncVisualViewport();
+        clearTimeout(viewportSettleTimer);
+        clearTimeout(viewportFinalTimer);
+        viewportSettleTimer = setTimeout(syncVisualViewport, 64);
+        viewportFinalTimer = setTimeout(syncVisualViewport, 240);
+      }
       window.visualViewport?.addEventListener("resize", fitVisualViewport);
+      window.visualViewport?.addEventListener("scroll", fitVisualViewport);
+      window.visualViewport?.addEventListener("scrollend", fitVisualViewport);
       window.addEventListener("resize", fitVisualViewport);
       fitVisualViewport();
 

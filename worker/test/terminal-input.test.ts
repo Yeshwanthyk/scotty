@@ -5,6 +5,7 @@ import {
   terminalCell,
   terminalFontSize,
   terminalPrompt,
+  visualViewportFrame,
   wheelButton,
   wheelSteps,
 } from "../public/terminal-input.js";
@@ -51,5 +52,32 @@ describe("terminal input", () => {
     assert.strictEqual(terminalFontSize(6), 12);
     assert.strictEqual(terminalFontSize(24), 18);
     assert.strictEqual(terminalFontSize("not-a-number", 13), 13);
+  });
+
+  it("anchors the app to the visible keyboard viewport and clears stale Safari offsets", () => {
+    const keyboardViewport = {
+      width: 390,
+      height: 431,
+      offsetTop: 329,
+      offsetLeft: 2,
+    };
+    assert.deepStrictEqual(visualViewportFrame(keyboardViewport, 390, 844, true), {
+      top: 329,
+      left: 2,
+      width: 390,
+      height: 431,
+    });
+    assert.deepStrictEqual(visualViewportFrame(keyboardViewport, 390, 844, false), {
+      top: 0,
+      left: 0,
+      width: 390,
+      height: 431,
+    });
+    assert.deepStrictEqual(visualViewportFrame(undefined, 390, 844, true), {
+      top: 0,
+      left: 0,
+      width: 390,
+      height: 844,
+    });
   });
 });
