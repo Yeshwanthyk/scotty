@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Layer } from "effect";
 import { Agent, type AgentLaunch, agentLayer } from "../src/agent";
+import { launchAgentRuntimeCommand, resetAgentRuntimeCommand } from "../src/agent-runtime";
 import { agentEnv } from "../src/container-auth";
 import {
   credentialVaultLayer,
@@ -121,12 +122,12 @@ const expectedCalls = (agentCommand: string): AgentCall[] => {
   return [
     {
       operation: "exec",
-      command: "tmux kill-session -t agent 2>/dev/null || true",
-      options: { env },
+      command: resetAgentRuntimeCommand(),
+      options: { env, timeout: 10_000 },
     },
     {
       operation: "exec",
-      command: `tmux new-session -d -s agent -c '/workspace/${ID}' '${agentCommand.replaceAll("'", "'\\''")}' && tmux set-option -t agent window-size smallest`,
+      command: launchAgentRuntimeCommand(`/workspace/${ID}`, agentCommand),
       options: { env, timeout: 30_000 },
     },
   ];

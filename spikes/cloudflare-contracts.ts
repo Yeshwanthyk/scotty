@@ -110,10 +110,15 @@ app.post("/schedule/:id", async (context) => {
 
 app.get("/terminal/:id", async (context) => {
   const sandbox = sandboxFor(context.env, context.req.param("id"));
-  await sandbox.exec("tmux has-session -t agent 2>/dev/null || tmux new-session -d -s agent");
+  const cwd = "/tmp/scotty-contract-terminal";
+  await sandbox.mkdir(cwd, { recursive: true });
+  await sandbox.exec(
+    "install -d -m 700 /root/.local/state/scotty && SHEPPARD_SOCKET=/tmp/scotty-sheppard.sock SHEPPARD_STATE_PATH=/root/.local/state/scotty/sheppard.json sheppard spawn --cwd /tmp/scotty-contract-terminal --title agent --cmd 'exec sh' --json",
+  );
   const terminalSession = await sandbox.createSession({
     id: "agent-terminal",
     name: "agent-terminal",
+    cwd,
   });
   return terminalSession.terminal(context.req.raw, {
     cols: 80,

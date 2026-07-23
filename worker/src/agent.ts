@@ -1,4 +1,5 @@
 import { Context, Effect, Layer } from "effect";
+import { launchAgentRuntimeCommand, resetAgentRuntimeCommand } from "./agent-runtime";
 import { agentEnv } from "./container-auth";
 import { CredentialVault, type CredentialVaultFailure } from "./credential-vault";
 import type { SessionRecord } from "./contracts";
@@ -32,12 +33,12 @@ export const agentLayer = (
           const credential = yield* vault.require;
           const root = sessionRoot(id);
           const env = agentEnv(id, credential);
-          yield* runtime.exec("tmux kill-session -t agent 2>/dev/null || true", { env });
+          yield* runtime.execChecked(resetAgentRuntimeCommand(), { env, timeout: 10_000 });
           const command = agentCommand(fakeAgent, launch);
-          yield* runtime.execChecked(
-            `tmux new-session -d -s agent -c ${shellQuote(root)} ${shellQuote(command)} && tmux set-option -t agent window-size smallest`,
-            { env, timeout: 30_000 },
-          );
+          yield* runtime.execChecked(launchAgentRuntimeCommand(root, command), {
+            env,
+            timeout: 30_000,
+          });
         }),
       });
     }),

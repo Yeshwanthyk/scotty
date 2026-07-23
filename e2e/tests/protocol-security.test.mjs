@@ -149,7 +149,7 @@ test("PTY auth, binary-before-ready, resize, and reconnect preserve the named ru
   assert.equal(
     secondReady.generation,
     firstReady.generation,
-    "reconnect must attach to the same tmux/runtime generation",
+    "reconnect must attach to the same managed runtime generation",
   );
   const inputAckPromise = waitForAck(second.socket);
   second.socket.send(JSON.stringify({ type: "input", data: "echo still-alive\\r" }));

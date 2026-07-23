@@ -504,6 +504,7 @@
 
     <script type="module">
       import { FitAddon, Ghostty, Terminal } from "/vendor/ghostty-web/ghostty-web.js";
+      import { sgrMouse, terminalCell, wheelButton, wheelSteps } from "/terminal-input.js";
 
       const app = document.querySelector("#app");
       const action = document.querySelector("#action");
@@ -547,6 +548,8 @@
       let lastAnnounced = "";
       let controlPending = false;
       let connectGeneration = 0;
+      let touchGesture;
+      let suppressTouchFocus = false;
 
       function getTerminalClientId() {
         const bytes = crypto.getRandomValues(new Uint8Array(6));
@@ -570,7 +573,7 @@
         reconnecting: [
           "REACQUIRING BEAM",
           "Connection interrupted",
-          "The remote process is still owned by tmux. Scotty will reattach automatically.",
+          "The remote process is still owned by Sheppard. Scotty will reattach automatically.",
         ],
         sleeping: [
           "SESSION SLEEPING",
@@ -691,6 +694,40 @@
       function sendInput(data) {
         if (!ready || socket?.readyState !== WebSocket.OPEN) return;
         socket.send(encoder.encode(data));
+      }
+
+      function trackedMouseCell(clientX, clientY) {
+        const canvas = terminalHost.querySelector("canvas");
+        const bounds = (canvas || terminalHost).getBoundingClientRect();
+        return terminalCell(bounds, terminal.cols, terminal.rows, clientX, clientY);
+      }
+
+      function sendTrackedWheel(deltaY, clientX, clientY, steps = wheelSteps(deltaY)) {
+        if (!terminal?.hasMouseTracking() || steps === 0) return false;
+        const sequence = sgrMouse(wheelButton(deltaY), trackedMouseCell(clientX, clientY));
+        for (let step = 0; step < steps; step += 1) sendInput(sequence);
+        return true;
+      }
+
+      function sendTrackedClick(clientX, clientY) {
+        if (!terminal?.hasMouseTracking()) return false;
+        const cell = trackedMouseCell(clientX, clientY);
+        sendInput(sgrMouse(0, cell));
+        sendInput(sgrMouse(0, cell, true));
+        return true;
+      }
+
+      function dispatchTerminalWheel(deltaY, clientX, clientY) {
+        terminalHost.dispatchEvent(
+          new WheelEvent("wheel", {
+            bubbles: true,
+            cancelable: true,
+            clientX,
+            clientY,
+            deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+            deltaY,
+          }),
+        );
       }
 
       function closeSocket() {
@@ -921,9 +958,77 @@
         }
       });
 
-      terminalHost.addEventListener("pointerdown", () => {
-        if (currentState === "connected") terminal.focus();
+      terminalHost.addEventListener("pointerdown", (event) => {
+        if (currentState !== "connected") return;
+        if (event.pointerType !== "touch") {
+          terminal.focus();
+          return;
+        }
+        touchGesture = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          lastY: event.clientY,
+          wheelDelta: 0,
+          scrolled: false,
+        };
+        terminalHost.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
       });
+
+      terminalHost.addEventListener("pointermove", (event) => {
+        if (event.pointerType !== "touch" || touchGesture?.pointerId !== event.pointerId) return;
+        const deltaY = touchGesture.lastY - event.clientY;
+        touchGesture.lastY = event.clientY;
+        touchGesture.wheelDelta += deltaY;
+        const steps = Math.min(5, Math.floor(Math.abs(touchGesture.wheelDelta) / 28));
+        if (steps > 0) {
+          const direction = Math.sign(touchGesture.wheelDelta);
+          const normalizedDelta = direction * steps * 32;
+          if (!sendTrackedWheel(normalizedDelta, event.clientX, event.clientY, steps))
+            dispatchTerminalWheel(normalizedDelta, event.clientX, event.clientY);
+          touchGesture.wheelDelta -= direction * steps * 28;
+          touchGesture.scrolled = true;
+        }
+        event.preventDefault();
+      });
+
+      terminalHost.addEventListener("pointerup", (event) => {
+        if (event.pointerType !== "touch" || touchGesture?.pointerId !== event.pointerId) return;
+        const moved =
+          touchGesture.scrolled ||
+          Math.hypot(event.clientX - touchGesture.startX, event.clientY - touchGesture.startY) > 8;
+        suppressTouchFocus = moved;
+        if (!moved) {
+          sendTrackedClick(event.clientX, event.clientY);
+          terminal.focus();
+        }
+        terminalHost.releasePointerCapture?.(event.pointerId);
+        touchGesture = undefined;
+        setTimeout(() => {
+          suppressTouchFocus = false;
+        }, 0);
+        event.preventDefault();
+      });
+
+      terminalHost.addEventListener("pointercancel", (event) => {
+        if (event.pointerType !== "touch" || touchGesture?.pointerId !== event.pointerId) return;
+        suppressTouchFocus = true;
+        touchGesture = undefined;
+        setTimeout(() => {
+          suppressTouchFocus = false;
+        }, 0);
+      });
+
+      terminalHost.addEventListener(
+        "touchend",
+        (event) => {
+          if (!suppressTouchFocus) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        },
+        { capture: true, passive: false },
+      );
 
       mobileKeys.addEventListener("pointerdown", (event) => event.preventDefault());
       mobileKeys.addEventListener("click", (event) => {
@@ -1026,6 +1131,9 @@
           fitAddon = new FitAddon();
           terminal.loadAddon(fitAddon);
           terminal.open(terminalHost);
+          terminal.attachCustomWheelEventHandler((event) =>
+            sendTrackedWheel(event.deltaY, event.clientX, event.clientY),
+          );
           fitAddon.observeResize();
           terminal.onData((data) => {
             if (controlPending && data.length === 1) {

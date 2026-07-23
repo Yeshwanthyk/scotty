@@ -699,7 +699,7 @@
                 tabindex="0"
                 role="group"
                 aria-label="ghostty web terminal"
-                data-tip="A browser terminal at scotty.dev/s/&lt;id&gt;. It reconnects to the same tmux-owned PTY instead of owning the agent process."
+                data-tip="A browser terminal at scotty.dev/s/&lt;id&gt;. It reconnects through an independent Sheppard client instead of owning the agent process."
               >
                 <rect x="790" y="70" width="176" height="104" rx="4" />
                 <circle class="box-dot" cx="805" cy="88" r="3" />
@@ -722,16 +722,16 @@
               </g>
               <rect class="sandbox-shell" x="326" y="221" width="390" height="274" rx="4" />
               <g
-                id="tmux"
+                id="sheppard"
                 class="component"
                 tabindex="0"
                 role="group"
-                aria-label="tmux and Codex TUI"
-                data-tip="tmux owns the PTY and Codex process. Browser refreshes and websocket reconnects do not terminate the running agent."
+                aria-label="Sheppard and Codex TUI"
+                data-tip="Sheppard owns the Codex PTY while each browser gets independent viewport and scroll state. Refreshes and websocket reconnects do not terminate the running agent."
               >
                 <rect x="344" y="243" width="354" height="66" rx="4" />
                 <circle class="box-dot" cx="359" cy="262" r="3" />
-                <text class="box-title" x="369" y="266">tmux → codex TUI</text>
+                <text class="box-title" x="369" y="266">Sheppard → Codex TUI</text>
                 <text class="box-sub" x="359" y="287">persistent PTY owner</text>
               </g>
               <g
@@ -1010,9 +1010,9 @@
           copy:
             "The Worker boots a per-session Sandbox, " +
             ("fet" + "ches") +
-            " only the delta on its baked bare clone, and creates a worktree at the latest dev SHA. It seeds auth.json, starts Codex inside tmux, and is ready in sub-second infrastructure time.",
+            " only the delta on its baked bare clone, and creates a worktree at the latest dev SHA. It seeds auth.json, starts Codex under Sheppard, and is ready in sub-second infrastructure time.",
           color: "#60a9ff",
-          boxes: ["worker", "sandbox", "tmux", "worktree", "seeded", "dev"],
+          boxes: ["worker", "sandbox", "sheppard", "worktree", "seeded", "dev"],
         },
         {
           title: "Link",
@@ -1024,9 +1024,9 @@
         {
           title: "Live terminal",
           command: "https://scotty.dev/s/<id>",
-          copy: "ghostty-web exchanges terminal bytes with the Worker over a websocket, and the Worker bridges them to the container PTY. tmux owns Codex, so refreshes and reconnects never kill the agent.",
+          copy: "ghostty-web exchanges terminal bytes with the Worker over a websocket, and the Worker bridges them to an independent Sheppard client. Sheppard owns Codex, so refreshes and reconnects never kill the agent or share client scroll state.",
           color: "#54dda0",
-          boxes: ["browser", "worker", "sandbox", "tmux"],
+          boxes: ["browser", "worker", "sandbox", "sheppard"],
         },
         {
           title: "Warm → sleep",
@@ -1040,7 +1040,7 @@
           command: "scotty resume <id>",
           copy: "A fresh container restores the R2 backup and starts codex resume against the saved thread. The process is new, but its conversation and filesystem continue from the same state.",
           color: "#ffad5c",
-          boxes: ["cli", "worker", "sandbox", "r2", "tmux", "worktree", "seeded"],
+          boxes: ["cli", "worker", "sandbox", "r2", "sheppard", "worktree", "seeded"],
         },
         {
           title: "Pull request",

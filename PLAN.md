@@ -15,8 +15,8 @@ scotty CLI ──► Worker (Hono, single route file)
                  │
                  ├─ Sandbox DO per session (@cloudflare/sandbox, RPC API — NOT the
                  │    deprecated HTTP/WS transports)
-                 │    • image: codex CLI (pinned), tmux, git, gh + baked bare clone of repo
-                 │    • tmux session "agent" running codex TUI
+                 │    • image: codex CLI (pinned), Sheppard, git, gh + baked bare clone of repo
+                 │    • Sheppard-managed Codex TUI with independent client views
                  │    • sleepAfter: "60m" (idle) + scheduled hard cap (default 4h)
                  │    • createBackup() → R2 before any sleep; restoreBackup() on resume
                  │
@@ -50,7 +50,7 @@ scotty/
 - **Repo**: default `anomalyco/rift`. Default branch is **`dev`** (there is NO `main`). "Latest" always means latest `dev` unless the repo's default branch differs — resolve default branch dynamically via `gh repo view --json defaultBranchRef` and cache it in the session record.
 - **Codex auth**: real tokens NEVER enter the container. Seed from `CODEX_AUTH_JSON` secret into the **session DO storage** (authoritative copy); container gets a sentinel auth.json. The egress proxy (see Credential safety) injects/refreshes real tokens. Refreshed bundles are persisted to DO storage, so snapshots contain only the sentinel — nothing sensitive.
 - **Codex version**: pin in Dockerfile to the same minor as the user's local (`codex-cli 0.144.x`) so beam-down rollout files stay compatible.
-- **tmux is the backbone**: codex runs inside tmux session `agent`. Browser/PTY clients attach to tmux; disconnects never kill codex. Set `GIT_TERMINAL_PROMPT=0`, `TERM=xterm-256color` outside / `tmux-256color` inside.
+- **Sheppard is the terminal backbone**: Codex runs in a Sheppard-managed PTY. Every browser attachment runs an independent Sheppard client, so scroll position, viewport size, and disconnect cleanup are per device while Codex survives client disconnects. Set `GIT_TERMINAL_PROMPT=0` and `TERM=xterm-256color`.
 - **Terminal**: use the Sandbox SDK **native PTY/terminal API** (shipped Feb 2026) — do NOT run ttyd. Browser side uses `ghostty-web` (npm, xterm.js-compatible API) wired to the terminal websocket. If the SDK's xterm addon assumes xterm.js exactly, wiring raw WS ↔ ghostty-web write/onData is acceptable.
 - **Snapshots**: Sandbox `createBackup()` / `restoreBackup()` (SquashFS → R2). Use `/workspace/<id>` (an SDK-supported backup root) and set `CODEX_HOME=/workspace/<id>/.codex`, so one snapshot includes the worktree and rollouts. auth.json in the snapshot is only the sentinel — real tokens live in DO storage (see Credential safety).
 - **Instance type**: `standard-2` default; make it a config constant.
@@ -93,7 +93,7 @@ Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.c
 ## Container image (worker/container/Dockerfile)
 
 - Base: `ubuntu:24.04` or the Sandbox SDK base image if required by the SDK.
-- Install: git, tmux, gh, curl, ca-certificates, codex CLI (pinned), locales (UTF-8).
+- Install: git, gh, curl, ca-certificates, codex CLI (pinned), a pinned static Sheppard binary, and locales (UTF-8).
 - Bake: `git clone --bare https://github.com/anomalyco/rift /cache/rift.git` (public repo, no creds at build time). Configure fetch refspec `+refs/heads/*:refs/remotes/origin/*`.
 - Entrypoint per Sandbox SDK requirements.
 
@@ -105,18 +105,18 @@ Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.c
 2. `getSandbox(env.SANDBOX, id)` — boots container.
 3. In container: `git -C /cache/rift.git fetch origin` → resolve `origin/<defaultBranch>` SHA → `git -C /cache/rift.git worktree add -b scotty/<id> /workspace/<id> <sha>`.
 4. Set `CODEX_HOME=/workspace/<id>/.codex`. Write **sentinel** auth.json (`scotty-sentinel-<id>`) there; store the real bundle in DO storage.
-5. `tmux new-session -d -s agent -c /workspace/<id>` then send-keys `codex "<prompt>"` (interactive TUI; prompt passed as initial input). Capture codex thread id later from `$CODEX_HOME/sessions` (newest rollout file's UUID) and store in KV.
+5. Start a Sheppard daemon on the session-private socket and spawn a managed `codex "<prompt>"` tab in `/workspace/<id>`. Capture the Codex thread id later from `$CODEX_HOME/sessions` (newest rollout file's UUID) and store it in KV.
 6. Schedule `enforceHardCap` for `now + HARD_CAP_MS` (default 4h, override via `?cap=`).
 7. KV → `status=warm`, respond with the clean URL `{id, url: https://<host>/s/<id>}`.
 
-**idle sleep**: `sleepAfter: "60m"` on the Sandbox. Override `onActivityExpired()` to quiesce the tmux agent, `createBackup({dir: "/workspace/<id>"})`, durably store the handle, publish `status=sleeping`, then stop. `onStop()` is cleanup-only because it runs after shutdown.
+**idle sleep**: `sleepAfter: "60m"` on the Sandbox. Override `onActivityExpired()` to pause the Sheppard-managed agent, `createBackup({dir: "/workspace/<id>"})`, durably store the handle, publish `status=sleeping`, then stop. `onStop()` is cleanup-only because it runs after shutdown.
 
 **hard cap**: use the Container's `schedule()` API rather than overriding its lifecycle `alarm()`. The scheduled callback quiesces, backs up, and destroys regardless of activity. This guarantees no session outlives its cap even with an open browser tab or a busy process.
 
 **resume** (`POST /api/sessions/:id/resume`):
 
 1. Fresh sandbox with same id → `restoreBackup(backupId)`.
-2. `tmux new-session -d -s agent -c /workspace/<id>` → `codex resume <threadId>` (fall back to `codex resume --last`).
+2. Start a fresh Sheppard-managed tab in `/workspace/<id>` → `codex resume <threadId>` (fall back to `codex resume --last`).
 3. New alarm (+4h). KV `status=warm`. Same web URL works.
 
 **snapshot** (`POST /api/sessions/:id/snapshot`): `createBackup()` on demand, update backupId. Container stays up.
@@ -189,13 +189,14 @@ AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
 
 - Single HTML file served by the Worker at `/s/:id`.
 - Loads ghostty-web (bundle it into the Worker assets; no CDN).
-- Requests a one-use PTY ticket with the browser cookie, then connects to `wss://<host>/api/sessions/:id/pty?ticket=<short-lived-ticket>`; Worker atomically consumes the ticket and bridges to Sandbox PTY (which attaches `tmux attach -t agent`).
+- Requests a one-use PTY ticket with the browser cookie, then connects to `wss://<host>/api/sessions/:id/pty?ticket=<short-lived-ticket>`; Worker atomically consumes the ticket and bridges to a Sandbox PTY running an independent Sheppard client.
+- Translates desktop wheels and touch swipes into SGR mouse events while Sheppard owns the alternate screen, preserving per-client server-side scrollback. Touch taps are translated too, so mobile rail actions remain usable.
 - Reconnect on drop with backoff. Show session id + status (warm/sleeping) in a slim header; if sleeping, show a "Resume" button that calls the resume endpoint then reconnects.
 
 ## Phases
 
 **Phase 1 — credential-free vertical infrastructure (up → web terminal)**
-Worker + Dockerfile + `scotty up` + `/s/:id` page with working PTY. Use a harmless fake agent until Phase 1.5 passes. Acceptance: `scotty up "hello"` prints a URL; opening it shows the tmux session on a fresh worktree of latest `dev`; refreshing the page reattaches without killing the process.
+Worker + Dockerfile + `scotty up` + `/s/:id` page with working PTY. Use a harmless fake agent until Phase 1.5 passes. Acceptance: `scotty up "hello"` prints a URL; opening it shows the Sheppard-managed session on a fresh worktree of latest `dev`; refreshing the page reattaches without killing the process.
 
 **Phase 1.5 — credential safety + live Codex (before any real-token use)**
 Egress proxy with sentinel injection + allowlist, DO-stored codex bundle with proxy-side refresh, cookie-based web auth, then Codex startup. Acceptance: `env`, `cat ~/.codex/auth.json`, and `git config --list` inside the container show only sentinels; a curl from inside the container to a non-allowlisted host fails; codex completes a turn (proxy injection works); after a forced token refresh the DO bundle is updated and a resumed session still authenticates.
@@ -218,7 +219,7 @@ Egress proxy with sentinel injection + allowlist, DO-stored codex bundle with pr
 2. Sandbox SDK HTTP/WS transports are deprecated (June 2026) — use the RPC API only. Check the current `@cloudflare/sandbox` README before coding against examples older than mid-2026.
 3. auth.json refresh tokens rotate; the **DO-stored bundle** is the single source of truth after first refresh (proxy persists rotations). Never re-seed from the `CODEX_AUTH_JSON` secret once a DO copy exists — a stale seed can invalidate the rotated refresh token.
 4. Rollout beam-down is not an official Codex contract. Pin codex versions; treat failures as non-fatal (branch fetch alone is still a useful beam-down).
-5. Codex TUI under web terminals: known scrollback quirks (openai/codex#27644). Try `--no-alt-screen` if scrollback misbehaves; don't burn time on cosmetic fixes in v1.
+5. Codex and Sheppard both use alternate-screen terminal modes. Keep browser wheel/touch translation and deployed phone/desktop interaction in the release gate; local emulator scrollback alone is not proof.
 6. `standard-2` idle-warm ≈ $0.057/hr; sleeping ≈ free. The hard cap bounds worst-case spend.
 
 ## Out of scope for v1 (do not build)
@@ -253,7 +254,6 @@ Warm pools, multi-user auth, D1 event replay, SSH gateway, VNC, exposePort previ
 - Source (pin-compatible reading): https://github.com/openai/codex
   - auth.json shape: `codex-rs/login/src/auth/storage.rs` · token refresh: `codex-rs/login/src/auth/manager.rs` · rollout layout: `codex-rs/rollout/src/list.rs`
 - TUI scrollback issue under xterm.js: https://github.com/openai/codex/issues/27644
-- tmux OSC/background-color issue: https://github.com/openai/codex/issues/19741
 
 **Terminal (browser)**
 

@@ -8,7 +8,7 @@ ARG CODEX_VERSION=0.144.6
 USER root
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends gh locales tmux \
+  && apt-get install -y --no-install-recommends gh locales \
   && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
   && locale-gen \
   && npm install --global "@openai/codex@${CODEX_VERSION}" \
@@ -27,10 +27,12 @@ RUN mkdir -p /cache /workspace \
 
 COPY bootstrap.sh /usr/local/bin/scotty-bootstrap
 COPY scotty-attach /usr/local/bin/scotty-attach
-RUN chmod 0755 /usr/local/bin/scotty-bootstrap /usr/local/bin/scotty-attach \
+COPY sheppard-linux-amd64 /usr/local/bin/sheppard
+RUN chmod 0755 /usr/local/bin/scotty-bootstrap /usr/local/bin/scotty-attach /usr/local/bin/sheppard \
+  && echo "2502c634d3ce34cccc3d55c8573b52c6ba29a46b66404bde65374aeff302ee4b  /usr/local/bin/sheppard" | sha256sum --check --strict \
   && codex --version \
   && gh --version \
-  && tmux -V \
+  && sheppard version \
   && git --version
 
 # The SDK base image supplies /container-server/sandbox as its ENTRYPOINT.

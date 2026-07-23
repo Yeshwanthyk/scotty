@@ -2,6 +2,7 @@ import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
 import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Layer, Option, Result, Schema } from "effect";
 import { Agent, type AgentLaunch, agentLayer } from "./agent";
+import { pauseAgentCommand, resumeAgentCommand } from "./agent-runtime";
 import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
 import { agentEnv, ContainerAuth, containerAuthLayer } from "./container-auth";
@@ -1218,14 +1219,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
 Sandbox.outboundByHost = makeOutboundByHost(fetch);
 Sandbox.outbound = denyOutbound;
-
-function pauseAgentCommand(): string {
-  return 'pid=$(tmux list-panes -t agent -F \'#{pane_pid}\' 2>/dev/null | head -1); [ -z "$pid" ] && exit 1; pgid=$(ps -o pgid= -p "$pid" | tr -d \' \'); [ -z "$pgid" ] && exit 1; kill -STOP -- -"$pgid"';
-}
-
-function resumeAgentCommand(): string {
-  return 'pid=$(tmux list-panes -t agent -F \'#{pane_pid}\' 2>/dev/null | head -1); [ -z "$pid" ] && exit 0; pgid=$(ps -o pgid= -p "$pid" | tr -d \' \'); [ -z "$pgid" ] || kill -CONT -- -"$pgid"';
-}
 
 function randomToken(bytes: number): string {
   const data = new Uint8Array(bytes);

@@ -317,7 +317,7 @@ export class FakeWorkerService {
         authJson: JSON.stringify({ tokens: { access_token: sentinel, refresh_token: sentinel } }),
         gitConfig:
           "credential.helper=!scotty-sentinel-helper\nremote.origin.url=https://github.com/anomalyco/rift.git",
-        processList: `tmux new-session -d -s agent fake-agent --session ${id}`,
+        processList: `sheppard spawn --title agent --cmd fake-agent --session ${id}`,
       });
       this.#project(record);
       this.logs.push({ event: "session.created", sessionId: id, outcome: "ok" });

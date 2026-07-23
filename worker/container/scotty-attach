@@ -1,9 +1,24 @@
 #!/bin/sh
 set -eu
 
-if ! tmux has-session -t agent 2>/dev/null; then
+export SHEPPARD_SOCKET=/tmp/scotty-sheppard.sock
+export SHEPPARD_STATE_PATH=/root/.local/state/scotty/sheppard.json
+
+if [ ! -S "$SHEPPARD_SOCKET" ]; then
   printf '\033[1;31mScotty agent session is unavailable. Resume the session and reconnect.\033[0m\r\n' >&2
   exit 1
 fi
 
-exec tmux attach-session -t agent
+tabs=$(sheppard tabs --json) || {
+  printf '\033[1;31mScotty could not reach the agent session. Reconnect in a moment.\033[0m\r\n' >&2
+  exit 1
+}
+case "$tabs" in
+  *'"id":"tab-1"'*) ;;
+  *)
+    printf '\033[1;31mScotty agent session is unavailable. Resume the session and reconnect.\033[0m\r\n' >&2
+    exit 1
+    ;;
+esac
+
+exec sheppard

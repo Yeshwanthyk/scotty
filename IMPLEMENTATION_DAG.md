@@ -57,7 +57,7 @@ interface SessionRecord {
 - Real credentials never enter container env, files, command arguments, logs, KV, responses, or backups.
 - `sleeping` is published only after a new backup handle is durable. At hard-cap failure, retain the last good handle, record `failed`, and destroy to preserve the spend bound.
 - A new backup becomes `current` only after upload succeeds. Delete `previous` only after the state update commits.
-- Snapshot and shutdown pause the tmux agent process group, `sync`, create the backup, then resume or destroy it.
+- Snapshot and shutdown ask Sheppard to pause the authoritative managed-agent process group, `sync`, create the backup, then resume or destroy it.
 - `vaporize` is terminal: destroy runtime, delete all known backup prefixes and the DO credential bundle, remove the KV projection, then persist a minimal `gone` tombstone.
 
 ## Lifecycle graph
@@ -65,7 +65,7 @@ interface SessionRecord {
 ```mermaid
 stateDiagram-v2
     [*] --> booting: create
-    booting --> warm: worktree + tmux + agent ready
+    booting --> warm: worktree + Sheppard + agent ready
     booting --> failed: setup fails
 
     warm --> warm: snapshot / pr / down
@@ -159,7 +159,7 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 #### D. Container image and bootstrap — 1 day
 
 - **Depends on:** A, B.
-- **Deliver:** pinned Ubuntu/Sandbox base, Codex `0.144.x`, tmux/git/gh, bare Rift clone, UTF-8/TERM setup, noninteractive Git, `/workspace/<id>` conventions.
+- **Deliver:** pinned Ubuntu/Sandbox base, Codex `0.144.x`, pinned Sheppard binary, git/gh, bare Rift clone, UTF-8/TERM setup, noninteractive Git, `/workspace/<id>` conventions.
 - **Files:** `worker/container/Dockerfile`, optional `worker/container/bootstrap.sh`.
 - **Proof:** image smoke test verifies versions, bare-clone fetch, worktree creation from dynamically resolved default branch, and absence of credentials.
 
@@ -180,16 +180,16 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 #### G. Fake-agent session create — 1 day
 
 - **Depends on:** D, E, F.
-- **Deliver:** `POST /api/sessions`, ID allocation, booting/warm persistence, latest-default-branch worktree, tmux session, hard-cap schedule. Run a harmless fake agent command instead of Codex.
-- **Files/symbols:** `ScottySandbox.createScottySession`, `prepareWorktree`, `startAgentTmux`.
-- **Proof:** `scotty up --detach` creates a warm session whose tmux process and worktree survive HTTP disconnects.
+- **Deliver:** `POST /api/sessions`, ID allocation, booting/warm persistence, latest-default-branch worktree, Sheppard-managed agent, hard-cap schedule. Run a harmless fake agent command instead of Codex.
+- **Files/symbols:** `ScottySandbox.createScottySession`, `Workspace.prepare`, `Agent.launch`.
+- **Proof:** `scotty up --detach` creates a warm session whose managed process and worktree survive HTTP disconnects.
 
 #### H. Native PTY and ghostty-web — 1 day
 
 - **Depends on:** G.
-- **Deliver:** authenticated PTY upgrade routed to the named execution session attaching `tmux attach -t agent`; bundled ghostty-web/WASM; resize, binary output-before-ready, reconnect backoff.
+- **Deliver:** authenticated PTY upgrade routed to a named execution session running an independent Sheppard client; bundled ghostty-web/WASM; tracked wheel/touch input, resize, binary output-before-ready, and reconnect backoff.
 - **Files:** `worker/public/terminal.html`, asset build step, `worker/src/index.ts` PTY route.
-- **Proof:** browser test types into tmux, resizes, disconnects, and reconnects without replacing the process.
+- **Proof:** desktop and phone clients type and scroll independently; resize, disconnect, and reconnect do not replace the agent process or leak one client's geometry into another.
 
 ### Wave 2 — credential safety and live Codex
 
@@ -211,18 +211,18 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 #### K. Live Codex start and thread capture — 0.5–1 day
 
 - **Depends on:** G, I.
-- **Deliver:** sentinel auth file, `CODEX_HOME`, interactive Codex in tmux, safely quoted initial prompt, rollout discovery, stored thread UUID.
+- **Deliver:** sentinel auth file, `CODEX_HOME`, interactive Codex managed by Sheppard, safely quoted initial prompt, rollout discovery, stored thread UUID.
 - **Files/symbols:** `seedSentinelAuth`, `startCodex`, `discoverCodexThread`.
 - **Proof:** a real Codex turn completes through the proxy; the container never observes the real credential; refreshing the browser reattaches to the same TUI and thread.
 
-**Gate V — secure live vertical slice:** `scotty up "hello"` opens a working terminal on latest `dev`, real credentials remain outside the container, and reconnect preserves tmux.
+**Gate V — secure live vertical slice:** `scotty up "hello"` opens a working terminal on latest `dev`, real credentials remain outside the container, and reconnect preserves the managed Codex process.
 
 ### Wave 3 — lifecycle and recovery
 
 #### L. Quiesced snapshot primitive — 1 day
 
 - **Depends on:** Gate V.
-- **Deliver:** pause tmux child process group, flush filesystem, `createBackup({dir: sessionRoot})`, atomically rotate backup handles, resume the agent, and garbage-collect superseded R2 prefixes.
+- **Deliver:** pause the Sheppard-managed agent process group, flush the filesystem, `createBackup({dir: sessionRoot})`, atomically rotate backup handles, resume the agent, and garbage-collect superseded R2 prefixes.
 - **Files/symbols:** `ScottySandbox.checkpoint`, `withQuiescedAgent`, `deleteBackupPrefix`.
 - **Proof:** repeated and concurrent snapshots serialize; failure retains the previous good handle and resumes the agent; restored Git and rollout files match the checkpoint.
 
@@ -236,7 +236,7 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 #### N. Resume, snapshot, and ls APIs/CLI — 1 day
 
 - **Depends on:** L.
-- **Deliver:** explicit snapshot, restore, tmux recreation, `codex resume <uuid>` with `--last` fallback, cap reset, list freshness fields, wrong-state errors.
+- **Deliver:** explicit snapshot, restore, Sheppard recreation, `codex resume <uuid>` with `--last` fallback, cap reset, list freshness fields, wrong-state errors.
 - **Files:** `worker/src/index.ts`, `worker/src/session.ts`, `cli/scotty.ts`.
 - **Proof:** sleeping and failed/recoverable sessions restore; warm resume exits 5; missing/expired backup errors are actionable.
 
@@ -289,7 +289,7 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 | Egress          | container → ContainerProxy → upstream | Host allowlist + sentinel-bound injection               | 403/520 deny; no redirect leakage         | Security suite       |
 | Projection      | Sandbox DO → KV                       | Versioned non-secret session summary                    | Retry; reads may declare staleness        | Projection tests     |
 | Backup          | Sandbox DO → R2                       | Immutable `DirectoryBackup` under session root          | Keep prior current handle                 | Restore tests        |
-| Terminal        | browser → Worker → named PTY          | Authenticated WS; binary + control frames               | Reconnect to same tmux                    | Browser test         |
+| Terminal        | browser → Worker → named PTY          | Authenticated WS; binary + control frames               | Reconnect through independent Sheppard UI | Browser test         |
 | Beam down       | Worker → CLI filesystem               | Tar + metadata; local mode 0600                         | Branch-only fallback                      | Local integration    |
 
 ## Verification matrix

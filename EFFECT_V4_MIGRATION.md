@@ -47,7 +47,7 @@ Preserve unless explicitly approved otherwise:
 - CLI JSON keys, TTY behavior, stdout/stderr placement, and exit codes `0`–`5`.
 - PTY framing, resize, reconnect, binary output, registered-browser pairing/cookie handoff, one-use PTY tickets, and streamed beam-down behavior.
 - Persisted `SessionRecord` version `1`, storage keys, statuses, operation lease, and nonce semantics.
-- `/workspace/<id>`, branch `scotty/<id>`, tmux session `agent`, and execution session `scotty-web`.
+- `/workspace/<id>`, branch `scotty/<id>`, the session-private Sheppard runtime, and per-client `scotty-web-*` execution sessions.
 
 ### State ownership remains unchanged
 
@@ -121,7 +121,8 @@ the SDK host remains a minimal external-class island.
 │                                                             ▼                │
 │                                                   ┌──────────────────────┐   │
 │                                                   │ Container app/image  │   │
-│                                                   │ Codex + tmux + git   │   │
+│                                                   │ Codex + Sheppard     │   │
+│                                                   │ + git                │   │
 │                                                   └──────────────────────┘   │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -589,7 +590,7 @@ Test every injected stage failure and preserve record/projection/schedule/thread
 Use scope finalizers around pause/resume. Preserve sequence:
 
 1. persisted lease;
-2. pause tmux process group;
+2. pause the Sheppard-managed agent process group;
 3. filesystem `sync`;
 4. immutable backup upload;
 5. authoritative commit of new current/old current as previous;

@@ -4,7 +4,7 @@ Scotty runs a persistent Codex TUI in a Cloudflare Sandbox, exposes it through a
 
 ## Components
 
-- `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, lifecycle, and terminal UI.
+- `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, Sheppard-backed lifecycle, and terminal UI.
 - `cli/scotty.ts` — single-file Bun CLI; compile with `bun build --compile`.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
 - `spikes/` — executable probes for the upstream Sandbox contracts.
