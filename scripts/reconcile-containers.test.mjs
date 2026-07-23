@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  PRODUCTION_CONTAINER_APPLICATION_ID,
   PRODUCTION_CONTAINER_APPLICATION_NAME,
   reconcileContainerInventory,
 } from "./reconcile-containers.mjs";
@@ -8,7 +9,7 @@ import {
 const NOW = Date.parse("2026-07-23T04:00:00.000Z");
 
 const application = (overrides = {}) => ({
-  id: "application-id",
+  id: PRODUCTION_CONTAINER_APPLICATION_ID,
   name: PRODUCTION_CONTAINER_APPLICATION_NAME,
   state: "active",
   instances: 7,
@@ -80,6 +81,19 @@ describe("Container reconciliation", () => {
         ["production_application_inactive"],
       );
     }
+  });
+
+  it("rejects a production application with the wrong Cloudflare ID", () => {
+    const report = reconcileContainerInventory({
+      applications: [application({ id: "replacement" })],
+      instances: [],
+      sessions: [],
+      now: NOW,
+    });
+    assert.deepEqual(
+      report.issues.map((issue) => issue.code),
+      ["production_application_identity"],
+    );
   });
 
   it("rejects duplicate applications and active instances without sessions", () => {
