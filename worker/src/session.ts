@@ -32,6 +32,11 @@ import {
   type SessionView,
 } from "./contracts";
 import {
+  decideIdempotentCreate,
+  decodeCreateIdempotencyMetadata,
+  type CreateIdempotencyMetadata,
+} from "./create-idempotency";
+import {
   ALLOWED_HOSTS,
   CODEX_SENTINEL_PREFIX,
   GITHUB_SENTINEL_PREFIX,
@@ -47,6 +52,12 @@ import {
   sessionStoreLayer,
 } from "./session-store";
 import {
+  hardCapObservationIsCurrent,
+  SESSION_SCHEDULE_CALLBACKS,
+  sessionAllowsRuntimeAccess,
+  VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
+} from "./session-lifecycle";
+import {
   errorName,
   SandboxRuntime,
   type SandboxRuntimeFailure,
@@ -56,12 +67,14 @@ import {
 import {
   kvSessionProjectionStorage,
   projectSessionBestEffort,
+  removeSessionProjection,
   sessionProjectionLayer,
 } from "./session-projection";
 import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
 import { type PreparedWorkspace, sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
 const RECORD_KEY = "scotty:session";
+const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
 const TERMINAL_ATTACHMENTS_KEY = "scotty:terminal-attachments";
 const MAX_TERMINAL_ATTACHMENTS = 8;
 const TERMINAL_ATTACHMENT_TTL_MS = 45_000;
@@ -70,6 +83,8 @@ const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
 const ABANDONED_OPERATION_MS = 5 * 60_000;
 const MANAGED_STOP_RETRY_SECONDS = 2;
+const DESTROY_DEADLINE_MS = 30_000;
+const DESTROY_RETRY_SECONDS = 35;
 
 const TerminalAttachmentLeaseSchema = Schema.Struct({
   sessionId: Schema.String,
@@ -103,6 +118,11 @@ interface TerminalAttachmentExpiryPayload {
   observedAt: string;
 }
 
+interface VaporizeRetryPayload {
+  id: string;
+  nonce: string;
+}
+
 class ManagedStopArmedError extends Error {
   readonly cause: unknown;
 
@@ -119,7 +139,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   enableInternet = false;
   allowedHosts = [...ALLOWED_HOSTS];
 
-  async createScottySession(input: CreateSessionInput, id: string): Promise<SessionView> {
+  async createScottySession(
+    input: CreateSessionInput,
+    id: string,
+    idempotency?: CreateIdempotencyMetadata,
+  ): Promise<SessionView> {
     const now = new Date();
     const nonce = crypto.randomUUID();
     const branch = `scotty/${id}`;
@@ -139,19 +163,31 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ownedBackupIds: [],
     };
 
+    let replay: SessionRecord | undefined;
     await this.ctx.storage.transaction(async (transaction) => {
       const existing = await transaction.get<SessionRecord>(RECORD_KEY);
-      if (existing && existing.status !== "gone") throw conflict(`Session ${id} already exists`);
+      const storedIdempotency = decodeCreateIdempotencyMetadata(
+        await transaction.get<unknown>(CREATE_IDEMPOTENCY_KEY),
+      );
+      const decision = decideIdempotentCreate(existing, storedIdempotency, idempotency);
+      if (decision.kind === "conflict") throw conflict(`Session ${id} already exists`);
+      if (decision.kind === "replay") {
+        replay = decision.record;
+        return;
+      }
+      if (idempotency) await transaction.put(CREATE_IDEMPOTENCY_KEY, idempotency);
+      else await transaction.delete(CREATE_IDEMPOTENCY_KEY);
       await transaction.put(RECORD_KEY, initial);
     });
+    if (replay) return toSessionView(toProjection(replay, new Date()), Date.now());
     await this.project(initial);
 
     try {
+      await this.scheduleHardCap(initial.hardCapAt);
       const credential = await this.seedCredential(id);
       const worktree = await this.prepareWorkspace(initial, credential.githubSentinel);
       await this.seedContainerAuth(initial, credential);
       await this.runAgent({ kind: "start", prompt: input.prompt }, initial.id);
-      await this.scheduleHardCap(initial.hardCapAt);
 
       const ready = await this.updateForOperation(nonce, (record) => ({
         ...record,
@@ -170,11 +206,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         "Session setup failed",
         false,
       );
-      try {
-        await this.destroy();
-      } catch {
-        await this.schedule(10, "retryHardCapDestroy", failed.id);
-      }
+      await this.destroyFailedRuntime(failed.id);
       throw this.upstreamError("Session setup failed", error, failed.id);
     }
   }
@@ -187,6 +219,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   async prepareTerminalAttachment(clientId: string): Promise<string> {
     const record = await this.requireRecord();
     if (record.status !== "warm") throw wrongState(record.status, "attach");
+    if (!sessionAllowsRuntimeAccess(record))
+      throw conflict("Session destruction is already in progress");
     const sessionId = `scotty-web-${clientId}`;
     const credential = await this.requireCredential();
     await this.reconcileExpiredTerminalAttachments();
@@ -214,6 +248,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ]);
     });
     try {
+      await this.assertRuntimeAccess();
       await this.createSession({
         id: sessionId,
         cwd: sessionRoot(record.id),
@@ -239,6 +274,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async touchTerminalAttachment(clientId: string): Promise<void> {
+    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!sessionAllowsRuntimeAccess(record)) return;
     const sessionId = `scotty-web-${clientId}`;
     const observedAt = new Date().toISOString();
     await this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
@@ -252,6 +289,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async expireTerminalAttachment(payload: TerminalAttachmentExpiryPayload): Promise<void> {
+    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!sessionAllowsRuntimeAccess(record)) return;
     await this.requestTerminalAttachmentRelease(payload.sessionId, {
       kind: "observedAt",
       value: payload.observedAt,
@@ -259,6 +298,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async finalizeTerminalAttachment(payload: TerminalAttachmentPayload): Promise<void> {
+    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!sessionAllowsRuntimeAccess(record)) return;
     const attachment = await this.updateTerminalAttachment(
       payload.sessionId,
       (current) => ({ ...current, status: "releasing" }),
@@ -318,13 +359,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }));
 
     try {
+      const hardCapAt = new Date(Date.now() + record.hardCapDurationSeconds * 1000).toISOString();
+      record = await this.updateForOperation(operation.nonce, (current) => ({
+        ...current,
+        hardCapAt,
+        updatedAt: new Date().toISOString(),
+      }));
+      await this.scheduleHardCap(hardCapAt);
       await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.restore(backup)));
       await this.ctx.storage.delete(TERMINAL_ATTACHMENTS_KEY);
       const credential = await this.requireCredential();
       await this.seedContainerAuth(record, credential);
       await this.runAgent({ kind: "resume", threadId: record.codexThreadId }, record.id);
-      const hardCapAt = new Date(Date.now() + record.hardCapDurationSeconds * 1000).toISOString();
-      await this.scheduleHardCap(hardCapAt);
       const ready = await this.updateForOperation(operation.nonce, (current) => ({
         ...current,
         status: "warm",
@@ -337,11 +383,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return toSessionView(toProjection(ready, new Date()), Date.now());
     } catch (error) {
       await this.failOperation(operation.nonce, "resume_failed", "Session restore failed", true);
-      try {
-        await this.destroy();
-      } catch {
-        await this.schedule(10, "retryHardCapDestroy", record.id);
-      }
+      await this.destroyFailedRuntime(record.id);
       throw this.upstreamError("Session restore failed", error);
     }
   }
@@ -441,42 +483,60 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
   }
 
+  async readScottyArchiveStream(path: string) {
+    await this.assertRuntimeAccess();
+    return this.readFileStream(path);
+  }
+
+  async getScottyTerminalSession(sessionId: string) {
+    await this.assertRuntimeAccess();
+    return this.getSession(sessionId);
+  }
+
   async vaporizeScottySession(): Promise<{ id: string; status: "gone" }> {
     const existing = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
     if (!existing) throw notFound("unknown");
-    if (existing.status === "gone") return { id: existing.id, status: "gone" };
-    const operation = await this.acquireOperation(
-      "vaporize",
-      ["booting", "warm", "sleeping", "failed"],
-      ABANDONED_OPERATION_MS,
-    );
-    const record = await this.requireRecord();
+    if (existing.status === "gone") {
+      try {
+        await this.removeProjection(existing.id);
+        this.cancelAllSessionSchedules();
+        return { id: existing.id, status: "gone" };
+      } catch (error) {
+        await this.armVaporizeRetry({ id: existing.id, nonce: "gone" });
+        throw this.upstreamError("Vaporize projection repair failed", error, existing.id);
+      }
+    }
+    const operation =
+      existing.operation?.kind === "vaporize"
+        ? existing.operation
+        : await this.acquireOperation(
+            "vaporize",
+            ["booting", "warm", "sleeping", "failed"],
+            ABANDONED_OPERATION_MS,
+          );
+    const payload = { id: existing.id, nonce: operation.nonce } satisfies VaporizeRetryPayload;
+    await this.armVaporizeRetry(payload);
 
     try {
-      this.deleteSchedules("enforceHardCap");
-      this.deleteSchedules("captureThreadId");
-      await this.destroy();
-      for (const backupId of new Set(record.ownedBackupIds)) {
-        await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.delete(backupId)));
-      }
-      await this.runCredentialVault(Effect.flatMap(CredentialVault, (vault) => vault.delete));
-      const gone: SessionRecord = {
-        ...record,
-        status: "gone",
-        operation: null,
-        backup: undefined,
-        ownedBackupIds: [],
-        backupExpiresAt: undefined,
-        codexThreadId: undefined,
-        failure: undefined,
-        updatedAt: new Date().toISOString(),
-      };
-      await this.ctx.storage.put(RECORD_KEY, gone);
-      await this.project(gone);
-      return { id: record.id, status: "gone" };
+      return await this.continueVaporizeSession(payload);
     } catch (error) {
-      await this.releaseOperation(operation.nonce);
       throw this.upstreamError("Vaporize failed", error);
+    }
+  }
+
+  async retryVaporizeSession(payload: VaporizeRetryPayload): Promise<void> {
+    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!record || record.id !== payload.id) return;
+    if (record.status !== "gone" && record.operation?.nonce !== payload.nonce) return;
+
+    await this.armVaporizeRetry(payload);
+    try {
+      await this.continueVaporizeSession(payload);
+    } catch (error) {
+      console.error("Vaporize reconciliation failed", {
+        sessionId: payload.id,
+        error: errorName(error),
+      });
     }
   }
 
@@ -510,7 +570,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async captureThreadId(payload: { attempt?: number } = {}): Promise<void> {
     const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!record || record.status !== "warm") return;
+    if (!sessionAllowsRuntimeAccess(record) || record.status !== "warm" || record.operation) return;
     const threadIdOption = await this.runRolloutDiscovery(
       Effect.flatMap(RolloutDiscovery, (discovery) => discovery.discoverThreadId(record.id)),
     );
@@ -523,7 +583,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
     let updated: SessionRecord | undefined;
     await this.ctx.storage.transaction(async (transaction) => {
       const current = await transaction.get<SessionRecord>(RECORD_KEY);
-      if (!current || current.status !== "warm" || current.codexThreadId === threadId) return;
+      if (
+        !sessionAllowsRuntimeAccess(current) ||
+        current.status !== "warm" ||
+        current.operation ||
+        current.codexThreadId === threadId
+      )
+        return;
       updated = { ...current, codexThreadId: threadId, updatedAt: new Date().toISOString() };
       await transaction.put(RECORD_KEY, updated);
     });
@@ -536,6 +602,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (payload.hardCapAt !== record.hardCapAt) return;
 
     if (record.operation) {
+      if (record.operation.kind === "vaporize") return;
       const operationAge = Date.now() - Date.parse(record.operation.startedAt);
       if (operationAge < HARD_CAP_GRACE_MS) {
         await this.schedule(5, "enforceHardCap", payload);
@@ -628,6 +695,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async finalizeManagedStop(payload: ManagedStopPayload): Promise<void> {
     const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!sessionAllowsRuntimeAccess(record)) return;
     if (
       record?.operation?.nonce === payload.nonce &&
       record.operation.checkpointedBackupId === record.backup?.current.id &&
@@ -893,14 +961,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private async finishTerminalAttachmentRelease(
     attachment: TerminalAttachmentLease,
   ): Promise<void> {
+    const lifecycle = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!sessionAllowsRuntimeAccess(lifecycle)) return;
     let settled = attachment;
     if (!settled.createSettled) {
       const record = await this.requireRecord();
-      if (record.status !== "warm") {
+      if (record.status !== "warm" || !sessionAllowsRuntimeAccess(record)) {
         await this.removeTerminalAttachment(settled.sessionId);
         return;
       }
       const credential = await this.requireCredential();
+      const beforeCreate = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+      if (!sessionAllowsRuntimeAccess(beforeCreate)) return;
       try {
         await this.createSession({
           id: settled.sessionId,
@@ -919,11 +991,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
       settled = updated;
     }
     try {
+      const beforeList = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+      if (!sessionAllowsRuntimeAccess(beforeList)) return;
       const { sessions } = await this.client.utils.listSessions();
       if (!sessions.includes(settled.sessionId)) {
         await this.removeTerminalAttachment(settled.sessionId);
         return;
       }
+      const beforeDelete = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+      if (!sessionAllowsRuntimeAccess(beforeDelete)) return;
       await this.deleteSession(settled.sessionId);
       await this.removeTerminalAttachment(settled.sessionId);
     } catch {}
@@ -933,6 +1009,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     sessionId: string,
     condition: TerminalAttachmentPayload["condition"] = { kind: "always" },
   ): Promise<void> {
+    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!sessionAllowsRuntimeAccess(record)) return;
     await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
       sessionId,
       condition,
@@ -956,6 +1034,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private async reconcileExpiredTerminalAttachments(): Promise<void> {
+    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!sessionAllowsRuntimeAccess(record)) return;
     const cutoff = Date.now() - TERMINAL_ATTACHMENT_TTL_MS;
     const attachments = await this.readTerminalAttachments();
     for (const attachment of attachments) {
@@ -973,6 +1053,93 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hardCapAt,
     } satisfies HardCapPayload);
   }
+
+  private async continueVaporizeSession(
+    payload: VaporizeRetryPayload,
+  ): Promise<{ id: string; status: "gone" }> {
+    const current = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!current) throw notFound(payload.id);
+    if (current.status === "gone") {
+      await this.removeProjection(current.id);
+      this.cancelAllSessionSchedules();
+      return { id: current.id, status: "gone" };
+    }
+    if (current.operation?.kind !== "vaporize" || current.operation.nonce !== payload.nonce)
+      throw conflict("Session vaporize lease changed");
+
+    this.cancelVaporizeConflictingSchedules();
+    await this.ctx.storage.delete(TERMINAL_ATTACHMENTS_KEY);
+    const destroyed = await this.destroyBeforeDeadline();
+    if (!destroyed) {
+      await this.armVaporizeRetry(payload);
+      this.ctx.abort(`Sandbox destroy exceeded ${DESTROY_DEADLINE_MS}ms`);
+      throw new ScottyError("upstream", "Sandbox destruction timed out", {
+        httpStatus: 502,
+        exitCode: 1,
+      });
+    }
+
+    for (const backupId of new Set(current.ownedBackupIds)) {
+      await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.delete(backupId)));
+    }
+    await this.runCredentialVault(Effect.flatMap(CredentialVault, (vault) => vault.delete));
+    const gone = await this.updateForOperation(payload.nonce, (record) => ({
+      ...record,
+      status: "gone",
+      operation: null,
+      backup: undefined,
+      ownedBackupIds: [],
+      backupExpiresAt: undefined,
+      codexThreadId: undefined,
+      failure: undefined,
+      updatedAt: new Date().toISOString(),
+    }));
+    await this.removeProjection(gone.id);
+    this.cancelAllSessionSchedules();
+    return { id: gone.id, status: "gone" };
+  }
+
+  private async armVaporizeRetry(payload: VaporizeRetryPayload): Promise<void> {
+    this.deleteSchedules("retryVaporizeSession");
+    await this.schedule(DESTROY_RETRY_SECONDS, "retryVaporizeSession", payload);
+  }
+
+  private cancelVaporizeConflictingSchedules(): void {
+    for (const callback of VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS) {
+      this.deleteSchedules(callback);
+    }
+  }
+
+  private cancelAllSessionSchedules(): void {
+    for (const callback of SESSION_SCHEDULE_CALLBACKS) {
+      this.deleteSchedules(callback);
+    }
+  }
+
+  private async destroyBeforeDeadline(): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.destroy().then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), DESTROY_DEADLINE_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async destroyFailedRuntime(sessionId: string): Promise<void> {
+    this.deleteSchedules("retryHardCapDestroy");
+    try {
+      const destroyed = await this.destroyBeforeDeadline();
+      if (destroyed) return;
+    } catch {}
+    await this.schedule(DESTROY_RETRY_SECONDS, "retryHardCapDestroy", sessionId);
+    this.ctx.abort(`Sandbox destroy did not complete for ${sessionId}`);
+  }
+
   private async acquireOperation(
     kind: OperationKind,
     allowed: SessionStatus[],
@@ -1028,37 +1195,48 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async retryHardCapDestroy(sessionId: string): Promise<void> {
     const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!record || record.id !== sessionId || record.status !== "failed") return;
-    try {
-      await this.destroy();
-    } catch {
-      await this.schedule(10, "retryHardCapDestroy", sessionId);
-    }
+    if (
+      !record ||
+      record.id !== sessionId ||
+      record.status !== "failed" ||
+      record.operation?.kind === "vaporize"
+    )
+      return;
+    await this.destroyFailedRuntime(sessionId);
   }
 
   private async markHardCapFailure(record: SessionRecord, message: string): Promise<void> {
-    const failed: SessionRecord = {
-      ...record,
-      status: "failed",
-      operation: null,
-      failure: {
-        code: "hard_cap_checkpoint_failed",
-        message,
-        recoverable: Boolean(record.backup?.current),
-      },
-      updatedAt: new Date().toISOString(),
-    };
-    await this.ctx.storage.put(RECORD_KEY, failed);
+    let failed: SessionRecord | undefined;
+    await this.ctx.storage.transaction(async (transaction) => {
+      const current = await transaction.get<SessionRecord>(RECORD_KEY);
+      if (!hardCapObservationIsCurrent(record, current)) return;
+      failed = {
+        ...current,
+        status: "failed",
+        operation: null,
+        failure: {
+          code: "hard_cap_checkpoint_failed",
+          message,
+          recoverable: Boolean(current.backup?.current),
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      await transaction.put(RECORD_KEY, failed);
+    });
+    if (!failed) return;
     await this.project(failed);
-    try {
-      await this.destroy();
-    } catch {
-      await this.schedule(10, "retryHardCapDestroy", record.id);
-    }
+    await this.destroyFailedRuntime(failed.id);
   }
 
   private async requireRecord(): Promise<SessionRecord> {
     return this.runSessionStore(Effect.flatMap(SessionStore, (store) => store.requireRecord));
+  }
+
+  private async assertRuntimeAccess(): Promise<SessionRecord> {
+    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
+    if (!sessionAllowsRuntimeAccess(record))
+      throw conflict("Session destruction is already in progress");
+    return record;
   }
 
   private async runSessionStore<A>(
@@ -1083,12 +1261,31 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
+  private async removeProjection(id: string): Promise<void> {
+    const layer = sessionProjectionLayer(kvSessionProjectionStorage(this.env.SESSIONS));
+    const result = await Effect.runPromise(
+      removeSessionProjection(id).pipe(Effect.provide(layer), Effect.scoped, Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (value) => value,
+    });
+  }
+
   private async runBackupStore<A>(
     program: Effect.Effect<A, BackupStoreFailure, BackupStore>,
   ): Promise<A> {
     const layer = backupStoreLayer({
-      createBackup: (options) => this.createBackup(options),
-      restoreBackup: (backup) => this.restoreBackup(backup),
+      createBackup: async (options) => {
+        await this.assertRuntimeAccess();
+        return this.createBackup(options);
+      },
+      restoreBackup: async (backup) => {
+        await this.assertRuntimeAccess();
+        return this.restoreBackup(backup);
+      },
       listObjects: (prefix, cursor) =>
         this.env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
           keys: page.objects.map((object) => object.key),
@@ -1198,12 +1395,30 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private sandboxRuntimeLayer(): Layer.Layer<SandboxRuntime> {
     return sandboxRuntimeLayer({
-      exec: (command, options) => this.exec(command, options),
-      createSession: (options) => this.createSession(options),
-      deleteSession: (sessionId) => this.deleteSession(sessionId),
-      mkdir: (path, options) => this.mkdir(path, options),
-      writeFile: (path, content) => this.writeFile(path, content),
-      setEnvVars: (envVars) => this.setEnvVars(envVars),
+      exec: async (command, options) => {
+        await this.assertRuntimeAccess();
+        return this.exec(command, options);
+      },
+      createSession: async (options) => {
+        await this.assertRuntimeAccess();
+        return this.createSession(options);
+      },
+      deleteSession: async (sessionId) => {
+        await this.assertRuntimeAccess();
+        return this.deleteSession(sessionId);
+      },
+      mkdir: async (path, options) => {
+        await this.assertRuntimeAccess();
+        return this.mkdir(path, options);
+      },
+      writeFile: async (path, content) => {
+        await this.assertRuntimeAccess();
+        return this.writeFile(path, content);
+      },
+      setEnvVars: async (envVars) => {
+        await this.assertRuntimeAccess();
+        return this.setEnvVars(envVars);
+      },
     });
   }
 

@@ -6,13 +6,13 @@ const sandbox = vi.hoisted(() => ({
   prepareTerminalAttachment: vi.fn(),
   releaseTerminalAttachment: vi.fn(),
   touchTerminalAttachment: vi.fn(),
-  getSession: vi.fn(),
   snapshotScottySession: vi.fn(),
   sleepScottySession: vi.fn(),
   resumeScottySession: vi.fn(),
   publishScottySession: vi.fn(),
   prepareDownArchive: vi.fn(),
-  readFileStream: vi.fn(),
+  readScottyArchiveStream: vi.fn(),
+  getScottyTerminalSession: vi.fn(),
   vaporizeScottySession: vi.fn(),
 }));
 
@@ -144,6 +144,71 @@ describe("real Hono boundary", () => {
     );
   });
 
+  it("maps repeated create keys to one Sandbox identity", async () => {
+    sandbox.createScottySession.mockResolvedValue({
+      branch: "scotty/replayed",
+      status: "booting",
+    });
+    const request = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        "idempotency-key": "01234567-89ab-4cde-8fab-0123456789ab",
+      },
+      body: JSON.stringify({ prompt: "ship it" }),
+    };
+    const first = await app.request("/api/sessions", request, env());
+    const second = await app.request("/api/sessions", request, env());
+    const firstBody = await first.json();
+    const secondBody = await second.json();
+    if (
+      !firstBody ||
+      typeof firstBody !== "object" ||
+      !("id" in firstBody) ||
+      typeof firstBody.id !== "string"
+    )
+      throw new TypeError("Expected idempotent create response object");
+    expect(firstBody).toEqual(secondBody);
+    expect(firstBody).toMatchObject({
+      id: expect.stringMatching(/^[0-9a-f]{12}$/u),
+      status: "booting",
+    });
+    expect(sandbox.createScottySession).toHaveBeenNthCalledWith(
+      1,
+      { prompt: "ship it", repo: "anomalyco/rift", hardCapSeconds: 14_400 },
+      firstBody.id,
+      {
+        keyDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      },
+    );
+    expect(sandbox.createScottySession).toHaveBeenNthCalledWith(
+      2,
+      { prompt: "ship it", repo: "anomalyco/rift", hardCapSeconds: 14_400 },
+      firstBody.id,
+      expect.any(Object),
+    );
+  });
+
+  it("rejects malformed create idempotency keys before touching a Sandbox", async () => {
+    const response = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+          "idempotency-key": "short",
+        },
+        body: JSON.stringify({ prompt: "ship it" }),
+      },
+      env(),
+    );
+    expect(response.status).toBe(400);
+    expect(sandbox.createScottySession).not.toHaveBeenCalled();
+  });
+
   it("preserves exact malformed create error envelopes", async () => {
     const response = await app.request(
       "/api/sessions",
@@ -190,7 +255,7 @@ describe("real Hono boundary", () => {
       filename: "scotty-a0b1c2d3e4f5.tar",
       manifest: {},
     });
-    sandbox.readFileStream.mockResolvedValue(new Blob(["archive"]).stream());
+    sandbox.readScottyArchiveStream.mockResolvedValue(new Blob(["archive"]).stream());
     const response = await app.request(
       "/api/sessions/a0b1c2d3e4f5/down",
       { headers: { authorization: `Bearer ${TOKEN}` } },

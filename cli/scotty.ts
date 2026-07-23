@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { chmod, mkdir, open, readFile, rename } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { Option, Schema } from "effect";
@@ -38,6 +38,13 @@ const ConfigSchema = Schema.Struct({
 });
 type Config = typeof ConfigSchema.Type;
 
+const PendingUpSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  key: Schema.String,
+  createdAt: Schema.String,
+});
+type PendingUp = typeof PendingUpSchema.Type;
+
 interface GlobalOptions {
   json: boolean;
   host?: string;
@@ -59,6 +66,7 @@ const VERSION = "1.0.0";
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const MUTATION_REQUEST_TIMEOUT_MS = 5 * 60_000;
+const PENDING_UP_TTL_MS = 24 * 60 * 60_000;
 
 const RawConfigSchema = Schema.Struct({
   host: Schema.optionalKey(Schema.Unknown),
@@ -127,6 +135,7 @@ type SessionResponse = typeof SessionResponseSchema.Type;
 
 const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
 const decodeRawConfig = Schema.decodeUnknownOption(RawConfigSchema);
+const decodePendingUp = Schema.decodeUnknownOption(PendingUpSchema);
 const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
 const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
 const decodePrResponse = Schema.decodeUnknownOption(PrResponseSchema);
@@ -391,6 +400,79 @@ async function secureWrite(path: string, data: string): Promise<void> {
   await chmod(path, 0o600);
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function readPendingUp(path: string): Promise<{ exists: boolean; value?: PendingUp }> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
+    throw error;
+  }
+  const json = decodeJsonValue(text);
+  if (Option.isNone(json)) return { exists: true };
+  const decoded = decodePendingUp(json.value);
+  return Option.isSome(decoded) ? { exists: true, value: decoded.value } : { exists: true };
+}
+
+async function pendingUpRequest(
+  deps: CliDependencies,
+  host: string,
+  body: JsonObject,
+): Promise<{ key: string; path: string }> {
+  const fingerprint = await sha256Hex(JSON.stringify([host, body]));
+  const path = join(deps.home, ".scotty", "pending-up", `${fingerprint}.json`);
+  await mkdir(dirname(path), { recursive: true });
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const stored = await readPendingUp(path);
+    const createdAt = stored.value ? Date.parse(stored.value.createdAt) : Number.NaN;
+    if (
+      stored.value &&
+      /^[0-9a-f-]{36}$/u.test(stored.value.key) &&
+      Number.isFinite(createdAt) &&
+      Date.now() - createdAt >= 0 &&
+      Date.now() - createdAt < PENDING_UP_TTL_MS
+    )
+      return { key: stored.value.key, path };
+    if (stored.exists) await unlink(path).catch(() => undefined);
+
+    const pending = {
+      version: 1,
+      key: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+    } satisfies PendingUp;
+    try {
+      const file = await open(path, "wx", 0o600);
+      try {
+        await file.writeFile(`${JSON.stringify(pending)}\n`, "utf8");
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      return { key: pending.key, path };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+  throw new CliError(
+    "pending_request_conflict",
+    "Could not establish a replay-safe session request",
+    "Retry after the other Scotty up command finishes.",
+    EXIT.GENERIC,
+  );
+}
+
+async function clearPendingUp(path: string): Promise<void> {
+  await unlink(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+}
+
 async function credentials(
   options: GlobalOptions,
   deps: CliDependencies,
@@ -510,7 +592,8 @@ async function apiRequest(
   headers.set("authorization", `Bearer ${auth.token}`);
   headers.set("accept", "application/json, application/x-tar, application/octet-stream");
   if (init.body) headers.set("content-type", "application/json");
-  if (method !== "GET") headers.set("idempotency-key", crypto.randomUUID());
+  if (method !== "GET" && !headers.has("idempotency-key"))
+    headers.set("idempotency-key", crypto.randomUUID());
   try {
     const response = await deps.fetch(`${auth.host}${path}`, {
       ...init,
@@ -1086,11 +1169,21 @@ async function execute(rawArgs: string[], deps: CliDependencies): Promise<number
       body.cap = cap;
       body.hardCapSeconds = durationSeconds(cap);
     }
-    const raw = await requestJson(deps, auth, "/api/sessions", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    const decoded = stableUp(raw, auth.host);
+    const pending = await pendingUpRequest(deps, auth.host, body);
+    let decoded: ReturnType<typeof stableUp>;
+    try {
+      const raw = await requestJson(deps, auth, "/api/sessions", {
+        method: "POST",
+        headers: { "idempotency-key": pending.key },
+        body: JSON.stringify(body),
+      });
+      decoded = stableUp(raw, auth.host);
+    } catch (error) {
+      if (error instanceof CliError && error.code === "conflict")
+        await clearPendingUp(pending.path);
+      throw error;
+    }
+    if (decoded.output.status !== "booting") await clearPendingUp(pending.path);
     const result = decoded.output;
     if (!detach)
       await deps.openBrowser(browserUrl(decoded.terminalUrl, auth.host, auth.token, result.id));

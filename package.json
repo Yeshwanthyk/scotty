@@ -24,10 +24,11 @@
     "test:e2e:offline": "node --test e2e/tests/cli-lifecycle.test.mjs e2e/tests/protocol-security.test.mjs",
     "test:e2e:deployed-routes": "node --test e2e/tests/deployed-routes.test.mjs",
     "test:e2e:deployed": "SCOTTY_E2E_EXPLICIT=1 node --test e2e/tests/deployed.test.mjs",
-    "test:all": "npm run test:contracts && npm run test:worker && npm run test:cli && npm run test:e2e:offline",
+    "test:ops": "node --test scripts/*.test.mjs",
+    "test:all": "npm run test:contracts && npm run test:worker && npm run test:cli && npm run test:e2e:offline && npm run test:ops",
+    "audit:containers": "node scripts/reconcile-containers.mjs",
     "probe:dry-run": "wrangler deploy --dry-run --config spikes/wrangler.jsonc",
-    "worker:dev": "npm run dev --workspace @scotty/worker",
-    "worker:deploy": "npm run deploy --workspace @scotty/worker"
+    "worker:dev": "npm run dev --workspace @scotty/worker"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0-beta.99",
