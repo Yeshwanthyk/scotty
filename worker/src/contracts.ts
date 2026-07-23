@@ -7,6 +7,7 @@ export const MIN_HARD_CAP_SECONDS = 60;
 export const MAX_HARD_CAP_SECONDS = 24 * 60 * 60;
 export const SESSION_ROOT = "/workspace";
 export const SESSION_KV_PREFIX = "session:";
+export const REPO_KV_PREFIX = "repo:";
 
 export const SessionStatusSchema = Schema.Literals([
   "booting",
@@ -129,6 +130,23 @@ export const SessionViewSchema = Schema.Struct({
   capRemainingSeconds: Schema.Number,
 });
 export type SessionView = typeof SessionViewSchema.Type;
+
+export const RepoProjectionSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  repo: Schema.String,
+  defaultBranch: Schema.String,
+  lastUsedAt: Schema.String,
+});
+export type RepoProjection = typeof RepoProjectionSchema.Type;
+
+export const decodeRepoProjection = Schema.decodeUnknownOption(RepoProjectionSchema);
+
+export const RepoViewSchema = Schema.Struct({
+  repo: Schema.String,
+  defaultBranch: Schema.String,
+  lastUsedAt: Schema.String,
+});
+export type RepoView = typeof RepoViewSchema.Type;
 
 export const CreateSessionInputSchema = Schema.Struct({
   prompt: Schema.String,

@@ -107,6 +107,7 @@ export class FakeWorkerService {
     this.realGithubSecret = options.realGithubSecret ?? "e2e-real-github-secret-never-expose";
     this.sessions = new Map();
     this.projections = new Map();
+    this.trackedRepos = new Map();
     this.backups = new Map();
     this.runtimes = new Map();
     this.credentials = new Map();
@@ -137,6 +138,7 @@ export class FakeWorkerService {
     return {
       sessions: [...this.sessions.values()].map((record) => structuredClone(record)),
       projections: [...this.projections.values()].map((record) => structuredClone(record)),
+      trackedRepos: this.#listTrackedRepos(),
       backupIds: [...this.backups.keys()],
       runtimeIds: [...this.runtimes.keys()],
       credentialIds: [...this.credentials.keys()],
@@ -281,6 +283,9 @@ export class FakeWorkerService {
     if (request.method === "GET" && url.pathname === "/api/sessions") {
       return json([...this.projections.values()].map((record) => publicRecord(record)));
     }
+    if (request.method === "GET" && url.pathname === "/api/repos") {
+      return json(this.#listTrackedRepos());
+    }
     if (request.method === "POST" && url.pathname === "/api/sessions") {
       const body = await readBody(request);
       if (typeof body.prompt !== "string" || !body.prompt.trim())
@@ -320,6 +325,7 @@ export class FakeWorkerService {
         processList: `sheppard spawn --title agent --cmd fake-agent --session ${id}`,
       });
       this.#project(record);
+      this.#trackRepo(record);
       this.logs.push({ event: "session.created", sessionId: id, outcome: "ok" });
       return json(
         {
@@ -462,6 +468,24 @@ export class FakeWorkerService {
   #project(record) {
     record.projectedAt = new Date().toISOString();
     this.projections.set(record.id, publicRecord(record));
+  }
+
+  #trackRepo(record) {
+    this.trackedRepos.set(record.repo, {
+      repo: record.repo,
+      defaultBranch: record.defaultBranch,
+      lastUsedAt: new Date().toISOString(),
+    });
+  }
+
+  #listTrackedRepos() {
+    return [...this.trackedRepos.values()]
+      .sort(
+        (left, right) =>
+          Date.parse(right.lastUsedAt) - Date.parse(left.lastUsedAt) ||
+          left.repo.localeCompare(right.repo),
+      )
+      .map((record) => structuredClone(record));
   }
 
   #wrongState(record, operation, expected) {

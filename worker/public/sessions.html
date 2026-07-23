@@ -47,7 +47,10 @@
       }
 
       button,
-      a {
+      a,
+      input,
+      textarea,
+      select {
         font: inherit;
       }
 
@@ -140,6 +143,10 @@
         line-height: 1;
         text-decoration: none;
         cursor: pointer;
+        transition:
+          scale 120ms ease-out,
+          border-color 150ms ease-out,
+          background-color 150ms ease-out;
       }
 
       .button:hover {
@@ -148,7 +155,7 @@
       }
 
       .button:active {
-        translate: 0 1px;
+        scale: 0.96;
       }
 
       .button:focus-visible {
@@ -170,6 +177,16 @@
       .button-primary:hover {
         border-color: transparent;
         background: oklch(86% 0.12 197);
+      }
+
+      .button-quiet {
+        border-color: transparent;
+        background: transparent;
+        color: var(--muted);
+      }
+
+      .button-quiet:hover {
+        border-color: transparent;
       }
 
       .button-danger {
@@ -201,6 +218,222 @@
         display: none;
       }
 
+      .composer-region {
+        display: grid;
+        grid-template-rows: 0fr;
+        margin-bottom: 0;
+        opacity: 0;
+        transition:
+          grid-template-rows 180ms cubic-bezier(0.16, 1, 0.3, 1),
+          margin-bottom 180ms cubic-bezier(0.16, 1, 0.3, 1),
+          opacity 130ms ease-out;
+      }
+
+      .composer-region.is-open {
+        grid-template-rows: 1fr;
+        margin-bottom: 18px;
+        opacity: 1;
+      }
+
+      .composer-clip {
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .composer {
+        padding: 18px;
+        border: 1px solid oklch(38% 0.04 220);
+        border-radius: 9px;
+        background: var(--panel);
+        box-shadow: 0 3px 8px oklch(3% 0.01 245 / 0.3);
+      }
+
+      .composer-heading {
+        margin-bottom: 17px;
+      }
+
+      .composer-heading h2 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 680;
+        letter-spacing: -0.015em;
+      }
+
+      .composer-heading p {
+        max-width: 68ch;
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+        line-height: 1.45;
+        text-wrap: pretty;
+      }
+
+      .composer-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 160px;
+        gap: 14px;
+      }
+
+      .field {
+        display: grid;
+        min-width: 0;
+        gap: 7px;
+      }
+
+      .field-prompt {
+        margin-top: 14px;
+      }
+
+      .field label {
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 650;
+      }
+
+      .field-hint {
+        color: var(--quiet);
+        font-size: 0.69rem;
+        line-height: 1.4;
+      }
+
+      .control {
+        width: 100%;
+        min-height: 44px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        outline: none;
+        background: oklch(12% 0.012 245);
+        color: var(--ink);
+        transition:
+          border-color 150ms ease-out,
+          box-shadow 150ms ease-out,
+          background-color 150ms ease-out;
+      }
+
+      input.control,
+      select.control {
+        padding: 0 12px;
+      }
+
+      textarea.control {
+        min-height: 132px;
+        resize: vertical;
+        padding: 11px 12px;
+        line-height: 1.5;
+      }
+
+      .control::placeholder {
+        color: oklch(66% 0.022 235);
+      }
+
+      .control:hover:not(:disabled) {
+        border-color: var(--quiet);
+      }
+
+      .control:focus {
+        border-color: var(--focus);
+        box-shadow: 0 0 0 3px oklch(84% 0.13 197 / 0.14);
+      }
+
+      .control:disabled {
+        cursor: wait;
+        opacity: 0.58;
+      }
+
+      .recent-repos {
+        display: flex;
+        min-height: 26px;
+        align-items: center;
+        gap: 6px;
+        overflow-x: auto;
+        margin-top: 8px;
+        scrollbar-width: none;
+      }
+
+      .recent-repos:empty {
+        display: none;
+      }
+
+      .recent-repos::-webkit-scrollbar {
+        display: none;
+      }
+
+      .repo-suggestion {
+        flex: none;
+        padding: 4px 7px;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        background: oklch(19% 0.017 240);
+        color: var(--muted);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.67rem;
+        line-height: 1.2;
+        cursor: pointer;
+      }
+
+      .repo-suggestion:hover {
+        border-color: var(--line);
+        color: var(--ink);
+      }
+
+      .repo-suggestion:focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
+      }
+
+      .repo-suggestion:disabled {
+        cursor: wait;
+        opacity: 0.5;
+      }
+
+      .composer-footer {
+        display: flex;
+        min-height: 44px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin-top: 15px;
+      }
+
+      .composer-feedback {
+        min-width: 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+        line-height: 1.45;
+      }
+
+      .composer-feedback:empty {
+        display: none;
+      }
+
+      .composer-feedback.is-pending {
+        color: var(--beam);
+      }
+
+      .composer-feedback.is-error {
+        color: oklch(84% 0.1 25);
+      }
+
+      .composer-feedback strong {
+        display: block;
+        color: var(--danger);
+        font-weight: 680;
+      }
+
+      .composer-actions {
+        display: flex;
+        flex: none;
+        gap: 8px;
+      }
+
+      .shortcut {
+        margin-left: 8px;
+        color: oklch(30% 0.025 235);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.67rem;
+        font-weight: 700;
+      }
+
       .state {
         padding: 56px 20px;
         border: 1px solid var(--line);
@@ -215,6 +448,10 @@
         margin-bottom: 6px;
         color: var(--ink);
         font-size: 0.95rem;
+      }
+
+      .state .button {
+        margin-top: 18px;
       }
 
       .session-list {
@@ -359,6 +596,28 @@
           justify-content: flex-start;
           flex-wrap: wrap;
         }
+
+        .composer {
+          padding: 16px;
+        }
+
+        .composer-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .composer-footer {
+          align-items: stretch;
+          flex-direction: column;
+          gap: 12px;
+        }
+
+        .composer-actions {
+          width: 100%;
+        }
+
+        .composer-actions .button-primary {
+          flex: 1;
+        }
       }
 
       @media (max-width: 420px) {
@@ -372,6 +631,25 @@
 
         .section-label {
           display: none;
+        }
+
+        .page-heading .button {
+          min-height: 40px;
+          padding-inline: 12px;
+        }
+
+        .composer-actions .button {
+          flex: 1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .composer-region {
+          transition: none;
+        }
+
+        .button:active {
+          scale: none;
         }
       }
     </style>
@@ -395,6 +673,84 @@
           <h1>Sessions</h1>
           <p class="subtitle" id="summary">Your cloud workspaces</p>
         </div>
+        <button
+          class="button button-primary"
+          id="new-session"
+          type="button"
+          aria-expanded="false"
+          aria-controls="new-session-region"
+        >
+          New session
+        </button>
+      </div>
+
+      <div class="composer-region" id="new-session-region" aria-hidden="true" inert>
+        <div class="composer-clip">
+          <form class="composer" id="new-session-form">
+            <div class="composer-heading">
+              <h2>Start a cloud workspace</h2>
+              <p>
+                Scotty fetches the repository, creates a session branch, and launches Codex with
+                your prompt.
+              </p>
+            </div>
+
+            <div class="composer-grid">
+              <div class="field">
+                <label for="session-repo">Repository</label>
+                <input
+                  class="control"
+                  id="session-repo"
+                  name="repo"
+                  type="text"
+                  placeholder="owner/repository"
+                  list="repository-suggestions"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  required
+                />
+                <datalist id="repository-suggestions"></datalist>
+                <div class="recent-repos" id="recent-repos" aria-label="Recent repositories"></div>
+              </div>
+
+              <div class="field">
+                <label for="session-cap">Session limit</label>
+                <select class="control" id="session-cap" name="hardCapSeconds">
+                  <option value="3600">1 hour</option>
+                  <option value="14400" selected>4 hours</option>
+                  <option value="28800">8 hours</option>
+                  <option value="43200">12 hours</option>
+                </select>
+                <span class="field-hint">Checkpoints and sleeps the workspace at this limit.</span>
+              </div>
+            </div>
+
+            <div class="field field-prompt">
+              <label for="session-prompt">What should Codex do?</label>
+              <textarea
+                class="control"
+                id="session-prompt"
+                name="prompt"
+                placeholder="Describe the outcome, important context, and how you want it verified."
+                required
+              ></textarea>
+            </div>
+
+            <div class="composer-footer">
+              <div class="composer-feedback" id="composer-feedback" role="status"></div>
+              <div class="composer-actions">
+                <button class="button button-quiet" id="cancel-session" type="button">
+                  Cancel
+                </button>
+                <button class="button button-primary" id="start-session" type="submit">
+                  <span id="start-session-label">Start session</span>
+                  <kbd class="shortcut" id="start-session-shortcut">⌘↵</kbd>
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
       </div>
 
       <div class="notice" id="notice" role="alert" hidden>
@@ -407,281 +763,516 @@
       </div>
     </main>
 
-    <script>
-      (() => {
-        "use strict";
+    <script type="module">
+      import {
+        mergeRepositorySuggestions,
+        promptText,
+        repositoryName,
+        safeSessionPath,
+        submissionIdentity,
+      } from "/session-form.js";
 
-        const POLL_INTERVAL = 5000;
-        const content = document.querySelector("#content");
-        const devicesLink = document.querySelector("#devices");
-        const summary = document.querySelector("#summary");
-        const notice = document.querySelector("#notice");
-        const noticeText = document.querySelector("#notice-text");
-        const refreshButton = document.querySelector("#refresh");
-        const retryButton = document.querySelector("#retry");
-        let sessions = [];
-        let loaded = false;
-        let fetching = false;
-        let pollTimer;
-        const busy = new Set();
-        const confirmations = new Set();
-        const rowErrors = new Map();
+      const POLL_INTERVAL = 5000;
+      const content = document.querySelector("#content");
+      const devicesLink = document.querySelector("#devices");
+      const summary = document.querySelector("#summary");
+      const notice = document.querySelector("#notice");
+      const noticeText = document.querySelector("#notice-text");
+      const refreshButton = document.querySelector("#refresh");
+      const retryButton = document.querySelector("#retry");
+      const newSessionButton = document.querySelector("#new-session");
+      const composerRegion = document.querySelector("#new-session-region");
+      const sessionForm = document.querySelector("#new-session-form");
+      const repoInput = document.querySelector("#session-repo");
+      const capSelect = document.querySelector("#session-cap");
+      const promptInput = document.querySelector("#session-prompt");
+      const repositoryDatalist = document.querySelector("#repository-suggestions");
+      const recentRepos = document.querySelector("#recent-repos");
+      const composerFeedback = document.querySelector("#composer-feedback");
+      const cancelSessionButton = document.querySelector("#cancel-session");
+      const startSessionButton = document.querySelector("#start-session");
+      const startSessionLabel = document.querySelector("#start-session-label");
+      const startSessionShortcut = document.querySelector("#start-session-shortcut");
+      let sessions = [];
+      let trackedRepositories = [];
+      let loaded = false;
+      let fetching = false;
+      let creating = false;
+      let createController;
+      let createAbortReason;
+      let lastSubmission;
+      let pollTimer;
+      const busy = new Set();
+      const confirmations = new Set();
+      const rowErrors = new Map();
 
-        function sessionPath(id, suffix = "") {
-          return `/api/sessions/${encodeURIComponent(id)}${suffix}`;
+      function sessionPath(id, suffix = "") {
+        return `/api/sessions/${encodeURIComponent(id)}${suffix}`;
+      }
+
+      function duration(value) {
+        const seconds = Math.max(0, Number.isFinite(value) ? Math.floor(value) : 0);
+        if (seconds < 60) return `${seconds}s`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+        if (seconds < 86400)
+          return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+        return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+      }
+
+      function addText(parent, className, text, tag = "div") {
+        const element = document.createElement(tag);
+        element.className = className;
+        element.textContent = text;
+        parent.append(element);
+        return element;
+      }
+
+      function setComposerOpen(open) {
+        composerRegion.classList.toggle("is-open", open);
+        composerRegion.toggleAttribute("inert", !open);
+        composerRegion.setAttribute("aria-hidden", open ? "false" : "true");
+        newSessionButton.setAttribute("aria-expanded", open ? "true" : "false");
+        newSessionButton.textContent = open ? "Close" : "New session";
+        newSessionButton.classList.toggle("button-primary", !open);
+        if (open) requestAnimationFrame(() => repoInput.focus());
+        else newSessionButton.focus();
+      }
+
+      function setComposerFeedback(kind, message, hint) {
+        composerFeedback.replaceChildren();
+        composerFeedback.className = `composer-feedback${kind ? ` is-${kind}` : ""}`;
+        if (!message) return;
+        if (kind === "error") addText(composerFeedback, "", message, "strong");
+        else composerFeedback.append(document.createTextNode(message));
+        if (hint) addText(composerFeedback, "", hint, "span");
+      }
+
+      function setCreating(next) {
+        creating = next;
+        for (const element of sessionForm.elements) {
+          if (element !== cancelSessionButton) element.disabled = next;
         }
+        for (const button of recentRepos.querySelectorAll("button")) button.disabled = next;
+        cancelSessionButton.textContent = next ? "Cancel start" : "Cancel";
+        startSessionLabel.textContent = next ? "Starting…" : "Start session";
+        startSessionShortcut.hidden = next;
+      }
 
-        function duration(value) {
-          const seconds = Math.max(0, Number.isFinite(value) ? Math.floor(value) : 0);
-          if (seconds < 60) return `${seconds}s`;
-          if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-          if (seconds < 86400)
-            return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-          return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+      function abortCreate(reason) {
+        if (!creating || !createController) return;
+        createAbortReason = reason;
+        createController.abort();
+      }
+
+      function renderRepositorySuggestions() {
+        const repositories = mergeRepositorySuggestions(trackedRepositories, sessions);
+        repositoryDatalist.replaceChildren();
+        recentRepos.replaceChildren();
+        for (const repository of repositories) {
+          const option = document.createElement("option");
+          option.value = repository.repo;
+          if (repository.defaultBranch) option.label = `default: ${repository.defaultBranch}`;
+          repositoryDatalist.append(option);
         }
-
-        function addText(parent, className, text, tag = "div") {
-          const element = document.createElement(tag);
-          element.className = className;
-          element.textContent = text;
-          parent.append(element);
-          return element;
-        }
-
-        function actionButton(label, action, id, primary = false) {
+        for (const repository of repositories.slice(0, 5)) {
           const button = document.createElement("button");
           button.type = "button";
-          button.className = `button${primary ? " button-primary" : ""}`;
-          button.dataset.action = action;
-          button.dataset.id = id;
-          button.disabled = busy.has(id);
-          button.textContent = busy.has(id) && action !== "confirm-delete" ? "Working…" : label;
-          return button;
+          button.className = "repo-suggestion";
+          button.textContent = repository.repo;
+          button.title = repository.defaultBranch
+            ? `${repository.repo} · default branch ${repository.defaultBranch}`
+            : repository.repo;
+          button.disabled = creating;
+          button.addEventListener("click", () => {
+            repoInput.value = repository.repo;
+            repoInput.setCustomValidity("");
+            if (composerFeedback.classList.contains("is-error")) setComposerFeedback();
+            promptInput.focus();
+          });
+          recentRepos.append(button);
+        }
+      }
+
+      function actionButton(label, action, id, primary = false) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `button${primary ? " button-primary" : ""}`;
+        button.dataset.action = action;
+        button.dataset.id = id;
+        button.dataset.focusKey = `${action}:${id}`;
+        button.disabled = busy.has(id);
+        button.textContent = busy.has(id) && action !== "confirm-delete" ? "Working…" : label;
+        return button;
+      }
+
+      function render() {
+        const activeElement = document.activeElement;
+        const focusKey =
+          activeElement instanceof HTMLElement && content.contains(activeElement)
+            ? activeElement.dataset.focusKey
+            : undefined;
+        content.replaceChildren();
+        content.setAttribute("aria-busy", fetching ? "true" : "false");
+        summary.textContent = loaded
+          ? `${sessions.length} ${sessions.length === 1 ? "workspace" : "workspaces"}`
+          : "Your cloud workspaces";
+
+        if (!loaded) {
+          const state = addText(content, "state", "Contacting Scotty…");
+          addText(state, "", "Loading sessions", "strong");
+          state.prepend(state.lastChild);
+          return;
         }
 
-        function render() {
-          content.replaceChildren();
-          content.setAttribute("aria-busy", fetching ? "true" : "false");
-          summary.textContent = loaded
-            ? `${sessions.length} ${sessions.length === 1 ? "workspace" : "workspaces"}`
-            : "Your cloud workspaces";
-
-          if (!loaded) {
-            const state = addText(content, "state", "Contacting Scotty…");
-            addText(state, "", "Loading sessions", "strong");
-            state.prepend(state.lastChild);
-            return;
-          }
-
-          if (sessions.length === 0) {
-            const state = addText(
-              content,
-              "state",
-              "New sessions created with Scotty will appear here.",
-            );
-            addText(state, "", "No sessions", "strong");
-            state.prepend(state.lastChild);
-            return;
-          }
-
-          const list = document.createElement("ul");
-          list.className = "session-list";
-          list.setAttribute("aria-label", "Scotty sessions");
-
-          for (const session of sessions) {
-            const item = document.createElement("li");
-            const status = typeof session.status === "string" ? session.status : "unknown";
-            item.className = `session status-${status}`;
-
-            const identity = document.createElement("div");
-            addText(identity, "repo", session.repo || "Unknown repository", "h2");
-            addText(identity, "branch", session.branch || session.defaultBranch || "No branch");
-            addText(identity, "session-id", session.id);
-            item.append(identity);
-
-            const details = document.createElement("div");
-            const statusLine = document.createElement("div");
-            statusLine.className = "status-line";
-            const signal = document.createElement("span");
-            signal.className = "signal";
-            signal.setAttribute("aria-hidden", "true");
-            statusLine.append(signal, document.createTextNode(status));
-            details.append(statusLine);
-            const metrics = document.createElement("div");
-            metrics.className = "metrics";
-            addText(metrics, "", `age ${duration(session.ageSeconds)}`, "span");
-            addText(metrics, "", `cap ${duration(session.capRemainingSeconds)} left`, "span");
-            details.append(metrics);
-            item.append(details);
-
-            const actions = document.createElement("div");
-            actions.className = "actions";
-            if (status === "warm") {
-              const open = document.createElement("a");
-              open.className = "button button-primary";
-              open.href = `/s/${encodeURIComponent(session.id)}`;
-              open.textContent = "Open";
-              actions.append(open, actionButton("Stop", "sleep", session.id));
-            } else if (status === "sleeping" || (status === "failed" && session.backupId)) {
-              actions.append(actionButton("Resume & open", "resume", session.id, true));
-            }
-            const deleteButton = actionButton("Delete", "confirm-delete", session.id);
-            deleteButton.classList.add("button-danger");
-            actions.append(deleteButton);
-            item.append(actions);
-
-            if (confirmations.has(session.id)) {
-              const confirmation = document.createElement("div");
-              confirmation.className = "confirmation";
-              addText(confirmation, "", "Permanently delete this session and its backups?", "span");
-              const confirmButton = actionButton("Delete permanently", "delete", session.id);
-              confirmButton.classList.add("button-danger-confirm");
-              confirmation.append(
-                confirmButton,
-                actionButton("Cancel", "cancel-delete", session.id),
-              );
-              item.append(confirmation);
-            }
-
-            if (rowErrors.has(session.id)) {
-              const error = addText(item, "row-error", rowErrors.get(session.id));
-              error.setAttribute("role", "alert");
-            }
-            list.append(item);
-          }
-          content.append(list);
+        if (sessions.length === 0) {
+          const state = addText(
+            content,
+            "state",
+            "Start with a repository and tell Codex what outcome you want.",
+          );
+          addText(state, "", "No cloud workspaces yet", "strong");
+          state.prepend(state.lastChild);
+          const createButton = actionButton("Start a session", "open-composer", "", true);
+          state.append(createButton);
+          return;
         }
 
-        async function errorMessage(response, fallback) {
-          try {
-            const body = await response.json();
-            return body?.error?.message || body?.message || fallback;
-          } catch {
-            return fallback;
-          }
-        }
+        const list = document.createElement("ul");
+        list.className = "session-list";
+        list.setAttribute("aria-label", "Scotty sessions");
 
-        async function refresh(options = {}) {
-          if (fetching) return;
-          fetching = true;
-          refreshButton.disabled = true;
-          if (!loaded) render();
-          try {
-            const response = await fetch("/api/sessions", {
-              credentials: "same-origin",
-              cache: "no-store",
-              headers: { Accept: "application/json" },
-            });
-            if (!response.ok)
-              throw new Error(await errorMessage(response, "Sessions could not be loaded."));
-            const body = await response.json();
-            const next = Array.isArray(body) ? body : body?.sessions;
-            if (!Array.isArray(next)) throw new Error("Scotty returned an unexpected response.");
-            sessions = next.filter(
-              (session) => session && typeof session === "object" && typeof session.id === "string",
-            );
-            loaded = true;
-            notice.hidden = true;
-          } catch (error) {
-            noticeText.textContent =
-              error instanceof Error ? error.message : "Sessions could not be loaded.";
-            notice.hidden = false;
-            if (options.actionId) rowErrors.set(options.actionId, noticeText.textContent);
-          } finally {
-            fetching = false;
-            refreshButton.disabled = false;
-            render();
-          }
-        }
+        for (const session of sessions) {
+          const item = document.createElement("li");
+          const status = typeof session.status === "string" ? session.status : "unknown";
+          item.className = `session status-${status}`;
 
-        async function perform(id, action) {
-          if (busy.has(id)) return;
-          busy.add(id);
-          rowErrors.delete(id);
+          const identity = document.createElement("div");
+          addText(identity, "repo", session.repo || "Unknown repository", "h2");
+          addText(identity, "branch", session.branch || session.defaultBranch || "No branch");
+          addText(identity, "session-id", session.id);
+          item.append(identity);
+
+          const details = document.createElement("div");
+          const statusLine = document.createElement("div");
+          statusLine.className = "status-line";
+          const signal = document.createElement("span");
+          signal.className = "signal";
+          signal.setAttribute("aria-hidden", "true");
+          statusLine.append(signal, document.createTextNode(status));
+          details.append(statusLine);
+          const metrics = document.createElement("div");
+          metrics.className = "metrics";
+          addText(metrics, "", `age ${duration(session.ageSeconds)}`, "span");
+          addText(metrics, "", `cap ${duration(session.capRemainingSeconds)} left`, "span");
+          details.append(metrics);
+          item.append(details);
+
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          if (status === "warm") {
+            const open = document.createElement("a");
+            open.className = "button button-primary";
+            open.href = `/s/${encodeURIComponent(session.id)}`;
+            open.dataset.focusKey = `open:${session.id}`;
+            open.textContent = "Open";
+            actions.append(open, actionButton("Stop", "sleep", session.id));
+          } else if (status === "sleeping" || (status === "failed" && session.backupId)) {
+            actions.append(actionButton("Resume & open", "resume", session.id, true));
+          }
+          const deleteButton = actionButton("Delete", "confirm-delete", session.id);
+          deleteButton.classList.add("button-danger");
+          actions.append(deleteButton);
+          item.append(actions);
+
+          if (confirmations.has(session.id)) {
+            const confirmation = document.createElement("div");
+            confirmation.className = "confirmation";
+            addText(confirmation, "", "Permanently delete this session and its backups?", "span");
+            const confirmButton = actionButton("Delete permanently", "delete", session.id);
+            confirmButton.classList.add("button-danger-confirm");
+            confirmation.append(confirmButton, actionButton("Cancel", "cancel-delete", session.id));
+            item.append(confirmation);
+          }
+
+          if (rowErrors.has(session.id)) {
+            const error = addText(item, "row-error", rowErrors.get(session.id));
+            error.setAttribute("role", "alert");
+          }
+          list.append(item);
+        }
+        content.append(list);
+        if (focusKey) {
+          content.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+        }
+      }
+
+      async function errorMessage(response, fallback) {
+        try {
+          const body = await response.json();
+          return body?.error?.message || body?.message || fallback;
+        } catch {
+          return fallback;
+        }
+      }
+
+      async function responseError(response, fallback) {
+        try {
+          const body = await response.json();
+          return {
+            message: body?.error?.message || body?.message || fallback,
+            hint: body?.error?.hint || body?.hint,
+          };
+        } catch {
+          return { message: fallback };
+        }
+      }
+
+      async function refreshRepositories() {
+        try {
+          const response = await fetch("/api/repos", {
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) return;
+          const body = await response.json();
+          const next = Array.isArray(body) ? body : body?.repos;
+          if (Array.isArray(next)) trackedRepositories = next;
+        } catch {
+          // Repository history is optional; manual owner/repo entry remains available.
+        } finally {
+          renderRepositorySuggestions();
+        }
+      }
+
+      async function createSession() {
+        if (creating) return;
+        const repo = repositoryName(repoInput.value);
+        const prompt = promptText(promptInput.value);
+        repoInput.setCustomValidity(repo ? "" : "Enter a repository as owner/repository.");
+        promptInput.setCustomValidity(prompt ? "" : "Tell Codex what to do.");
+        if (!sessionForm.reportValidity() || !repo || !prompt) return;
+
+        const payload = {
+          repo,
+          prompt,
+          hardCapSeconds: Number(capSelect.value),
+        };
+        lastSubmission = submissionIdentity(lastSubmission, payload, () => crypto.randomUUID());
+        setComposerFeedback(
+          "pending",
+          "Fetching the repository and launching Codex. This can take a moment…",
+        );
+        setCreating(true);
+        const controller = new AbortController();
+        createController = controller;
+        createAbortReason = undefined;
+        const timeout = setTimeout(() => {
+          if (createController !== controller) return;
+          createAbortReason = "timeout";
+          controller.abort();
+        }, 120_000);
+
+        try {
+          const response = await fetch("/api/sessions", {
+            method: "POST",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+              "Idempotency-Key": lastSubmission.key,
+            },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            const detail = await responseError(response, "The session could not be started.");
+            const error = new Error(detail.message);
+            error.hint = detail.hint;
+            throw error;
+          }
+          const result = await response.json();
+          if (typeof result?.id !== "string")
+            throw new Error("Scotty returned an unexpected response.");
+          const path = safeSessionPath(result.url, result.id, window.location.origin);
+          if (!path) throw new Error("Scotty returned an unsafe session URL.");
+          window.location.assign(path);
+        } catch (error) {
+          const abortReason = controller.signal.aborted ? createAbortReason : undefined;
+          setComposerFeedback(
+            "error",
+            abortReason === "timeout"
+              ? "Scotty is taking longer than expected."
+              : abortReason === "cancel"
+                ? "Session start canceled."
+                : error instanceof Error
+                  ? error.message
+                  : "The session could not be started.",
+            abortReason
+              ? "Your values are preserved. Retry to safely check the same start request."
+              : error instanceof Error && typeof error.hint === "string"
+                ? error.hint
+                : undefined,
+          );
+        } finally {
+          clearTimeout(timeout);
+          if (createController === controller) {
+            createController = undefined;
+            createAbortReason = undefined;
+          }
+          setCreating(false);
+        }
+      }
+
+      async function refresh(options = {}) {
+        if (fetching) return;
+        fetching = true;
+        refreshButton.disabled = true;
+        if (!loaded) render();
+        try {
+          const response = await fetch("/api/sessions", {
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok)
+            throw new Error(await errorMessage(response, "Sessions could not be loaded."));
+          const body = await response.json();
+          const next = Array.isArray(body) ? body : body?.sessions;
+          if (!Array.isArray(next)) throw new Error("Scotty returned an unexpected response.");
+          sessions = next.filter(
+            (session) => session && typeof session === "object" && typeof session.id === "string",
+          );
+          loaded = true;
+          notice.hidden = true;
+        } catch (error) {
+          noticeText.textContent =
+            error instanceof Error ? error.message : "Sessions could not be loaded.";
+          notice.hidden = false;
+          if (options.actionId) rowErrors.set(options.actionId, noticeText.textContent);
+        } finally {
+          fetching = false;
+          refreshButton.disabled = false;
+          renderRepositorySuggestions();
           render();
-          const suffix = action === "delete" ? "" : `/${action}`;
-          const method = action === "delete" ? "DELETE" : "POST";
-          let succeeded = false;
-          try {
-            const response = await fetch(sessionPath(id, suffix), {
-              method,
-              credentials: "same-origin",
-              cache: "no-store",
-              headers: { Accept: "application/json" },
-            });
-            if (!response.ok) {
-              throw new Error(await errorMessage(response, `Could not ${action} this session.`));
-            }
-            const result = await response.json();
-            const expectedStatus =
-              action === "delete" ? "gone" : action === "sleep" ? "sleeping" : "warm";
-            if (result?.id !== id || result?.status !== expectedStatus)
-              throw new Error("Scotty returned an unexpected response.");
-            succeeded = true;
-            confirmations.delete(id);
-            if (action === "resume") {
-              window.location.assign(`/s/${encodeURIComponent(id)}`);
-              return;
-            }
-            if (action === "delete") sessions = sessions.filter((session) => session.id !== id);
-            else
-              sessions = sessions.map((session) =>
-                session.id === id ? { ...session, ...result } : session,
-              );
-          } catch (error) {
-            rowErrors.set(
-              id,
-              error instanceof Error ? error.message : `Could not ${action} this session.`,
+        }
+      }
+
+      async function perform(id, action) {
+        if (busy.has(id)) return;
+        busy.add(id);
+        rowErrors.delete(id);
+        render();
+        const suffix = action === "delete" ? "" : `/${action}`;
+        const method = action === "delete" ? "DELETE" : "POST";
+        let succeeded = false;
+        try {
+          const response = await fetch(sessionPath(id, suffix), {
+            method,
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) {
+            throw new Error(await errorMessage(response, `Could not ${action} this session.`));
+          }
+          const result = await response.json();
+          const expectedStatus =
+            action === "delete" ? "gone" : action === "sleep" ? "sleeping" : "warm";
+          if (result?.id !== id || result?.status !== expectedStatus)
+            throw new Error("Scotty returned an unexpected response.");
+          succeeded = true;
+          confirmations.delete(id);
+          if (action === "resume") {
+            window.location.assign(`/s/${encodeURIComponent(id)}`);
+            return;
+          }
+          if (action === "delete") sessions = sessions.filter((session) => session.id !== id);
+          else
+            sessions = sessions.map((session) =>
+              session.id === id ? { ...session, ...result } : session,
             );
-          } finally {
-            busy.delete(id);
-            if (succeeded) render();
-            else await refresh({ actionId: id });
-          }
+        } catch (error) {
+          rowErrors.set(
+            id,
+            error instanceof Error ? error.message : `Could not ${action} this session.`,
+          );
+        } finally {
+          busy.delete(id);
+          if (succeeded) render();
+          else await refresh({ actionId: id });
         }
+      }
 
-        content.addEventListener("click", (event) => {
-          const button = event.target.closest("button[data-action]");
-          if (!button) return;
-          const { action, id } = button.dataset;
-          if (action === "confirm-delete") {
-            confirmations.add(id);
-            render();
-            content.querySelector(`[data-action="delete"][data-id="${CSS.escape(id)}"]`)?.focus();
-          } else if (action === "cancel-delete") {
-            confirmations.delete(id);
-            render();
-          } else {
-            void perform(id, action);
-          }
-        });
-
-        function schedulePoll() {
-          clearInterval(pollTimer);
-          if (!document.hidden) pollTimer = setInterval(() => void refresh(), POLL_INTERVAL);
+      content.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-action]");
+        if (!button) return;
+        const { action, id } = button.dataset;
+        if (action === "open-composer") {
+          setComposerOpen(true);
+        } else if (action === "confirm-delete") {
+          confirmations.add(id);
+          render();
+          content.querySelector(`[data-action="delete"][data-id="${CSS.escape(id)}"]`)?.focus();
+        } else if (action === "cancel-delete") {
+          confirmations.delete(id);
+          render();
+        } else {
+          void perform(id, action);
         }
+      });
 
-        document.addEventListener("visibilitychange", () => {
-          schedulePoll();
-          if (!document.hidden) void refresh();
-        });
-        refreshButton.addEventListener("click", () => void refresh());
-        retryButton.addEventListener("click", () => void refresh());
+      function schedulePoll() {
+        clearInterval(pollTimer);
+        if (!document.hidden) pollTimer = setInterval(() => void refresh(), POLL_INTERVAL);
+      }
 
-        fetch("/api/auth/me", {
-          credentials: "same-origin",
-          cache: "no-store",
-          headers: { Accept: "application/json" },
-        })
-          .then((response) => (response.ok ? response.json() : undefined))
-          .then((me) => {
-            devicesLink.hidden = !Array.isArray(me?.scopes) || !me.scopes.includes("access:read");
-          })
-          .catch(() => undefined);
-
+      document.addEventListener("visibilitychange", () => {
         schedulePoll();
-        void refresh();
-      })();
+        if (!document.hidden) void refresh();
+      });
+      refreshButton.addEventListener("click", () => void refresh());
+      retryButton.addEventListener("click", () => void refresh());
+      newSessionButton.addEventListener("click", () => {
+        const open = composerRegion.classList.contains("is-open");
+        if (open && creating) abortCreate("cancel");
+        setComposerOpen(!open);
+      });
+      cancelSessionButton.addEventListener("click", () => {
+        if (creating) abortCreate("cancel");
+        setComposerOpen(false);
+      });
+      sessionForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void createSession();
+      });
+      sessionForm.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          sessionForm.requestSubmit();
+        }
+      });
+      sessionForm.addEventListener("input", (event) => {
+        if (event.target === repoInput) repoInput.setCustomValidity("");
+        if (event.target === promptInput) promptInput.setCustomValidity("");
+        if (composerFeedback.classList.contains("is-error")) setComposerFeedback();
+      });
+
+      fetch("/api/auth/me", {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      })
+        .then((response) => (response.ok ? response.json() : undefined))
+        .then((me) => {
+          devicesLink.hidden = !Array.isArray(me?.scopes) || !me.scopes.includes("access:read");
+        })
+        .catch(() => undefined);
+
+      schedulePoll();
+      void refreshRepositories();
+      void refresh();
     </script>
   </body>
 </html>

@@ -13,6 +13,16 @@ async function create(service, prompt = "protocol fixture") {
   return response.json();
 }
 
+async function createForRepo(service, repo) {
+  const response = await fetch(`${service.url}/api/sessions`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ prompt: `work on ${repo}`, repo }),
+  });
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
 function connect(url) {
   return new Promise((resolve, reject) => {
     const messages = [];
@@ -99,6 +109,66 @@ test("fake protocol matches production cap parsing, floor rounding, and backup h
     id: record.backup.current.id,
     dir: `/workspace/${session.id}`,
   });
+});
+
+test("successful creation tracks a repo and vaporize retains it", async (t) => {
+  const service = await new FakeWorkerService().start();
+  t.after(() => service.stop());
+  const repo = "yesh/scotty-repo-projection";
+  const session = await createForRepo(service, repo);
+  const headers = { authorization: `Bearer ${service.token}` };
+
+  const listed = await fetch(`${service.url}/api/repos`, { headers });
+  assert.equal(listed.status, 200);
+  const reposBeforeVaporize = await listed.json();
+  assert.equal(reposBeforeVaporize.length, 1);
+  assert.deepEqual(Object.keys(reposBeforeVaporize[0]).sort(), [
+    "defaultBranch",
+    "lastUsedAt",
+    "repo",
+  ]);
+  assert.equal(reposBeforeVaporize[0].repo, repo);
+  assert.equal(reposBeforeVaporize[0].defaultBranch, "dev");
+  assert.ok(Number.isFinite(Date.parse(reposBeforeVaporize[0].lastUsedAt)));
+
+  const vaporized = await fetch(`${service.url}/api/sessions/${session.id}`, {
+    method: "DELETE",
+    headers,
+  });
+  assert.equal(vaporized.status, 200);
+  assert.equal(service.inspect().projections.length, 0, "session projection must be deleted");
+
+  const retained = await fetch(`${service.url}/api/repos`, { headers });
+  assert.equal(retained.status, 200);
+  assert.deepEqual(await retained.json(), reposBeforeVaporize);
+  assert.equal(service.inspect().trackedRepos.length, 1, "tracked repo must survive vaporize");
+});
+
+test("tracked repos use session-read auth and list newest use first", async (t) => {
+  const service = await new FakeWorkerService().start();
+  t.after(() => service.stop());
+  const first = await createForRepo(service, "yesh/older-repo");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await createForRepo(service, "yesh/newer-repo");
+
+  const unauthenticated = await fetch(`${service.url}/api/repos`);
+  assert.equal(unauthenticated.status, 401);
+
+  const exchange = await fetch(first.url, { redirect: "manual" });
+  assert.equal(exchange.status, 302);
+  const cookie = exchange.headers.get("set-cookie");
+  assert.ok(cookie);
+  const sessionRead = await fetch(`${service.url}/api/sessions`, { headers: { cookie } });
+  const repoRead = await fetch(`${service.url}/api/repos`, { headers: { cookie } });
+  assert.equal(sessionRead.status, 200);
+  assert.equal(repoRead.status, sessionRead.status);
+
+  const repos = await repoRead.json();
+  assert.deepEqual(
+    repos.map((record) => record.repo),
+    ["yesh/newer-repo", "yesh/older-repo"],
+  );
+  assert.ok(Date.parse(repos[0].lastUsedAt) > Date.parse(repos[1].lastUsedAt));
 });
 
 test("malformed PR JSON preserves the production default title", async (t) => {

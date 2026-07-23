@@ -34,6 +34,25 @@ test(
       assert.equal(logout.status, 200);
     });
 
+    const reposResponse = await fetch(`${host}/api/repos`, {
+      headers: { cookie: browserCookie },
+    });
+    assert.equal(reposResponse.status, 200);
+    const repos = await reposResponse.json();
+    assert.ok(Array.isArray(repos));
+    for (const repo of repos) {
+      assert.deepEqual(Object.keys(repo).sort(), ["defaultBranch", "lastUsedAt", "repo"]);
+      assert.match(repo.repo, /^[^/]+\/[^/]+$/u);
+      assert.equal(typeof repo.defaultBranch, "string");
+      assert.ok(Number.isFinite(Date.parse(repo.lastUsedAt)));
+    }
+    for (let index = 1; index < repos.length; index++) {
+      assert.ok(
+        Date.parse(repos[index - 1].lastUsedAt) >= Date.parse(repos[index].lastUsedAt),
+        "tracked repos must be newest first",
+      );
+    }
+
     const terminal = await fetch(`${host}/s/000000000000`, {
       headers: { cookie: browserCookie },
     });
