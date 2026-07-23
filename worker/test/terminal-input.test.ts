@@ -3,6 +3,7 @@ import {
   mobileKeyData,
   sgrMouse,
   terminalCell,
+  terminalFontSize,
   terminalPrompt,
   wheelButton,
   wheelSteps,
@@ -40,5 +41,13 @@ describe("terminal input", () => {
   it("keeps composed prompts intact while rejecting empty submissions", () => {
     assert.strictEqual(terminalPrompt("  \n"), undefined);
     assert.strictEqual(terminalPrompt(" fix this\r\nthen test "), " fix this\nthen test ");
+  });
+
+  it("keeps persisted terminal text readable on a phone", () => {
+    assert.strictEqual(terminalFontSize(undefined), 14);
+    assert.strictEqual(terminalFontSize("15"), 15);
+    assert.strictEqual(terminalFontSize(6), 12);
+    assert.strictEqual(terminalFontSize(24), 18);
+    assert.strictEqual(terminalFontSize("not-a-number", 13), 13);
   });
 });

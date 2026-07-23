@@ -13,7 +13,7 @@ The page assumes these same-origin endpoints:
 
 The WebSocket uses binary UTF-8 in both directions for terminal I/O. Text frames are JSON controls: server `ready`, `exit`, and `error`; client `resize`. Buffered binary output is rendered even when it arrives before `ready`. Input is only sent after `ready`.
 
-On phone-sized viewports, the client uses a native textarea composer for agent prompts. The browser handles selection, paste, dictation, autocorrection, and IME composition; submitting pastes the complete draft through Ghostty's bracketed-paste support, sends Enter, and dismisses the software keyboard. Raw terminal input and one-tap terminal controls remain available behind the keyboard button.
+On phone-sized viewports, the client uses a native textarea composer for agent prompts. The browser handles selection, paste, dictation, autocorrection, and IME composition; submitting pastes the complete draft through Ghostty's bracketed-paste support, sends Enter, and dismisses the software keyboard. The composer and compact raw-control tray overlay the terminal instead of changing its geometry. Software-keyboard height changes clip the stable PTY viewport rather than reflowing the remote TUI, and new output preserves manual scrollback until the reader taps `Latest`. Raw input, one-tap terminal controls, and a persisted terminal font-size setting remain available behind the keyboard button.
 
 ## Vendored Ghostty Web
 

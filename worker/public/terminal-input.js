@@ -14,6 +14,11 @@ export function terminalPrompt(value) {
   return normalized.trim().length > 0 ? normalized : undefined;
 }
 
+export function terminalFontSize(value, fallback = 14) {
+  const parsed = typeof value === "string" && value.trim().length > 0 ? Number(value) : value;
+  return Number.isFinite(parsed) ? clamp(Math.round(parsed), 12, 18) : fallback;
+}
+
 export function terminalCell(bounds, cols, rows, clientX, clientY) {
   const width = Math.max(1, bounds.width);
   const height = Math.max(1, bounds.height);

@@ -15,6 +15,8 @@ export type MobileKey = "escape" | "tab" | "interrupt" | "enter" | "left" | "dow
 export const mobileKeyData: Readonly<Record<MobileKey, string>>;
 export function terminalPrompt(value: string): string | undefined;
 
+export function terminalFontSize(value: unknown, fallback?: number): number;
+
 export function terminalCell(
   bounds: TerminalBounds,
   cols: number,
