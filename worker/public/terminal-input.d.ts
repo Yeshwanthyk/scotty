@@ -10,12 +10,32 @@ export interface TerminalCell {
   readonly y: number;
 }
 
+export interface VisualViewportMetrics {
+  readonly width: number;
+  readonly height: number;
+  readonly offsetTop: number;
+  readonly offsetLeft: number;
+}
+
+export interface VisualViewportFrame {
+  readonly top: number;
+  readonly left: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 export type MobileKey = "escape" | "tab" | "interrupt" | "enter";
 
 export const mobileKeyData: Readonly<Record<MobileKey, string>>;
 export function terminalPrompt(value: string): string | undefined;
 
 export function terminalFontSize(value: unknown, fallback?: number): number;
+export function visualViewportFrame(
+  viewport: Partial<VisualViewportMetrics> | undefined,
+  fallbackWidth: number,
+  fallbackHeight: number,
+  keyboardOpen?: boolean,
+): VisualViewportFrame;
 
 export function terminalCell(
   bounds: TerminalBounds,

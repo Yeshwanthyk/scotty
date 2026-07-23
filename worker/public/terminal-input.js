@@ -15,6 +15,17 @@ export function terminalFontSize(value, fallback = 14) {
   return Number.isFinite(parsed) ? clamp(Math.round(parsed), 12, 18) : fallback;
 }
 
+export function visualViewportFrame(viewport, fallbackWidth, fallbackHeight, keyboardOpen = false) {
+  const width = positiveFinite(viewport?.width, fallbackWidth);
+  const height = positiveFinite(viewport?.height, fallbackHeight);
+  return {
+    top: keyboardOpen ? nonNegativeFinite(viewport?.offsetTop) : 0,
+    left: keyboardOpen ? nonNegativeFinite(viewport?.offsetLeft) : 0,
+    width,
+    height,
+  };
+}
+
 export function terminalCell(bounds, cols, rows, clientX, clientY) {
   const width = Math.max(1, bounds.width);
   const height = Math.max(1, bounds.height);
@@ -39,4 +50,12 @@ export function wheelSteps(deltaY, pixelsPerStep = 32) {
 
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+function positiveFinite(value, fallback) {
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeFinite(value) {
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
 }
