@@ -5,16 +5,71 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
 import {
+  assessContainerSettlement,
+  assertSettledContainerBaseline,
+  CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
   executeProductionDeploySteps,
   PRODUCTION_CLOUDFLARE_ACCOUNT_ID,
   PRODUCTION_DEPLOY_STEPS,
   PRODUCTION_SCOTTY_HOST,
+  readAlchemyContainerAction,
   runCommand,
+  waitForProductionContainerRollout,
 } from "./deploy-production.mjs";
-import { PRODUCTION_CONTAINER_APPLICATION_NAME } from "./reconcile-containers.mjs";
+import {
+  PRODUCTION_CONTAINER_APPLICATION_ID,
+  PRODUCTION_CONTAINER_APPLICATION_NAME,
+} from "./reconcile-containers.mjs";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+
+const application = (overrides = {}) => ({
+  id: PRODUCTION_CONTAINER_APPLICATION_ID,
+  name: PRODUCTION_CONTAINER_APPLICATION_NAME,
+  version: 5,
+  updatedAt: "2026-07-23T01:18:50.795Z",
+  activeRolloutId: null,
+  configurationDigest: "configuration-v5",
+  health: {
+    active: 0,
+    assigned: 0,
+    healthy: 7,
+    stopped: 0,
+    failed: 0,
+    scheduling: 0,
+    starting: 0,
+  },
+  ...overrides,
+});
+
+const rollout = (overrides = {}) => ({
+  id: "rollout-v6",
+  status: "progressing",
+  createdAt: "2026-07-23T11:47:51.502Z",
+  lastUpdatedAt: "2026-07-23T11:47:51.502Z",
+  currentVersion: 5,
+  targetVersion: 6,
+  health: {
+    healthy: 0,
+    failed: 0,
+    scheduling: 0,
+    starting: 7,
+  },
+  progress: {
+    totalSteps: 1,
+    currentStep: 1,
+    updatedInstances: 0,
+    totalInstances: 7,
+  },
+  ...overrides,
+});
+
+const snapshot = ({ application: applicationOverrides = {}, rollouts = [] } = {}) => ({
+  application: application(applicationOverrides),
+  rollouts,
+});
 
 describe("production deployment ownership", () => {
   it("has one guarded local Alchemy production command", () => {
@@ -58,12 +113,20 @@ describe("production deployment ownership", () => {
       commands.some((command) => /wrangler\s+deploy/u.test(command)),
       false,
     );
+    assert.equal(PRODUCTION_DEPLOY_STEPS[2].capture, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[2].tee, true);
+    assert.equal(readAlchemyContainerAction("[SandboxContainer] updated\n"), "updated");
+    assert.equal(
+      readAlchemyContainerAction("\u001B[32m[SandboxContainer] noop\u001B[0m\n"),
+      "noop",
+    );
   });
 
-  it("audits the deployed inventory after an Alchemy failure", async () => {
+  it("waits for Container settlement and audits after an Alchemy failure", async () => {
     const executed = [];
     const environments = new Map();
     const deployFailure = new Error("simulated partial Alchemy failure");
+    const controlPlaneBeforeDeploy = snapshot();
     await assert.rejects(
       executeProductionDeploySteps(
         async (step, env, options) => {
@@ -74,6 +137,17 @@ describe("production deployment ownership", () => {
         async () => {
           executed.push("Revalidate release state");
         },
+        {
+          readControlPlane: async (env) => {
+            executed.push("Read Container baseline");
+            environments.set("Read Container baseline", { env });
+            return controlPlaneBeforeDeploy;
+          },
+          waitForRollout: async (before, env, options) => {
+            executed.push("Wait for Container rollout");
+            environments.set("Wait for Container rollout", { before, env, options });
+          },
+        },
       ),
       deployFailure,
     );
@@ -81,7 +155,9 @@ describe("production deployment ownership", () => {
       "Check repository",
       "Audit current runtime inventory",
       "Revalidate release state",
+      "Read Container baseline",
       "Deploy production through Alchemy",
+      "Wait for Container rollout",
       "Audit deployed runtime inventory",
     ]);
     const verificationEnv = environments.get("Check repository").env;
@@ -91,6 +167,8 @@ describe("production deployment ownership", () => {
     for (const name of [
       "Audit current runtime inventory",
       "Deploy production through Alchemy",
+      "Read Container baseline",
+      "Wait for Container rollout",
       "Audit deployed runtime inventory",
     ]) {
       const { env } = environments.get(name);
@@ -102,6 +180,288 @@ describe("production deployment ownership", () => {
     assert.deepEqual(environments.get("Audit deployed runtime inventory").options, {
       allowAfterSignal: true,
     });
+    assert.equal(environments.get("Wait for Container rollout").before, controlPlaneBeforeDeploy);
+    assert.equal(environments.get("Wait for Container rollout").options.containerAction, "unknown");
+  });
+
+  it("requires the exact new rollout to complete and converge", () => {
+    const before = snapshot({
+      rollouts: [rollout({ id: "old-rollout", status: "replaced", targetVersion: 5 })],
+    });
+    assert.deepEqual(
+      assessContainerSettlement(
+        before,
+        snapshot({
+          application: {
+            version: 6,
+            updatedAt: "2026-07-23T11:49:32.185Z",
+            configurationDigest: "configuration-v6",
+          },
+          rollouts: [
+            rollout({ id: "old-rollout", status: "replaced", targetVersion: 5 }),
+            rollout({
+              status: "completed",
+              health: {
+                healthy: 7,
+                failed: 0,
+                scheduling: 0,
+                starting: 0,
+              },
+              progress: {
+                totalSteps: 1,
+                currentStep: 1,
+                updatedInstances: 7,
+                totalInstances: 7,
+              },
+            }),
+          ],
+        }),
+        "updated",
+      ),
+      {
+        status: "settled",
+        outcome: "rollout",
+        message: "Container rollout rollout-v6 completed at version 6.",
+      },
+    );
+  });
+
+  it("polls the rollout resource through progressing to completed", async () => {
+    const before = snapshot();
+    const observations = [
+      snapshot({
+        application: {
+          updatedAt: "2026-07-23T11:47:50.102Z",
+          activeRolloutId: "rollout-v6",
+          configurationDigest: "configuration-v6",
+          health: { ...application().health, healthy: 1, starting: 6 },
+        },
+        rollouts: [rollout()],
+      }),
+      snapshot({
+        application: {
+          version: 6,
+          updatedAt: "2026-07-23T11:49:32.185Z",
+          configurationDigest: "configuration-v6",
+        },
+        rollouts: [
+          rollout({
+            status: "completed",
+            health: {
+              healthy: 7,
+              failed: 0,
+              scheduling: 0,
+              starting: 0,
+            },
+            progress: {
+              totalSteps: 1,
+              currentStep: 1,
+              updatedInstances: 7,
+              totalInstances: 7,
+            },
+          }),
+        ],
+      }),
+    ];
+    let now = 0;
+    const settled = await waitForProductionContainerRollout(
+      before,
+      {},
+      {
+        containerAction: "updated",
+        readControlPlane: async () => observations.shift(),
+        sleep: async (milliseconds) => {
+          now += milliseconds;
+        },
+        now: () => now,
+        timeoutMs: 100,
+        pollMs: 5,
+      },
+    );
+    assert.equal(settled.application.version, 6);
+    assert.equal(observations.length, 0);
+  });
+
+  it("accepts only Alchemy-proven no-op or application-only updates without a rollout", () => {
+    const before = snapshot();
+    assert.deepEqual(assessContainerSettlement(before, before, "noop"), {
+      status: "settled",
+      outcome: "noop",
+      message: "Alchemy reported a Container no-op at version 5.",
+    });
+    assert.equal(
+      assessContainerSettlement(
+        before,
+        snapshot({ application: { updatedAt: "2026-07-23T11:47:50.102Z" } }),
+        "updated",
+      ).status,
+      "waiting",
+    );
+    assert.deepEqual(
+      assessContainerSettlement(
+        before,
+        snapshot({ application: { updatedAt: "2026-07-23T11:47:50.102Z" } }),
+        "updated",
+        { quietMs: CONTAINER_ROLLOUT_ABSENCE_QUIET_MS },
+      ),
+      {
+        status: "settled",
+        outcome: "application-only",
+        message: "Container application metadata updated without a rollout at version 5.",
+      },
+    );
+    assert.equal(assessContainerSettlement(before, before, "updated").status, "waiting");
+  });
+
+  it("fails closed on failed, reverted, replaced, ambiguous, or unconverged rollouts", () => {
+    const before = snapshot();
+    for (const status of ["failed", "reverted", "replaced", "unexpected"]) {
+      assert.equal(
+        assessContainerSettlement(before, snapshot({ rollouts: [rollout({ status })] }), "updated")
+          .status,
+        "failed",
+      );
+    }
+    assert.equal(
+      assessContainerSettlement(
+        before,
+        snapshot({ rollouts: [rollout(), rollout({ id: "concurrent-rollout" })] }),
+        "updated",
+      ).status,
+      "failed",
+    );
+    assert.equal(
+      assessContainerSettlement(
+        before,
+        snapshot({
+          application: {
+            version: 6,
+            configurationDigest: "configuration-v6",
+            health: { ...application().health, starting: 1 },
+          },
+          rollouts: [rollout({ status: "completed" })],
+        }),
+        "updated",
+      ).status,
+      "waiting",
+    );
+    assert.equal(
+      assessContainerSettlement(
+        before,
+        snapshot({
+          application: { version: 6, configurationDigest: "configuration-v6" },
+          rollouts: [
+            rollout({
+              status: "completed",
+              health: {
+                healthy: 0,
+                failed: 0,
+                scheduling: 0,
+                starting: 0,
+              },
+              progress: {
+                totalSteps: 1,
+                currentStep: 1,
+                updatedInstances: 7,
+                totalInstances: 7,
+              },
+            }),
+          ],
+        }),
+        "updated",
+      ).status,
+      "waiting",
+    );
+    assert.equal(
+      assessContainerSettlement(before, snapshot({ rollouts: [rollout()] }), "noop").status,
+      "failed",
+    );
+  });
+
+  it("fails closed on application identity replacement or version regression", () => {
+    const before = snapshot();
+    for (const applicationOverrides of [{ id: "replacement" }, { version: 4 }]) {
+      assert.equal(
+        assessContainerSettlement(before, snapshot({ application: applicationOverrides }), "noop")
+          .status,
+        "failed",
+      );
+    }
+  });
+
+  it("rejects ambiguous or missing terminal Alchemy actions", () => {
+    assert.throws(() => readAlchemyContainerAction(""), /one terminal/u);
+    assert.throws(
+      () => readAlchemyContainerAction("[SandboxContainer] noop\n[SandboxContainer] updated\n"),
+      /one terminal/u,
+    );
+    assert.throws(
+      () => readAlchemyContainerAction("[SandboxContainer] created\n"),
+      /one terminal/u,
+    );
+  });
+
+  it("decodes only the allow-listed Container control-plane snapshot", async () => {
+    const input = snapshot({ rollouts: [rollout()] });
+    assert.deepEqual(await parseContainerControlPlaneSnapshot(JSON.stringify(input)), input);
+    await assert.rejects(
+      parseContainerControlPlaneSnapshot(
+        JSON.stringify({
+          ...input,
+          application: { ...input.application, health: { healthy: "seven" } },
+        }),
+      ),
+    );
+  });
+
+  it("requires a quiet absence proof after a failed deploy", () => {
+    assert.equal(assessContainerSettlement(snapshot(), snapshot(), "unknown").status, "waiting");
+    assert.deepEqual(
+      assessContainerSettlement(snapshot(), snapshot(), "unknown", {
+        quietMs: CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
+      }),
+      {
+        status: "settled",
+        outcome: "failed-deploy-no-rollout",
+        message: "The failed Alchemy deployment created no Container rollout.",
+      },
+    );
+  });
+
+  it("restarts the failed-deploy quiet period when the application changes", async () => {
+    const before = snapshot();
+    const changed = snapshot({
+      application: { updatedAt: "2026-07-23T11:47:50.102Z" },
+    });
+    const observations = [before, changed, changed, changed];
+    let now = 0;
+    const settled = await waitForProductionContainerRollout(
+      before,
+      {},
+      {
+        containerAction: "unknown",
+        readControlPlane: async () => observations.shift(),
+        sleep: async (milliseconds) => {
+          now += milliseconds;
+        },
+        now: () => now,
+        timeoutMs: 100_000,
+        pollMs: 30_000,
+      },
+    );
+    assert.equal(settled.application.updatedAt, changed.application.updatedAt);
+    assert.equal(now, 90_000);
+    assert.equal(observations.length, 0);
+  });
+
+  it("rejects a deployment while an earlier Container rollout is active", () => {
+    for (const before of [
+      snapshot({ application: { activeRolloutId: "rollout-v6" } }),
+      snapshot({ rollouts: [rollout()] }),
+    ]) {
+      assert.throws(() => assertSettledContainerBaseline(before), /already has an active rollout/u);
+    }
+    assert.doesNotThrow(() => assertSettledContainerBaseline(snapshot()));
   });
 
   it(
@@ -147,6 +507,7 @@ describe("production deployment ownership", () => {
     const infrastructure = read("spikes/infra/monolith-greenfield.ts");
     assert.match(infrastructure, new RegExp(PRODUCTION_CONTAINER_APPLICATION_NAME, "u"));
     assert.match(infrastructure, /name: MONOLITH_GREENFIELD_TOPOLOGY\.container\.name/u);
+    assert.match(read("scripts/deploy-production.mjs"), /PRODUCTION_CONTAINER_APPLICATION_ID/u);
   });
 
   it("tracks every scheduled session callback in the cancellation inventory", () => {
