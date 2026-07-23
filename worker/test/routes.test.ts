@@ -506,6 +506,12 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   });
 
+  it("redirects the public root to the canonical session manager", async () => {
+    const response = await app.request("/", undefined, env());
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/sessions");
+  });
+
   it("requires bounded terminal client ids and releases per-client execution sessions", async () => {
     const invalid = await app.request(
       "/api/sessions/a0b1c2d3e4f5/pty?client=INVALID",
