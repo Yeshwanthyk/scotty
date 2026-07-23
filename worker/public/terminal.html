@@ -232,7 +232,7 @@
         display: block;
       }
 
-      .mobile-keys {
+      .mobile-input {
         display: none;
       }
 
@@ -350,7 +350,7 @@
           --header-height: 58px;
         }
         .app {
-          grid-template-rows: var(--header-height) minmax(0, 1fr) 50px;
+          grid-template-rows: var(--header-height) minmax(0, 1fr) auto;
           min-height: 0;
         }
         .masthead {
@@ -391,27 +391,47 @@
         .veil {
           padding: 18px;
         }
-        .mobile-keys {
+        .mobile-input {
           display: grid;
-          grid-template-columns: repeat(7, minmax(44px, 1fr));
-          gap: 1px;
+          align-content: end;
           min-width: 0;
-          padding: 3px max(3px, env(safe-area-inset-right)) 3px max(3px, env(safe-area-inset-left));
+          padding: 5px 7px 6px;
+          border-top: 1px solid var(--line);
+          background: var(--shell);
+        }
+        .terminal-keys {
+          display: flex;
+          gap: 6px;
+          margin: -1px -1px 5px;
+          padding: 1px;
           overflow-x: auto;
-          background: var(--line);
+          overscroll-behavior-inline: contain;
+          scrollbar-width: none;
+          -webkit-overflow-scrolling: touch;
+        }
+        .terminal-keys::-webkit-scrollbar {
+          display: none;
+        }
+        .terminal-keys[hidden] {
+          display: none;
         }
         .mobile-key {
-          min-width: 44px;
-          min-height: 44px;
-          padding: 0 8px;
-          border: 0;
-          background: var(--shell);
+          min-width: 46px;
+          min-height: 40px;
+          flex: 0 0 auto;
+          padding: 0 10px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: var(--terminal);
           color: var(--ink);
           font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-          font-size: 0.76rem;
+          font-size: 0.75rem;
+          font-weight: 620;
         }
-        .mobile-key:active,
-        .mobile-key[aria-pressed="true"] {
+        .mobile-key-wide {
+          min-width: 82px;
+        }
+        .mobile-key:active {
           background: oklch(25% 0.035 220);
           color: var(--beam);
         }
@@ -420,6 +440,88 @@
           z-index: 1;
           outline: 2px solid var(--focus);
           outline-offset: -2px;
+        }
+        .prompt-composer {
+          display: grid;
+          grid-template-columns: 44px minmax(0, 1fr) 44px;
+          align-items: center;
+          gap: 6px;
+          min-width: 0;
+        }
+        .mobile-input[data-focused="true"] .prompt-composer {
+          grid-template-columns: minmax(0, 1fr) 44px 44px;
+        }
+        .composer-button {
+          display: grid;
+          width: 44px;
+          height: 44px;
+          place-items: center;
+          padding: 0;
+          border: 0;
+          border-radius: 10px;
+          background: transparent;
+          color: var(--muted);
+        }
+        .composer-button:active {
+          scale: 0.96;
+        }
+        .composer-button:focus-visible {
+          outline: 2px solid var(--focus);
+          outline-offset: -2px;
+        }
+        .keys-toggle {
+          border: 1px solid var(--line);
+          background: var(--terminal);
+        }
+        .keys-toggle[aria-expanded="true"] {
+          border-color: oklch(56% 0.08 205);
+          color: var(--beam);
+        }
+        .cancel-prompt {
+          display: none;
+          color: var(--muted);
+        }
+        .mobile-input[data-focused="true"] .keys-toggle {
+          display: none;
+        }
+        .mobile-input[data-focused="true"] .cancel-prompt {
+          display: grid;
+        }
+        .prompt-input {
+          width: 100%;
+          height: 44px;
+          min-height: 44px;
+          max-height: 112px;
+          padding: 10px 12px;
+          overflow-y: auto;
+          border: 1px solid var(--line);
+          border-radius: 10px;
+          outline: none;
+          background: var(--terminal);
+          color: var(--ink);
+          font: inherit;
+          font-size: 16px;
+          line-height: 22px;
+          resize: none;
+          caret-color: var(--beam);
+        }
+        .prompt-input::placeholder {
+          color: var(--muted);
+          opacity: 1;
+        }
+        .prompt-input:focus {
+          border-color: var(--beam);
+          box-shadow: 0 0 0 1px var(--beam);
+        }
+        .send-prompt {
+          background: var(--beam);
+          color: oklch(18% 0.024 220);
+        }
+        .send-prompt:disabled,
+        .keys-toggle:disabled,
+        .prompt-input:disabled {
+          cursor: not-allowed;
+          opacity: 0.42;
         }
       }
 
@@ -488,32 +590,124 @@
           </div>
         </div>
       </section>
-      <div class="mobile-keys" aria-label="Terminal keys">
-        <button class="mobile-key" type="button" data-key="escape">Esc</button>
-        <button class="mobile-key" type="button" data-key="tab">Tab</button>
-        <button class="mobile-key" type="button" id="control-key" aria-pressed="false">Ctrl</button>
-        <button class="mobile-key" type="button" data-key="left" aria-label="Left arrow">←</button>
-        <button class="mobile-key" type="button" data-key="down" aria-label="Down arrow">↓</button>
-        <button class="mobile-key" type="button" data-key="up" aria-label="Up arrow">↑</button>
-        <button class="mobile-key" type="button" data-key="right" aria-label="Right arrow">
-          →
-        </button>
+      <div class="mobile-input" id="mobile-input">
+        <div class="terminal-keys" id="terminal-keys" aria-label="Terminal keys" hidden>
+          <button class="mobile-key mobile-key-wide" type="button" data-action="raw-input">
+            Raw input
+          </button>
+          <button class="mobile-key" type="button" data-key="escape">Esc</button>
+          <button class="mobile-key" type="button" data-key="tab">Tab</button>
+          <button class="mobile-key mobile-key-wide" type="button" data-key="interrupt">
+            Ctrl-C
+          </button>
+          <button class="mobile-key" type="button" data-key="enter" aria-label="Enter">↵</button>
+          <button class="mobile-key" type="button" data-key="left" aria-label="Left arrow">
+            ←
+          </button>
+          <button class="mobile-key" type="button" data-key="down" aria-label="Down arrow">
+            ↓
+          </button>
+          <button class="mobile-key" type="button" data-key="up" aria-label="Up arrow">↑</button>
+          <button class="mobile-key" type="button" data-key="right" aria-label="Right arrow">
+            →
+          </button>
+        </div>
+        <form class="prompt-composer" id="prompt-composer">
+          <button
+            class="composer-button keys-toggle"
+            id="keys-toggle"
+            type="button"
+            aria-label="Show terminal keys"
+            aria-controls="terminal-keys"
+            aria-expanded="false"
+            disabled
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M4.75 6.75h14.5v10.5H4.75zM7.5 10h.01m2.99 0h.01m2.99 0h.01m2.99 0h.01M8 14h8"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.6"
+              />
+            </svg>
+          </button>
+          <label class="sr-only" for="prompt-input">Write a prompt</label>
+          <textarea
+            class="prompt-input"
+            id="prompt-input"
+            rows="1"
+            placeholder="Message Codex…"
+            autocapitalize="sentences"
+            autocorrect="on"
+            enterkeyhint="send"
+            spellcheck="true"
+            disabled
+          ></textarea>
+          <button
+            class="composer-button cancel-prompt"
+            id="cancel-prompt"
+            type="button"
+            aria-label="Dismiss keyboard"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="m7 7 10 10M17 7 7 17"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-width="1.8"
+              />
+            </svg>
+          </button>
+          <button
+            class="composer-button send-prompt"
+            id="send-prompt"
+            type="submit"
+            aria-label="Send prompt"
+            disabled
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M12 18V6m0 0-5 5m5-5 5 5"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+              />
+            </svg>
+          </button>
+        </form>
       </div>
       <p class="sr-only" id="announcer" aria-live="assertive"></p>
     </main>
 
     <script type="module">
       import { FitAddon, Ghostty, Terminal } from "/vendor/ghostty-web/ghostty-web.js";
-      import { sgrMouse, terminalCell, wheelButton, wheelSteps } from "/terminal-input.js";
+      import {
+        mobileKeyData,
+        sgrMouse,
+        terminalCell,
+        terminalPrompt,
+        wheelButton,
+        wheelSteps,
+      } from "/terminal-input.js";
 
       const app = document.querySelector("#app");
       const action = document.querySelector("#action");
       const announcer = document.querySelector("#announcer");
-      const controlKey = document.querySelector("#control-key");
-      const mobileKeys = document.querySelector(".mobile-keys");
+      const cancelPrompt = document.querySelector("#cancel-prompt");
+      const keysToggle = document.querySelector("#keys-toggle");
+      const mobileInput = document.querySelector("#mobile-input");
+      const promptComposer = document.querySelector("#prompt-composer");
+      const promptInput = document.querySelector("#prompt-input");
+      const sendPrompt = document.querySelector("#send-prompt");
       const sessionLabel = document.querySelector("#session-label");
       const statusText = document.querySelector("#status-text");
       const terminalHost = document.querySelector("#terminal");
+      const terminalKeys = document.querySelector("#terminal-keys");
       const veil = document.querySelector("#veil");
       const stateMark = document.querySelector("#state-mark");
       const stateTitle = document.querySelector("#state-title");
@@ -524,15 +718,6 @@
       const apiId = sessionId ? encodeURIComponent(sessionId) : "";
       const encoder = new TextEncoder();
       const reconnectDelays = [750, 1500, 3000, 6000, 10000, 15000];
-      const mobileKeyData = {
-        escape: "\x1b",
-        tab: "\t",
-        left: "\x1b[D",
-        down: "\x1b[B",
-        up: "\x1b[A",
-        right: "\x1b[C",
-      };
-
       let terminal;
       let fitAddon;
       let socket;
@@ -546,7 +731,6 @@
       let intentionalClose = false;
       let currentState = "initializing";
       let lastAnnounced = "";
-      let controlPending = false;
       let connectGeneration = 0;
       let touchGesture;
       let suppressTouchFocus = false;
@@ -628,6 +812,13 @@
         const connected = nextState === "connected";
         veil.hidden = connected;
         terminalHost.inert = !connected;
+        keysToggle.disabled = !connected;
+        promptInput.disabled = !connected;
+        if (!connected) {
+          promptInput.blur();
+          setTerminalKeysOpen(false);
+        }
+        updatePromptState();
 
         action.hidden = true;
         action.disabled = false;
@@ -694,6 +885,46 @@
       function sendInput(data) {
         if (!ready || socket?.readyState !== WebSocket.OPEN) return;
         socket.send(encoder.encode(data));
+      }
+
+      function setTerminalKeysOpen(open) {
+        terminalKeys.hidden = !open;
+        keysToggle.setAttribute("aria-expanded", String(open));
+        keysToggle.setAttribute("aria-label", open ? "Hide terminal keys" : "Show terminal keys");
+        requestAnimationFrame(() => {
+          if (!terminal) return;
+          dimensions();
+          sendResize();
+        });
+      }
+
+      function updatePromptState() {
+        sendPrompt.disabled = currentState !== "connected" || !terminalPrompt(promptInput.value);
+      }
+
+      function sizePrompt() {
+        const previousHeight = promptInput.offsetHeight;
+        promptInput.style.height = "0px";
+        promptInput.style.height = `${Math.min(112, Math.max(44, promptInput.scrollHeight))}px`;
+        updatePromptState();
+        if (promptInput.offsetHeight === previousHeight) return;
+        requestAnimationFrame(() => {
+          if (!terminal) return;
+          dimensions();
+          sendResize();
+        });
+      }
+
+      function submitPrompt() {
+        const prompt = terminalPrompt(promptInput.value);
+        if (!prompt || currentState !== "connected") return;
+        terminal.paste(prompt);
+        sendInput(mobileKeyData.enter);
+        promptInput.value = "";
+        sizePrompt();
+        setTerminalKeysOpen(false);
+        promptInput.blur();
+        announce("Prompt sent");
       }
 
       function trackedMouseCell(clientX, clientY) {
@@ -971,7 +1202,9 @@
           lastY: event.clientY,
           wheelDelta: 0,
           scrolled: false,
+          hadComposerFocus: document.activeElement === promptInput,
         };
+        if (touchGesture.hadComposerFocus) promptInput.blur();
         terminalHost.setPointerCapture?.(event.pointerId);
         event.preventDefault();
       });
@@ -1000,8 +1233,8 @@
           Math.hypot(event.clientX - touchGesture.startX, event.clientY - touchGesture.startY) > 8;
         suppressTouchFocus = moved;
         if (!moved) {
-          sendTrackedClick(event.clientX, event.clientY);
-          terminal.focus();
+          const tracked = sendTrackedClick(event.clientX, event.clientY);
+          if (!tracked && !touchGesture.hadComposerFocus) promptInput.focus();
         }
         terminalHost.releasePointerCapture?.(event.pointerId);
         touchGesture = undefined;
@@ -1030,17 +1263,41 @@
         { capture: true, passive: false },
       );
 
-      mobileKeys.addEventListener("pointerdown", (event) => event.preventDefault());
-      mobileKeys.addEventListener("click", (event) => {
+      keysToggle.addEventListener("pointerdown", (event) => event.preventDefault());
+      keysToggle.addEventListener("click", () => setTerminalKeysOpen(terminalKeys.hidden));
+      cancelPrompt.addEventListener("pointerdown", (event) => event.preventDefault());
+      cancelPrompt.addEventListener("click", () => {
+        setTerminalKeysOpen(false);
+        promptInput.blur();
+      });
+
+      terminalKeys.addEventListener("pointerdown", (event) => event.preventDefault());
+      terminalKeys.addEventListener("click", (event) => {
         const button = event.target.closest("button");
         if (!button || currentState !== "connected") return;
-        if (button === controlKey) {
-          controlPending = !controlPending;
-          controlKey.setAttribute("aria-pressed", String(controlPending));
+        if (button.dataset.action === "raw-input") {
+          setTerminalKeysOpen(false);
+          terminal.focus();
           return;
         }
         sendInput(mobileKeyData[button.dataset.key] || "");
-        terminal.focus();
+      });
+
+      promptInput.addEventListener("input", sizePrompt);
+      promptInput.addEventListener("focus", () => {
+        mobileInput.dataset.focused = "true";
+      });
+      promptInput.addEventListener("blur", () => {
+        delete mobileInput.dataset.focused;
+      });
+      promptInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+        event.preventDefault();
+        submitPrompt();
+      });
+      promptComposer.addEventListener("submit", (event) => {
+        event.preventDefault();
+        submitPrompt();
       });
 
       window.addEventListener("online", () => {
@@ -1073,11 +1330,12 @@
           }).catch(() => undefined);
       });
       function fitVisualViewport() {
-        if (window.visualViewport)
+        if (window.visualViewport) {
           document.documentElement.style.setProperty(
             "--app-height",
             `${window.visualViewport.height}px`,
           );
+        }
         requestAnimationFrame(() => {
           if (!terminal) return;
           dimensions();
@@ -1136,12 +1394,6 @@
           );
           fitAddon.observeResize();
           terminal.onData((data) => {
-            if (controlPending && data.length === 1) {
-              const code = data.toUpperCase().charCodeAt(0);
-              if (code >= 64 && code <= 95) data = String.fromCharCode(code - 64);
-              controlPending = false;
-              controlKey.setAttribute("aria-pressed", "false");
-            }
             sendInput(data);
           });
           terminal.onResize(({ cols, rows }) => sendResize(cols, rows));

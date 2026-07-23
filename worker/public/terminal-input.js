@@ -1,3 +1,19 @@
+export const mobileKeyData = Object.freeze({
+  escape: "\x1b",
+  tab: "\t",
+  interrupt: "\x03",
+  enter: "\r",
+  left: "\x1b[D",
+  down: "\x1b[B",
+  up: "\x1b[A",
+  right: "\x1b[C",
+});
+
+export function terminalPrompt(value) {
+  const normalized = value.replace(/\r\n?/gu, "\n");
+  return normalized.trim().length > 0 ? normalized : undefined;
+}
+
 export function terminalCell(bounds, cols, rows, clientX, clientY) {
   const width = Math.max(1, bounds.width);
   const height = Math.max(1, bounds.height);

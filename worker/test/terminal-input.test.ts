@@ -1,5 +1,12 @@
 import { assert, describe, it } from "vitest";
-import { sgrMouse, terminalCell, wheelButton, wheelSteps } from "../public/terminal-input.js";
+import {
+  mobileKeyData,
+  sgrMouse,
+  terminalCell,
+  terminalPrompt,
+  wheelButton,
+  wheelSteps,
+} from "../public/terminal-input.js";
 
 describe("terminal input", () => {
   it("maps browser coordinates into clamped one-based terminal cells", () => {
@@ -21,5 +28,17 @@ describe("terminal input", () => {
     assert.strictEqual(wheelSteps(4), 1);
     assert.strictEqual(wheelSteps(-64), 2);
     assert.strictEqual(wheelSteps(1_000), 5);
+  });
+
+  it("exposes one-tap mobile terminal controls", () => {
+    assert.strictEqual(mobileKeyData.interrupt, "\x03");
+    assert.strictEqual(mobileKeyData.enter, "\r");
+    assert.strictEqual(mobileKeyData.escape, "\x1b");
+    assert.strictEqual(mobileKeyData.up, "\x1b[A");
+  });
+
+  it("keeps composed prompts intact while rejecting empty submissions", () => {
+    assert.strictEqual(terminalPrompt("  \n"), undefined);
+    assert.strictEqual(terminalPrompt(" fix this\r\nthen test "), " fix this\nthen test ");
   });
 });

@@ -13,6 +13,8 @@ The page assumes these same-origin endpoints:
 
 The WebSocket uses binary UTF-8 in both directions for terminal I/O. Text frames are JSON controls: server `ready`, `exit`, and `error`; client `resize`. Buffered binary output is rendered even when it arrives before `ready`. Input is only sent after `ready`.
 
+On phone-sized viewports, the client uses a native textarea composer for agent prompts. The browser handles selection, paste, dictation, autocorrection, and IME composition; submitting pastes the complete draft through Ghostty's bracketed-paste support, sends Enter, and dismisses the software keyboard. Raw terminal input and one-tap terminal controls remain available behind the keyboard button.
+
 ## Vendored Ghostty Web
 
 `vendor/ghostty-web/` is copied from the published `ghostty-web@0.4.0` npm package (MIT, integrity `sha512-0puDBik2qapbD/QQBW9o5ZHfXnZBqZWx/ctBiVtKZ6ZLds4NYb+wZuw1cRLXZk9zYovIQ908z3rvFhexAvc5Hg==`). The ESM distribution embeds the Ghostty WASM payload and also probes the adjacent `ghostty-vt.wasm` as a fallback, so both files are kept local. `__vite-browser-external-2447137e.js` is the package's browser shim used by its fallback loader. No CDN or runtime package registry request is used.

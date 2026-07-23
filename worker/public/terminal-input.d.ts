@@ -10,6 +10,11 @@ export interface TerminalCell {
   readonly y: number;
 }
 
+export type MobileKey = "escape" | "tab" | "interrupt" | "enter" | "left" | "down" | "up" | "right";
+
+export const mobileKeyData: Readonly<Record<MobileKey, string>>;
+export function terminalPrompt(value: string): string | undefined;
+
 export function terminalCell(
   bounds: TerminalBounds,
   cols: number,
