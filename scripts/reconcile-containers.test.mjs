@@ -49,6 +49,39 @@ describe("Container reconciliation", () => {
     assert.equal(report.application.summaryInstances, 7);
   });
 
+  it("accepts a ready application with no active sessions or instances", () => {
+    const report = reconcileContainerInventory({
+      applications: [application({ state: "ready" })],
+      instances: [instance({ name: "old-session", state: "inactive" })],
+      sessions: [session({ status: "sleeping" })],
+      now: NOW,
+    });
+    assert.equal(report.ok, true);
+    assert.equal(report.application.state, "ready");
+    assert.deepEqual(report.counts, {
+      scottyApplications: 1,
+      activeInstances: 0,
+      inactiveIdentityRows: 1,
+      projectedSessions: 1,
+    });
+  });
+
+  it("rejects provisioning or degraded applications", () => {
+    for (const state of ["provisioning", "degraded"]) {
+      const report = reconcileContainerInventory({
+        applications: [application({ state })],
+        instances: [],
+        sessions: [],
+        now: NOW,
+      });
+      assert.equal(report.ok, false);
+      assert.deepEqual(
+        report.issues.map((issue) => issue.code),
+        ["production_application_inactive"],
+      );
+    }
+  });
+
   it("rejects duplicate applications and active instances without sessions", () => {
     const report = reconcileContainerInventory({
       applications: [application(), application({ id: "duplicate", name: "scotty-duplicate" })],
