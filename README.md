@@ -2,11 +2,13 @@
 
 Scotty runs a persistent Codex TUI in a Cloudflare Sandbox, exposes it through an authenticated browser terminal, checkpoints it to R2, and can resume, publish, beam down, or permanently destroy the session.
 
+![Scotty](assets/brand/scotty-hero-16x9.png)
+
 ## Components
 
 - `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, Sheppard-backed lifecycle, and terminal UI.
-- `cli/scotty.ts` / `cli/src/` — stable Bun entrypoint plus Effect-native schemas, services,
-  transport, archive, command, and rendering modules; compile with `bun build --compile`.
+- `cli/` — Effect-native Bun CLI and embedded `scotty skills` guide.
+- `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
 - `spikes/` — executable probes for the upstream Sandbox contracts.
 - [`EFFECT_V4_MIGRATION.md`](EFFECT_V4_MIGRATION.md) — governing Alchemy v2 + Effect v4
@@ -82,22 +84,12 @@ repositories.
 ```sh
 bun build cli/scotty.ts --compile --outfile dist/scotty
 ./dist/scotty init --host https://scotty-worker.<account>.workers.dev --token "$SCOTTY_TOKEN"
-./dist/scotty up "fix the failing tests" --repo anomalyco/rift
-./dist/scotty ls --json
-./dist/scotty snapshot <id>
-./dist/scotty resume <id>
-./dist/scotty pr <id>
-./dist/scotty down <id>
-./dist/scotty vaporize <id> --yes
+./dist/scotty up "fix the failing tests" --repo anomalyco/rift --json
+./dist/scotty skills
 ```
 
-The CLI token is also the browser bootstrap/recovery credential. Open a browser once through
-`scotty attach`, then use **Devices** on `/sessions` to create a five-minute one-use QR/link for
-Helium, a phone, or another browser profile. Every paired browser gets an independent revocable
-cookie; ordinary session links stay clean.
-
-The source guide is `cli/skills/scotty/SKILL.md`; Bun compiles it into the standalone executable.
-Run `scotty skills` to print that embedded agent-facing command and state-machine reference.
+Use `scotty attach <id>` to bootstrap a browser. Run `scotty skills` for the complete agent-facing
+command and state-machine guide.
 
 ## E2E
 
