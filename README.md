@@ -8,6 +8,7 @@ Scotty runs a persistent Codex TUI in a Cloudflare Sandbox, exposes it through a
 - `cli/scotty.ts` — single-file Bun CLI; compile with `bun build --compile`.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
 - `spikes/` — executable probes for the upstream Sandbox contracts.
+- [`docs/cloudflare-primitives.md`](docs/cloudflare-primitives.md) — illustrated guide to the Cloudflare pieces Scotty uses and why.
 - `PLAN.md` / `IMPLEMENTATION_DAG.md` — scope, architecture, dependency order, and proof gates.
 
 ## Security model
