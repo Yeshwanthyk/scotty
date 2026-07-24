@@ -33,7 +33,7 @@ These normalize `PLAN.md` against the current Sandbox SDK contracts before code 
 type SessionStatus = "booting" | "warm" | "sleeping" | "failed" | "gone";
 
 type SessionOperation = {
-  kind: "create" | "snapshot" | "resume" | "pr" | "down" | "vaporize";
+  kind: "create" | "snapshot" | "resume" | "down" | "vaporize";
   nonce: string;
   startedAt: string;
 } | null;
@@ -73,7 +73,7 @@ stateDiagram-v2
     booting --> warm: worktree + Sheppard + agent ready
     booting --> failed: setup fails
 
-    warm --> warm: snapshot / pr / down
+    warm --> warm: snapshot / down
     warm --> sleeping: idle or hard-cap checkpoint succeeds
     warm --> failed: hard-cap checkpoint fails; runtime destroyed
 
@@ -120,16 +120,15 @@ flowchart TD
     M --> W{Gate W: lifecycle recovery}
     N --> W
 
-    W --> O[O: GitHub push, repo-create, and PR]
     W --> P[P: Beam down]
     W --> Q[Q: Vaporize]
-    O --> R[R: Agent ergonomics and embedded skill]
     P --> R
     Q --> R
+    R[R: Agent ergonomics and embedded skill]
     R --> S[S: Production verification and release]
 ```
 
-**Critical path:** `A → C → E/D → G → H/I → J/K → V → L → M/N → W → O/P/Q → R → S`.
+**Critical path:** `A → C → E/D → G → H/I → J/K → V → L → M/N → W → P/Q → R → S`.
 
 Expected effort: **10–15 focused engineering days**, plus Cloudflare deployment/account setup. `A` can materially change the estimate if OAuth refresh cannot be implemented through the current interception contract.
 
@@ -249,12 +248,11 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 
 ### Wave 4 — shipping, teardown, and release
 
-#### O. GitHub push, repo-create, and PR — 1 day
+#### O. Agent-owned source control
 
-- **Depends on:** Gate W, I.
-- **Deliver:** sentinel GitHub credential helper, dynamic default branch, existing-repo push/PR, missing-repo private create/push, stable URLs.
-- **Files/symbols:** `ScottySandbox.publish`, `POST /api/sessions/:id/pr`, CLI `pr`.
-- **Proof:** Rift PR targets `dev`; a new repo is created and pushed without attempting an invalid PR; no remote URL or logs contain tokens.
+- **Contract:** Scotty has no commit, push, repository-creation, or pull-request command or HTTP endpoint.
+- **Boundary:** Codex may use the sentinel GitHub credential inside a session when the user asks it to perform source-control work.
+- **Proof:** removed CLI command and route return usage/not-found errors, and no Sandbox orchestration invokes `git commit`, `git push`, `gh repo create`, or `gh pr create`.
 
 #### P. Beam down — 1 day
 
@@ -272,10 +270,10 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 
 #### R. Agent ergonomics and embedded skill — 1 day
 
-- **Depends on:** O, P, Q.
+- **Depends on:** P, Q.
 - **Deliver:** all operational commands/flags, `--json` and non-TTY JSON, stable exit codes, terse help, and a source `SKILL.md` compiled into the standalone CLI and printed by `scotty skills`.
 - **Files:** `cli/scotty.ts`, `cli/skills/scotty/SKILL.md`, CLI golden tests.
-- **Proof:** a clean agent given only `scotty skills` completes `up → pr → vaporize` unattended; every piped command parses as JSON.
+- **Proof:** a clean agent given only `scotty skills` completes `up → snapshot → vaporize` unattended; every piped command parses as JSON.
 
 #### S. Production verification and release — 1 day
 
@@ -299,27 +297,26 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 
 ## Verification matrix
 
-| Gate            | Unit/local                           | Deployed Cloudflare                | Destructive/credential check             |
-| --------------- | ------------------------------------ | ---------------------------------- | ---------------------------------------- |
-| Contracts       | Type probes and fixtures             | Sandbox/PTY/backup probe           | Disposable credentials only              |
-| Secure vertical | State/routes/CLI tests               | Real Codex turn + reconnect        | Files/env/log/R2 scan; deny egress       |
-| Lifecycle       | Transition and fault-injection tests | Idle, hard cap, restore            | Backup-failure and stale-handle recovery |
-| Ship            | Git/gh command fixtures              | Existing and new private test repo | PAT scope and token-leak scan            |
-| Down/vaporize   | Tar/path/mode tests                  | Resume locally; inspect R2/KV/DO   | Repeated teardown                        |
-| Release         | Golden help/JSON tests               | End-to-end unattended workflow     | Cost cap and log redaction               |
+| Gate            | Unit/local                           | Deployed Cloudflare              | Destructive/credential check             |
+| --------------- | ------------------------------------ | -------------------------------- | ---------------------------------------- |
+| Contracts       | Type probes and fixtures             | Sandbox/PTY/backup probe         | Disposable credentials only              |
+| Secure vertical | State/routes/CLI tests               | Real Codex turn + reconnect      | Files/env/log/R2 scan; deny egress       |
+| Lifecycle       | Transition and fault-injection tests | Idle, hard cap, restore          | Backup-failure and stale-handle recovery |
+| Down/vaporize   | Tar/path/mode tests                  | Resume locally; inspect R2/KV/DO | Repeated teardown                        |
+| Release         | Golden help/JSON tests               | End-to-end unattended workflow   | Cost cap and log redaction               |
 
 ## Rollout
 
 1. Deploy a development Worker with a dedicated R2 bucket, KV namespace, test PAT, and short backup TTL.
 2. Pass Contract Gate A and Security Gate V using a disposable repository and credential bundle.
 3. Pass lifecycle fault injection with 2-minute idle and 5-minute hard cap; then restore production defaults of 60 minutes and 4 hours.
-4. Run one canary session through `up → snapshot → resume → pr → down → vaporize` and inspect all storage/log surfaces.
+4. Run one canary session through `up → snapshot → resume → down → vaporize` and inspect all storage/log surfaces.
 5. Publish the compiled CLI and embedded skill only after the canary leaves no secret or orphaned resource.
 
 ## Residual risks and open gates
 
 - **OAuth protocol drift:** Codex refresh/rollout formats are pinned-version internals. Gate A must freeze fixtures and fail closed on unknown shapes.
 - **Unexpected host loss:** `onActivityExpired()` covers managed idle, not infrastructure loss. Recovery is only as fresh as the latest successful manual/periodic/hard-cap checkpoint. Decide checkpoint cadence after measuring backup duration and R2 cost; this does not block the vertical slice.
-- **Backup consistency:** pausing the agent reduces write races but cannot make external GitHub operations transactional. PR/down commands must run under the same operation lease.
+- **Backup consistency:** pausing the agent reduces write races. Beam-down runs under an operation lease; GitHub operations belong to Codex and aren't Scotty lifecycle transitions.
 - **KV freshness:** `ls` is a projection. Include `projectedAt`; direct commands always consult the DO.
 - **Allowed registries:** every allowed host remains an exfiltration channel for prompts/source, even without credentials. Start with the smallest host set needed by Rift and make additions explicit configuration changes.

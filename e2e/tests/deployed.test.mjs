@@ -24,7 +24,7 @@ const skipReason = enabled
 if (process.env.SCOTTY_E2E_EXPLICIT === "1" && !enabled) throw new Error(skipReason);
 
 test(
-  "deployed canary: up/snapshot/hard-cap/resume/pr/down/vaporize leaves no orphans",
+  "deployed canary: up/snapshot/hard-cap/resume/down/vaporize leaves no orphans",
   { skip: skipReason, timeout: 15 * 60_000 },
   async (t) => {
     const env = {
@@ -74,13 +74,6 @@ test(
     const resume = await runCli(["resume", id, "--json"], { env, cwd, timeoutMs: 180_000 });
     assert.equal(resume.code, 0, resume.stderr);
 
-    const pr = await runCli(["pr", id, "--title", `Scotty E2E ${id}`, "--json"], {
-      env,
-      cwd,
-      timeoutMs: 180_000,
-    });
-    assert.equal(pr.code, 0, pr.stderr);
-    assert.equal(pr.json.created, true);
     const down = await runCli(["down", id, "--json"], { env, cwd, timeoutMs: 180_000 });
     assert.equal(down.code, 0, down.stderr);
     assert.equal(fs.statSync(down.json.rolloutPath).mode & 0o777, 0o600);

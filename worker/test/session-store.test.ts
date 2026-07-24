@@ -141,7 +141,9 @@ runContractSuite<SessionRecordStorageFactory>(
         const conflictResult = yield* Effect.result(
           withStore(
             activeStorage,
-            Effect.flatMap(SessionStore, (store) => store.acquireOperation("pr", ["warm"], "new")),
+            Effect.flatMap(SessionStore, (store) =>
+              store.acquireOperation("down", ["warm"], "new"),
+            ),
           ),
         );
         assert.deepInclude(failure(conflictResult), {

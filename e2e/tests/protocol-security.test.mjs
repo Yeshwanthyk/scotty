@@ -171,17 +171,15 @@ test("tracked repos use session-read auth and list newest use first", async (t) 
   assert.ok(Date.parse(repos[0].lastUsedAt) > Date.parse(repos[1].lastUsedAt));
 });
 
-test("malformed PR JSON preserves the production default title", async (t) => {
+test("source-control publishing route is unavailable", async (t) => {
   const service = await new FakeWorkerService().start();
   t.after(() => service.stop());
   const session = await create(service);
   const response = await fetch(`${service.url}/api/sessions/${session.id}/pr`, {
     method: "POST",
     headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
-    body: "{",
   });
-  assert.equal(response.status, 200);
-  assert.equal(service.sessions.get(session.id).prTitle, `Scotty session ${session.id}`);
+  assert.equal(response.status, 404);
 });
 
 test("PTY auth, binary-before-ready, resize, and reconnect preserve the named runtime", async (t) => {

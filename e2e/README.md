@@ -17,11 +17,11 @@ The CLI defaults to `cli/scotty.ts`. To test a compiled artifact:
 SCOTTY_E2E_CLI="$PWD/dist/scotty" node e2e/scripts/run.mjs
 ```
 
-The default suite covers `up`, `ls`, `snapshot`, hard-cap sleep, `resume`, `pr`, `down`, and idempotent `vaporize`; tracked-repo creation, authentication, ordering, and retention after vaporize; JSON keys; stdout/stderr separation; exit codes 0 through 5; wrong-state errors; backup restoration; hard-cap backup failure; PTY auth/resize/reconnect; cookie/query-token behavior; sentinel and credential scans; denied/redirected egress; tar traversal rejection; rollout mode 0600; and runtime/KV/R2/credential orphan cleanup.
+The default suite covers `up`, `ls`, `snapshot`, hard-cap sleep, `resume`, `down`, and idempotent `vaporize`; tracked-repo creation, authentication, ordering, and retention after vaporize; JSON keys; stdout/stderr separation; exit codes 0 through 5; wrong-state errors; backup restoration; hard-cap backup failure; PTY auth/resize/reconnect; cookie/query-token behavior; sentinel and credential scans; denied/redirected egress; tar traversal rejection; rollout mode 0600; and runtime/KV/R2/credential orphan cleanup.
 
 ## Run against a disposable deployment
 
-The deployed canary is destructive: it creates a session, waits for its configured hard cap, opens a PR, beams the session down, and vaporizes it. It skips with a list of missing gates unless every variable below is explicit.
+The deployed canary is destructive: it creates a session, waits for its configured hard cap, beams the session down, and vaporizes it. It skips with a list of missing gates unless every variable below is explicit.
 
 ```sh
 SCOTTY_E2E_DEPLOYED=1 \

@@ -62,11 +62,6 @@ export const OperationResponseSchema = Schema.Struct({
   backupId: Schema.optionalKey(Schema.Unknown),
   status: Schema.NonEmptyString,
 });
-export const PrResponseSchema = Schema.Struct({
-  prUrl: Schema.optionalKey(Schema.Unknown),
-  branchUrl: Schema.NonEmptyString,
-  created: Schema.Boolean,
-});
 export const RawSessionFailureSchema = Schema.Struct({
   code: Schema.optionalKey(Schema.Unknown),
   message: Schema.optionalKey(Schema.Unknown),
@@ -115,7 +110,6 @@ export const decodeRawConfig = Schema.decodeUnknownOption(RawConfigSchema);
 export const decodePendingUp = Schema.decodeUnknownOption(PendingUpSchema);
 export const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
 export const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
-export const decodePrResponse = Schema.decodeUnknownOption(PrResponseSchema);
 export const decodeRawSessionFailure = Schema.decodeUnknownOption(RawSessionFailureSchema);
 export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema);
 export const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchema);

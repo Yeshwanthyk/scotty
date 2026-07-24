@@ -507,7 +507,7 @@ Wrangler remains rollback-only during this chunk and must not be updated in para
 
 **Work:**
 
-- Define schemas for every HTTP input/output, persisted session/credential record, KV projection, OAuth payload, PR/down result, and CLI response.
+- Define schemas for every HTTP input/output, persisted session/credential record, KV projection, OAuth payload, down result, and CLI response.
 - Keep version `1`, defaults, limits, trimming, optional-key omission, and public error text compatible.
 - Use schema-backed tagged errors for public HTTP/RPC failures and data-tagged errors for internal adapters.
 - Map `bad_request`, `auth`, `not_found`, `wrong_state`, `conflict`, `upstream`, and `internal` to existing statuses and exit codes.
@@ -617,13 +617,14 @@ Migrate idle expiry, hard cap, stop, destroy retry, and thread capture. Preserve
 
 Use `TestClock`, fault injection, official callback canaries, and a shortened deployed cap.
 
-### Chunk 10 — publish, beam-down, and vaporize
+### Chunk 10 — beam-down and vaporize
 
 Use separate commits.
 
-- **Publish:** full persisted lease, sentinel-only GitHub auth, clean/dirty worktree, private new repo, stored default branch, unchanged result.
 - **Beam-down:** Effect archive preparation and validation, but preserve scope-transferred streaming; exact manifest/tar/checksum/path/ref/SHA/mode behavior.
 - **Vaporize:** schedules → runtime → deduplicated backups → credential → KV projection → minimal `gone` tombstone. Define durable partial-progress/retry behavior before coding and test every failed stage.
+
+Source-control publishing is deliberately outside Scotty. Codex may commit, push, create repositories, or open pull requests when the user asks, but no Scotty CLI command, HTTP route, or Sandbox orchestration owns those actions.
 
 ### Chunk 11 — Effect-native CLI
 
@@ -672,7 +673,7 @@ Run the same contracts against fake and production implementations for DO storag
 Every deploy requires user approval. Use an isolated stage/account first and run:
 
 ```text
-up → attach → reconnect → snapshot → hard-cap sleep → resume → pr → down → vaporize
+up → attach → reconnect → snapshot → hard-cap sleep → resume → down → vaporize
 ```
 
 Verify:

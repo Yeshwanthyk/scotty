@@ -105,16 +105,15 @@ Do: hard cap (grace re-schedule, stale `hardCapAt` payload ignored, operation-ex
 managed stop (commit → `sleeping` in `onStop`; uncommitted stop → `failed
 runtime_stopped`; `finalizeManagedStop` rollback claim + agent resume + lease release;
 rollback-failure retry path), 12-attempt `captureThreadId` bound, abandoned-lease recovery
-(driver dies holding `pr` lease → hard-cap alarm converts to `failed` — this documents the
-intended backstop). Wall-clock injection is acceptable until C2 lands; convert to
+(a lease written by the removed publish endpoint → hard-cap alarm converts to `failed` — this
+documents the compatibility backstop). Wall-clock injection is acceptable until C2 lands; convert to
 `TestClock` afterwards (tracked in C2 accept).
 Accept: every transition in the list has a test naming its trigger and final record state.
 
-### B4 — Publish / beam-down / vaporize tests (Chunk 10 gate)
+### B4 — Beam-down / vaporize tests (Chunk 10 gate)
 
-Depends: B2. Files: new `worker/test/session-publish-down-vaporize.test.ts`.
-Do: publish clean/dirty worktree, missing-repo private-create path, missing PR URL;
-down-archive manifest/tar member construction and lease release on failure; vaporize full
+Depends: B2. Files: new `worker/test/session-down-vaporize.test.ts`.
+Do: down-archive manifest/tar member construction and lease release on failure; vaporize full
 sequence (schedule cancel order, backup dedupe delete, credential delete, `gone` tombstone,
 projection removal), `retryVaporizeSession` idempotent re-entry, lease-changed conflict,
 destroy-timeout path (`ctx.abort` + retry armed), gone-tombstone projection repair.
@@ -149,7 +148,7 @@ Depends: C1. Files: `worker/src/session.ts`, touch `worker/src/contracts.ts` onl
 managed-stop error tag.
 Do: convert method bodies to `Effect.fnUntraced` programs run once at the RPC boundary,
 method-by-method in this commit order: checkpoint/stopAfterCheckpoint → create → resume →
-vaporize → publish/down → schedule callbacks. Adopt `Clock` everywhere (34 wall-clock
+vaporize → down → schedule callbacks. Adopt `Clock` everywhere (34 wall-clock
 sites); replace the 20×250ms poll in `stopAfterCheckpoint` with `Effect.retry` +
 `Schedule`; replace `ManagedStopArmedError` with a `Data.TaggedError`; remove the raw
 throw at `session.ts:436` (typed error → existing envelope). Public RPC signatures,
@@ -235,7 +234,7 @@ Accept: disconnect paths covered by a test; no silent cleanup swallow.
 Depends: B2 harness. Files: `worker/test/routes.test.ts`.
 Do: replace the whole-DO `vi.fn()` stub with the B2 fake-storage-backed `Sandbox` for the
 session routes, keeping pure HTTP-layer cases as-is.
-Accept: create/resume/publish/vaporize routes exercise real orchestration.
+Accept: create/resume/vaporize routes exercise real orchestration, and the removed publishing route returns 404.
 
 ## WS-E — Shared abstractions and enforced conventions
 

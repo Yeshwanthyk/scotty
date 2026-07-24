@@ -9,7 +9,6 @@ import {
   parseAuthClientId,
   parseCreateInput,
   parseIdempotencyKey,
-  parsePrInput,
   parseSessionId,
   parseSessionIdFromTerminalPath,
   parseTerminalClientId,
@@ -238,13 +237,6 @@ app.post("/api/sessions/:id/resume", async (c) => {
   return c.json(await sessionSandbox(c.env, id).resumeScottySession());
 });
 
-app.post("/api/sessions/:id/pr", async (c) => {
-  requireAuthScope(c.get("auth"), "sessions:write");
-  const id = parseSessionId(c.req.param("id"));
-  const body: unknown = await c.req.json().catch(() => ({}));
-  return c.json(await sessionSandbox(c.env, id).publishScottySession(parsePrInput(body)));
-});
-
 app.get("/api/sessions/:id/down", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
@@ -362,6 +354,8 @@ app.get(
 );
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+app.all("/api/*", (c) => c.json({ error: { code: "not_found", message: "Route not found" } }, 404));
 
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 

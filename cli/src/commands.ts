@@ -26,7 +26,6 @@ import {
   requireId,
   ROOT_HELP,
   sanitizeUrl,
-  stablePr,
   stableSession,
   stableUp,
   takeBoolean,
@@ -246,7 +245,6 @@ export const execute = Effect.fnUntraced(function* (rawArgs: string[]) {
     return EXIT.OK;
   }
 
-  const title = command === "pr" ? yield* Effect.fromResult(takeValue(args, "--title")) : undefined;
   const yes = command === "vaporize" ? takeBoolean(args, "--yes") : false;
   const id = yield* Effect.fromResult(requireId(args, command));
   if (command === "vaporize" && runtime.stdoutIsTTY && runtime.stdinIsTTY && !yes) {
@@ -262,16 +260,9 @@ export const execute = Effect.fnUntraced(function* (rawArgs: string[]) {
   const auth = yield* credentials(options);
   const path = `/api/sessions/${encodeURIComponent(id)}${command === "vaporize" ? "" : `/${command}`}`;
   const method = command === "vaporize" ? "DELETE" : "POST";
-  const body =
-    command === "pr" && title
-      ? JSON.stringify({ title })
-      : command === "pr"
-        ? JSON.stringify({})
-        : undefined;
-  const raw = yield* requestJson(auth, path, { method, body });
+  const raw = yield* requestJson(auth, path, { method });
   let result: JsonObject;
-  if (command === "pr") result = yield* Effect.fromResult(stablePr(raw));
-  else if (command === "vaporize") {
+  if (command === "vaporize") {
     const decoded = decodeVaporizeResponse(raw);
     if (Option.isNone(decoded) || decoded.value.id !== id)
       return yield* new CliError(

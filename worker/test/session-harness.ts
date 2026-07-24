@@ -48,11 +48,6 @@ export type HarnessFailureStage =
   | "downWriteManifest"
   | "hardCapSchedule"
   | "projectionDelete"
-  | "publishCommit"
-  | "publishPrCreate"
-  | "publishPrivateCreate"
-  | "publishPush"
-  | "publishStatus"
   | "restoreBackup"
   | "rollbackResume"
   | "terminalAttachmentCleanup"
@@ -419,23 +414,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           ? "workspace"
           : command.includes("sheppard spawn")
             ? "agent"
-            : command.includes("status --porcelain")
-              ? "publishStatus"
-              : command.includes(" commit -m ")
-                ? "publishCommit"
-                : command.startsWith("gh repo create")
-                  ? "publishPrivateCreate"
-                  : command.includes(" push -u origin ")
-                    ? "publishPush"
-                    : command.startsWith("gh pr create")
-                      ? "publishPrCreate"
-                      : command.includes("rev-parse HEAD")
-                        ? "downSha"
-                        : command.startsWith("find ") && command.includes("*.jsonl")
-                          ? "downRollout"
-                          : command.startsWith("tar -cf ")
-                            ? "downTar"
-                            : "exec";
+            : command.includes("rev-parse HEAD")
+              ? "downSha"
+              : command.startsWith("find ") && command.includes("*.jsonl")
+                ? "downRollout"
+                : command.startsWith("tar -cf ")
+                  ? "downTar"
+                  : "exec";
         events.push(`host:exec:${stage === "downRollout" ? "exec" : stage}`);
         if (failures.has("workspacePrepare") && stage === "workspace")
           throw new Error("injected workspace failure");
@@ -444,11 +429,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         if (failures.has("rollbackResume") && command.includes("sheppard resume --tab"))
           throw new Error("injected managed-stop rollback failure");
         if (
-          (stage === "publishStatus" && failures.has("publishStatus")) ||
-          (stage === "publishCommit" && failures.has("publishCommit")) ||
-          (stage === "publishPrivateCreate" && failures.has("publishPrivateCreate")) ||
-          (stage === "publishPush" && failures.has("publishPush")) ||
-          (stage === "publishPrCreate" && failures.has("publishPrCreate")) ||
           (stage === "downSha" && failures.has("downSha")) ||
           (stage === "downRollout" && failures.has("downRollout")) ||
           (stage === "downTar" && failures.has("downTar"))
@@ -457,13 +437,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         const configured = options.commandStdout?.(command);
         const stdout =
           configured ??
-          (stage === "workspace"
-            ? "main\n"
-            : stage === "publishPrCreate"
-              ? "https://github.com/anomalyco/rift/pull/123\n"
-              : stage === "downSha"
-                ? "deadbeef\n"
-                : "");
+          (stage === "workspace" ? "main\n" : stage === "downSha" ? "deadbeef\n" : "");
         return successfulExec(command, stdout);
       },
     },

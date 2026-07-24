@@ -1,11 +1,11 @@
 ---
 name: scotty
-description: Manage cloud Codex agent sessions on Cloudflare. Use before running Scotty to start, inspect, attach, checkpoint, resume, publish, beam down, or vaporize a session.
+description: Manage cloud Codex agent sessions on Cloudflare. Use before running Scotty to start, inspect, attach, checkpoint, resume, beam down, or vaporize a session.
 ---
 
 # Scotty
 
-Scotty beams a Codex agent into a Cloudflare sandbox. Use it to start a cloud session, attach to its terminal, checkpoint or resume it, publish a PR, beam its branch and Codex rollout down to the current local repository, and permanently remove it.
+Scotty beams a Codex agent into a Cloudflare sandbox. Use it to start a cloud session, attach to its terminal, checkpoint or resume it, beam its branch and Codex rollout down to the current local repository, and permanently remove it. Commit, push, and open pull requests directly from Codex when you want them; Scotty doesn't own source-control publishing.
 
 ## Command reference
 
@@ -15,7 +15,6 @@ Scotty beams a Codex agent into a Cloudflare sandbox. Use it to start a cloud se
 - `scotty attach ID --json` opens the browser and returns `{"id","url","opened"}`.
 - `scotty snapshot ID --json` checkpoints a warm session and returns `{"id","status","backupId"?}`.
 - `scotty resume ID --json` restores a sleeping or recoverable failed session and returns `{"id","url"?,"branch"?,"status"}`.
-- `scotty pr ID [--title TITLE] --json` returns `{"prUrl"?,"branchUrl","created"}`.
 - `scotty down ID --json` fetches the session branch, securely installs its rollout when present, and returns `{"branch","sha","rolloutPath","resumeCmd"}`. The last two values are null when no usable rollout exists.
 - `scotty vaporize ID --yes --json` permanently deletes runtime, backups, credentials, and registry state; it returns `{"id","status":"gone"}`.
 - `scotty tools list --json` prints the immutable `standard` sandbox tool manifest. `scotty tools doctor --json` probes the installed commands without Worker credentials.
@@ -27,12 +26,12 @@ Exit codes: 0 success, 1 generic or network failure, 2 bad usage/config, 3 sessi
 
 ## Workflows
 
-### Cloud work to PR
+### Cloud work
 
 1. Run `scotty up "TASK" --detach --json`.
 2. Poll `scotty ls --json` until the session is `warm`.
-3. Run `scotty pr ID --json`.
-4. Run `scotty vaporize ID --yes --json` after the work is safely published.
+3. Ask Codex in the session to commit, push, or open a pull request when you want that.
+4. Run `scotty vaporize ID --yes --json` after the work is safely stored elsewhere.
 
 ### Sleep and resume
 

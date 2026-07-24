@@ -22,8 +22,6 @@ import {
   type DownArchive,
   type DownManifest,
   type OperationKind,
-  type PrInput,
-  type PrResult,
   type SessionRecord,
   type SessionStatus,
   type SessionView,
@@ -122,8 +120,6 @@ class ManagedStopArmedError extends Data.TaggedError("ManagedStopArmedError")<{
 }> {}
 
 class SessionShutdownPending extends Data.TaggedError("SessionShutdownPending")<{}> {}
-
-class MissingPullRequestUrl extends Data.TaggedError("MissingPullRequestUrl")<{}> {}
 
 const hostEffect = <A>(operation: () => Promise<A>): Effect.Effect<A, unknown> =>
   Effect.tryPromise({
@@ -598,64 +594,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return vaporized.success;
   });
 
-  private readonly publishScottySessionProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    input: PrInput,
-  ) {
-    const runtime = yield* SandboxRuntime;
-    const vault = yield* CredentialVault;
-    const operation = yield* this.acquireOperationProgram("pr", ["warm"]);
-    const record = yield* this.requireRecordProgram();
-    const credential = yield* vault.require;
-    const env = agentEnv(record.id, credential);
-    const root = sessionRoot(record.id);
-    const repoUrl = `https://github.com/${record.repo}.git`;
-    const published = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        const title = input.title ?? `Scotty session ${record.id}`;
-        const dirty = yield* runtime.execChecked(`git -C ${shellQuote(root)} status --porcelain`);
-        if (dirty.stdout.trim()) {
-          yield* runtime.execChecked(
-            `git -C ${shellQuote(root)} -c user.name=Scotty -c user.email=scotty@users.noreply.github.com add -A && git -C ${shellQuote(root)} -c user.name=Scotty -c user.email=scotty@users.noreply.github.com commit -m ${shellQuote(title)}`,
-            { env, timeout: 120_000 },
-          );
-        }
-        if (!record.repoExistsAtCreate) {
-          yield* runtime.execChecked(`gh repo create ${shellQuote(record.repo)} --private`, {
-            env,
-            timeout: 120_000,
-          });
-          yield* runtime.execChecked(
-            `git -C ${shellQuote(root)} remote set-url origin ${shellQuote(repoUrl)}`,
-            { env },
-          );
-        }
-        yield* runtime.execChecked(
-          `git -C ${shellQuote(root)} push -u origin ${shellQuote(record.branch)}`,
-          { env, timeout: 180_000 },
-        );
-        const branchUrl = `https://github.com/${record.repo}/tree/${record.branch}`;
-        if (!record.repoExistsAtCreate) return { branchUrl, created: false } satisfies PrResult;
-        const bodyPath = `/tmp/scotty-pr-${record.id}.md`;
-        yield* runtime.writeFile(
-          bodyPath,
-          `Automated changes from Scotty session \`${record.id}\`.\n`,
-        );
-        const created = yield* runtime.execChecked(
-          `gh pr create --repo ${shellQuote(record.repo)} --base ${shellQuote(record.defaultBranch)} --head ${shellQuote(record.branch)} --title ${shellQuote(title)} --body-file ${shellQuote(bodyPath)}`,
-          { env, timeout: 120_000 },
-        );
-        const prUrl = created.stdout.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/u)?.[0];
-        if (!prUrl) return yield* new MissingPullRequestUrl();
-        return { prUrl, branchUrl, created: true } satisfies PrResult;
-      }),
-    );
-    yield* this.releaseOperationProgram(operation.nonce);
-    if (Result.isFailure(published))
-      return yield* this.upstreamError("Publishing failed", published.failure);
-    return published.success;
-  });
-
   private readonly prepareDownArchiveProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const runtime = yield* SandboxRuntime;
     const discovery = yield* RolloutDiscovery;
@@ -1044,10 +982,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async resumeScottySession(): Promise<SessionView> {
     return this.#run(this.resumeScottySessionProgram());
-  }
-
-  async publishScottySession(input: PrInput): Promise<PrResult> {
-    return this.#run(this.publishScottySessionProgram(input));
   }
 
   async prepareDownArchive(): Promise<DownArchive> {

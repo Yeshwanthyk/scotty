@@ -338,9 +338,7 @@ export class FakeWorkerService {
       );
     }
 
-    const match = /^\/api\/sessions\/([^/]+)(?:\/(snapshot|resume|pr|down|pty))?$/.exec(
-      url.pathname,
-    );
+    const match = /^\/api\/sessions\/([^/]+)(?:\/(snapshot|resume|down|pty))?$/.exec(url.pathname);
     if (!match) return error(404, "not_found", "Route not found", "Check the command");
     const [, id, action] = match;
     const record = this.sessions.get(id);
@@ -376,19 +374,6 @@ export class FakeWorkerService {
         url: `${this.url}/s/${id}?t=${this.token}`,
         branch: record.branch,
         status: record.status,
-      });
-    }
-    if (request.method === "POST" && action === "pr") {
-      if (record.status !== "warm") return this.#wrongState(record, "pr", "warm");
-      const body = await readBody(request).catch(() => ({}));
-      record.prTitle =
-        typeof body.title === "string" && body.title.trim()
-          ? body.title.trim()
-          : `Scotty session ${record.id}`;
-      return json({
-        prUrl: `https://github.com/${record.repo}/pull/42`,
-        branchUrl: `https://github.com/${record.repo}/tree/${record.branch}`,
-        created: true,
       });
     }
     if (request.method === "GET" && action === "down") {
