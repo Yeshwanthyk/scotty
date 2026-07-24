@@ -58,6 +58,11 @@ export function safeSessionPath(value, id, origin) {
   }
 }
 
+export function sessionDisplayStatus(value, pendingAction) {
+  const status = typeof value === "string" ? value : "unknown";
+  return pendingAction === "sleep" && status === "warm" ? "stopping" : status;
+}
+
 function arrayOrEmpty(value) {
   return Array.isArray(value) ? value : [];
 }

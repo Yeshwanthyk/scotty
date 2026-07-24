@@ -19,6 +19,9 @@ export const sessionAllowsRuntimeAccess = (
 ): record is SessionRecord =>
   record !== undefined && record.status !== "gone" && record.operation?.kind !== "vaporize";
 
+export const sessionAllowsTerminalAttachment = (record: SessionRecord | undefined): boolean =>
+  sessionAllowsRuntimeAccess(record) && record.status === "warm" && record.operation === null;
+
 export const hardCapObservationIsCurrent = (
   observed: SessionRecord,
   current: SessionRecord | undefined,

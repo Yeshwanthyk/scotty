@@ -743,6 +743,15 @@
         background: var(--warm);
       }
 
+      .status-stopping .status-line {
+        background: oklch(79% 0.12 78 / 0.09);
+        color: var(--warm);
+      }
+
+      .status-stopping .signal {
+        background: var(--warm);
+      }
+
       .status-failed .status-line {
         background: oklch(70% 0.16 25 / 0.09);
         color: var(--danger);
@@ -1049,6 +1058,7 @@
         promptText,
         repositoryName,
         safeSessionPath,
+        sessionDisplayStatus,
         submissionIdentity,
       } from "/session-form.js";
 
@@ -1082,7 +1092,7 @@
       let createAbortReason;
       let lastSubmission;
       let pollTimer;
-      const busy = new Set();
+      const busy = new Map();
       const confirmations = new Set();
       const rowErrors = new Map();
 
@@ -1178,7 +1188,13 @@
         button.dataset.id = id;
         button.dataset.focusKey = `${action}:${id}`;
         button.disabled = busy.has(id);
-        button.textContent = busy.has(id) && action !== "confirm-delete" ? "Working…" : label;
+        const pendingAction = busy.get(id);
+        button.textContent =
+          pendingAction === "sleep" && action === "sleep"
+            ? "Stopping…"
+            : pendingAction && action !== "confirm-delete"
+              ? "Working…"
+              : label;
         return button;
       }
 
@@ -1226,7 +1242,7 @@
 
         for (const session of sessions) {
           const item = document.createElement("li");
-          const status = typeof session.status === "string" ? session.status : "unknown";
+          const status = sessionDisplayStatus(session.status, busy.get(session.id));
           item.className = `session status-${status}`;
 
           const identity = document.createElement("div");
@@ -1250,7 +1266,10 @@
           const signal = document.createElement("span");
           signal.className = "signal";
           signal.setAttribute("aria-hidden", "true");
-          statusLine.append(signal, document.createTextNode(status));
+          statusLine.append(
+            signal,
+            document.createTextNode(status === "stopping" ? "Stopping…" : status),
+          );
           details.append(statusLine);
           const metrics = document.createElement("div");
           metrics.className = "metrics";
@@ -1268,7 +1287,9 @@
 
           const actions = document.createElement("div");
           actions.className = "actions";
-          if (status === "warm") {
+          if (status === "stopping") {
+            actions.append(actionButton("Stopping…", "sleep", session.id, true));
+          } else if (status === "warm") {
             const open = document.createElement("a");
             open.className = "button button-primary";
             open.href = `/s/${encodeURIComponent(session.id)}`;
@@ -1278,12 +1299,14 @@
           } else if (status === "sleeping" || (status === "failed" && session.backupId)) {
             actions.append(actionButton("Resume & open", "resume", session.id, true));
           }
-          const deleteButton = actionButton("Delete", "confirm-delete", session.id);
-          deleteButton.classList.add("button-danger");
-          actions.append(deleteButton);
+          if (status !== "stopping") {
+            const deleteButton = actionButton("Delete", "confirm-delete", session.id);
+            deleteButton.classList.add("button-danger");
+            actions.append(deleteButton);
+          }
           item.append(actions);
 
-          if (confirmations.has(session.id)) {
+          if (status !== "stopping" && confirmations.has(session.id)) {
             const confirmation = document.createElement("div");
             confirmation.className = "confirmation";
             addText(
@@ -1465,7 +1488,7 @@
 
       async function perform(id, action) {
         if (busy.has(id)) return;
-        busy.add(id);
+        busy.set(id, action);
         rowErrors.delete(id);
         render();
         const suffix = action === "delete" ? "" : `/${action}`;
