@@ -1,5 +1,10 @@
 # Scotty browser terminal assets
 
+`scotty-ui.css` and `brand/` apply the committed Scotty painted identity across the session list,
+device manager, pairing flow, and terminal shell. The UI uses the small app mark for persistent
+identity and role glyphs only at meaningful empty, loading, security, and completion states.
+The deployable files in `brand/` mirror or derive from selected source artwork in `assets/brand/`.
+
 `terminal.html` is a standalone browser client for the raw Cloudflare Sandbox terminal WebSocket protocol. The Worker serves it at `/s/:id` only after registered-browser authentication. During migration, an old root-token cookie or `?t=` bootstrap link is exchanged once for an independent `Secure; HttpOnly; SameSite=Strict` browser credential and redirected to the clean URL. The client never reads the browser credential.
 
 `devices.html` is the administrator-only registered-browser manager. It creates five-minute one-use pairing links and renders their QR matrix locally. `pair.html` removes the link fragment before consuming it and receives a browser-specific credential cookie.

@@ -1,0 +1,529 @@
+:root {
+  --space: #01060c;
+  --shell: #030e14;
+  --panel: #07131a;
+  --panel-raised: #0b1a21;
+  --control: #020b10;
+  --terminal: #02090e;
+  --ink: #eee7d3;
+  --muted: #b5ad95;
+  --quiet: #847d6a;
+  --line: #2b373b;
+  --line-soft: rgb(238 231 211 / 0.09);
+  --line-hover: rgb(238 231 211 / 0.17);
+  --beam: #d8cfb2;
+  --accent: #cf633f;
+  --accent-strong: #e07954;
+  --warm: #c69a5d;
+  --danger: #ff8278;
+  --focus: #f08a64;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ring: 0 0 0 1px var(--line-soft);
+  --ring-hover: 0 0 0 1px var(--line-hover);
+}
+
+html {
+  background: var(--space);
+}
+
+body.scotty-ui {
+  background: var(--space);
+  color: var(--ink);
+}
+
+.scotty-ui ::selection {
+  background: rgb(207 99 63 / 0.38);
+  color: var(--ink);
+}
+
+.scotty-ui .masthead {
+  border-color: var(--line-soft);
+  background: var(--shell);
+  box-shadow: 0 1px 0 var(--line-soft);
+}
+
+.scotty-ui .identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px rgb(238 231 211 / 0.12);
+}
+
+.scotty-ui .wordmark {
+  margin-left: 0;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.scotty-ui .section-label,
+.scotty-ui .session-label {
+  margin-left: 0;
+  color: var(--muted);
+}
+
+.scotty-ui .button,
+.scotty-ui button,
+.scotty-ui input,
+.scotty-ui select,
+.scotty-ui textarea {
+  border-color: var(--line);
+}
+
+.scotty-ui .button {
+  background: var(--panel-raised);
+  box-shadow: var(--ring);
+}
+
+.scotty-ui .button:hover {
+  background: #10232b;
+  box-shadow: var(--ring-hover);
+}
+
+.scotty-ui .button-quiet,
+.scotty-ui .button-danger {
+  background: transparent;
+  box-shadow: none;
+}
+
+.scotty-ui .button-quiet {
+  color: var(--muted);
+}
+
+.scotty-ui .button-quiet:hover {
+  background: rgb(238 231 211 / 0.05);
+  box-shadow: none;
+  color: var(--ink);
+}
+
+.scotty-ui .button-danger {
+  color: var(--danger);
+}
+
+.scotty-ui .button-danger:hover {
+  background: rgb(255 130 120 / 0.08);
+  box-shadow: none;
+  color: #ff9a91;
+}
+
+.scotty-ui .button-danger-confirm {
+  background: #3a1914;
+  box-shadow: 0 0 0 1px rgb(255 130 120 / 0.58);
+  color: #ffaca5;
+}
+
+.scotty-ui .button-danger-confirm:hover {
+  background: #481e18;
+  box-shadow: 0 0 0 1px rgb(255 130 120 / 0.72);
+  color: #ffd0cc;
+}
+
+.scotty-ui .button-primary,
+.terminal-page .action,
+.terminal-page .latest-output,
+.terminal-page .send-prompt {
+  border-color: transparent;
+  background: var(--beam);
+  box-shadow: none;
+  color: #091117;
+}
+
+.scotty-ui .button-primary:hover,
+.terminal-page .action:hover,
+.terminal-page .latest-output:hover {
+  background: #ece3c8;
+  box-shadow: none;
+}
+
+.scotty-ui .button:focus-visible,
+.scotty-ui button:focus-visible,
+.scotty-ui input:focus-visible,
+.scotty-ui select:focus-visible,
+.scotty-ui textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.scotty-ui input,
+.scotty-ui select,
+.scotty-ui textarea,
+.scotty-ui .control {
+  background: var(--control);
+  color: var(--ink);
+}
+
+.scotty-ui input::placeholder,
+.scotty-ui textarea::placeholder,
+.scotty-ui .control::placeholder {
+  color: #99917c;
+  opacity: 1;
+}
+
+.scotty-ui input:focus,
+.scotty-ui select:focus,
+.scotty-ui textarea:focus,
+.scotty-ui .control:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px rgb(207 99 63 / 0.18);
+}
+
+.sessions-page {
+  background: var(--space);
+}
+
+.sessions-page main {
+  width: min(100%, 1080px);
+}
+
+.sessions-page .page-heading {
+  margin-bottom: 26px;
+}
+
+.sessions-page.has-no-sessions .page-heading .button-primary {
+  background: transparent;
+  box-shadow: var(--ring);
+  color: var(--muted);
+}
+
+.sessions-page.has-no-sessions .page-heading .button-primary:hover {
+  background: rgb(238 231 211 / 0.05);
+  box-shadow: var(--ring-hover);
+  color: var(--ink);
+}
+
+.sessions-page h1,
+.devices-page h1,
+.pair-page h1 {
+  color: var(--ink);
+  font-weight: 680;
+}
+
+.sessions-page .subtitle {
+  color: var(--muted);
+}
+
+.sessions-page .composer {
+  border: 1px solid rgb(207 99 63 / 0.42);
+  background: var(--panel);
+  box-shadow: 0 4px 8px rgb(0 0 0 / 0.3);
+}
+
+.sessions-page .composer-feedback.is-pending {
+  color: var(--accent-strong);
+}
+
+.sessions-page .repo-suggestion,
+.sessions-page .repo-suggestion:hover {
+  background: var(--panel-raised);
+}
+
+.sessions-page .state {
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  box-shadow: none;
+}
+
+.sessions-page .state::before {
+  display: block;
+  width: 76px;
+  height: 76px;
+  margin: 0 auto 18px;
+  border-radius: 12px;
+  background: url("/brand/scotty-wait.png") center / cover no-repeat;
+  box-shadow: 0 0 0 1px var(--line-soft);
+  content: "";
+}
+
+.sessions-page .state-empty::before {
+  background-image: url("/brand/scotty-orchestrate.png");
+}
+
+.sessions-page .session {
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  box-shadow: none;
+}
+
+.sessions-page .session:hover {
+  border-color: var(--line-hover);
+  background: #091820;
+  box-shadow: none;
+}
+
+.sessions-page .status-line {
+  background: rgb(181 173 149 / 0.08);
+}
+
+.sessions-page .status-warm .status-line {
+  background: rgb(207 99 63 / 0.11);
+  color: var(--accent-strong);
+}
+
+.sessions-page .status-warm .signal {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgb(207 99 63 / 0.13);
+}
+
+.sessions-page .status-sleeping .status-line,
+.sessions-page .status-stopping .status-line {
+  background: rgb(198 154 93 / 0.11);
+  color: #dab77e;
+}
+
+.sessions-page .confirmation {
+  background: #231411;
+}
+
+.devices-page {
+  background: var(--space);
+}
+
+.devices-page .page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 24px;
+}
+
+.devices-page .intro {
+  max-width: 64ch;
+  margin-bottom: 0;
+}
+
+.page-symbol {
+  display: block;
+  width: 72px;
+  height: 72px;
+  flex: none;
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px var(--line-soft);
+}
+
+.devices-page .panel {
+  border-color: var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.devices-page .panel + .panel {
+  margin-top: 12px;
+}
+
+.devices-page .qr-shell {
+  border: 6px solid #e9e2d0;
+  background: #fff;
+}
+
+.devices-page .current {
+  color: var(--accent-strong);
+}
+
+.devices-page .client {
+  border-color: var(--line-soft);
+}
+
+.pair-page {
+  position: relative;
+  isolation: isolate;
+  place-items: center start;
+  background: var(--space);
+}
+
+.pair-page::before,
+.pair-page::after {
+  position: fixed;
+  z-index: -2;
+  inset: 0;
+  content: "";
+}
+
+.pair-page::before {
+  background: url("/brand/scotty-hero-16x9.png") center / cover no-repeat;
+}
+
+.pair-page::after {
+  z-index: -1;
+  background: rgb(1 6 12 / 0.22);
+}
+
+.pair-page .card {
+  width: min(100%, 450px);
+  margin-left: clamp(0px, 8vw, 120px);
+  padding: 30px;
+  border: 0;
+  border-radius: 12px;
+  background: #061118;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.52);
+}
+
+.pair-page .pair-lockup {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: var(--ink);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.pair-page .pair-success-art {
+  display: block;
+  width: 82px;
+  height: 82px;
+  margin-bottom: 20px;
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px var(--line-soft);
+}
+
+.pair-page .button {
+  border: 0;
+  background: var(--beam);
+  box-shadow: none;
+  color: #091117;
+}
+
+.pair-page .button:hover {
+  background: #ece3c8;
+}
+
+.terminal-page .app {
+  background: var(--space);
+}
+
+.terminal-page .masthead {
+  background: var(--shell);
+}
+
+.terminal-page .stage {
+  background: var(--terminal);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.terminal-page .veil {
+  background: rgb(1 6 12 / 0.94);
+}
+
+.terminal-page .state-art {
+  display: block;
+  width: 88px;
+  height: 88px;
+  margin: 0 auto 18px;
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px var(--line-soft);
+}
+
+.terminal-page .state-mark {
+  color: var(--accent-strong);
+}
+
+.terminal-page .state-mark::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgb(207 99 63 / 0.12);
+}
+
+.terminal-page .app[data-state="connected"] .signal {
+  background: var(--accent);
+  box-shadow:
+    0 0 0 3px rgb(207 99 63 / 0.13),
+    0 0 12px rgb(207 99 63 / 0.3);
+}
+
+.terminal-page .transport-line::after {
+  background: var(--accent);
+}
+
+.terminal-page .terminal-keys,
+.terminal-page .prompt-composer {
+  background: var(--panel-raised);
+}
+
+.terminal-page .mobile-key {
+  background: var(--terminal);
+}
+
+.terminal-page .prompt-composer:focus-within {
+  background: #0d2028;
+  box-shadow:
+    0 0 0 1px rgb(207 99 63 / 0.62),
+    0 8px 24px rgb(0 0 0 / 0.52);
+}
+
+.terminal-page .prompt-input {
+  caret-color: var(--accent-strong);
+}
+
+@media (max-width: 620px) {
+  .devices-page .page-heading {
+    align-items: flex-start;
+  }
+
+  .devices-page .page-symbol {
+    width: 58px;
+    height: 58px;
+  }
+
+  .pair-page {
+    place-items: center;
+  }
+
+  .pair-page::before {
+    background-position: 66% center;
+  }
+
+  .pair-page::after {
+    background: rgb(1 6 12 / 0.5);
+  }
+
+  .pair-page .card {
+    margin-left: 0;
+    padding: 24px 20px;
+  }
+}
+
+@media (max-width: 420px) {
+  .brand-mark {
+    width: 28px;
+    height: 28px;
+  }
+
+  .sessions-page .state::before {
+    width: 68px;
+    height: 68px;
+  }
+
+  .devices-page .page-symbol {
+    display: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #d1c8ad;
+    --quiet: #aaa18b;
+    --line: #596266;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scotty-ui *,
+  .scotty-ui *::before,
+  .scotty-ui *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
