@@ -4,6 +4,7 @@ import {
   promptText,
   repositoryName,
   safeSessionPath,
+  sessionDisplayStatus,
   submissionIdentity,
 } from "../public/session-form.js";
 
@@ -76,5 +77,12 @@ describe("session form", () => {
     assert.isUndefined(
       safeSessionPath("https://scotty.example/s/a0b1c2d3e4f5?next=evil", "a0b1c2d3e4f5", origin),
     );
+  });
+
+  it("shows an optimistic stopping state only while a warm session is running the sleep action", () => {
+    assert.strictEqual(sessionDisplayStatus("warm", "sleep"), "stopping");
+    assert.strictEqual(sessionDisplayStatus("warm", "delete"), "warm");
+    assert.strictEqual(sessionDisplayStatus("sleeping", "sleep"), "sleeping");
+    assert.strictEqual(sessionDisplayStatus(undefined, undefined), "unknown");
   });
 });

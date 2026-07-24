@@ -54,6 +54,7 @@ import {
 import {
   hardCapObservationIsCurrent,
   SESSION_SCHEDULE_CALLBACKS,
+  sessionAllowsTerminalAttachment,
   sessionAllowsRuntimeAccess,
   VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
 } from "./session-lifecycle";
@@ -218,9 +219,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async prepareTerminalAttachment(clientId: string): Promise<string> {
     const record = await this.requireRecord();
-    if (record.status !== "warm") throw wrongState(record.status, "attach");
-    if (!sessionAllowsRuntimeAccess(record))
-      throw conflict("Session destruction is already in progress");
+    this.assertTerminalAttachmentAllowed(record);
     const sessionId = `scotty-web-${clientId}`;
     const credential = await this.requireCredential();
     await this.reconcileExpiredTerminalAttachments();
@@ -230,6 +229,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       observedAt: now,
     } satisfies TerminalAttachmentExpiryPayload);
     await this.ctx.storage.transaction(async (transaction) => {
+      this.assertTerminalAttachmentAllowed(await transaction.get<SessionRecord>(RECORD_KEY));
       const attachments = this.decodeTerminalAttachments(
         await transaction.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
       );
@@ -248,7 +248,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ]);
     });
     try {
-      await this.assertRuntimeAccess();
+      this.assertTerminalAttachmentAllowed(await this.ctx.storage.get<SessionRecord>(RECORD_KEY));
       await this.createSession({
         id: sessionId,
         cwd: sessionRoot(record.id),
@@ -1225,6 +1225,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private async requireRecord(): Promise<SessionRecord> {
     return this.runSessionStore(Effect.flatMap(SessionStore, (store) => store.requireRecord));
+  }
+
+  private assertTerminalAttachmentAllowed(
+    record: SessionRecord | undefined,
+  ): asserts record is SessionRecord {
+    if (sessionAllowsTerminalAttachment(record)) return;
+    if (!record) throw notFound("unknown");
+    if (record.status !== "warm") throw wrongState(record.status, "attach");
+    if (!sessionAllowsRuntimeAccess(record))
+      throw conflict("Session destruction is already in progress");
+    if (record.operation) throw conflict(`Session is already running ${record.operation.kind}`);
+    throw conflict("Session is not accepting terminal attachments");
   }
 
   private async assertRuntimeAccess(): Promise<SessionRecord> {
