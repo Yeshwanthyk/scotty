@@ -2,6 +2,8 @@
 
 This is the execution plan for `PLAN.md`. Build one secure vertical slice first, then add lifecycle and shipping behavior behind explicit gates. The critical design choice is that each session's Sandbox Durable Object owns lifecycle state and credentials; KV is only the eventually consistent list projection.
 
+`SANDBOX_SETUP_PERFORMANCE_PLAN.md` defines the measurement, image, bootstrap, auth, agent-launch, concurrency, and instance-sizing work that may optimize create and resume after the owning migration chunks establish their typed boundaries. It is subordinate to this document's behavior, security, state-ownership, and lifecycle invariants and to `EFFECT_V4_MIGRATION.md`'s superseding delivery order.
+
 ## Implementation corrections
 
 These normalize `PLAN.md` against the current Sandbox SDK contracts before code is written:

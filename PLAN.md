@@ -4,7 +4,7 @@ Cloud coding agents on Cloudflare (Amp-orbs style). Beam a Codex agent into a cl
 
 This plan is written for AI agents to implement. Follow phases in order; each phase has acceptance criteria. Do not add features beyond this document.
 
-See `IMPLEMENTATION_DAG.md` for dependency order, work packages, proof gates, and current Sandbox SDK corrections. Where an SDK contract makes an older detail here impossible, the correction in that DAG governs.
+See `IMPLEMENTATION_DAG.md` for dependency order, work packages, proof gates, and current Sandbox SDK corrections. See `SANDBOX_SETUP_PERFORMANCE_PLAN.md` for the measurement-first, behavior-preserving plan to reduce create and resume latency without weakening the per-session Sandbox boundary. Where an SDK contract makes an older detail here impossible, the correction in that DAG governs.
 
 ---
 
