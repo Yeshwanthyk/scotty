@@ -30,6 +30,7 @@ interface CanaryOrphanProbe {
   readonly backups: ReadonlyArray<string>;
   readonly createIdempotency: boolean;
   readonly credentials: boolean;
+  readonly githubCredentialCurrent: boolean;
   readonly incarnation: string;
   readonly kv: boolean;
   readonly runtime: boolean;
@@ -75,6 +76,7 @@ export class ScottySandbox extends Sandbox {
       backups: backupPage.objects.map(({ key }) => key).sort(),
       createIdempotency: createIdempotency !== undefined,
       credentials: credential !== undefined,
+      githubCredentialCurrent: credential?.githubToken === this.env.GH_TOKEN,
       incarnation: this.e2eIncarnation,
       kv: projection !== null,
       runtime,
@@ -125,6 +127,25 @@ export { ContainerProxy, ScottyAuthRegistry };
 export default {
   async fetch(request: Request, env: CanaryBindings, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/__e2e/config") {
+      if (
+        request.headers.get("authorization") !== `Bearer ${env.SCOTTY_TOKEN}` ||
+        env.SCOTTY_E2E_CANARY_STAGE.length === 0
+      ) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const github = await fetch("https://api.github.com/user", {
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${env.GH_TOKEN}`,
+          "user-agent": "Scotty deployed E2E",
+        },
+      });
+      return Response.json({
+        githubStatus: github.status,
+        githubTokenBytes: new TextEncoder().encode(env.GH_TOKEN).byteLength,
+      });
+    }
     const probe = /^\/__e2e\/(probe|reconstruct)\/([^/]+)$/u.exec(url.pathname);
     if (probe === null) return app.fetch(request, env, ctx);
     if (
