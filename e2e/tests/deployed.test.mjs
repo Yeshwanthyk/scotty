@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -62,6 +63,15 @@ const canaryRequest = async (pathname, init) => {
 const probe = async (id) => {
   const response = await canaryRequest(`/__e2e/probe/${id}`);
   return response.json();
+};
+
+const pendingSessionId = (home) => {
+  const directory = path.join(home, ".scotty", "pending-up");
+  const files = fs.readdirSync(directory);
+  assert.equal(files.length, 1, "a failed up must preserve exactly one pending request");
+  const pending = JSON.parse(fs.readFileSync(path.join(directory, files[0]), "utf8"));
+  assert.match(pending.key, /^[0-9a-f-]{36}$/u);
+  return createHash("sha256").update(pending.key).digest("hex").slice(0, 12);
 };
 
 const waitForTerminalRoundTrip = async (id, clientId, command, marker) => {
@@ -146,13 +156,29 @@ test(
     );
     let id;
     let remoteBranch;
+    const baseline = await runCli(["ls", "--json"], { env, cwd });
+    assert.equal(baseline.code, 0, baseline.stderr);
+    const baselineIds = new Set(baseline.json.map((session) => session.id));
+    const configResponse = await canaryRequest("/__e2e/config");
+    const config = await configResponse.json();
+    assert.equal(config.githubStatus, 200, "the disposable Worker must have valid GitHub egress");
+    assert.ok(config.githubTokenBytes >= 20, "the disposable GitHub credential is malformed");
     t.after(async () => {
-      if (id)
-        await runCli(["vaporize", id, "--yes", "--json"], {
+      const current = await runCli(["ls", "--json"], { env, cwd });
+      const cleanupIds = new Set(id ? [id] : []);
+      if (current.code === 0) {
+        for (const session of current.json) {
+          if (baselineIds.has(session.id)) continue;
+          cleanupIds.add(session.id);
+        }
+      }
+      for (const sessionId of cleanupIds) {
+        await runCli(["vaporize", sessionId, "--yes", "--json"], {
           env,
           cwd,
           timeoutMs: 180_000,
         });
+      }
       if (remoteBranch) await git(["push", "origin", "--delete", remoteBranch], cwd);
     });
 
@@ -169,6 +195,7 @@ test(
       ],
       { env, cwd, timeoutMs: 300_000 },
     );
+    if (up.code !== 0) id = pendingSessionId(home);
     assert.equal(up.code, 0, up.stderr);
     id = up.json.id;
     remoteBranch = up.json.branch;
@@ -217,6 +244,11 @@ test(
     const beforeReconstruction = await probe(id);
     assert.equal(beforeReconstruction.authorityStatus, "warm");
     assert.equal(beforeReconstruction.credentials, true);
+    assert.equal(
+      beforeReconstruction.githubCredentialCurrent,
+      true,
+      "the session vault must retain the current Worker GitHub credential",
+    );
     assert.equal(beforeReconstruction.kv, true);
     assert.ok(beforeReconstruction.backups.length > 0);
     assert.deepEqual(beforeReconstruction.security, {

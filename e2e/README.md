@@ -35,15 +35,28 @@ export SCOTTY_E2E_APPROVE_CLEANUP="destroy:$stage:disposable"
 npx alchemy deploy spikes/infra/full-stack-canary.run.ts --stage "$stage" --yes
 ```
 
-Use the `workerUrl` printed by Alchemy and a disposable clone of the repository. The canary pushes
-one random `scotty/<id>` branch so beam-down exercises a real remote fetch; the test deletes that
-branch in its cleanup hook.
+Use the `workerName` and `workerUrl` printed by Alchemy. Seed disposable secret values out of band
+so Alchemy state retains only inherited secret references:
+
+```sh
+worker='scotty-e2e-<stage-suffix>-worker'
+token_file="$(mktemp)"
+chmod 600 "$token_file"
+openssl rand -hex 32 >"$token_file"
+npx wrangler secret put SCOTTY_TOKEN --name "$worker" <"$token_file"
+gh auth token | tr -d '\n' | npx wrangler secret put GH_TOKEN --name "$worker"
+printf '%s' '{"OPENAI_API_KEY":"scotty-e2e-fake-agent"}' |
+  npx wrangler secret put CODEX_AUTH_JSON --name "$worker"
+```
+
+Use a disposable clone of the repository. The canary pushes one random `scotty/<id>` branch so
+beam-down exercises a real remote fetch; the test deletes that branch in its cleanup hook.
 
 ```sh
 SCOTTY_E2E_DEPLOYED=1 \
 SCOTTY_E2E_STAGE="$stage" \
 SCOTTY_E2E_HOST='https://scotty-e2e-<stage-suffix>-worker.<account>.workers.dev' \
-SCOTTY_E2E_TOKEN='the inherited canary Worker token' \
+SCOTTY_E2E_TOKEN="$(tr -d '\n' <"$token_file")" \
 SCOTTY_E2E_REPO='owner/disposable-repo' \
 SCOTTY_E2E_LOCAL_REPO='/absolute/path/to/disposable-repo' \
 SCOTTY_E2E_CAP='5m' \
@@ -62,6 +75,7 @@ is a no-op, then destroy the entire stage:
 ```sh
 npx alchemy plan spikes/infra/full-stack-canary.run.ts --stage "$stage"
 npx alchemy destroy spikes/infra/full-stack-canary.run.ts --stage "$stage" --yes
+rm "$token_file"
 ```
 
 The cleanup hook retries `vaporize` and deletes the test-created remote branch if any assertion
