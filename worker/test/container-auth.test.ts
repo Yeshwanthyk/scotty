@@ -1,7 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { ExecResult } from "@cloudflare/sandbox";
 import { Effect, Layer, Result } from "effect";
-import { agentEnv, ContainerAuth, containerAuthLayer } from "../src/container-auth";
+import {
+  agentEnv,
+  ContainerAuth,
+  containerAuthLayer,
+  sandboxAgentsInstructions,
+} from "../src/container-auth";
 import { sentinelAuthJson, type StoredCredential } from "../src/egress";
 import {
   SandboxRuntimeFailure,
@@ -128,6 +133,12 @@ describe("container auth values", () => {
       LC_ALL: "C.UTF-8",
     });
   });
+
+  it("does not impose a bundled browser or frontend screenshot gate", () => {
+    assert.ok(!sandboxAgentsInstructions.includes("before/after screenshots"));
+    assert.ok(!sandboxAgentsInstructions.includes("screenshot blocker"));
+    assert.ok(!sandboxAgentsInstructions.includes("agent-browser"));
+  });
 });
 
 describe("ContainerAuth", () => {
@@ -164,8 +175,13 @@ trust_level = "trusted"
 `,
         },
         {
+          operation: "writeFile",
+          path: `/workspace/${ID}/.codex/AGENTS.md`,
+          content: sandboxAgentsInstructions,
+        },
+        {
           operation: "exec",
-          command: `chmod 700 '/workspace/${ID}/.codex' && chmod 600 '/workspace/${ID}/.codex/auth.json' '/workspace/${ID}/.codex/config.toml'`,
+          command: `chmod 700 '/workspace/${ID}/.codex' && chmod 600 '/workspace/${ID}/.codex/auth.json' '/workspace/${ID}/.codex/config.toml' '/workspace/${ID}/.codex/AGENTS.md' && ln -sfn /opt/scotty/skills '/workspace/${ID}/.codex/skills'`,
           options: undefined,
         },
         {
@@ -213,8 +229,8 @@ trust_level = "trusted"
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 5);
-      assert.strictEqual(second.calls.length, 5);
+      assert.strictEqual(first.calls.length, 6);
+      assert.strictEqual(second.calls.length, 6);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),

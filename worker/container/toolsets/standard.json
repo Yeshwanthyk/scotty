@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "name": "standard",
+  "tools": [
+    {
+      "name": "rg",
+      "category": "search-data",
+      "commands": ["rg"],
+      "source": "GitHub release",
+      "versionPolicy": "pinned",
+      "expectedVersion": "15.2.0",
+      "probe": ["rg", "--version"]
+    },
+    {
+      "name": "fd",
+      "category": "search-data",
+      "commands": ["fd"],
+      "source": "GitHub release",
+      "versionPolicy": "pinned",
+      "expectedVersion": "10.4.2",
+      "probe": ["fd", "--version"]
+    },
+    {
+      "name": "ast-grep",
+      "category": "search-data",
+      "commands": ["ast-grep", "sg"],
+      "source": "npm",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.45.0",
+      "probe": ["ast-grep", "--version"]
+    },
+    {
+      "name": "jq",
+      "category": "search-data",
+      "commands": ["jq"],
+      "source": "Debian",
+      "versionPolicy": "image",
+      "probe": ["jq", "--version"]
+    },
+    {
+      "name": "yq",
+      "category": "search-data",
+      "commands": ["yq"],
+      "source": "GitHub release",
+      "versionPolicy": "pinned",
+      "expectedVersion": "4.53.3",
+      "probe": ["yq", "--version"]
+    },
+    {
+      "name": "qsv",
+      "category": "search-data",
+      "commands": ["qsv"],
+      "source": "GitHub release",
+      "versionPolicy": "pinned",
+      "expectedVersion": "21.1.0",
+      "probe": ["qsv", "--version"]
+    },
+    {
+      "name": "uv",
+      "category": "python",
+      "commands": ["uv"],
+      "source": "GitHub release",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.11.32",
+      "probe": ["uv", "--version"]
+    },
+    {
+      "name": "uvx",
+      "category": "python",
+      "commands": ["uvx"],
+      "source": "GitHub release",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.11.32",
+      "probe": ["uvx", "--version"]
+    },
+    {
+      "name": "CPython",
+      "category": "python",
+      "commands": ["python", "python3", "python3.13"],
+      "source": "uv managed",
+      "versionPolicy": "pinned",
+      "expectedVersion": "3.13.13",
+      "probe": ["python", "--version"]
+    },
+    {
+      "name": "git",
+      "category": "git-process",
+      "commands": ["git"],
+      "source": "base image",
+      "versionPolicy": "image",
+      "probe": ["git", "--version"]
+    },
+    {
+      "name": "gh",
+      "category": "git-process",
+      "commands": ["gh"],
+      "source": "Debian",
+      "versionPolicy": "image",
+      "probe": ["gh", "--version"]
+    },
+    {
+      "name": "tmux",
+      "category": "git-process",
+      "commands": ["tmux"],
+      "source": "Debian",
+      "versionPolicy": "image",
+      "probe": ["tmux", "-V"]
+    },
+    {
+      "name": "shellcheck",
+      "category": "git-process",
+      "commands": ["shellcheck"],
+      "source": "Debian",
+      "versionPolicy": "image",
+      "probe": [
+        "sh",
+        "-lc",
+        "command -v shellcheck >/dev/null && dpkg-query -W -f='${Version}\\n' shellcheck"
+      ]
+    },
+    {
+      "name": "Node",
+      "category": "javascript",
+      "commands": ["node"],
+      "source": "base image",
+      "versionPolicy": "image",
+      "probe": ["node", "--version"]
+    },
+    {
+      "name": "npm",
+      "category": "javascript",
+      "commands": ["npm"],
+      "source": "base image",
+      "versionPolicy": "image",
+      "probe": ["npm", "--version"]
+    },
+    {
+      "name": "Bun",
+      "category": "javascript",
+      "commands": ["bun"],
+      "source": "base image",
+      "versionPolicy": "image",
+      "probe": ["bun", "--version"]
+    },
+    {
+      "name": "Corepack",
+      "category": "javascript",
+      "commands": ["corepack"],
+      "source": "npm",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.35.0",
+      "probe": ["corepack", "--version"]
+    },
+    {
+      "name": "build-essential",
+      "category": "build",
+      "commands": ["cc", "c++", "make"],
+      "source": "Debian",
+      "versionPolicy": "image",
+      "probe": ["cc", "--version"]
+    },
+    {
+      "name": "pkg-config",
+      "category": "build",
+      "commands": ["pkg-config"],
+      "source": "Debian",
+      "versionPolicy": "image",
+      "probe": ["pkg-config", "--version"]
+    },
+    {
+      "name": "Codex",
+      "category": "scotty",
+      "commands": ["codex"],
+      "source": "npm",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.144.6",
+      "probe": ["codex", "--version"]
+    },
+    {
+      "name": "Sheppard",
+      "category": "scotty",
+      "commands": ["sheppard"],
+      "source": "Scotty image",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.1.2-scotty.2a7c6f8",
+      "probe": ["sheppard", "version"]
+    }
+  ]
+}

@@ -45,7 +45,7 @@ export const MONOLITH_GREENFIELD_TOPOLOGY = {
   container: {
     logicalId: "SandboxContainer",
     name: MONOLITH_GREENFIELD_CONTAINER_APPLICATION_NAME,
-    context: "worker/container",
+    context: ".",
     dockerfile: "worker/container/Dockerfile",
     instanceType: "standard-2",
     maxInstances: 10,

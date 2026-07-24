@@ -196,7 +196,7 @@ describe("monolith greenfield topology", () => {
       container: {
         logicalId: "SandboxContainer",
         name: "scotty-sandboxcontainer-production-ytkhty6mswuofjo5",
-        context: "worker/container",
+        context: ".",
         dockerfile: "worker/container/Dockerfile",
         instanceType: "standard-2",
         maxInstances: 10,

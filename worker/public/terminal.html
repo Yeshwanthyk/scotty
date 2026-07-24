@@ -32,6 +32,9 @@
         --danger: oklch(70% 0.16 25);
         --focus: oklch(84% 0.13 197);
         --header-height: 54px;
+        --mono:
+          "BerkeleyMono Nerd Font", "Berkeley Mono", "SFMono-Regular", "Cascadia Mono",
+          "Liberation Mono", Consolas, monospace;
         font-family:
           ui-sans-serif,
           system-ui,
@@ -96,7 +99,7 @@
         gap: 10px;
         min-width: 0;
         color: inherit;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-family: var(--mono);
         text-decoration: none;
       }
 
@@ -308,7 +311,7 @@
         gap: 9px;
         margin-bottom: 13px;
         color: var(--warm);
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-family: var(--mono);
         font-size: 0.72rem;
         letter-spacing: 0.06em;
       }
@@ -482,7 +485,7 @@
           border-radius: 8px;
           background: var(--terminal);
           color: var(--ink);
-          font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+          font-family: var(--mono);
           font-size: 0.75rem;
           font-weight: 620;
           box-shadow: 0 0 0 1px oklch(93% 0.02 220 / 0.1);
@@ -801,8 +804,7 @@
       const apiId = sessionId ? encodeURIComponent(sessionId) : "";
       const encoder = new TextEncoder();
       const reconnectDelays = [750, 1500, 3000, 6000, 10000, 15000];
-      const mobileLayout = matchMedia("(max-width: 560px)");
-      const fontSizeStorageKey = "scotty-terminal-font-size";
+      const fontSizeStorageKey = "scotty-terminal-font-size-v2";
       let terminal;
       let fitAddon;
       let socket;
@@ -827,12 +829,9 @@
 
       function readFontSize() {
         try {
-          return terminalFontSize(
-            localStorage.getItem(fontSizeStorageKey),
-            mobileLayout.matches ? 14 : 13,
-          );
+          return terminalFontSize(localStorage.getItem(fontSizeStorageKey), 15);
         } catch {
-          return mobileLayout.matches ? 14 : 13;
+          return 15;
         }
       }
 
@@ -1518,13 +1517,13 @@
             cursorBlink: !matchMedia("(prefers-reduced-motion: reduce)").matches,
             cursorStyle: "block",
             fontFamily:
-              '"Berkeley Mono", "SFMono-Regular", "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+              '"BerkeleyMono Nerd Font", "Berkeley Mono", "SFMono-Regular", "Cascadia Mono", "Liberation Mono", Consolas, monospace',
             fontSize: currentFontSize,
             scrollback: 6000,
             smoothScrollDuration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 110,
             theme: {
               background: "#0b1016",
-              foreground: "#dce8ee",
+              foreground: "#e8f0f3",
               cursor: "#7bd8e5",
               cursorAccent: "#0b1016",
               selectionBackground: "#214d59",
@@ -1537,7 +1536,7 @@
               magenta: "#b79ad6",
               cyan: "#78c8d3",
               white: "#cdd9df",
-              brightBlack: "#65737e",
+              brightBlack: "#7d8d98",
               brightRed: "#f18a8f",
               brightGreen: "#9adfbe",
               brightYellow: "#e6cf8d",

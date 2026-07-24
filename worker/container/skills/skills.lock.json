@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "source": "gitgud",
+  "snapshotAt": "2026-07-24T02:35:07.182Z",
+  "skills": [
+    {
+      "name": "breadboarding",
+      "source": "github:rjs/shaping-skills/breadboarding",
+      "subpath": ".",
+      "contentHash": "sha256:330af7bfea720c890a26ae512b73aa2b1974adc0b5e5ae5ca0c4d154a53ebaa2",
+      "resolvedCommit": "d8b65d7733c71e9bf436f0c2e4da60e5214a96d9"
+    },
+    {
+      "name": "domain-modeling",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/engineering/domain-modeling",
+      "contentHash": "sha256:40afc20cd49261811d7fe377fff53c1804f5e27644b42adb65469c7fc305a3a2",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "frontend-design",
+      "source": "github:anthropics/skills/skills/frontend-design",
+      "subpath": ".",
+      "contentHash": "sha256:665c585455decbcb02116bc928adf5148b9cd0f67b7eb4908c8c0d647c00f68a",
+      "resolvedCommit": "9d2f1ae187231d8199c64b5b762e1bdf2244733d"
+    },
+    {
+      "name": "grill-me",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/productivity/grill-me",
+      "contentHash": "sha256:000514e9633b1a2df8bef98549e99b6eaf1a8c3fabfad0e3b328440b3b226c90",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "grill-with-docs",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/engineering/grill-with-docs",
+      "contentHash": "sha256:84554e18aac963e26214159bfb522ddbd72dab710f43176727ca14f432033567",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "grilling",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/productivity/grilling",
+      "contentHash": "sha256:35963aa4abbdae92eb75d8c2dc69eaa70126315a642aba1e5371bd4a9305fb2a",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "i-have-adhd",
+      "source": "github:ayghri/i-have-adhd",
+      "subpath": "skills/i-have-adhd",
+      "contentHash": "sha256:9be649191b57d60447a257602e4e4e60a52fe6b17932bc29aadbcfe4f9236781",
+      "resolvedCommit": "72c33eee81ea439cf01991e93729adfce2ffc99e"
+    },
+    {
+      "name": "impeccable",
+      "source": "github:pbakaus/impeccable",
+      "subpath": ".agents/skills/impeccable",
+      "contentHash": "sha256:c805d991346c3831a1c04908311d7b0c48cb00c00772e669ea3252fec47bc2e2",
+      "resolvedCommit": "8259c28209b92792005cec14dad573df39f68eaf"
+    },
+    {
+      "name": "improve-codebase-architecture",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/engineering/improve-codebase-architecture",
+      "contentHash": "sha256:d3682058df92c259b47c36503baa02345d5811758621b5dc03081d5ba0f7b69b",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "interactive-system-explainer",
+      "source": "github:Yeshwanthyk/agent-skills",
+      "subpath": "skills/interactive-system-explainer",
+      "contentHash": "sha256:3934a73277060c8d49f41d83d0018c3f771918b9d09f57033f7339a5345facfd",
+      "resolvedCommit": "234c1ec32f104d132da4672ad04020a2a80ba711"
+    },
+    {
+      "name": "make-interfaces-feel-better",
+      "source": "github:jakubkrehel/make-interfaces-feel-better",
+      "subpath": "skills/make-interfaces-feel-better",
+      "contentHash": "sha256:de4d74dd857d3dc245e6f5d5483adc8795921f071ac2f4c471ab6c87df2b6ba7",
+      "resolvedCommit": "366f0f86efcb2811c26e2cf386d09cf2ddc35fcb"
+    },
+    {
+      "name": "prototype",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/engineering/prototype",
+      "contentHash": "sha256:9a52396fe98d9fd40299c304ce45655507715e6237c5bf6621a308a4e351e18b",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "research",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/engineering/research",
+      "contentHash": "sha256:6d02c11a6a7192f3e6058533e1cc310060cfceddd118623ea53e6d1da605d659",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "shaping",
+      "source": "github:rjs/shaping-skills/shaping",
+      "subpath": ".",
+      "contentHash": "sha256:bedb8aa62190760a78b9a3f3a694791a133024bbcca0f4cdb530b1e0a9f9ff86",
+      "resolvedCommit": "d8b65d7733c71e9bf436f0c2e4da60e5214a96d9"
+    },
+    {
+      "name": "stateful-systems",
+      "source": "github:Yeshwanthyk/agent-skills",
+      "subpath": "skills/stateful-systems",
+      "contentHash": "sha256:239d717dfdf95997c468313d59c25a3a11c3b6b882cda3cd7d6be798463ae7c9",
+      "resolvedCommit": "234c1ec32f104d132da4672ad04020a2a80ba711"
+    },
+    {
+      "name": "to-spec",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/engineering/to-spec",
+      "contentHash": "sha256:0e05c1bea97c787e44e79f4e255a9afd6a377c24f29f0a3a014f0231ebe57d8c",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "to-tickets",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/engineering/to-tickets",
+      "contentHash": "sha256:27f8a34226cc7109cd87895bb31e0163607348a6ef3653b8836b0be30dcf00e5",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "wayfinder",
+      "source": "github:mattpocock/skills",
+      "subpath": "skills/engineering/wayfinder",
+      "contentHash": "sha256:21c81e4a49dac730ada84bf5a23123b549078ad47ce5bb5359f11de489ee9ac8",
+      "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+    },
+    {
+      "name": "yesh-architect",
+      "source": "github:Yeshwanthyk/agent-skills",
+      "subpath": "skills/yesh-architect",
+      "contentHash": "sha256:e09cd2fa4122c35b4e11fd73e95135f1612b4c44c88a7e0a3797b1b91d0c2f84",
+      "resolvedCommit": "234c1ec32f104d132da4672ad04020a2a80ba711"
+    },
+    {
+      "name": "yesh-debug",
+      "source": "github:Yeshwanthyk/agent-skills",
+      "subpath": "skills/yesh-debug",
+      "contentHash": "sha256:0b04633da06139510aa80cdf716f1037c15a0d205eacdf578366c2f5b66155d4",
+      "resolvedCommit": "234c1ec32f104d132da4672ad04020a2a80ba711"
+    },
+    {
+      "name": "yesh-how",
+      "source": "github:Yeshwanthyk/agent-skills",
+      "subpath": "skills/yesh-how",
+      "contentHash": "sha256:4a62ca92d6938bb55576ad54014a8f2021d58cd2d4760e392d66082191c72d62",
+      "resolvedCommit": "234c1ec32f104d132da4672ad04020a2a80ba711"
+    },
+    {
+      "name": "yesh-plan",
+      "source": "github:Yeshwanthyk/agent-skills",
+      "subpath": "skills/yesh-plan",
+      "contentHash": "sha256:ab2cc0f3312b2f6878a508a2935f52e4d190ce6c54c61f296b538f592cee20a7",
+      "resolvedCommit": "234c1ec32f104d132da4672ad04020a2a80ba711"
+    },
+    {
+      "name": "yesh-structure-review",
+      "source": "github:Yeshwanthyk/agent-skills",
+      "subpath": "skills/yesh-structure-review",
+      "contentHash": "sha256:2067beb9e17af2d11509f43e7c29bc4686ca65442393ef1bb31404f5a3b61d73",
+      "resolvedCommit": "234c1ec32f104d132da4672ad04020a2a80ba711"
+    }
+  ]
+}

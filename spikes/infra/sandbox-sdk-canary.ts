@@ -213,7 +213,7 @@ export const m01cCanaryProgram = Effect.fnUntraced(function* (config: M01CCanary
   }).pipe(removalPolicy);
   const container = yield* Cloudflare.Containers.ContainerPlatform("SandboxContainer", {
     name: names.container,
-    context: "worker/container",
+    context: ".",
     // beta.63 resolves an explicit Dockerfile from cwd rather than context.
     dockerfile: "worker/container/Dockerfile",
     instanceType: "standard-2",
