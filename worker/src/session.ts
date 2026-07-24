@@ -488,11 +488,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.readFileStream(path);
   }
 
-  async getScottyTerminalSession(sessionId: string) {
-    await this.assertRuntimeAccess();
-    return this.getSession(sessionId);
-  }
-
   async vaporizeScottySession(): Promise<{ id: string; status: "gone" }> {
     const existing = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
     if (!existing) throw notFound("unknown");

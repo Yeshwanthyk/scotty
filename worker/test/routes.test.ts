@@ -12,7 +12,7 @@ const sandbox = vi.hoisted(() => ({
   publishScottySession: vi.fn(),
   prepareDownArchive: vi.fn(),
   readScottyArchiveStream: vi.fn(),
-  getScottyTerminalSession: vi.fn(),
+  getSession: vi.fn(),
   vaporizeScottySession: vi.fn(),
 }));
 
@@ -702,6 +702,38 @@ describe("real Hono boundary", () => {
     );
     expect(heartbeat.status).toBe(200);
     expect(sandbox.touchTerminalAttachment).toHaveBeenCalledWith("123456abcdef");
+  });
+
+  it("opens PTYs through the Worker-side enhanced Sandbox session", async () => {
+    const terminal = vi.fn().mockResolvedValue(new Response());
+    sandbox.getScottySession.mockResolvedValueOnce({ status: "warm" });
+    sandbox.prepareTerminalAttachment.mockResolvedValueOnce("scotty-web-123456abcdef");
+    sandbox.getSession.mockReturnValueOnce({ terminal });
+    sandbox.releaseTerminalAttachment.mockResolvedValueOnce(undefined);
+
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/pty?client=123456abcdef&cols=120&rows=40",
+      {
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          upgrade: "websocket",
+        },
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(502);
+    expect(sandbox.prepareTerminalAttachment).toHaveBeenCalledWith("123456abcdef");
+    expect(sandbox.getSession).toHaveBeenCalledWith("scotty-web-123456abcdef");
+    expect(terminal).toHaveBeenCalledWith(
+      expect.any(Request),
+      expect.objectContaining({
+        cols: 120,
+        rows: 40,
+        shell: "/usr/local/bin/scotty-attach",
+      }),
+    );
+    expect(sandbox.releaseTerminalAttachment).toHaveBeenCalledWith("123456abcdef");
   });
 
   it("does not serve the terminal client without a canonical session URL", async () => {

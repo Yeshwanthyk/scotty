@@ -308,7 +308,7 @@ app.get("/api/sessions/:id/pty", async (c) => {
   const rows = positiveInteger(c.req.query("rows"), 24);
   const terminalSessionId = await sandbox.prepareTerminalAttachment(clientId);
   try {
-    const terminalSession = await sandbox.getScottyTerminalSession(terminalSessionId);
+    const terminalSession = await sandbox.getSession(terminalSessionId);
     const response = await terminalSession.terminal(c.req.raw, {
       cols,
       rows,
