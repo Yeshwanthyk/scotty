@@ -804,6 +804,7 @@
       const apiId = sessionId ? encodeURIComponent(sessionId) : "";
       const encoder = new TextEncoder();
       const reconnectDelays = [750, 1500, 3000, 6000, 10000, 15000];
+      const mobileLayout = matchMedia("(max-width: 560px)");
       const fontSizeStorageKey = "scotty-terminal-font-size-v2";
       let terminal;
       let fitAddon;

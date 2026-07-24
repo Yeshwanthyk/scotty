@@ -50,6 +50,7 @@ describe("pinned Task 4 contracts", () => {
     expect(terminalHtml).toMatch(
       /"BerkeleyMono Nerd Font", "Berkeley Mono", "SFMono-Regular", "Cascadia Mono"/,
     );
+    expect(terminalHtml).toContain('const mobileLayout = matchMedia("(max-width: 560px)")');
     expect(terminalHtml).toContain('const fontSizeStorageKey = "scotty-terminal-font-size-v2"');
     expect(terminalHtml).toMatch(
       /terminalFontSize\(localStorage\.getItem\(fontSizeStorageKey\), 15\)/,
