@@ -3,17 +3,23 @@ import { Clock, Effect } from "effect";
 import { TestClock } from "effect/testing";
 import {
   createSessionHarness,
+  type HarnessOptions,
   makeResumeBackup,
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
-const currentTestTime = Effect.gen(function* () {
-  const now = yield* TestClock.withLive(Clock.currentTimeMillis);
-  yield* TestClock.setTime(now);
-  return now;
-});
+const TEST_TIME = Date.parse("2026-07-24T12:00:00.000Z");
+
+const createTestHarness = (options: HarnessOptions = {}) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(TEST_TIME);
+    const clock = yield* Clock.Clock;
+    return yield* Effect.promise(() => createSessionHarness({ ...options, clock }));
+  });
+
+const currentTestTime = Effect.succeed(TEST_TIME);
 
 const isoAt = (milliseconds: number): string => new Date(milliseconds).toISOString();
 
@@ -36,6 +42,27 @@ const managedStopRecord = (
   });
 
 describe("Sandbox lifecycle machine", () => {
+  it.effect("shares the deterministic TestClock across the Durable Object Promise boundary", () =>
+    Effect.gen(function* () {
+      const record = makeSessionRecord({
+        createdAt: isoAt(TEST_TIME - 1_000),
+        hardCapAt: isoAt(TEST_TIME + 60_000),
+      });
+      const harness = yield* createTestHarness({
+        initialEntries: { [sessionHarnessKeys.record]: record },
+      });
+
+      const initial = yield* Effect.promise(() => harness.sandbox.getScottySession());
+      assert.strictEqual(initial.ageSeconds, 1);
+      assert.strictEqual(initial.capRemainingSeconds, 60);
+
+      yield* TestClock.adjust("10 seconds");
+      const advanced = yield* Effect.promise(() => harness.sandbox.getScottySession());
+      assert.strictEqual(advanced.ageSeconds, 11);
+      assert.strictEqual(advanced.capRemainingSeconds, 50);
+    }),
+  );
+
   it.effect("enforceHardCap re-schedules a live operation inside the 30-second grace window", () =>
     Effect.gen(function* () {
       const now = yield* currentTestTime;
@@ -46,11 +73,9 @@ describe("Sandbox lifecycle machine", () => {
           startedAt: isoAt(now),
         },
       });
-      const harness = yield* Effect.promise(() =>
-        createSessionHarness({
-          initialEntries: { [sessionHarnessKeys.record]: record },
-        }),
-      );
+      const harness = yield* createTestHarness({
+        initialEntries: { [sessionHarnessKeys.record]: record },
+      });
 
       yield* Effect.promise(() => harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt }));
 
@@ -70,11 +95,9 @@ describe("Sandbox lifecycle machine", () => {
   it.effect("enforceHardCap ignores a stale hardCapAt payload without mutating authority", () =>
     Effect.gen(function* () {
       const record = makeSessionRecord();
-      const harness = yield* Effect.promise(() =>
-        createSessionHarness({
-          initialEntries: { [sessionHarnessKeys.record]: record },
-        }),
-      );
+      const harness = yield* createTestHarness({
+        initialEntries: { [sessionHarnessKeys.record]: record },
+      });
 
       yield* Effect.promise(() =>
         harness.sandbox.enforceHardCap({
@@ -100,11 +123,9 @@ describe("Sandbox lifecycle machine", () => {
             startedAt: isoAt(now - 30_001),
           },
         });
-        const harness = yield* Effect.promise(() =>
-          createSessionHarness({
-            initialEntries: { [sessionHarnessKeys.record]: record },
-          }),
-        );
+        const harness = yield* createTestHarness({
+          initialEntries: { [sessionHarnessKeys.record]: record },
+        });
 
         yield* Effect.promise(() =>
           harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt }),
@@ -126,12 +147,10 @@ describe("Sandbox lifecycle machine", () => {
   it.effect("onActivityExpired checkpoints an idle warm session and stops into sleeping", () =>
     Effect.gen(function* () {
       const record = makeSessionRecord();
-      const harness = yield* Effect.promise(() =>
-        createSessionHarness({
-          initialEntries: { [sessionHarnessKeys.record]: record },
-          stopCallsOnStop: true,
-        }),
-      );
+      const harness = yield* createTestHarness({
+        initialEntries: { [sessionHarnessKeys.record]: record },
+        stopCallsOnStop: true,
+      });
 
       yield* Effect.promise(() => harness.sandbox.onActivityExpired());
 
@@ -151,11 +170,9 @@ describe("Sandbox lifecycle machine", () => {
       const committed = managedStopRecord(now, {
         stopRequestedAt: isoAt(now),
       });
-      const harness = yield* Effect.promise(() =>
-        createSessionHarness({
-          initialEntries: { [sessionHarnessKeys.record]: committed },
-        }),
-      );
+      const harness = yield* createTestHarness({
+        initialEntries: { [sessionHarnessKeys.record]: committed },
+      });
 
       yield* Effect.promise(() => harness.sandbox.onStop());
 
@@ -173,11 +190,9 @@ describe("Sandbox lifecycle machine", () => {
         backup: { current: makeResumeBackup() },
         ownedBackupIds: ["backup-1"],
       });
-      const harness = yield* Effect.promise(() =>
-        createSessionHarness({
-          initialEntries: { [sessionHarnessKeys.record]: uncommitted },
-        }),
-      );
+      const harness = yield* createTestHarness({
+        initialEntries: { [sessionHarnessKeys.record]: uncommitted },
+      });
 
       yield* Effect.promise(() => harness.sandbox.onStop());
 
@@ -199,11 +214,9 @@ describe("Sandbox lifecycle machine", () => {
       Effect.gen(function* () {
         const now = yield* currentTestTime;
         const record = managedStopRecord(now);
-        const harness = yield* Effect.promise(() =>
-          createSessionHarness({
-            initialEntries: { [sessionHarnessKeys.record]: record },
-          }),
-        );
+        const harness = yield* createTestHarness({
+          initialEntries: { [sessionHarnessKeys.record]: record },
+        });
         const payload = {
           nonce: "managed-stop",
           armedAt: isoAt(now - 30_001),
@@ -229,12 +242,10 @@ describe("Sandbox lifecycle machine", () => {
       Effect.gen(function* () {
         const now = yield* currentTestTime;
         const record = managedStopRecord(now);
-        const harness = yield* Effect.promise(() =>
-          createSessionHarness({
-            failureStage: "rollbackResume",
-            initialEntries: { [sessionHarnessKeys.record]: record },
-          }),
-        );
+        const harness = yield* createTestHarness({
+          failureStage: "rollbackResume",
+          initialEntries: { [sessionHarnessKeys.record]: record },
+        });
         const payload = {
           nonce: "managed-stop",
           armedAt: isoAt(now - 30_001),
@@ -256,11 +267,9 @@ describe("Sandbox lifecycle machine", () => {
   it.effect("captureThreadId stops after the twelfth bounded discovery attempt", () =>
     Effect.gen(function* () {
       const record = makeSessionRecord();
-      const harness = yield* Effect.promise(() =>
-        createSessionHarness({
-          initialEntries: { [sessionHarnessKeys.record]: record },
-        }),
-      );
+      const harness = yield* createTestHarness({
+        initialEntries: { [sessionHarnessKeys.record]: record },
+      });
 
       for (let attempt = 0; attempt < 12; attempt += 1) {
         yield* Effect.promise(() => harness.sandbox.captureThreadId({ attempt }));
@@ -285,11 +294,9 @@ describe("Sandbox lifecycle machine", () => {
           startedAt: isoAt(now - (5 * 60_000 + 1)),
         },
       });
-      const harness = yield* Effect.promise(() =>
-        createSessionHarness({
-          initialEntries: { [sessionHarnessKeys.record]: abandoned },
-        }),
-      );
+      const harness = yield* createTestHarness({
+        initialEntries: { [sessionHarnessKeys.record]: abandoned },
+      });
 
       yield* Effect.promise(() =>
         harness.sandbox.enforceHardCap({ hardCapAt: abandoned.hardCapAt }),

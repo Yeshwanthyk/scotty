@@ -115,6 +115,10 @@ interface VaporizeRetryPayload {
   nonce: string;
 }
 
+export interface SandboxEffectOptions {
+  readonly clock?: Clock.Clock;
+}
+
 class ManagedStopArmedError extends Data.TaggedError("ManagedStopArmedError")<{
   readonly cause: unknown;
 }> {}
@@ -133,9 +137,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   enableInternet = false;
   allowedHosts = [...ALLOWED_HOSTS];
   private readonly layer: Layer.Layer<SandboxServices>;
+  private readonly clock: Clock.Clock | undefined;
 
-  constructor(ctx: DurableObjectState<{}>, env: Bindings) {
+  constructor(ctx: DurableObjectState<{}>, env: Bindings, options: SandboxEffectOptions = {}) {
     super(ctx, env);
+    this.clock = options.clock;
 
     const runtime = sandboxRuntimeLayer({
       exec: async (command, options) => {
@@ -1339,10 +1345,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async #run<A, E>(operation: Effect.Effect<A, E, SandboxServices>): Promise<A> {
+    const provided =
+      this.clock === undefined
+        ? operation.pipe(Effect.provide(this.layer))
+        : operation.pipe(
+            Effect.provide(this.layer),
+            Effect.provideService(Clock.Clock, this.clock),
+          );
     // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Sandbox Durable Object methods must return Promises to the Cloudflare host
-    const result = await Effect.runPromise(
-      operation.pipe(Effect.provide(this.layer), Effect.result),
-    );
+    const result = await Effect.runPromise(provided.pipe(Effect.result));
     return Result.match(result, {
       onFailure: (error) => {
         // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Effect failure must reject the Promise required by the Sandbox Durable Object host
