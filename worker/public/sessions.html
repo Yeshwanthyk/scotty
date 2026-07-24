@@ -13,14 +13,22 @@
         --space: oklch(13% 0.012 248);
         --shell: oklch(16% 0.014 248);
         --panel: #0b1016;
+        --panel-raised: oklch(17.5% 0.018 245);
+        --control: oklch(11.5% 0.012 245);
         --ink: oklch(93% 0.012 220);
         --muted: oklch(70% 0.025 230);
         --quiet: oklch(53% 0.024 235);
         --line: oklch(30% 0.025 235);
+        --line-soft: oklch(93% 0.012 220 / 0.075);
+        --line-hover: oklch(93% 0.012 220 / 0.14);
         --beam: oklch(79% 0.115 200);
         --warm: oklch(79% 0.12 78);
         --danger: oklch(70% 0.16 25);
         --focus: oklch(84% 0.13 197);
+        --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+        --ring: 0 0 0 1px var(--line-soft);
+        --ring-hover: 0 0 0 1px var(--line-hover);
+        --z-sticky: 10;
         font-family:
           ui-sans-serif,
           system-ui,
@@ -30,6 +38,7 @@
           sans-serif;
         font-synthesis: none;
         -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
         text-rendering: optimizeLegibility;
       }
 
@@ -42,7 +51,9 @@
         min-height: 100vh;
         min-height: 100dvh;
         margin: 0;
-        background: var(--space);
+        background:
+          radial-gradient(90% 44% at 50% -16%, oklch(34% 0.055 220 / 0.16), transparent 72%),
+          var(--space);
         color: var(--ink);
       }
 
@@ -59,8 +70,11 @@
       }
 
       .masthead {
-        border-bottom: 1px solid var(--line);
-        background: var(--shell);
+        position: sticky;
+        z-index: var(--z-sticky);
+        top: 0;
+        background: oklch(16% 0.014 248 / 0.96);
+        box-shadow: 0 1px 0 var(--line-soft);
       }
 
       .masthead-inner,
@@ -82,7 +96,21 @@
       .masthead-actions {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 4px;
+      }
+
+      .masthead-actions .button {
+        min-height: 40px;
+        padding-inline: 11px;
+        background: transparent;
+        box-shadow: none;
+        color: var(--muted);
+      }
+
+      .masthead-actions .button:hover {
+        background: oklch(93% 0.012 220 / 0.05);
+        box-shadow: none;
+        color: var(--ink);
       }
 
       .identity {
@@ -103,29 +131,31 @@
       }
 
       main {
-        padding: 28px max(16px, env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom))
+        padding: 32px max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom))
           max(16px, env(safe-area-inset-left));
       }
 
       .page-heading {
         display: flex;
-        align-items: end;
+        align-items: center;
         justify-content: space-between;
-        gap: 18px;
-        margin-bottom: 18px;
+        gap: 24px;
+        margin-bottom: 22px;
       }
 
       h1 {
         margin: 0;
-        font-size: clamp(1.3rem, 4vw, 1.75rem);
+        font-size: 1.75rem;
         font-weight: 650;
         letter-spacing: -0.025em;
+        line-height: 1.1;
+        text-wrap: balance;
       }
 
       .subtitle {
-        margin: 5px 0 0;
+        margin: 7px 0 0;
         color: var(--muted);
-        font-size: 0.82rem;
+        font-size: 0.84rem;
       }
 
       .button {
@@ -134,9 +164,10 @@
         align-items: center;
         justify-content: center;
         padding: 0 15px;
-        border: 1px solid var(--line);
-        border-radius: 5px;
-        background: var(--shell);
+        border: 0;
+        border-radius: 6px;
+        background: var(--panel-raised);
+        box-shadow: var(--ring);
         color: var(--ink);
         font-size: 0.78rem;
         font-weight: 680;
@@ -144,14 +175,16 @@
         text-decoration: none;
         cursor: pointer;
         transition:
-          scale 120ms ease-out,
-          border-color 150ms ease-out,
-          background-color 150ms ease-out;
+          scale 120ms var(--ease-out),
+          box-shadow 150ms var(--ease-out),
+          background-color 150ms var(--ease-out),
+          color 150ms var(--ease-out),
+          opacity 150ms var(--ease-out);
       }
 
       .button:hover {
-        border-color: var(--quiet);
-        background: oklch(19% 0.018 240);
+        background: oklch(20% 0.02 240);
+        box-shadow: var(--ring-hover);
       }
 
       .button:active {
@@ -159,7 +192,7 @@
       }
 
       .button:focus-visible {
-        outline: 2px solid var(--focus);
+        outline: 1px solid var(--focus);
         outline-offset: 2px;
       }
 
@@ -169,34 +202,66 @@
       }
 
       .button-primary {
-        border-color: transparent;
         background: var(--beam);
+        box-shadow:
+          0 0 0 1px oklch(94% 0.03 200 / 0.12),
+          0 2px 6px oklch(3% 0.01 245 / 0.34);
         color: oklch(18% 0.024 220);
       }
 
       .button-primary:hover {
-        border-color: transparent;
         background: oklch(86% 0.12 197);
+        box-shadow:
+          0 0 0 1px oklch(94% 0.03 200 / 0.18),
+          0 3px 8px oklch(3% 0.01 245 / 0.42);
+      }
+
+      .has-no-sessions .page-heading .button-primary {
+        background: transparent;
+        box-shadow: var(--ring);
+        color: var(--muted);
+      }
+
+      .has-no-sessions .page-heading .button-primary:hover {
+        background: oklch(93% 0.012 220 / 0.05);
+        box-shadow: var(--ring-hover);
+        color: var(--ink);
       }
 
       .button-quiet {
-        border-color: transparent;
         background: transparent;
+        box-shadow: none;
         color: var(--muted);
       }
 
       .button-quiet:hover {
-        border-color: transparent;
+        background: oklch(93% 0.012 220 / 0.05);
+        box-shadow: none;
+        color: var(--ink);
       }
 
       .button-danger {
+        background: transparent;
+        box-shadow: none;
         color: var(--danger);
       }
 
+      .button-danger:hover {
+        background: oklch(70% 0.16 25 / 0.08);
+        box-shadow: none;
+        color: oklch(78% 0.14 25);
+      }
+
       .button-danger-confirm {
-        border-color: oklch(48% 0.12 25);
         background: oklch(24% 0.055 25);
+        box-shadow: 0 0 0 1px oklch(58% 0.13 25 / 0.7);
         color: oklch(84% 0.1 25);
+      }
+
+      .button-danger-confirm:hover {
+        background: oklch(28% 0.065 25);
+        box-shadow: 0 0 0 1px oklch(66% 0.14 25 / 0.75);
+        color: oklch(89% 0.08 25);
       }
 
       .notice {
@@ -224,9 +289,9 @@
         margin-bottom: 0;
         opacity: 0;
         transition:
-          grid-template-rows 180ms cubic-bezier(0.16, 1, 0.3, 1),
-          margin-bottom 180ms cubic-bezier(0.16, 1, 0.3, 1),
-          opacity 130ms ease-out;
+          grid-template-rows 200ms var(--ease-out),
+          margin-bottom 200ms var(--ease-out),
+          opacity 140ms var(--ease-out);
       }
 
       .composer-region.is-open {
@@ -241,73 +306,88 @@
       }
 
       .composer {
-        padding: 18px;
-        border: 1px solid oklch(38% 0.04 220);
-        border-radius: 9px;
-        background: var(--panel);
-        box-shadow: 0 3px 8px oklch(3% 0.01 245 / 0.3);
+        padding: 20px;
+        border: 0;
+        border-radius: 12px;
+        background: oklch(15% 0.016 245);
+        box-shadow:
+          0 0 0 1px oklch(79% 0.115 200 / 0.2),
+          0 4px 8px oklch(3% 0.01 245 / 0.34);
+        transform: translateY(-6px) scale(0.995);
+        transform-origin: 50% 0;
+        transition:
+          box-shadow 180ms var(--ease-out),
+          transform 200ms var(--ease-out);
+      }
+
+      .composer-region.is-open .composer {
+        transform: translateY(0) scale(1);
       }
 
       .composer-heading {
-        margin-bottom: 17px;
+        margin-bottom: 20px;
       }
 
       .composer-heading h2 {
         margin: 0;
-        font-size: 1rem;
-        font-weight: 680;
+        font-size: 1.05rem;
+        font-weight: 700;
         letter-spacing: -0.015em;
+        line-height: 1.3;
+        text-wrap: balance;
       }
 
       .composer-heading p {
         max-width: 68ch;
-        margin: 4px 0 0;
+        margin: 6px 0 0;
         color: var(--muted);
-        font-size: 0.78rem;
-        line-height: 1.45;
+        font-size: 0.8rem;
+        line-height: 1.5;
         text-wrap: pretty;
       }
 
       .composer-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 160px;
-        gap: 14px;
+        grid-template-columns: minmax(0, 1fr) 180px;
+        gap: 16px;
       }
 
       .field {
         display: grid;
         min-width: 0;
-        gap: 7px;
+        align-content: start;
+        gap: 8px;
       }
 
       .field-prompt {
-        margin-top: 14px;
+        margin-top: 18px;
       }
 
       .field label {
-        color: var(--muted);
-        font-size: 0.72rem;
-        font-weight: 650;
+        color: oklch(78% 0.02 230);
+        font-size: 0.75rem;
+        font-weight: 680;
       }
 
       .field-hint {
         color: var(--quiet);
-        font-size: 0.69rem;
-        line-height: 1.4;
+        font-size: 0.72rem;
+        line-height: 1.45;
+        text-wrap: pretty;
       }
 
       .control {
         width: 100%;
         min-height: 44px;
         border: 1px solid var(--line);
-        border-radius: 5px;
+        border-radius: 6px;
         outline: none;
-        background: oklch(12% 0.012 245);
+        background: var(--control);
         color: var(--ink);
         transition:
-          border-color 150ms ease-out,
-          box-shadow 150ms ease-out,
-          background-color 150ms ease-out;
+          border-color 150ms var(--ease-out),
+          box-shadow 150ms var(--ease-out),
+          background-color 150ms var(--ease-out);
       }
 
       input.control,
@@ -316,10 +396,10 @@
       }
 
       textarea.control {
-        min-height: 132px;
+        min-height: 144px;
         resize: vertical;
-        padding: 11px 12px;
-        line-height: 1.5;
+        padding: 12px 13px;
+        line-height: 1.55;
       }
 
       .control::placeholder {
@@ -327,7 +407,8 @@
       }
 
       .control:hover:not(:disabled) {
-        border-color: var(--quiet);
+        border-color: oklch(44% 0.03 230);
+        background: oklch(12.5% 0.014 245);
       }
 
       .control:focus {
@@ -342,42 +423,65 @@
 
       .recent-repos {
         display: flex;
-        min-height: 26px;
+        min-height: 40px;
         align-items: center;
-        gap: 6px;
-        overflow-x: auto;
-        margin-top: 8px;
-        scrollbar-width: none;
+        flex-wrap: wrap;
+        gap: 8px;
       }
 
-      .recent-repos:empty {
+      .recent-repositories[hidden] {
         display: none;
       }
 
-      .recent-repos::-webkit-scrollbar {
-        display: none;
+      .recent-repositories {
+        display: grid;
+        gap: 7px;
+        margin-top: 2px;
+      }
+
+      .recent-label {
+        color: var(--quiet);
+        font-size: 0.69rem;
+        font-weight: 650;
       }
 
       .repo-suggestion {
+        display: inline-flex;
+        max-width: 100%;
+        min-height: 40px;
+        min-width: 0;
+        align-items: center;
+        gap: 9px;
         flex: none;
-        padding: 4px 7px;
-        border: 1px solid transparent;
-        border-radius: 4px;
-        background: oklch(19% 0.017 240);
+        padding: 0 10px;
+        border: 0;
+        border-radius: 6px;
+        background: var(--panel-raised);
+        box-shadow: var(--ring);
         color: var(--muted);
         font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 0.67rem;
+        font-size: 0.7rem;
         line-height: 1.2;
         cursor: pointer;
+        transition:
+          background-color 150ms var(--ease-out),
+          box-shadow 150ms var(--ease-out),
+          color 150ms var(--ease-out),
+          scale 120ms var(--ease-out);
       }
 
       .repo-suggestion:hover {
-        border-color: var(--line);
+        background: oklch(20% 0.02 240);
+        box-shadow: var(--ring-hover);
         color: var(--ink);
       }
 
+      .repo-suggestion:active {
+        scale: 0.96;
+      }
+
       .repo-suggestion:focus-visible {
-        outline: 2px solid var(--focus);
+        outline: 1px solid var(--focus);
         outline-offset: 2px;
       }
 
@@ -386,13 +490,31 @@
         opacity: 0.5;
       }
 
+      .repo-suggestion-name {
+        min-width: 0;
+        overflow: hidden;
+        color: inherit;
+        font-weight: 680;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .repo-suggestion-branch {
+        flex: none;
+        padding: 3px 5px;
+        border-radius: 4px;
+        background: oklch(11% 0.012 245 / 0.7);
+        color: var(--quiet);
+        font-size: 0.65rem;
+      }
+
       .composer-footer {
         display: flex;
         min-height: 44px;
         align-items: center;
         justify-content: space-between;
-        gap: 18px;
-        margin-top: 15px;
+        gap: 20px;
+        margin-top: 18px;
       }
 
       .composer-feedback {
@@ -424,34 +546,74 @@
         display: flex;
         flex: none;
         gap: 8px;
+        margin-left: auto;
       }
 
       .shortcut {
-        margin-left: 8px;
-        color: oklch(30% 0.025 235);
+        margin-left: 7px;
+        padding: 3px 5px;
+        border-radius: 4px;
+        background: oklch(18% 0.024 220 / 0.11);
+        color: oklch(24% 0.028 220);
         font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
         font-size: 0.67rem;
         font-weight: 700;
       }
 
       .state {
-        padding: 56px 20px;
-        border: 1px solid var(--line);
-        border-radius: 7px;
-        background: var(--panel);
+        padding: 44px 24px;
+        border: 0;
+        border-radius: 10px;
+        background:
+          radial-gradient(48% 80% at 50% 0%, oklch(79% 0.115 200 / 0.045), transparent 100%),
+          var(--panel);
+        box-shadow:
+          var(--ring),
+          0 3px 8px oklch(3% 0.01 245 / 0.2);
         color: var(--muted);
         text-align: center;
       }
 
+      .state-empty::before {
+        content: ">_";
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        margin: 0 auto 18px;
+        border-radius: 8px;
+        background: oklch(79% 0.115 200 / 0.08);
+        box-shadow: 0 0 0 1px oklch(79% 0.115 200 / 0.16);
+        color: var(--beam);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.72rem;
+        font-weight: 700;
+      }
+
       .state strong {
         display: block;
-        margin-bottom: 6px;
+        margin-bottom: 8px;
         color: var(--ink);
-        font-size: 0.95rem;
+        font-size: 1.05rem;
+        letter-spacing: -0.012em;
+        text-wrap: balance;
+      }
+
+      .state-copy {
+        max-width: 58ch;
+        margin: 0 auto;
+        line-height: 1.55;
+        text-wrap: pretty;
       }
 
       .state .button {
-        margin-top: 18px;
+        display: flex;
+        width: max-content;
+        margin: 22px auto 0;
+      }
+
+      .composer-open #content .state {
+        display: none;
       }
 
       .session-list {
@@ -466,13 +628,25 @@
         display: grid;
         grid-template-columns: minmax(190px, 1.5fr) minmax(150px, 1fr) auto;
         align-items: center;
-        gap: 20px;
+        gap: 24px;
         min-width: 0;
-        padding: 15px;
-        border: 1px solid var(--line);
-        border-radius: 7px;
+        padding: 17px 18px;
+        border: 0;
+        border-radius: 10px;
         background: var(--panel);
-        box-shadow: 0 2px 6px oklch(3% 0.01 245 / 0.28);
+        box-shadow:
+          var(--ring),
+          0 2px 6px oklch(3% 0.01 245 / 0.24);
+        transition:
+          background-color 160ms var(--ease-out),
+          box-shadow 160ms var(--ease-out);
+      }
+
+      .session:hover {
+        background: oklch(15.5% 0.017 245);
+        box-shadow:
+          var(--ring-hover),
+          0 3px 8px oklch(3% 0.01 245 / 0.3);
       }
 
       .repo,
@@ -485,8 +659,11 @@
 
       .repo {
         margin: 0;
-        font-size: 0.95rem;
-        font-weight: 650;
+        font-size: 0.98rem;
+        font-weight: 680;
+        letter-spacing: -0.01em;
+        line-height: 1.3;
+        text-wrap: balance;
       }
 
       .branch,
@@ -497,24 +674,45 @@
       }
 
       .branch {
-        margin-top: 4px;
+        min-width: 0;
         color: var(--muted);
-        font-size: 0.72rem;
+        font-size: 0.73rem;
       }
 
       .session-id {
-        margin-top: 5px;
+        flex: none;
         color: var(--quiet);
-        font-size: 0.67rem;
+        font-size: 0.68rem;
+      }
+
+      .identity-meta {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+      }
+
+      .identity-separator {
+        width: 3px;
+        height: 3px;
+        flex: none;
+        border-radius: 50%;
+        background: var(--quiet);
       }
 
       .status-line {
-        display: flex;
+        display: inline-flex;
+        min-height: 28px;
         align-items: center;
-        gap: 8px;
-        margin-bottom: 7px;
-        font-size: 0.76rem;
-        font-weight: 650;
+        gap: 7px;
+        margin-bottom: 8px;
+        padding: 0 9px;
+        border-radius: 999px;
+        background: oklch(53% 0.024 235 / 0.09);
+        color: var(--muted);
+        font-size: 0.73rem;
+        font-weight: 680;
         text-transform: capitalize;
       }
 
@@ -527,12 +725,27 @@
         box-shadow: 0 0 0 3px oklch(53% 0.024 235 / 0.12);
       }
 
+      .status-warm .status-line {
+        background: oklch(79% 0.115 200 / 0.09);
+        color: var(--beam);
+      }
+
       .status-warm .signal {
         background: var(--beam);
       }
 
+      .status-sleeping .status-line {
+        background: oklch(79% 0.12 78 / 0.09);
+        color: var(--warm);
+      }
+
       .status-sleeping .signal {
         background: var(--warm);
+      }
+
+      .status-failed .status-line {
+        background: oklch(70% 0.16 25 / 0.09);
+        color: var(--danger);
       }
 
       .status-failed .signal {
@@ -542,22 +755,28 @@
       .metrics {
         display: flex;
         flex-wrap: wrap;
-        gap: 5px 14px;
+        gap: 5px 12px;
         color: var(--muted);
-        font-size: 0.69rem;
+        font-size: 0.7rem;
       }
 
       .actions {
         display: flex;
         flex-wrap: wrap;
+        align-items: center;
         justify-content: flex-end;
         gap: 8px;
+      }
+
+      .actions .button {
+        min-height: 40px;
+        padding-inline: 13px;
       }
 
       .row-error,
       .confirmation {
         grid-column: 1 / -1;
-        margin: -4px 0 0;
+        margin: -2px 0 0;
         font-size: 0.76rem;
         line-height: 1.45;
       }
@@ -571,25 +790,30 @@
         align-items: center;
         justify-content: flex-end;
         gap: 10px;
+        padding: 12px;
+        border-radius: 8px;
+        background: oklch(20% 0.035 25);
+        box-shadow: 0 0 0 1px oklch(58% 0.13 25 / 0.35);
         color: var(--muted);
       }
 
       @media (max-width: 720px) {
         main {
-          padding-top: 20px;
+          padding-top: 24px;
+        }
+
+        h1 {
+          font-size: 1.5rem;
         }
 
         .session {
           grid-template-columns: 1fr;
-          gap: 14px;
+          gap: 16px;
+          padding: 16px;
         }
 
         .actions {
-          justify-content: stretch;
-        }
-
-        .actions .button {
-          flex: 1 1 90px;
+          justify-content: flex-end;
         }
 
         .confirmation {
@@ -599,10 +823,24 @@
 
         .composer {
           padding: 16px;
+          border-radius: 10px;
         }
 
-        .composer-grid {
-          grid-template-columns: 1fr;
+        .composer-heading p {
+          font-size: 0.875rem;
+        }
+
+        .field label,
+        .field-hint,
+        .branch,
+        .session-id,
+        .metrics,
+        .status-line {
+          font-size: 0.78rem;
+        }
+
+        .repo-suggestion {
+          font-size: 0.78rem;
         }
 
         .composer-footer {
@@ -613,10 +851,18 @@
 
         .composer-actions {
           width: 100%;
+          justify-content: flex-end;
+          margin-left: 0;
         }
 
-        .composer-actions .button-primary {
-          flex: 1;
+        .shortcut {
+          display: none;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .composer-grid {
+          grid-template-columns: 1fr;
         }
       }
 
@@ -634,12 +880,34 @@
         }
 
         .page-heading .button {
-          min-height: 40px;
           padding-inline: 12px;
         }
 
-        .composer-actions .button {
-          flex: 1;
+        .recent-repos {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .repo-suggestion {
+          justify-content: space-between;
+          width: 100%;
+        }
+
+        .repo-suggestion:nth-child(n + 4) {
+          display: none;
+        }
+
+        .notice {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .confirmation-copy {
+          flex-basis: 100%;
+        }
+
+        .state {
+          padding: 40px 20px;
         }
       }
 
@@ -648,7 +916,18 @@
           transition: none;
         }
 
+        .composer,
+        .session,
+        .repo-suggestion {
+          transition: none;
+          transform: none;
+        }
+
         .button:active {
+          scale: none;
+        }
+
+        .repo-suggestion:active {
           scale: none;
         }
       }
@@ -704,14 +983,15 @@
                   name="repo"
                   type="text"
                   placeholder="owner/repository"
-                  list="repository-suggestions"
                   autocomplete="off"
                   autocapitalize="none"
                   spellcheck="false"
                   required
                 />
-                <datalist id="repository-suggestions"></datalist>
-                <div class="recent-repos" id="recent-repos" aria-label="Recent repositories"></div>
+                <div class="recent-repositories" id="recent-repositories" hidden>
+                  <span class="recent-label">Recent repositories</span>
+                  <div class="recent-repos" id="recent-repos"></div>
+                </div>
               </div>
 
               <div class="field">
@@ -786,7 +1066,7 @@
       const repoInput = document.querySelector("#session-repo");
       const capSelect = document.querySelector("#session-cap");
       const promptInput = document.querySelector("#session-prompt");
-      const repositoryDatalist = document.querySelector("#repository-suggestions");
+      const recentRepositories = document.querySelector("#recent-repositories");
       const recentRepos = document.querySelector("#recent-repos");
       const composerFeedback = document.querySelector("#composer-feedback");
       const cancelSessionButton = document.querySelector("#cancel-session");
@@ -828,6 +1108,7 @@
       }
 
       function setComposerOpen(open) {
+        document.body.classList.toggle("composer-open", open);
         composerRegion.classList.toggle("is-open", open);
         composerRegion.toggleAttribute("inert", !open);
         composerRegion.setAttribute("aria-hidden", open ? "false" : "true");
@@ -866,22 +1147,18 @@
 
       function renderRepositorySuggestions() {
         const repositories = mergeRepositorySuggestions(trackedRepositories, sessions);
-        repositoryDatalist.replaceChildren();
         recentRepos.replaceChildren();
-        for (const repository of repositories) {
-          const option = document.createElement("option");
-          option.value = repository.repo;
-          if (repository.defaultBranch) option.label = `default: ${repository.defaultBranch}`;
-          repositoryDatalist.append(option);
-        }
+        recentRepositories.hidden = repositories.length === 0;
         for (const repository of repositories.slice(0, 5)) {
           const button = document.createElement("button");
           button.type = "button";
           button.className = "repo-suggestion";
-          button.textContent = repository.repo;
           button.title = repository.defaultBranch
             ? `${repository.repo} · default branch ${repository.defaultBranch}`
             : repository.repo;
+          addText(button, "repo-suggestion-name", repository.repo, "span");
+          if (repository.defaultBranch)
+            addText(button, "repo-suggestion-branch", repository.defaultBranch, "span");
           button.disabled = creating;
           button.addEventListener("click", () => {
             repoInput.value = repository.repo;
@@ -913,27 +1190,33 @@
             : undefined;
         content.replaceChildren();
         content.setAttribute("aria-busy", fetching ? "true" : "false");
+        document.body.classList.toggle("has-no-sessions", loaded && sessions.length === 0);
         summary.textContent = loaded
           ? `${sessions.length} ${sessions.length === 1 ? "workspace" : "workspaces"}`
           : "Your cloud workspaces";
 
         if (!loaded) {
-          const state = addText(content, "state", "Contacting Scotty…");
+          const state = document.createElement("div");
+          state.className = "state";
           addText(state, "", "Loading sessions", "strong");
-          state.prepend(state.lastChild);
+          addText(state, "state-copy", "Contacting Scotty…", "p");
+          content.append(state);
           return;
         }
 
         if (sessions.length === 0) {
-          const state = addText(
-            content,
-            "state",
-            "Start with a repository and tell Codex what outcome you want.",
-          );
+          const state = document.createElement("div");
+          state.className = "state state-empty";
           addText(state, "", "No cloud workspaces yet", "strong");
-          state.prepend(state.lastChild);
+          addText(
+            state,
+            "state-copy",
+            "Start with a repository and tell Codex what outcome you want.",
+            "p",
+          );
           const createButton = actionButton("Start a session", "open-composer", "", true);
           state.append(createButton);
+          content.append(state);
           return;
         }
 
@@ -948,8 +1231,17 @@
 
           const identity = document.createElement("div");
           addText(identity, "repo", session.repo || "Unknown repository", "h2");
-          addText(identity, "branch", session.branch || session.defaultBranch || "No branch");
-          addText(identity, "session-id", session.id);
+          const identityMeta = document.createElement("div");
+          identityMeta.className = "identity-meta";
+          addText(
+            identityMeta,
+            "branch",
+            session.branch || session.defaultBranch || "No branch",
+            "span",
+          );
+          addText(identityMeta, "identity-separator", "", "span");
+          addText(identityMeta, "session-id", session.id, "span");
+          identity.append(identityMeta);
           item.append(identity);
 
           const details = document.createElement("div");
@@ -962,8 +1254,15 @@
           details.append(statusLine);
           const metrics = document.createElement("div");
           metrics.className = "metrics";
-          addText(metrics, "", `age ${duration(session.ageSeconds)}`, "span");
-          addText(metrics, "", `cap ${duration(session.capRemainingSeconds)} left`, "span");
+          addText(metrics, "", `${duration(session.ageSeconds)} old`, "span");
+          addText(
+            metrics,
+            "",
+            session.capRemainingSeconds > 0
+              ? `${duration(session.capRemainingSeconds)} remaining`
+              : "limit reached",
+            "span",
+          );
           details.append(metrics);
           item.append(details);
 
@@ -987,7 +1286,12 @@
           if (confirmations.has(session.id)) {
             const confirmation = document.createElement("div");
             confirmation.className = "confirmation";
-            addText(confirmation, "", "Permanently delete this session and its backups?", "span");
+            addText(
+              confirmation,
+              "confirmation-copy",
+              "Permanently delete this session and its backups?",
+              "span",
+            );
             const confirmButton = actionButton("Delete permanently", "delete", session.id);
             confirmButton.classList.add("button-danger-confirm");
             confirmation.append(confirmButton, actionButton("Cancel", "cancel-delete", session.id));
