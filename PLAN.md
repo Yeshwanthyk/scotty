@@ -168,17 +168,12 @@ AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
 **Self-describing help**
 
 - `scotty --help` and `scotty <cmd> --help`: one usage line, flags, and 1-2 real examples each (crabfleet-style). Terse — no prose walls.
-- `scotty help --agents` (and `scotty skills`, see below) is the long-form agent doc.
+- `scotty skills` is the long-form agent doc.
 
 **`scotty skills` command**
 
 - `scotty skills` prints a complete SKILL.md to stdout: what scotty is, the full command reference with JSON output shapes, the canonical workflows (up → work → pr; up → snapshot → resume; down → local resume), state machine (booting → warm → sleeping → gone), and rules of thumb (always `--json`, poll `ls` for status transitions, vaporize when done to stop spend, hard cap means sessions self-sleep).
-- `scotty skills install` writes it where agents look:
-  - `--claude`: `~/.claude/skills/scotty/SKILL.md` (with frontmatter `name: scotty`, `description: Manage cloud Codex agent sessions on Cloudflare`)
-  - `--codex`: appends a short pointer section to `~/.codex/AGENTS.md`
-  - `--here`: writes `./.agents/scotty.md` and appends a pointer line to `./AGENTS.md` (create if missing)
-  - no flag: prints the paths it would write and asks nothing (agents pass a flag).
-- The SKILL.md content lives in the CLI binary (single source of truth, versioned with the CLI). Regenerated per release — never hand-edit installed copies.
+- `cli/skills/scotty/SKILL.md` is the source of truth. Bun's text loader compiles it into the standalone CLI, so the installed executable serves the guide without copying skill files into agent or project directories.
 
 **Statelessness for agents**
 
@@ -211,7 +206,7 @@ Egress proxy with sentinel injection + allowlist, DO-stored codex bundle with pr
 `scotty down`, `scotty vaporize`. Acceptance: after beam down, `codex resume <uuid>` locally replays the cloud conversation and the branch is fetchable; vaporize leaves no KV record, no R2 objects, no sandbox (and no DO credential bundle).
 
 **Phase 5 — agent ergonomics**
-`--json` everywhere + non-TTY auto-JSON, exit codes, `scotty skills` + `skills install`, `help --agents`. Acceptance: an agent given only `scotty skills` output can run up → pr → vaporize unattended with no prompts; piping any command produces valid JSON; wrong-state operations exit 5 with a hint.
+`--json` on operational commands + non-TTY auto-JSON, stable exit codes, and `scotty skills` as raw Markdown. Acceptance: an agent given only `scotty skills` output can run up → pr → vaporize unattended with no prompts; piping an operational command produces valid JSON; wrong-state operations exit 5 with a hint.
 
 ## Risks / gotchas (implementers: read)
 

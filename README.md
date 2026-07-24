@@ -85,7 +85,8 @@ The CLI token is also the browser bootstrap/recovery credential. Open a browser 
 Helium, a phone, or another browser profile. Every paired browser gets an independent revocable
 cookie; ordinary session links stay clean.
 
-Run `scotty skills` for the embedded agent-facing command and state-machine reference.
+The source guide is `cli/skills/scotty/SKILL.md`; Bun compiles it into the standalone executable.
+Run `scotty skills` to print that embedded agent-facing command and state-machine reference.
 
 ## E2E
 

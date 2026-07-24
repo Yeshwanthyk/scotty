@@ -4,6 +4,7 @@ import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { Option, Schema } from "effect";
+import scottySkill from "./skills/scotty/SKILL.md" with { type: "text" };
 import rawStandardToolset from "../worker/container/toolsets/standard.json" with { type: "json" };
 
 export const EXIT = {
@@ -191,73 +192,13 @@ const COMMAND_HELP: Record<string, string> = {
   pr: `Usage: scotty pr ID [--title TITLE] [--json]\n\nFlags:\n  --title TITLE    Pull request title\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty pr abc123 --json\n  scotty pr abc123 --title "Fix session restore"`,
   down: `Usage: scotty down ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty down abc123\n  scotty down abc123 --json`,
   vaporize: `Usage: scotty vaporize ID [--yes] [--json]\n\nFlags:\n  --yes            Skip the TTY confirmation\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty vaporize abc123 --yes --json\n  scotty vaporize abc123`,
-  skills: `Usage: scotty skills [install (--claude | --codex | --here)] [--json]\n\nFlags:\n  --claude         Install Claude Code skill\n  --codex          Add pointer to ~/.codex/AGENTS.md\n  --here           Install in the current project\n  --json           Wrap output as JSON\n\nExamples:\n  scotty skills\n  scotty skills install --claude`,
+  skills: `Usage: scotty skills\n\nPrint the embedded Scotty agent guide as Markdown.\n\nExample:\n  scotty skills`,
   tools: `Usage: scotty tools <list | doctor> [--json]\n\nCommands:\n  list             Print the standard sandbox tool manifest\n  doctor           Probe every declared tool and report missing or mismatched installs\n\nFlags:\n  --json           Emit JSON\n\nExamples:\n  scotty tools list --json\n  scotty tools doctor --json`,
 };
 
-const ROOT_HELP = `Usage: scotty <command> [flags]\n\nCommands:\n  init       Save Worker host and token\n  up         Start a cloud agent session\n  ls         List sessions\n  attach     Open a session terminal\n  snapshot   Checkpoint a warm session\n  resume     Restore a sleeping session\n  pr         Push work and open a pull request\n  down       Fetch branch and install local rollout\n  vaporize   Permanently delete a session\n  skills     Print or install the agent skill\n  tools      List or verify standard sandbox tools\n  help       Show help; use help --agents for agent docs\n\nFlags:\n  --host URL       Override SCOTTY_HOST and config\n  --token TOKEN    Override SCOTTY_TOKEN and config\n  --json           Emit JSON for scripting\n  --help           Show command help\n  --version        Show version\n\nExamples:\n  scotty up "fix CI" --detach --json\n  scotty tools doctor --json`;
+const ROOT_HELP = `Usage: scotty <command> [flags]\n\nCommands:\n  init       Save Worker host and token\n  up         Start a cloud agent session\n  ls         List sessions\n  attach     Open a session terminal\n  snapshot   Checkpoint a warm session\n  resume     Restore a sleeping session\n  pr         Push work and open a pull request\n  down       Fetch branch and install local rollout\n  vaporize   Permanently delete a session\n  skills     Print the embedded agent skill\n  tools      List or verify standard sandbox tools\n  help       Show command help\n\nFlags:\n  --host URL       Override SCOTTY_HOST and config\n  --token TOKEN    Override SCOTTY_TOKEN and config\n  --json           Emit JSON for operational commands\n  --help           Show command help\n  --version        Show version\n\nExamples:\n  scotty up "fix CI" --detach --json\n  scotty tools doctor --json`;
 
-export const EMBEDDED_SKILL = `---
-name: scotty
-description: Manage cloud Codex agent sessions on Cloudflare
----
-
-# Scotty
-
-Scotty beams a Codex agent into a Cloudflare sandbox. Use it to start a cloud session, attach to its terminal, checkpoint or resume it, publish a PR, beam its branch and Codex rollout down to the current local repository, and permanently remove it.
-
-## Command reference
-
-- \`scotty init [--host URL] [--token TOKEN]\` writes \`~/.scotty.json\` with mode 0600. This is the only command that prompts.
-- \`scotty up "PROMPT" [--repo OWNER/NAME] [--cap 4h] [--detach] --json\` returns \`{"id","url","branch","status"}\`.
-- \`scotty ls --json\` returns session records including \`ageSeconds\` and \`capRemainingSeconds\`. This is the polling primitive.
-- \`scotty attach ID --json\` opens the browser and returns \`{"id","url","opened"}\`.
-- \`scotty snapshot ID --json\` checkpoints a warm session and returns \`{"id","status","backupId"?}\`.
-- \`scotty resume ID --json\` restores a sleeping or recoverable failed session and returns \`{"id","url"?,"branch"?,"status"}\`.
-- \`scotty pr ID [--title TITLE] --json\` returns \`{"prUrl"?,"branchUrl","created"}\`.
-- \`scotty down ID --json\` fetches the session branch, securely installs its rollout when present, and returns \`{"branch","sha","rolloutPath","resumeCmd"}\`. The last two values are null when no usable rollout exists.
-- \`scotty vaporize ID --yes --json\` permanently deletes runtime, backups, credentials, and registry state; it returns \`{"id","status":"gone"}\`.
-- \`scotty tools list --json\` prints the immutable \`standard\` sandbox tool manifest. \`scotty tools doctor --json\` probes the installed commands without Worker credentials.
-- \`scotty skills\` prints this document. \`scotty help --agents\` does the same.
-- \`scotty skills install --claude|--codex|--here\` installs this embedded source of truth.
-
-Every operational command accepts \`--host\` and \`--token\`. Precedence is flags, then \`SCOTTY_HOST\`/\`SCOTTY_TOKEN\`, then \`~/.scotty.json\`. Non-TTY output automatically uses JSON. Errors are \`{"error":{"code","message","hint"}}\` on stderr.
-
-Exit codes: 0 success, 1 generic or network failure, 2 bad usage/config, 3 session not found, 4 authentication/authorization failure, 5 wrong session state.
-
-## Workflows
-
-### Cloud work to PR
-
-1. Run \`scotty up "TASK" --detach --json\`.
-2. Poll \`scotty ls --json\` until the session is \`warm\`.
-3. Run \`scotty pr ID --json\`.
-4. Run \`scotty vaporize ID --yes --json\` after the work is safely published.
-
-### Sleep and resume
-
-1. Run \`scotty snapshot ID --json\` before a deliberate pause.
-2. Poll \`scotty ls --json\`; hard-capped or idle sessions become \`sleeping\` automatically.
-3. Run \`scotty resume ID --json\` only when it is sleeping or recoverably failed.
-
-### Beam down
-
-1. Change into the matching local Git repository.
-2. Run \`scotty down ID --json\`.
-3. Run the returned \`resumeCmd\` when non-null.
-
-## State machine
-
-\`booting -> warm -> sleeping -> booting -> warm\`. Setup or checkpoint failures may enter \`failed\`; recoverable failures can resume through \`booting\`. \`vaporize\` moves any live state to terminal \`gone\`.
-
-## Rules of thumb
-
-- Always pass \`--json\` in agent automation.
-- Poll \`ls\`; its records are a projection and direct commands enforce authoritative state.
-- A hard cap forces a checkpoint and sleep even while a terminal is attached.
-- Vaporize completed sessions to stop spend. It never snapshots first.
-- Retry network failures, but don't retry exit 2, 4, or 5 without changing input, credentials, or state.
-`;
+export const EMBEDDED_SKILL = scottySkill;
 
 function defaultDependencies(): CliDependencies {
   return {
@@ -1008,74 +949,6 @@ async function handleDown(
   return { branch, sha, rolloutPath, resumeCmd };
 }
 
-async function appendOnce(path: string, marker: string, content: string): Promise<boolean> {
-  let existing = "";
-  try {
-    existing = await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  if (existing.includes(marker)) return false;
-  const next = existing.length === 0 ? content : `${existing.replace(/\s*$/, "")}\n\n${content}`;
-  await mkdir(dirname(path), { recursive: true });
-  const file = await open(path, "w", 0o644);
-  try {
-    await file.writeFile(next, "utf8");
-  } finally {
-    await file.close();
-  }
-  return true;
-}
-
-async function installSkill(args: string[], json: boolean, deps: CliDependencies): Promise<void> {
-  const targets = ["--claude", "--codex", "--here"].filter((flag) => takeBoolean(args, flag));
-  assertNoFlags(args);
-  if (args.length) throw usage(`Unexpected argument: ${args[0]}`);
-  if (targets.length > 1) throw usage("Choose exactly one of --claude, --codex, or --here");
-  if (targets.length === 0) {
-    const paths = [
-      join(deps.home, ".claude", "skills", "scotty", "SKILL.md"),
-      join(deps.home, ".codex", "AGENTS.md"),
-      join(deps.cwd, ".agents", "scotty.md"),
-      join(deps.cwd, "AGENTS.md"),
-    ];
-    if (json) outputJson(deps.stdout, { wouldWrite: paths });
-    else
-      deps.stdout(
-        `Would write:\n${paths.map((path) => `  ${path}`).join("\n")}\nPass --claude, --codex, or --here.\n`,
-      );
-    return;
-  }
-  const installed: string[] = [];
-  if (targets[0] === "--claude") {
-    const path = join(deps.home, ".claude", "skills", "scotty", "SKILL.md");
-    await mkdir(dirname(path), { recursive: true });
-    await Bun.write(path, EMBEDDED_SKILL);
-    installed.push(path);
-  } else if (targets[0] === "--codex") {
-    const path = join(deps.home, ".codex", "AGENTS.md");
-    await appendOnce(
-      path,
-      "<!-- scotty-skill -->",
-      "<!-- scotty-skill -->\n## Scotty\n\nRun `scotty skills` for the current Scotty cloud-session operating guide.",
-    );
-    installed.push(path);
-  } else {
-    const skillPath = join(deps.cwd, ".agents", "scotty.md");
-    await mkdir(dirname(skillPath), { recursive: true });
-    await Bun.write(skillPath, EMBEDDED_SKILL);
-    const agentsPath = join(deps.cwd, "AGENTS.md");
-    await appendOnce(
-      agentsPath,
-      "<!-- scotty-skill -->",
-      "<!-- scotty-skill -->\nRead `.agents/scotty.md` before operating Scotty cloud sessions.",
-    );
-    installed.push(skillPath, agentsPath);
-  }
-  if (json) outputJson(deps.stdout, { installed });
-  else deps.stdout(`Installed ${installed.join(", ")}\n`);
-}
-
 function probeOutput(stdout: string, stderr: string): string {
   const combined = [stdout, stderr]
     .map((text) => text.trim())
@@ -1176,13 +1049,6 @@ async function execute(rawArgs: string[], deps: CliDependencies): Promise<number
     return EXIT.OK;
   }
   if (command === "help") {
-    if (takeBoolean(args, "--agents")) {
-      assertNoFlags(args);
-      if (args.length) throw usage(`Unexpected argument: ${args[0]}`);
-      if (options.json) outputJson(deps.stdout, { skill: EMBEDDED_SKILL });
-      else deps.stdout(EMBEDDED_SKILL);
-      return EXIT.OK;
-    }
     const target = args[0];
     if (!target || args.length !== 1 || !COMMAND_HELP[target]) throw usage("Unknown help topic");
     deps.stdout(`${COMMAND_HELP[target]}\n`);
@@ -1195,15 +1061,14 @@ async function execute(rawArgs: string[], deps: CliDependencies): Promise<number
     return EXIT.OK;
   }
   if (command === "skills") {
-    if (args[0] === "install") {
-      args.shift();
-      await installSkill(args, options.json, deps);
-    } else {
-      assertNoFlags(args);
-      if (args.length) throw usage(`Unexpected argument: ${args[0]}`);
-      if (options.json) outputJson(deps.stdout, { skill: EMBEDDED_SKILL });
-      else deps.stdout(EMBEDDED_SKILL);
-    }
+    if (options.json)
+      throw usage(
+        "scotty skills emits Markdown and does not support --json",
+        "Run scotty skills without flags.",
+      );
+    assertNoFlags(args);
+    if (args.length) throw usage(`Unexpected argument: ${args[0]}`);
+    deps.stdout(EMBEDDED_SKILL);
     return EXIT.OK;
   }
   const autoJson = options.json || !deps.stdoutIsTTY;
