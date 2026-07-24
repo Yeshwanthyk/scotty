@@ -268,8 +268,8 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 #### R. Agent ergonomics and embedded skill — 1 day
 
 - **Depends on:** O, P, Q.
-- **Deliver:** all commands/flags, `--json` and non-TTY JSON, stable exit codes, terse help, `help --agents`, embedded `SKILL.md`, all install targets.
-- **Files:** `cli/scotty.ts`, CLI golden tests.
+- **Deliver:** all operational commands/flags, `--json` and non-TTY JSON, stable exit codes, terse help, and a source `SKILL.md` compiled into the standalone CLI and printed by `scotty skills`.
+- **Files:** `cli/scotty.ts`, `cli/skills/scotty/SKILL.md`, CLI golden tests.
 - **Proof:** a clean agent given only `scotty skills` completes `up → pr → vaporize` unattended; every piped command parses as JSON.
 
 #### S. Production verification and release — 1 day

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EMBEDDED_SKILL, EXIT, main, STANDARD_TOOLSET, type CliDependencies } from "../scotty";
@@ -880,13 +880,21 @@ describe("beam down and embedded skill", () => {
     expect(h.error().error.code).toBe("invalid_archive");
   });
 
-  test("skills and help --agents share the exact embedded source", async () => {
+  test("skills prints the exact embedded source as Markdown", async () => {
     const skills = harness();
-    const agents = harness();
+    const source = await readFile(new URL("../skills/scotty/SKILL.md", import.meta.url), "utf8");
     expect(await main(["skills"], skills.deps)).toBe(EXIT.OK);
-    expect(await main(["help", "--agents"], agents.deps)).toBe(EXIT.OK);
+    expect(EMBEDDED_SKILL).toBe(source);
     expect(skills.stdout.join("")).toBe(EMBEDDED_SKILL);
-    expect(agents.stdout.join("")).toBe(EMBEDDED_SKILL);
+  });
+
+  test("skills rejects JSON wrapping and filesystem installation", async () => {
+    const json = harness();
+    const install = harness();
+    expect(await main(["skills", "--json"], json.deps)).toBe(EXIT.USAGE);
+    expect(await main(["skills", "install"], install.deps)).toBe(EXIT.USAGE);
+    expect(json.error().error.code).toBe("bad_usage");
+    expect(install.error().error.code).toBe("bad_usage");
   });
 
   test("tools list returns the checked-in standard manifest without credentials", async () => {
@@ -963,17 +971,5 @@ describe("beam down and embedded skill", () => {
     });
     expect(await main(["tools", "doctor", "--json"], healthy.deps)).toBe(EXIT.OK);
     expect(healthy.json().ok).toBe(true);
-  });
-
-  test("skills install --here writes the skill and idempotent AGENTS pointer", async () => {
-    const cwd = await temporaryDirectory();
-    await mkdir(cwd, { recursive: true });
-    const first = harness({ cwd });
-    const second = harness({ cwd });
-    expect(await main(["skills", "install", "--here", "--json"], first.deps)).toBe(EXIT.OK);
-    expect(await main(["skills", "install", "--here", "--json"], second.deps)).toBe(EXIT.OK);
-    expect(await readFile(join(cwd, ".agents", "scotty.md"), "utf8")).toBe(EMBEDDED_SKILL);
-    const agents = await readFile(join(cwd, "AGENTS.md"), "utf8");
-    expect(agents.match(/<!-- scotty-skill -->/g)?.length).toBe(1);
   });
 });

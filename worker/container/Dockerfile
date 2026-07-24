@@ -8,6 +8,7 @@ COPY package.json package-lock.json ./
 COPY worker/package.json worker/package.json
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY cli/scotty.ts cli/scotty.ts
+COPY cli/skills cli/skills
 COPY worker/container/toolsets/standard.json worker/container/toolsets/standard.json
 RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
   && /out/scotty --version
