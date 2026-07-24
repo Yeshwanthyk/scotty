@@ -16,6 +16,13 @@ plugins = false
 trust_level = "trusted"
 `;
 
+export const sandboxAgentsInstructions = `- Read and follow the repository AGENTS.md first; repository instructions override this file.
+- Run \`scotty tools list --json\` to inspect the standard sandbox tools.
+- Prefer \`rg\`, \`fd\`, and \`ast-grep\` for search. Use \`jq\`, \`yq\`, and \`qsv\` for structured data.
+- Use \`uv\` and \`uvx\` for Python. Use Corepack and the repository's declared JavaScript package manager.
+- Use matching skills under \`$CODEX_HOME/skills\`; read the selected \`SKILL.md\` before acting.
+`;
+
 interface ContainerAuthShape {
   readonly seed: (
     id: SessionRecord["id"],
@@ -35,11 +42,14 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         const codexHome = `${sessionRoot(id)}/.codex`;
         const authPath = `${codexHome}/auth.json`;
         const configPath = `${codexHome}/config.toml`;
+        const agentsPath = `${codexHome}/AGENTS.md`;
+        const skillsPath = `${codexHome}/skills`;
         yield* runtime.mkdir(codexHome, { recursive: true });
         yield* runtime.writeFile(authPath, sentinelAuthJson(credential));
         yield* runtime.writeFile(configPath, codexConfig(id));
+        yield* runtime.writeFile(agentsPath, sandboxAgentsInstructions);
         yield* runtime.execChecked(
-          `chmod 700 ${shellQuote(codexHome)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)}`,
+          `chmod 700 ${shellQuote(codexHome)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)} ${shellQuote(agentsPath)} && ln -sfn /opt/scotty/skills ${shellQuote(skillsPath)}`,
         );
         yield* runtime.setEnvVars(agentEnv(id, credential));
       }),

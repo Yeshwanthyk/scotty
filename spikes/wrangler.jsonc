@@ -22,6 +22,7 @@
     {
       "class_name": "ContractSandbox",
       "image": "../worker/container/Dockerfile",
+      "image_build_context": "..",
       "instance_type": "standard-2",
       "max_instances": 1,
     },

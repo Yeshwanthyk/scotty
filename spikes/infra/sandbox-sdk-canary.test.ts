@@ -98,7 +98,7 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
     assert.match(stackSource, /Cloudflare\.DurableObject<[\s\S]+>\("Sandbox", \{/u);
     assert.match(stackSource, /className: "ScottySandbox"/u);
     assert.match(stackSource, /main: "spikes\/infra\/sandbox-sdk-canary-worker\.ts"/u);
-    assert.match(stackSource, /context: "worker\/container"/u);
+    assert.match(stackSource, /context: "\."/u);
     assert.match(stackSource, /dockerfile: "worker\/container\/Dockerfile"/u);
     assert.match(stackSource, /directory: "worker\/public"/u);
     assert.match(stackSource, /Cloudflare\.readAssets\(assetConfig\)/u);

@@ -11,6 +11,7 @@
     "**/*.tsbuildinfo",
     "vendor/**",
     "work/**",
+    "worker/container/skills/bundled/**",
     "worker/public/vendor/**",
     "*.tldraw",
     "*.svg"

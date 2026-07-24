@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { EMBEDDED_SKILL, EXIT, main, type CliDependencies } from "../scotty";
+import { EMBEDDED_SKILL, EXIT, main, STANDARD_TOOLSET, type CliDependencies } from "../scotty";
 
 const temporaryDirectories: string[] = [];
 
@@ -887,6 +887,82 @@ describe("beam down and embedded skill", () => {
     expect(await main(["help", "--agents"], agents.deps)).toBe(EXIT.OK);
     expect(skills.stdout.join("")).toBe(EMBEDDED_SKILL);
     expect(agents.stdout.join("")).toBe(EMBEDDED_SKILL);
+  });
+
+  test("tools list returns the checked-in standard manifest without credentials", async () => {
+    let fetched = false;
+    const h = harness({
+      fetch: async () => {
+        fetched = true;
+        return Response.json({});
+      },
+    });
+
+    expect(await main(["tools", "list", "--json"], h.deps)).toBe(EXIT.OK);
+    expect(h.json()).toEqual(STANDARD_TOOLSET);
+    const toolNames = h.json().tools.map((tool: { name: string }) => tool.name);
+    expect(toolNames).not.toContain("tree");
+    expect(toolNames).not.toContain("duckdb");
+    expect(toolNames).not.toContain("agent-browser");
+    expect(toolNames).not.toContain("Chromium");
+    expect(toolNames).toContain("build-essential");
+    expect(toolNames).toContain("pkg-config");
+    expect(fetched).toBe(false);
+  });
+
+  test("tools doctor probes sequentially and reports pinned version mismatches", async () => {
+    const probes: string[][] = [];
+    const h = harness({
+      run: async (command) => {
+        probes.push(command);
+        const tool = STANDARD_TOOLSET.tools.find(
+          (candidate) => candidate.probe.join("\0") === command.join("\0"),
+        );
+        return {
+          exitCode: 0,
+          stdout:
+            tool?.name === "qsv"
+              ? "qsv 0.0.0\n"
+              : `${tool?.name ?? command[0]} ${tool?.expectedVersion ?? "image"}\n`,
+          stderr: "",
+        };
+      },
+    });
+
+    expect(await main(["tools", "doctor", "--json"], h.deps)).toBe(EXIT.GENERIC);
+    expect(probes).toEqual(STANDARD_TOOLSET.tools.map((tool) => [...tool.probe]));
+    expect(h.json().ok).toBe(false);
+    expect(h.json().tools.find((tool: { name: string }) => tool.name === "qsv")).toEqual({
+      name: "qsv",
+      status: "version-mismatch",
+      version: "qsv 0.0.0",
+      expectedVersion: "21.1.0",
+    });
+  });
+
+  test("tools doctor reports missing commands and succeeds when every probe passes", async () => {
+    const missing = harness({
+      run: async () => Promise.reject(new Error("ENOENT")),
+    });
+    expect(await main(["tools", "doctor", "--json"], missing.deps)).toBe(EXIT.GENERIC);
+    expect(
+      missing.json().tools.every((tool: { status: string }) => tool.status === "missing"),
+    ).toBe(true);
+
+    const healthy = harness({
+      run: async (command) => {
+        const tool = STANDARD_TOOLSET.tools.find(
+          (candidate) => candidate.probe.join("\0") === command.join("\0"),
+        );
+        return {
+          exitCode: 0,
+          stdout: `${tool?.name ?? command[0]} ${tool?.expectedVersion ?? "image"}\n`,
+          stderr: "",
+        };
+      },
+    });
+    expect(await main(["tools", "doctor", "--json"], healthy.deps)).toBe(EXIT.OK);
+    expect(healthy.json().ok).toBe(true);
   });
 
   test("skills install --here writes the skill and idempotent AGENTS pointer", async () => {

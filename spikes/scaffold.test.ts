@@ -39,7 +39,23 @@ describe("pinned Task 4 contracts", () => {
 
     expect(dockerfile).toContain("cloudflare/sandbox:0.12.3@sha256:");
     expect(dockerfile).toContain("ARG CODEX_VERSION=0.144.6");
+    expect(dockerfile).not.toContain("AGENT_BROWSER");
+    expect(dockerfile).not.toContain("agent-browser");
     expect(dockerfile).not.toMatch(/(?:TOKEN|SECRET|PASSWORD)=\S+/);
+  });
+
+  it("uses the installed BerkeleyMono Nerd Font family with readable terminal defaults", async () => {
+    const terminalHtml = await readFile(new URL("worker/public/terminal.html", root), "utf8");
+
+    expect(terminalHtml).toMatch(
+      /"BerkeleyMono Nerd Font", "Berkeley Mono", "SFMono-Regular", "Cascadia Mono"/,
+    );
+    expect(terminalHtml).toContain('const fontSizeStorageKey = "scotty-terminal-font-size-v2"');
+    expect(terminalHtml).toMatch(
+      /terminalFontSize\(localStorage\.getItem\(fontSizeStorageKey\), 15\)/,
+    );
+    expect(terminalHtml).toContain('foreground: "#e8f0f3"');
+    expect(terminalHtml).toContain('brightBlack: "#7d8d98"');
   });
 
   it("selects RPC transport and the expected runtime bindings", async () => {
