@@ -11,6 +11,7 @@ import {
   type SandboxRuntimeCapabilities,
   type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
+import { InMemoryFaultInjectableFake, sandboxRuntimeCapabilitiesFake } from "./support";
 
 const successResult = (command: string): ExecResult => ({
   success: true,
@@ -29,32 +30,6 @@ const failedResult = (command: string, stdout: string, stderr: string): ExecResu
   stdout,
   stderr,
 });
-
-class FakeSandboxRuntimeCapabilities implements SandboxRuntimeCapabilities {
-  readonly calls: Array<{ command: string; options?: SandboxExecOptions }> = [];
-  result: ExecResult = successResult("true");
-  rejection: unknown;
-
-  exec = (command: string, options?: SandboxExecOptions): Promise<ExecResult> => {
-    this.calls.push({ command, options });
-    if (this.rejection !== undefined) return Promise.reject(this.rejection);
-    return Promise.resolve(this.result);
-  };
-
-  createSession = (_options: SandboxSessionOptions): Promise<void> =>
-    this.rejection === undefined ? Promise.resolve() : Promise.reject(this.rejection);
-
-  deleteSession = (_sessionId: string): Promise<void> =>
-    this.rejection === undefined ? Promise.resolve() : Promise.reject(this.rejection);
-
-  mkdir = (): Promise<{ success: true; path: string; message: string }> =>
-    Promise.resolve({ success: true, path: "/unused", message: "ok" });
-
-  writeFile = (): Promise<{ success: true; path: string; bytesWritten: number }> =>
-    Promise.resolve({ success: true, path: "/unused", bytesWritten: 0 });
-
-  setEnvVars = (): Promise<void> => Promise.resolve();
-}
 
 const withRuntime = <A, E>(
   capabilities: SandboxRuntimeCapabilities,
@@ -81,43 +56,44 @@ const failure = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRun
 describe("SandboxRuntime", () => {
   it.effect("returns nonzero results for callers that branch on command status", () =>
     Effect.gen(function* () {
-      const capabilities = new FakeSandboxRuntimeCapabilities();
+      const memory = new InMemoryFaultInjectableFake();
+      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
       const result = failedResult("gh repo view", "", "not found");
-      capabilities.result = result;
+      memory.respond("exec", result);
 
       const actual = yield* withRuntime(capabilities, exec("gh repo view", { timeout: 60_000 }));
 
       assert.strictEqual(actual, result);
-      assert.deepStrictEqual(capabilities.calls, [
-        { command: "gh repo view", options: { timeout: 60_000 } },
-      ]);
+      assert.deepStrictEqual(memory.calls("exec"), [["gh repo view", { timeout: 60_000 }]]);
     }),
   );
 
   it.effect("captures a successful call and forwards cwd, env, and timeout exactly", () =>
     Effect.gen(function* () {
-      const capabilities = new FakeSandboxRuntimeCapabilities();
+      const memory = new InMemoryFaultInjectableFake();
+      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
       const command = "git status --porcelain";
       const options: SandboxExecOptions = {
         cwd: "/workspace/a0b1c2d3e4f5",
         env: { GH_TOKEN: "scotty-github-a0b1c2d3e4f5-token", EMPTY: undefined },
         timeout: 120_000,
       };
-      capabilities.result = successResult(command);
+      memory.respond("exec", successResult(command));
 
       const result = yield* withRuntime(capabilities, execChecked(command, options));
 
-      assert.strictEqual(result, capabilities.result);
-      assert.deepStrictEqual(capabilities.calls, [{ command, options }]);
+      assert.deepStrictEqual(result, successResult(command));
+      assert.deepStrictEqual(memory.calls("exec"), [[command, options]]);
     }),
   );
 
   it.effect("maps transport rejection to a fixed redacted typed failure", () =>
     Effect.gen(function* () {
-      const capabilities = new FakeSandboxRuntimeCapabilities();
+      const memory = new InMemoryFaultInjectableFake();
+      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
       const providerDetail = "provider rejected github_pat_provider-secret";
       const commandSecret = "gh auth token ghp_commandsecret";
-      capabilities.rejection = new Error(providerDetail);
+      memory.injectFailure("exec", { error: new Error(providerDetail) });
 
       const result = yield* Effect.result(
         withRuntime(
@@ -143,8 +119,11 @@ describe("SandboxRuntime", () => {
 
   it.effect("keeps unchecked transport failures fixed and redacted", () =>
     Effect.gen(function* () {
-      const capabilities = new FakeSandboxRuntimeCapabilities();
-      capabilities.rejection = new Error("provider leaked github_pat_provider-secret");
+      const memory = new InMemoryFaultInjectableFake();
+      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
+      memory.injectFailure("exec", {
+        error: new Error("provider leaked github_pat_provider-secret"),
+      });
 
       const result = yield* Effect.result(
         withRuntime(capabilities, exec("gh repo view ghp_commandsecret")),
@@ -163,12 +142,17 @@ describe("SandboxRuntime", () => {
   it.effect("maps named-session transport rejections to operation-specific redacted failures", () =>
     Effect.gen(function* () {
       const providerDetail = "provider leaked github_pat_provider-secret";
-      for (const [operation, message] of [
-        [createSession({ id: "scotty-web" }), "Sandbox session creation transport failed"],
-        [deleteSession("scotty-web"), "Sandbox session deletion transport failed"],
+      for (const [capabilityOperation, operation, message] of [
+        [
+          "createSession",
+          createSession({ id: "scotty-web" }),
+          "Sandbox session creation transport failed",
+        ],
+        ["deleteSession", deleteSession("scotty-web"), "Sandbox session deletion transport failed"],
       ] as const) {
-        const capabilities = new FakeSandboxRuntimeCapabilities();
-        capabilities.rejection = new Error(providerDetail);
+        const memory = new InMemoryFaultInjectableFake();
+        const capabilities = sandboxRuntimeCapabilitiesFake(memory);
+        memory.injectFailure(capabilityOperation, { error: new Error(providerDetail) });
         const result = yield* Effect.result(withRuntime(capabilities, operation));
         const error = failure(result);
 
@@ -181,8 +165,9 @@ describe("SandboxRuntime", () => {
 
   it.effect("maps nonzero exit stderr to a redacted typed failure", () =>
     Effect.gen(function* () {
-      const capabilities = new FakeSandboxRuntimeCapabilities();
-      capabilities.result = failedResult("false", "stdout fallback", "permission denied");
+      const memory = new InMemoryFaultInjectableFake();
+      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
+      memory.respond("exec", failedResult("false", "stdout fallback", "permission denied"));
 
       const result = yield* Effect.result(withRuntime(capabilities, execChecked("false")));
 
@@ -195,12 +180,13 @@ describe("SandboxRuntime", () => {
 
   it.effect("redacts sentinels and GitHub PATs and truncates failures to 1000 characters", () =>
     Effect.gen(function* () {
-      const capabilities = new FakeSandboxRuntimeCapabilities();
+      const memory = new InMemoryFaultInjectableFake();
+      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
       const secretOutput =
         "scotty-codex-session-secret scotty-github-session-secret ghp_patsecret " +
         "github_pat_pat_secret " +
         "x".repeat(1_100);
-      capabilities.result = failedResult("false", secretOutput, "");
+      memory.respond("exec", failedResult("false", secretOutput, ""));
 
       const result = yield* Effect.result(withRuntime(capabilities, execChecked("false")));
       const error = failure(result);
@@ -220,27 +206,20 @@ describe("SandboxRuntime", () => {
         resolvePending = resolve;
       });
       let remoteSettled = false;
-      const calls: Array<{ command: string; options?: SandboxExecOptions }> = [];
-      const capabilities: SandboxRuntimeCapabilities = {
-        exec: (command, options) => {
-          calls.push({ command, options });
-          return pending.then((result) => {
-            remoteSettled = true;
-            return result;
-          });
-        },
-        createSession: () => Promise.resolve(),
-        deleteSession: () => Promise.resolve(),
-        mkdir: () => Promise.resolve({ success: true, path: "/unused", message: "ok" }),
-        writeFile: () => Promise.resolve({ success: true, path: "/unused", bytesWritten: 0 }),
-        setEnvVars: () => Promise.resolve(),
-      };
+      const memory = new InMemoryFaultInjectableFake();
+      memory.handle("exec", () =>
+        pending.then((result) => {
+          remoteSettled = true;
+          return result;
+        }),
+      );
+      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
       const fiber = yield* withRuntime(capabilities, execChecked("long-running")).pipe(
         Effect.forkChild({ startImmediately: true }),
       );
 
       yield* Fiber.interrupt(fiber);
-      assert.deepStrictEqual(calls, [{ command: "long-running", options: undefined }]);
+      assert.deepStrictEqual(memory.calls("exec"), [["long-running", undefined]]);
       assert.strictEqual(remoteSettled, false);
 
       resolvePending(successResult("long-running"));

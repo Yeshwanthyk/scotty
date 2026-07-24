@@ -1,5 +1,10 @@
 # Scotty — Implementation Plan
 
+> **Historical planning document.** `EFFECT_V4_MIGRATION.md` supersedes this document's
+> architecture, infrastructure/runtime framework, file layout, and delivery order. The v1 public
+> behavior, security constraints, state machine, lifecycle semantics, credential isolation, and
+> other invariants recorded here remain authoritative.
+
 Cloud coding agents on Cloudflare (Amp-orbs style). Beam a Codex agent into a cloud sandbox, work with it live in the browser, let it sleep, resume later, ship a PR, or beam the session back down to your laptop.
 
 This plan is written for AI agents to implement. Follow phases in order; each phase has acceptance criteria. Do not add features beyond this document.

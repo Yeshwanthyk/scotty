@@ -6,6 +6,7 @@ import {
   type RepoProjection as RepoProjectionRecord,
   type RepoView,
 } from "./contracts";
+import { listProjectionValues } from "./projection-list";
 
 type RepoProjectionOperation = "get" | "list" | "put";
 
@@ -82,32 +83,14 @@ const makeRepoProjection = (storage: RepoProjectionStorage): RepoProjectionShape
       });
     }),
     list: Effect.gen(function* () {
-      const repositories: Array<RepoView> = [];
-      let cursor: string | undefined;
-      do {
-        const page = yield* Effect.tryPromise({
-          try: () => storage.list(cursor),
-          catch: () => failure("list"),
-        });
-        const values = yield* Effect.all(
-          page.keys.map((key) =>
-            Effect.tryPromise({
-              try: () => storage.get(key),
-              catch: () => failure("get"),
-            }).pipe(Effect.map((value) => decodeProjection(key, value))),
-          ),
-          { concurrency: "unbounded" },
-        );
-        for (const value of values) {
-          if (value !== undefined) repositories.push(toRepoView(value));
-        }
-        cursor = page.cursor;
-      } while (cursor !== undefined);
-
-      repositories.sort(
-        (left, right) => Date.parse(right.lastUsedAt) - Date.parse(left.lastUsedAt),
-      );
-      return repositories;
+      const projections = yield* listProjectionValues({
+        storage,
+        decode: decodeProjection,
+        compare: (left, right) => Date.parse(right.lastUsedAt) - Date.parse(left.lastUsedAt),
+        onGetError: () => failure("get"),
+        onListError: () => failure("list"),
+      });
+      return projections.map(toRepoView);
     }),
   });
 };

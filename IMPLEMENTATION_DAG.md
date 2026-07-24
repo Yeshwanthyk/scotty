@@ -1,5 +1,10 @@
 # Scotty implementation DAG
 
+> **Historical planning document.** `EFFECT_V4_MIGRATION.md` supersedes this document's
+> architecture, infrastructure/runtime framework, file layout, and delivery order. The state
+> ownership model, state machine, lifecycle semantics, security and credential constraints, and
+> other invariants recorded here remain authoritative.
+
 This is the execution plan for `PLAN.md`. Build one secure vertical slice first, then add lifecycle and shipping behavior behind explicit gates. The critical design choice is that each session's Sandbox Durable Object owns lifecycle state and credentials; KV is only the eventually consistent list projection.
 
 ## Implementation corrections

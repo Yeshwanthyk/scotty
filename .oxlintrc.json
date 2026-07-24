@@ -41,22 +41,10 @@
   "overrides": [
     {
       "files": [
+        "cli/scotty.ts",
+        "cli/src/**/*.ts",
+        "worker/src/**/*.ts",
         "alchemy.run.ts",
-        "worker/src/auth-registry.ts",
-        "worker/src/agent.ts",
-        "worker/src/backup-store.ts",
-        "worker/src/container-auth.ts",
-        "worker/src/contracts.ts",
-        "worker/src/create-idempotency.ts",
-        "worker/src/credential-vault.ts",
-        "worker/src/egress.ts",
-        "worker/src/rollout-discovery.ts",
-        "worker/src/repo-projection.ts",
-        "worker/src/sandbox-runtime.ts",
-        "worker/src/session-projection.ts",
-        "worker/src/session-lifecycle.ts",
-        "worker/src/session-store.ts",
-        "worker/src/workspace.ts",
         "spikes/infra/account-secrets-store-canary.run.ts",
         "spikes/infra/account-secrets-store-canary.ts",
         "spikes/infra/external-sandbox-container-binding.ts",
@@ -67,15 +55,58 @@
         "spikes/infra/write-only-secret.ts"
       ],
       "rules": {
+        "scotty/no-direct-do-storage": "error",
+        "scotty/no-effect-internal-tags": "error",
         "scotty/no-effect-runtime-escape": "error",
         "scotty/no-error-constructor": "error",
+        "scotty/no-error-subclass": "error",
         "scotty/no-instanceof-error": "error",
+        "scotty/no-instanceof-tagged-error": "error",
         "scotty/no-json-parse": "error",
+        "scotty/no-promise-catch": "error",
         "scotty/no-promise-reject": "error",
         "scotty/no-raw-error-throw": "off",
         "scotty/no-raw-fetch": "error",
         "scotty/no-raw-wall-clock": "error",
+        "scotty/no-try-catch-or-throw": "error",
+        "scotty/no-unknown-error-message": "error"
+      }
+    },
+    {
+      "files": ["worker/src/**/*.ts"],
+      "rules": {
+        "scotty/no-storage-key-literal": "error"
+      }
+    },
+    {
+      "files": ["worker/test/**/*.ts"],
+      "rules": {
+        "scotty/no-raw-wall-clock": "error"
+      }
+    },
+    {
+      "files": ["worker/src/session.ts"],
+      "rules": {
+        "scotty/no-raw-error-throw": "error",
         "scotty/no-try-catch-or-throw": "error"
+      }
+    },
+    {
+      "files": ["worker/src/index.ts"],
+      "rules": {
+        "scotty/no-effect-runtime-escape": "off",
+        "scotty/no-instanceof-error": "off",
+        "scotty/no-instanceof-tagged-error": "off",
+        "scotty/no-promise-catch": "off",
+        "scotty/no-try-catch-or-throw": "off",
+        "scotty/no-unknown-error-message": "off"
+      }
+    },
+    {
+      "files": ["worker/src/auth.ts"],
+      "rules": {
+        "scotty/no-raw-wall-clock": "off",
+        "scotty/no-try-catch-or-throw": "off"
       }
     }
   ]

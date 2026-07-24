@@ -25,14 +25,26 @@ The end state has no Hono runtime, no hand-maintained `wrangler.jsonc`, no manua
 - `AGENTS.md` requires source-first work against both submodules and records the Sandbox and credential constraints.
 - oxfmt and oxlint are pinned and exclude all `vendor/**` source.
 
-### Conversion not yet implemented
+### Conversion status — re-audited 2026-07-24
 
-- Production source does not import Effect or Alchemy.
-- `worker/src/index.ts` still uses Hono and manually defined bindings.
-- `worker/wrangler.jsonc` still owns deployment metadata.
-- Session, credential, egress, Sandbox, backup, and CLI code remains Promise/throw based.
-- Stored and network data uses manual validation and unsafe casts rather than Schema.
-- No Alchemy stack, custom provider, Effect HTTP API, Sandbox Effect bridge, or Alchemy deployed test exists.
+The 2026-07-24 audit superseded the earlier "no Effect in production source" finding.
+Current reality (details and task breakdown in `docs/effect-v4-alignment-tasks.md`):
+
+- Chunks 3 and 5 are done and locally verified: `contracts.ts` is schema-first with
+  `ScottyError` as the tagged public error, and the credential vault plus egress are
+  Effect-native, Clock-based, and tested.
+- Chunk 4 and 6 leaf services all exist as `Context.Service` layers with tests; the
+  gap is the orchestrator: `worker/src/session.ts` remains a Promise/async state
+  machine with duplicated `run*` boundary wrappers, ~30 raw `ctx.storage` accesses
+  bypassing `SessionStore`, and no `Clock` usage.
+- Chunk 7 is partial: the auth registry/DO meet the target bar; `worker/src/index.ts`
+  still carries route-level workflow logic and the native WebSocket bridge lacks a
+  deterministic scope-close guarantee.
+- Chunks 8–10 behavior is implemented and working but `session.ts` has zero direct
+  tests, so their fault-injection gates are unmet.
+- Chunk 11 (CLI) has Schema decoders only; async flows remain Promise-based.
+- `alchemy.run.ts` is the production deploy path; `worker/wrangler.jsonc` remains
+  only for local dev and the dry-run rollback probe per the Chunk 12 gate.
 
 Do not report the repository as migrated until the definition of done at the end of this packet passes.
 

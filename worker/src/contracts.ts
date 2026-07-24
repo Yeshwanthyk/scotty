@@ -9,6 +9,24 @@ export const SESSION_ROOT = "/workspace";
 export const SESSION_KV_PREFIX = "session:";
 export const REPO_KV_PREFIX = "repo:";
 
+const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/));
+const ShortHexIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u));
+const IdempotencyKeySchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{16,128}$/u));
+const TerminalSessionPathSchema = Schema.TemplateLiteralParser([
+  "/api/sessions/",
+  SessionIdSchema,
+  "/pty",
+]);
+const TerminalDimensionSchema = Schema.NumberFromString.pipe(
+  Schema.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 1_000 })),
+);
+
+const decodeSessionId = Schema.decodeUnknownOption(SessionIdSchema);
+const decodeShortHexId = Schema.decodeUnknownOption(ShortHexIdSchema);
+const decodeIdempotencyKey = Schema.decodeUnknownOption(IdempotencyKeySchema);
+const decodeTerminalSessionPath = Schema.decodeUnknownOption(TerminalSessionPathSchema);
+const decodeTerminalDimension = Schema.decodeUnknownOption(TerminalDimensionSchema);
+
 export const SessionStatusSchema = Schema.Literals([
   "booting",
   "warm",
@@ -44,6 +62,16 @@ export const SessionFailureSchema = Schema.Struct({
   recoverable: Schema.Boolean,
 });
 export type SessionFailure = typeof SessionFailureSchema.Type;
+
+export const TerminalAttachmentLeaseSchema = Schema.Struct({
+  sessionId: Schema.String,
+  status: Schema.Literals(["creating", "active", "releasing"]),
+  lastSeenAt: Schema.String,
+  createSettled: Schema.Boolean,
+});
+export type TerminalAttachmentLease = typeof TerminalAttachmentLeaseSchema.Type;
+
+export const TerminalAttachmentLeasesSchema = Schema.Array(TerminalAttachmentLeaseSchema);
 
 export const DirectoryBackupSchema = Schema.Struct({
   id: Schema.String,
@@ -485,9 +513,46 @@ export function parsePrInput(value: unknown): PrInput {
 }
 
 export function parseSessionId(value: string): string {
+  const decoded = decodeSessionId(value);
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono path parser preserves the existing thrown ScottyError contract
-  if (!/^[a-z0-9][a-z0-9-]{5,31}$/.test(value)) throw badRequest("Invalid session id");
-  return value;
+  if (Option.isNone(decoded)) throw badRequest("Invalid session id");
+  return decoded.value;
+}
+
+export function parseAuthClientId(value: string): string {
+  const decoded = decodeShortHexId(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono path parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Invalid registered client id");
+  return decoded.value;
+}
+
+export function parseTerminalClientId(value: string | undefined): string {
+  const decoded = decodeShortHexId(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono path parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Invalid terminal client id");
+  return decoded.value;
+}
+
+export function parseSessionIdFromTerminalPath(pathname: string): string {
+  const decoded = decodeTerminalSessionPath(pathname);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono path parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Invalid terminal path");
+  return decoded.value[1];
+}
+
+export function parseIdempotencyKey(value: string): string {
+  const decoded = decodeIdempotencyKey(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono header parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Invalid idempotency key");
+  return decoded.value;
+}
+
+export function parseTerminalDimension(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const decoded = decodeTerminalDimension(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono query parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Invalid terminal dimensions");
+  return decoded.value;
 }
 
 export function parseRepo(value: unknown): string {

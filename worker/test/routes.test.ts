@@ -16,6 +16,10 @@ const sandbox = vi.hoisted(() => ({
   vaporizeScottySession: vi.fn(),
 }));
 
+const sandboxTarget = vi.hoisted((): { current: unknown } => ({
+  current: sandbox,
+}));
+
 const auth = vi.hoisted(() => ({
   authenticate: vi.fn(),
   registerBootstrapClient: vi.fn(),
@@ -29,11 +33,20 @@ const auth = vi.hoisted(() => ({
 
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@cloudflare/sandbox")>()),
-  getSandbox: vi.fn(() => sandbox),
+  getSandbox: vi.fn(() => sandboxTarget.current),
 }));
 
-import app from "../src/index";
+import app, { terminalBridgeCleanup } from "../src/index";
 import type { Bindings } from "../src/bindings";
+import {
+  createSessionHarness,
+  makeResumeBackup,
+  makeStoredCredential,
+  SESSION_ID,
+  sessionHarnessKeys,
+  type SessionHarness,
+} from "./session-harness";
+import { makeSessionRecord } from "./support";
 
 const TOKEN = "worker-test-token-1234567890";
 const CLIENT_CREDENTIAL = "scotty_client.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -73,6 +86,10 @@ function env(): Bindings {
   };
 }
 
+function useRealSandbox(harness: SessionHarness): void {
+  sandboxTarget.current = harness.sandbox;
+}
+
 const projection = {
   version: 1,
   id: "a0b1c2d3e4f5",
@@ -93,6 +110,7 @@ const projection = {
 describe("real Hono boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sandboxTarget.current = sandbox;
     auth.registerBootstrapClient.mockResolvedValue({
       ok: true,
       value: {
@@ -100,6 +118,37 @@ describe("real Hono boundary", () => {
         client: REGISTERED_CLIENT,
       },
     });
+  });
+
+  it("releases a terminal bridge once across socket and request disconnect signals", async () => {
+    const controller = new AbortController();
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    const tasks: Promise<void>[] = [];
+    const settle = terminalBridgeCleanup(cleanup, (task) => tasks.push(task), controller.signal);
+
+    settle();
+    settle();
+    controller.abort();
+    await Promise.all(tasks);
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses request abort as a cleanup backstop and logs cleanup failure", async () => {
+    const controller = new AbortController();
+    const cleanup = vi.fn().mockRejectedValue(new Error("release failed"));
+    const tasks: Promise<void>[] = [];
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    terminalBridgeCleanup(cleanup, (task) => tasks.push(task), controller.signal);
+
+    controller.abort();
+    await Promise.all(tasks);
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(logged).toHaveBeenCalledWith("Terminal attachment cleanup failed", {
+      name: "Error",
+    });
+    logged.mockRestore();
   });
 
   it("rejects unauthenticated API requests before touching bindings", async () => {
@@ -115,12 +164,8 @@ describe("real Hono boundary", () => {
   });
 
   it("preserves the create status, output shape, and ignored legacy cap", async () => {
-    sandbox.createScottySession.mockResolvedValue({
-      branch: "scotty/a0b1c2d3e4f5",
-      repo: "anomalyco/rift",
-      defaultBranch: "dev",
-      status: "warm",
-    });
+    const harness = await createSessionHarness();
+    useRealSandbox(harness);
     const response = await app.request(
       "/api/sessions",
       {
@@ -132,27 +177,40 @@ describe("real Hono boundary", () => {
     );
     expect(response.status).toBe(200);
     const body = await response.json();
-    if (!body || typeof body !== "object" || !("id" in body))
+    if (!body || typeof body !== "object" || !("id" in body) || typeof body.id !== "string")
       throw new TypeError("Expected create response object");
     expect(body).toEqual({
       id: expect.stringMatching(/^[0-9a-f]{12}$/u),
       url: expect.stringMatching(/^http:\/\/localhost\/s\/[0-9a-f]{12}$/u),
-      branch: "scotty/a0b1c2d3e4f5",
+      branch: `scotty/${body.id}`,
       status: "warm",
     });
-    expect(sandbox.createScottySession).toHaveBeenCalledWith(
-      { prompt: "ship it", repo: "anomalyco/rift", hardCapSeconds: 14_400 },
-      body.id,
+    expect(harness.readRecord()).toMatchObject({
+      id: body.id,
+      branch: `scotty/${body.id}`,
+      repo: "anomalyco/rift",
+      defaultBranch: "main",
+      status: "warm",
+      operation: null,
+      hardCapDurationSeconds: 14_400,
+    });
+    expect(harness.events).toEqual(
+      expect.arrayContaining([
+        "record:booting",
+        "projection:booting",
+        "schedule:enforceHardCap",
+        "host:exec:workspace",
+        "host:exec:agent",
+        "record:warm",
+        "projection:warm",
+        "schedule:captureThreadId",
+      ]),
     );
   });
 
   it("maps repeated create keys to one Sandbox identity", async () => {
-    sandbox.createScottySession.mockResolvedValue({
-      branch: "scotty/replayed",
-      repo: "anomalyco/rift",
-      defaultBranch: "dev",
-      status: "booting",
-    });
+    const harness = await createSessionHarness();
+    useRealSandbox(harness);
     const request = {
       method: "POST",
       headers: {
@@ -176,32 +234,18 @@ describe("real Hono boundary", () => {
     expect(firstBody).toEqual(secondBody);
     expect(firstBody).toMatchObject({
       id: expect.stringMatching(/^[0-9a-f]{12}$/u),
-      status: "booting",
+      status: "warm",
     });
-    expect(sandbox.createScottySession).toHaveBeenNthCalledWith(
-      1,
-      { prompt: "ship it", repo: "anomalyco/rift", hardCapSeconds: 14_400 },
-      firstBody.id,
-      {
-        keyDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
-        inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
-      },
-    );
-    expect(sandbox.createScottySession).toHaveBeenNthCalledWith(
-      2,
-      { prompt: "ship it", repo: "anomalyco/rift", hardCapSeconds: 14_400 },
-      firstBody.id,
-      expect.any(Object),
-    );
+    expect(harness.read(sessionHarnessKeys.createIdempotency)).toEqual({
+      keyDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(harness.events.filter((event) => event === "host:exec:agent")).toHaveLength(1);
   });
 
   it("tracks the returned repository without making KV authoritative for create", async () => {
-    sandbox.createScottySession.mockResolvedValue({
-      branch: "scotty/a0b1c2d3e4f5",
-      repo: "owner/repo",
-      defaultBranch: "main",
-      status: "warm",
-    });
+    const trackedHarness = await createSessionHarness();
+    useRealSandbox(trackedHarness);
     const put = vi.fn(async () => undefined);
     const tracked = await app.request(
       "/api/sessions",
@@ -219,6 +263,8 @@ describe("real Hono boundary", () => {
     );
 
     put.mockRejectedValueOnce("KV unavailable");
+    const unavailableHarness = await createSessionHarness();
+    useRealSandbox(unavailableHarness);
     const unavailable = await app.request(
       "/api/sessions",
       {
@@ -289,6 +335,37 @@ describe("real Hono boundary", () => {
     expect(sandbox.publishScottySession).toHaveBeenCalledWith({});
   });
 
+  it("publishes through real repository and operation-lease orchestration", async () => {
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          branch: `scotty/${SESSION_ID}`,
+          repo: "owner/repo",
+          repoExistsAtCreate: false,
+        }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+      },
+    });
+    useRealSandbox(harness);
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/pr",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ title: "Ship the route parity test" }),
+      },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      branchUrl: "https://github.com/owner/repo/tree/scotty/a0b1c2d3e4f5",
+      created: false,
+    });
+    expect(harness.readRecord()).toMatchObject({ status: "warm", operation: null });
+    expect(harness.events).toContain("host:exec:exec");
+  });
+
   it("preserves beam-down streaming status, headers, and filename", async () => {
     sandbox.prepareDownArchive.mockResolvedValue({
       path: "/tmp/scotty-a0b1c2d3e4f5.tar",
@@ -330,18 +407,6 @@ describe("real Hono boundary", () => {
         mock: sandbox.sleepScottySession,
         output: { id: "a0b1c2d3e4f5", status: "sleeping", backupId: "backup-1" },
       },
-      {
-        method: "POST",
-        path: "/api/sessions/a0b1c2d3e4f5/resume",
-        mock: sandbox.resumeScottySession,
-        output: { id: "a0b1c2d3e4f5", status: "warm", branch: "scotty/a0b1c2d3e4f5" },
-      },
-      {
-        method: "DELETE",
-        path: "/api/sessions/a0b1c2d3e4f5",
-        mock: sandbox.vaporizeScottySession,
-        output: { id: "a0b1c2d3e4f5", status: "gone" },
-      },
     ] as const;
     for (const entry of cases) {
       entry.mock.mockResolvedValueOnce(entry.output);
@@ -353,6 +418,89 @@ describe("real Hono boundary", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual(entry.output);
     }
+  });
+
+  it("resumes through real restore, credential, runtime, and state orchestration", async () => {
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "sleeping",
+          branch: `scotty/${SESSION_ID}`,
+          backup: { current: makeResumeBackup() },
+          ownedBackupIds: ["backup-1"],
+          codexThreadId: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
+        }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+        [sessionHarnessKeys.terminalAttachments]: [],
+      },
+    });
+    useRealSandbox(harness);
+
+    const response = await app.request(
+      `/api/sessions/${SESSION_ID}/resume`,
+      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: SESSION_ID,
+      status: "warm",
+      branch: `scotty/${SESSION_ID}`,
+      backupId: "backup-1",
+    });
+    expect(harness.readRecord()).toMatchObject({ status: "warm", operation: null });
+    expect(harness.events).toEqual(
+      expect.arrayContaining([
+        "schedule:enforceHardCap",
+        "host:restoreBackup",
+        `storage:delete:${sessionHarnessKeys.terminalAttachments}`,
+        "host:mkdir",
+        "host:exec:agent",
+        "record:warm",
+        "projection:warm",
+        "schedule:captureThreadId",
+      ]),
+    );
+  });
+
+  it("vaporizes through real destruction, credential deletion, and authority transition", async () => {
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          branch: `scotty/${SESSION_ID}`,
+        }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+      },
+    });
+    useRealSandbox(harness);
+
+    const response = await app.request(
+      `/api/sessions/${SESSION_ID}`,
+      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ id: SESSION_ID, status: "gone" });
+    expect(harness.readRecord()).toMatchObject({
+      id: SESSION_ID,
+      status: "gone",
+      operation: null,
+      ownedBackupIds: [],
+    });
+    expect(harness.read(sessionHarnessKeys.credential)).toBeUndefined();
+    expect(harness.events).toEqual(
+      expect.arrayContaining([
+        "schedule:retryVaporizeSession",
+        "host:destroy",
+        `storage:delete:${sessionHarnessKeys.credential}`,
+        "record:gone",
+        `projection:delete:session:${SESSION_ID}`,
+      ]),
+    );
   });
 
   it("lists only fully decoded KV projections and preserves valid optional fields", async () => {
@@ -459,6 +607,10 @@ describe("real Hono boundary", () => {
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toEqual({
       error: { code: "internal", message: "Internal error" },
+    });
+    expect(logged).toHaveBeenCalledWith("Projection failure", {
+      tag: "SessionProjectionFailure",
+      reason: "list",
     });
     logged.mockRestore();
   });
@@ -723,6 +875,7 @@ describe("real Hono boundary", () => {
     );
 
     expect(response.status).toBe(502);
+    expect(sandbox.getScottySession).not.toHaveBeenCalled();
     expect(sandbox.prepareTerminalAttachment).toHaveBeenCalledWith("123456abcdef");
     expect(sandbox.getSession).toHaveBeenCalledWith("scotty-web-123456abcdef");
     expect(terminal).toHaveBeenCalledWith(

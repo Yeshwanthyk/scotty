@@ -1,20 +1,17 @@
 import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
-import type { ExecResult } from "@cloudflare/sandbox";
-import { Effect, Layer, Option, Result, Schema } from "effect";
-import { Agent, type AgentLaunch, agentLayer } from "./agent";
+import { Clock, Data, Effect, Layer, Option, Predicate, Result, Schedule } from "effect";
+import { Agent, agentLayer } from "./agent";
 import { pauseAgentCommand, resumeAgentCommand } from "./agent-runtime";
-import { BackupStore, type BackupStoreFailure, backupStoreLayer } from "./backup-store";
+import { BackupStore, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
 import { agentEnv, ContainerAuth, containerAuthLayer } from "./container-auth";
 import {
   CredentialVault,
-  type CredentialVaultFailure,
   credentialVaultLayer,
   durableObjectCredentialVaultStorage,
 } from "./credential-vault";
 import {
   conflict,
-  hasCommittedManagedStop,
   isRecord,
   notFound,
   ScottyError,
@@ -30,12 +27,9 @@ import {
   type SessionRecord,
   type SessionStatus,
   type SessionView,
+  type TerminalAttachmentLease,
 } from "./contracts";
-import {
-  decideIdempotentCreate,
-  decodeCreateIdempotencyMetadata,
-  type CreateIdempotencyMetadata,
-} from "./create-idempotency";
+import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import {
   ALLOWED_HOSTS,
   CODEX_SENTINEL_PREFIX,
@@ -52,33 +46,30 @@ import {
   sessionStoreLayer,
 } from "./session-store";
 import {
-  hardCapObservationIsCurrent,
   SESSION_SCHEDULE_CALLBACKS,
   sessionAllowsTerminalAttachment,
   sessionAllowsRuntimeAccess,
   VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
 } from "./session-lifecycle";
-import {
-  errorName,
-  SandboxRuntime,
-  type SandboxRuntimeFailure,
-  sandboxRuntimeLayer,
-  shellQuote,
-} from "./sandbox-runtime";
+import { errorName, SandboxRuntime, sandboxRuntimeLayer, shellQuote } from "./sandbox-runtime";
 import {
   kvSessionProjectionStorage,
   projectSessionBestEffort,
   removeSessionProjection,
+  SessionProjection,
   sessionProjectionLayer,
 } from "./session-projection";
 import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
-import { type PreparedWorkspace, sessionRoot, Workspace, workspaceLayer } from "./workspace";
+import {
+  durableObjectTerminalAttachmentStorage,
+  TerminalAttachments,
+  TERMINAL_ATTACHMENT_TTL_MS,
+  terminalAttachmentCleanupBestEffort,
+  terminalAttachmentsLayer,
+  type TerminalAttachmentReleaseCondition,
+} from "./terminal-attachments";
+import { sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
-const RECORD_KEY = "scotty:session";
-const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
-const TERMINAL_ATTACHMENTS_KEY = "scotty:terminal-attachments";
-const MAX_TERMINAL_ATTACHMENTS = 8;
-const TERMINAL_ATTACHMENT_TTL_MS = 45_000;
 const TERMINAL_ATTACHMENT_RETRY_SECONDS = 2;
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
@@ -87,15 +78,17 @@ const MANAGED_STOP_RETRY_SECONDS = 2;
 const DESTROY_DEADLINE_MS = 30_000;
 const DESTROY_RETRY_SECONDS = 35;
 
-const TerminalAttachmentLeaseSchema = Schema.Struct({
-  sessionId: Schema.String,
-  status: Schema.Literals(["creating", "active", "releasing"]),
-  lastSeenAt: Schema.String,
-  createSettled: Schema.Boolean,
-});
-const TerminalAttachmentLeasesSchema = Schema.Array(TerminalAttachmentLeaseSchema);
-const decodeTerminalAttachmentLeases = Schema.decodeUnknownOption(TerminalAttachmentLeasesSchema);
-type TerminalAttachmentLease = typeof TerminalAttachmentLeaseSchema.Type;
+type SandboxServices =
+  | Agent
+  | BackupStore
+  | ContainerAuth
+  | CredentialVault
+  | RolloutDiscovery
+  | SandboxRuntime
+  | SessionProjection
+  | SessionStore
+  | TerminalAttachments
+  | Workspace;
 
 interface HardCapPayload {
   hardCapAt: string;
@@ -124,1284 +117,31 @@ interface VaporizeRetryPayload {
   nonce: string;
 }
 
-class ManagedStopArmedError extends Error {
+class ManagedStopArmedError extends Data.TaggedError("ManagedStopArmedError")<{
   readonly cause: unknown;
+}> {}
 
-  constructor(cause: unknown) {
-    super("Managed stop reconciliation is armed");
-    this.name = "ManagedStopArmedError";
-    this.cause = cause;
-  }
-}
+class SessionShutdownPending extends Data.TaggedError("SessionShutdownPending")<{}> {}
+
+class MissingPullRequestUrl extends Data.TaggedError("MissingPullRequestUrl")<{}> {}
+
+const hostEffect = <A>(operation: () => Promise<A>): Effect.Effect<A, unknown> =>
+  Effect.tryPromise({
+    try: operation,
+    catch: (cause) => cause,
+  });
 
 export class Sandbox extends BaseSandbox<Bindings> {
   override sleepAfter = "60m";
   interceptHttps = true;
   enableInternet = false;
   allowedHosts = [...ALLOWED_HOSTS];
+  private readonly layer: Layer.Layer<SandboxServices>;
 
-  async createScottySession(
-    input: CreateSessionInput,
-    id: string,
-    idempotency?: CreateIdempotencyMetadata,
-  ): Promise<SessionView> {
-    const now = new Date();
-    const nonce = crypto.randomUUID();
-    const branch = `scotty/${id}`;
-    const initial: SessionRecord = {
-      version: 1,
-      id,
-      status: "booting",
-      operation: { kind: "create", nonce, startedAt: now.toISOString() },
-      repo: input.repo,
-      repoExistsAtCreate: true,
-      defaultBranch: "dev",
-      branch,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      hardCapAt: new Date(now.getTime() + input.hardCapSeconds * 1000).toISOString(),
-      hardCapDurationSeconds: input.hardCapSeconds,
-      ownedBackupIds: [],
-    };
+  constructor(ctx: DurableObjectState<{}>, env: Bindings) {
+    super(ctx, env);
 
-    let replay: SessionRecord | undefined;
-    await this.ctx.storage.transaction(async (transaction) => {
-      const existing = await transaction.get<SessionRecord>(RECORD_KEY);
-      const storedIdempotency = decodeCreateIdempotencyMetadata(
-        await transaction.get<unknown>(CREATE_IDEMPOTENCY_KEY),
-      );
-      const decision = decideIdempotentCreate(existing, storedIdempotency, idempotency);
-      if (decision.kind === "conflict") throw conflict(`Session ${id} already exists`);
-      if (decision.kind === "replay") {
-        replay = decision.record;
-        return;
-      }
-      if (idempotency) await transaction.put(CREATE_IDEMPOTENCY_KEY, idempotency);
-      else await transaction.delete(CREATE_IDEMPOTENCY_KEY);
-      await transaction.put(RECORD_KEY, initial);
-    });
-    if (replay) return toSessionView(toProjection(replay, new Date()), Date.now());
-    await this.project(initial);
-
-    try {
-      await this.scheduleHardCap(initial.hardCapAt);
-      const credential = await this.seedCredential(id);
-      const worktree = await this.prepareWorkspace(initial, credential.githubSentinel);
-      await this.seedContainerAuth(initial, credential);
-      await this.runAgent({ kind: "start", prompt: input.prompt }, initial.id);
-
-      const ready = await this.updateForOperation(nonce, (record) => ({
-        ...record,
-        status: "warm",
-        operation: null,
-        repoExistsAtCreate: worktree.repoExists,
-        defaultBranch: worktree.defaultBranch,
-        updatedAt: new Date().toISOString(),
-      }));
-      await this.schedule(5, "captureThreadId");
-      return toSessionView(toProjection(ready, new Date()), Date.now());
-    } catch (error) {
-      const failed = await this.failOperation(
-        nonce,
-        "create_failed",
-        "Session setup failed",
-        false,
-      );
-      await this.destroyFailedRuntime(failed.id);
-      throw this.upstreamError("Session setup failed", error, failed.id);
-    }
-  }
-
-  async getScottySession(): Promise<SessionView> {
-    const record = await this.requireRecord();
-    return toSessionView(toProjection(record, new Date()), Date.now());
-  }
-
-  async prepareTerminalAttachment(clientId: string): Promise<string> {
-    const record = await this.requireRecord();
-    this.assertTerminalAttachmentAllowed(record);
-    const sessionId = `scotty-web-${clientId}`;
-    const credential = await this.requireCredential();
-    await this.reconcileExpiredTerminalAttachments();
-    const now = new Date().toISOString();
-    await this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
-      sessionId,
-      observedAt: now,
-    } satisfies TerminalAttachmentExpiryPayload);
-    await this.ctx.storage.transaction(async (transaction) => {
-      this.assertTerminalAttachmentAllowed(await transaction.get<SessionRecord>(RECORD_KEY));
-      const attachments = this.decodeTerminalAttachments(
-        await transaction.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
-      );
-      if (attachments.some((attachment) => attachment.sessionId === sessionId))
-        throw conflict("Terminal attachment already exists");
-      if (attachments.length >= MAX_TERMINAL_ATTACHMENTS)
-        throw conflict("Too many terminal attachments");
-      await transaction.put(TERMINAL_ATTACHMENTS_KEY, [
-        ...attachments,
-        {
-          sessionId,
-          status: "creating",
-          lastSeenAt: now,
-          createSettled: false,
-        } satisfies TerminalAttachmentLease,
-      ]);
-    });
-    try {
-      this.assertTerminalAttachmentAllowed(await this.ctx.storage.get<SessionRecord>(RECORD_KEY));
-      await this.createSession({
-        id: sessionId,
-        cwd: sessionRoot(record.id),
-        env: agentEnv(record.id, credential),
-      });
-      const activated = await this.updateTerminalAttachment(sessionId, (attachment) => ({
-        ...attachment,
-        status: attachment.status === "creating" ? "active" : attachment.status,
-        lastSeenAt: now,
-        createSettled: true,
-      }));
-      if (activated?.status !== "active")
-        throw conflict("Terminal attachment was released during creation");
-      return sessionId;
-    } catch (error) {
-      await this.requestTerminalAttachmentRelease(sessionId);
-      throw error;
-    }
-  }
-
-  async releaseTerminalAttachment(clientId: string): Promise<void> {
-    await this.requestTerminalAttachmentRelease(`scotty-web-${clientId}`);
-  }
-
-  async touchTerminalAttachment(clientId: string): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    const sessionId = `scotty-web-${clientId}`;
-    const observedAt = new Date().toISOString();
-    await this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
-      sessionId,
-      observedAt,
-    } satisfies TerminalAttachmentExpiryPayload);
-    await this.updateTerminalAttachment(sessionId, (attachment) => ({
-      ...attachment,
-      lastSeenAt: observedAt,
-    }));
-  }
-
-  async expireTerminalAttachment(payload: TerminalAttachmentExpiryPayload): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    await this.requestTerminalAttachmentRelease(payload.sessionId, {
-      kind: "observedAt",
-      value: payload.observedAt,
-    });
-  }
-
-  async finalizeTerminalAttachment(payload: TerminalAttachmentPayload): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    const attachment = await this.updateTerminalAttachment(
-      payload.sessionId,
-      (current) => ({ ...current, status: "releasing" }),
-      (current) =>
-        current.status === "releasing" ||
-        this.terminalReleaseConditionMatches(current, payload.condition),
-    );
-    if (!attachment) return;
-    await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
-      sessionId: payload.sessionId,
-      condition: { kind: "always" },
-    } satisfies TerminalAttachmentPayload);
-    await this.finishTerminalAttachmentRelease(attachment);
-  }
-
-  async snapshotScottySession(): Promise<SessionView> {
-    const operation = await this.acquireOperation("snapshot", ["warm"]);
-    try {
-      const record = await this.checkpoint(operation.nonce, true);
-      return toSessionView(toProjection(record, new Date()), Date.now());
-    } catch (error) {
-      await this.releaseOperation(operation.nonce);
-      throw this.upstreamError("Snapshot failed", error);
-    }
-  }
-
-  async sleepScottySession(): Promise<SessionView> {
-    const operation = await this.acquireOperation("snapshot", ["warm"]);
-    try {
-      await this.checkpoint(operation.nonce, false, false);
-      const record = await this.stopAfterCheckpoint(operation.nonce);
-      return toSessionView(toProjection(record, new Date()), Date.now());
-    } catch (error) {
-      if (
-        !(error instanceof ManagedStopArmedError) &&
-        !(await this.isManagedStopPending(operation.nonce))
-      )
-        await this.releaseOperationIfHeld(operation.nonce);
-      throw this.upstreamError("Session stop failed", error);
-    }
-  }
-
-  async resumeScottySession(): Promise<SessionView> {
-    const operation = await this.acquireOperation("resume", ["sleeping", "failed"]);
-    let record = await this.requireRecord();
-    const backup = record.backup?.current;
-    if (!backup) {
-      await this.releaseOperation(operation.nonce);
-      throw wrongState(record.status, "resume", "No successful backup is available");
-    }
-
-    record = await this.updateForOperation(operation.nonce, (current) => ({
-      ...current,
-      status: "booting",
-      failure: undefined,
-      updatedAt: new Date().toISOString(),
-    }));
-
-    try {
-      const hardCapAt = new Date(Date.now() + record.hardCapDurationSeconds * 1000).toISOString();
-      record = await this.updateForOperation(operation.nonce, (current) => ({
-        ...current,
-        hardCapAt,
-        updatedAt: new Date().toISOString(),
-      }));
-      await this.scheduleHardCap(hardCapAt);
-      await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.restore(backup)));
-      await this.ctx.storage.delete(TERMINAL_ATTACHMENTS_KEY);
-      const credential = await this.requireCredential();
-      await this.seedContainerAuth(record, credential);
-      await this.runAgent({ kind: "resume", threadId: record.codexThreadId }, record.id);
-      const ready = await this.updateForOperation(operation.nonce, (current) => ({
-        ...current,
-        status: "warm",
-        operation: null,
-        failure: undefined,
-        hardCapAt,
-        updatedAt: new Date().toISOString(),
-      }));
-      await this.schedule(5, "captureThreadId");
-      return toSessionView(toProjection(ready, new Date()), Date.now());
-    } catch (error) {
-      await this.failOperation(operation.nonce, "resume_failed", "Session restore failed", true);
-      await this.destroyFailedRuntime(record.id);
-      throw this.upstreamError("Session restore failed", error);
-    }
-  }
-
-  async publishScottySession(input: PrInput): Promise<PrResult> {
-    const operation = await this.acquireOperation("pr", ["warm"]);
-    const record = await this.requireRecord();
-    const credential = await this.requireCredential();
-    const env = agentEnv(record.id, credential);
-    const root = sessionRoot(record.id);
-    const repoUrl = `https://github.com/${record.repo}.git`;
-
-    try {
-      const title = input.title ?? `Scotty session ${record.id}`;
-      const dirty = await this.execChecked(`git -C ${shellQuote(root)} status --porcelain`);
-      if (dirty.stdout.trim()) {
-        await this.execChecked(
-          `git -C ${shellQuote(root)} -c user.name=Scotty -c user.email=scotty@users.noreply.github.com add -A && git -C ${shellQuote(root)} -c user.name=Scotty -c user.email=scotty@users.noreply.github.com commit -m ${shellQuote(title)}`,
-          { env, timeout: 120_000 },
-        );
-      }
-      if (!record.repoExistsAtCreate) {
-        await this.execChecked(`gh repo create ${shellQuote(record.repo)} --private`, {
-          env,
-          timeout: 120_000,
-        });
-        await this.execChecked(
-          `git -C ${shellQuote(root)} remote set-url origin ${shellQuote(repoUrl)}`,
-          { env },
-        );
-      }
-
-      await this.execChecked(
-        `git -C ${shellQuote(root)} push -u origin ${shellQuote(record.branch)}`,
-        { env, timeout: 180_000 },
-      );
-      const branchUrl = `https://github.com/${record.repo}/tree/${record.branch}`;
-      let result: PrResult;
-      if (!record.repoExistsAtCreate) {
-        result = { branchUrl, created: false };
-      } else {
-        const bodyPath = `/tmp/scotty-pr-${record.id}.md`;
-        await this.writeFile(bodyPath, `Automated changes from Scotty session \`${record.id}\`.\n`);
-        const created = await this.execChecked(
-          `gh pr create --repo ${shellQuote(record.repo)} --base ${shellQuote(record.defaultBranch)} --head ${shellQuote(record.branch)} --title ${shellQuote(title)} --body-file ${shellQuote(bodyPath)}`,
-          { env, timeout: 120_000 },
-        );
-        const prUrl = created.stdout.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/u)?.[0];
-        // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: native Sandbox command callback preserves its existing Promise rejection contract until Chunk 6
-        if (!prUrl) throw new Error("gh did not return a pull request URL");
-        result = { prUrl, branchUrl, created: true };
-      }
-      await this.releaseOperation(operation.nonce);
-      return result;
-    } catch (error) {
-      await this.releaseOperation(operation.nonce);
-      throw this.upstreamError("Publishing failed", error);
-    }
-  }
-
-  async prepareDownArchive(): Promise<DownArchive> {
-    const operation = await this.acquireOperation("down", ["warm"]);
-    const record = await this.requireRecord();
-    const root = sessionRoot(record.id);
-
-    try {
-      const sha = (
-        await this.execChecked(`git -C ${shellQuote(root)} rev-parse HEAD`)
-      ).stdout.trim();
-      const rollout = Option.getOrElse(
-        await this.runRolloutDiscovery(
-          Effect.flatMap(RolloutDiscovery, (discovery) => discovery.findNewestRollout(record.id)),
-        ),
-        () => undefined,
-      );
-      const manifest: DownManifest = {
-        version: 1,
-        id: record.id,
-        repo: record.repo,
-        branch: record.branch,
-        sha,
-        codexThreadId: record.codexThreadId,
-        rolloutFile: rollout ? basename(rollout) : undefined,
-      };
-      const manifestPath = `/tmp/metadata.json`;
-      const archivePath = `/tmp/scotty-${record.id}.tar`;
-      await this.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-      const members = [`-C /tmp ${shellQuote(basename(manifestPath))}`];
-      if (rollout)
-        members.push(`-C ${shellQuote(dirname(rollout))} ${shellQuote(basename(rollout))}`);
-      await this.execChecked(`tar -cf ${shellQuote(archivePath)} ${members.join(" ")}`);
-      await this.releaseOperation(operation.nonce);
-      return { path: archivePath, filename: `scotty-${record.id}.tar`, manifest };
-    } catch (error) {
-      await this.releaseOperation(operation.nonce);
-      throw this.upstreamError("Beam-down archive failed", error);
-    }
-  }
-
-  async readScottyArchiveStream(path: string) {
-    await this.assertRuntimeAccess();
-    return this.readFileStream(path);
-  }
-
-  async vaporizeScottySession(): Promise<{ id: string; status: "gone" }> {
-    const existing = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!existing) throw notFound("unknown");
-    if (existing.status === "gone") {
-      try {
-        await this.removeProjection(existing.id);
-        this.cancelAllSessionSchedules();
-        return { id: existing.id, status: "gone" };
-      } catch (error) {
-        await this.armVaporizeRetry({ id: existing.id, nonce: "gone" });
-        throw this.upstreamError("Vaporize projection repair failed", error, existing.id);
-      }
-    }
-    const operation =
-      existing.operation?.kind === "vaporize"
-        ? existing.operation
-        : await this.acquireOperation(
-            "vaporize",
-            ["booting", "warm", "sleeping", "failed"],
-            ABANDONED_OPERATION_MS,
-          );
-    const payload = { id: existing.id, nonce: operation.nonce } satisfies VaporizeRetryPayload;
-    await this.armVaporizeRetry(payload);
-
-    try {
-      return await this.continueVaporizeSession(payload);
-    } catch (error) {
-      throw this.upstreamError("Vaporize failed", error);
-    }
-  }
-
-  async retryVaporizeSession(payload: VaporizeRetryPayload): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!record || record.id !== payload.id) return;
-    if (record.status !== "gone" && record.operation?.nonce !== payload.nonce) return;
-
-    await this.armVaporizeRetry(payload);
-    try {
-      await this.continueVaporizeSession(payload);
-    } catch (error) {
-      console.error("Vaporize reconciliation failed", {
-        sessionId: payload.id,
-        error: errorName(error),
-      });
-    }
-  }
-
-  async readCredentialForProxy(sentinel: string): Promise<StoredCredential | null> {
-    return this.runCredentialVault(
-      Effect.flatMap(CredentialVault, (vault) => vault.readForProxy(sentinel)),
-    );
-  }
-
-  async beginCredentialRefresh(sentinel: string): Promise<CredentialRefreshLease | null> {
-    return this.runCredentialVault(
-      Effect.flatMap(CredentialVault, (vault) => vault.beginRefresh(sentinel, crypto.randomUUID())),
-    );
-  }
-
-  async persistRotatedCredential(
-    sentinel: string,
-    patch: CredentialPatch,
-    nonce: string,
-  ): Promise<void> {
-    await this.runCredentialVault(
-      Effect.flatMap(CredentialVault, (vault) => vault.persistRotation(sentinel, patch, nonce)),
-    );
-  }
-
-  async cancelCredentialRefresh(sentinel: string, nonce: string): Promise<void> {
-    await this.runCredentialVault(
-      Effect.flatMap(CredentialVault, (vault) => vault.cancelRefresh(sentinel, nonce)),
-    );
-  }
-
-  async captureThreadId(payload: { attempt?: number } = {}): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(record) || record.status !== "warm" || record.operation) return;
-    const threadIdOption = await this.runRolloutDiscovery(
-      Effect.flatMap(RolloutDiscovery, (discovery) => discovery.discoverThreadId(record.id)),
-    );
-    if (Option.isNone(threadIdOption)) {
-      const attempt = payload.attempt ?? 0;
-      if (attempt < 11) await this.schedule(5, "captureThreadId", { attempt: attempt + 1 });
-      return;
-    }
-    const threadId = threadIdOption.value;
-    let updated: SessionRecord | undefined;
-    await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<SessionRecord>(RECORD_KEY);
-      if (
-        !sessionAllowsRuntimeAccess(current) ||
-        current.status !== "warm" ||
-        current.operation ||
-        current.codexThreadId === threadId
-      )
-        return;
-      updated = { ...current, codexThreadId: threadId, updatedAt: new Date().toISOString() };
-      await transaction.put(RECORD_KEY, updated);
-    });
-    if (updated) await this.project(updated);
-  }
-
-  async enforceHardCap(payload: HardCapPayload): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!record || record.status === "gone" || record.status === "sleeping") return;
-    if (payload.hardCapAt !== record.hardCapAt) return;
-
-    if (record.operation) {
-      if (record.operation.kind === "vaporize") return;
-      const operationAge = Date.now() - Date.parse(record.operation.startedAt);
-      if (operationAge < HARD_CAP_GRACE_MS) {
-        await this.schedule(5, "enforceHardCap", payload);
-        return;
-      }
-      await this.markHardCapFailure(
-        record,
-        "A session operation exceeded the hard-cap grace period",
-      );
-      return;
-    }
-
-    let operation: SessionRecord["operation"] = null;
-    try {
-      operation = await this.acquireOperation("snapshot", ["warm", "booting"]);
-      await this.checkpoint(operation.nonce, false, false);
-      await this.stopAfterCheckpoint(operation.nonce);
-    } catch (error) {
-      if (
-        operation &&
-        (error instanceof ManagedStopArmedError ||
-          (await this.isManagedStopPending(operation.nonce)))
-      )
-        return;
-      const current = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-      if (current) await this.markHardCapFailure(current, "Hard-cap checkpoint or shutdown failed");
-    }
-  }
-
-  override async onActivityExpired(): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!record || record.status !== "warm" || record.operation) return;
-    let operation: NonNullable<SessionRecord["operation"]> | undefined;
-    try {
-      operation = await this.acquireOperation("snapshot", ["warm"]);
-      await this.checkpoint(operation.nonce, false, false);
-      await this.stopAfterCheckpoint(operation.nonce);
-    } catch (error) {
-      if (
-        operation &&
-        !(error instanceof ManagedStopArmedError) &&
-        !(await this.isManagedStopPending(operation.nonce))
-      )
-        await this.releaseOperationIfHeld(operation.nonce);
-      console.error("Managed idle checkpoint failed", {
-        sessionId: record.id,
-        error: errorName(error),
-      });
-    }
-  }
-
-  override async onStop(): Promise<void> {
-    await super.onStop();
-    let next: SessionRecord | undefined;
-    await this.ctx.storage.transaction(async (transaction) => {
-      const record = await transaction.get<SessionRecord>(RECORD_KEY);
-      if (
-        !record ||
-        record.status === "sleeping" ||
-        record.status === "failed" ||
-        record.status === "gone" ||
-        record.operation?.kind === "vaporize"
-      )
-        return;
-      const checkpointCommitted = hasCommittedManagedStop(record);
-      next = checkpointCommitted
-        ? {
-            ...record,
-            status: "sleeping",
-            operation: null,
-            failure: undefined,
-            updatedAt: new Date().toISOString(),
-          }
-        : {
-            ...record,
-            status: "failed",
-            operation: null,
-            failure: {
-              code: "runtime_stopped",
-              message: "Sandbox runtime stopped before a managed checkpoint",
-              recoverable: Boolean(record.backup?.current),
-            },
-            updatedAt: new Date().toISOString(),
-          };
-      await transaction.put(RECORD_KEY, next);
-      await transaction.delete(TERMINAL_ATTACHMENTS_KEY);
-    });
-    if (next) await this.project(next);
-  }
-
-  async finalizeManagedStop(payload: ManagedStopPayload): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    if (
-      record?.operation?.nonce === payload.nonce &&
-      record.operation.checkpointedBackupId === record.backup?.current.id &&
-      !record.operation.stopRequestedAt
-    ) {
-      if (Date.now() - Date.parse(payload.armedAt) < 30_000) {
-        await this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload);
-        return;
-      }
-      await this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload);
-      let rollbackClaimed = false;
-      await this.ctx.storage.transaction(async (transaction) => {
-        const current = await transaction.get<SessionRecord>(RECORD_KEY);
-        if (
-          current?.operation?.nonce !== payload.nonce ||
-          current.operation.stopRequestedAt ||
-          current.operation.checkpointedBackupId !== current.backup?.current.id
-        )
-          return;
-        if (current.operation.stopRollbackAt) {
-          rollbackClaimed = true;
-          return;
-        }
-        rollbackClaimed = true;
-        await transaction.put(RECORD_KEY, {
-          ...current,
-          operation: { ...current.operation, stopRollbackAt: new Date().toISOString() },
-          updatedAt: new Date().toISOString(),
-        });
-      });
-      if (!rollbackClaimed) return;
-      try {
-        await this.execChecked(resumeAgentCommand(), { timeout: 10_000 });
-        await this.releaseOperationIfHeld(payload.nonce);
-      } catch {
-        await this.updateForOperation(payload.nonce, (current) => ({
-          ...current,
-          operation: current.operation && {
-            kind: current.operation.kind,
-            nonce: current.operation.nonce,
-            startedAt: current.operation.startedAt,
-            checkpointedBackupId: current.operation.checkpointedBackupId,
-          },
-          updatedAt: new Date().toISOString(),
-        })).catch(() => undefined);
-      }
-      return;
-    }
-    if (!(await this.isManagedStopPending(payload.nonce))) return;
-    await this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload);
-    try {
-      await this.stop();
-    } catch (error) {
-      console.error("Managed stop reconciliation failed", { error: errorName(error) });
-    }
-  }
-
-  private async seedCredential(id: string): Promise<StoredCredential> {
-    return this.runCredentialVault(
-      Effect.flatMap(CredentialVault, (vault) =>
-        vault.seed({
-          codexAuthJson: this.env.CODEX_AUTH_JSON,
-          codexSentinel: `${CODEX_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
-          githubSentinel: `${GITHUB_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
-        }),
-      ),
-    );
-  }
-
-  private async requireCredential(): Promise<StoredCredential> {
-    return this.runCredentialVault(Effect.flatMap(CredentialVault, (vault) => vault.require));
-  }
-
-  private async prepareWorkspace(
-    record: SessionRecord,
-    githubSentinel: string,
-  ): Promise<PreparedWorkspace> {
-    const layer = workspaceLayer.pipe(Layer.provide(this.sandboxRuntimeLayer()));
-    const result = await Effect.runPromise(
-      Effect.flatMap(Workspace, (workspace) => workspace.prepare(record, githubSentinel)).pipe(
-        Effect.provide(layer),
-        Effect.scoped,
-        Effect.result,
-      ),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-
-  private async seedContainerAuth(
-    record: SessionRecord,
-    credential: StoredCredential,
-  ): Promise<void> {
-    const layer = containerAuthLayer.pipe(Layer.provide(this.sandboxRuntimeLayer()));
-    const result = await Effect.runPromise(
-      Effect.flatMap(ContainerAuth, (auth) => auth.seed(record.id, credential)).pipe(
-        Effect.provide(layer),
-        Effect.scoped,
-        Effect.result,
-      ),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-  private async checkpoint(
-    nonce: string,
-    resumeAgent: boolean,
-    releaseLease = resumeAgent,
-  ): Promise<SessionRecord> {
-    const record = await this.requireRecord();
-    const root = sessionRoot(record.id);
-    let paused = false;
-    let checkpointSucceeded = false;
-    try {
-      await this.execChecked(pauseAgentCommand(), { timeout: 10_000 });
-      paused = true;
-      await this.execChecked("sync", { timeout: 30_000 });
-      const backup = await this.runBackupStore(
-        Effect.flatMap(BackupStore, (store) =>
-          store.create({
-            dir: root,
-            name: `scotty-${record.id}-${Date.now()}`,
-            ttl: BACKUP_TTL_SECONDS,
-            localBucket: true,
-            compression: { format: "zstd" },
-          }),
-        ),
-      );
-      const priorPrevious = record.backup?.previous;
-      const updated = await this.updateForOperation(nonce, (current) => ({
-        ...current,
-        operation: releaseLease
-          ? null
-          : current.operation && {
-              ...current.operation,
-              checkpointedBackupId: backup.id,
-            },
-        backup: { current: backup, previous: current.backup?.current },
-        ownedBackupIds: [...new Set([...current.ownedBackupIds, backup.id])],
-        backupExpiresAt: new Date(Date.now() + BACKUP_TTL_SECONDS * 1000).toISOString(),
-        failure: undefined,
-        updatedAt: new Date().toISOString(),
-      }));
-      if (priorPrevious) {
-        await this.runBackupStore(
-          Effect.flatMap(BackupStore, (store) => store.delete(priorPrevious.id)),
-        ).catch(() => undefined);
-      }
-      checkpointSucceeded = true;
-      return updated;
-    } finally {
-      if (paused && (resumeAgent || !checkpointSucceeded)) {
-        await this.exec(resumeAgentCommand(), { timeout: 10_000 }).catch(() => undefined);
-      }
-    }
-  }
-
-  private async stopAfterCheckpoint(nonce: string): Promise<SessionRecord> {
-    const payload = { nonce, armedAt: new Date().toISOString() } satisfies ManagedStopPayload;
-    await this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload);
-    try {
-      await this.updateForOperation(nonce, (record) => {
-        if (record.operation?.stopRollbackAt) throw conflict("Managed stop rollback started");
-        return {
-          ...record,
-          operation: record.operation && {
-            ...record.operation,
-            stopRequestedAt: new Date().toISOString(),
-          },
-          updatedAt: new Date().toISOString(),
-        };
-      });
-      await this.releaseAllTerminalAttachments();
-      await this.stop();
-    } catch (error) {
-      const current = await this.requireRecord();
-      if (current.status === "sleeping") return current;
-      throw new ManagedStopArmedError(error);
-    }
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const stopped = await this.requireRecord();
-      if (stopped.status === "sleeping") return stopped;
-      if (stopped.status === "failed") throw wrongState(stopped.status, "stop");
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      await this.stop().catch((error) => {
-        throw new ManagedStopArmedError(error);
-      });
-    }
-    throw new ScottyError("upstream", "Session shutdown is still completing", {
-      httpStatus: 502,
-      exitCode: 4,
-    });
-  }
-
-  private async isManagedStopPending(nonce: string): Promise<boolean> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    return (
-      (record?.status === "warm" || record?.status === "booting") &&
-      record.operation?.nonce === nonce &&
-      Boolean(record.operation.stopRequestedAt)
-    );
-  }
-
-  private async releaseAllTerminalAttachments(): Promise<void> {
-    const attachments = await this.readTerminalAttachments();
-    await Promise.all(
-      attachments.map((attachment) => this.requestTerminalAttachmentRelease(attachment.sessionId)),
-    );
-  }
-
-  private decodeTerminalAttachments(stored: unknown): TerminalAttachmentLease[] {
-    return Option.getOrElse(decodeTerminalAttachmentLeases(stored), () => []).filter((attachment) =>
-      /^scotty-web-[0-9a-f]{12}$/u.test(attachment.sessionId),
-    );
-  }
-
-  private async readTerminalAttachments(): Promise<TerminalAttachmentLease[]> {
-    return this.decodeTerminalAttachments(
-      await this.ctx.storage.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
-    );
-  }
-
-  private async updateTerminalAttachment(
-    sessionId: string,
-    update: (attachment: TerminalAttachmentLease) => TerminalAttachmentLease,
-    predicate: (attachment: TerminalAttachmentLease) => boolean = () => true,
-  ): Promise<TerminalAttachmentLease | undefined> {
-    let updated: TerminalAttachmentLease | undefined;
-    await this.ctx.storage.transaction(async (transaction) => {
-      const attachments = this.decodeTerminalAttachments(
-        await transaction.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
-      );
-      const next = attachments.map((attachment) => {
-        if (attachment.sessionId !== sessionId || !predicate(attachment)) return attachment;
-        updated = update(attachment);
-        return updated;
-      });
-      if (updated) await transaction.put(TERMINAL_ATTACHMENTS_KEY, next);
-    });
-    return updated;
-  }
-
-  private async removeTerminalAttachment(sessionId: string): Promise<void> {
-    await this.ctx.storage.transaction(async (transaction) => {
-      const attachments = this.decodeTerminalAttachments(
-        await transaction.get<unknown>(TERMINAL_ATTACHMENTS_KEY),
-      );
-      await transaction.put(
-        TERMINAL_ATTACHMENTS_KEY,
-        attachments.filter((attachment) => attachment.sessionId !== sessionId),
-      );
-    });
-  }
-
-  private async finishTerminalAttachmentRelease(
-    attachment: TerminalAttachmentLease,
-  ): Promise<void> {
-    const lifecycle = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(lifecycle)) return;
-    let settled = attachment;
-    if (!settled.createSettled) {
-      const record = await this.requireRecord();
-      if (record.status !== "warm" || !sessionAllowsRuntimeAccess(record)) {
-        await this.removeTerminalAttachment(settled.sessionId);
-        return;
-      }
-      const credential = await this.requireCredential();
-      const beforeCreate = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-      if (!sessionAllowsRuntimeAccess(beforeCreate)) return;
-      try {
-        await this.createSession({
-          id: settled.sessionId,
-          cwd: sessionRoot(record.id),
-          env: agentEnv(record.id, credential),
-        });
-      } catch (error) {
-        if (!isRecord(error) || error.code !== "SESSION_ALREADY_EXISTS") return;
-      }
-      const updated = await this.updateTerminalAttachment(
-        settled.sessionId,
-        (current) => ({ ...current, createSettled: true }),
-        (current) => current.status === "releasing",
-      );
-      if (!updated) return;
-      settled = updated;
-    }
-    try {
-      const beforeList = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-      if (!sessionAllowsRuntimeAccess(beforeList)) return;
-      const { sessions } = await this.client.utils.listSessions();
-      if (!sessions.includes(settled.sessionId)) {
-        await this.removeTerminalAttachment(settled.sessionId);
-        return;
-      }
-      const beforeDelete = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-      if (!sessionAllowsRuntimeAccess(beforeDelete)) return;
-      await this.deleteSession(settled.sessionId);
-      await this.removeTerminalAttachment(settled.sessionId);
-    } catch {}
-  }
-
-  private async requestTerminalAttachmentRelease(
-    sessionId: string,
-    condition: TerminalAttachmentPayload["condition"] = { kind: "always" },
-  ): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
-      sessionId,
-      condition,
-    } satisfies TerminalAttachmentPayload);
-    const updated = await this.updateTerminalAttachment(
-      sessionId,
-      (attachment) => ({ ...attachment, status: "releasing" }),
-      (attachment) => this.terminalReleaseConditionMatches(attachment, condition),
-    );
-    if (updated) await this.finishTerminalAttachmentRelease(updated);
-  }
-
-  private terminalReleaseConditionMatches(
-    attachment: TerminalAttachmentLease,
-    condition: TerminalAttachmentPayload["condition"] = { kind: "always" },
-  ): boolean {
-    if (condition.kind === "observedAt") return attachment.lastSeenAt === condition.value;
-    if (condition.kind === "staleBefore")
-      return Date.parse(attachment.lastSeenAt) <= Date.parse(condition.value);
-    return true;
-  }
-
-  private async reconcileExpiredTerminalAttachments(): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    const cutoff = Date.now() - TERMINAL_ATTACHMENT_TTL_MS;
-    const attachments = await this.readTerminalAttachments();
-    for (const attachment of attachments) {
-      if (Date.parse(attachment.lastSeenAt) > cutoff || attachment.status === "releasing") continue;
-      await this.requestTerminalAttachmentRelease(attachment.sessionId, {
-        kind: "staleBefore",
-        value: new Date(cutoff).toISOString(),
-      });
-    }
-  }
-
-  private async scheduleHardCap(hardCapAt: string): Promise<void> {
-    this.deleteSchedules("enforceHardCap");
-    await this.schedule(new Date(hardCapAt), "enforceHardCap", {
-      hardCapAt,
-    } satisfies HardCapPayload);
-  }
-
-  private async continueVaporizeSession(
-    payload: VaporizeRetryPayload,
-  ): Promise<{ id: string; status: "gone" }> {
-    const current = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!current) throw notFound(payload.id);
-    if (current.status === "gone") {
-      await this.removeProjection(current.id);
-      this.cancelAllSessionSchedules();
-      return { id: current.id, status: "gone" };
-    }
-    if (current.operation?.kind !== "vaporize" || current.operation.nonce !== payload.nonce)
-      throw conflict("Session vaporize lease changed");
-
-    this.cancelVaporizeConflictingSchedules();
-    await this.ctx.storage.delete(TERMINAL_ATTACHMENTS_KEY);
-    const destroyed = await this.destroyBeforeDeadline();
-    if (!destroyed) {
-      await this.armVaporizeRetry(payload);
-      this.ctx.abort(`Sandbox destroy exceeded ${DESTROY_DEADLINE_MS}ms`);
-      throw new ScottyError("upstream", "Sandbox destruction timed out", {
-        httpStatus: 502,
-        exitCode: 1,
-      });
-    }
-
-    for (const backupId of new Set(current.ownedBackupIds)) {
-      await this.runBackupStore(Effect.flatMap(BackupStore, (store) => store.delete(backupId)));
-    }
-    await this.runCredentialVault(Effect.flatMap(CredentialVault, (vault) => vault.delete));
-    const gone = await this.updateForOperation(payload.nonce, (record) => ({
-      ...record,
-      status: "gone",
-      operation: null,
-      backup: undefined,
-      ownedBackupIds: [],
-      backupExpiresAt: undefined,
-      codexThreadId: undefined,
-      failure: undefined,
-      updatedAt: new Date().toISOString(),
-    }));
-    await this.removeProjection(gone.id);
-    this.cancelAllSessionSchedules();
-    return { id: gone.id, status: "gone" };
-  }
-
-  private async armVaporizeRetry(payload: VaporizeRetryPayload): Promise<void> {
-    this.deleteSchedules("retryVaporizeSession");
-    await this.schedule(DESTROY_RETRY_SECONDS, "retryVaporizeSession", payload);
-  }
-
-  private cancelVaporizeConflictingSchedules(): void {
-    for (const callback of VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS) {
-      this.deleteSchedules(callback);
-    }
-  }
-
-  private cancelAllSessionSchedules(): void {
-    for (const callback of SESSION_SCHEDULE_CALLBACKS) {
-      this.deleteSchedules(callback);
-    }
-  }
-
-  private async destroyBeforeDeadline(): Promise<boolean> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        this.destroy().then(() => true),
-        new Promise<false>((resolve) => {
-          timer = setTimeout(() => resolve(false), DESTROY_DEADLINE_MS);
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-  }
-
-  private async destroyFailedRuntime(sessionId: string): Promise<void> {
-    this.deleteSchedules("retryHardCapDestroy");
-    try {
-      const destroyed = await this.destroyBeforeDeadline();
-      if (destroyed) return;
-    } catch {}
-    await this.schedule(DESTROY_RETRY_SECONDS, "retryHardCapDestroy", sessionId);
-    this.ctx.abort(`Sandbox destroy did not complete for ${sessionId}`);
-  }
-
-  private async acquireOperation(
-    kind: OperationKind,
-    allowed: SessionStatus[],
-    replaceOperationOlderThanMs?: number,
-  ): Promise<NonNullable<SessionRecord["operation"]>> {
-    return this.runSessionStore(
-      Effect.flatMap(SessionStore, (store) =>
-        store.acquireOperation(kind, allowed, crypto.randomUUID(), replaceOperationOlderThanMs),
-      ),
-    );
-  }
-
-  private async updateForOperation(
-    nonce: string,
-    update: (record: SessionRecord) => SessionRecord,
-  ): Promise<SessionRecord> {
-    const next = await this.runSessionStore(
-      Effect.flatMap(SessionStore, (store) => store.updateForOperation(nonce, update)),
-    );
-    await this.project(next);
-    return next;
-  }
-
-  private async releaseOperation(nonce: string): Promise<SessionRecord> {
-    const next = await this.runSessionStore(
-      Effect.flatMap(SessionStore, (store) => store.releaseOperation(nonce)),
-    );
-    await this.project(next);
-    return next;
-  }
-
-  private async releaseOperationIfHeld(nonce: string): Promise<void> {
-    const next = await this.runSessionStore(
-      Effect.flatMap(SessionStore, (store) => store.releaseOperationIfHeld(nonce)),
-    );
-    if (next) await this.project(next).catch(() => undefined);
-  }
-
-  private async failOperation(
-    nonce: string,
-    code: string,
-    message: string,
-    recoverable: boolean,
-  ): Promise<SessionRecord> {
-    const next = await this.runSessionStore(
-      Effect.flatMap(SessionStore, (store) =>
-        store.failOperation(nonce, code, message, recoverable),
-      ),
-    );
-    await this.project(next);
-    return next;
-  }
-
-  async retryHardCapDestroy(sessionId: string): Promise<void> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (
-      !record ||
-      record.id !== sessionId ||
-      record.status !== "failed" ||
-      record.operation?.kind === "vaporize"
-    )
-      return;
-    await this.destroyFailedRuntime(sessionId);
-  }
-
-  private async markHardCapFailure(record: SessionRecord, message: string): Promise<void> {
-    let failed: SessionRecord | undefined;
-    await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<SessionRecord>(RECORD_KEY);
-      if (!hardCapObservationIsCurrent(record, current)) return;
-      failed = {
-        ...current,
-        status: "failed",
-        operation: null,
-        failure: {
-          code: "hard_cap_checkpoint_failed",
-          message,
-          recoverable: Boolean(current.backup?.current),
-        },
-        updatedAt: new Date().toISOString(),
-      };
-      await transaction.put(RECORD_KEY, failed);
-    });
-    if (!failed) return;
-    await this.project(failed);
-    await this.destroyFailedRuntime(failed.id);
-  }
-
-  private async requireRecord(): Promise<SessionRecord> {
-    return this.runSessionStore(Effect.flatMap(SessionStore, (store) => store.requireRecord));
-  }
-
-  private assertTerminalAttachmentAllowed(
-    record: SessionRecord | undefined,
-  ): asserts record is SessionRecord {
-    if (sessionAllowsTerminalAttachment(record)) return;
-    if (!record) throw notFound("unknown");
-    if (record.status !== "warm") throw wrongState(record.status, "attach");
-    if (!sessionAllowsRuntimeAccess(record))
-      throw conflict("Session destruction is already in progress");
-    if (record.operation) throw conflict(`Session is already running ${record.operation.kind}`);
-    throw conflict("Session is not accepting terminal attachments");
-  }
-
-  private async assertRuntimeAccess(): Promise<SessionRecord> {
-    const record = await this.ctx.storage.get<SessionRecord>(RECORD_KEY);
-    if (!sessionAllowsRuntimeAccess(record))
-      throw conflict("Session destruction is already in progress");
-    return record;
-  }
-
-  private async runSessionStore<A>(
-    program: Effect.Effect<A, ScottyError, SessionStore>,
-  ): Promise<A> {
-    const layer = sessionStoreLayer(durableObjectSessionRecordStorage(this.ctx.storage));
-    const result = await Effect.runPromise(
-      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-
-  private async project(record: SessionRecord): Promise<void> {
-    const layer = sessionProjectionLayer(kvSessionProjectionStorage(this.env.SESSIONS));
-    await Effect.runPromise(
-      projectSessionBestEffort(record).pipe(Effect.provide(layer), Effect.scoped),
-    );
-  }
-
-  private async removeProjection(id: string): Promise<void> {
-    const layer = sessionProjectionLayer(kvSessionProjectionStorage(this.env.SESSIONS));
-    const result = await Effect.runPromise(
-      removeSessionProjection(id).pipe(Effect.provide(layer), Effect.scoped, Effect.result),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-
-  private async runBackupStore<A>(
-    program: Effect.Effect<A, BackupStoreFailure, BackupStore>,
-  ): Promise<A> {
-    const layer = backupStoreLayer({
-      createBackup: async (options) => {
-        await this.assertRuntimeAccess();
-        return this.createBackup(options);
-      },
-      restoreBackup: async (backup) => {
-        await this.assertRuntimeAccess();
-        return this.restoreBackup(backup);
-      },
-      listObjects: (prefix, cursor) =>
-        this.env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
-          keys: page.objects.map((object) => object.key),
-          cursor: page.truncated ? page.cursor : undefined,
-        })),
-      deleteObjects: (keys) => this.env.BACKUP_BUCKET.delete([...keys]),
-    });
-    const result = await Effect.runPromise(
-      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-
-  private async runCredentialVault<A>(
-    program: Effect.Effect<A, CredentialVaultFailure, CredentialVault>,
-  ): Promise<A> {
-    const layer = credentialVaultLayer(
-      durableObjectCredentialVaultStorage(this.ctx.storage),
-      this.env.GH_TOKEN,
-    );
-    const result = await Effect.runPromise(
-      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-
-  private async runAgent(launch: AgentLaunch, id: SessionRecord["id"]): Promise<void> {
-    const dependencies = Layer.merge(
-      this.sandboxRuntimeLayer(),
-      credentialVaultLayer(
-        durableObjectCredentialVaultStorage(this.ctx.storage),
-        this.env.GH_TOKEN,
-      ),
-    );
-    const layer = agentLayer(this.env.SCOTTY_FAKE_AGENT === "1").pipe(Layer.provide(dependencies));
-    const result = await Effect.runPromise(
-      Effect.flatMap(Agent, (agent) => agent.launch(id, launch)).pipe(
-        Effect.provide(layer),
-        Effect.scoped,
-        Effect.result,
-      ),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-
-  private async execChecked(
-    command: string,
-    options: { env?: Record<string, string>; timeout?: number } = {},
-  ): Promise<ExecResult> {
-    return this.runSandboxRuntime(
-      Effect.flatMap(SandboxRuntime, (runtime) => runtime.execChecked(command, options)),
-    );
-  }
-
-  private async execResult(
-    command: string,
-    options: { env?: Record<string, string>; timeout?: number } = {},
-  ): Promise<ExecResult> {
-    return this.runSandboxRuntime(
-      Effect.flatMap(SandboxRuntime, (runtime) => runtime.exec(command, options)),
-    );
-  }
-
-  private async runSandboxRuntime<A>(
-    program: Effect.Effect<A, SandboxRuntimeFailure, SandboxRuntime>,
-  ): Promise<A> {
-    const result = await Effect.runPromise(
-      program.pipe(Effect.provide(this.sandboxRuntimeLayer()), Effect.scoped, Effect.result),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-
-  private async runRolloutDiscovery<A>(
-    program: Effect.Effect<A, SandboxRuntimeFailure, RolloutDiscovery>,
-  ): Promise<A> {
-    const layer = rolloutDiscoveryLayer.pipe(Layer.provide(this.sandboxRuntimeLayer()));
-    const result = await Effect.runPromise(
-      program.pipe(Effect.provide(layer), Effect.scoped, Effect.result),
-    );
-    return Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (value) => value,
-    });
-  }
-
-  private sandboxRuntimeLayer(): Layer.Layer<SandboxRuntime> {
-    return sandboxRuntimeLayer({
+    const runtime = sandboxRuntimeLayer({
       exec: async (command, options) => {
         await this.assertRuntimeAccess();
         return this.exec(command, options);
@@ -1426,6 +166,1255 @@ export class Sandbox extends BaseSandbox<Bindings> {
         await this.assertRuntimeAccess();
         return this.setEnvVars(envVars);
       },
+    });
+    const vault = credentialVaultLayer(
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning CredentialVault adapter
+      durableObjectCredentialVaultStorage(ctx.storage),
+      env.GH_TOKEN,
+    );
+    const agentDependencies = Layer.merge(runtime, vault);
+    const backup = backupStoreLayer({
+      createBackup: async (options) => {
+        await this.assertRuntimeAccess();
+        return this.createBackup(options);
+      },
+      restoreBackup: async (backup) => {
+        await this.assertRuntimeAccess();
+        return this.restoreBackup(backup);
+      },
+      listObjects: (prefix, cursor) =>
+        env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
+          keys: page.objects.map((object) => object.key),
+          cursor: page.truncated ? page.cursor : undefined,
+        })),
+      deleteObjects: (keys) => env.BACKUP_BUCKET.delete([...keys]),
+    });
+
+    this.layer = Layer.mergeAll(
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning SessionStore adapter
+      sessionStoreLayer(durableObjectSessionRecordStorage(ctx.storage)),
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning TerminalAttachments adapter
+      terminalAttachmentsLayer(durableObjectTerminalAttachmentStorage(ctx.storage)),
+      sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS)),
+      backup,
+      agentDependencies,
+      rolloutDiscoveryLayer.pipe(Layer.provide(runtime)),
+      workspaceLayer.pipe(Layer.provide(runtime)),
+      containerAuthLayer.pipe(Layer.provide(runtime)),
+      agentLayer(env.SCOTTY_FAKE_AGENT === "1").pipe(Layer.provide(agentDependencies)),
+    );
+  }
+
+  private readonly requireRecordProgram = Effect.fnUntraced(function* () {
+    const store = yield* SessionStore;
+    return yield* store.requireRecord;
+  });
+
+  private readonly readRecordProgram = Effect.fnUntraced(function* () {
+    const store = yield* SessionStore;
+    return Option.getOrUndefined(yield* store.read);
+  });
+
+  private readonly terminalAttachmentAllowedProgram = Effect.fnUntraced(function* (
+    record: SessionRecord | undefined,
+  ) {
+    if (sessionAllowsTerminalAttachment(record)) return record;
+    if (!record) return yield* notFound("unknown");
+    if (record.status !== "warm")
+      return yield* wrongState(
+        record.status,
+        "attach",
+        record.status === "sleeping" ? "Resume the session before attaching" : undefined,
+      );
+    if (!sessionAllowsRuntimeAccess(record))
+      return yield* conflict("Session destruction is already in progress");
+    if (record.operation)
+      return yield* conflict(`Session is already running ${record.operation.kind}`);
+    return yield* conflict("Session is not accepting terminal attachments");
+  });
+
+  private readonly assertRuntimeAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.readRecordProgram();
+    if (!sessionAllowsRuntimeAccess(record))
+      return yield* conflict("Session destruction is already in progress");
+    return record;
+  });
+
+  private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
+    yield* projectSessionBestEffort(record);
+  });
+
+  private readonly updateForOperationProgram = Effect.fnUntraced(function* (
+    nonce: string,
+    update: (record: SessionRecord) => SessionRecord,
+  ) {
+    const store = yield* SessionStore;
+    const next = yield* store.updateForOperation(nonce, update);
+    yield* projectSessionBestEffort(next);
+    return next;
+  });
+
+  private readonly releaseOperationProgram = Effect.fnUntraced(function* (nonce: string) {
+    const store = yield* SessionStore;
+    const next = yield* store.releaseOperation(nonce);
+    yield* projectSessionBestEffort(next);
+    return next;
+  });
+
+  private readonly releaseOperationIfHeldProgram = Effect.fnUntraced(function* (nonce: string) {
+    const store = yield* SessionStore;
+    const next = yield* store.releaseOperationIfHeld(nonce);
+    if (next) yield* projectSessionBestEffort(next);
+  });
+
+  private readonly failOperationProgram = Effect.fnUntraced(function* (
+    nonce: string,
+    code: string,
+    message: string,
+    recoverable: boolean,
+  ) {
+    const store = yield* SessionStore;
+    const next = yield* store.failOperation(nonce, code, message, recoverable);
+    yield* projectSessionBestEffort(next);
+    return next;
+  });
+
+  private readonly acquireOperationProgram = Effect.fnUntraced(function* (
+    kind: OperationKind,
+    allowed: SessionStatus[],
+    replaceOperationOlderThanMs?: number,
+  ) {
+    const store = yield* SessionStore;
+    return yield* store.acquireOperation(
+      kind,
+      allowed,
+      crypto.randomUUID(),
+      replaceOperationOlderThanMs,
+    );
+  });
+
+  private readonly isManagedStopPendingProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+  ) {
+    const record = yield* this.readRecordProgram();
+    return (
+      (record?.status === "warm" || record?.status === "booting") &&
+      record.operation?.nonce === nonce &&
+      Boolean(record.operation.stopRequestedAt)
+    );
+  });
+
+  private readonly createScottySessionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: CreateSessionInput,
+    id: string,
+    idempotency?: CreateIdempotencyMetadata,
+  ) {
+    const vault = yield* CredentialVault;
+    const workspace = yield* Workspace;
+    const containerAuth = yield* ContainerAuth;
+    const agent = yield* Agent;
+    const store = yield* SessionStore;
+    const now = yield* Clock.currentTimeMillis;
+    const nowIso = new Date(now).toISOString();
+    const nonce = crypto.randomUUID();
+    const initial: SessionRecord = {
+      version: 1,
+      id,
+      status: "booting",
+      operation: { kind: "create", nonce, startedAt: nowIso },
+      repo: input.repo,
+      repoExistsAtCreate: true,
+      defaultBranch: "dev",
+      branch: `scotty/${id}`,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      hardCapAt: new Date(now + input.hardCapSeconds * 1_000).toISOString(),
+      hardCapDurationSeconds: input.hardCapSeconds,
+      ownedBackupIds: [],
+    };
+
+    const inspected = yield* Effect.result(store.inspectInitial(initial, idempotency));
+    if (Result.isFailure(inspected)) {
+      if (Predicate.isTagged(inspected.failure, "InitialSessionStorageFailure"))
+        return yield* Effect.fail(inspected.failure.cause);
+      return yield* inspected.failure;
+    }
+    const decisionBeforeSchedule = inspected.success;
+    if (decisionBeforeSchedule.kind === "replay")
+      return toSessionView(toProjection(decisionBeforeSchedule.record, new Date(now)), now);
+
+    const hardCapSchedule = yield* Effect.result(
+      hostEffect(() =>
+        this.schedule(new Date(initial.hardCapAt), "enforceHardCap", {
+          hardCapAt: initial.hardCapAt,
+        } satisfies HardCapPayload),
+      ),
+    );
+    const recordToCommit: SessionRecord = Result.isFailure(hardCapSchedule)
+      ? {
+          ...initial,
+          status: "failed",
+          operation: null,
+          failure: {
+            code: "create_failed",
+            message: "Session setup failed",
+            recoverable: false,
+          },
+        }
+      : initial;
+
+    const committed = yield* Effect.result(store.createInitial(recordToCommit, idempotency));
+    if (Result.isFailure(committed)) {
+      if (Predicate.isTagged(committed.failure, "InitialSessionStorageFailure"))
+        return yield* Effect.fail(committed.failure.cause);
+      return yield* committed.failure;
+    }
+    const decision = committed.success;
+    if (decision.kind === "replay") {
+      const replayNow = yield* Clock.currentTimeMillis;
+      return toSessionView(toProjection(decision.record, new Date(replayNow)), replayNow);
+    }
+    yield* this.projectProgram(recordToCommit);
+
+    if (Result.isFailure(hardCapSchedule)) {
+      yield* this.destroyFailedRuntimeProgram(recordToCommit.id);
+      return yield* this.upstreamError(
+        "Session setup failed",
+        hardCapSchedule.failure,
+        recordToCommit.id,
+      );
+    }
+
+    const setup = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        const credential = yield* vault.seed({
+          codexAuthJson: this.env.CODEX_AUTH_JSON,
+          codexSentinel: `${CODEX_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
+          githubSentinel: `${GITHUB_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
+        });
+        const worktree = yield* workspace.prepare(initial, credential.githubSentinel);
+        yield* containerAuth.seed(initial.id, credential);
+        yield* agent.launch(initial.id, { kind: "start", prompt: input.prompt });
+        const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        const ready = yield* this.updateForOperationProgram(nonce, (record) => ({
+          ...record,
+          status: "warm",
+          operation: null,
+          repoExistsAtCreate: worktree.repoExists,
+          defaultBranch: worktree.defaultBranch,
+          updatedAt,
+        }));
+        yield* hostEffect(() => this.schedule(5, "captureThreadId"));
+        return ready;
+      }),
+    );
+    if (Result.isFailure(setup)) {
+      const failed = yield* this.failOperationProgram(
+        nonce,
+        "create_failed",
+        "Session setup failed",
+        false,
+      );
+      yield* this.destroyFailedRuntimeProgram(failed.id);
+      return yield* this.upstreamError("Session setup failed", setup.failure, failed.id);
+    }
+    const completedAt = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(setup.success, new Date(completedAt)), completedAt);
+  });
+
+  private readonly getScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.requireRecordProgram();
+    const now = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(record, new Date(now)), now);
+  });
+
+  private readonly resumeScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const backups = yield* BackupStore;
+    const vault = yield* CredentialVault;
+    const containerAuth = yield* ContainerAuth;
+    const agent = yield* Agent;
+    const terminalAttachments = yield* TerminalAttachments;
+    const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
+    let record = yield* this.requireRecordProgram();
+    const backup = record.backup?.current;
+    if (!backup) {
+      yield* this.releaseOperationProgram(operation.nonce);
+      return yield* wrongState(record.status, "resume", "No successful backup is available");
+    }
+
+    const bootingAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    record = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
+      ...current,
+      status: "booting",
+      failure: undefined,
+      updatedAt: bootingAt,
+    }));
+
+    const restored = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        const hardCapAt = new Date(
+          (yield* Clock.currentTimeMillis) + record.hardCapDurationSeconds * 1_000,
+        ).toISOString();
+        const hardCapUpdatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        record = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
+          ...current,
+          hardCapAt,
+          updatedAt: hardCapUpdatedAt,
+        }));
+        yield* hostEffect(() => this.scheduleHardCap(hardCapAt));
+        yield* backups.restore(backup);
+        yield* terminalAttachments.clear;
+        const credential = yield* vault.require;
+        yield* containerAuth.seed(record.id, credential);
+        yield* agent.launch(record.id, { kind: "resume", threadId: record.codexThreadId });
+        const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
+          ...current,
+          status: "warm",
+          operation: null,
+          failure: undefined,
+          hardCapAt,
+          updatedAt: readyAt,
+        }));
+        yield* hostEffect(() => this.schedule(5, "captureThreadId"));
+        return ready;
+      }),
+    );
+    if (Result.isFailure(restored)) {
+      yield* this.failOperationProgram(
+        operation.nonce,
+        "resume_failed",
+        "Session restore failed",
+        true,
+      );
+      yield* this.destroyFailedRuntimeProgram(record.id);
+      return yield* this.upstreamError("Session restore failed", restored.failure);
+    }
+    const now = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(restored.success, new Date(now)), now);
+  });
+
+  private readonly armVaporizeRetryProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: VaporizeRetryPayload,
+  ) {
+    yield* Effect.sync(() => this.deleteSchedules("retryVaporizeSession"));
+    yield* hostEffect(() => this.schedule(DESTROY_RETRY_SECONDS, "retryVaporizeSession", payload));
+  });
+
+  private readonly continueVaporizeSessionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: VaporizeRetryPayload,
+  ) {
+    const backups = yield* BackupStore;
+    const vault = yield* CredentialVault;
+    const terminalAttachments = yield* TerminalAttachments;
+    const current = yield* this.readRecordProgram();
+    if (!current) return yield* notFound(payload.id);
+    if (current.status === "gone") {
+      yield* removeSessionProjection(current.id);
+      yield* Effect.sync(() => this.cancelAllSessionSchedules());
+      return { id: current.id, status: "gone" as const };
+    }
+    if (current.operation?.kind !== "vaporize" || current.operation.nonce !== payload.nonce)
+      return yield* conflict("Session vaporize lease changed");
+
+    yield* Effect.sync(() => this.cancelVaporizeConflictingSchedules());
+    yield* terminalAttachments.clear;
+    const destroyed = yield* Effect.raceFirst(
+      hostEffect(() => this.destroy()).pipe(Effect.as(true)),
+      Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
+    );
+    if (!destroyed) {
+      yield* this.armVaporizeRetryProgram(payload);
+      yield* Effect.sync(() => this.ctx.abort(`Sandbox destroy exceeded ${DESTROY_DEADLINE_MS}ms`));
+      return yield* new ScottyError("upstream", "Sandbox destruction timed out", {
+        httpStatus: 502,
+        exitCode: 1,
+      });
+    }
+
+    for (const backupId of new Set(current.ownedBackupIds)) yield* backups.delete(backupId);
+    yield* vault.delete;
+    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    const gone = yield* this.updateForOperationProgram(payload.nonce, (record) => ({
+      ...record,
+      status: "gone",
+      operation: null,
+      backup: undefined,
+      ownedBackupIds: [],
+      backupExpiresAt: undefined,
+      codexThreadId: undefined,
+      failure: undefined,
+      updatedAt,
+    }));
+    yield* removeSessionProjection(gone.id);
+    yield* Effect.sync(() => this.cancelAllSessionSchedules());
+    return { id: gone.id, status: "gone" as const };
+  });
+
+  private readonly vaporizeScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const existing = yield* this.readRecordProgram();
+    if (!existing) return yield* notFound("unknown");
+    if (existing.status === "gone") {
+      const repaired = yield* Effect.result(
+        Effect.gen({ self: this }, function* () {
+          yield* removeSessionProjection(existing.id);
+          yield* Effect.sync(() => this.cancelAllSessionSchedules());
+          return { id: existing.id, status: "gone" as const };
+        }),
+      );
+      if (Result.isSuccess(repaired)) return repaired.success;
+      yield* this.armVaporizeRetryProgram({ id: existing.id, nonce: "gone" });
+      return yield* this.upstreamError(
+        "Vaporize projection repair failed",
+        repaired.failure,
+        existing.id,
+      );
+    }
+    const operation =
+      existing.operation?.kind === "vaporize"
+        ? existing.operation
+        : yield* this.acquireOperationProgram(
+            "vaporize",
+            ["booting", "warm", "sleeping", "failed"],
+            ABANDONED_OPERATION_MS,
+          );
+    const payload = { id: existing.id, nonce: operation.nonce } satisfies VaporizeRetryPayload;
+    const armed = yield* Effect.result(this.armVaporizeRetryProgram(payload));
+    if (Result.isFailure(armed)) {
+      yield* this.releaseOperationIfHeldProgram(operation.nonce);
+      return yield* this.upstreamError(
+        "Vaporize retry scheduling failed",
+        armed.failure,
+        existing.id,
+      );
+    }
+    const vaporized = yield* Effect.result(this.continueVaporizeSessionProgram(payload));
+    if (Result.isFailure(vaporized))
+      return yield* this.upstreamError("Vaporize failed", vaporized.failure);
+    return vaporized.success;
+  });
+
+  private readonly publishScottySessionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: PrInput,
+  ) {
+    const runtime = yield* SandboxRuntime;
+    const vault = yield* CredentialVault;
+    const operation = yield* this.acquireOperationProgram("pr", ["warm"]);
+    const record = yield* this.requireRecordProgram();
+    const credential = yield* vault.require;
+    const env = agentEnv(record.id, credential);
+    const root = sessionRoot(record.id);
+    const repoUrl = `https://github.com/${record.repo}.git`;
+    const published = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        const title = input.title ?? `Scotty session ${record.id}`;
+        const dirty = yield* runtime.execChecked(`git -C ${shellQuote(root)} status --porcelain`);
+        if (dirty.stdout.trim()) {
+          yield* runtime.execChecked(
+            `git -C ${shellQuote(root)} -c user.name=Scotty -c user.email=scotty@users.noreply.github.com add -A && git -C ${shellQuote(root)} -c user.name=Scotty -c user.email=scotty@users.noreply.github.com commit -m ${shellQuote(title)}`,
+            { env, timeout: 120_000 },
+          );
+        }
+        if (!record.repoExistsAtCreate) {
+          yield* runtime.execChecked(`gh repo create ${shellQuote(record.repo)} --private`, {
+            env,
+            timeout: 120_000,
+          });
+          yield* runtime.execChecked(
+            `git -C ${shellQuote(root)} remote set-url origin ${shellQuote(repoUrl)}`,
+            { env },
+          );
+        }
+        yield* runtime.execChecked(
+          `git -C ${shellQuote(root)} push -u origin ${shellQuote(record.branch)}`,
+          { env, timeout: 180_000 },
+        );
+        const branchUrl = `https://github.com/${record.repo}/tree/${record.branch}`;
+        if (!record.repoExistsAtCreate) return { branchUrl, created: false } satisfies PrResult;
+        const bodyPath = `/tmp/scotty-pr-${record.id}.md`;
+        yield* runtime.writeFile(
+          bodyPath,
+          `Automated changes from Scotty session \`${record.id}\`.\n`,
+        );
+        const created = yield* runtime.execChecked(
+          `gh pr create --repo ${shellQuote(record.repo)} --base ${shellQuote(record.defaultBranch)} --head ${shellQuote(record.branch)} --title ${shellQuote(title)} --body-file ${shellQuote(bodyPath)}`,
+          { env, timeout: 120_000 },
+        );
+        const prUrl = created.stdout.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/u)?.[0];
+        if (!prUrl) return yield* new MissingPullRequestUrl();
+        return { prUrl, branchUrl, created: true } satisfies PrResult;
+      }),
+    );
+    yield* this.releaseOperationProgram(operation.nonce);
+    if (Result.isFailure(published))
+      return yield* this.upstreamError("Publishing failed", published.failure);
+    return published.success;
+  });
+
+  private readonly prepareDownArchiveProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const runtime = yield* SandboxRuntime;
+    const discovery = yield* RolloutDiscovery;
+    const operation = yield* this.acquireOperationProgram("down", ["warm"]);
+    const record = yield* this.requireRecordProgram();
+    const root = sessionRoot(record.id);
+    const prepared = yield* Effect.result(
+      Effect.gen(function* () {
+        const sha = (yield* runtime.execChecked(
+          `git -C ${shellQuote(root)} rev-parse HEAD`,
+        )).stdout.trim();
+        const rollout = Option.getOrElse(yield* discovery.findNewestRollout(record.id), () => {
+          return undefined;
+        });
+        const manifest: DownManifest = {
+          version: 1,
+          id: record.id,
+          repo: record.repo,
+          branch: record.branch,
+          sha,
+          codexThreadId: record.codexThreadId,
+          rolloutFile: rollout ? basename(rollout) : undefined,
+        };
+        const manifestPath = `/tmp/metadata.json`;
+        const archivePath = `/tmp/scotty-${record.id}.tar`;
+        yield* runtime.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        const members = [`-C /tmp ${shellQuote(basename(manifestPath))}`];
+        if (rollout)
+          members.push(`-C ${shellQuote(dirname(rollout))} ${shellQuote(basename(rollout))}`);
+        yield* runtime.execChecked(`tar -cf ${shellQuote(archivePath)} ${members.join(" ")}`);
+        return { path: archivePath, filename: `scotty-${record.id}.tar`, manifest };
+      }),
+    );
+    yield* this.releaseOperationProgram(operation.nonce);
+    if (Result.isFailure(prepared))
+      return yield* this.upstreamError("Beam-down archive failed", prepared.failure);
+    return prepared.success;
+  });
+
+  private readonly markHardCapFailureProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    message: string,
+  ) {
+    const store = yield* SessionStore;
+    const failedOption = yield* store.markHardCapFailure(record, message);
+    if (Option.isNone(failedOption)) return;
+    const failed = failedOption.value;
+    yield* this.projectProgram(failed);
+    yield* this.destroyFailedRuntimeProgram(failed.id);
+  });
+
+  private readonly destroyFailedRuntimeProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    sessionId: string,
+  ) {
+    yield* Effect.sync(() => this.deleteSchedules("retryHardCapDestroy"));
+    const destroyed = yield* Effect.result(
+      Effect.raceFirst(
+        hostEffect(() => this.destroy()).pipe(Effect.as(true)),
+        Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
+      ),
+    );
+    if (Result.isSuccess(destroyed) && destroyed.success) return;
+    yield* hostEffect(() => this.schedule(DESTROY_RETRY_SECONDS, "retryHardCapDestroy", sessionId));
+    yield* Effect.sync(() => this.ctx.abort(`Sandbox destroy did not complete for ${sessionId}`));
+  });
+
+  private readonly retryVaporizeSessionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: VaporizeRetryPayload,
+  ) {
+    const record = yield* this.readRecordProgram();
+    if (!record || record.id !== payload.id) return;
+    if (record.status !== "gone" && record.operation?.nonce !== payload.nonce) return;
+    const armed = yield* Effect.result(this.armVaporizeRetryProgram(payload));
+    if (Result.isFailure(armed)) {
+      const released = yield* Effect.result(this.releaseOperationIfHeldProgram(payload.nonce));
+      if (Result.isFailure(released)) {
+        yield* Effect.sync(() =>
+          console.error("Vaporize schedule failure lease release failed", {
+            sessionId: payload.id,
+            error: errorName(released.failure),
+          }),
+        );
+      }
+      yield* Effect.sync(() =>
+        console.error("Vaporize retry scheduling failed", {
+          sessionId: payload.id,
+          error: errorName(armed.failure),
+        }),
+      );
+      return;
+    }
+    const continued = yield* Effect.result(this.continueVaporizeSessionProgram(payload));
+    if (Result.isFailure(continued)) {
+      yield* Effect.sync(() =>
+        console.error("Vaporize reconciliation failed", {
+          sessionId: payload.id,
+          error: errorName(continued.failure),
+        }),
+      );
+    }
+  });
+
+  private readonly captureThreadIdProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: { attempt?: number } = {},
+  ) {
+    const discovery = yield* RolloutDiscovery;
+    const store = yield* SessionStore;
+    const record = yield* this.readRecordProgram();
+    if (!sessionAllowsRuntimeAccess(record) || record.status !== "warm" || record.operation) return;
+    const threadIdOption = yield* discovery.discoverThreadId(record.id);
+    if (Option.isNone(threadIdOption)) {
+      const attempt = payload.attempt ?? 0;
+      if (attempt < 11)
+        yield* hostEffect(() => this.schedule(5, "captureThreadId", { attempt: attempt + 1 }));
+      return;
+    }
+    const updated = yield* store.captureThreadId(threadIdOption.value);
+    if (Option.isSome(updated)) yield* this.projectProgram(updated.value);
+  });
+
+  private readonly enforceHardCapProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: HardCapPayload,
+  ) {
+    const record = yield* this.readRecordProgram();
+    if (!record || record.status === "gone" || record.status === "sleeping") return;
+    if (payload.hardCapAt !== record.hardCapAt) return;
+    if (record.operation) {
+      if (record.operation.kind === "vaporize") return;
+      const operationAge =
+        (yield* Clock.currentTimeMillis) - Date.parse(record.operation.startedAt);
+      if (operationAge < HARD_CAP_GRACE_MS) {
+        yield* hostEffect(() => this.schedule(5, "enforceHardCap", payload));
+        return;
+      }
+      yield* this.markHardCapFailureProgram(
+        record,
+        "A session operation exceeded the hard-cap grace period",
+      );
+      return;
+    }
+
+    const operationResult = yield* Effect.result(
+      this.acquireOperationProgram("snapshot", ["warm", "booting"]),
+    );
+    if (Result.isFailure(operationResult)) {
+      const current = yield* this.readRecordProgram();
+      if (current)
+        yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
+      return;
+    }
+    const operation = operationResult.success;
+    const stopped = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        yield* this.checkpointProgram(operation.nonce, false, false);
+        yield* this.stopAfterCheckpointProgram(operation.nonce);
+      }),
+    );
+    if (Result.isSuccess(stopped)) return;
+    const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
+    if (Predicate.isTagged(stopped.failure, "ManagedStopArmedError") || pending) return;
+    const current = yield* this.readRecordProgram();
+    if (current)
+      yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
+  });
+
+  private readonly onActivityExpiredProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.readRecordProgram();
+    if (!record || record.status !== "warm" || record.operation) return;
+    const acquired = yield* Effect.result(this.acquireOperationProgram("snapshot", ["warm"]));
+    if (Result.isFailure(acquired)) {
+      yield* Effect.sync(() =>
+        console.error("Managed idle checkpoint failed", {
+          sessionId: record.id,
+          error: errorName(acquired.failure),
+        }),
+      );
+      return;
+    }
+    const operation = acquired.success;
+    const stopped = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        yield* this.checkpointProgram(operation.nonce, false, false);
+        yield* this.stopAfterCheckpointProgram(operation.nonce);
+      }),
+    );
+    if (Result.isSuccess(stopped)) return;
+    const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
+    if (!Predicate.isTagged(stopped.failure, "ManagedStopArmedError") && !pending)
+      yield* this.releaseOperationIfHeldProgram(operation.nonce);
+    yield* Effect.sync(() =>
+      console.error("Managed idle checkpoint failed", {
+        sessionId: record.id,
+        error: errorName(stopped.failure),
+      }),
+    );
+  });
+
+  private readonly onStopProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const store = yield* SessionStore;
+    const terminalAttachments = yield* TerminalAttachments;
+    const next = yield* store.recordRuntimeStop;
+    if (Option.isSome(next)) {
+      yield* terminalAttachments.clear;
+      yield* this.projectProgram(next.value);
+    }
+  });
+
+  private readonly finalizeManagedStopProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: ManagedStopPayload,
+  ) {
+    const runtime = yield* SandboxRuntime;
+    const store = yield* SessionStore;
+    const record = yield* this.readRecordProgram();
+    if (!sessionAllowsRuntimeAccess(record)) return;
+    if (
+      record.operation?.nonce === payload.nonce &&
+      record.operation.checkpointedBackupId === record.backup?.current.id &&
+      !record.operation.stopRequestedAt
+    ) {
+      const now = yield* Clock.currentTimeMillis;
+      if (now - Date.parse(payload.armedAt) < 30_000) {
+        yield* hostEffect(() =>
+          this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
+        );
+        return;
+      }
+      yield* hostEffect(() =>
+        this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
+      );
+      const rollbackClaimed = yield* store.claimManagedStopRollback(payload.nonce);
+      if (!rollbackClaimed) return;
+      const resumed = yield* Effect.result(
+        runtime.execChecked(resumeAgentCommand(), { timeout: 10_000 }),
+      );
+      if (Result.isSuccess(resumed)) {
+        yield* this.releaseOperationIfHeldProgram(payload.nonce);
+        return;
+      }
+      const rollbackAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+      yield* this.updateForOperationProgram(payload.nonce, (current) => ({
+        ...current,
+        operation: current.operation && {
+          kind: current.operation.kind,
+          nonce: current.operation.nonce,
+          startedAt: current.operation.startedAt,
+          checkpointedBackupId: current.operation.checkpointedBackupId,
+        },
+        updatedAt: rollbackAt,
+      })).pipe(Effect.ignore);
+      return;
+    }
+    if (!(yield* this.isManagedStopPendingProgram(payload.nonce))) return;
+    yield* hostEffect(() =>
+      this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
+    );
+    const stopped = yield* Effect.result(hostEffect(() => this.stop()));
+    if (Result.isFailure(stopped)) {
+      yield* Effect.sync(() =>
+        console.error("Managed stop reconciliation failed", {
+          error: errorName(stopped.failure),
+        }),
+      );
+    }
+  });
+
+  private readonly retryHardCapDestroyProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    sessionId: string,
+  ) {
+    const record = yield* this.readRecordProgram();
+    if (
+      !record ||
+      record.id !== sessionId ||
+      record.status !== "failed" ||
+      record.operation?.kind === "vaporize"
+    )
+      return;
+    yield* this.destroyFailedRuntimeProgram(sessionId);
+  });
+
+  async createScottySession(
+    input: CreateSessionInput,
+    id: string,
+    idempotency?: CreateIdempotencyMetadata,
+  ): Promise<SessionView> {
+    return this.#run(this.createScottySessionProgram(input, id, idempotency));
+  }
+
+  async getScottySession(): Promise<SessionView> {
+    return this.#run(this.getScottySessionProgram());
+  }
+
+  async prepareTerminalAttachment(clientId: string): Promise<string> {
+    const record = await this.requireRecord();
+    await this.#run(this.terminalAttachmentAllowedProgram(record));
+    const sessionId = `scotty-web-${clientId}`;
+    const credential = await this.requireCredential();
+    await this.reconcileExpiredTerminalAttachments();
+    const creating = await this.#run(
+      Effect.flatMap(TerminalAttachments, (attachments) => attachments.begin(sessionId)),
+    );
+    const prepared = await this.#run(
+      Effect.gen({ self: this }, function* () {
+        yield* hostEffect(() =>
+          this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
+            sessionId,
+            observedAt: creating.lastSeenAt,
+          } satisfies TerminalAttachmentExpiryPayload),
+        );
+        yield* this.terminalAttachmentAllowedProgram(yield* this.readRecordProgram());
+        yield* hostEffect(() =>
+          this.createSession({
+            id: sessionId,
+            cwd: sessionRoot(record.id),
+            env: agentEnv(record.id, credential),
+          }),
+        );
+        const attachments = yield* TerminalAttachments;
+        const activated = yield* attachments.activate(sessionId);
+        if (activated?.status !== "active")
+          return yield* conflict("Terminal attachment was released during creation");
+        return sessionId;
+      }).pipe(Effect.result),
+    );
+    if (Result.isSuccess(prepared)) return prepared.success;
+    await this.requestTerminalAttachmentRelease(sessionId);
+    return this.#run(Effect.fail(prepared.failure));
+  }
+
+  async releaseTerminalAttachment(clientId: string): Promise<void> {
+    await this.requestTerminalAttachmentRelease(`scotty-web-${clientId}`);
+  }
+
+  async touchTerminalAttachment(clientId: string): Promise<void> {
+    const record = await this.#run(this.readRecordProgram());
+    if (!sessionAllowsRuntimeAccess(record)) return;
+    const sessionId = `scotty-web-${clientId}`;
+    const touched = await this.#run(
+      Effect.flatMap(TerminalAttachments, (attachments) => attachments.touch(sessionId)),
+    );
+    if (!touched) return;
+    await this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
+      sessionId,
+      observedAt: touched.lastSeenAt,
+    } satisfies TerminalAttachmentExpiryPayload);
+  }
+
+  async expireTerminalAttachment(payload: TerminalAttachmentExpiryPayload): Promise<void> {
+    const record = await this.#run(this.readRecordProgram());
+    if (!sessionAllowsRuntimeAccess(record)) return;
+    await this.requestTerminalAttachmentRelease(payload.sessionId, {
+      kind: "observedAt",
+      value: payload.observedAt,
+    });
+  }
+
+  async finalizeTerminalAttachment(payload: TerminalAttachmentPayload): Promise<void> {
+    const record = await this.#run(this.readRecordProgram());
+    if (!sessionAllowsRuntimeAccess(record)) return;
+    const attachment = await this.#run(
+      Effect.flatMap(TerminalAttachments, (attachments) =>
+        attachments.finalizeRelease(payload.sessionId, payload.condition),
+      ),
+    );
+    if (!attachment) return;
+    await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
+      sessionId: payload.sessionId,
+      condition: { kind: "always" },
+    } satisfies TerminalAttachmentPayload);
+    await this.finishTerminalAttachmentRelease(attachment);
+  }
+
+  async snapshotScottySession(): Promise<SessionView> {
+    return this.#run(this.snapshotScottySessionProgram());
+  }
+
+  async sleepScottySession(): Promise<SessionView> {
+    return this.#run(this.sleepScottySessionProgram());
+  }
+
+  async resumeScottySession(): Promise<SessionView> {
+    return this.#run(this.resumeScottySessionProgram());
+  }
+
+  async publishScottySession(input: PrInput): Promise<PrResult> {
+    return this.#run(this.publishScottySessionProgram(input));
+  }
+
+  async prepareDownArchive(): Promise<DownArchive> {
+    return this.#run(this.prepareDownArchiveProgram());
+  }
+
+  async readScottyArchiveStream(path: string) {
+    await this.assertRuntimeAccess();
+    return this.readFileStream(path);
+  }
+
+  async vaporizeScottySession(): Promise<{ id: string; status: "gone" }> {
+    return this.#run(this.vaporizeScottySessionProgram());
+  }
+
+  async retryVaporizeSession(payload: VaporizeRetryPayload): Promise<void> {
+    return this.#run(this.retryVaporizeSessionProgram(payload));
+  }
+
+  async readCredentialForProxy(sentinel: string): Promise<StoredCredential | null> {
+    return this.#run(Effect.flatMap(CredentialVault, (vault) => vault.readForProxy(sentinel)));
+  }
+
+  async beginCredentialRefresh(sentinel: string): Promise<CredentialRefreshLease | null> {
+    return this.#run(
+      Effect.flatMap(CredentialVault, (vault) => vault.beginRefresh(sentinel, crypto.randomUUID())),
+    );
+  }
+
+  async persistRotatedCredential(
+    sentinel: string,
+    patch: CredentialPatch,
+    nonce: string,
+  ): Promise<void> {
+    await this.#run(
+      Effect.flatMap(CredentialVault, (vault) => vault.persistRotation(sentinel, patch, nonce)),
+    );
+  }
+
+  async cancelCredentialRefresh(sentinel: string, nonce: string): Promise<void> {
+    await this.#run(
+      Effect.flatMap(CredentialVault, (vault) => vault.cancelRefresh(sentinel, nonce)),
+    );
+  }
+
+  async captureThreadId(payload: { attempt?: number } = {}): Promise<void> {
+    return this.#run(this.captureThreadIdProgram(payload));
+  }
+
+  async enforceHardCap(payload: HardCapPayload): Promise<void> {
+    return this.#run(this.enforceHardCapProgram(payload));
+  }
+
+  override async onActivityExpired(): Promise<void> {
+    return this.#run(this.onActivityExpiredProgram());
+  }
+
+  override async onStop(): Promise<void> {
+    await super.onStop();
+    return this.#run(this.onStopProgram());
+  }
+
+  async finalizeManagedStop(payload: ManagedStopPayload): Promise<void> {
+    return this.#run(this.finalizeManagedStopProgram(payload));
+  }
+
+  private async requireCredential(): Promise<StoredCredential> {
+    return this.#run(Effect.flatMap(CredentialVault, (vault) => vault.require));
+  }
+  private readonly checkpointProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+    resumeAgent: boolean,
+    releaseLease = resumeAgent,
+  ) {
+    const record = yield* this.requireRecordProgram();
+    const runtime = yield* SandboxRuntime;
+    const backups = yield* BackupStore;
+    const root = sessionRoot(record.id);
+    let paused = false;
+    let checkpointSucceeded = false;
+
+    const outcome = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        yield* runtime.execChecked(pauseAgentCommand(), { timeout: 10_000 });
+        paused = true;
+        yield* runtime.execChecked("sync", { timeout: 30_000 });
+        const now = yield* Clock.currentTimeMillis;
+        const backup = yield* backups.create({
+          dir: root,
+          name: `scotty-${record.id}-${now}`,
+          ttl: BACKUP_TTL_SECONDS,
+          localBucket: true,
+          compression: { format: "zstd" },
+        });
+        const priorPrevious = record.backup?.previous;
+        const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        const backupExpiresAt = new Date(
+          (yield* Clock.currentTimeMillis) + BACKUP_TTL_SECONDS * 1_000,
+        ).toISOString();
+        const updated = yield* this.updateForOperationProgram(nonce, (current) => ({
+          ...current,
+          operation: releaseLease
+            ? null
+            : current.operation && {
+                ...current.operation,
+                checkpointedBackupId: backup.id,
+              },
+          backup: { current: backup, previous: current.backup?.current },
+          ownedBackupIds: [...new Set([...current.ownedBackupIds, backup.id])],
+          backupExpiresAt,
+          failure: undefined,
+          updatedAt,
+        }));
+        if (priorPrevious) yield* backups.delete(priorPrevious.id).pipe(Effect.ignore);
+        checkpointSucceeded = true;
+        return updated;
+      }),
+    );
+
+    if (paused && (resumeAgent || !checkpointSucceeded)) {
+      yield* runtime.exec(resumeAgentCommand(), { timeout: 10_000 }).pipe(Effect.ignore);
+    }
+    return yield* Result.match(outcome, {
+      onFailure: Effect.fail,
+      onSuccess: Effect.succeed,
+    });
+  });
+
+  private readonly stopAfterCheckpointProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+  ) {
+    const armedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    const payload = { nonce, armedAt } satisfies ManagedStopPayload;
+    yield* hostEffect(() =>
+      this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
+    );
+
+    const beforeStop = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        const current = yield* this.requireRecordProgram();
+        if (current.operation?.stopRollbackAt)
+          return yield* conflict("Managed stop rollback started");
+        const stopRequestedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        yield* this.updateForOperationProgram(nonce, (record) => ({
+          ...record,
+          operation: record.operation && {
+            ...record.operation,
+            stopRequestedAt,
+          },
+          updatedAt: stopRequestedAt,
+        }));
+        yield* hostEffect(() => this.releaseAllTerminalAttachments());
+        yield* hostEffect(() => this.stop());
+      }),
+    );
+    if (Result.isFailure(beforeStop)) {
+      const current = yield* this.requireRecordProgram();
+      if (current.status === "sleeping") return current;
+      return yield* new ManagedStopArmedError({ cause: beforeStop.failure });
+    }
+
+    const observeStopped = Effect.gen({ self: this }, function* () {
+      const stopped = yield* this.requireRecordProgram();
+      if (stopped.status === "sleeping") return stopped;
+      if (stopped.status === "failed") return yield* wrongState(stopped.status, "stop");
+      const stoppedAgain = yield* hostEffect(() => this.stop()).pipe(
+        Effect.mapError((cause) => new ManagedStopArmedError({ cause })),
+      );
+      void stoppedAgain;
+      return yield* new SessionShutdownPending();
+    });
+
+    return yield* observeStopped.pipe(
+      Effect.retry({ times: 19, schedule: Schedule.spaced("250 millis") }),
+      Effect.catchTag(
+        "SessionShutdownPending",
+        () =>
+          new ScottyError("upstream", "Session shutdown is still completing", {
+            httpStatus: 502,
+            exitCode: 4,
+          }),
+      ),
+    );
+  });
+
+  private readonly snapshotScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
+    const result = yield* Effect.result(this.checkpointProgram(operation.nonce, true));
+    if (Result.isFailure(result)) {
+      yield* this.releaseOperationProgram(operation.nonce);
+      return yield* this.upstreamError("Snapshot failed", result.failure);
+    }
+    const now = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(result.success, new Date(now)), now);
+  });
+
+  private readonly sleepScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
+    const result = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        yield* this.checkpointProgram(operation.nonce, false, false);
+        return yield* this.stopAfterCheckpointProgram(operation.nonce);
+      }),
+    );
+    if (Result.isFailure(result)) {
+      const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
+      if (!Predicate.isTagged(result.failure, "ManagedStopArmedError") && !pending)
+        yield* this.releaseOperationIfHeldProgram(operation.nonce);
+      return yield* this.upstreamError("Session stop failed", result.failure);
+    }
+    const now = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(result.success, new Date(now)), now);
+  });
+
+  private async releaseAllTerminalAttachments(): Promise<void> {
+    const attachments = await this.#run(
+      Effect.flatMap(TerminalAttachments, (service) => service.read),
+    );
+    await Promise.all(
+      attachments.map((attachment) => this.requestTerminalAttachmentRelease(attachment.sessionId)),
+    );
+  }
+
+  private async removeTerminalAttachment(sessionId: string): Promise<void> {
+    await this.#run(
+      Effect.flatMap(TerminalAttachments, (attachments) => attachments.remove(sessionId)),
+    );
+  }
+
+  private async finishTerminalAttachmentRelease(
+    attachment: TerminalAttachmentLease,
+  ): Promise<void> {
+    const lifecycle = await this.#run(this.readRecordProgram());
+    if (!sessionAllowsRuntimeAccess(lifecycle)) return;
+    let settled = attachment;
+    if (!settled.createSettled) {
+      const record = await this.requireRecord();
+      if (record.status !== "warm" || !sessionAllowsRuntimeAccess(record)) {
+        await this.removeTerminalAttachment(settled.sessionId);
+        return;
+      }
+      const credential = await this.requireCredential();
+      const beforeCreate = await this.#run(this.readRecordProgram());
+      if (!sessionAllowsRuntimeAccess(beforeCreate)) return;
+      const created = await this.#run(
+        Effect.result(
+          hostEffect(() =>
+            this.createSession({
+              id: settled.sessionId,
+              cwd: sessionRoot(record.id),
+              env: agentEnv(record.id, credential),
+            }),
+          ),
+        ),
+      );
+      if (
+        Result.isFailure(created) &&
+        (!isRecord(created.failure) || created.failure.code !== "SESSION_ALREADY_EXISTS")
+      )
+        return;
+      const updated = await this.#run(
+        Effect.flatMap(TerminalAttachments, (attachments) =>
+          attachments.settleCreate(settled.sessionId),
+        ),
+      );
+      if (!updated) return;
+      settled = updated;
+    }
+    await this.#run(
+      terminalAttachmentCleanupBestEffort(
+        settled.sessionId,
+        Effect.gen({ self: this }, function* () {
+          const attachments = yield* TerminalAttachments;
+          const beforeList = yield* this.readRecordProgram();
+          if (!sessionAllowsRuntimeAccess(beforeList)) return;
+          const { sessions } = yield* hostEffect(() => this.client.utils.listSessions());
+          if (!sessions.includes(settled.sessionId)) {
+            yield* attachments.remove(settled.sessionId);
+            return;
+          }
+          const beforeDelete = yield* this.readRecordProgram();
+          if (!sessionAllowsRuntimeAccess(beforeDelete)) return;
+          yield* hostEffect(() => this.deleteSession(settled.sessionId));
+          yield* attachments.remove(settled.sessionId);
+        }),
+      ),
+    );
+  }
+
+  private async requestTerminalAttachmentRelease(
+    sessionId: string,
+    condition: TerminalAttachmentReleaseCondition = { kind: "always" },
+  ): Promise<void> {
+    const record = await this.#run(this.readRecordProgram());
+    if (!sessionAllowsRuntimeAccess(record)) return;
+    await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
+      sessionId,
+      condition,
+    } satisfies TerminalAttachmentPayload);
+    const updated = await this.#run(
+      Effect.flatMap(TerminalAttachments, (attachments) =>
+        attachments.requestRelease(sessionId, condition),
+      ),
+    );
+    if (updated) await this.finishTerminalAttachmentRelease(updated);
+  }
+
+  private async reconcileExpiredTerminalAttachments(): Promise<void> {
+    const record = await this.#run(this.readRecordProgram());
+    if (!sessionAllowsRuntimeAccess(record)) return;
+    const now = await this.#run(Clock.currentTimeMillis);
+    const cutoff = now - TERMINAL_ATTACHMENT_TTL_MS;
+    const attachments = await this.#run(
+      Effect.flatMap(TerminalAttachments, (service) => service.expired),
+    );
+    for (const attachment of attachments) {
+      await this.requestTerminalAttachmentRelease(attachment.sessionId, {
+        kind: "staleBefore",
+        value: new Date(cutoff).toISOString(),
+      });
+    }
+  }
+
+  private async scheduleHardCap(hardCapAt: string): Promise<void> {
+    this.deleteSchedules("enforceHardCap");
+    await this.schedule(new Date(hardCapAt), "enforceHardCap", {
+      hardCapAt,
+    } satisfies HardCapPayload);
+  }
+
+  private cancelVaporizeConflictingSchedules(): void {
+    for (const callback of VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS) {
+      this.deleteSchedules(callback);
+    }
+  }
+
+  private cancelAllSessionSchedules(): void {
+    for (const callback of SESSION_SCHEDULE_CALLBACKS) {
+      this.deleteSchedules(callback);
+    }
+  }
+
+  async retryHardCapDestroy(sessionId: string): Promise<void> {
+    return this.#run(this.retryHardCapDestroyProgram(sessionId));
+  }
+
+  private async requireRecord(): Promise<SessionRecord> {
+    return this.#run(Effect.flatMap(SessionStore, (store) => store.requireRecord));
+  }
+
+  private async assertRuntimeAccess(): Promise<SessionRecord> {
+    return this.#run(this.assertRuntimeAccessProgram());
+  }
+
+  async #run<A, E>(operation: Effect.Effect<A, E, SandboxServices>): Promise<A> {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Sandbox Durable Object methods must return Promises to the Cloudflare host
+    const result = await Effect.runPromise(
+      operation.pipe(Effect.provide(this.layer), Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => {
+        // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Effect failure must reject the Promise required by the Sandbox Durable Object host
+        throw error;
+      },
+      onSuccess: (value) => value,
     });
   }
 

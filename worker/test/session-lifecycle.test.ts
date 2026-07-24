@@ -1,5 +1,4 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { SessionRecord } from "../src/contracts";
 import {
   hardCapObservationIsCurrent,
   SESSION_SCHEDULE_CALLBACKS,
@@ -7,23 +6,7 @@ import {
   sessionAllowsRuntimeAccess,
   VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
 } from "../src/session-lifecycle";
-
-const record = (overrides: Partial<SessionRecord> = {}): SessionRecord => ({
-  version: 1,
-  id: "a0b1c2d3e4f5",
-  status: "warm",
-  operation: null,
-  repo: "anomalyco/rift",
-  repoExistsAtCreate: true,
-  defaultBranch: "dev",
-  branch: "scotty/a0b1c2d3e4f5",
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:01.000Z",
-  hardCapAt: "2026-01-01T04:00:00.000Z",
-  hardCapDurationSeconds: 14_400,
-  ownedBackupIds: [],
-  ...overrides,
-});
+import { makeSessionRecord as record } from "./support";
 
 describe("session lifecycle invariants", () => {
   it("forbids every container-touching callback after vaporize starts", () => {
