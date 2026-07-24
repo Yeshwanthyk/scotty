@@ -4,8 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#090d12" />
+    <meta name="theme-color" content="#01060c" />
     <meta name="referrer" content="same-origin" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/brand/scotty-favicon-64.png" />
+    <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
     <title>Scotty sessions</title>
     <style>
       :root {
@@ -941,13 +944,16 @@
         }
       }
     </style>
+    <link rel="stylesheet" href="/scotty-ui.css" />
   </head>
-  <body>
+  <body class="scotty-ui sessions-page">
     <header class="masthead">
       <div class="masthead-inner">
-        <div class="identity">
-          <span class="wordmark">SCOTTY</span><span class="section-label">session control</span>
-        </div>
+        <a class="identity" href="/sessions" aria-label="Scotty sessions">
+          <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
+          <span class="wordmark">SCOTTY</span>
+          <span class="section-label">session control</span>
+        </a>
         <div class="masthead-actions">
           <a class="button" id="devices" href="/devices" hidden>Devices</a>
           <button class="button" id="refresh" type="button">Refresh</button>
