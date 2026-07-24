@@ -48,6 +48,8 @@
         "spikes/infra/account-secrets-store-canary.run.ts",
         "spikes/infra/account-secrets-store-canary.ts",
         "spikes/infra/external-sandbox-container-binding.ts",
+        "spikes/infra/full-stack-canary.run.ts",
+        "spikes/infra/full-stack-canary.ts",
         "spikes/infra/local-secret-source.ts",
         "spikes/infra/monolith-greenfield.ts",
         "spikes/infra/sandbox-sdk-canary.ts",

@@ -97,4 +97,6 @@ command and state-machine guide.
 node e2e/scripts/run.mjs
 ```
 
-The destructive deployed canary is opt-in and requires every `SCOTTY_E2E_*` gate documented in `e2e/README.md`. Never point it at production resources.
+The destructive deployed canary uses the stage-isolated
+`spikes/infra/full-stack-canary.run.ts` stack and requires every stage-scoped gate documented in
+`e2e/README.md`. Its production Worker host check fails closed.

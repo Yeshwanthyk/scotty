@@ -11,6 +11,7 @@ import {
   type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
 import { sessionRoot, Workspace, workspaceLayer } from "../src/workspace";
+import { makeSessionRecord } from "./support";
 
 const ID = "a0b1c2d3e4f5";
 const SENTINEL = `scotty-github-${ID}-sentinel`;
@@ -18,22 +19,6 @@ const REAL_GITHUB = "honeypot-real-github-credential";
 const ROOT = `/workspace/${ID}`;
 const ENV = { GH_TOKEN: SENTINEL, GIT_TERMINAL_PROMPT: "0" };
 const HELPER = "!f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f";
-
-const record = (repo = "anomalyco/rift", branch = `scotty/${ID}`): SessionRecord => ({
-  version: 1,
-  id: ID,
-  status: "booting",
-  operation: { kind: "create", nonce: "nonce", startedAt: "2026-07-22T00:00:00.000Z" },
-  repo,
-  repoExistsAtCreate: true,
-  defaultBranch: "dev",
-  branch,
-  createdAt: "2026-07-22T00:00:00.000Z",
-  updatedAt: "2026-07-22T00:00:00.000Z",
-  hardCapAt: "2026-07-22T04:00:00.000Z",
-  hardCapDurationSeconds: 14_400,
-  ownedBackupIds: [],
-});
 
 const execResult = (
   command: string,
@@ -75,7 +60,10 @@ class FakeWorkspaceCapabilities implements SandboxRuntimeCapabilities {
 
 const prepareWith = (
   capabilities: SandboxRuntimeCapabilities,
-  session: SessionRecord = record(),
+  session: SessionRecord = makeSessionRecord({
+    status: "booting",
+    operation: { kind: "create", nonce: "nonce", startedAt: "2026-07-22T00:00:00.000Z" },
+  }),
   sentinel = SENTINEL,
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
@@ -129,7 +117,7 @@ describe("Workspace", () => {
       capabilities.results.push(execResult("view", { stdout: "trunk\n" }));
       const repo = "acme/widgets";
 
-      const prepared = yield* prepareWith(capabilities, record(repo));
+      const prepared = yield* prepareWith(capabilities, makeSessionRecord({ repo }));
       const basic = btoa(`x-access-token:${SENTINEL}`);
       const cache = `/tmp/scotty-cache-${ID}.git`;
 
@@ -163,7 +151,10 @@ describe("Workspace", () => {
         execResult("view", { success: false, stderr: "repository not found" }),
       );
 
-      const prepared = yield* prepareWith(capabilities, record("acme/new-project"));
+      const prepared = yield* prepareWith(
+        capabilities,
+        makeSessionRecord({ repo: "acme/new-project" }),
+      );
 
       assert.deepStrictEqual(prepared, {
         root: ROOT,
@@ -213,7 +204,10 @@ describe("Workspace", () => {
       const hostileDefault = "dev'; $(touch /tmp/default-pwned) #";
       capabilities.results.push(execResult("view", { stdout: `${hostileDefault}\n` }));
 
-      yield* prepareWith(capabilities, record(hostileRepo, hostileBranch));
+      yield* prepareWith(
+        capabilities,
+        makeSessionRecord({ repo: hostileRepo, branch: hostileBranch }),
+      );
       const surfaces = capabilities.calls.map(({ command }) => command).join("\n");
 
       assert.ok(surfaces.includes(repoViewCommand(hostileRepo)));

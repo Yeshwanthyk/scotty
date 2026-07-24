@@ -21,28 +21,52 @@ The default suite covers `up`, `ls`, `snapshot`, hard-cap sleep, `resume`, `down
 
 ## Run against a disposable deployment
 
-The deployed canary is destructive: it creates a session, waits for its configured hard cap, beams the session down, and vaporizes it. It skips with a list of missing gates unless every variable below is explicit.
+The deployed canary uses `spikes/infra/full-stack-canary.run.ts`, which creates a complete
+stage-isolated Worker, Sandbox and Auth Durable Objects, Container application, KV namespace, and
+R2 bucket with destroy-on-cleanup policies. The stage must be
+`scotty-e2e-<32 lowercase hex>` and requires exact stage-scoped deploy and cleanup approvals.
+Production names and hosts fail closed.
+
+```sh
+stage="scotty-e2e-$(openssl rand -hex 16)"
+export ALCHEMY_TELEMETRY_DISABLED=1
+export SCOTTY_E2E_APPROVE_DEPLOY="deploy:$stage"
+export SCOTTY_E2E_APPROVE_CLEANUP="destroy:$stage:disposable"
+npx alchemy deploy spikes/infra/full-stack-canary.run.ts --stage "$stage" --yes
+```
+
+Use the `workerUrl` printed by Alchemy and a disposable clone of the repository. The canary pushes
+one random `scotty/<id>` branch so beam-down exercises a real remote fetch; the test deletes that
+branch in its cleanup hook.
 
 ```sh
 SCOTTY_E2E_DEPLOYED=1 \
-SCOTTY_E2E_HOST='https://scotty-e2e.example.workers.dev' \
-SCOTTY_E2E_TOKEN='disposable-worker-token' \
+SCOTTY_E2E_STAGE="$stage" \
+SCOTTY_E2E_HOST='https://scotty-e2e-<stage-suffix>-worker.<account>.workers.dev' \
+SCOTTY_E2E_TOKEN='the inherited canary Worker token' \
 SCOTTY_E2E_REPO='owner/disposable-repo' \
 SCOTTY_E2E_LOCAL_REPO='/absolute/path/to/disposable-repo' \
-SCOTTY_E2E_CAP='2m' \
-SCOTTY_E2E_CAP_TIMEOUT_MS='420000' \
-SCOTTY_E2E_CONFIRM_DESTRUCTIVE=YES \
-SCOTTY_E2E_ORPHAN_PROBE_URL='https://scotty-e2e.example.workers.dev/__e2e/orphans' \
+SCOTTY_E2E_CAP='5m' \
+SCOTTY_E2E_CAP_TIMEOUT_MS='600000' \
+SCOTTY_E2E_CONFIRM_DESTRUCTIVE="destroy:$stage:disposable" \
 node e2e/scripts/run.mjs --deployed
 ```
 
-`SCOTTY_E2E_ORPHAN_PROBE_URL/<session-id>` must be available only on the disposable test Worker, require the same bearer token, and return this after teardown:
+The test performs the real sequence
+`up → attach → PTY reconnect → snapshot → scheduled hard-cap sleep → resume → down → vaporize`.
+Its canary-only authenticated probe verifies DO reconstruction, credential persistence,
+sentinel-only container state, non-secret KV, default-deny egress, restored backups, closed terminal
+leases, and complete runtime/KV/R2/credential/schedule cleanup. After it passes, prove a second plan
+is a no-op, then destroy the entire stage:
 
-```json
-{ "runtime": false, "kv": false, "credentials": false, "backups": [] }
+```sh
+npx alchemy plan spikes/infra/full-stack-canary.run.ts --stage "$stage"
+npx alchemy destroy spikes/infra/full-stack-canary.run.ts --stage "$stage" --yes
 ```
 
-Never point the deployed suite at a production Worker, account bucket, token, or repository. The cleanup hook retries `vaporize` if any assertion fails after session creation.
+The cleanup hook retries `vaporize` and deletes the test-created remote branch if any assertion
+fails after session creation. Always destroy the disposable Alchemy stage, even after a failed
+test.
 
 ## Red-capable failure signals
 

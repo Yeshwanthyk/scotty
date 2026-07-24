@@ -1,0 +1,154 @@
+import { ContainerProxy, getSandbox } from "@cloudflare/sandbox";
+import type { Bindings } from "../../worker/src/bindings";
+import type { SessionRecord, StoredCredential } from "../../worker/src/contracts";
+import app from "../../worker/src/index";
+import { SESSION_SCHEDULE_CALLBACKS } from "../../worker/src/session-lifecycle";
+import { Sandbox } from "../../worker/src/session";
+import { ScottyAuthRegistry } from "../../worker/src/auth-object";
+
+const RECORD_KEY = "scotty:session";
+const CREDENTIAL_KEY = "scotty:credential";
+const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
+const TERMINAL_ATTACHMENTS_KEY = "scotty:terminal-attachments";
+const SESSION_ID_PATTERN = /^[0-9a-f]{12}$/u;
+
+interface CanaryBindings extends Omit<Bindings, "SANDBOX"> {
+  readonly SANDBOX: DurableObjectNamespace<ScottySandbox>;
+  readonly SCOTTY_E2E_CANARY_STAGE: string;
+}
+
+interface CanarySecurityProbe {
+  readonly defaultDeny: boolean;
+  readonly kvNonSecret: boolean;
+  readonly sentinelsOnly: boolean;
+}
+
+interface CanaryOrphanProbe {
+  readonly activeLease: boolean;
+  readonly alarm: boolean;
+  readonly authorityStatus: string | null;
+  readonly backups: ReadonlyArray<string>;
+  readonly createIdempotency: boolean;
+  readonly credentials: boolean;
+  readonly incarnation: string;
+  readonly kv: boolean;
+  readonly runtime: boolean;
+  readonly schedules: ReadonlyArray<string>;
+  readonly security: CanarySecurityProbe | null;
+  readonly terminalAttachments: number;
+}
+
+export class ScottySandbox extends Sandbox {
+  private readonly e2eIncarnation = crypto.randomUUID();
+
+  async e2eProbe(): Promise<CanaryOrphanProbe> {
+    const [record, credential, createIdempotency, terminalAttachments, alarm, schedules, state] =
+      await Promise.all([
+        this.ctx.storage.get<SessionRecord>(RECORD_KEY),
+        this.ctx.storage.get<StoredCredential>(CREDENTIAL_KEY),
+        this.ctx.storage.get(CREATE_IDEMPOTENCY_KEY),
+        this.ctx.storage.get<ReadonlyArray<unknown>>(TERMINAL_ATTACHMENTS_KEY),
+        this.ctx.storage.getAlarm(),
+        Promise.all(
+          SESSION_SCHEDULE_CALLBACKS.map(async (callback) => ({
+            callback,
+            count: (await this.listSchedules(callback)).length,
+          })),
+        ),
+        this.getState(),
+      ]);
+    const backupPage = await this.env.BACKUP_BUCKET.list();
+    const projection = record ? await this.env.SESSIONS.get(record.id) : null;
+    const activeSchedules = schedules
+      .filter(({ count }) => count > 0)
+      .map(({ callback }) => callback);
+    const runtime = state.status !== "stopped" && state.status !== "stopped_with_code";
+    const security =
+      credential && record?.status === "warm"
+        ? await this.e2eSecurityProbe(record, credential, projection)
+        : null;
+
+    return {
+      activeLease: record?.operation != null,
+      alarm: alarm !== null,
+      authorityStatus: record?.status ?? null,
+      backups: backupPage.objects.map(({ key }) => key).sort(),
+      createIdempotency: createIdempotency !== undefined,
+      credentials: credential !== undefined,
+      incarnation: this.e2eIncarnation,
+      kv: projection !== null,
+      runtime,
+      schedules: activeSchedules,
+      security,
+      terminalAttachments: terminalAttachments?.length ?? 0,
+    };
+  }
+
+  e2eAbortHost(): void {
+    this.ctx.abort("Full-stack E2E requested host reconstruction");
+  }
+
+  private async e2eSecurityProbe(
+    record: SessionRecord,
+    credential: StoredCredential,
+    projection: string | null,
+  ): Promise<CanarySecurityProbe> {
+    const root = `/workspace/${record.id}`;
+    const surface = await this.exec(
+      `printf '%s\\n' "$OPENAI_API_KEY" "$GH_TOKEN" "$GITHUB_SENTINEL"; cat ${root}/.codex/auth.json; git -C ${root} config --local --list; curl --silent --output /dev/null --write-out '%{http_code}' https://example.com/`,
+      { timeout: 30_000 },
+    );
+    const serializedSurface = `${surface.stdout}\n${surface.stderr}`;
+    const realSecrets = [
+      credential.githubToken,
+      credential.codex.OPENAI_API_KEY,
+      credential.codex.tokens?.id_token,
+      credential.codex.tokens?.access_token,
+      credential.codex.tokens?.refresh_token,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+    const containsRealSecret = (value: string): boolean =>
+      realSecrets.some((secret) => value.includes(secret));
+
+    return {
+      defaultDeny: /(?:403|520)\s*$/u.test(surface.stdout.trim()),
+      kvNonSecret: projection !== null && !containsRealSecret(projection),
+      sentinelsOnly:
+        serializedSurface.includes(credential.codexSentinel) &&
+        serializedSurface.includes(credential.githubSentinel) &&
+        !containsRealSecret(serializedSurface),
+    };
+  }
+}
+
+export { ContainerProxy, ScottyAuthRegistry };
+
+export default {
+  async fetch(request: Request, env: CanaryBindings, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    const probe = /^\/__e2e\/(probe|reconstruct)\/([^/]+)$/u.exec(url.pathname);
+    if (probe === null) return app.fetch(request, env, ctx);
+    if (
+      request.headers.get("authorization") !== `Bearer ${env.SCOTTY_TOKEN}` ||
+      env.SCOTTY_E2E_CANARY_STAGE.length === 0
+    ) {
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    }
+    const id = probe[2];
+    if (!id || !SESSION_ID_PATTERN.test(id)) {
+      return Response.json({ error: "invalid session id" }, { status: 400 });
+    }
+    const sandbox = getSandbox<ScottySandbox>(env.SANDBOX, id, {
+      sleepAfter: "60m",
+      transport: "rpc",
+      enableDefaultSession: false,
+      normalizeId: true,
+    });
+    if (probe[1] === "reconstruct") {
+      if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      sandbox.e2eAbortHost();
+      return new Response(null, { status: 204 });
+    }
+    if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+    return Response.json(await sandbox.e2eProbe());
+  },
+};

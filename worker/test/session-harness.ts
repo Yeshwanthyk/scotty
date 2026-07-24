@@ -9,7 +9,7 @@ import type {
 import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
-import { Sandbox } from "../src/session";
+import { Sandbox, type SandboxEffectOptions } from "../src/session";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
@@ -56,6 +56,7 @@ export type HarnessFailureStage =
   | "workspacePrepare";
 
 export interface HarnessOptions {
+  readonly clock?: SandboxEffectOptions["clock"];
   readonly commandStdout?: (command: string) => string | undefined;
   readonly crashAfterInitialRecordCommit?: boolean;
   readonly destroyBehavior?: "pending" | "reject" | "success";
@@ -393,7 +394,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     SCOTTY_FAKE_AGENT: "1",
   };
 
-  const sandbox = new Sandbox(ctx, env);
+  const sandbox = new Sandbox(ctx, env, { clock: options.clock });
   await Promise.all(constructorWork);
 
   const successfulExec = (command: string, stdout = ""): ExecResult => ({

@@ -27,24 +27,25 @@ The end state has no Hono runtime, no hand-maintained `wrangler.jsonc`, no manua
 
 ### Conversion status — re-audited 2026-07-24
 
-The 2026-07-24 audit superseded the earlier "no Effect in production source" finding.
-Current reality (details and task breakdown in `docs/effect-v4-alignment-tasks.md`):
+Chunks 3–11 are implemented and locally verified. The Sandbox orchestrator now has one Effect
+Promise boundary, instance-owned layers, service-owned storage, typed orchestration programs,
+Effect `Clock`, scoped terminal cleanup, and direct fault-injection suites for create, resume,
+lifecycle, beam-down, and vaporize. The lifecycle harness injects the same `TestClock` instance
+through the real Durable Object Promise boundary and proves deterministic time advancement.
 
-- Chunks 3 and 5 are done and locally verified: `contracts.ts` is schema-first with
-  `ScottyError` as the tagged public error, and the credential vault plus egress are
-  Effect-native, Clock-based, and tested.
-- Chunk 4 and 6 leaf services all exist as `Context.Service` layers with tests; the
-  gap is the orchestrator: `worker/src/session.ts` remains a Promise/async state
-  machine with duplicated `run*` boundary wrappers, ~30 raw `ctx.storage` accesses
-  bypassing `SessionStore`, and no `Clock` usage.
-- Chunk 7 is partial: the auth registry/DO meet the target bar; `worker/src/index.ts`
-  still carries route-level workflow logic and the native WebSocket bridge lacks a
-  deterministic scope-close guarantee.
-- Chunks 8–10 behavior is implemented and working but `session.ts` has zero direct
-  tests, so their fault-injection gates are unmet.
-- Chunk 11 (CLI) has Schema decoders only; async flows remain Promise-based.
-- `alchemy.run.ts` is the production deploy path; `worker/wrangler.jsonc` remains
-  only for local dev and the dry-run rollback probe per the Chunk 12 gate.
+The CLI async core is split into Effect services with one terminal Promise fold while preserving
+the existing JSON, exit-code, archive, browser, and credential contracts. Hono remains the approved
+thin monolithic host adapter under the current simplification decision.
+
+`spikes/infra/full-stack-canary.run.ts` is the disposable, stage-isolated deployed proof path. It
+uses the real Worker, Sandbox/Auth Durable Objects, Container, KV, R2, assets, inherited secrets,
+and a canary-only authenticated orphan/security probe. Production remains
+`alchemy.run.ts` → `npm run deploy:production`.
+
+The remaining gates are live evidence: the full deployed canary plus following no-op Alchemy plan,
+the broader production-adapter contract matrix beyond SessionRecordStorage and BackupStore, and
+Chunk 12 removal after the required stable Alchemy-managed release. `worker/wrangler.jsonc` remains
+only for local development and the rollback dry-run until that gate.
 
 Do not report the repository as migrated until the definition of done at the end of this packet passes.
 

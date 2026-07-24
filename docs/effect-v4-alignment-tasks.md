@@ -19,23 +19,23 @@ self-contained tasks suitable for handing to an implementation agent one at a ti
   `worker/src/egress.ts`, `worker/src/auth-object.ts` (DO boundary pattern).
 - One task per branch/commit series; do not fold in neighboring tasks.
 
-## Reconciled chunk status (2026-07-24 audit)
+## Reconciled chunk status (2026-07-24 implementation update)
 
-| Chunk            | Actual state                                                                                                                                                                                                            |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0–2              | Complete. Alchemy (`alchemy.run.ts` → `npm run deploy:production`) is the deploy path; Wrangler remains only for local dev + dry-run probe per the Chunk 12 gate.                                                       |
-| 3 schema/errors  | Done (`contracts.ts`), except: terminal-attachment schema lives in `session.ts:90-98`, and `session.ts` uses no `Clock` (34 wall-clock sites).                                                                          |
-| 4 state services | Services done and tested. Orchestrator gap: `session.ts` has ~30 raw `ctx.storage` accesses bypassing `SessionStore`, a duplicated `RECORD_KEY`, and 8+ duplicated `run*` boundary wrappers rebuilding layers per call. |
-| 5 vault/egress   | Done; cleanest chunk.                                                                                                                                                                                                   |
-| 6 adapters       | Adapters done. Consumer gap: flagged raw throw `session.ts:436`; no composed Effect programs in the DO.                                                                                                                 |
-| 7 boundary       | Auth stack at target bar. `index.ts`: workflow logic in ~5 routes, error-mapping seam, scope-unsafe WebSocket bridge.                                                                                                   |
-| 8–10             | Behavior implemented and working; **zero direct tests of `session.ts`** — all three fault-injection gates unmet.                                                                                                        |
-| 11 CLI           | Not started beyond Schema decoders; `cli/scotty.ts` is a 1381-line Promise monolith. Golden tests exist.                                                                                                                |
-| 12 cutover       | Correctly gated; do not start.                                                                                                                                                                                          |
+WS-A, B1–B4, WS-C, WS-D, WS-E, and WS-F are implemented and locally verified. In particular,
+`session.ts` has one host Promise boundary, no direct DO storage outside layer construction,
+composed Effect programs using `Clock`, and direct fault-injection coverage. Its lifecycle suite
+now passes the outer `TestClock` service through that real boundary instead of aligning a fake clock
+to wall time.
 
-State-model verdict: design is sound (single-writer DO, nonce-fenced lease, CAS guards,
-alarm reconcilers, commit-before-projection, idempotent `gone` tombstone). Known gaps are
-encoded in tasks C5, B3, C3, C4 below.
+B5 is partially complete: shared contracts run against the production SessionRecordStorage and
+BackupStore adapters behind explicit deployed gates. The governing packet's broader production
+matrix remains evidence work. The new full-stack disposable canary covers the integrated production
+paths for DO authority, KV projection, R2 backup/restore, credential isolation, egress, Sandbox
+runtime, lifecycle callbacks, HTTP, PTY reconnect, teardown, and host reconstruction.
+
+WS-G remains gated until that deployed canary passes, its following Alchemy plan is a no-op, and one
+stable Alchemy-managed release has run. The task briefs below remain as the audit trail and
+acceptance contracts; don't re-dispatch completed tasks.
 
 ## Dependency order
 
