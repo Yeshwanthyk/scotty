@@ -3,11 +3,13 @@ import path from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 import { RuleTester } from "oxlint/plugins-dev";
 import noConditionalTests from "../../scripts/oxlint-plugin-scotty/rules/no-conditional-tests.js";
+import noDirectDoStorage from "../../scripts/oxlint-plugin-scotty/rules/no-direct-do-storage.js";
 import noDoubleCast from "../../scripts/oxlint-plugin-scotty/rules/no-double-cast.js";
 import noEffectEscapeHatch from "../../scripts/oxlint-plugin-scotty/rules/no-effect-escape-hatch.js";
 import noEffectRunSyncInTests from "../../scripts/oxlint-plugin-scotty/rules/no-effect-run-sync-in-tests.js";
 import noEffectRuntimeEscape from "../../scripts/oxlint-plugin-scotty/rules/no-effect-runtime-escape.js";
 import noErrorConstructor from "../../scripts/oxlint-plugin-scotty/rules/no-error-constructor.js";
+import noErrorSubclass from "../../scripts/oxlint-plugin-scotty/rules/no-error-subclass.js";
 import noInlineObjectTypeAssertion from "../../scripts/oxlint-plugin-scotty/rules/no-inline-object-type-assertion.js";
 import noInlineSchemaCompile from "../../scripts/oxlint-plugin-scotty/rules/no-inline-schema-compile.js";
 import noInstanceofError from "../../scripts/oxlint-plugin-scotty/rules/no-instanceof-error.js";
@@ -22,6 +24,7 @@ import noRawWallClock from "../../scripts/oxlint-plugin-scotty/rules/no-raw-wall
 import noRedundantErrorFactory from "../../scripts/oxlint-plugin-scotty/rules/no-redundant-error-factory.js";
 import noRedundantPrimitiveCast from "../../scripts/oxlint-plugin-scotty/rules/no-redundant-primitive-cast.js";
 import noSchemaClass from "../../scripts/oxlint-plugin-scotty/rules/no-schema-class.js";
+import noStorageKeyLiteral from "../../scripts/oxlint-plugin-scotty/rules/no-storage-key-literal.js";
 import noSwitchStatement from "../../scripts/oxlint-plugin-scotty/rules/no-switch-statement.js";
 import noTryCatchOrThrow from "../../scripts/oxlint-plugin-scotty/rules/no-try-catch-or-throw.js";
 import noTsNocheck from "../../scripts/oxlint-plugin-scotty/rules/no-ts-nocheck.js";
@@ -40,6 +43,7 @@ const tester = new RuleTester({
 const productionFile = "spikes/infra/write-only-secret.ts";
 const testFile = "spikes/infra/example.test.ts";
 const toolingFile = path.resolve(import.meta.dirname, "../../scripts/example.ts");
+const workerFile = (name) => path.resolve(import.meta.dirname, `../../worker/src/${name}`);
 
 tester.run("no-conditional-tests", noConditionalTests, {
   valid: [
@@ -56,6 +60,39 @@ tester.run("no-conditional-tests", noConditionalTests, {
     {
       filename: testFile,
       code: `import { assert } from "@effect/vitest"; enabled && assert(value)`,
+      errors: 1,
+    },
+  ],
+});
+
+tester.run("no-direct-do-storage", noDirectDoStorage, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `request.ctx.storage.get("key"); context.storage.get("key")`,
+    },
+    {
+      filename: workerFile("session-store.ts"),
+      code: `ctx.storage.get("key"); class Store { read() { return this.ctx.storage.get("key") } }`,
+    },
+    {
+      filename: workerFile("credential-vault.ts"),
+      code: `ctx["storage"].get("key")`,
+    },
+    {
+      filename: workerFile("auth-object.ts"),
+      code: `class Auth { read() { return this.ctx.storage.get("key") } }`,
+    },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `ctx.storage.get("key"); ctx["storage"].put("key", value)`,
+      errors: 2,
+    },
+    {
+      filename: productionFile,
+      code: `class Session { read() { return this.ctx.storage.get("key") } }`,
       errors: 1,
     },
   ],
@@ -166,6 +203,22 @@ tester.run("no-effect-runtime-escape", noEffectRuntimeEscape, {
 tester.run("no-error-constructor", noErrorConstructor, {
   valid: [{ filename: productionFile, code: `new DomainFailure({ operation: "read" })` }],
   invalid: [{ filename: productionFile, code: `new Error("bad"); TypeError("bad")`, errors: 2 }],
+});
+
+tester.run("no-error-subclass", noErrorSubclass, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `class DomainFailure extends Data.TaggedError("DomainFailure") {} class Custom extends BaseError {}`,
+    },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `class DomainFailure extends Error {} const Anonymous = class extends globalThis.Error {}`,
+      errors: 2,
+    },
+  ],
 });
 
 tester.run("no-instanceof-error", noInstanceofError, {
@@ -334,6 +387,22 @@ tester.run("no-schema-class", noSchemaClass, {
   ],
 });
 
+tester.run("no-storage-key-literal", noStorageKeyLiteral, {
+  valid: [
+    { filename: productionFile, code: `const key = "session"; const prefix = "scotty_"` },
+    { filename: workerFile("session-store.ts"), code: `const key = "scotty:session"` },
+    { filename: workerFile("credential-vault.ts"), code: `const key = "scotty:credential"` },
+    { filename: workerFile("auth-registry.ts"), code: `const key = "scotty:auth-authority"` },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `const record = "scotty:session"; const credential = 'scotty:credential'`,
+      errors: 2,
+    },
+  ],
+});
+
 tester.run("no-switch-statement", noSwitchStatement, {
   valid: [{ filename: productionFile, code: `Match.value(value).pipe(Match.exhaustive)` }],
   invalid: [
@@ -469,66 +538,74 @@ describe("Scotty Oxlint policy integration", () => {
     assert.equal(config.rules["scotty/no-raw-fetch"], undefined);
   });
 
-  it("tracks migrated Effect modules explicitly", () => {
+  it("covers Worker source strictly with only the three legacy exceptions", () => {
     const repoRoot = path.resolve(import.meta.dirname, "../..");
     const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
-    assert.deepEqual(config.overrides, [
-      {
-        files: [
-          "alchemy.run.ts",
-          "worker/src/auth-registry.ts",
-          "worker/src/agent.ts",
-          "worker/src/backup-store.ts",
-          "worker/src/container-auth.ts",
-          "worker/src/contracts.ts",
-          "worker/src/create-idempotency.ts",
-          "worker/src/credential-vault.ts",
-          "worker/src/egress.ts",
-          "worker/src/rollout-discovery.ts",
-          "worker/src/repo-projection.ts",
-          "worker/src/sandbox-runtime.ts",
-          "worker/src/session-projection.ts",
-          "worker/src/session-lifecycle.ts",
-          "worker/src/session-store.ts",
-          "worker/src/workspace.ts",
-          "spikes/infra/account-secrets-store-canary.run.ts",
-          "spikes/infra/account-secrets-store-canary.ts",
-          "spikes/infra/external-sandbox-container-binding.ts",
-          "spikes/infra/local-secret-source.ts",
-          "spikes/infra/monolith-greenfield.ts",
-          "spikes/infra/sandbox-sdk-canary.ts",
-          "spikes/infra/write-only-secret-cloudflare.ts",
-          "spikes/infra/write-only-secret.ts",
-        ],
-        rules: {
-          "scotty/no-effect-runtime-escape": "error",
-          "scotty/no-error-constructor": "error",
-          "scotty/no-instanceof-error": "error",
-          "scotty/no-json-parse": "error",
-          "scotty/no-promise-reject": "error",
-          "scotty/no-raw-error-throw": "off",
-          "scotty/no-raw-fetch": "error",
-          "scotty/no-raw-wall-clock": "error",
-          "scotty/no-try-catch-or-throw": "error",
-        },
-      },
+    const legacyFiles = new Set([
+      "worker/src/auth.ts",
+      "worker/src/index.ts",
+      "worker/src/session.ts",
+    ]);
+    const legacyOverrides = config.overrides.filter(
+      (override) => override.files.length === 1 && legacyFiles.has(override.files[0]),
+    );
+    assert.ok(config.overrides[0].files.includes("worker/src/**/*.ts"));
+    assert.deepEqual(
+      legacyOverrides.map((override) => override.files),
+      [["worker/src/session.ts"], ["worker/src/index.ts"], ["worker/src/auth.ts"]],
+    );
+    assert.deepEqual(legacyOverrides.flatMap((override) => override.files).sort(), [
+      "worker/src/auth.ts",
+      "worker/src/index.ts",
+      "worker/src/session.ts",
     ]);
   });
 
-  it("registers but does not enable rules awaiting semantic precision", () => {
+  it("enables the precise strict rules and removes the imprecise rules", () => {
     const repoRoot = path.resolve(import.meta.dirname, "../..");
-    const config = readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8");
-    const disabledRules = [
+    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
+    const strictRules = config.overrides[0].rules;
+    const enabledRules = [
+      "no-direct-do-storage",
       "no-effect-internal-tags",
+      "no-error-subclass",
       "no-instanceof-tagged-error",
       "no-promise-catch",
       "no-unknown-error-message",
-      "no-unknown-shape-probing",
-      "prefer-yield-tagged-error",
     ];
-    for (const rule of disabledRules) {
+    for (const rule of enabledRules) {
       assert.ok(scottyPlugin.rules[rule]);
-      assert.equal(config.includes(`"scotty/${rule}"`), false);
+      assert.equal(strictRules[`scotty/${rule}`], "error");
     }
+    for (const rule of ["no-unknown-shape-probing", "prefer-yield-tagged-error"]) {
+      assert.equal(scottyPlugin.rules[rule], undefined);
+      assert.equal(strictRules[`scotty/${rule}`], undefined);
+    }
+  });
+
+  it("keeps storage, session, CLI, and test rules at their current migration gates", () => {
+    const repoRoot = path.resolve(import.meta.dirname, "../..");
+    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
+    const strict = config.overrides[0];
+    const workerStorage = config.overrides.find(
+      (override) => override.files.length === 1 && override.files[0] === "worker/src/**/*.ts",
+    );
+    const session = config.overrides.find((override) =>
+      override.files.includes("worker/src/session.ts"),
+    );
+    const workerTests = config.overrides.find(
+      (override) => override.files.length === 1 && override.files[0] === "worker/test/**/*.ts",
+    );
+
+    assert.equal(strict.rules["scotty/no-direct-do-storage"], "error");
+    assert.equal(strict.rules["scotty/no-error-subclass"], "error");
+    assert.ok(scottyPlugin.rules["no-storage-key-literal"]);
+    assert.equal(workerStorage.rules["scotty/no-storage-key-literal"], "error");
+    assert.equal(session.rules["scotty/no-direct-do-storage"], undefined);
+    assert.equal(session.rules["scotty/no-storage-key-literal"], undefined);
+    assert.equal(session.rules["scotty/no-error-subclass"], undefined);
+    assert.ok(strict.files.some((file) => file.startsWith("cli/")));
+    assert.ok(!strict.files.some((file) => file.startsWith("worker/test/")));
+    assert.equal(workerTests.rules["scotty/no-raw-wall-clock"], "error");
   });
 });

@@ -5,10 +5,16 @@ Scotty runs a persistent Codex TUI in a Cloudflare Sandbox, exposes it through a
 ## Components
 
 - `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, Sheppard-backed lifecycle, and terminal UI.
-- `cli/scotty.ts` — single-file Bun CLI; compile with `bun build --compile`.
+- `cli/scotty.ts` / `cli/src/` — stable Bun entrypoint plus Effect-native schemas, services,
+  transport, archive, command, and rendering modules; compile with `bun build --compile`.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
 - `spikes/` — executable probes for the upstream Sandbox contracts.
-- `PLAN.md` / `IMPLEMENTATION_DAG.md` — scope, architecture, dependency order, and proof gates.
+- [`EFFECT_V4_MIGRATION.md`](EFFECT_V4_MIGRATION.md) — governing Alchemy v2 + Effect v4
+  architecture, migration order, and proof gates.
+- [`docs/effect-v4-alignment-tasks.md`](docs/effect-v4-alignment-tasks.md) — audited migration
+  status and remaining agent-ready work.
+- `PLAN.md` / `IMPLEMENTATION_DAG.md` — historical v1 behavior, state-machine, and invariant
+  references.
 
 ## Security model
 
@@ -31,30 +37,22 @@ bun build cli/scotty.ts --compile --outfile dist/scotty
 
 The default suites do not use Cloudflare, OpenAI, or GitHub credentials.
 
-A Wrangler dry run also builds the Sandbox image and therefore requires a healthy Docker daemon:
+A Wrangler dry run remains as a local rollback probe. It builds the Sandbox image and therefore
+requires a healthy Docker daemon:
 
 ```sh
 npx wrangler deploy --dry-run --config worker/wrangler.jsonc
 ```
 
-## Cloudflare setup
-
-Create dedicated KV and R2 resources, then fill their IDs/names in `worker/wrangler.jsonc`. Backups require the R2 binding plus the Sandbox SDK's presigned-upload credentials.
+For interactive local Worker development only, use:
 
 ```sh
-cd worker
-npx wrangler kv namespace create SESSIONS
-npx wrangler r2 bucket create scotty-backups
-
-npx wrangler secret put SCOTTY_TOKEN
-npx wrangler secret put CODEX_AUTH_JSON
-npx wrangler secret put GH_TOKEN
-npx wrangler secret put R2_ACCESS_KEY_ID
-npx wrangler secret put R2_SECRET_ACCESS_KEY
-npx wrangler secret put CLOUDFLARE_ACCOUNT_ID
+npx wrangler dev --config worker/wrangler.jsonc
 ```
 
-Use a fine-grained GitHub PAT restricted to managed repositories. Add an R2 lifecycle rule for the `backups/` prefix; SDK backup TTL is metadata and does not itself remove expired objects.
+Wrangler is not a production infrastructure or deployment path.
+
+## Cloudflare deployment
 
 Production infrastructure has one owner: the guarded local command `npm run deploy:production`.
 Configure the local Alchemy OAuth profile once with `npx alchemy login --configure`. The command
@@ -65,6 +63,19 @@ rollout resource to report `completed` with its target version and healthy capac
 Alchemy to report a terminal no-op). An update without a rollout must remain unchanged for the
 bounded control-plane observation window. The command audits the result even if deployment fails.
 Do not bypass it with a raw production Wrangler or Alchemy command.
+
+`alchemy.run.ts` accepts only the exact `production` stage. Its guarded greenfield resource path
+requires `CLOUDFLARE_ACCOUNT_ID` and matching `SCOTTY_CLOUDFLARE_ACCOUNT_ID`, telemetry disabled
+with `ALCHEMY_TELEMETRY_DISABLED=1`, and account-scoped confirmations:
+`SCOTTY_CHUNK2_ABSENCE_CONFIRMED=absent:<account-id>:scotty-worker` and
+`SCOTTY_CHUNK2_APPROVE_GREENFIELD=greenfield:<account-id>:scotty-worker`. The production wrapper
+derives and supplies these values after auditing the pinned account; operators should not export
+them to bypass its checks.
+
+Alchemy declares the Worker, Durable Objects, Container application, KV namespace, R2 bucket,
+assets, bindings, migrations, and retained-resource policy. Existing inherited Worker secrets
+remain managed outside Alchemy state. Use a fine-grained GitHub PAT restricted to managed
+repositories.
 
 ## CLI
 

@@ -7,8 +7,8 @@ import {
   credentialVaultLayer,
   type CredentialVaultShape,
   type CredentialVaultStorage,
-  type CredentialVaultTransaction,
 } from "../src/credential-vault";
+import { InMemoryFaultInjectableFake, makeCredentialVaultStorageFake } from "./support";
 
 const NOW = Date.parse("2026-04-05T06:07:08.000Z");
 const CODEX_SENTINEL = "scotty-codex-session-sentinel";
@@ -46,44 +46,6 @@ const credential = (overrides: Partial<StoredCredential> = {}): StoredCredential
   ...overrides,
 });
 
-class MemoryCredentialVaultStorage implements CredentialVaultStorage {
-  private value: unknown | undefined;
-  private tail: Promise<void> = Promise.resolve();
-
-  constructor(value?: unknown) {
-    this.value = value;
-  }
-
-  snapshot = (): unknown | undefined => structuredClone(this.value);
-
-  transaction = async <A>(
-    operation: (transaction: CredentialVaultTransaction) => Promise<A>,
-  ): Promise<A> => {
-    const preceding = this.tail;
-    let unlock = (): void => undefined;
-    this.tail = new Promise((resolve) => {
-      unlock = resolve;
-    });
-    await preceding;
-    let staged = structuredClone(this.value);
-    try {
-      const result = await operation({
-        get: async () => structuredClone(staged),
-        put: async (next) => {
-          staged = structuredClone(next);
-        },
-        delete: async () => {
-          staged = undefined;
-        },
-      });
-      this.value = staged;
-      return result;
-    } finally {
-      unlock();
-    }
-  };
-}
-
 const withVault = <A, E>(
   storage: CredentialVaultStorage,
   githubSeed: unknown,
@@ -102,7 +64,7 @@ const failure = <A>(result: Result.Result<A, unknown>): unknown => {
 describe("CredentialVault", () => {
   it.effect("seeds both credential kinds once with a Clock-owned timestamp", () =>
     Effect.gen(function* () {
-      const storage = new MemoryCredentialVaultStorage();
+      const storage = makeCredentialVaultStorageFake();
       yield* TestClock.setTime(NOW);
       const seeded = yield* withVault(
         storage,
@@ -122,7 +84,7 @@ describe("CredentialVault", () => {
 
   it.effect("serializes competing first seeds into one complete authority tuple", () =>
     Effect.gen(function* () {
-      const storage = new MemoryCredentialVaultStorage();
+      const storage = makeCredentialVaultStorageFake();
       yield* TestClock.setTime(NOW);
       const results = yield* Effect.all(
         [
@@ -175,7 +137,7 @@ describe("CredentialVault", () => {
       const existing = credential({
         refreshLease: { nonce: "held", startedAt: "2026-01-02T00:00:01.000Z" },
       });
-      const storage = new MemoryCredentialVaultStorage(existing);
+      const storage = makeCredentialVaultStorageFake(existing);
       const result = yield* withVault(
         storage,
         undefined,
@@ -191,7 +153,7 @@ describe("CredentialVault", () => {
       const { githubToken: _githubToken, ...legacy } = credential({
         refreshLease: { nonce: "held", startedAt: "2026-01-02T00:00:01.000Z" },
       });
-      const storage = new MemoryCredentialVaultStorage(legacy);
+      const storage = makeCredentialVaultStorageFake(legacy);
       const migrated = yield* withVault(
         storage,
         "first-github-token",
@@ -221,7 +183,7 @@ describe("CredentialVault", () => {
           refreshLease: { nonce: "held", startedAt: "not-a-timestamp" },
         },
       ]) {
-        const storage = new MemoryCredentialVaultStorage(malformed);
+        const storage = makeCredentialVaultStorageFake(malformed);
         const result = yield* Effect.result(
           withVault(
             storage,
@@ -244,7 +206,7 @@ describe("CredentialVault", () => {
     Effect.gen(function* () {
       const missingCodex = yield* Effect.result(
         withVault(
-          new MemoryCredentialVaultStorage(),
+          makeCredentialVaultStorageFake(),
           "github-seed",
           vaultEffect((vault) => vault.seed({ ...SEED, codexAuthJson: "" })),
         ),
@@ -256,7 +218,7 @@ describe("CredentialVault", () => {
 
       const missingGithub = yield* Effect.result(
         withVault(
-          new MemoryCredentialVaultStorage(),
+          makeCredentialVaultStorageFake(),
           undefined,
           vaultEffect((vault) => vault.seed(SEED)),
         ),
@@ -271,7 +233,7 @@ describe("CredentialVault", () => {
   it.effect("looks up only exact Codex and GitHub sentinels", () =>
     Effect.gen(function* () {
       const stored = credential();
-      const storage = new MemoryCredentialVaultStorage(stored);
+      const storage = makeCredentialVaultStorageFake(stored);
       for (const sentinel of [CODEX_SENTINEL, GITHUB_SENTINEL]) {
         assert.deepStrictEqual(
           yield* withVault(
@@ -296,7 +258,7 @@ describe("CredentialVault", () => {
 
   it.effect("keeps refresh busy until the exact 60-second TestClock threshold", () =>
     Effect.gen(function* () {
-      const storage = new MemoryCredentialVaultStorage(credential());
+      const storage = makeCredentialVaultStorageFake(credential());
       yield* TestClock.setTime(NOW);
       const first = yield* withVault(
         storage,
@@ -327,7 +289,7 @@ describe("CredentialVault", () => {
 
   it.effect("rejects stale rotation nonces and persists rotation before later reads", () =>
     Effect.gen(function* () {
-      const storage = new MemoryCredentialVaultStorage(credential());
+      const storage = makeCredentialVaultStorageFake(credential());
       yield* TestClock.setTime(NOW);
       yield* withVault(
         storage,
@@ -397,7 +359,7 @@ describe("CredentialVault", () => {
 
   it.effect("cancels only the matching refresh lease", () =>
     Effect.gen(function* () {
-      const storage = new MemoryCredentialVaultStorage(
+      const storage = makeCredentialVaultStorageFake(
         credential({
           refreshLease: { nonce: "held", startedAt: "2026-01-02T00:00:01.000Z" },
         }),
@@ -419,7 +381,7 @@ describe("CredentialVault", () => {
 
   it.effect("deletes authority transactionally and remains deleted after reconstruction", () =>
     Effect.gen(function* () {
-      const storage = new MemoryCredentialVaultStorage(credential());
+      const storage = makeCredentialVaultStorageFake(credential());
       yield* withVault(
         storage,
         "ignored",
@@ -443,9 +405,9 @@ describe("CredentialVault", () => {
   it.effect("redacts storage failures and credential honeypots", () =>
     Effect.gen(function* () {
       const honeypot = "honeypot-provider-credential";
-      const storage: CredentialVaultStorage = {
-        transaction: async () => Promise.reject(honeypot),
-      };
+      const memory = new InMemoryFaultInjectableFake();
+      memory.injectFailure("transaction", { error: honeypot });
+      const storage = makeCredentialVaultStorageFake(undefined, memory);
       const result = yield* Effect.result(
         withVault(
           storage,

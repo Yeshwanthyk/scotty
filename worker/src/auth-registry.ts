@@ -1,4 +1,5 @@
 import { Clock, Context, Data, Effect, Layer, Result, Schema } from "effect";
+import { sha256Hex } from "./digest";
 
 const AUTHORITY_KEY = "scotty:auth-authority";
 const CLIENT_CREDENTIAL_PREFIX = "scotty_client";
@@ -292,7 +293,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
     const now = new Date(nowMillis).toISOString();
     const record: AuthClientRecord = {
       id: candidate.credential.id,
-      credentialDigest: await runDigest(candidate.credential.secret),
+      credentialDigest: await sha256Hex(candidate.credential.secret),
       label: normalizeLabel(candidate.label),
       scopes: [...candidate.scopes],
       createdAt: now,
@@ -325,7 +326,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           return Result.fail(invalidInput());
         const createdAt = new Date(nowMillis).toISOString();
         const expiresAt = new Date(nowMillis + candidate.ttlMillis).toISOString();
-        const credentialDigest = await runDigest(candidate.credential.secret);
+        const credentialDigest = await sha256Hex(candidate.credential.secret);
         const record: PairingGrantRecord = {
           id: candidate.credential.id,
           credentialDigest,
@@ -353,7 +354,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
         );
         if (pairingIndex < 0) return Result.fail(pairingInvalid(failure));
         const pairing = authority.pairings[pairingIndex];
-        const digest = await runDigest(parsed.success.secret);
+        const digest = await sha256Hex(parsed.success.secret);
         if (!safeDigestEqual(digest, pairing.credentialDigest))
           return Result.fail(pairingInvalid(failure));
         const decodedClient = decodeClientCandidate(clientValue);
@@ -467,7 +468,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
         const expiresAt = new Date(nowMillis + candidate.ttlMillis).toISOString();
         const record: TerminalTicketRecord = {
           id: candidate.credential.id,
-          credentialDigest: await runDigest(candidate.credential.secret),
+          credentialDigest: await sha256Hex(candidate.credential.secret),
           clientId: authenticated.success.id,
           sessionId: candidate.sessionId,
           createdAt,
@@ -494,7 +495,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
         );
         if (ticketIndex < 0) return Result.fail(ticketInvalid(failure));
         const ticket = authority.terminalTickets[ticketIndex];
-        const digest = await runDigest(parsed.success.secret);
+        const digest = await sha256Hex(parsed.success.secret);
         if (!safeDigestEqual(digest, ticket.credentialDigest))
           return Result.fail(ticketInvalid(failure));
         const client = authority.clients.find(
@@ -511,11 +512,6 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
       }),
   });
 };
-
-async function runDigest(secret: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 
 async function authenticateClient(
   authority: AuthAuthority,
@@ -535,7 +531,7 @@ async function authenticateClient(
   );
   if (!client)
     return Result.fail(failure("credential_invalid", "Client credential is invalid or expired"));
-  const digest = await runDigest(parsed.success.secret);
+  const digest = await sha256Hex(parsed.success.secret);
   return safeDigestEqual(digest, client.credentialDigest)
     ? Result.succeed(client)
     : Result.fail(failure("credential_invalid", "Client credential is invalid or expired"));

@@ -1,7 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { TestClock } from "effect/testing";
-import type { SessionRecord } from "../src/contracts";
 import {
   listSessionProjections,
   projectSessionBestEffort,
@@ -9,62 +8,25 @@ import {
   SessionProjection,
   SessionProjectionFailure,
   sessionProjectionLayer,
-  type SessionProjectionStorage,
 } from "../src/session-projection";
+import {
+  InMemoryFaultInjectableFake,
+  makeSessionRecord as record,
+  sessionProjectionStorageFake,
+} from "./support";
 
 const NOW = Date.parse("2026-04-05T06:07:08.000Z");
 
-const record = (overrides: Partial<SessionRecord> = {}): SessionRecord => ({
-  version: 1,
-  id: "a0b1c2d3e4f5",
-  status: "warm",
-  operation: null,
-  repo: "anomalyco/rift",
-  repoExistsAtCreate: true,
-  defaultBranch: "dev",
-  branch: "scotty/a0b1c2d3e4f5",
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:01.000Z",
-  hardCapAt: "2026-01-01T04:00:00.000Z",
-  hardCapDurationSeconds: 14_400,
-  ownedBackupIds: [],
-  ...overrides,
-});
-
-class MemorySessionProjectionStorage implements SessionProjectionStorage {
-  readonly values = new Map<string, unknown>();
-  fail?: "delete" | "get" | "list" | "put";
-
-  delete = async (key: string): Promise<void> => {
-    if (this.fail === "delete") return Promise.reject("delete failed");
-    this.values.delete(key);
-  };
-
-  get = async (key: string): Promise<unknown | null> => {
-    if (this.fail === "get") return Promise.reject("get failed");
-    return this.values.get(key) ?? null;
-  };
-
-  list = async (): Promise<{ keys: ReadonlyArray<string> }> => {
-    if (this.fail === "list") return Promise.reject("list failed");
-    return { keys: [...this.values.keys()] };
-  };
-
-  put = async (key: string, value: string): Promise<void> => {
-    if (this.fail === "put") return Promise.reject("put failed");
-    this.values.set(key, JSON.parse(value));
-  };
-}
-
 const withProjection = <A, E>(
-  storage: SessionProjectionStorage,
+  memory: InMemoryFaultInjectableFake,
   effect: Effect.Effect<A, E, SessionProjection>,
-): Effect.Effect<A, E> => Effect.provide(effect, sessionProjectionLayer(storage));
+): Effect.Effect<A, E> =>
+  Effect.provide(effect, sessionProjectionLayer(sessionProjectionStorageFake(memory)));
 
 describe("SessionProjection", () => {
   it.effect("projects with Clock time and removes gone projections", () =>
     Effect.gen(function* () {
-      const storage = new MemorySessionProjectionStorage();
+      const storage = new InMemoryFaultInjectableFake();
       yield* TestClock.setTime(NOW);
       yield* withProjection(
         storage,
@@ -82,7 +44,7 @@ describe("SessionProjection", () => {
 
   it.effect("skips malformed neighbors and key mismatches, strips extras, and orders views", () =>
     Effect.gen(function* () {
-      const storage = new MemorySessionProjectionStorage();
+      const storage = new InMemoryFaultInjectableFake();
       const valid = {
         version: 1,
         id: "a0b1c2d3e4f5",
@@ -131,27 +93,30 @@ describe("SessionProjection", () => {
   it.effect("keeps provider failures typed and best-effort writes non-authoritative", () =>
     Effect.gen(function* () {
       const authoritative = record({ status: "sleeping" });
-      const storage = new MemorySessionProjectionStorage();
-      storage.fail = "put";
+      const storage = new InMemoryFaultInjectableFake();
+      storage.injectFailure("put");
       yield* withProjection(storage, projectSessionBestEffort(authoritative));
       assert.strictEqual(authoritative.status, "sleeping");
       assert.strictEqual(storage.values.size, 0);
 
       storage.values.set("session:a0b1c2d3e4f5", { stale: true });
-      storage.fail = "delete";
+      storage.clearFailure();
+      storage.injectFailure("delete");
       const gone = record({ status: "gone" });
       yield* withProjection(storage, projectSessionBestEffort(gone));
       assert.strictEqual(gone.status, "gone");
       assert.deepStrictEqual(storage.values.get("session:a0b1c2d3e4f5"), { stale: true });
 
       storage.values.set("session:a0b1c2d3e4f5", {});
-      storage.fail = "get";
+      storage.clearFailure();
+      storage.injectFailure("get");
       const result = yield* Effect.result(withProjection(storage, listSessionProjections));
       assert.ok(Result.isFailure(result));
       assert.ok(result.failure instanceof SessionProjectionFailure);
       assert.deepStrictEqual(result.failure, new SessionProjectionFailure({ operation: "get" }));
 
-      storage.fail = "list";
+      storage.clearFailure();
+      storage.injectFailure("list");
       const listResult = yield* Effect.result(withProjection(storage, listSessionProjections));
       assert.ok(Result.isFailure(listResult));
       assert.deepStrictEqual(
@@ -163,9 +128,9 @@ describe("SessionProjection", () => {
 
   it.effect("requires confirmed projection removal for destructive cleanup", () =>
     Effect.gen(function* () {
-      const storage = new MemorySessionProjectionStorage();
+      const storage = new InMemoryFaultInjectableFake();
       storage.values.set("session:a0b1c2d3e4f5", { stale: true });
-      storage.fail = "delete";
+      storage.injectFailure("delete");
 
       const failed = yield* Effect.result(
         withProjection(storage, removeSessionProjection("a0b1c2d3e4f5")),
@@ -174,7 +139,7 @@ describe("SessionProjection", () => {
       assert.deepStrictEqual(failed.failure, new SessionProjectionFailure({ operation: "delete" }));
       assert.deepStrictEqual(storage.values.get("session:a0b1c2d3e4f5"), { stale: true });
 
-      storage.fail = undefined;
+      storage.clearFailure();
       yield* withProjection(storage, removeSessionProjection("a0b1c2d3e4f5"));
       assert.strictEqual(storage.values.size, 0);
     }),
@@ -182,17 +147,13 @@ describe("SessionProjection", () => {
 
   it.effect("continues projection listing across empty pages", () =>
     Effect.gen(function* () {
-      const storage = new MemorySessionProjectionStorage();
+      const storage = new InMemoryFaultInjectableFake();
       yield* TestClock.setTime(NOW);
       yield* withProjection(storage, projectSessionBestEffort(record()));
-      const paged: SessionProjectionStorage = {
-        delete: storage.delete,
-        get: storage.get,
-        list: async (cursor) =>
-          cursor === undefined ? { keys: [], cursor: "next" } : { keys: ["session:a0b1c2d3e4f5"] },
-        put: storage.put,
-      };
-      const views = yield* withProjection(paged, listSessionProjections);
+      storage.handle("list", (cursor) =>
+        cursor === undefined ? { keys: [], cursor: "next" } : { keys: ["session:a0b1c2d3e4f5"] },
+      );
+      const views = yield* withProjection(storage, listSessionProjections);
       assert.deepStrictEqual(
         views.map((view) => view.id),
         ["a0b1c2d3e4f5"],
@@ -202,7 +163,7 @@ describe("SessionProjection", () => {
 
   it.effect("reconstructs from KV without runtime-memory authority", () =>
     Effect.gen(function* () {
-      const storage = new MemorySessionProjectionStorage();
+      const storage = new InMemoryFaultInjectableFake();
       yield* TestClock.setTime(NOW);
       yield* withProjection(storage, projectSessionBestEffort(record()));
       const persisted = storage.values.get("session:a0b1c2d3e4f5");

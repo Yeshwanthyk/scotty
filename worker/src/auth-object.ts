@@ -128,12 +128,14 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
   async #run<A>(
     operation: Effect.Effect<A, AuthRegistryFailure, AuthRegistry>,
   ): Promise<AuthRpcResult<A>> {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
     const result = await Effect.runPromise(
       operation.pipe(Effect.provide(this.layer), Effect.result),
     );
     return Result.match(result, {
       onFailure: (error) => ({
         ok: false,
+        // oxlint-disable-next-line scotty/no-unknown-error-message -- boundary: Effect.Result has narrowed this value to AuthRegistryFailure
         error: { reason: error.reason, message: error.message },
       }),
       onSuccess: (value) => ({ ok: true, value }),

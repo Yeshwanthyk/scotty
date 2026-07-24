@@ -8,6 +8,7 @@ import type {
 import type { AuthClientView, AuthScope, IssuedClientCredential } from "./auth-registry";
 import { ADMIN_AUTH_SCOPES } from "./auth-registry";
 import { ScottyError } from "./contracts";
+import { constantTimeStringEqual } from "./digest";
 
 export const AUTH_COOKIE = "__Host-scotty";
 const AUTH_OBJECT_NAME = "account";
@@ -46,13 +47,13 @@ export async function authenticateRequest(
   if (
     env.SCOTTY_TOKEN &&
     authorization?.startsWith("Bearer ") &&
-    (await safeEqual(authorization.slice(7), env.SCOTTY_TOKEN))
+    (await constantTimeStringEqual(authorization.slice(7), env.SCOTTY_TOKEN))
   )
     return { kind: "root", source: "bearer", scopes: [...ADMIN_AUTH_SCOPES] };
 
   const credential = readCookie(request.headers.get("cookie"), AUTH_COOKIE);
   if (credential) {
-    if (env.SCOTTY_TOKEN && (await safeEqual(credential, env.SCOTTY_TOKEN)))
+    if (env.SCOTTY_TOKEN && (await constantTimeStringEqual(credential, env.SCOTTY_TOKEN)))
       return { kind: "root", source: "cookie", scopes: [...ADMIN_AUTH_SCOPES] };
     const result = await authRegistry(env).authenticate(credential);
     if (result.ok)
@@ -67,7 +68,7 @@ export async function authenticateRequest(
 
   if (allowRootQuery && env.SCOTTY_TOKEN) {
     const candidate = new URL(request.url).searchParams.get("t");
-    if (candidate && (await safeEqual(candidate, env.SCOTTY_TOKEN)))
+    if (candidate && (await constantTimeStringEqual(candidate, env.SCOTTY_TOKEN)))
       return { kind: "root", source: "query", scopes: [...ADMIN_AUTH_SCOPES] };
   }
   return undefined;
@@ -112,6 +113,16 @@ export async function registerRootBrowser<T extends AuthBindings>(
   };
 }
 
+export async function registeredRootBrowserRedirect<T extends AuthBindings>(
+  c: Context<{ Bindings: T; Variables: AuthVariables }>,
+  principal: AuthPrincipal,
+  location: string,
+): Promise<Response | undefined> {
+  if (principal.kind !== "root") return undefined;
+  await registerRootBrowser(c, principal);
+  return c.redirect(location, 302);
+}
+
 export function setClientAuthCookie<T extends AuthBindings>(
   c: Context<{ Bindings: T; Variables: AuthVariables }>,
   issued: IssuedClientCredential,
@@ -141,6 +152,18 @@ export function clearClientAuthCookie<T extends AuthBindings>(
 
 export function requestClientCredential(request: Request): string | undefined {
   return readCookie(request.headers.get("cookie"), AUTH_COOKIE);
+}
+
+export function terminalTicketCredential(principal: AuthPrincipal, request: Request): string {
+  const credential =
+    principal.kind === "client" && principal.source === "cookie"
+      ? principal.credential
+      : requestClientCredential(request);
+  if (credential) return credential;
+  throw new ScottyError("auth", "Pair this browser before opening a terminal", {
+    httpStatus: 401,
+    exitCode: 4,
+  });
 }
 
 export function authRegistry(env: AuthBindings): ScottyAuthRegistryStub {
@@ -188,15 +211,18 @@ async function rootCredentialSource(
 ): Promise<RootAuthPrincipal["source"] | undefined> {
   if (!token) return undefined;
   const authorization = request.headers.get("authorization");
-  if (authorization?.startsWith("Bearer ") && (await safeEqual(authorization.slice(7), token)))
+  if (
+    authorization?.startsWith("Bearer ") &&
+    (await constantTimeStringEqual(authorization.slice(7), token))
+  )
     return "bearer";
 
   const cookie = readCookie(request.headers.get("cookie"), AUTH_COOKIE);
-  if (cookie && (await safeEqual(cookie, token))) return "cookie";
+  if (cookie && (await constantTimeStringEqual(cookie, token))) return "cookie";
 
   if (allowQuery) {
     const candidate = new URL(request.url).searchParams.get("t");
-    if (candidate && (await safeEqual(candidate, token))) return "query";
+    if (candidate && (await constantTimeStringEqual(candidate, token))) return "query";
   }
   return undefined;
 }
@@ -215,19 +241,6 @@ function browserLabel(userAgent: string | undefined): string {
   if (/Android/iu.test(userAgent)) return "Android browser";
   if (/Helium/iu.test(userAgent)) return "Helium browser";
   return "Trusted browser";
-}
-
-async function safeEqual(left: string, right: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const [leftDigest, rightDigest] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(left)),
-    crypto.subtle.digest("SHA-256", encoder.encode(right)),
-  ]);
-  const a = new Uint8Array(leftDigest);
-  const b = new Uint8Array(rightDigest);
-  let difference = 0;
-  for (let index = 0; index < a.length; index += 1) difference |= a[index] ^ b[index];
-  return difference === 0 && left.length === right.length;
 }
 
 function readCookie(header: string | null, name: string): string | undefined {

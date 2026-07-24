@@ -8,6 +8,7 @@ import {
   type SessionRecord,
   type SessionView,
 } from "./contracts";
+import { listProjectionValues } from "./projection-list";
 
 type ProjectionOperation = "delete" | "get" | "list" | "put";
 
@@ -95,29 +96,13 @@ const makeSessionProjection = (storage: SessionProjectionStorage): SessionProjec
     }),
     remove,
     list: Effect.gen(function* () {
-      const projections = [];
-      let cursor: string | undefined;
-      do {
-        const page = yield* Effect.tryPromise({
-          try: () => storage.list(cursor),
-          catch: () => failure("list"),
-        });
-        const values = yield* Effect.all(
-          page.keys.map((key) =>
-            Effect.tryPromise({
-              try: () => storage.get(key),
-              catch: () => failure("get"),
-            }).pipe(Effect.map((value) => decodeProjection(key, value))),
-          ),
-          { concurrency: "unbounded" },
-        );
-        for (const value of values) {
-          if (value !== undefined) projections.push(value);
-        }
-        cursor = page.cursor;
-      } while (cursor !== undefined);
-
-      projections.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+      const projections = yield* listProjectionValues({
+        storage,
+        decode: decodeProjection,
+        compare: (left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt),
+        onGetError: () => failure("get"),
+        onListError: () => failure("list"),
+      });
       const now = yield* Clock.currentTimeMillis;
       return projections.map((projection) => toSessionView(projection, now));
     }),
