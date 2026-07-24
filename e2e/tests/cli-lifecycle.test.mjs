@@ -5,7 +5,7 @@ import test from "node:test";
 import { FakeWorkerService } from "../support/fake-worker.mjs";
 import { cliEnvironment, makeGitFixture, makeTempDir, runCli } from "../support/harness.mjs";
 
-test("real CLI completes up/ls/snapshot/resume/pr/down/vaporize against the fake Worker", async (t) => {
+test("real CLI completes up/ls/snapshot/resume/down/vaporize against the fake Worker", async (t) => {
   const service = await new FakeWorkerService().start();
   const root = makeTempDir();
   const home = path.join(root, "home");
@@ -78,12 +78,6 @@ test("real CLI completes up/ls/snapshot/resume/pr/down/vaporize against the fake
   assert.deepEqual(Object.keys(resume.json).sort(), ["branch", "id", "status", "url"]);
   assert.equal(service.runtimes.get(id).worktree, originalWorktree);
   assert.equal(service.runtimes.get(id).generation, 2);
-
-  const pr = await runCli(["pr", id, "--title", "Scotty E2E fixture", "--json"], { env });
-  assert.equal(pr.code, 0, pr.stderr);
-  assert.deepEqual(Object.keys(pr.json).sort(), ["branchUrl", "created", "prUrl"]);
-  assert.equal(pr.json.created, true);
-  assert.match(pr.json.prUrl, /\/pull\/42$/);
 
   const gitFixture = await makeGitFixture(root, service.sessions.get(id).branch);
   service.sessions.get(id).sha = gitFixture.sha;

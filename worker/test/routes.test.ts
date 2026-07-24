@@ -9,7 +9,6 @@ const sandbox = vi.hoisted(() => ({
   snapshotScottySession: vi.fn(),
   sleepScottySession: vi.fn(),
   resumeScottySession: vi.fn(),
-  publishScottySession: vi.fn(),
   prepareDownArchive: vi.fn(),
   readScottyArchiveStream: vi.fn(),
   getSession: vi.fn(),
@@ -311,59 +310,22 @@ describe("real Hono boundary", () => {
     });
   });
 
-  it("treats malformed PR JSON as an omitted title and preserves the result shape", async () => {
-    sandbox.publishScottySession.mockResolvedValue({
-      prUrl: "https://github.com/owner/repo/pull/1",
-      branchUrl: "https://github.com/owner/repo/tree/scotty/a0b1c2d3e4f5",
-      created: true,
-    });
+  it("does not expose a source-control publishing route", async () => {
     const response = await app.request(
       "/api/sessions/a0b1c2d3e4f5/pr",
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: "{",
       },
       env(),
     );
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({
-      prUrl: "https://github.com/owner/repo/pull/1",
-      branchUrl: "https://github.com/owner/repo/tree/scotty/a0b1c2d3e4f5",
-      created: true,
-    });
-    expect(sandbox.publishScottySession).toHaveBeenCalledWith({});
-  });
-
-  it("publishes through real repository and operation-lease orchestration", async () => {
-    const harness = await createSessionHarness({
-      initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
-          id: SESSION_ID,
-          branch: `scotty/${SESSION_ID}`,
-          repo: "owner/repo",
-          repoExistsAtCreate: false,
-        }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
+      error: {
+        code: "not_found",
+        message: "Route not found",
       },
     });
-    useRealSandbox(harness);
-    const response = await app.request(
-      "/api/sessions/a0b1c2d3e4f5/pr",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ title: "Ship the route parity test" }),
-      },
-      env(),
-    );
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      branchUrl: "https://github.com/owner/repo/tree/scotty/a0b1c2d3e4f5",
-      created: false,
-    });
-    expect(harness.readRecord()).toMatchObject({ status: "warm", operation: null });
-    expect(harness.events).toContain("host:exec:exec");
   });
 
   it("preserves beam-down streaming status, headers, and filename", async () => {

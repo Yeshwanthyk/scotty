@@ -5,7 +5,7 @@
 > behavior, security constraints, state machine, lifecycle semantics, credential isolation, and
 > other invariants recorded here remain authoritative.
 
-Cloud coding agents on Cloudflare (Amp-orbs style). Beam a Codex agent into a cloud sandbox, work with it live in the browser, let it sleep, resume later, ship a PR, or beam the session back down to your laptop.
+Cloud coding agents on Cloudflare (Amp-orbs style). Beam a Codex agent into a cloud sandbox, work with it live in the browser, let it sleep, resume later, or beam the session back down to your laptop. Source-control publishing stays in Codex itself.
 
 This plan is written for AI agents to implement. Follow phases in order; each phase has acceptance criteria. Do not add features beyond this document.
 
@@ -80,7 +80,7 @@ Adopt the pattern from Cloudflare's `sandbox-sdk/examples/codex` (it ships worki
 Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.com`, `api.openai.com`, `chatgpt.com`, plus package registries needed for builds (`registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, crates.io as needed — config constant). Exfil via arbitrary hosts is blocked even if repo code goes rogue. Use the Sandbox SDK's egress controls (as in the Claude Code example); if a hole is unavoidable, log it as a known risk in README.
 
 **3. GitHub token scope.**
-`GH_TOKEN` is a **fine-grained PAT** limited to the repos scotty manages (contents: rw, pull requests: rw, administration: rw only if repo auto-create is wanted — otherwise drop it and let `pr` fail with a hint). Never a classic all-repo PAT. GitHub App installation tokens remain the v2 upgrade path.
+`GH_TOKEN` is a **fine-grained PAT** limited to the repos Codex works in (contents: rw and pull requests: rw when Codex should push or open pull requests). Grant administration only when Codex itself should create repositories. Never use a classic all-repo PAT. GitHub App installation tokens remain the v2 upgrade path.
 
 **4. Scotty's own tokens.**
 
@@ -126,13 +126,7 @@ Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.c
 
 **snapshot** (`POST /api/sessions/:id/snapshot`): `createBackup()` on demand, update backupId. Container stays up.
 
-**pr** (`POST /api/sessions/:id/pr`):
-
-1. Exec in container with a **sentinel** `GH_TOKEN` env (real PAT lives in Worker secrets; egress proxy swaps it on api.github.com/github.com requests only). Never write any token to disk:
-   - **If the target repo does not exist on GitHub, create it first**: `gh repo view <owner>/<name> || gh repo create <owner>/<name> --private --source /workspace/<id> --push`. This covers first-push-of-a-new-project; for existing repos it's a no-op check.
-   - `git push -u origin scotty/<id>`
-   - `gh pr create --base <defaultBranch> --head scotty/<id> --title ... --body-file ...` (skip PR creation when the repo was just created and has no base branch yet — then just report the pushed branch URL).
-2. Return PR/branch URL.
+**source control**: Scotty exposes no commit, push, repository-creation, or pull-request command or HTTP endpoint. Codex runs those operations directly inside the session when requested, using the same sentinel-only `GH_TOKEN` boundary as other GitHub access.
 
 **down (beam down)** (`GET /api/sessions/:id/down`):
 
@@ -152,7 +146,6 @@ scotty ls [--json]
 scotty attach <id>            # opens web URL (browser)
 scotty snapshot <id>
 scotty resume <id>
-scotty pr <id> [--title ...]
 scotty down <id>              # beam down: branch + rollout → local; prints resume cmd
 scotty vaporize <id>          # destroy everything, no snapshot
 ```
@@ -166,7 +159,7 @@ AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
 **Machine-readable by default when piped**
 
 - Every command supports `--json`; additionally, auto-detect non-TTY stdout and emit JSON (same as `--json`). Human tables only on a TTY.
-- JSON shapes are stable and minimal: `up` → `{id, url, branch, status}`; `ls` → array of session records; `pr` → `{prUrl?, branchUrl, created}`; `down` → `{branch, sha, rolloutPath, resumeCmd}`. Errors → `{error: {code, message, hint}}` on stderr, non-zero exit.
+- JSON shapes are stable and minimal: `up` → `{id, url, branch, status}`; `ls` → array of session records; `down` → `{branch, sha, rolloutPath, resumeCmd}`. Errors → `{error: {code, message, hint}}` on stderr, non-zero exit.
 - Exit codes: 0 ok, 1 generic, 2 bad usage, 3 not found, 4 auth, 5 session in wrong state (e.g. resume on a warm session). Never exit 0 on failure.
 - No interactive prompts anywhere except `scotty init`. Every command must run unattended. `vaporize` takes `--yes` to skip its confirm; confirm is skipped automatically when non-TTY.
 
@@ -177,7 +170,7 @@ AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
 
 **`scotty skills` command**
 
-- `scotty skills` prints a complete SKILL.md to stdout: what scotty is, the full command reference with JSON output shapes, the canonical workflows (up → work → pr; up → snapshot → resume; down → local resume), state machine (booting → warm → sleeping → gone), and rules of thumb (always `--json`, poll `ls` for status transitions, vaporize when done to stop spend, hard cap means sessions self-sleep).
+- `scotty skills` prints a complete SKILL.md to stdout: what scotty is, the full command reference with JSON output shapes, the canonical workflows (up → work in Codex; up → snapshot → resume; down → local resume), state machine (booting → warm → sleeping → gone), and rules of thumb (always `--json`, poll `ls` for status transitions, vaporize when done to stop spend, hard cap means sessions self-sleep).
 - `cli/skills/scotty/SKILL.md` is the source of truth. Bun's text loader compiles it into the standalone CLI, so the installed executable serves the guide without copying skill files into agent or project directories.
 
 **Statelessness for agents**
@@ -204,14 +197,14 @@ Egress proxy with sentinel injection + allowlist, DO-stored codex bundle with pr
 **Phase 2 — lifecycle (sleep/snapshot/resume/hard cap)**
 `onActivityExpired()` checkpoint, scheduled hard cap, and `scotty resume/snapshot/ls`. Acceptance: force-sleep a session, resume it, codex continues the same thread with the same worktree; a session with an open browser tab still snapshots+sleeps at the hard cap.
 
-**Phase 3 — ship (pr + repo auto-create)**
-`scotty pr` incl. `gh repo create` fallback. Acceptance: PR opened against `dev` on rift from a session branch; pushing a session whose repo doesn't exist creates the repo and pushes.
+**Phase 3 — agent-owned source control**
+Keep GitHub credentials available through the sentinel boundary, but expose no Scotty publishing command or route. Acceptance: Codex can perform explicitly requested Git operations while Scotty never commits, pushes, creates repositories, or opens pull requests itself.
 
 **Phase 4 — beam down + vaporize**
 `scotty down`, `scotty vaporize`. Acceptance: after beam down, `codex resume <uuid>` locally replays the cloud conversation and the branch is fetchable; vaporize leaves no KV record, no R2 objects, no sandbox (and no DO credential bundle).
 
 **Phase 5 — agent ergonomics**
-`--json` on operational commands + non-TTY auto-JSON, stable exit codes, and `scotty skills` as raw Markdown. Acceptance: an agent given only `scotty skills` output can run up → pr → vaporize unattended with no prompts; piping an operational command produces valid JSON; wrong-state operations exit 5 with a hint.
+`--json` on operational commands + non-TTY auto-JSON, stable exit codes, and `scotty skills` as raw Markdown. Acceptance: an agent given only `scotty skills` output can run up → snapshot → vaporize unattended with no prompts; piping an operational command produces valid JSON; wrong-state operations exit 5 with a hint.
 
 ## Risks / gotchas (implementers: read)
 
@@ -263,8 +256,6 @@ Warm pools, multi-user auth, D1 event replay, SSH gateway, VNC, exposePort previ
 
 - Target repo (public, default branch `dev`, no `main`): https://github.com/anomalyco/rift
 - git worktree: https://git-scm.com/docs/git-worktree
-- gh pr create: https://cli.github.com/manual/gh_pr_create
-- gh repo create: https://cli.github.com/manual/gh_repo_create
 - gh env vars (`GH_TOKEN` precedence): https://cli.github.com/manual/gh_help_environment
 - Fine-grained PATs: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
 

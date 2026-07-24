@@ -40,14 +40,17 @@ export const OperationKindSchema = Schema.Literals([
   "create",
   "snapshot",
   "resume",
-  "pr",
   "down",
   "vaporize",
 ]);
 export type OperationKind = typeof OperationKindSchema.Type;
 
+// Decode leases written by versions that exposed the removed publish endpoint so lifecycle
+// recovery can clear them. New operations can only use OperationKindSchema.
+const PersistedOperationKindSchema = Schema.Union([OperationKindSchema, Schema.Literal("pr")]);
+
 export const SessionOperationSchema = Schema.Struct({
-  kind: OperationKindSchema,
+  kind: PersistedOperationKindSchema,
   nonce: Schema.String,
   startedAt: Schema.String,
   checkpointedBackupId: Schema.optionalKey(Schema.String),
@@ -182,18 +185,6 @@ export const CreateSessionInputSchema = Schema.Struct({
   hardCapSeconds: Schema.Number,
 });
 export type CreateSessionInput = typeof CreateSessionInputSchema.Type;
-
-export const PrInputSchema = Schema.Struct({
-  title: Schema.optionalKey(Schema.String),
-});
-export type PrInput = typeof PrInputSchema.Type;
-
-export const PrResultSchema = Schema.Struct({
-  prUrl: Schema.optionalKey(Schema.String),
-  branchUrl: Schema.String,
-  created: Schema.Boolean,
-});
-export type PrResult = typeof PrResultSchema.Type;
 
 export const DownManifestSchema = Schema.Struct({
   version: Schema.Literal(1),
@@ -494,22 +485,6 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
           MAX_HARD_CAP_SECONDS,
         );
   return { prompt, repo, hardCapSeconds };
-}
-
-const RawPrInputSchema = Schema.NullOr(
-  Schema.Struct({
-    title: Schema.optionalKey(Schema.Unknown),
-  }),
-);
-const decodeRawPrInput = Schema.decodeUnknownOption(RawPrInputSchema);
-
-export function parsePrInput(value: unknown): PrInput {
-  if (value === undefined) return {};
-  const decoded = decodeRawPrInput(value);
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
-  if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
-  if (decoded.value === null || decoded.value.title === undefined) return {};
-  return { title: readNonEmptyString(decoded.value.title, "title", 256) };
 }
 
 export function parseSessionId(value: string): string {

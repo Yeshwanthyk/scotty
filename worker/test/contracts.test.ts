@@ -10,7 +10,6 @@ import {
   hasCommittedManagedStop,
   notFound,
   parseCreateInput,
-  parsePrInput,
   parseSessionId,
   ScottyError,
   toProjection,
@@ -44,15 +43,6 @@ describe("request contracts", () => {
     assert.throws(() => parseCreateInput({}), /prompt must be a non-empty string/u);
     assert.throws(() => parseCreateInput({ prompt: "", repo: "bad" }), /prompt/u);
     assert.throws(() => parseCreateInput({ prompt: "x", hardCapSeconds: 30 }), /hardCapSeconds/u);
-  });
-
-  it("preserves PR title omission, trimming, and errors", () => {
-    assert.deepStrictEqual(parsePrInput(undefined), {});
-    assert.deepStrictEqual(parsePrInput(null), {});
-    assert.deepStrictEqual(parsePrInput({ ignored: true }), {});
-    assert.deepStrictEqual(parsePrInput({ title: " ship it " }), { title: "ship it" });
-    assert.throws(() => parsePrInput([]), /Request body must be a JSON object/u);
-    assert.throws(() => parsePrInput({ title: "" }), /title must be a non-empty string/u);
   });
 
   it("accepts only normalized session ids", () => {

@@ -779,7 +779,7 @@
                 tabindex="0"
                 role="group"
                 aria-label="GitHub dev branch"
-                data-tip="The authoritative integration base. Session worktrees start from its latest SHA and PRs target it."
+                data-tip="The authoritative integration base. Session worktrees start from its latest SHA; Codex can target it when the user asks for source-control work."
               >
                 <rect x="790" y="281" width="176" height="72" rx="4" />
                 <circle class="box-dot" cx="805" cy="300" r="3" />
@@ -787,18 +787,18 @@
                 <text class="box-sub" x="805" y="326">latest base SHA</text>
               </g>
               <g
-                id="pr"
+                id="review"
                 class="component"
                 tabindex="0"
                 role="group"
-                aria-label="Pull Request"
-                data-tip="scotty pushes the session branch and runs gh pr create with dev as the base, then prints the review URL."
+                aria-label="Agent-owned source control"
+                data-tip="Codex handles commits, pushes, and pull requests when the user asks. Scotty doesn't expose a publishing command."
               >
                 <rect x="790" y="381" width="176" height="82" rx="4" />
                 <circle class="box-dot" cx="805" cy="400" r="3" />
-                <text class="box-title" x="815" y="404">Pull Request</text>
-                <text class="box-sub" x="805" y="426">session branch → dev</text>
-                <text class="box-sub" x="805" y="444">review URL</text>
+                <text class="box-title" x="815" y="404">Codex source control</text>
+                <text class="box-sub" x="805" y="426">commit · push · PR</text>
+                <text class="box-sub" x="805" y="444">only when requested</text>
               </g>
               <!-- transporter beams behind flow paths visually -->
               <path
@@ -910,7 +910,7 @@
                 style="--flow-color: var(--white); --end-marker: url(#arrow-white)"
                 d="M878 381V353"
               />
-              <text class="callout" data-step="7" x="704" y="351">push + gh pr create</text>
+              <text class="callout" data-step="7" x="704" y="351">Codex runs git / gh</text>
               <path
                 class="flow"
                 data-step="8"
@@ -1043,11 +1043,11 @@
           boxes: ["cli", "worker", "sandbox", "r2", "sheppard", "worktree", "seeded"],
         },
         {
-          title: "Pull request",
-          command: "scotty pr <id>",
-          copy: "Scotty pushes the session branch, runs gh pr create --base dev, and prints the resulting URL. The cloud worktree becomes a normal reviewable GitHub change.",
+          title: "Agent-owned source control",
+          command: "ask Codex directly",
+          copy: "Codex commits, pushes, creates repositories, or opens pull requests only when the user asks. Scotty has no publishing command or HTTP endpoint.",
           color: "#f4f7fa",
-          boxes: ["worktree", "dev", "pr"],
+          boxes: ["worktree", "dev", "review"],
         },
         {
           title: "Beam down",

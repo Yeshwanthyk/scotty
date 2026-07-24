@@ -1,6 +1,6 @@
 # Scotty
 
-Scotty runs a persistent Codex TUI in a Cloudflare Sandbox, exposes it through an authenticated browser terminal, checkpoints it to R2, and can resume, publish, beam down, or permanently destroy the session.
+Scotty runs a persistent Codex TUI in a Cloudflare Sandbox, exposes it through an authenticated browser terminal, checkpoints it to R2, and can resume, beam down, or permanently destroy the session.
 
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 

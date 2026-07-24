@@ -474,7 +474,7 @@ describe("commands and schemas", () => {
     expect(redactedCode.error().error.code).toBe("[REDACTED]");
   });
 
-  test("snapshot, resume, and pr emit minimal stable schemas", async () => {
+  test("snapshot and resume emit minimal stable schemas", async () => {
     for (const [args, reply, expected] of [
       [
         ["snapshot", "s1"],
@@ -495,20 +495,6 @@ describe("commands and schemas", () => {
           status: "warm",
           url: "https://worker.example/s/s1",
           branch: "scotty/s1",
-        },
-      ],
-      [
-        ["pr", "s1", "--title", "A fix"],
-        {
-          prUrl: "https://github.test/pr/1",
-          branchUrl: "https://github.test/tree/scotty/s1",
-          created: true,
-          ignored: true,
-        },
-        {
-          prUrl: "https://github.test/pr/1",
-          branchUrl: "https://github.test/tree/scotty/s1",
-          created: true,
         },
       ],
     ] as const) {
@@ -532,17 +518,21 @@ describe("commands and schemas", () => {
         { status: "warm", url: null, branch: null, backupId: null, ignored: true },
         { id: "requested", status: "warm" },
       ],
-      [
-        ["pr", "requested"],
-        { prUrl: null, branchUrl: "https://github.test/tree/scotty/requested", created: false },
-        { branchUrl: "https://github.test/tree/scotty/requested", created: false },
-      ],
     ] as const) {
       const h = harness({ fetch: async () => Response.json(reply) });
       expect(
         await main([...args, "--host", "https://worker.example", "--token", "secret"], h.deps),
       ).toBe(EXIT.OK);
       expect(h.json()).toEqual(expected);
+    }
+  });
+
+  test("removed source-control publishing commands fail as unknown commands", async () => {
+    for (const command of ["pr", "publish"]) {
+      const h = harness();
+      expect(await main([command, "s1"], h.deps)).toBe(EXIT.USAGE);
+      expect(h.error().error.code).toBe("bad_usage");
+      expect(h.stderr.join("")).toContain(`Unknown command: ${command}`);
     }
   });
 

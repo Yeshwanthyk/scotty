@@ -11,7 +11,6 @@ import {
 } from "./core";
 import {
   decodeNonEmptyString,
-  decodePrResponse,
   decodeRawSessionFailure,
   decodeString,
   decodeUpResponse,
@@ -25,14 +24,13 @@ export const COMMAND_HELP: Record<string, string> = {
   attach: `Usage: scotty attach ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty attach abc123\n  scotty attach abc123 --json`,
   snapshot: `Usage: scotty snapshot ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty snapshot abc123\n  scotty snapshot abc123 --json`,
   resume: `Usage: scotty resume ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty resume abc123\n  scotty resume abc123 --json`,
-  pr: `Usage: scotty pr ID [--title TITLE] [--json]\n\nFlags:\n  --title TITLE    Pull request title\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty pr abc123 --json\n  scotty pr abc123 --title "Fix session restore"`,
   down: `Usage: scotty down ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty down abc123\n  scotty down abc123 --json`,
   vaporize: `Usage: scotty vaporize ID [--yes] [--json]\n\nFlags:\n  --yes            Skip the TTY confirmation\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty vaporize abc123 --yes --json\n  scotty vaporize abc123`,
   skills: `Usage: scotty skills\n\nPrint the embedded Scotty agent guide as Markdown.\n\nExample:\n  scotty skills`,
   tools: `Usage: scotty tools <list | doctor> [--json]\n\nCommands:\n  list             Print the standard sandbox tool manifest\n  doctor           Probe every declared tool and report missing or mismatched installs\n\nFlags:\n  --json           Emit JSON\n\nExamples:\n  scotty tools list --json\n  scotty tools doctor --json`,
 };
 
-export const ROOT_HELP = `Usage: scotty <command> [flags]\n\nCommands:\n  init       Save Worker host and token\n  up         Start a cloud agent session\n  ls         List sessions\n  attach     Open a session terminal\n  snapshot   Checkpoint a warm session\n  resume     Restore a sleeping session\n  pr         Push work and open a pull request\n  down       Fetch branch and install local rollout\n  vaporize   Permanently delete a session\n  skills     Print the embedded agent skill\n  tools      List or verify standard sandbox tools\n  help       Show command help\n\nFlags:\n  --host URL       Override SCOTTY_HOST and config\n  --token TOKEN    Override SCOTTY_TOKEN and config\n  --json           Emit JSON for operational commands\n  --help           Show command help\n  --version        Show version\n\nExamples:\n  scotty up "fix CI" --detach --json\n  scotty tools doctor --json`;
+export const ROOT_HELP = `Usage: scotty <command> [flags]\n\nCommands:\n  init       Save Worker host and token\n  up         Start a cloud agent session\n  ls         List sessions\n  attach     Open a session terminal\n  snapshot   Checkpoint a warm session\n  resume     Restore a sleeping session\n  down       Fetch branch and install local rollout\n  vaporize   Permanently delete a session\n  skills     Print the embedded agent skill\n  tools      List or verify standard sandbox tools\n  help       Show command help\n\nFlags:\n  --host URL       Override SCOTTY_HOST and config\n  --token TOKEN    Override SCOTTY_TOKEN and config\n  --json           Emit JSON for operational commands\n  --help           Show command help\n  --version        Show version\n\nExamples:\n  scotty up "fix CI" --detach --json\n  scotty tools doctor --json`;
 
 export const EMBEDDED_SKILL = scottySkill;
 
@@ -232,20 +230,6 @@ export function stableUp(
   });
 }
 
-export function stablePr(
-  value: unknown,
-): Result.Result<{ prUrl?: string; branchUrl: string; created: boolean }, CliError> {
-  const decoded = decodePrResponse(value);
-  if (Option.isNone(decoded)) return Result.fail(invalidResponse());
-  const result: { prUrl?: string; branchUrl: string; created: boolean } = {
-    branchUrl: decoded.value.branchUrl,
-    created: decoded.value.created,
-  };
-  const prUrl = optionalString(decoded.value.prUrl);
-  if (prUrl) result.prUrl = prUrl;
-  return Result.succeed(result);
-}
-
 export function stableSession(record: SessionResponse): JsonObject {
   const result: JsonObject = {
     id: record.id,
@@ -319,7 +303,6 @@ export function humanResult(command: string, value: JsonObject): string {
   if (command === "snapshot") return `Snapshot ${String(value.id)}: ${String(value.status)}\n`;
   if (command === "resume")
     return `Session ${String(value.id)}: ${String(value.status)}${value.url ? `\n${String(value.url)}` : ""}\n`;
-  if (command === "pr") return `${value.prUrl ?? value.branchUrl}\n`;
   if (command === "down")
     return value.resumeCmd
       ? `${String(value.resumeCmd)}\n`
