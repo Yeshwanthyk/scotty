@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -93,16 +93,31 @@ const pendingSessionId = (home) => {
   return createHash("sha256").update(pending.key).digest("hex").slice(0, 12);
 };
 
-const browserCookieForSession = async (id) => {
-  const response = await fetch(
-    `${host}/s/${id}?t=${encodeURIComponent(process.env.SCOTTY_E2E_TOKEN)}`,
-    {
-      redirect: "manual",
+const recoverOwnerCookie = async () => {
+  const issued = await fetch(`${host}/api/auth/recovery-grants`, {
+    method: "POST",
+    headers: {
+      ...authorization(),
+      "idempotency-key": randomUUID(),
     },
-  );
-  assert.equal(response.status, 302);
-  assert.equal(response.headers.get("location"), `/s/${id}`);
-  const cookie = response.headers.get("set-cookie");
+  });
+  assert.equal(issued.status, 200);
+  const recovery = await issued.json();
+  const recoveryUrl = new URL(recovery.url);
+  assert.equal(recoveryUrl.origin, new URL(host).origin);
+  assert.equal(recoveryUrl.pathname, "/recover");
+  const token = new URLSearchParams(recoveryUrl.hash.slice(1)).get("token");
+  assert.match(token ?? "", /^scotty_recovery\./u);
+  const consumed = await fetch(`${host}/api/auth/recovery-grants/consume`, {
+    method: "POST",
+    headers: {
+      origin: new URL(host).origin,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ token }),
+  });
+  assert.equal(consumed.status, 200);
+  const cookie = consumed.headers.get("set-cookie");
   assert.match(cookie ?? "", /^__Host-scotty=/u);
   assert.match(cookie ?? "", /HttpOnly/iu);
   assert.match(cookie ?? "", /Secure/iu);
@@ -121,7 +136,7 @@ const waitForTerminalRoundTrip = async (
 ) => {
   const ticketResponse = await fetch(`${host}/api/sessions/${id}/pty-ticket`, {
     method: "POST",
-    headers: { cookie: browserCookie },
+    headers: { cookie: browserCookie, origin: new URL(host).origin },
   });
   if (ticketResponse.status !== 200)
     assert.fail(`expected terminal ticket HTTP 200: ${await ticketResponse.text()}`);
@@ -178,7 +193,7 @@ const waitForTerminalRoundTrip = async (
       try {
         const release = await fetch(`${host}/api/sessions/${id}/pty/${clientId}`, {
           method: "DELETE",
-          headers: { cookie: browserCookie },
+          headers: { cookie: browserCookie, origin: new URL(host).origin },
         });
         if (release.status !== 200)
           throw new Error(`terminal release returned HTTP ${release.status}`);
@@ -247,12 +262,6 @@ test(
           timeoutMs: 180_000,
         });
       }
-      if (browserCookie) {
-        await fetch(`${host}/api/auth/logout`, {
-          method: "POST",
-          headers: { cookie: browserCookie },
-        });
-      }
       if (remoteBranch) await git(["push", "origin", "--delete", remoteBranch], cwd);
     });
 
@@ -282,7 +291,7 @@ test(
       url: `${host}/s/${id}`,
       opened: true,
     });
-    browserCookie = await browserCookieForSession(id);
+    browserCookie = await recoverOwnerCookie();
 
     const rolloutId = "11111111-2222-4333-8444-555555555555";
     const firstOutput = await waitForTerminalRoundTrip(

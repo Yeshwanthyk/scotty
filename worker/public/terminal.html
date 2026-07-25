@@ -10,16 +10,6 @@
     <link rel="icon" type="image/png" sizes="64x64" href="/brand/scotty-favicon-64.png" />
     <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
     <title>Scotty terminal</title>
-    <script>
-      // The Worker normally exchanges ?t= for an HttpOnly cookie before serving this
-      // page. Scrub defensively before any subresource loads; never extract or retain it.
-      (() => {
-        const clean = new URL(window.location.href);
-        if (!clean.searchParams.has("t")) return;
-        clean.searchParams.delete("t");
-        history.replaceState(null, "", `${clean.pathname}${clean.search}${clean.hash}`);
-      })();
-    </script>
     <style>
       :root {
         color-scheme: dark;
@@ -896,7 +886,7 @@
         revoked: [
           "ACCESS REVOKED",
           "This browser no longer has access",
-          "Open a fresh one-time pairing link from an administrator browser to reconnect.",
+          "Open a fresh one-time pairing link from the primary device to reconnect.",
         ],
       };
 

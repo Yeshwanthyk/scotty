@@ -1,6 +1,10 @@
 # Scotty E2E harness
 
-The default suite uses a real Scotty CLI process and an in-memory fake Worker/session service. It needs Node 22+, Bun, Git, and no Cloudflare or GitHub credentials. The fake models authoritative sessions, KV projections, backups, runtimes, a credential vault, hard-cap behavior, egress policy, cookie handoff, and a small authenticated WebSocket PTY protocol.
+The default suite uses a real Scotty CLI process and an in-memory fake Worker/session service. It
+needs Node 22+, Bun, Git, and no Cloudflare or GitHub credentials. The fake models authoritative
+sessions, KV projections, backups, runtimes, a credential vault, hard-cap behavior, egress policy,
+V1 auth migration, owner recovery and transfer, per-browser cookies, and one-use WebSocket PTY
+tickets.
 
 ## Run locally
 
@@ -17,7 +21,12 @@ The CLI defaults to `cli/scotty.ts`. To test a compiled artifact:
 SCOTTY_E2E_CLI="$PWD/dist/scotty" node e2e/scripts/run.mjs
 ```
 
-The default suite covers `up`, `ls`, `snapshot`, hard-cap sleep, `resume`, `down`, and idempotent `vaporize`; tracked-repo creation, authentication, ordering, and retention after vaporize; JSON keys; stdout/stderr separation; exit codes 0 through 5; wrong-state errors; backup restoration; hard-cap backup failure; PTY auth/resize/reconnect; cookie/query-token behavior; sentinel and credential scans; denied/redirected egress; tar traversal rejection; rollout mode 0600; and runtime/KV/R2/credential orphan cleanup.
+The default suite covers `up`, `ls`, `snapshot`, hard-cap sleep, `resume`, `down`, and idempotent
+`vaporize`; V1 multi-admin migration to unclaimed standard clients; destructive owner recovery;
+pairing; target-bound transfer; stale-cookie rejection; a second recovery reset; strict auth-page
+scripts; tracked-repo creation and retention; exit codes; backup restoration; one-use PTY auth,
+resize, and reconnect; root-query/root-cookie rejection; sentinel and credential scans; denied
+egress; tar traversal rejection; rollout mode 0600; and resource cleanup.
 
 ## Run against a disposable deployment
 
@@ -66,7 +75,8 @@ node e2e/scripts/run.mjs --deployed
 ```
 
 The test performs the real sequence
-`up → attach → PTY reconnect → snapshot → scheduled hard-cap sleep → resume → down → vaporize`.
+`up → root recovery on the disposable stage → attach → PTY reconnect → snapshot → scheduled
+hard-cap sleep → resume → down → vaporize`.
 Its canary-only authenticated probe verifies DO reconstruction, credential persistence,
 sentinel-only container state, non-secret KV, default-deny egress, restored backups, closed terminal
 leases, and complete runtime/KV/R2/credential/schedule cleanup. After it passes, prove a second plan
@@ -81,6 +91,11 @@ rm "$token_file"
 The cleanup hook retries `vaporize` and deletes the test-created remote branch if any assertion
 fails after session creation. Always destroy the disposable Alchemy stage, even after a failed
 test.
+
+`deployed-routes.test.mjs` is deliberately non-mutating. It requires
+`SCOTTY_E2E_CLIENT_CREDENTIAL` for an already registered disposable or canary browser and proves
+that the root bearer, root cookie, and `?t=` cannot open browser pages. It never pairs, transfers,
+recovers, logs out, or revokes that client.
 
 ## Red-capable failure signals
 

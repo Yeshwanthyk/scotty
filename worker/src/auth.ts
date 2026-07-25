@@ -5,8 +5,12 @@ import type {
   ScottyAuthRegistryNamespace,
   ScottyAuthRegistryStub,
 } from "./auth-object";
-import type { AuthClientView, AuthScope, IssuedClientCredential } from "./auth-registry";
-import { ADMIN_AUTH_SCOPES } from "./auth-registry";
+import {
+  ADMIN_AUTH_SCOPES,
+  type AuthClientView,
+  type AuthScope,
+  type IssuedClientCredential,
+} from "./auth-registry";
 import { ScottyError } from "./contracts";
 import { constantTimeStringEqual } from "./digest";
 
@@ -20,7 +24,7 @@ export interface AuthBindings {
 
 export interface RootAuthPrincipal {
   readonly kind: "root";
-  readonly source: "bearer" | "cookie" | "query";
+  readonly source: "bearer";
   readonly scopes: ReadonlyArray<AuthScope>;
 }
 
@@ -30,6 +34,7 @@ export interface ClientAuthPrincipal {
   readonly credential?: string;
   readonly client: AuthClientView;
   readonly scopes: ReadonlyArray<AuthScope>;
+  readonly renewed?: boolean;
 }
 
 export type AuthPrincipal = RootAuthPrincipal | ClientAuthPrincipal;
@@ -41,7 +46,6 @@ export interface AuthVariables {
 export async function authenticateRequest(
   request: Request,
   env: AuthBindings,
-  allowRootQuery = false,
 ): Promise<AuthPrincipal | undefined> {
   const authorization = request.headers.get("authorization");
   if (
@@ -51,87 +55,91 @@ export async function authenticateRequest(
   )
     return { kind: "root", source: "bearer", scopes: [...ADMIN_AUTH_SCOPES] };
 
-  const credential = readCookie(request.headers.get("cookie"), AUTH_COOKIE);
-  if (credential) {
-    if (env.SCOTTY_TOKEN && (await constantTimeStringEqual(credential, env.SCOTTY_TOKEN)))
-      return { kind: "root", source: "cookie", scopes: [...ADMIN_AUTH_SCOPES] };
-    const result = await authRegistry(env).authenticate(credential);
-    if (result.ok)
-      return {
-        kind: "client",
-        source: "cookie",
-        credential,
-        client: result.value,
-        scopes: result.value.scopes,
-      };
-  }
-
-  if (allowRootQuery && env.SCOTTY_TOKEN) {
-    const candidate = new URL(request.url).searchParams.get("t");
-    if (candidate && (await constantTimeStringEqual(candidate, env.SCOTTY_TOKEN)))
-      return { kind: "root", source: "query", scopes: [...ADMIN_AUTH_SCOPES] };
-  }
-  return undefined;
+  const credential = requestClientCredential(request);
+  if (!credential) return undefined;
+  if (env.SCOTTY_TOKEN && (await constantTimeStringEqual(credential, env.SCOTTY_TOKEN)))
+    return undefined;
+  const result = await authRegistry(env).authenticate(credential);
+  if (!result.ok) return undefined;
+  return {
+    kind: "client",
+    source: "cookie",
+    credential,
+    client: result.value.client,
+    scopes: result.value.client.scopes,
+    ...(result.value.renewed ? { renewed: true } : {}),
+  };
 }
 
 export async function requireAuthRequest(
   request: Request,
   env: AuthBindings,
-  allowRootQuery = false,
 ): Promise<AuthPrincipal> {
-  const principal = await authenticateRequest(request, env, allowRootQuery);
+  const principal = await authenticateRequest(request, env);
   if (principal) return principal;
+  throw authenticationRequired();
+}
+
+export async function requireClientCookieRequest(
+  request: Request,
+  env: AuthBindings,
+): Promise<ClientAuthPrincipal> {
+  const principal = await authenticateRequest(request, env);
+  if (principal?.kind === "client" && principal.source === "cookie") return principal;
   throw authenticationRequired();
 }
 
 export function requireAuthScope(principal: AuthPrincipal, scope: AuthScope): void {
   if (principal.scopes.includes(scope)) return;
-  throw new ScottyError("auth", "This browser isn't allowed to manage access", {
+  throw new ScottyError("auth", "This client isn't allowed to perform that action", {
     httpStatus: 401,
     exitCode: 4,
-    hint: "Use an administrator browser to manage registered devices.",
+    hint: "Use the primary device for device management.",
   });
 }
 
-export async function registerRootBrowser<T extends AuthBindings>(
-  c: Context<{ Bindings: T; Variables: AuthVariables }>,
-  principal: AuthPrincipal,
-): Promise<AuthPrincipal> {
-  if (principal.kind === "client") return principal;
-  const result = await authRegistry(c.env).registerBootstrapClient(
-    browserLabel(c.req.header("user-agent")),
-    c.req.header("user-agent"),
-  );
-  const issued = unwrapAuthRpc(result);
-  setClientAuthCookie(c, issued);
-  return {
-    kind: "client",
-    source: "cookie",
-    credential: issued.credential,
-    client: issued.client,
-    scopes: issued.client.scopes,
-  };
-}
-
-export async function registeredRootBrowserRedirect<T extends AuthBindings>(
-  c: Context<{ Bindings: T; Variables: AuthVariables }>,
-  principal: AuthPrincipal,
-  location: string,
-): Promise<Response | undefined> {
-  if (principal.kind !== "root") return undefined;
-  await registerRootBrowser(c, principal);
-  return c.redirect(location, 302);
+export function requireOwnerPrincipal(principal: AuthPrincipal): ClientAuthPrincipal {
+  if (
+    principal.kind === "client" &&
+    principal.source === "cookie" &&
+    principal.client.role === "owner" &&
+    principal.credential
+  )
+    return principal;
+  throw new ScottyError("auth", "The primary device is required", {
+    httpStatus: 401,
+    exitCode: 4,
+    hint: "Open this page from the current primary device or use scotty owner recover.",
+  });
 }
 
 export function setClientAuthCookie<T extends AuthBindings>(
   c: Context<{ Bindings: T; Variables: AuthVariables }>,
   issued: IssuedClientCredential,
 ): void {
-  const remainingSeconds = Math.max(
-    1,
-    Math.floor((Date.parse(issued.client.expiresAt) - Date.now()) / 1_000),
-  );
-  setCookie(c, AUTH_COOKIE, issued.credential, {
+  setClientCredentialCookie(c, issued.credential, issued.client.expiresAt);
+}
+
+export function refreshClientAuthCookie<T extends AuthBindings>(
+  c: Context<{ Bindings: T; Variables: AuthVariables }>,
+  principal: AuthPrincipal,
+): void {
+  if (
+    principal.kind === "client" &&
+    principal.source === "cookie" &&
+    principal.renewed &&
+    principal.credential
+  )
+    setClientCredentialCookie(c, principal.credential, principal.client.expiresAt);
+}
+
+function setClientCredentialCookie<T extends AuthBindings>(
+  c: Context<{ Bindings: T; Variables: AuthVariables }>,
+  credential: string,
+  expiresAt: string,
+): void {
+  const remainingSeconds = Math.max(1, Math.floor((Date.parse(expiresAt) - Date.now()) / 1_000));
+  setCookie(c, AUTH_COOKIE, credential, {
     httpOnly: true,
     secure: true,
     sameSite: "Strict",
@@ -154,12 +162,15 @@ export function requestClientCredential(request: Request): string | undefined {
   return readCookie(request.headers.get("cookie"), AUTH_COOKIE);
 }
 
-export function terminalTicketCredential(principal: AuthPrincipal, request: Request): string {
-  const credential =
-    principal.kind === "client" && principal.source === "cookie"
-      ? principal.credential
-      : requestClientCredential(request);
-  if (credential) return credential;
+export function requireClientCredential(principal: AuthPrincipal): string {
+  if (principal.kind === "client" && principal.source === "cookie" && principal.credential)
+    return principal.credential;
+  throw authenticationRequired();
+}
+
+export function terminalTicketCredential(principal: AuthPrincipal): string {
+  if (principal.kind === "client" && principal.source === "cookie" && principal.credential)
+    return principal.credential;
   throw new ScottyError("auth", "Pair this browser before opening a terminal", {
     httpStatus: 401,
     exitCode: 4,
@@ -176,15 +187,23 @@ export function unwrapAuthRpc<A>(result: AuthRpcResult<A>): A {
   if (
     reason === "credential_invalid" ||
     reason === "pairing_invalid" ||
+    reason === "recovery_invalid" ||
     reason === "ticket_invalid" ||
-    reason === "forbidden"
+    reason === "transfer_invalid" ||
+    reason === "forbidden" ||
+    reason === "owner_required"
   ) {
     throw new ScottyError("auth", message, { httpStatus: 401, exitCode: 4 });
   }
   if (reason === "client_missing") {
     throw new ScottyError("not_found", message, { httpStatus: 404, exitCode: 3 });
   }
-  if (reason === "capacity" || reason === "self_revoke") {
+  if (
+    reason === "capacity" ||
+    reason === "outcome_unknown" ||
+    reason === "self_revoke" ||
+    reason === "transfer_pending"
+  ) {
     throw new ScottyError("conflict", message, { httpStatus: 409, exitCode: 5 });
   }
   if (reason === "invalid_input") {
@@ -196,46 +215,24 @@ export function unwrapAuthRpc<A>(result: AuthRpcResult<A>): A {
   });
 }
 
-export async function isAuthorizedRequest(
-  request: Request,
-  token: string,
-  allowQuery = false,
-): Promise<boolean> {
-  return Boolean(await rootCredentialSource(request, token, allowQuery));
-}
-
-async function rootCredentialSource(
-  request: Request,
-  token: string,
-  allowQuery: boolean,
-): Promise<RootAuthPrincipal["source"] | undefined> {
-  if (!token) return undefined;
+export async function isAuthorizedRequest(request: Request, token: string): Promise<boolean> {
+  if (!token) return false;
   const authorization = request.headers.get("authorization");
-  if (
+  return Boolean(
     authorization?.startsWith("Bearer ") &&
-    (await constantTimeStringEqual(authorization.slice(7), token))
-  )
-    return "bearer";
-
-  const cookie = readCookie(request.headers.get("cookie"), AUTH_COOKIE);
-  if (cookie && (await constantTimeStringEqual(cookie, token))) return "cookie";
-
-  if (allowQuery) {
-    const candidate = new URL(request.url).searchParams.get("t");
-    if (candidate && (await constantTimeStringEqual(candidate, token))) return "query";
-  }
-  return undefined;
+    (await constantTimeStringEqual(authorization.slice(7), token)),
+  );
 }
 
 function authenticationRequired(): ScottyError {
   return new ScottyError("auth", "Authentication required", {
     httpStatus: 401,
     exitCode: 4,
-    hint: "Open a fresh pairing link or run scotty init with a bootstrap token.",
+    hint: "Open a fresh pairing or recovery link, or configure the CLI root token.",
   });
 }
 
-function browserLabel(userAgent: string | undefined): string {
+export function browserLabel(userAgent: string | undefined): string {
   if (!userAgent) return "Trusted browser";
   if (/iPhone|iPad/iu.test(userAgent)) return "iPhone or iPad";
   if (/Android/iu.test(userAgent)) return "Android browser";

@@ -634,7 +634,7 @@ describe("commands and schemas", () => {
     }
   });
 
-  test("attach opens a tokenized URL but never prints the token", async () => {
+  test("attach opens a clean URL and never gives the browser the root token", async () => {
     let opened = "";
     const h = harness({
       openBrowser: async (url) => {
@@ -644,9 +644,134 @@ describe("commands and schemas", () => {
     expect(
       await main(["attach", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
     ).toBe(EXIT.OK);
-    expect(opened).toBe("https://worker.example/s/s1?t=secret");
+    expect(opened).toBe("https://worker.example/s/s1");
     expect(h.json()).toEqual({ id: "s1", url: "https://worker.example/s/s1", opened: true });
     expect(h.stdout.join("")).not.toContain("secret");
+  });
+
+  test("up strips server query data before opening the session browser", async () => {
+    let opened = "";
+    const h = harness({
+      fetch: async () =>
+        Response.json({
+          id: "s1",
+          url: "https://worker.example/s/s1?t=legacy-root#fragment",
+          branch: "scotty/s1",
+          status: "warm",
+        }),
+      openBrowser: async (url) => {
+        opened = url;
+      },
+    });
+    expect(
+      await main(
+        ["up", "fix it", "--host", "https://worker.example", "--token", "root-secret"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(opened).toBe("https://worker.example/s/s1");
+    expect(h.stdout.join("")).not.toContain("legacy-root");
+    expect(h.stdout.join("")).not.toContain("root-secret");
+  });
+
+  test("owner recover opens the capability but emits only its expiry", async () => {
+    const rootToken = "protected-root-token";
+    const recoveryCredential =
+      "scotty_recovery.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1_000).toISOString();
+    let opened = "";
+    let request: Request | undefined;
+    const h = harness({
+      fetch: async (input, init) => {
+        request = new Request(input, init);
+        return Response.json({
+          url: `https://worker.example/recover#token=${recoveryCredential}`,
+          expiresAt,
+        });
+      },
+      openBrowser: async (url) => {
+        opened = url;
+      },
+    });
+
+    expect(
+      await main(
+        ["owner", "recover", "--host", "https://worker.example", "--token", rootToken, "--json"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(request?.url).toBe("https://worker.example/api/auth/recovery-grants");
+    expect(request?.method).toBe("POST");
+    expect(request?.headers.get("authorization")).toBe(`Bearer ${rootToken}`);
+    expect(request?.headers.get("idempotency-key")).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(opened).toBe(`https://worker.example/recover#token=${recoveryCredential}`);
+    expect(h.json()).toEqual({ opened: true, expiresAt });
+    expect(h.stdout.join("")).not.toContain(rootToken);
+    expect(h.stdout.join("")).not.toContain(recoveryCredential);
+    expect(h.stderr.join("")).not.toContain(rootToken);
+    expect(h.stderr.join("")).not.toContain(recoveryCredential);
+  });
+
+  test("owner recover rejects unsafe or malformed capability responses without opening them", async () => {
+    const credential = "scotty_recovery.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const validExpiry = new Date(Date.now() + 5 * 60 * 1_000).toISOString();
+    const replies = [
+      {
+        url: `https://attacker.example/recover#token=${credential}`,
+        expiresAt: validExpiry,
+      },
+      {
+        url: `https://worker.example/not-recover#token=${credential}`,
+        expiresAt: validExpiry,
+      },
+      {
+        url: `https://worker.example/recover?leak=1#token=${credential}`,
+        expiresAt: validExpiry,
+      },
+      {
+        url: `https://worker.example/recover#token=${credential}&extra=1`,
+        expiresAt: validExpiry,
+      },
+      {
+        url: "https://worker.example/recover#token=protected-root-token",
+        expiresAt: validExpiry,
+      },
+      {
+        url: `https://worker.example/recover#token=${credential}`,
+        expiresAt: "not-a-date",
+      },
+      {
+        url: `https://worker.example/recover#token=${credential}`,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1_000).toISOString(),
+      },
+    ];
+
+    for (const reply of replies) {
+      let opened = false;
+      const h = harness({
+        fetch: async () => Response.json(reply),
+        openBrowser: async () => {
+          opened = true;
+        },
+      });
+      expect(
+        await main(
+          [
+            "owner",
+            "recover",
+            "--host",
+            "https://worker.example",
+            "--token",
+            "protected-root-token",
+          ],
+          h.deps,
+        ),
+      ).toBe(EXIT.GENERIC);
+      expect(opened).toBe(false);
+      expect(h.stdout.join("")).toBe("");
+      expect(h.stderr.join("")).not.toContain(credential);
+      expect(h.stderr.join("")).not.toContain("protected-root-token");
+    }
   });
 });
 

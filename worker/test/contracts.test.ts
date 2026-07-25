@@ -413,7 +413,7 @@ describe("credential boundary", () => {
 });
 
 describe("Worker authentication", () => {
-  it("accepts bearer and cookie credentials without accepting query credentials by default", async () => {
+  it("accepts only a root bearer credential", async () => {
     const token = "test-token-1234567890";
     assert.strictEqual(
       await isAuthorizedRequest(
@@ -427,15 +427,11 @@ describe("Worker authentication", () => {
         new Request("https://scotty.test/api", { headers: { cookie: `__Host-scotty=${token}` } }),
         token,
       ),
-      true,
+      false,
     );
     assert.strictEqual(
       await isAuthorizedRequest(new Request(`https://scotty.test/api?t=${token}`), token),
       false,
-    );
-    assert.strictEqual(
-      await isAuthorizedRequest(new Request(`https://scotty.test/api?t=${token}`), token, true),
-      true,
     );
   });
 });

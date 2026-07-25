@@ -21,12 +21,17 @@ import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
 import { sha256Hex } from "./digest";
 import {
   authRegistry,
+  browserLabel,
   clearClientAuthCookie,
   type AuthPrincipal,
   type AuthVariables,
-  registeredRootBrowserRedirect,
+  refreshClientAuthCookie,
+  requestClientCredential,
   requireAuthRequest,
   requireAuthScope,
+  requireClientCookieRequest,
+  requireClientCredential,
+  requireOwnerPrincipal,
   setClientAuthCookie,
   terminalTicketCredential,
   unwrapAuthRpc,
@@ -48,6 +53,11 @@ import { Sandbox as ScottySandbox } from "./session";
 export { ContainerProxy, ScottyAuthRegistry, ScottySandbox };
 
 const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
+const PUBLIC_AUTH_MUTATIONS = new Set([
+  "POST /api/auth/owner-transfers/accept",
+  "POST /api/auth/pairings/consume",
+  "POST /api/auth/recovery-grants/consume",
+]);
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -63,9 +73,23 @@ app.onError((error, c) => {
   );
 });
 
+app.use("/api/auth/*", async (c, next) => {
+  try {
+    await next();
+  } finally {
+    c.header("cache-control", "no-store");
+  }
+});
+
+app.use("*", async (c, next) => {
+  if (new URL(c.req.url).searchParams.has("t")) c.header("cache-control", "no-store");
+  rejectRootQuery(c.req.raw);
+  await next();
+});
+
 app.use("/api/*", async (c, next) => {
   const url = new URL(c.req.url);
-  if (c.req.method === "POST" && url.pathname === "/api/auth/pairings/consume") {
+  if (PUBLIC_AUTH_MUTATIONS.has(`${c.req.method} ${url.pathname}`)) {
     await next();
     return;
   }
@@ -77,7 +101,12 @@ app.use("/api/*", async (c, next) => {
       ? url.searchParams.get("ticket")
       : undefined;
   let principal: AuthPrincipal;
-  if (terminalTicket) {
+  if (c.req.header("upgrade")?.toLowerCase() === "websocket" && !terminalTicket) {
+    throw new ScottyError("auth", "A one-time terminal ticket is required", {
+      httpStatus: 401,
+      exitCode: 4,
+    });
+  } else if (terminalTicket) {
     const id = parseSessionIdFromTerminalPath(url.pathname);
     const client = unwrapAuthRpc(
       await authRegistry(c.env).consumeTerminalTicket(terminalTicket, id),
@@ -89,14 +118,17 @@ app.use("/api/*", async (c, next) => {
       scopes: client.scopes,
     };
   } else {
-    principal = await requireAuthRequest(c.req.raw, c.env, url.pathname.endsWith("/pty"));
+    principal = await requireAuthRequest(c.req.raw, c.env);
   }
   c.set("auth", principal);
+  refreshClientAuthCookie(c, principal);
+  if (isUnsafeMethod(c.req.method) && principal.kind === "client")
+    requireCookieMutationSecurity(c.req.raw);
   await next();
 });
 
 app.post("/api/auth/pairings/consume", async (c) => {
-  requireSameOrigin(c.req.raw);
+  requirePublicMutationSecurity(c.req.raw);
   const input = parsePairingConsumeInput(await readJsonBody(c.req.raw));
   const issued = unwrapAuthRpc(
     await authRegistry(c.env).consumePairing(input.token, input.label, c.req.header("user-agent")),
@@ -115,9 +147,12 @@ app.get("/api/auth/me", (c) => {
 });
 
 app.post("/api/auth/pairings", async (c) => {
-  requireAuthScope(c.get("auth"), "access:write");
+  const owner = requireOwnerPrincipal(c.get("auth"));
+  requireJsonContentType(c.req.raw);
   const input = parsePairingIssueInput(await readOptionalJsonBody(c.req.raw));
-  const pairing = unwrapAuthRpc(await authRegistry(c.env).issuePairing(input.label));
+  const pairing = unwrapAuthRpc(
+    await authRegistry(c.env).issuePairing(requireClientCredential(owner), input.label),
+  );
   const pairingUrl = `${new URL(c.req.url).origin}/pair#token=${encodeURIComponent(
     pairing.credential,
   )}`;
@@ -130,41 +165,123 @@ app.post("/api/auth/pairings", async (c) => {
 });
 
 app.get("/api/auth/clients", async (c) => {
-  const principal = c.get("auth");
-  requireAuthScope(principal, "access:read");
+  const owner = requireOwnerPrincipal(c.get("auth"));
   return c.json(
-    unwrapAuthRpc(
-      await authRegistry(c.env).listClients(
-        principal.kind === "client" ? principal.client.id : undefined,
-      ),
-    ),
+    unwrapAuthRpc(await authRegistry(c.env).listClients(requireClientCredential(owner))),
   );
 });
 
 app.delete("/api/auth/clients/:id", async (c) => {
-  const principal = c.get("auth");
-  requireAuthScope(principal, "access:write");
+  const owner = requireOwnerPrincipal(c.get("auth"));
   const clientId = parseAuthClientId(c.req.param("id"));
-  unwrapAuthRpc(
-    await authRegistry(c.env).revokeClient(
-      clientId,
-      principal.kind === "client" ? principal.client.id : undefined,
-    ),
-  );
+  unwrapAuthRpc(await authRegistry(c.env).revokeClient(requireClientCredential(owner), clientId));
   return c.json({ ok: true });
 });
 
 app.post("/api/auth/logout", async (c) => {
-  const principal = c.get("auth");
-  if (principal.kind === "client") {
-    unwrapAuthRpc(await authRegistry(c.env).revokeClient(principal.client.id));
-  }
+  const credential = requireClientCredential(c.get("auth"));
+  unwrapAuthRpc(await authRegistry(c.env).logoutClient(credential));
   clearClientAuthCookie(c);
   return c.json({ ok: true });
 });
 
+app.post("/api/auth/owner-transfers", async (c) => {
+  const owner = requireOwnerPrincipal(c.get("auth"));
+  requireJsonContentType(c.req.raw);
+  const input = parseOwnerTransferInput(await readJsonBody(c.req.raw));
+  const idempotencyKey = c.req.header("idempotency-key");
+  if (idempotencyKey !== undefined) parseIdempotencyKey(idempotencyKey);
+  const issued = unwrapAuthRpc(
+    await authRegistry(c.env).startOwnerTransfer(
+      requireClientCredential(owner),
+      input.targetClientId,
+      idempotencyKey,
+    ),
+  );
+  const transferUrl = `${new URL(c.req.url).origin}/owner-transfer#token=${encodeURIComponent(
+    issued.credential,
+  )}`;
+  return c.json({
+    ...issued.transfer,
+    url: transferUrl,
+    qr: qrMatrix(transferUrl),
+  });
+});
+
+app.get("/api/auth/owner-transfers/current", async (c) => {
+  const owner = requireOwnerPrincipal(c.get("auth"));
+  return c.json(
+    unwrapAuthRpc(await authRegistry(c.env).currentOwnerTransfer(requireClientCredential(owner))),
+  );
+});
+
+app.delete("/api/auth/owner-transfers/:id", async (c) => {
+  const owner = requireOwnerPrincipal(c.get("auth"));
+  const transferId = parseAuthClientId(c.req.param("id"));
+  unwrapAuthRpc(
+    await authRegistry(c.env).cancelOwnerTransfer(requireClientCredential(owner), transferId),
+  );
+  return c.json({ ok: true });
+});
+
+app.post("/api/auth/owner-transfers/accept", async (c) => {
+  requirePublicMutationSecurity(c.req.raw);
+  const input = parseGrantConsumeInput(
+    await readJsonBody(c.req.raw),
+    "Owner transfer request is invalid",
+  );
+  const targetCredential = requestClientCredential(c.req.raw);
+  if (!targetCredential)
+    throw new ScottyError("auth", "Owner transfer is invalid or expired", {
+      httpStatus: 401,
+      exitCode: 4,
+    });
+  const issued = unwrapAuthRpc(
+    await authRegistry(c.env).acceptOwnerTransfer(targetCredential, input.token),
+  );
+  setClientAuthCookie(c, issued);
+  return c.json({ client: issued.client });
+});
+
+app.post("/api/auth/recovery-grants", async (c) => {
+  const principal = c.get("auth");
+  if (principal.kind !== "root")
+    throw new ScottyError("auth", "Recovery authorization failed", {
+      httpStatus: 401,
+      exitCode: 4,
+    });
+  const rootCredential = bearerCredential(c.req.raw);
+  const idempotencyKey = c.req.header("idempotency-key");
+  if (idempotencyKey !== undefined) parseIdempotencyKey(idempotencyKey);
+  const issued = unwrapAuthRpc(
+    await authRegistry(c.env).issueRecoveryGrant(rootCredential, idempotencyKey),
+  );
+  const recoveryUrl = `${new URL(c.req.url).origin}/recover#token=${encodeURIComponent(
+    issued.credential,
+  )}`;
+  return c.json({ url: recoveryUrl, expiresAt: issued.expiresAt });
+});
+
+app.post("/api/auth/recovery-grants/consume", async (c) => {
+  requirePublicMutationSecurity(c.req.raw);
+  const input = parseGrantConsumeInput(
+    await readJsonBody(c.req.raw),
+    "Recovery request is invalid",
+  );
+  const issued = unwrapAuthRpc(
+    await authRegistry(c.env).consumeRecoveryGrant(
+      input.token,
+      browserLabel(c.req.header("user-agent")),
+      c.req.header("user-agent"),
+    ),
+  );
+  setClientAuthCookie(c, issued);
+  return c.json({ client: issued.client });
+});
+
 app.post("/api/sessions", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
+  requireJsonContentType(c.req.raw);
   const body: unknown = await c.req.json().catch(() => {
     throw badRequest("Request body must be valid JSON");
   });
@@ -263,7 +380,7 @@ app.post("/api/sessions/:id/pty-ticket", async (c) => {
   const principal = c.get("auth");
   requireAuthScope(principal, "terminal:connect");
   const id = parseSessionId(c.req.param("id"));
-  const credential = terminalTicketCredential(principal, c.req.raw);
+  const credential = terminalTicketCredential(principal);
   return c.json(unwrapAuthRpc(await authRegistry(c.env).issueTerminalTicket(credential, id)));
 });
 
@@ -317,34 +434,30 @@ app.post("/api/sessions/:id/pty/:client/heartbeat", async (c) => {
 
 app.get("/s/:id", async (c) => {
   parseSessionId(c.req.param("id"));
-  const url = new URL(c.req.url);
-  const principal = await requireAuthRequest(c.req.raw, c.env, true);
-  const registration = await registeredRootBrowserRedirect(c, principal, url.pathname);
-  if (registration) return registration;
-  if (url.searchParams.has("t")) return c.redirect(url.pathname, 302);
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
   return terminalAsset(c.env, c.req.raw);
 });
 
 app.get("/sessions", async (c) => {
-  const url = new URL(c.req.url);
-  const principal = await requireAuthRequest(c.req.raw, c.env, true);
-  const registration = await registeredRootBrowserRedirect(c, principal, "/sessions");
-  if (registration) return registration;
-  if (url.searchParams.has("t")) return c.redirect("/sessions", 302);
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
   return secureAsset(c.env, c.req.raw, "/sessions.html");
 });
 
 app.get("/devices", async (c) => {
-  const url = new URL(c.req.url);
-  const principal = await requireAuthRequest(c.req.raw, c.env, true);
-  const registration = await registeredRootBrowserRedirect(c, principal, "/devices");
-  if (registration) return registration;
-  if (url.searchParams.has("t")) return c.redirect("/devices", 302);
-  requireAuthScope(principal, "access:read");
-  return secureAsset(c.env, c.req.raw, "/devices.html");
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  requireOwnerPrincipal(principal);
+  refreshClientAuthCookie(c, principal);
+  return authAsset(c.env, c.req.raw, "/devices.html");
 });
 
-app.get("/pair", (c) => secureAsset(c.env, c.req.raw, "/pair.html"));
+app.get("/pair", (c) => authAsset(c.env, c.req.raw, "/pair.html"));
+app.get("/owner-transfer", (c) => authAsset(c.env, c.req.raw, "/owner-transfer.html"));
+app.get("/recover", (c) => authAsset(c.env, c.req.raw, "/recover.html"));
 
 app.get("/", (c) => c.redirect("/sessions", 302));
 
@@ -368,10 +481,22 @@ const PairingConsumeInputSchema = Schema.Struct({
 const PairingIssueInputSchema = Schema.Struct({
   label: Schema.optionalKey(Schema.NonEmptyString),
 });
+const OwnerTransferInputSchema = Schema.Struct({
+  targetClientId: Schema.NonEmptyString,
+});
+const GrantConsumeInputSchema = Schema.Struct({
+  token: Schema.NonEmptyString,
+});
 const decodePairingConsumeInput = Schema.decodeUnknownOption(PairingConsumeInputSchema, {
   onExcessProperty: "error",
 });
 const decodePairingIssueInput = Schema.decodeUnknownOption(PairingIssueInputSchema, {
+  onExcessProperty: "error",
+});
+const decodeOwnerTransferInput = Schema.decodeUnknownOption(OwnerTransferInputSchema, {
+  onExcessProperty: "error",
+});
+const decodeGrantConsumeInput = Schema.decodeUnknownOption(GrantConsumeInputSchema, {
   onExcessProperty: "error",
 });
 
@@ -387,6 +512,18 @@ function parsePairingConsumeInput(value: unknown): {
 function parsePairingIssueInput(value: unknown): { readonly label?: string } {
   const decoded = decodePairingIssueInput(value);
   if (Option.isNone(decoded)) throw badRequest("Pairing request is invalid");
+  return decoded.value;
+}
+
+function parseOwnerTransferInput(value: unknown): { readonly targetClientId: string } {
+  const decoded = decodeOwnerTransferInput(value);
+  if (Option.isNone(decoded)) throw badRequest("Owner transfer request is invalid");
+  return { targetClientId: parseAuthClientId(decoded.value.targetClientId) };
+}
+
+function parseGrantConsumeInput(value: unknown, errorMessage: string): { readonly token: string } {
+  const decoded = decodeGrantConsumeInput(value);
+  if (Option.isNone(decoded)) throw badRequest(errorMessage);
   return decoded.value;
 }
 
@@ -408,7 +545,52 @@ async function readOptionalJsonBody(request: Request): Promise<unknown> {
 function requireSameOrigin(request: Request): void {
   const expected = new URL(request.url).origin;
   if (request.headers.get("origin") === expected) return;
-  throw badRequest("Pairing request must come from this Scotty origin");
+  throw badRequest("Request must come from this Scotty origin");
+}
+
+function requireFetchMetadata(request: Request): void {
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite === null || fetchSite === "same-origin") return;
+  throw badRequest("Request must come from this Scotty origin");
+}
+
+function requireJsonContentType(request: Request): void {
+  const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType === "application/json") return;
+  throw badRequest("Request content type must be application/json");
+}
+
+function requireCookieMutationSecurity(request: Request): void {
+  requireSameOrigin(request);
+  requireFetchMetadata(request);
+}
+
+function requirePublicMutationSecurity(request: Request): void {
+  requireCookieMutationSecurity(request);
+  requireJsonContentType(request);
+}
+
+function isUnsafeMethod(method: string): boolean {
+  return method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+}
+
+function bearerCredential(request: Request): string {
+  const authorization = request.headers.get("authorization");
+  if (authorization?.startsWith("Bearer ") && authorization.length > 7)
+    return authorization.slice(7);
+  throw new ScottyError("auth", "Recovery authorization failed", {
+    httpStatus: 401,
+    exitCode: 4,
+  });
+}
+
+function rejectRootQuery(request: Request): void {
+  if (!new URL(request.url).searchParams.has("t")) return;
+  throw new ScottyError("auth", "Root-token browser links are not supported", {
+    httpStatus: 401,
+    exitCode: 4,
+    hint: "Run scotty owner recover to register a replacement primary device.",
+  });
 }
 
 function qrMatrix(value: string): { readonly size: number; readonly rows: ReadonlyArray<string> } {
@@ -626,6 +808,23 @@ async function secureAsset(env: Bindings, request: Request, pathname: string): P
   headers.set(
     "content-security-policy",
     "default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+  );
+  headers.set("referrer-policy", "no-referrer");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("x-frame-options", "DENY");
+  return new Response(asset.body, { status: asset.status, headers });
+}
+
+async function authAsset(env: Bindings, request: Request, pathname: string): Promise<Response> {
+  const url = new URL(request.url);
+  url.pathname = pathname;
+  url.search = "";
+  const asset = await env.ASSETS.fetch(new Request(url, request));
+  const headers = new Headers(asset.headers);
+  headers.set("cache-control", "no-store");
+  headers.set(
+    "content-security-policy",
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   );
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");

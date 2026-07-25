@@ -60,14 +60,18 @@ Preserve unless explicitly approved otherwise:
 - HTTP methods and routes currently registered in `worker/src/index.ts`.
 - Error envelope `{ "error": { "code", "message", "hint" } }` and HTTP statuses.
 - CLI JSON keys, TTY behavior, stdout/stderr placement, and exit codes `0`–`5`.
-- PTY framing, resize, reconnect, binary output, registered-browser pairing/cookie handoff, one-use PTY tickets, and streamed beam-down behavior.
+- PTY framing, resize, reconnect, binary output, single-owner browser pairing/transfer/recovery
+  cookie handoff, one-use PTY tickets, and streamed beam-down behavior.
 - Persisted `SessionRecord` version `1`, storage keys, statuses, operation lease, and nonce semantics.
 - `/workspace/<id>`, branch `scotty/<id>`, the session-private Sheppard runtime, and per-client `scotty-web-*` execution sessions.
 
 ### State ownership remains unchanged
 
 - The Sandbox Durable Object storage owns the authoritative session record, operation lease, real credential bundle, refresh lease, and hard-cap metadata.
-- The singleton Auth Durable Object owns browser registrations, one-use pairing grants, revocation, and one-use PTY tickets. It persists credential digests only and is not associated with the Sandbox container.
+- The singleton Auth Durable Object owns exactly one browser owner client ID, standard browser
+  registrations, one-use pairing/transfer/recovery grants, revocation, and one-use PTY tickets. It
+  persists credential digests only and is not associated with the Sandbox container. Stored
+  scopes never authorize ownership.
 - KV is only an eventually consistent, non-secret list projection. It never authorizes a transition.
 - R2 stores immutable backups. The authoritative DO record decides which backup is current and recoverable.
 - The container filesystem is disposable state restored from a DO-approved backup.
@@ -577,7 +581,8 @@ tests. The remainder of this chunk records the deferred split design.
 **Special routes:** use `HttpRouter`/raw Effect HTTP response support for:
 
 - terminal page and assets;
-- compatibility root-token-to-registered-browser redirect, fragment pairing, and PTY ticket consume;
+- fragment pairing, target-bound owner transfer, root-issued recovery consumption, and PTY ticket
+  consume; root-token browser cookies and query parameters are rejected;
 - PTY/WebSocket upgrade;
 - streamed beam-down tar;
 - any Sandbox callback requiring exact native object identity.

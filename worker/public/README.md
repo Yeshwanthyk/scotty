@@ -5,9 +5,14 @@ device manager, pairing flow, and terminal shell. The UI uses the small app mark
 identity and role glyphs only at meaningful empty, loading, security, and completion states.
 The deployable files in `brand/` mirror or derive from selected source artwork in `assets/brand/`.
 
-`terminal.html` is a standalone browser client for the raw Cloudflare Sandbox terminal WebSocket protocol. The Worker serves it at `/s/:id` only after registered-browser authentication. During migration, an old root-token cookie or `?t=` bootstrap link is exchanged once for an independent `Secure; HttpOnly; SameSite=Strict` browser credential and redirected to the clean URL. The client never reads the browser credential.
+`terminal.html` is a standalone browser client for the raw Cloudflare Sandbox terminal WebSocket protocol. The Worker serves it at `/s/:id` only after registered-browser authentication. Root credentials are never accepted from cookies or query parameters. The client never reads the browser credential.
 
-`devices.html` is the administrator-only registered-browser manager. It creates five-minute one-use pairing links and renders their QR matrix locally. `pair.html` removes the link fragment before consuming it and receives a browser-specific credential cookie.
+`devices.html` is the primary-device-only browser manager. It creates five-minute one-use pairing
+links, starts target-bound ownership transfers, distinguishes the server-derived `Primary` role
+from `This device`, and renders capability QR matrices locally. `pair.html`, `owner-transfer.html`,
+and `recover.html` remove their link fragments before any fetch and require an explicit click.
+Their executable code lives in static JavaScript files so the Worker can apply the strict
+authentication-page CSP without `unsafe-inline` scripts.
 
 The page assumes these same-origin endpoints:
 

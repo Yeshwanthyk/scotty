@@ -24,18 +24,19 @@ For Scotty, the useful pattern is therefore not "pick a primary laptop." It is:
 
 1. Keep ordinary browser and phone registrations scoped and independently
    revocable.
-2. Put device-management authority behind a durable owner identity that is not
-   stored only on one laptop.
-3. Require an owner assertion or step-up to create another administrator.
+2. Store exactly one authoritative owner client ID in the Auth Durable Object.
+3. Require that owner's client credential inside the same transaction that
+   registers, revokes, or starts an ownership transfer.
 4. Keep the deploy-time root credential as an offline, CLI-only break-glass
    path.
-5. Consider proof-bound credentials for native clients, but keep browser
-   credentials in Secure HttpOnly cookies.
+5. Move authority through target-bound owner transfer when the old owner is
+   available, or destructive root recovery when it is not.
 
-For a single-user Scotty deployment, WebAuthn credentials stored by the Auth
-Durable Object can provide the durable owner layer without adopting Clerk. The
-owner should register at least two authenticators: a synced platform passkey
-and a separate hardware security key or another trusted-device passkey.
+Scotty deliberately does not adopt Clerk, passkeys, proof-bound native
+credentials, email recovery, or another identity provider for v1. Browser
+credentials remain opaque bearer tokens in Secure HttpOnly cookies. The
+operator must keep `SCOTTY_TOKEN` in a protected recovery location independent
+of the owner laptop.
 
 ## Evidence
 

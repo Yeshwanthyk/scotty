@@ -2,20 +2,25 @@ import { DurableObject } from "cloudflare:workers";
 import { Effect, Result } from "effect";
 import type { Bindings } from "./bindings";
 import {
-  ADMIN_AUTH_SCOPES,
   AuthRegistry,
+  type AuthenticatedClient,
   type AuthClientView,
   type AuthRegistryFailure,
   authRegistryLayer,
   durableObjectAuthAuthorityStorage,
   type IssuedClientCredential,
+  type IssuedOwnerTransfer,
   type IssuedPairingGrant,
+  type IssuedRecoveryGrant,
   type IssuedTerminalTicket,
-  STANDARD_AUTH_SCOPES,
+  type OwnerTransferView,
 } from "./auth-registry";
+import { constantTimeStringEqual } from "./digest";
 
 const PAIRING_TTL_MILLIS = 5 * 60 * 1_000;
 const CLIENT_TTL_MILLIS = 30 * 24 * 60 * 60 * 1_000;
+const OWNER_TRANSFER_TTL_MILLIS = 5 * 60 * 1_000;
+const RECOVERY_TTL_MILLIS = 5 * 60 * 1_000;
 const TERMINAL_TICKET_TTL_MILLIS = 5 * 60 * 1_000;
 
 export interface AuthRpcError {
@@ -35,12 +40,18 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
     this.layer = authRegistryLayer(durableObjectAuthAuthorityStorage(ctx.storage));
   }
 
-  issuePairing(label?: string): Promise<AuthRpcResult<IssuedPairingGrant>> {
+  authenticate(credential: string): Promise<AuthRpcResult<AuthenticatedClient>> {
+    return this.#run(Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(credential)));
+  }
+
+  issuePairing(
+    ownerCredential: string,
+    label?: string,
+  ): Promise<AuthRpcResult<IssuedPairingGrant>> {
     return this.#run(
       Effect.flatMap(AuthRegistry, (registry) =>
-        registry.issuePairing({
+        registry.issuePairing(ownerCredential, {
           credential: randomCredentialCandidate(),
-          scopes: [...STANDARD_AUTH_SCOPES],
           ttlMillis: PAIRING_TTL_MILLIS,
           ...(label === undefined ? {} : { label }),
         }),
@@ -58,7 +69,6 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
         registry.consumePairing(credential, {
           credential: randomCredentialCandidate(),
           label,
-          scopes: [...STANDARD_AUTH_SCOPES],
           ttlMillis: CLIENT_TTL_MILLIS,
           ...(userAgent === undefined ? {} : { userAgent }),
         }),
@@ -66,36 +76,104 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
     );
   }
 
-  registerBootstrapClient(
+  listClients(ownerCredential: string): Promise<AuthRpcResult<ReadonlyArray<AuthClientView>>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) => registry.listClients(ownerCredential)),
+    );
+  }
+
+  revokeClient(ownerCredential: string, clientId: string): Promise<AuthRpcResult<void>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) => registry.revokeClient(ownerCredential, clientId)),
+    );
+  }
+
+  logoutClient(credential: string): Promise<AuthRpcResult<void>> {
+    return this.#run(Effect.flatMap(AuthRegistry, (registry) => registry.logoutClient(credential)));
+  }
+
+  startOwnerTransfer(
+    ownerCredential: string,
+    targetClientId: string,
+    idempotencyKey?: string,
+  ): Promise<AuthRpcResult<IssuedOwnerTransfer>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) =>
+        registry.startOwnerTransfer(ownerCredential, {
+          credential: randomCredentialCandidate(),
+          targetClientId,
+          ttlMillis: OWNER_TRANSFER_TTL_MILLIS,
+          ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+        }),
+      ),
+    );
+  }
+
+  currentOwnerTransfer(ownerCredential: string): Promise<AuthRpcResult<OwnerTransferView | null>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) => registry.currentOwnerTransfer(ownerCredential)),
+    );
+  }
+
+  cancelOwnerTransfer(ownerCredential: string, transferId: string): Promise<AuthRpcResult<void>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) =>
+        registry.cancelOwnerTransfer(ownerCredential, transferId),
+      ),
+    );
+  }
+
+  acceptOwnerTransfer(
+    targetCredential: string,
+    transferCredential: string,
+  ): Promise<AuthRpcResult<IssuedClientCredential>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) =>
+        registry.acceptOwnerTransfer(targetCredential, transferCredential, {
+          secret: randomBase64Url(32),
+          ttlMillis: CLIENT_TTL_MILLIS,
+        }),
+      ),
+    );
+  }
+
+  async issueRecoveryGrant(
+    rootCredential: string,
+    idempotencyKey?: string,
+  ): Promise<AuthRpcResult<IssuedRecoveryGrant>> {
+    if (
+      !this.env.SCOTTY_TOKEN ||
+      !(await constantTimeStringEqual(rootCredential, this.env.SCOTTY_TOKEN))
+    )
+      return {
+        ok: false,
+        error: { reason: "forbidden", message: "Recovery authorization failed" },
+      };
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) =>
+        registry.issueRecoveryGrant({
+          credential: randomCredentialCandidate(),
+          ttlMillis: RECOVERY_TTL_MILLIS,
+          ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+        }),
+      ),
+    );
+  }
+
+  consumeRecoveryGrant(
+    credential: string,
     label: string,
     userAgent?: string,
   ): Promise<AuthRpcResult<IssuedClientCredential>> {
     return this.#run(
       Effect.flatMap(AuthRegistry, (registry) =>
-        registry.registerBootstrapClient({
+        registry.consumeRecoveryGrant(credential, {
           credential: randomCredentialCandidate(),
           label,
-          scopes: [...ADMIN_AUTH_SCOPES],
           ttlMillis: CLIENT_TTL_MILLIS,
           ...(userAgent === undefined ? {} : { userAgent }),
         }),
       ),
-    );
-  }
-
-  authenticate(credential: string): Promise<AuthRpcResult<AuthClientView>> {
-    return this.#run(Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(credential)));
-  }
-
-  listClients(currentClientId?: string): Promise<AuthRpcResult<ReadonlyArray<AuthClientView>>> {
-    return this.#run(
-      Effect.flatMap(AuthRegistry, (registry) => registry.listClients(currentClientId)),
-    );
-  }
-
-  revokeClient(clientId: string, currentClientId?: string): Promise<AuthRpcResult<void>> {
-    return this.#run(
-      Effect.flatMap(AuthRegistry, (registry) => registry.revokeClient(clientId, currentClientId)),
     );
   }
 
@@ -145,14 +223,20 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
 
 export type ScottyAuthRegistryStub = Pick<
   ScottyAuthRegistry,
+  | "acceptOwnerTransfer"
   | "authenticate"
+  | "cancelOwnerTransfer"
   | "consumePairing"
+  | "consumeRecoveryGrant"
   | "consumeTerminalTicket"
+  | "currentOwnerTransfer"
   | "issuePairing"
+  | "issueRecoveryGrant"
   | "issueTerminalTicket"
   | "listClients"
-  | "registerBootstrapClient"
+  | "logoutClient"
   | "revokeClient"
+  | "startOwnerTransfer"
 >;
 
 export interface ScottyAuthRegistryNamespace {

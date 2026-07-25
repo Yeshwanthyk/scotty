@@ -8,6 +8,10 @@ import { createTar } from "./tar.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_ROLLOUT = fs.readFileSync(path.join(HERE, "../fixtures/rollout.jsonl"), "utf8");
 const COOKIE = "__Host-scotty";
+const STANDARD_SCOPES = ["sessions:read", "sessions:write", "terminal:connect"];
+const OWNER_SCOPES = [...STANDARD_SCOPES, "access:read", "access:write"];
+const FIVE_MINUTES = 5 * 60 * 1_000;
+const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1_000;
 const PUBLIC_SESSION_FIELDS = [
   "id",
   "status",
@@ -114,6 +118,13 @@ export class FakeWorkerService {
     this.tombstones = new Set();
     this.logs = [];
     this.counter = 0;
+    this.auth = {
+      version: 2,
+      ownership: { state: "unclaimed", epoch: 0 },
+      clients: [],
+      pairings: [],
+      terminalTickets: [],
+    };
     this.server = null;
     this.url = null;
   }
@@ -144,7 +155,36 @@ export class FakeWorkerService {
       credentialIds: [...this.credentials.keys()],
       tombstones: [...this.tombstones],
       logs: structuredClone(this.logs),
+      auth: structuredClone(this.auth),
     };
+  }
+
+  seedV1Authority(labels = ["Legacy admin A", "Legacy admin B"]) {
+    const credentials = labels.map(() => this.#credential("scotty_client"));
+    const now = Date.now();
+    this.auth = {
+      version: 1,
+      clients: credentials.map((credential, index) => ({
+        id: credential.id,
+        credentialDigest: this.#digest(credential.secret),
+        label: labels[index],
+        scopes: [...OWNER_SCOPES],
+        createdAt: new Date(now - 60_000).toISOString(),
+        expiresAt: new Date(now + THIRTY_DAYS).toISOString(),
+        lastSeenAt: new Date(now - 1_000).toISOString(),
+      })),
+      pairings: [
+        {
+          id: "eeeeeeeeeeee",
+          credentialDigest: this.#digest("e".repeat(43)),
+          scopes: [...OWNER_SCOPES],
+          createdAt: new Date(now - 1_000).toISOString(),
+          expiresAt: new Date(now + FIVE_MINUTES).toISOString(),
+        },
+      ],
+      terminalTickets: [],
+    };
+    return credentials.map((credential) => credential.raw);
   }
 
   publicSurfaces(id) {
@@ -236,49 +276,518 @@ export class FakeWorkerService {
     }
   }
 
-  #authorized(request, url) {
-    const bearer = request.headers.authorization === `Bearer ${this.token}`;
-    const query = url.searchParams.get("t") === this.token;
-    const cookie = parseCookies(request.headers.cookie)[COOKIE] === this.token;
-    return bearer || query || cookie;
+  #digest(value) {
+    return crypto.createHash("sha256").update(value).digest("hex");
+  }
+
+  #credential(prefix) {
+    const id = crypto.randomBytes(6).toString("hex");
+    const secret = crypto.randomBytes(32).toString("base64url");
+    return { id, secret, raw: `${prefix}.${id}.${secret}` };
+  }
+
+  #parseCredential(value, prefix) {
+    if (typeof value !== "string") return undefined;
+    const match = new RegExp(`^${prefix}\\.([0-9a-f]{12})\\.([A-Za-z0-9_-]{32,128})$`, "u").exec(
+      value,
+    );
+    return match ? { id: match[1], secret: match[2] } : undefined;
+  }
+
+  #migrateAuth() {
+    if (this.auth.version === 2) return;
+    const now = Date.now();
+    this.auth = {
+      version: 2,
+      ownership: { state: "unclaimed", epoch: 0 },
+      clients: this.auth.clients
+        .filter((client) => !client.revokedAt && Date.parse(client.expiresAt) > now)
+        .map((client) => ({ ...client, scopes: [...STANDARD_SCOPES] })),
+      pairings: [],
+      terminalTickets: [],
+    };
+  }
+
+  #purgeAuth() {
+    this.#migrateAuth();
+    const now = Date.now();
+    const ownerId =
+      this.auth.ownership.state === "claimed" ? this.auth.ownership.ownerClientId : undefined;
+    this.auth.clients = this.auth.clients.filter(
+      (client) =>
+        client.id === ownerId || (!client.revokedAt && Date.parse(client.expiresAt) > now),
+    );
+    const activeIds = new Set(
+      this.auth.clients
+        .filter((client) => !client.revokedAt && Date.parse(client.expiresAt) > now)
+        .map((client) => client.id),
+    );
+    this.auth.pairings = this.auth.pairings.filter((grant) => Date.parse(grant.expiresAt) > now);
+    this.auth.terminalTickets = this.auth.terminalTickets.filter(
+      (ticket) => Date.parse(ticket.expiresAt) > now && activeIds.has(ticket.clientId),
+    );
+    if (
+      this.auth.ownerTransfer &&
+      (Date.parse(this.auth.ownerTransfer.expiresAt) <= now ||
+        !activeIds.has(this.auth.ownerTransfer.sourceOwnerClientId) ||
+        !activeIds.has(this.auth.ownerTransfer.targetClientId))
+    )
+      delete this.auth.ownerTransfer;
+    if (
+      this.auth.recoveryGrant &&
+      (Date.parse(this.auth.recoveryGrant.expiresAt) <= now ||
+        this.auth.recoveryGrant.ownerEpoch !== this.auth.ownership.epoch)
+    )
+      delete this.auth.recoveryGrant;
+  }
+
+  #authenticateClient(raw, { renew = true } = {}) {
+    this.#purgeAuth();
+    const parsed = this.#parseCredential(raw, "scotty_client");
+    if (!parsed) return undefined;
+    const now = Date.now();
+    const client = this.auth.clients.find(
+      (candidate) =>
+        candidate.id === parsed.id &&
+        !candidate.revokedAt &&
+        Date.parse(candidate.expiresAt) > now &&
+        candidate.credentialDigest === this.#digest(parsed.secret),
+    );
+    if (!client) return undefined;
+    const owner =
+      this.auth.ownership.state === "claimed" && this.auth.ownership.ownerClientId === client.id;
+    client.lastSeenAt = new Date(now).toISOString();
+    if (renew && owner && Date.parse(client.expiresAt) - now <= 7 * 24 * 60 * 60 * 1_000)
+      client.expiresAt = new Date(now + THIRTY_DAYS).toISOString();
+    return client;
+  }
+
+  #clientFromRequest(request) {
+    const raw = parseCookies(request.headers.cookie)[COOKIE];
+    if (!raw || raw === this.token) return undefined;
+    const client = this.#authenticateClient(raw);
+    return client ? { kind: "client", raw, client } : undefined;
+  }
+
+  #principal(request) {
+    if (request.headers.authorization === `Bearer ${this.token}`) return { kind: "root" };
+    return this.#clientFromRequest(request);
+  }
+
+  #owner(request) {
+    const principal = this.#clientFromRequest(request);
+    return principal &&
+      this.auth.ownership.state === "claimed" &&
+      this.auth.ownership.ownerClientId === principal.client.id
+      ? principal
+      : undefined;
+  }
+
+  #view(client, currentId) {
+    const owner =
+      this.auth.ownership.state === "claimed" && this.auth.ownership.ownerClientId === client.id;
+    return {
+      id: client.id,
+      label: client.label,
+      scopes: owner ? [...OWNER_SCOPES] : [...STANDARD_SCOPES],
+      role: owner ? "owner" : "standard",
+      createdAt: client.createdAt,
+      expiresAt: client.expiresAt,
+      lastSeenAt: client.lastSeenAt,
+      ...(client.userAgent ? { userAgent: client.userAgent } : {}),
+      ...(client.id === currentId ? { current: true } : {}),
+    };
+  }
+
+  #newClient(credential, label, userAgent) {
+    const now = Date.now();
+    return {
+      id: credential.id,
+      credentialDigest: this.#digest(credential.secret),
+      label: typeof label === "string" && label.trim() ? label.trim().slice(0, 80) : "Browser",
+      scopes: [...STANDARD_SCOPES],
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + THIRTY_DAYS).toISOString(),
+      lastSeenAt: new Date(now).toISOString(),
+      ...(userAgent ? { userAgent: userAgent.slice(0, 512) } : {}),
+    };
+  }
+
+  #cookie(credential) {
+    return `${COOKIE}=${credential}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${
+      THIRTY_DAYS / 1_000
+    }`;
+  }
+
+  #sameOrigin(request) {
+    return (
+      request.headers.origin === this.url &&
+      (!request.headers["sec-fetch-site"] || request.headers["sec-fetch-site"] === "same-origin")
+    );
+  }
+
+  #isJson(request) {
+    return request.headers["content-type"]?.split(";", 1)[0] === "application/json";
+  }
+
+  #authError(message = "Authentication required") {
+    return error(401, "auth", message);
+  }
+
+  #authJson(value, status = 200, headers = {}) {
+    return json(value, status, { "cache-control": "no-store", ...headers });
+  }
+
+  #grantInvalid(kind) {
+    const message =
+      kind === "pairing"
+        ? "Pairing link is invalid or expired"
+        : kind === "transfer"
+          ? "Owner transfer is invalid or expired"
+          : "Recovery link is invalid or expired";
+    return this.#authError(message);
+  }
+
+  #consumeGrant(raw, prefix, record) {
+    const parsed = this.#parseCredential(raw, prefix);
+    return Boolean(
+      parsed &&
+      record &&
+      record.id === parsed.id &&
+      Date.parse(record.expiresAt) > Date.now() &&
+      record.credentialDigest === this.#digest(parsed.secret),
+    );
+  }
+
+  async #routeAuth(request, url) {
+    if (!url.pathname.startsWith("/api/auth/")) return undefined;
+    this.#purgeAuth();
+
+    if (request.method === "POST" && url.pathname === "/api/auth/recovery-grants") {
+      if (request.headers.authorization !== `Bearer ${this.token}`)
+        return this.#authError("Recovery authorization failed");
+      const credential = this.#credential("scotty_recovery");
+      const expiresAt = new Date(Date.now() + FIVE_MINUTES).toISOString();
+      this.auth.recoveryGrant = {
+        id: credential.id,
+        credentialDigest: this.#digest(credential.secret),
+        ownerEpoch: this.auth.ownership.epoch,
+        createdAt: new Date().toISOString(),
+        expiresAt,
+      };
+      return this.#authJson({
+        url: `${this.url}/recover#token=${credential.raw}`,
+        expiresAt,
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/recovery-grants/consume") {
+      if (!this.#sameOrigin(request) || !this.#isJson(request))
+        return error(400, "bad_request", "Request must come from this Scotty origin");
+      const body = await readBody(request);
+      const grant = this.auth.recoveryGrant;
+      if (
+        !this.#consumeGrant(body.token, "scotty_recovery", grant) ||
+        grant.ownerEpoch !== this.auth.ownership.epoch
+      )
+        return this.#grantInvalid("recovery");
+      const credential = this.#credential("scotty_client");
+      const client = this.#newClient(credential, "Trusted browser", request.headers["user-agent"]);
+      const revokedAt = new Date().toISOString();
+      this.auth.clients = [
+        ...this.auth.clients.map((candidate) => ({ ...candidate, revokedAt })),
+        client,
+      ];
+      this.auth.ownership = {
+        state: "claimed",
+        ownerClientId: client.id,
+        epoch: this.auth.ownership.epoch + 1,
+      };
+      this.auth.pairings = [];
+      this.auth.terminalTickets = [];
+      delete this.auth.ownerTransfer;
+      delete this.auth.recoveryGrant;
+      return this.#authJson({ client: this.#view(client, client.id) }, 200, {
+        "set-cookie": this.#cookie(credential.raw),
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/pairings/consume") {
+      if (!this.#sameOrigin(request) || !this.#isJson(request))
+        return error(400, "bad_request", "Request must come from this Scotty origin");
+      const body = await readBody(request);
+      const parsed = this.#parseCredential(body.token, "scotty_pair");
+      const pairing = parsed
+        ? this.auth.pairings.find((candidate) => candidate.id === parsed.id)
+        : undefined;
+      if (!this.#consumeGrant(body.token, "scotty_pair", pairing))
+        return this.#grantInvalid("pairing");
+      const credential = this.#credential("scotty_client");
+      const client = this.#newClient(
+        credential,
+        body.label || pairing.label || "Paired browser",
+        request.headers["user-agent"],
+      );
+      this.auth.clients.push(client);
+      this.auth.pairings = this.auth.pairings.filter((candidate) => candidate.id !== pairing.id);
+      return this.#authJson({ client: this.#view(client, client.id) }, 200, {
+        "set-cookie": this.#cookie(credential.raw),
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/owner-transfers/accept") {
+      if (!this.#sameOrigin(request) || !this.#isJson(request))
+        return error(400, "bad_request", "Request must come from this Scotty origin");
+      const body = await readBody(request);
+      const target = this.#clientFromRequest(request);
+      const transfer = this.auth.ownerTransfer;
+      if (
+        !target ||
+        !this.#consumeGrant(body.token, "scotty_transfer", transfer) ||
+        target.client.id !== transfer.targetClientId ||
+        this.auth.ownership.state !== "claimed" ||
+        this.auth.ownership.ownerClientId !== transfer.sourceOwnerClientId ||
+        this.auth.ownership.epoch !== transfer.ownerEpoch
+      )
+        return this.#grantInvalid("transfer");
+      const source = this.auth.clients.find(
+        (client) =>
+          client.id === transfer.sourceOwnerClientId &&
+          !client.revokedAt &&
+          Date.parse(client.expiresAt) > Date.now(),
+      );
+      if (!source) return this.#grantInvalid("transfer");
+      const replacementSecret = crypto.randomBytes(32).toString("base64url");
+      const replacement = `scotty_client.${target.client.id}.${replacementSecret}`;
+      const now = new Date().toISOString();
+      target.client.credentialDigest = this.#digest(replacementSecret);
+      target.client.expiresAt = new Date(Date.now() + THIRTY_DAYS).toISOString();
+      target.client.lastSeenAt = now;
+      source.revokedAt = now;
+      this.auth.ownership = {
+        state: "claimed",
+        ownerClientId: target.client.id,
+        epoch: this.auth.ownership.epoch + 1,
+      };
+      this.auth.pairings = [];
+      this.auth.terminalTickets = [];
+      delete this.auth.ownerTransfer;
+      delete this.auth.recoveryGrant;
+      return this.#authJson({ client: this.#view(target.client, target.client.id) }, 200, {
+        "set-cookie": this.#cookie(replacement),
+      });
+    }
+
+    const principal = this.#principal(request);
+    if (!principal) return this.#authError();
+    if (principal.kind === "client" && request.method !== "GET" && !this.#sameOrigin(request))
+      return error(400, "bad_request", "Request must come from this Scotty origin");
+
+    if (request.method === "GET" && url.pathname === "/api/auth/me") {
+      return this.#authJson(
+        principal.kind === "root"
+          ? { kind: "root", scopes: [...OWNER_SCOPES] }
+          : {
+              kind: "client",
+              scopes: this.#view(principal.client).scopes,
+              client: this.#view(principal.client, principal.client.id),
+            },
+      );
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+      if (principal.kind !== "client") return this.#authError();
+      if (
+        this.auth.ownership.state === "claimed" &&
+        this.auth.ownership.ownerClientId === principal.client.id
+      )
+        return error(409, "conflict", "Transfer ownership or use recovery before signing out");
+      principal.client.revokedAt = new Date().toISOString();
+      this.auth.terminalTickets = this.auth.terminalTickets.filter(
+        (ticket) => ticket.clientId !== principal.client.id,
+      );
+      if (this.auth.ownerTransfer?.targetClientId === principal.client.id)
+        delete this.auth.ownerTransfer;
+      return this.#authJson({ ok: true }, 200, {
+        "set-cookie": `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`,
+      });
+    }
+
+    const owner =
+      principal.kind === "client" &&
+      this.auth.ownership.state === "claimed" &&
+      this.auth.ownership.ownerClientId === principal.client.id
+        ? principal
+        : undefined;
+    if (!owner) return this.#authError("The primary device is required");
+
+    if (request.method === "POST" && url.pathname === "/api/auth/pairings") {
+      if (!this.#isJson(request))
+        return error(400, "bad_request", "Request content type must be application/json");
+      const body = await readBody(request);
+      const credential = this.#credential("scotty_pair");
+      const expiresAt = new Date(Date.now() + FIVE_MINUTES).toISOString();
+      this.auth.pairings.push({
+        id: credential.id,
+        credentialDigest: this.#digest(credential.secret),
+        createdAt: new Date().toISOString(),
+        expiresAt,
+        ...(typeof body.label === "string" ? { label: body.label.slice(0, 80) } : {}),
+      });
+      return this.#authJson({
+        id: credential.id,
+        url: `${this.url}/pair#token=${credential.raw}`,
+        expiresAt,
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/auth/clients") {
+      return this.#authJson(
+        this.auth.clients
+          .filter((client) => !client.revokedAt && Date.parse(client.expiresAt) > Date.now())
+          .map((client) => this.#view(client, owner.client.id)),
+      );
+    }
+
+    const clientMatch = /^\/api\/auth\/clients\/([0-9a-f]{12})$/u.exec(url.pathname);
+    if (request.method === "DELETE" && clientMatch) {
+      if (clientMatch[1] === owner.client.id)
+        return error(409, "conflict", "Transfer ownership before revoking the primary device");
+      const target = this.auth.clients.find(
+        (client) => client.id === clientMatch[1] && !client.revokedAt,
+      );
+      if (!target) return error(404, "not_found", "Registered client was not found");
+      target.revokedAt = new Date().toISOString();
+      this.auth.terminalTickets = this.auth.terminalTickets.filter(
+        (ticket) => ticket.clientId !== target.id,
+      );
+      if (this.auth.ownerTransfer?.targetClientId === target.id) delete this.auth.ownerTransfer;
+      return this.#authJson({ ok: true });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/owner-transfers") {
+      if (!this.#isJson(request))
+        return error(400, "bad_request", "Request content type must be application/json");
+      const body = await readBody(request);
+      const target = this.auth.clients.find(
+        (client) =>
+          client.id === body.targetClientId &&
+          client.id !== owner.client.id &&
+          !client.revokedAt &&
+          Date.parse(client.expiresAt) > Date.now(),
+      );
+      if (!target) return error(404, "not_found", "Registered client was not found");
+      if (this.auth.ownerTransfer)
+        return error(409, "conflict", "Cancel the current owner transfer before starting another");
+      const credential = this.#credential("scotty_transfer");
+      const record = {
+        id: credential.id,
+        credentialDigest: this.#digest(credential.secret),
+        sourceOwnerClientId: owner.client.id,
+        targetClientId: target.id,
+        ownerEpoch: this.auth.ownership.epoch,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + FIVE_MINUTES).toISOString(),
+      };
+      this.auth.ownerTransfer = record;
+      return this.#authJson({
+        id: record.id,
+        sourceOwnerClientId: record.sourceOwnerClientId,
+        targetClientId: record.targetClientId,
+        ownerEpoch: record.ownerEpoch,
+        createdAt: record.createdAt,
+        expiresAt: record.expiresAt,
+        url: `${this.url}/owner-transfer#token=${credential.raw}`,
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/auth/owner-transfers/current") {
+      const record = this.auth.ownerTransfer;
+      return this.#authJson(
+        record
+          ? {
+              id: record.id,
+              sourceOwnerClientId: record.sourceOwnerClientId,
+              targetClientId: record.targetClientId,
+              ownerEpoch: record.ownerEpoch,
+              createdAt: record.createdAt,
+              expiresAt: record.expiresAt,
+            }
+          : null,
+      );
+    }
+
+    const transferMatch = /^\/api\/auth\/owner-transfers\/([0-9a-f]{12})$/u.exec(url.pathname);
+    if (request.method === "DELETE" && transferMatch) {
+      if (this.auth.ownerTransfer?.id !== transferMatch[1]) return this.#grantInvalid("transfer");
+      delete this.auth.ownerTransfer;
+      return this.#authJson({ ok: true });
+    }
+
+    return error(404, "not_found", "Route not found", "Check the command");
   }
 
   async #route(request, url) {
+    if (url.searchParams.has("t"))
+      return this.#authError("Root-token browser links are not supported");
+
+    const authResult = await this.#routeAuth(request, url);
+    if (authResult) return authResult;
+
     const pageMatch = /^\/s\/([^/]+)$/.exec(url.pathname);
     if (pageMatch) {
-      if (!this.#authorized(request, url))
-        return error(
-          401,
-          "auth",
-          "Authentication required",
-          "Pass ?t= once or use the session cookie",
-        );
+      if (!this.#clientFromRequest(request)) return this.#authError();
       if (!this.sessions.has(pageMatch[1]))
         return error(404, "not_found", "Session not found", "Run scotty ls --json");
-      if (url.searchParams.has("t")) {
-        return {
-          status: 302,
-          headers: {
-            location: `/s/${pageMatch[1]}`,
-            "set-cookie": `${COOKIE}=${this.token}; Path=/; HttpOnly; Secure; SameSite=Strict`,
-            "cache-control": "no-store",
-          },
-          body: Buffer.alloc(0),
-        };
-      }
+      return {
+        status: 200,
+        headers: {
+          "content-type": "text/html",
+          "cache-control": "no-store",
+          "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        },
+        body: Buffer.from("<!doctype html><title>Scotty E2E terminal</title>"),
+      };
+    }
+
+    if (url.pathname === "/sessions") {
+      if (!this.#clientFromRequest(request)) return this.#authError();
       return {
         status: 200,
         headers: { "content-type": "text/html", "cache-control": "no-store" },
-        body: Buffer.from(
-          "<!doctype html><title>Scotty E2E terminal</title><script>history.replaceState({}, '', location.pathname)</script>",
-        ),
+        body: Buffer.from("<!doctype html><title>Scotty sessions</title>"),
+      };
+    }
+
+    if (url.pathname === "/devices") {
+      if (!this.#owner(request)) return this.#authError("The primary device is required");
+      return {
+        status: 200,
+        headers: { "content-type": "text/html", "cache-control": "no-store" },
+        body: Buffer.from("<!doctype html><title>Scotty devices</title>"),
+      };
+    }
+
+    if (["/pair", "/owner-transfer", "/recover"].includes(url.pathname)) {
+      return {
+        status: 200,
+        headers: {
+          "content-type": "text/html",
+          "cache-control": "no-store",
+          "content-security-policy":
+            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+        },
+        body: Buffer.from("<!doctype html><title>Scotty authentication</title>"),
       };
     }
 
     if (!url.pathname.startsWith("/api/"))
       return error(404, "not_found", "Route not found", "Check the Scotty host");
-    if (!this.#authorized(request, url))
+    const principal = this.#principal(request);
+    if (!principal)
       return error(401, "auth", "Authentication required", "Pass SCOTTY_TOKEN or --token");
+    if (principal.kind === "client" && request.method !== "GET" && !this.#sameOrigin(request))
+      return error(400, "bad_request", "Request must come from this Scotty origin");
 
     if (request.method === "GET" && url.pathname === "/api/sessions") {
       return json([...this.projections.values()].map((record) => publicRecord(record)));
@@ -330,7 +839,7 @@ export class FakeWorkerService {
       return json(
         {
           id,
-          url: `${this.url}/s/${id}?t=${this.token}`,
+          url: `${this.url}/s/${id}`,
           branch: record.branch,
           status: record.status,
         },
@@ -338,7 +847,9 @@ export class FakeWorkerService {
       );
     }
 
-    const match = /^\/api\/sessions\/([^/]+)(?:\/(snapshot|resume|down|pty))?$/.exec(url.pathname);
+    const match = /^\/api\/sessions\/([^/]+)(?:\/(snapshot|resume|down|pty|pty-ticket))?$/.exec(
+      url.pathname,
+    );
     if (!match) return error(404, "not_found", "Route not found", "Check the command");
     const [, id, action] = match;
     const record = this.sessions.get(id);
@@ -371,7 +882,7 @@ export class FakeWorkerService {
       this.#project(record);
       return json({
         id,
-        url: `${this.url}/s/${id}?t=${this.token}`,
+        url: `${this.url}/s/${id}`,
         branch: record.branch,
         status: record.status,
       });
@@ -415,6 +926,21 @@ export class FakeWorkerService {
       this.tombstones.add(id);
       this.logs.push({ event: "session.vaporized", sessionId: id, outcome: "ok" });
       return json({ id, status: "gone" });
+    }
+    if (request.method === "POST" && action === "pty-ticket") {
+      if (principal.kind !== "client")
+        return this.#authError("Pair this browser before opening a terminal");
+      const credential = this.#credential("scotty_pty");
+      const expiresAt = new Date(Date.now() + FIVE_MINUTES).toISOString();
+      this.auth.terminalTickets.push({
+        id: credential.id,
+        credentialDigest: this.#digest(credential.secret),
+        clientId: principal.client.id,
+        sessionId: id,
+        createdAt: new Date().toISOString(),
+        expiresAt,
+      });
+      return json({ credential: credential.raw, expiresAt });
     }
     if (action === "pty")
       return error(
@@ -482,11 +1008,42 @@ export class FakeWorkerService {
     );
   }
 
+  #consumeTerminalTicket(raw, sessionId) {
+    this.#purgeAuth();
+    const parsed = this.#parseCredential(raw, "scotty_pty");
+    if (!parsed) return false;
+    const index = this.auth.terminalTickets.findIndex(
+      (ticket) =>
+        ticket.id === parsed.id &&
+        ticket.sessionId === sessionId &&
+        ticket.credentialDigest === this.#digest(parsed.secret) &&
+        Date.parse(ticket.expiresAt) > Date.now(),
+    );
+    if (index < 0) return false;
+    const ticket = this.auth.terminalTickets[index];
+    const client = this.auth.clients.find(
+      (candidate) =>
+        candidate.id === ticket.clientId &&
+        !candidate.revokedAt &&
+        Date.parse(candidate.expiresAt) > Date.now(),
+    );
+    if (!client) return false;
+    this.auth.terminalTickets.splice(index, 1);
+    return true;
+  }
+
   #upgrade(request, socket) {
     const url = new URL(request.url, this.url);
     const match = /^\/api\/sessions\/([^/]+)\/pty$/.exec(url.pathname);
     const record = match && this.sessions.get(match[1]);
-    if (!match || !this.#authorized(request, url) || !record || record.status !== "warm") {
+    const ticket = url.searchParams.get("ticket");
+    if (
+      !match ||
+      !ticket ||
+      !record ||
+      record.status !== "warm" ||
+      !this.#consumeTerminalTicket(ticket, match[1])
+    ) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
     }
