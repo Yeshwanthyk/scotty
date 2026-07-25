@@ -22,6 +22,14 @@ Scotty runs a persistent Codex TUI in a Cloudflare Sandbox, exposes it through a
 
 Repository code is untrusted. Real Codex and GitHub credentials stay in Worker secrets or per-session Durable Object storage. The container receives session-bound sentinels only. `ContainerProxy` replaces sentinels on allowlisted egress, sanitizes OAuth refresh responses before they return to the container, and denies all other outbound traffic.
 
+Browser authority is separate from the root credential. `SCOTTY_TOKEN` is accepted only as a CLI
+bearer and break-glass recovery credential; it is never accepted from a cookie, browser URL, or
+`?t=`. The singleton Auth Durable Object stores exactly one owner client ID plus an ownership
+epoch. Other browsers are standard clients. Pairing creates standard access, ownership transfer is
+bound to one existing target browser, and root recovery revokes every browser credential before
+creating a fresh owner. Raw client, pairing, transfer, recovery, and PTY secrets are never
+persisted.
+
 Residual limitation: any allowed package registry is still a potential source/prompt exfiltration channel. Keep `ALLOWED_HOSTS` in `worker/src/egress.ts` minimal for the target repository.
 
 ## Local checks
@@ -84,12 +92,16 @@ repositories.
 ```sh
 bun build cli/scotty.ts --compile --outfile dist/scotty
 ./dist/scotty init --host https://scotty-worker.<account>.workers.dev --token "$SCOTTY_TOKEN"
+./dist/scotty owner recover
 ./dist/scotty up "fix the failing tests" --repo anomalyco/rift --json
 ./dist/scotty skills
 ```
 
-Use `scotty attach <id>` to bootstrap a browser. Run `scotty skills` for the complete agent-facing
-command and state-machine guide.
+Run `scotty owner recover` once on the intended primary browser after a fresh deployment or when
+moving to a replacement laptop. Keep `SCOTTY_TOKEN` in a password manager or another protected
+recovery location. `scotty attach <id>` opens a clean session URL and requires an already paired
+browser. See [`docs/owner-transfer-cutover.md`](docs/owner-transfer-cutover.md) before production
+migration.
 
 ## E2E
 

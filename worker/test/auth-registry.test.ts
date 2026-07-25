@@ -4,13 +4,16 @@ import { TestClock } from "effect/testing";
 import {
   ADMIN_AUTH_SCOPES,
   AuthRegistry,
+  AuthRegistryFailure,
   authRegistryLayer,
   STANDARD_AUTH_SCOPES,
   type AuthAuthority,
   type AuthAuthorityStorage,
   type AuthAuthorityTransaction,
   type ClientCandidate,
+  type IssuedClientCredential,
 } from "../src/auth-registry";
+import { sha256Hex } from "../src/digest";
 
 const NOW = Date.parse("2026-07-22T12:00:00.000Z");
 const FIVE_MINUTES = 5 * 60 * 1_000;
@@ -22,11 +25,11 @@ const clientCandidate = (
   id: string,
   secretValue: string,
   label = "Test browser",
+  ttlMillis = THIRTY_DAYS,
 ): ClientCandidate => ({
   credential: { id, secret: secretValue },
   label,
-  scopes: [...STANDARD_AUTH_SCOPES],
-  ttlMillis: THIRTY_DAYS,
+  ttlMillis,
   userAgent: "Scotty test browser",
 });
 
@@ -72,62 +75,233 @@ const withRegistry = <A, E>(
   effect: Effect.Effect<A, E, AuthRegistry>,
 ): Effect.Effect<A, E> => Effect.provide(effect, authRegistryLayer(storage));
 
-const failure = <A>(result: Result.Result<A, unknown>): unknown => {
+const recoverOwner = (
+  storage: AuthAuthorityStorage,
+  id = "111111111111",
+  secretValue = secret("a"),
+  label = "Primary browser",
+): Effect.Effect<IssuedClientCredential, AuthRegistryFailure> =>
+  withRegistry(
+    storage,
+    Effect.gen(function* () {
+      const registry = yield* AuthRegistry;
+      const grant = yield* registry.issueRecoveryGrant({
+        credential: { id: "aaaaaaaaaaaa", secret: secret("r") },
+        ttlMillis: FIVE_MINUTES,
+      });
+      return yield* registry.consumeRecoveryGrant(
+        grant.credential,
+        clientCandidate(id, secretValue, label),
+      );
+    }),
+  );
+
+const pairClient = (
+  storage: AuthAuthorityStorage,
+  ownerCredential: string,
+  id: string,
+  secretValue: string,
+  label: string,
+): Effect.Effect<IssuedClientCredential, AuthRegistryFailure> =>
+  withRegistry(
+    storage,
+    Effect.gen(function* () {
+      const registry = yield* AuthRegistry;
+      const pairing = yield* registry.issuePairing(ownerCredential, {
+        credential: { id: id.replaceAll(/[1-9]/gu, "e"), secret: secret("p") },
+        label,
+        ttlMillis: FIVE_MINUTES,
+      });
+      return yield* registry.consumePairing(
+        pairing.credential,
+        clientCandidate(id, secretValue, label),
+      );
+    }),
+  );
+
+const failure = <A>(result: Result.Result<A, AuthRegistryFailure>): AuthRegistryFailure => {
   assert.ok(Result.isFailure(result));
   return result.failure;
 };
 
-describe("AuthRegistry", () => {
-  it.effect("registers opaque clients while persisting only a digest", () =>
+describe("AuthRegistry ownership authority", () => {
+  it.effect("creates the first owner only through recovery and stores standard scopes", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const storage = new MemoryAuthAuthorityStorage();
-      const issued = yield* withRegistry(
-        storage,
-        Effect.flatMap(AuthRegistry, (registry) =>
-          registry.registerBootstrapClient({
-            ...clientCandidate("111111111111", secret("a"), "T3 Code"),
-            scopes: [...ADMIN_AUTH_SCOPES],
-          }),
-        ),
-      );
+      const owner = yield* recoverOwner(storage);
 
-      assert.strictEqual(issued.credential, `scotty_client.111111111111.${secret("a")}`);
-      assert.deepInclude(issued.client, {
+      assert.strictEqual(owner.credential, `scotty_client.111111111111.${secret("a")}`);
+      assert.deepInclude(owner.client, {
         id: "111111111111",
-        label: "T3 Code",
+        role: "owner",
         scopes: [...ADMIN_AUTH_SCOPES],
-        createdAt: "2026-07-22T12:00:00.000Z",
+        current: true,
       });
-      const persisted = JSON.stringify(storage.snapshot());
-      assert.notInclude(persisted, secret("a"));
-      assert.notInclude(persisted, "scotty_client");
 
-      yield* TestClock.setTime(NOW + 10_000);
-      const authenticated = yield* withRegistry(
-        storage,
-        Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(issued.credential)),
-      );
-      assert.strictEqual(authenticated.id, "111111111111");
-      assert.strictEqual(authenticated.lastSeenAt, "2026-07-22T12:00:10.000Z");
+      const authority = storage.snapshot() as AuthAuthority;
+      assert.deepStrictEqual(authority.ownership, {
+        state: "claimed",
+        ownerClientId: "111111111111",
+        epoch: 1,
+      });
+      assert.deepStrictEqual(authority.clients[0]?.scopes, [...STANDARD_AUTH_SCOPES]);
+      assert.notProperty(authority, "recoveryGrant");
+      const persisted = JSON.stringify(authority);
+      assert.notInclude(persisted, secret("a"));
+      assert.notInclude(persisted, secret("r"));
+      assert.notInclude(persisted, "scotty_client");
+      assert.notInclude(persisted, "scotty_recovery");
     }),
   );
 
-  it.effect("consumes a pairing grant exactly once under a concurrent race", () =>
+  it.effect("migrates V1 clients to standard access without guessing an owner", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const clientSecret = secret("b");
+      const pairingSecret = secret("c");
+      const ticketSecret = secret("d");
+      const storage = new MemoryAuthAuthorityStorage({
+        version: 1,
+        clients: [
+          {
+            id: "222222222222",
+            credentialDigest: yield* Effect.promise(() => sha256Hex(clientSecret)),
+            label: "Former admin",
+            scopes: [...ADMIN_AUTH_SCOPES],
+            createdAt: "2026-07-01T00:00:00.000Z",
+            expiresAt: "2026-08-01T00:00:00.000Z",
+            lastSeenAt: "2026-07-21T00:00:00.000Z",
+          },
+        ],
+        pairings: [
+          {
+            id: "333333333333",
+            credentialDigest: yield* Effect.promise(() => sha256Hex(pairingSecret)),
+            scopes: [...ADMIN_AUTH_SCOPES],
+            createdAt: "2026-07-22T11:59:00.000Z",
+            expiresAt: "2026-07-22T12:04:00.000Z",
+          },
+        ],
+        terminalTickets: [
+          {
+            id: "444444444444",
+            credentialDigest: yield* Effect.promise(() => sha256Hex(ticketSecret)),
+            clientId: "222222222222",
+            sessionId: "abcdef123456",
+            createdAt: "2026-07-22T11:59:00.000Z",
+            expiresAt: "2026-07-22T12:04:00.000Z",
+          },
+        ],
+      });
+
+      const authenticated = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.authenticate(`scotty_client.222222222222.${clientSecret}`),
+        ),
+      );
+      assert.strictEqual(authenticated.client.role, "standard");
+      assert.deepStrictEqual(authenticated.client.scopes, [...STANDARD_AUTH_SCOPES]);
+
+      const authority = storage.snapshot() as AuthAuthority;
+      assert.deepStrictEqual(authority.ownership, { state: "unclaimed", epoch: 0 });
+      assert.deepStrictEqual(authority.clients[0]?.scopes, [...STANDARD_AUTH_SCOPES]);
+      assert.lengthOf(authority.pairings, 0);
+      assert.lengthOf(authority.terminalTickets, 0);
+
+      const ownerOnly = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.issuePairing(`scotty_client.222222222222.${clientSecret}`, {
+            credential: { id: "555555555555", secret: secret("e") },
+            ttlMillis: FIVE_MINUTES,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(ownerOnly), { reason: "owner_required" });
+    }),
+  );
+
+  it.effect(
+    "renews the owner inside the final seven days and retains an expired owner record",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        const storage = new MemoryAuthAuthorityStorage();
+        const owner = yield* recoverOwner(storage);
+
+        yield* TestClock.setTime(NOW + 24 * 24 * 60 * 60 * 1_000);
+        const renewed = yield* withRegistry(
+          storage,
+          Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(owner.credential)),
+        );
+        assert.isTrue(renewed.renewed);
+        assert.strictEqual(
+          renewed.client.expiresAt,
+          new Date(NOW + 54 * 24 * 60 * 60 * 1_000).toISOString(),
+        );
+
+        yield* TestClock.setTime(NOW + 54 * 24 * 60 * 60 * 1_000);
+        const expired = yield* withRegistry(
+          storage,
+          Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(owner.credential)).pipe(
+            Effect.result,
+          ),
+        );
+        assert.deepInclude(failure(expired), { reason: "credential_invalid" });
+        const authority = storage.snapshot() as AuthAuthority;
+        assert.strictEqual(authority.clients[0]?.id, owner.client.id);
+        assert.deepStrictEqual(authority.ownership, {
+          state: "claimed",
+          ownerClientId: owner.client.id,
+          epoch: 1,
+        });
+
+        const replacement = yield* recoverOwner(
+          storage,
+          "222222222222",
+          secret("b"),
+          "Replacement primary",
+        );
+        assert.strictEqual(replacement.client.role, "owner");
+        assert.strictEqual((storage.snapshot() as AuthAuthority).ownership.epoch, 2);
+      }),
+  );
+
+  it.effect("requires the owner for pairing and consumes a pairing exactly once under a race", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const storage = new MemoryAuthAuthorityStorage();
+      const owner = yield* recoverOwner(storage);
+      const standard = yield* pairClient(
+        storage,
+        owner.credential,
+        "222222222222",
+        secret("b"),
+        "Phone",
+      );
+
+      const forbidden = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.issuePairing(standard.credential, {
+            credential: { id: "bbbbbbbbbbbb", secret: secret("q") },
+            ttlMillis: FIVE_MINUTES,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(forbidden), { reason: "owner_required" });
+
       const pairing = yield* withRegistry(
         storage,
         Effect.flatMap(AuthRegistry, (registry) =>
-          registry.issuePairing({
-            credential: { id: "222222222222", secret: secret("b") },
-            scopes: [...STANDARD_AUTH_SCOPES],
+          registry.issuePairing(owner.credential, {
+            credential: { id: "cccccccccccc", secret: secret("s") },
             ttlMillis: FIVE_MINUTES,
           }),
         ),
       );
-
       const results = yield* Effect.all(
         [
           withRegistry(
@@ -135,7 +309,7 @@ describe("AuthRegistry", () => {
             Effect.flatMap(AuthRegistry, (registry) =>
               registry.consumePairing(
                 pairing.credential,
-                clientCandidate("333333333333", secret("c"), "Helium"),
+                clientCandidate("333333333333", secret("c"), "Tablet"),
               ),
             ).pipe(Effect.result),
           ),
@@ -144,7 +318,7 @@ describe("AuthRegistry", () => {
             Effect.flatMap(AuthRegistry, (registry) =>
               registry.consumePairing(
                 pairing.credential,
-                clientCandidate("444444444444", secret("d"), "Phone"),
+                clientCandidate("444444444444", secret("d"), "Laptop"),
               ),
             ).pipe(Effect.result),
           ),
@@ -154,117 +328,457 @@ describe("AuthRegistry", () => {
 
       assert.strictEqual(results.filter(Result.isSuccess).length, 1);
       assert.strictEqual(results.filter(Result.isFailure).length, 1);
-      assert.deepInclude(failure(results.find(Result.isFailure) ?? Result.succeed(undefined)), {
-        reason: "pairing_invalid",
-        message: "Pairing link is invalid or expired",
-      });
-      const authority = storage.snapshot() as AuthAuthority;
-      assert.strictEqual(authority.pairings.length, 0);
-      assert.strictEqual(authority.clients.length, 1);
+      assert.deepInclude(
+        failure(
+          results.find(Result.isFailure) ??
+            Result.fail(new AuthRegistryFailure({ reason: "storage", message: "missing" })),
+        ),
+        { reason: "pairing_invalid" },
+      );
     }),
   );
 
-  it.effect("expires pairing links and client credentials at the exact boundary", () =>
+  it.effect("prevents owner self-revocation and revokes standard clients with their tickets", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const storage = new MemoryAuthAuthorityStorage();
-      const pairing = yield* withRegistry(
+      const owner = yield* recoverOwner(storage);
+      const standard = yield* pairClient(
+        storage,
+        owner.credential,
+        "222222222222",
+        secret("b"),
+        "Phone",
+      );
+      yield* withRegistry(
         storage,
         Effect.flatMap(AuthRegistry, (registry) =>
-          registry.issuePairing({
-            credential: { id: "555555555555", secret: secret("e") },
-            scopes: [...STANDARD_AUTH_SCOPES],
+          registry.issueTerminalTicket(standard.credential, {
+            credential: { id: "333333333333", secret: secret("c") },
+            sessionId: "abcdef123456",
             ttlMillis: FIVE_MINUTES,
           }),
         ),
       );
-      const client = yield* withRegistry(
+
+      const listed = yield* withRegistry(
         storage,
-        Effect.flatMap(AuthRegistry, (registry) =>
-          registry.registerBootstrapClient({
-            ...clientCandidate("666666666666", secret("f")),
-            ttlMillis: 1_000,
-          }),
-        ),
+        Effect.flatMap(AuthRegistry, (registry) => registry.listClients(owner.credential)),
+      );
+      assert.strictEqual(listed.find((client) => client.id === owner.client.id)?.role, "owner");
+      assert.strictEqual(
+        listed.find((client) => client.id === standard.client.id)?.role,
+        "standard",
       );
 
-      yield* TestClock.setTime(NOW + 1_000);
-      const expiredClient = yield* withRegistry(
+      const selfRevoke = yield* withRegistry(
         storage,
-        Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(client.credential)).pipe(
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.revokeClient(owner.credential, owner.client.id),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(selfRevoke), { reason: "self_revoke" });
+      const ownerLogout = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) => registry.logoutClient(owner.credential)).pipe(
           Effect.result,
         ),
       );
-      assert.deepInclude(failure(expiredClient), { reason: "credential_invalid" });
-
-      yield* TestClock.setTime(NOW + FIVE_MINUTES);
-      const expiredPairing = yield* withRegistry(
-        storage,
-        Effect.flatMap(AuthRegistry, (registry) =>
-          registry.consumePairing(pairing.credential, clientCandidate("777777777777", secret("g"))),
-        ).pipe(Effect.result),
-      );
-      assert.deepInclude(failure(expiredPairing), { reason: "pairing_invalid" });
-    }),
-  );
-
-  it.effect("revokes a client and all of its outstanding terminal tickets", () =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
-      const storage = new MemoryAuthAuthorityStorage();
-      const client = yield* withRegistry(
-        storage,
-        Effect.flatMap(AuthRegistry, (registry) =>
-          registry.registerBootstrapClient(
-            clientCandidate("888888888888", secret("h"), "Disposable phone"),
-          ),
-        ),
-      );
-      const ticket = yield* withRegistry(
-        storage,
-        Effect.flatMap(AuthRegistry, (registry) =>
-          registry.issueTerminalTicket(client.credential, {
-            credential: { id: "999999999999", secret: secret("i") },
-            sessionId: "a0b1c2d3e4f5",
-            ttlMillis: FIVE_MINUTES,
-          }),
-        ),
-      );
+      assert.deepInclude(failure(ownerLogout), { reason: "self_revoke" });
 
       yield* withRegistry(
         storage,
-        Effect.flatMap(AuthRegistry, (registry) => registry.revokeClient(client.client.id)),
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.revokeClient(owner.credential, standard.client.id),
+        ),
       );
-
-      const authResult = yield* withRegistry(
+      const standardAuth = yield* withRegistry(
         storage,
-        Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(client.credential)).pipe(
+        Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(standard.credential)).pipe(
           Effect.result,
         ),
       );
-      assert.deepInclude(failure(authResult), { reason: "credential_invalid" });
-      const ticketResult = yield* withRegistry(
-        storage,
-        Effect.flatMap(AuthRegistry, (registry) =>
-          registry.consumeTerminalTicket(ticket.credential, "a0b1c2d3e4f5"),
-        ).pipe(Effect.result),
-      );
-      assert.deepInclude(failure(ticketResult), { reason: "ticket_invalid" });
+      assert.deepInclude(failure(standardAuth), { reason: "credential_invalid" });
+      assert.lengthOf((storage.snapshot() as AuthAuthority).terminalTickets, 0);
     }),
   );
 
-  it.effect("fails closed for malformed persisted authority", () =>
+  it.effect("transfers ownership only to the bound target and rotates its credential", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const storage = new MemoryAuthAuthorityStorage();
+      const owner = yield* recoverOwner(storage);
+      const target = yield* pairClient(
+        storage,
+        owner.credential,
+        "222222222222",
+        secret("b"),
+        "New laptop",
+      );
+      const bystander = yield* pairClient(
+        storage,
+        owner.credential,
+        "333333333333",
+        secret("c"),
+        "Phone",
+      );
+      yield* withRegistry(
+        storage,
+        Effect.gen(function* () {
+          const registry = yield* AuthRegistry;
+          yield* registry.issuePairing(owner.credential, {
+            credential: { id: "444444444444", secret: secret("d") },
+            ttlMillis: FIVE_MINUTES,
+          });
+          yield* registry.issueRecoveryGrant({
+            credential: { id: "555555555555", secret: secret("e") },
+            ttlMillis: FIVE_MINUTES,
+          });
+          yield* registry.issueTerminalTicket(target.credential, {
+            credential: { id: "666666666666", secret: secret("f") },
+            sessionId: "abcdef123456",
+            ttlMillis: FIVE_MINUTES,
+          });
+        }),
+      );
+      const transfer = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.startOwnerTransfer(owner.credential, {
+            credential: { id: "777777777777", secret: secret("g") },
+            targetClientId: target.client.id,
+            ttlMillis: FIVE_MINUTES,
+            idempotencyKey: "transfer-test-key-0001",
+          }),
+        ),
+      );
+
+      const wrongTarget = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.acceptOwnerTransfer(bystander.credential, transfer.credential, {
+            secret: secret("h"),
+            ttlMillis: THIRTY_DAYS,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(wrongTarget), {
+        reason: "transfer_invalid",
+        message: "Owner transfer is invalid or expired",
+      });
+
+      const accepted = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.acceptOwnerTransfer(target.credential, transfer.credential, {
+            secret: secret("i"),
+            ttlMillis: THIRTY_DAYS,
+          }),
+        ),
+      );
+      assert.strictEqual(accepted.credential, `scotty_client.${target.client.id}.${secret("i")}`);
+      assert.strictEqual(accepted.client.role, "owner");
+
+      const authority = storage.snapshot() as AuthAuthority;
+      assert.deepStrictEqual(authority.ownership, {
+        state: "claimed",
+        ownerClientId: target.client.id,
+        epoch: 2,
+      });
+      assert.lengthOf(authority.pairings, 0);
+      assert.lengthOf(authority.terminalTickets, 0);
+      assert.notProperty(authority, "ownerTransfer");
+      assert.notProperty(authority, "recoveryGrant");
+
+      for (const oldCredential of [owner.credential, target.credential]) {
+        const oldAuth = yield* withRegistry(
+          storage,
+          Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(oldCredential)).pipe(
+            Effect.result,
+          ),
+        );
+        assert.deepInclude(failure(oldAuth), { reason: "credential_invalid" });
+      }
+      const bystanderAuth = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(bystander.credential)),
+      );
+      assert.strictEqual(bystanderAuth.client.role, "standard");
+
+      const replay = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.acceptOwnerTransfer(accepted.credential, transfer.credential, {
+            secret: secret("j"),
+            ttlMillis: THIRTY_DAYS,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(replay), { reason: "transfer_invalid" });
+    }),
+  );
+
+  it.effect("serializes transfer acceptance against cancellation", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const storage = new MemoryAuthAuthorityStorage();
+      const owner = yield* recoverOwner(storage);
+      const target = yield* pairClient(
+        storage,
+        owner.credential,
+        "222222222222",
+        secret("b"),
+        "New laptop",
+      );
+      const transfer = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.startOwnerTransfer(owner.credential, {
+            credential: { id: "333333333333", secret: secret("c") },
+            targetClientId: target.client.id,
+            ttlMillis: FIVE_MINUTES,
+          }),
+        ),
+      );
+
+      const outcomes = yield* Effect.all(
+        [
+          withRegistry(
+            storage,
+            Effect.flatMap(AuthRegistry, (registry) =>
+              registry.cancelOwnerTransfer(owner.credential, transfer.id),
+            ).pipe(Effect.result),
+          ),
+          withRegistry(
+            storage,
+            Effect.flatMap(AuthRegistry, (registry) =>
+              registry.acceptOwnerTransfer(target.credential, transfer.credential, {
+                secret: secret("d"),
+                ttlMillis: THIRTY_DAYS,
+              }),
+            ).pipe(Effect.result),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const successCount =
+        Number(Result.isSuccess(outcomes[0])) + Number(Result.isSuccess(outcomes[1]));
+      assert.strictEqual(successCount, 1);
+
+      const authority = storage.snapshot() as AuthAuthority;
+      assert.notProperty(authority, "ownerTransfer");
+      assert.isTrue(
+        authority.ownership.state === "claimed" &&
+          (authority.ownership.ownerClientId === owner.client.id ||
+            authority.ownership.ownerClientId === target.client.id),
+      );
+    }),
+  );
+
+  it.effect("recovers by revoking every previous client and clearing transient authority", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const storage = new MemoryAuthAuthorityStorage();
+      const owner = yield* recoverOwner(storage);
+      const standard = yield* pairClient(
+        storage,
+        owner.credential,
+        "222222222222",
+        secret("b"),
+        "Phone",
+      );
+      const recovery = yield* withRegistry(
+        storage,
+        Effect.gen(function* () {
+          const registry = yield* AuthRegistry;
+          yield* registry.issuePairing(owner.credential, {
+            credential: { id: "333333333333", secret: secret("c") },
+            ttlMillis: FIVE_MINUTES,
+          });
+          yield* registry.issueTerminalTicket(standard.credential, {
+            credential: { id: "444444444444", secret: secret("d") },
+            sessionId: "abcdef123456",
+            ttlMillis: FIVE_MINUTES,
+          });
+          return yield* registry.issueRecoveryGrant({
+            credential: { id: "555555555555", secret: secret("e") },
+            ttlMillis: FIVE_MINUTES,
+          });
+        }),
+      );
+
+      const replacement = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.consumeRecoveryGrant(
+            recovery.credential,
+            clientCandidate("666666666666", secret("f"), "Recovered laptop"),
+          ),
+        ),
+      );
+      assert.strictEqual(replacement.client.role, "owner");
+
+      const authority = storage.snapshot() as AuthAuthority;
+      assert.deepStrictEqual(authority.ownership, {
+        state: "claimed",
+        ownerClientId: replacement.client.id,
+        epoch: 2,
+      });
+      assert.lengthOf(authority.pairings, 0);
+      assert.lengthOf(authority.terminalTickets, 0);
+      assert.notProperty(authority, "ownerTransfer");
+      assert.notProperty(authority, "recoveryGrant");
+      assert.isTrue(
+        authority.clients
+          .filter((client) => client.id !== replacement.client.id)
+          .every((client) => client.revokedAt !== undefined),
+      );
+
+      for (const oldCredential of [owner.credential, standard.credential]) {
+        const oldAuth = yield* withRegistry(
+          storage,
+          Effect.flatMap(AuthRegistry, (registry) => registry.authenticate(oldCredential)).pipe(
+            Effect.result,
+          ),
+        );
+        assert.deepInclude(failure(oldAuth), { reason: "credential_invalid" });
+      }
+    }),
+  );
+
+  it.effect("expires pairings, transfers, recovery grants, and clients at the exact boundary", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const storage = new MemoryAuthAuthorityStorage();
+      const owner = yield* recoverOwner(storage);
+      const target = yield* pairClient(
+        storage,
+        owner.credential,
+        "222222222222",
+        secret("b"),
+        "Target",
+      );
+      const transfer = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.startOwnerTransfer(owner.credential, {
+            credential: { id: "333333333333", secret: secret("c") },
+            targetClientId: target.client.id,
+            ttlMillis: FIVE_MINUTES,
+          }),
+        ),
+      );
+      yield* TestClock.setTime(NOW + FIVE_MINUTES);
+      const expiredTransfer = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.acceptOwnerTransfer(target.credential, transfer.credential, {
+            secret: secret("d"),
+            ttlMillis: THIRTY_DAYS,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(expiredTransfer), { reason: "transfer_invalid" });
+
+      const recovery = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.issueRecoveryGrant({
+            credential: { id: "444444444444", secret: secret("e") },
+            ttlMillis: FIVE_MINUTES,
+          }),
+        ),
+      );
+      yield* TestClock.setTime(NOW + 2 * FIVE_MINUTES);
+      const expiredRecovery = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.consumeRecoveryGrant(
+            recovery.credential,
+            clientCandidate("555555555555", secret("f"), "Replacement"),
+          ),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(expiredRecovery), { reason: "recovery_invalid" });
+    }),
+  );
+
+  it.effect("keeps destructive recovery available at the stored-client ceiling", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const clients = Array.from({ length: 129 }, (_, index) => {
+        const id = index.toString(16).padStart(12, "0");
+        return {
+          id,
+          credentialDigest: "0".repeat(64),
+          label: `Browser ${index}`,
+          scopes: [...STANDARD_AUTH_SCOPES],
+          createdAt: "2026-07-01T00:00:00.000Z",
+          expiresAt: "2026-08-21T00:00:00.000Z",
+          lastSeenAt: "2026-07-21T00:00:00.000Z",
+        };
+      });
+      const storage = new MemoryAuthAuthorityStorage({
+        version: 2,
+        ownership: {
+          state: "claimed",
+          ownerClientId: "000000000000",
+          epoch: 12,
+        },
+        clients,
+        pairings: [],
+        terminalTickets: [],
+      });
+      const replacement = yield* withRegistry(
+        storage,
+        Effect.gen(function* () {
+          const registry = yield* AuthRegistry;
+          const recovery = yield* registry.issueRecoveryGrant({
+            credential: { id: "eeeeeeeeeeee", secret: secret("e") },
+            ttlMillis: FIVE_MINUTES,
+          });
+          return yield* registry.consumeRecoveryGrant(
+            recovery.credential,
+            clientCandidate("ffffffffffff", secret("f"), "Replacement"),
+          );
+        }),
+      );
+
+      assert.strictEqual(replacement.client.role, "owner");
+      const authority = storage.snapshot() as AuthAuthority;
+      assert.lengthOf(authority.clients, 129);
+      assert.deepStrictEqual(authority.ownership, {
+        state: "claimed",
+        ownerClientId: "ffffffffffff",
+        epoch: 13,
+      });
+      assert.isTrue(
+        authority.clients
+          .filter((client) => client.id !== replacement.client.id)
+          .every((client) => client.revokedAt !== undefined),
+      );
+    }),
+  );
+
+  it.effect("fails closed for malformed V2 authority", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const storage = new MemoryAuthAuthorityStorage({
-        version: 1,
-        clients: [{ credentialDigest: "invented" }],
+        version: 2,
+        ownership: {
+          state: "claimed",
+          ownerClientId: "111111111111",
+          epoch: 9,
+        },
+        clients: [],
         pairings: [],
         terminalTickets: [],
       });
       const result = yield* withRegistry(
         storage,
-        Effect.flatMap(AuthRegistry, (registry) => registry.listClients()).pipe(Effect.result),
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.authenticate(`scotty_client.111111111111.${secret("a")}`),
+        ).pipe(Effect.result),
       );
       assert.deepInclude(failure(result), {
         reason: "invalid_authority",

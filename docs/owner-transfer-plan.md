@@ -1,6 +1,7 @@
 # Scotty single-owner registration and transfer plan
 
-Status: planning stage gate. No implementation is authorized by this document alone.
+Status: implementation approved 2026-07-24. Production migration and recovery remain separate
+operator-approved gates.
 
 This packet replaces Scotty's browser-side multi-admin model with the settled token-registration
 model:
@@ -788,8 +789,8 @@ This work is complete only when:
 
 ## 19. Stage gate
 
-Stop after this document until the user approves implementation.
+Implementation was approved on 2026-07-24. Wave 0 binding-document edits and Waves 1–4 local and
+disposable-stage work are authorized.
 
-Approval authorizes Wave 0 binding-document edits first. It does not authorize production
-migration or deployment. Those remain separate operator-approved gates after local and disposable
-proof.
+Production migration, destructive recovery against production, root-token rotation, and production
+deployment remain separate operator-approved gates after local and disposable proof.

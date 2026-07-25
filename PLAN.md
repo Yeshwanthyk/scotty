@@ -59,7 +59,14 @@ scotty/
 - **Terminal**: use the Sandbox SDK **native PTY/terminal API** (shipped Feb 2026) — do NOT run ttyd. Browser side uses `ghostty-web` (npm, xterm.js-compatible API) wired to the terminal websocket. If the SDK's xterm addon assumes xterm.js exactly, wiring raw WS ↔ ghostty-web write/onData is acceptable.
 - **Snapshots**: Sandbox `createBackup()` / `restoreBackup()` (SquashFS → R2). Use `/workspace/<id>` (an SDK-supported backup root) and set `CODEX_HOME=/workspace/<id>/.codex`, so one snapshot includes the worktree and rollouts. auth.json in the snapshot is only the sentinel — real tokens live in DO storage (see Credential safety).
 - **Instance type**: `standard-2` default; make it a config constant.
-- **Auth for web/API v1**: single-user. The deploy-time `SCOTTY_TOKEN` remains the CLI/bootstrap recovery credential. A singleton Auth Durable Object owns one-use pairing grants, independent browser registrations, revocation, and short-lived one-use PTY tickets. Browser credentials are opaque, stored only as SHA-256 digests in the Auth DO, and carried in a Secure HttpOnly SameSite cookie. No Cloudflare Access in v1.
+- **Auth for web/API v1**: single-user. The deploy-time `SCOTTY_TOKEN` remains the CLI and
+  break-glass recovery credential and is never a browser session. A singleton Auth Durable Object
+  owns exactly one owner client ID, standard browser registrations, one-use pairing/transfer/
+  recovery grants, revocation, and short-lived one-use PTY tickets. Owner authority is derived
+  only from the stored owner client ID and is rechecked inside every authority-changing
+  transaction. Browser credentials are opaque, stored only as SHA-256 digests in the Auth DO, and
+  carried in a Secure HttpOnly SameSite cookie. No Cloudflare Access, passkeys, or external
+  identity provider in v1.
 - **Domain**: start on `*.workers.dev` (native terminal WS goes through the Worker, no wildcard subdomain needed). `exposePort` previews are out of scope for v1.
 
 ## Credential safety (crabfleet/Cloudflare-example grade — REQUIRED, not optional)
@@ -84,8 +91,15 @@ Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.c
 
 **4. Scotty's own tokens.**
 
-- `SCOTTY_TOKEN` grants full control of sessions (and thus code execution) — treat like a password. CLI stores it 0600 in `~/.scotty.json`. During the compatibility window, an old root-token browser cookie or `?t=` bootstrap link is exchanged once for an administrator browser registration and redirected to a clean URL; the root token is never copied into the replacement cookie.
-- `/devices` creates five-minute one-use `/pair#token=…` links. The fragment is removed before the browser makes the consume request. Each target browser receives its own 30-day credential and can be revoked without affecting other browsers.
+- `SCOTTY_TOKEN` grants full control of sessions (and thus code execution) and can issue a
+  five-minute destructive browser recovery grant — treat it like a password. CLI stores it 0600
+  in `~/.scotty.json` and must keep a protected copy outside the owner laptop. Root cookies,
+  root-token query parameters, and root-token browser bootstrap links are rejected.
+- `/devices` is owner-only and creates five-minute one-use `/pair#token=…` links for standard
+  clients. It can start a five-minute target-bound `/owner-transfer#token=…` grant. The exact
+  target accepts it with its existing cookie, rotates its credential, becomes the sole owner, and
+  revokes the old owner. `scotty owner recover` uses bearer root authority to open
+  `/recover#token=…`; consuming it revokes every browser and creates a fresh owner.
 - PTY websocket upgrades use five-minute one-use tickets bound to both the registered browser and session. Revoking a browser removes outstanding tickets; existing sockets lose their heartbeat and are cleaned up by the existing lease bound.
 
 **5. Hygiene rules for implementers.**

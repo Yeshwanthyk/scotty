@@ -3,36 +3,36 @@ import test from "node:test";
 
 const host = process.env.SCOTTY_E2E_HOST?.replace(/\/$/, "");
 const token = process.env.SCOTTY_E2E_TOKEN;
+const clientCredential = process.env.SCOTTY_E2E_CLIENT_CREDENTIAL;
 const skipReason =
-  host && token ? false : "deployed route E2E skipped: set SCOTTY_E2E_HOST and SCOTTY_E2E_TOKEN";
+  host && token && clientCredential
+    ? false
+    : "deployed route E2E skipped: set SCOTTY_E2E_HOST, SCOTTY_E2E_TOKEN, and a non-mutating SCOTTY_E2E_CLIENT_CREDENTIAL";
 
 test(
   "deployed edge routes only serve terminals from canonical session URLs",
   { skip: skipReason },
-  async (context) => {
+  async () => {
     const legacy = await fetch(`${host}/terminal`, { redirect: "manual" });
     assert.equal(legacy.status, 404);
     assert.equal(await legacy.text(), "Open a session with scotty attach ID or use its /s/ID URL.");
 
-    const exchange = await fetch(`${host}/s/000000000000?t=${encodeURIComponent(token)}`, {
+    const queryRejected = await fetch(`${host}/s/000000000000?t=${encodeURIComponent(token)}`, {
       redirect: "manual",
     });
-    assert.equal(exchange.status, 302);
-    assert.equal(exchange.headers.get("location"), "/s/000000000000");
-    const cookie = exchange.headers.get("set-cookie");
-    assert.match(cookie ?? "", /^__Host-scotty=/u);
-    assert.match(cookie ?? "", /HttpOnly/iu);
-    assert.match(cookie ?? "", /Secure/iu);
-    assert.match(cookie ?? "", /SameSite=Strict/iu);
-    const browserCookie = cookie?.split(";", 1)[0];
-    assert.ok(browserCookie);
-    context.after(async () => {
-      const logout = await fetch(`${host}/api/auth/logout`, {
-        method: "POST",
-        headers: { cookie: browserCookie },
-      });
-      assert.equal(logout.status, 200);
+    assert.equal(queryRejected.status, 401);
+    assert.equal(queryRejected.headers.get("set-cookie"), null);
+
+    const rootCookieRejected = await fetch(`${host}/s/000000000000`, {
+      headers: { cookie: `__Host-scotty=${token}` },
     });
+    assert.equal(rootCookieRejected.status, 401);
+    const rootBearerRejected = await fetch(`${host}/s/000000000000`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(rootBearerRejected.status, 401);
+
+    const browserCookie = `__Host-scotty=${clientCredential}`;
 
     const reposResponse = await fetch(`${host}/api/repos`, {
       headers: { cookie: browserCookie },

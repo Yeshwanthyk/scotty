@@ -13,6 +13,8 @@ Scotty beams a Codex agent into a Cloudflare sandbox. Use it to start a cloud se
 - `scotty up "PROMPT" [--repo OWNER/NAME] [--cap 4h] [--detach] --json` returns `{"id","url","branch","status"}`.
 - `scotty ls --json` returns session records including `ageSeconds` and `capRemainingSeconds`. This is the polling primitive.
 - `scotty attach ID --json` opens the browser and returns `{"id","url","opened"}`.
+- `scotty owner recover --json` uses the protected root token to open a five-minute browser
+  recovery flow and returns only `{"opened":true,"expiresAt"}`. It never prints the capability URL.
 - `scotty snapshot ID --json` checkpoints a warm session and returns `{"id","status","backupId"?}`.
 - `scotty resume ID --json` restores a sleeping or recoverable failed session and returns `{"id","url"?,"branch"?,"status"}`.
 - `scotty down ID --json` fetches the session branch, securely installs its rollout when present, and returns `{"branch","sha","rolloutPath","resumeCmd"}`. The last two values are null when no usable rollout exists.
@@ -21,6 +23,12 @@ Scotty beams a Codex agent into a Cloudflare sandbox. Use it to start a cloud se
 - `scotty skills` prints this document.
 
 Every operational command accepts `--host` and `--token`. Precedence is flags, then `SCOTTY_HOST`/`SCOTTY_TOKEN`, then `~/.scotty.json`. Non-TTY output automatically uses JSON. Errors are `{"error":{"code","message","hint"}}` on stderr.
+
+The root token is CLI and break-glass authority only. Browser session and terminal URLs are clean;
+they never contain the root token. Keep the root token in a password manager or another protected
+recovery location. On a replacement laptop, run `scotty init` with that token and then
+`scotty owner recover`. Recovery revokes every existing browser credential but leaves sessions,
+containers, backups, and worktrees intact.
 
 Exit codes: 0 success, 1 generic or network failure, 2 bad usage/config, 3 session not found, 4 authentication/authorization failure, 5 wrong session state.
 

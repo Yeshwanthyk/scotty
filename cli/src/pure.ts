@@ -12,6 +12,7 @@ import {
 import {
   decodeNonEmptyString,
   decodeRawSessionFailure,
+  decodeRecoveryGrantResponse,
   decodeString,
   decodeUpResponse,
   type SessionResponse,
@@ -22,6 +23,7 @@ export const COMMAND_HELP: Record<string, string> = {
   up: `Usage: scotty up "PROMPT" [--repo OWNER/NAME] [--cap DURATION] [--detach] [--json]\n\nFlags:\n  --repo REPO      GitHub owner/name\n  --cap DURATION   Hard cap, for example 4h\n  --detach         Don't open a browser\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty up "fix the failing tests" --detach --json\n  scotty up "review auth" --repo anomalyco/rift --cap 2h`,
   ls: `Usage: scotty ls [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty ls\n  scotty ls --json`,
   attach: `Usage: scotty attach ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty attach abc123\n  scotty attach abc123 --json`,
+  owner: `Usage: scotty owner recover [--json]\n\nCommands:\n  recover          Open a five-minute owner-recovery flow\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured root token\n  --json           Emit JSON without the recovery URL\n\nExamples:\n  scotty owner recover\n  scotty owner recover --host https://scotty.example.workers.dev --token "$SCOTTY_TOKEN"`,
   snapshot: `Usage: scotty snapshot ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty snapshot abc123\n  scotty snapshot abc123 --json`,
   resume: `Usage: scotty resume ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty resume abc123\n  scotty resume abc123 --json`,
   down: `Usage: scotty down ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty down abc123\n  scotty down abc123 --json`,
@@ -30,7 +32,7 @@ export const COMMAND_HELP: Record<string, string> = {
   tools: `Usage: scotty tools <list | doctor> [--json]\n\nCommands:\n  list             Print the standard sandbox tool manifest\n  doctor           Probe every declared tool and report missing or mismatched installs\n\nFlags:\n  --json           Emit JSON\n\nExamples:\n  scotty tools list --json\n  scotty tools doctor --json`,
 };
 
-export const ROOT_HELP = `Usage: scotty <command> [flags]\n\nCommands:\n  init       Save Worker host and token\n  up         Start a cloud agent session\n  ls         List sessions\n  attach     Open a session terminal\n  snapshot   Checkpoint a warm session\n  resume     Restore a sleeping session\n  down       Fetch branch and install local rollout\n  vaporize   Permanently delete a session\n  skills     Print the embedded agent skill\n  tools      List or verify standard sandbox tools\n  help       Show command help\n\nFlags:\n  --host URL       Override SCOTTY_HOST and config\n  --token TOKEN    Override SCOTTY_TOKEN and config\n  --json           Emit JSON for operational commands\n  --help           Show command help\n  --version        Show version\n\nExamples:\n  scotty up "fix CI" --detach --json\n  scotty tools doctor --json`;
+export const ROOT_HELP = `Usage: scotty <command> [flags]\n\nCommands:\n  init       Save Worker host and token\n  up         Start a cloud agent session\n  ls         List sessions\n  attach     Open a session terminal\n  owner      Recover ownership on a replacement device\n  snapshot   Checkpoint a warm session\n  resume     Restore a sleeping session\n  down       Fetch branch and install local rollout\n  vaporize   Permanently delete a session\n  skills     Print the embedded agent skill\n  tools      List or verify standard sandbox tools\n  help       Show command help\n\nFlags:\n  --host URL       Override SCOTTY_HOST and config\n  --token TOKEN    Override SCOTTY_TOKEN and config\n  --json           Emit JSON for operational commands\n  --help           Show command help\n  --version        Show version\n\nExamples:\n  scotty up "fix CI" --detach --json\n  scotty owner recover`;
 
 export const EMBEDDED_SKILL = scottySkill;
 
@@ -160,22 +162,43 @@ export function sanitizeUrl(
 export function browserUrl(
   raw: string | undefined,
   host: string,
-  token: string,
   id: string,
 ): Result.Result<string, CliError> {
+  return sanitizeUrl(raw || `${host}/s/${encodeURIComponent(id)}`, host, id);
+}
+
+export function stableRecoveryGrant(
+  value: unknown,
+  host: string,
+  nowMillis: number,
+): Result.Result<{ readonly url: string; readonly expiresAt: string }, CliError> {
+  const decoded = decodeRecoveryGrantResponse(value);
+  if (Option.isNone(decoded))
+    return Result.fail(invalidResponse("Server returned an invalid recovery response"));
+  if (!URL.canParse(host) || !URL.canParse(decoded.value.url, host))
+    return Result.fail(invalidResponse("Worker returned an invalid recovery URL"));
   const base = new URL(host);
-  const url = new URL(raw || `${host}/s/${encodeURIComponent(id)}`, base);
-  if (url.origin !== base.origin || url.username || url.password)
-    return Result.fail(
-      new CliError(
-        "invalid_response",
-        "Worker returned an unsafe terminal URL",
-        "Check the configured Worker host.",
-        EXIT.GENERIC,
-      ),
-    );
-  url.searchParams.set("t", token);
-  return Result.succeed(url.toString());
+  const url = new URL(decoded.value.url, base);
+  const fragment = new URLSearchParams(url.hash.slice(1));
+  const recoveryCredential = fragment.get("token");
+  const expiresAtMillis = Date.parse(decoded.value.expiresAt);
+  if (
+    url.origin !== base.origin ||
+    url.pathname !== "/recover" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    [...fragment.keys()].length !== 1 ||
+    !/^scotty_recovery\.[0-9a-f]{12}\.[A-Za-z0-9_-]{32,128}$/u.test(recoveryCredential ?? "") ||
+    !Number.isFinite(expiresAtMillis) ||
+    expiresAtMillis <= nowMillis ||
+    expiresAtMillis > nowMillis + 10 * 60 * 1_000
+  )
+    return Result.fail(invalidResponse("Worker returned an unsafe recovery response"));
+  return Result.succeed({
+    url: url.toString(),
+    expiresAt: new Date(expiresAtMillis).toISOString(),
+  });
 }
 
 export function redact(text: string, secrets: string[]): string {

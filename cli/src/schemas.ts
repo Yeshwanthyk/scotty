@@ -55,6 +55,10 @@ export const UpResponseSchema = Schema.Struct({
   branch: Schema.NonEmptyString,
   status: Schema.NonEmptyString,
 });
+export const RecoveryGrantResponseSchema = Schema.Struct({
+  url: Schema.NonEmptyString,
+  expiresAt: Schema.NonEmptyString,
+});
 export const OperationResponseSchema = Schema.Struct({
   id: Schema.optionalKey(Schema.Unknown),
   url: Schema.optionalKey(Schema.Unknown),
@@ -109,6 +113,7 @@ export const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJson
 export const decodeRawConfig = Schema.decodeUnknownOption(RawConfigSchema);
 export const decodePendingUp = Schema.decodeUnknownOption(PendingUpSchema);
 export const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
+export const decodeRecoveryGrantResponse = Schema.decodeUnknownOption(RecoveryGrantResponseSchema);
 export const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
 export const decodeRawSessionFailure = Schema.decodeUnknownOption(RawSessionFailureSchema);
 export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema);

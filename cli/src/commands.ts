@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { Effect, Option, Result } from "effect";
+import { Clock, Effect, Option, Result } from "effect";
 import { CliError, EXIT, VERSION, type JsonObject } from "./core";
 import { clearPendingUp, credentials, pendingUpRequest, secureWrite } from "./dependencies";
 import { handleDown } from "./archive";
@@ -26,6 +26,7 @@ import {
   requireId,
   ROOT_HELP,
   sanitizeUrl,
+  stableRecoveryGrant,
   stableSession,
   stableUp,
   takeBoolean,
@@ -165,11 +166,31 @@ export const execute = Effect.fnUntraced(function* (rawArgs: string[]) {
   }
   if (!COMMAND_HELP[command]) return yield* usage(`Unknown command: ${command}`);
 
+  if (command === "owner") {
+    yield* Effect.fromResult(assertNoFlags(args));
+    if (args.length !== 1 || args[0] !== "recover")
+      return yield* usage("Usage: scotty owner recover", "Run scotty owner --help for details.");
+    const auth = yield* credentials(options);
+    const raw = yield* requestJson(auth, "/api/auth/recovery-grants", {
+      method: "POST",
+    });
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const recovery = yield* Effect.fromResult(stableRecoveryGrant(raw, auth.host, nowMillis));
+    yield* browser.open(recovery.url);
+    const result = { opened: true, expiresAt: recovery.expiresAt };
+    if (autoJson) outputJson(runtime.stdout, result);
+    else
+      runtime.stdout(
+        `Opened owner recovery in your browser. It expires at ${recovery.expiresAt}.\n`,
+      );
+    return EXIT.OK;
+  }
+
   if (command === "attach") {
     const id = yield* Effect.fromResult(requireId(args, command));
     const auth = yield* credentials(options);
     const safeUrl = `${auth.host}/s/${encodeURIComponent(id)}`;
-    const targetUrl = yield* Effect.fromResult(browserUrl(undefined, auth.host, auth.token, id));
+    const targetUrl = yield* Effect.fromResult(browserUrl(undefined, auth.host, id));
     yield* browser.open(targetUrl);
     const result = { id, url: safeUrl, opened: true };
     if (autoJson) outputJson(runtime.stdout, result);
@@ -230,7 +251,7 @@ export const execute = Effect.fnUntraced(function* (rawArgs: string[]) {
     const result = decoded.output;
     if (!detach)
       yield* browser.open(
-        yield* Effect.fromResult(browserUrl(decoded.terminalUrl, auth.host, auth.token, result.id)),
+        yield* Effect.fromResult(browserUrl(decoded.terminalUrl, auth.host, result.id)),
       );
     if (autoJson) outputJson(runtime.stdout, result);
     else runtime.stdout(humanResult(command, result));

@@ -20,14 +20,20 @@ const sandboxTarget = vi.hoisted((): { current: unknown } => ({
 }));
 
 const auth = vi.hoisted(() => ({
+  acceptOwnerTransfer: vi.fn(),
   authenticate: vi.fn(),
-  registerBootstrapClient: vi.fn(),
+  cancelOwnerTransfer: vi.fn(),
   consumePairing: vi.fn(),
-  issuePairing: vi.fn(),
-  listClients: vi.fn(),
-  revokeClient: vi.fn(),
-  issueTerminalTicket: vi.fn(),
+  consumeRecoveryGrant: vi.fn(),
   consumeTerminalTicket: vi.fn(),
+  currentOwnerTransfer: vi.fn(),
+  issuePairing: vi.fn(),
+  issueRecoveryGrant: vi.fn(),
+  issueTerminalTicket: vi.fn(),
+  listClients: vi.fn(),
+  logoutClient: vi.fn(),
+  revokeClient: vi.fn(),
+  startOwnerTransfer: vi.fn(),
 }));
 
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
@@ -53,9 +59,11 @@ const REGISTERED_CLIENT = {
   id: "111111111111",
   label: "Trusted browser",
   scopes: ["sessions:read", "sessions:write", "terminal:connect", "access:read", "access:write"],
+  role: "owner",
   createdAt: "2026-07-22T12:00:00.000Z",
   expiresAt: "2026-08-21T12:00:00.000Z",
   lastSeenAt: "2026-07-22T12:00:00.000Z",
+  current: true,
 };
 
 function authNamespace(): import("../src/auth-object").ScottyAuthRegistryNamespace {
@@ -110,11 +118,11 @@ describe("real Hono boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sandboxTarget.current = sandbox;
-    auth.registerBootstrapClient.mockResolvedValue({
+    auth.authenticate.mockResolvedValue({
       ok: true,
       value: {
-        credential: CLIENT_CREDENTIAL,
         client: REGISTERED_CLIENT,
+        renewed: false,
       },
     });
   });
@@ -157,7 +165,7 @@ describe("real Hono boundary", () => {
       error: {
         code: "auth",
         message: "Authentication required",
-        hint: "Open a fresh pairing link or run scotty init with a bootstrap token.",
+        hint: "Open a fresh pairing or recovery link, or configure the CLI root token.",
       },
     });
   });
@@ -627,8 +635,100 @@ describe("real Hono boundary", () => {
     expect(cookie).not.toContain(TOKEN);
   });
 
-  it("issues scannable pairing links and manages registered clients only for admins", async () => {
-    auth.authenticate.mockResolvedValue({ ok: true, value: REGISTERED_CLIENT });
+  it("issues recovery only from the root bearer and consumes it only from this origin", async () => {
+    const recoveryCredential =
+      "scotty_recovery.222222222222.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    auth.issueRecoveryGrant.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        id: "222222222222",
+        credential: recoveryCredential,
+        expiresAt: "2026-07-22T12:05:00.000Z",
+      },
+    });
+    const issued = await app.request(
+      "/api/auth/recovery-grants",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "idempotency-key": "recovery-test-key-0001",
+        },
+      },
+      env(),
+    );
+    expect(issued.status).toBe(200);
+    expect(issued.headers.get("cache-control")).toBe("no-store");
+    const issuedBody = await issued.json();
+    expect(issuedBody).toEqual({
+      url: `http://localhost/recover#token=${recoveryCredential}`,
+      expiresAt: "2026-07-22T12:05:00.000Z",
+    });
+    expect(auth.issueRecoveryGrant).toHaveBeenCalledWith(TOKEN, "recovery-test-key-0001");
+    expect(JSON.stringify(issuedBody)).not.toContain(TOKEN);
+
+    const deniedCookie = await app.request(
+      "/api/auth/recovery-grants",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+        },
+      },
+      env(),
+    );
+    expect(deniedCookie.status).toBe(401);
+    expect(auth.issueRecoveryGrant).toHaveBeenCalledTimes(1);
+
+    const recoveredCredential =
+      "scotty_client.333333333333.ccccccccccccccccccccccccccccccccccccccccccc";
+    const recoveredClient = {
+      ...REGISTERED_CLIENT,
+      id: "333333333333",
+      label: "Recovered browser",
+    };
+    auth.consumeRecoveryGrant.mockResolvedValueOnce({
+      ok: true,
+      value: { credential: recoveredCredential, client: recoveredClient },
+    });
+    const missingOrigin = await app.request(
+      "/api/auth/recovery-grants/consume",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: recoveryCredential }),
+      },
+      env(),
+    );
+    expect(missingOrigin.status).toBe(400);
+    expect(missingOrigin.headers.get("cache-control")).toBe("no-store");
+    expect(auth.consumeRecoveryGrant).not.toHaveBeenCalled();
+
+    const consumed = await app.request(
+      "/api/auth/recovery-grants/consume",
+      {
+        method: "POST",
+        headers: {
+          origin: "http://localhost",
+          "content-type": "application/json",
+          "user-agent": "Replacement browser",
+        },
+        body: JSON.stringify({ token: recoveryCredential }),
+      },
+      env(),
+    );
+    expect(consumed.status).toBe(200);
+    expect(auth.consumeRecoveryGrant).toHaveBeenCalledWith(
+      recoveryCredential,
+      "Trusted browser",
+      "Replacement browser",
+    );
+    expect(consumed.headers.get("set-cookie")).toContain(`__Host-scotty=${recoveredCredential}`);
+    expect(consumed.headers.get("set-cookie")).not.toContain(TOKEN);
+  });
+
+  it("issues scannable pairing links and manages registered clients only for the owner", async () => {
     const pairingCredential =
       "scotty_pair.333333333333.ccccccccccccccccccccccccccccccccccccccccccc";
     auth.issuePairing.mockResolvedValue({
@@ -645,6 +745,7 @@ describe("real Hono boundary", () => {
         method: "POST",
         headers: {
           cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
           "content-type": "application/json",
         },
         body: JSON.stringify({ label: "Phone" }),
@@ -652,6 +753,7 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(issued.status).toBe(200);
+    expect(auth.issuePairing).toHaveBeenCalledWith(CLIENT_CREDENTIAL, "Phone");
     const body = await issued.json();
     expect(body).toMatchObject({
       id: "333333333333",
@@ -680,24 +782,34 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(listed.status).toBe(200);
-    expect(auth.listClients).toHaveBeenCalledWith(REGISTERED_CLIENT.id);
+    expect(auth.listClients).toHaveBeenCalledWith(CLIENT_CREDENTIAL);
 
     auth.revokeClient.mockResolvedValue({ ok: true, value: undefined });
     const revoked = await app.request(
       "/api/auth/clients/222222222222",
-      { method: "DELETE", headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      {
+        method: "DELETE",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+        },
+      },
       env(),
     );
     expect(revoked.status).toBe(200);
-    expect(auth.revokeClient).toHaveBeenCalledWith("222222222222", REGISTERED_CLIENT.id);
+    expect(auth.revokeClient).toHaveBeenCalledWith(CLIENT_CREDENTIAL, "222222222222");
   });
 
   it("lets a standard paired browser issue terminal tickets but not manage devices", async () => {
     const standard = {
       ...REGISTERED_CLIENT,
       scopes: ["sessions:read", "sessions:write", "terminal:connect"],
+      role: "standard",
     };
-    auth.authenticate.mockResolvedValue({ ok: true, value: standard });
+    auth.authenticate.mockResolvedValue({
+      ok: true,
+      value: { client: standard, renewed: false },
+    });
     const denied = await app.request(
       "/api/auth/clients",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
@@ -715,37 +827,245 @@ describe("real Hono boundary", () => {
     });
     const ticket = await app.request(
       "/api/sessions/a0b1c2d3e4f5/pty-ticket",
-      { method: "POST", headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+        },
+      },
       env(),
     );
     expect(ticket.status).toBe(200);
     expect(auth.issueTerminalTicket).toHaveBeenCalledWith(CLIENT_CREDENTIAL, "a0b1c2d3e4f5");
   });
 
-  it("exchanges a query token for a hardened cookie and clean redirect", async () => {
-    const response = await app.request(`/s/a0b1c2d3e4f5?t=${TOKEN}`, undefined, env());
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("/s/a0b1c2d3e4f5");
-    const cookie = response.headers.get("set-cookie") ?? "";
-    expect(cookie).toContain("__Host-scotty=");
-    expect(cookie).toContain("HttpOnly");
-    expect(cookie).toContain("Secure");
-    expect(cookie).toContain("SameSite=Strict");
-    expect(cookie).toContain("Path=/");
+  it("binds owner transfer issuance to the owner and acceptance to the target cookie", async () => {
+    const transferCredential =
+      "scotty_transfer.333333333333.ccccccccccccccccccccccccccccccccccccccccccc";
+    auth.startOwnerTransfer.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        id: "333333333333",
+        credential: transferCredential,
+        transfer: {
+          id: "333333333333",
+          sourceOwnerClientId: REGISTERED_CLIENT.id,
+          targetClientId: "222222222222",
+          ownerEpoch: 7,
+          createdAt: "2026-07-22T12:00:00.000Z",
+          expiresAt: "2026-07-22T12:05:00.000Z",
+        },
+      },
+    });
+    const started = await app.request(
+      "/api/auth/owner-transfers",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "content-type": "application/json",
+          "idempotency-key": "transfer-test-key-0001",
+        },
+        body: JSON.stringify({ targetClientId: "222222222222" }),
+      },
+      env(),
+    );
+    expect(started.status).toBe(200);
+    expect(started.headers.get("cache-control")).toBe("no-store");
+    const startBody = await started.json();
+    expect(startBody).toMatchObject({
+      targetClientId: "222222222222",
+      url: `http://localhost/owner-transfer#token=${transferCredential}`,
+      qr: { size: expect.any(Number), rows: expect.any(Array) },
+    });
+    expect(auth.startOwnerTransfer).toHaveBeenCalledWith(
+      CLIENT_CREDENTIAL,
+      "222222222222",
+      "transfer-test-key-0001",
+    );
+
+    const missingTargetCookie = await app.request(
+      "/api/auth/owner-transfers/accept",
+      {
+        method: "POST",
+        headers: {
+          origin: "http://localhost",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ token: transferCredential }),
+      },
+      env(),
+    );
+    expect(missingTargetCookie.status).toBe(401);
+    await expect(missingTargetCookie.json()).resolves.toEqual({
+      error: {
+        code: "auth",
+        message: "Owner transfer is invalid or expired",
+      },
+    });
+
+    const rotatedCredential =
+      "scotty_client.222222222222.ddddddddddddddddddddddddddddddddddddddddddd";
+    const newOwner = {
+      ...REGISTERED_CLIENT,
+      id: "222222222222",
+      label: "New laptop",
+    };
+    auth.acceptOwnerTransfer.mockResolvedValueOnce({
+      ok: true,
+      value: { credential: rotatedCredential, client: newOwner },
+    });
+    const accepted = await app.request(
+      "/api/auth/owner-transfers/accept",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ token: transferCredential }),
+      },
+      env(),
+    );
+    expect(accepted.status).toBe(200);
+    expect(auth.acceptOwnerTransfer).toHaveBeenCalledWith(CLIENT_CREDENTIAL, transferCredential);
+    expect(accepted.headers.get("set-cookie")).toContain(`__Host-scotty=${rotatedCredential}`);
+    expect(await accepted.clone().text()).not.toContain(transferCredential);
   });
 
-  it("upgrades a root cookie once and serves the terminal with registered-client auth", async () => {
-    const upgraded = await app.request(
+  it("rejects every owner route for a standard client", async () => {
+    auth.authenticate.mockResolvedValue({
+      ok: true,
+      value: {
+        client: {
+          ...REGISTERED_CLIENT,
+          role: "standard",
+          scopes: ["sessions:read", "sessions:write", "terminal:connect"],
+        },
+        renewed: false,
+      },
+    });
+    const requests: ReadonlyArray<readonly [string, RequestInit]> = [
+      ["/api/auth/clients", {}],
+      ["/api/auth/owner-transfers/current", {}],
+      [
+        "/api/auth/pairings",
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
+      ],
+      [
+        "/api/auth/owner-transfers",
+        {
+          method: "POST",
+          headers: {
+            origin: "http://localhost",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ targetClientId: "222222222222" }),
+        },
+      ],
+      [
+        "/api/auth/clients/222222222222",
+        {
+          method: "DELETE",
+          headers: { origin: "http://localhost" },
+        },
+      ],
+      [
+        "/api/auth/owner-transfers/333333333333",
+        {
+          method: "DELETE",
+          headers: { origin: "http://localhost" },
+        },
+      ],
+    ];
+    for (const [path, init] of requests) {
+      const response = await app.request(
+        path,
+        {
+          ...init,
+          headers: {
+            cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+            ...init.headers,
+          },
+        },
+        env(),
+      );
+      expect(response.status, path).toBe(401);
+    }
+    expect(auth.issuePairing).not.toHaveBeenCalled();
+    expect(auth.startOwnerTransfer).not.toHaveBeenCalled();
+    expect(auth.revokeClient).not.toHaveBeenCalled();
+    expect(auth.cancelOwnerTransfer).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsafe cookie mutations before owner commands without exact origin metadata", async () => {
+    auth.logoutClient.mockResolvedValue({ ok: true, value: undefined });
+    const missingOrigin = await app.request(
+      "/api/auth/logout",
+      {
+        method: "POST",
+        headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` },
+      },
+      env(),
+    );
+    expect(missingOrigin.status).toBe(400);
+    expect(auth.logoutClient).not.toHaveBeenCalled();
+
+    const crossSite = await app.request(
+      "/api/auth/logout",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "cross-site",
+        },
+      },
+      env(),
+    );
+    expect(crossSite.status).toBe(400);
+    expect(auth.logoutClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects the root token in query parameters and cookies", async () => {
+    const response = await app.request(`/s/a0b1c2d3e4f5?t=${TOKEN}`, undefined, env());
+    expect(response.status).toBe(401);
+    expect(response.headers.get("set-cookie")).toBeNull();
+
+    const rootCookie = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${TOKEN}` } },
       env(),
     );
-    expect(upgraded.status).toBe(302);
-    expect(upgraded.headers.get("location")).toBe("/s/a0b1c2d3e4f5");
-    expect(upgraded.headers.get("set-cookie")).toContain(CLIENT_CREDENTIAL);
-    expect(upgraded.headers.get("set-cookie")).not.toContain(TOKEN);
+    expect(rootCookie.status).toBe(401);
+    expect(rootCookie.headers.get("set-cookie")).toBeNull();
 
-    auth.authenticate.mockResolvedValue({ ok: true, value: REGISTERED_CLIENT });
+    const apiQuery = await app.request(
+      `/api/sessions?t=${TOKEN}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(apiQuery.status).toBe(401);
+    expect(apiQuery.headers.get("cache-control")).toBe("no-store");
+    const apiRootCookie = await app.request(
+      "/api/sessions",
+      { headers: { cookie: `__Host-scotty=${TOKEN}` } },
+      env(),
+    );
+    expect(apiRootCookie.status).toBe(401);
+  });
+
+  it("serves terminal and session pages only with registered-client cookies", async () => {
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
@@ -755,34 +1075,67 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
-  });
 
-  it("serves the authenticated session manager and exchanges query auth cleanly", async () => {
-    const exchanged = await app.request(`/sessions?t=${TOKEN}`, undefined, env());
-    expect(exchanged.status).toBe(302);
-    expect(exchanged.headers.get("location")).toBe("/sessions");
-    expect(exchanged.headers.get("set-cookie")).toContain(CLIENT_CREDENTIAL);
-    expect(exchanged.headers.get("set-cookie")).not.toContain(TOKEN);
-
-    auth.authenticate.mockResolvedValue({ ok: true, value: REGISTERED_CLIENT });
-    auth.registerBootstrapClient.mockClear();
-    const repeatedCliLink = await app.request(
-      `/sessions?t=${TOKEN}`,
-      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
-    );
-    expect(repeatedCliLink.status).toBe(302);
-    expect(repeatedCliLink.headers.get("location")).toBe("/sessions");
-    expect(auth.registerBootstrapClient).not.toHaveBeenCalled();
-
-    const response = await app.request(
+    const sessions = await app.request(
       "/sessions",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
+    expect(sessions.status).toBe(200);
+    expect(sessions.headers.get("cache-control")).toBe("no-store");
+    expect(sessions.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+    const rootBearer = await app.request(
+      "/sessions",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(rootBearer.status).toBe(401);
+  });
+
+  it("serves every critical auth page with the external-script CSP and no-store", async () => {
+    for (const path of ["/pair", "/owner-transfer", "/recover"]) {
+      const response = await app.request(path, undefined, env());
+      expect(response.status, path).toBe(200);
+      expect(response.headers.get("cache-control"), path).toBe("no-store");
+      const csp = response.headers.get("content-security-policy") ?? "";
+      expect(csp, path).toContain("script-src 'self'");
+      expect(csp, path).not.toContain("script-src 'self' 'unsafe-inline'");
+      expect(csp, path).toContain("connect-src 'self'");
+      expect(csp, path).toContain("base-uri 'none'");
+      expect(csp, path).toContain("form-action 'none'");
+      expect(response.headers.get("referrer-policy"), path).toBe("no-referrer");
+      expect(response.headers.get("x-content-type-options"), path).toBe("nosniff");
+      expect(response.headers.get("x-frame-options"), path).toBe("DENY");
+    }
+
+    const devices = await app.request(
+      "/devices",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(devices.status).toBe(200);
+    expect(devices.headers.get("content-security-policy")).toContain("script-src 'self'");
+  });
+
+  it("refreshes an owner cookie only when the Auth Durable Object reports renewal", async () => {
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: {
+          ...REGISTERED_CLIENT,
+        },
+        renewed: true,
+      },
+    });
+    const response = await app.request(
+      "/api/auth/me",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(response.headers.get("set-cookie")).toContain(`__Host-scotty=${CLIENT_CREDENTIAL}`);
+    expect(response.headers.get("set-cookie")).toContain("SameSite=Strict");
   });
 
   it("redirects the public root to the canonical session manager", async () => {
@@ -820,16 +1173,19 @@ describe("real Hono boundary", () => {
 
   it("opens PTYs through the Worker-side enhanced Sandbox session", async () => {
     const terminal = vi.fn().mockResolvedValue(new Response());
+    auth.consumeTerminalTicket.mockResolvedValueOnce({
+      ok: true,
+      value: REGISTERED_CLIENT,
+    });
     sandbox.getScottySession.mockResolvedValueOnce({ status: "warm" });
     sandbox.prepareTerminalAttachment.mockResolvedValueOnce("scotty-web-123456abcdef");
     sandbox.getSession.mockReturnValueOnce({ terminal });
     sandbox.releaseTerminalAttachment.mockResolvedValueOnce(undefined);
 
     const response = await app.request(
-      "/api/sessions/a0b1c2d3e4f5/pty?client=123456abcdef&cols=120&rows=40",
+      "/api/sessions/a0b1c2d3e4f5/pty?client=123456abcdef&cols=120&rows=40&ticket=one-time-ticket",
       {
         headers: {
-          authorization: `Bearer ${TOKEN}`,
           upgrade: "websocket",
         },
       },
@@ -837,6 +1193,7 @@ describe("real Hono boundary", () => {
     );
 
     expect(response.status).toBe(502);
+    expect(auth.consumeTerminalTicket).toHaveBeenCalledWith("one-time-ticket", "a0b1c2d3e4f5");
     expect(sandbox.getScottySession).not.toHaveBeenCalled();
     expect(sandbox.prepareTerminalAttachment).toHaveBeenCalledWith("123456abcdef");
     expect(sandbox.getSession).toHaveBeenCalledWith("scotty-web-123456abcdef");

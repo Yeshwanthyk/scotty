@@ -1599,7 +1599,7 @@
       })
         .then((response) => (response.ok ? response.json() : undefined))
         .then((me) => {
-          devicesLink.hidden = !Array.isArray(me?.scopes) || !me.scopes.includes("access:read");
+          devicesLink.hidden = me?.client?.role !== "owner";
         })
         .catch(() => undefined);
 
