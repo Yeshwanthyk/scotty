@@ -4,6 +4,7 @@ import { TestClock } from "effect/testing";
 import type { TerminalAttachmentLease } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import { SessionStore, sessionStoreLayer, type SessionRecordStorage } from "../src/session-store";
+import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "./session-harness";
 import {
   TerminalAttachments,
   TERMINAL_ATTACHMENT_TTL_MS,
@@ -130,6 +131,33 @@ const makeInitialSessionStorage = (): {
 };
 
 describe("TerminalAttachments", () => {
+  it("kills the isolated PTY process before deleting its execution session and lease", async () => {
+    const clientId = "123456abcdef";
+    const sessionId = `scotty-web-${clientId}`;
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
+        [sessionHarnessKeys.terminalAttachments]: [
+          {
+            sessionId,
+            status: "active",
+            lastSeenAt: "2026-04-05T06:07:08.000Z",
+            createSettled: true,
+          },
+        ],
+      },
+      initialExecutionSessions: [sessionId],
+    });
+
+    await harness.sandbox.releaseTerminalAttachment(clientId);
+
+    const killIndex = harness.events.indexOf(`host:killAllProcesses:${sessionId}`);
+    const deleteIndex = harness.events.indexOf("host:deleteSession");
+    assert.ok(killIndex >= 0);
+    assert.ok(killIndex < deleteIndex);
+    assert.deepStrictEqual(harness.read(sessionHarnessKeys.terminalAttachments), []);
+  });
+
   it.effect("transitions creating leases to active and updates activity with Clock", () =>
     Effect.gen(function* () {
       const { storage } = makeStorage();

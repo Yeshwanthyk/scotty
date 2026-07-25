@@ -101,6 +101,16 @@ export const makeDeployedSessionRecordStorage = (
   return {
     storage: {
       get: async () => (await readStored()).value,
+      deleteCreateIdempotency: async () => {
+        await initialize();
+        await decodeAck(
+          await request(url, {
+            adapter: "session-record-storage",
+            operation: "delete-create-idempotency",
+            namespace,
+          }),
+        );
+      },
       put: async (record) => {
         await initialize();
         await decodeAck(

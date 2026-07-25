@@ -22,6 +22,8 @@ export interface FullStackCanaryNames {
   readonly backups: string;
 }
 
+export const fullStackCanaryAssetHash = (digest: string): string => `scotty-assets-v1:${digest}`;
+
 export const expectedFullStackCanaryApprovals = (stage: string) => ({
   deploy: `deploy:${stage}`,
   cleanup: `destroy:${stage}:disposable`,
@@ -74,6 +76,26 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   assertFullStackCanaryConfig(config);
   const names = fullStackCanaryNames(config.stage);
   const removalPolicy = RemovalPolicy.destroy();
+  const assetConfig = {
+    directory: "worker/public",
+    binding: "ASSETS",
+    runWorkerFirst: [
+      "/__e2e/*",
+      "/api/*",
+      "/s/*",
+      "/sessions",
+      "/devices",
+      "/pair",
+      "/terminal",
+      "/health",
+    ],
+    htmlHandling: "none" as const,
+    notFoundHandling: "404-page" as const,
+  };
+  const assetDigest = (yield* Cloudflare.readAssets(assetConfig).pipe(
+    // oxlint-disable-next-line scotty/no-effect-escape-hatch -- boundary: missing or invalid checked-in canary assets are an unrecoverable Alchemy build defect
+    Effect.orDie,
+  )).hash;
   const sessions = yield* Cloudflare.KV.Namespace("SessionsProjection", {
     title: names.sessions,
   }).pipe(removalPolicy);
@@ -98,20 +120,8 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
     main: "spikes/infra/full-stack-canary-worker.ts",
     url: true,
     assets: {
-      directory: "worker/public",
-      binding: "ASSETS",
-      runWorkerFirst: [
-        "/__e2e/*",
-        "/api/*",
-        "/s/*",
-        "/sessions",
-        "/devices",
-        "/pair",
-        "/terminal",
-        "/health",
-      ],
-      htmlHandling: "none",
-      notFoundHandling: "404-page",
+      ...assetConfig,
+      hash: fullStackCanaryAssetHash(assetDigest),
     },
     compatibility: {
       date: "2026-07-20",

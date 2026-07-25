@@ -1,4 +1,4 @@
-import { Sandbox as BaseSandbox } from "@cloudflare/sandbox";
+import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
 import { Clock, Data, Effect, Layer, Option, Predicate, Result, Schedule } from "effect";
 import { Agent, agentLayer } from "./agent";
 import { pauseAgentCommand, resumeAgentCommand } from "./agent-runtime";
@@ -60,6 +60,7 @@ import {
 import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
 import {
   durableObjectTerminalAttachmentStorage,
+  isTerminalAttachmentSessionId,
   TerminalAttachments,
   TERMINAL_ATTACHMENT_TTL_MS,
   terminalAttachmentCleanupBestEffort,
@@ -75,6 +76,30 @@ const ABANDONED_OPERATION_MS = 5 * 60_000;
 const MANAGED_STOP_RETRY_SECONDS = 2;
 const DESTROY_DEADLINE_MS = 30_000;
 const DESTROY_RETRY_SECONDS = 35;
+
+export const decodeSandboxFileStream = (
+  source: ReadableStream<Uint8Array>,
+): ReadableStream<Uint8Array> => {
+  const chunks = streamFile(source);
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await chunks.next();
+      if (next.done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(typeof next.value === "string" ? encoder.encode(next.value) : next.value);
+    },
+    async cancel() {
+      // oxlint-disable-next-line scotty/no-error-constructor -- boundary: ReadableStream cancellation interrupts the Cloudflare SDK async generator with a native Error
+      await chunks.throw(new Error("Beam-down response stream canceled")).then(
+        () => undefined,
+        () => undefined,
+      );
+    },
+  });
+};
 
 type SandboxServices =
   | Agent
@@ -512,18 +537,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
     const terminalAttachments = yield* TerminalAttachments;
     const current = yield* this.readRecordProgram();
     if (!current) return yield* notFound(payload.id);
-    if (current.status === "gone") {
-      yield* removeSessionProjection(current.id);
-      yield* Effect.sync(() => this.cancelAllSessionSchedules());
-      return { id: current.id, status: "gone" as const };
-    }
+    if (current.status === "gone") return yield* this.repairGoneSessionProgram(current);
     if (current.operation?.kind !== "vaporize" || current.operation.nonce !== payload.nonce)
       return yield* conflict("Session vaporize lease changed");
 
     yield* Effect.sync(() => this.cancelVaporizeConflictingSchedules());
+    yield* hostEffect(() => this.releaseAllTerminalAttachments());
+    yield* this.removeOrphanedTerminalExecutionSessionsProgram();
     yield* terminalAttachments.clear;
     const destroyed = yield* Effect.raceFirst(
       hostEffect(() => this.destroy()).pipe(Effect.as(true)),
@@ -540,6 +564,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
     for (const backupId of new Set(current.ownedBackupIds)) yield* backups.delete(backupId);
     yield* vault.delete;
+    yield* store.clearCreateIdempotency;
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     const gone = yield* this.updateForOperationProgram(payload.nonce, (record) => ({
       ...record,
@@ -561,13 +586,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const existing = yield* this.readRecordProgram();
     if (!existing) return yield* notFound("unknown");
     if (existing.status === "gone") {
-      const repaired = yield* Effect.result(
-        Effect.gen({ self: this }, function* () {
-          yield* removeSessionProjection(existing.id);
-          yield* Effect.sync(() => this.cancelAllSessionSchedules());
-          return { id: existing.id, status: "gone" as const };
-        }),
-      );
+      const repaired = yield* Effect.result(this.repairGoneSessionProgram(existing));
       if (Result.isSuccess(repaired)) return repaired.success;
       yield* this.armVaporizeRetryProgram({ id: existing.id, nonce: "gone" });
       return yield* this.upstreamError(
@@ -599,6 +618,43 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* this.upstreamError("Vaporize failed", vaporized.failure);
     return vaporized.success;
   });
+
+  private readonly repairGoneSessionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+  ) {
+    const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
+    const terminalAttachments = yield* TerminalAttachments;
+    yield* this.removeOrphanedTerminalExecutionSessionsProgram();
+    yield* terminalAttachments.clear;
+    const destroyed = yield* Effect.raceFirst(
+      hostEffect(() => this.destroy()).pipe(Effect.as(true)),
+      Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
+    );
+    if (!destroyed)
+      return yield* new ScottyError("upstream", "Sandbox destruction timed out", {
+        httpStatus: 502,
+        exitCode: 1,
+      });
+    yield* vault.delete;
+    yield* store.clearCreateIdempotency;
+    yield* removeSessionProjection(record.id);
+    yield* Effect.sync(() => this.cancelAllSessionSchedules());
+    return { id: record.id, status: "gone" as const };
+  });
+
+  private readonly removeOrphanedTerminalExecutionSessionsProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      const state = yield* hostEffect(() => this.getState());
+      if (state.status === "stopped" || state.status === "stopped_with_code") return;
+      const { sessions } = yield* hostEffect(() => this.client.utils.listSessions());
+      for (const sessionId of sessions.filter(isTerminalAttachmentSessionId)) {
+        yield* hostEffect(async () => (await this.getSession(sessionId)).killAllProcesses());
+        yield* hostEffect(() => this.deleteSession(sessionId));
+      }
+    },
+  );
 
   private readonly prepareDownArchiveProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const runtime = yield* SandboxRuntime;
@@ -996,7 +1052,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async readScottyArchiveStream(path: string) {
     await this.assertRuntimeAccess();
-    return this.readFileStream(path);
+    return decodeSandboxFileStream(await this.readFileStream(path));
   }
 
   async vaporizeScottySession(): Promise<{ id: string; status: "gone" }> {
@@ -1272,6 +1328,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
           }
           const beforeDelete = yield* this.readRecordProgram();
           if (!sessionAllowsRuntimeAccess(beforeDelete)) return;
+          yield* hostEffect(async () =>
+            (await this.getSession(settled.sessionId)).killAllProcesses(),
+          );
           yield* hostEffect(() => this.deleteSession(settled.sessionId));
           yield* attachments.remove(settled.sessionId);
         }),

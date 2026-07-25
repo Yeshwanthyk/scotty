@@ -108,8 +108,11 @@ export const terminalAttachmentCleanupBestEffort = <E, R>(
 
 const decodeLeases = (stored: unknown): ReadonlyArray<TerminalAttachmentLease> =>
   Option.getOrElse(decodeTerminalAttachmentLeases(stored), () => []).filter((attachment) =>
-    TERMINAL_ATTACHMENT_ID_PATTERN.test(attachment.sessionId),
+    isTerminalAttachmentSessionId(attachment.sessionId),
   );
+
+export const isTerminalAttachmentSessionId = (value: string): boolean =>
+  TERMINAL_ATTACHMENT_ID_PATTERN.test(value);
 
 const releaseConditionMatches = (
   attachment: TerminalAttachmentLease,
