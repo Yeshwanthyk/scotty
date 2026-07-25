@@ -42,10 +42,12 @@ uses the real Worker, Sandbox/Auth Durable Objects, Container, KV, R2, assets, i
 and a canary-only authenticated orphan/security probe. Production remains
 `alchemy.run.ts` → `npm run deploy:production`.
 
-The remaining gates are live evidence: the full deployed canary plus following no-op Alchemy plan,
-the broader production-adapter contract matrix beyond SessionRecordStorage and BackupStore, and
-Chunk 12 removal after the required stable Alchemy-managed release. `worker/wrangler.jsonc` remains
-only for local development and the rollback dry-run until that gate.
+The disposable full-stack canary passed the complete deployed lifecycle on 2026-07-24, including
+hard-cap sleep, host reconstruction, resume, beam-down, vaporize, and zero-orphan proof. Its
+immediate following Alchemy plan reported four no-ops. The remaining gates are the broader
+production-adapter contract matrix beyond SessionRecordStorage and BackupStore, one stable
+Alchemy-managed production release, and Chunk 12 removal after that release.
+`worker/wrangler.jsonc` remains only for local development and the rollback dry-run until then.
 
 Do not report the repository as migrated until the definition of done at the end of this packet passes.
 
@@ -429,11 +431,14 @@ pinned provider does not request strict inheritance, so a missing secret can be
 silently omitted; check all three live binding names before a mutating deploy
 until a pinned public strict-inheritance fix is available.
 
-Precomputed asset hashes are intentionally omitted. Beta.63 can persist the
-hash of a pre-created Worker before uploading its asset manifest, causing retry
-to keep nonexistent assets. Reading assets during each Worker reconcile is less
-efficient but converges safely after partial creation. The final plan reports a
-Worker update for this conservative read plus no-ops for Container, KV, and R2.
+The full-stack canary supplies a deterministic, namespaced asset token derived
+from `Cloudflare.readAssets`. It must not pass beta.63's raw manifest digest:
+on first creation the provider can mistake that equality for an existing
+manifest and skip the upload. The `scotty-assets-v1:<digest>` token cannot equal
+the raw provider digest, so first creation uploads assets while later plans can
+compare the stable token and converge to a no-op. This is a Scotty-side
+workaround for the pinned beta.63 provider; the lasting upstream fix is for the
+provider's keep-assets branch to compare against prior deployed output.
 
 The fail-closed parity and plan contract is recorded in
 `spikes/infra/monolith-adoption-readiness.ts`; the exact local Cloudflare
@@ -771,4 +776,5 @@ is complete only when:
 - Wrangler and duplicate manual binding/runtime code are removed, and Hono contains no application workflow logic;
 - public HTTP, CLI, persistence, terminal, and security contracts remain compatible.
 
-Until the deployed Alchemy canary passes, describe the work as planned or locally verified—not production proven.
+The deployed Alchemy canary is production-like lifecycle proof, not completion of the remaining
+adapter matrix, stable-release observation, or Chunk 12 cutover.

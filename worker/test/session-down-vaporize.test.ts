@@ -1,8 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { ScottyError, type SessionRecord } from "../src/contracts";
+import { decodeSandboxFileStream } from "../src/session";
 import {
   createSessionHarness,
+  CREATE_IDEMPOTENCY,
   type HarnessFailureStage,
   type HarnessOptions,
   lifecycleWallClock,
@@ -45,6 +47,28 @@ const assertLeaseReleased = (record: SessionRecord | undefined): void => {
 };
 
 describe("Sandbox beam-down orchestration", () => {
+  it("decodes the Sandbox SDK file protocol before returning archive bytes", async () => {
+    const payload = [
+      {
+        type: "metadata",
+        mimeType: "application/x-tar",
+        size: 4,
+        isBinary: true,
+        encoding: "base64",
+      },
+      { type: "chunk", data: "AAEC/w==" },
+      { type: "complete", bytesRead: 4 },
+    ]
+      .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+      .join("");
+    const source = new Response(payload).body;
+    assert.ok(source);
+
+    const bytes = new Uint8Array(await new Response(decodeSandboxFileStream(source)).arrayBuffer());
+
+    assert.deepStrictEqual([...bytes], [0, 1, 2, 255]);
+  });
+
   const rolloutPath =
     `/workspace/${SESSION_ID}/.codex/sessions/2026/07/24/` +
     "rollout-a1b2c3d4-e5f6-7890-abcd-ef0123456789.jsonl";
@@ -199,7 +223,11 @@ describe("Sandbox vaporize orchestration", () => {
       failure: undefined,
     });
     const harness = await createSessionHarness({
-      initialEntries: { [sessionHarnessKeys.record]: gone },
+      initialEntries: {
+        [sessionHarnessKeys.record]: gone,
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+      initialExecutionSessions: ["scotty-web-123456abcdef"],
       initialProjections: {
         [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
       },
@@ -211,6 +239,9 @@ describe("Sandbox vaporize orchestration", () => {
     });
 
     assert.deepStrictEqual(harness.readRecord(), gone);
+    assert.strictEqual(harness.read(sessionHarnessKeys.createIdempotency), undefined);
+    assert.ok(harness.events.includes("host:destroy"));
+    assert.ok(harness.events.includes("host:killAllProcesses:scotty-web-123456abcdef"));
     assert.ok(harness.events.includes(`projection:delete:session:${SESSION_ID}`));
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),

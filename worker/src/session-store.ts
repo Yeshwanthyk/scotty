@@ -41,6 +41,7 @@ export interface InitialSessionTransaction {
 export interface SessionRecordStorage {
   readonly get: () => Promise<unknown | undefined>;
   readonly put: (record: SessionRecord) => Promise<void>;
+  readonly deleteCreateIdempotency?: () => Promise<void>;
   readonly transaction: <A>(
     operation: (transaction: SessionRecordTransaction) => Promise<A>,
   ) => Promise<A>;
@@ -62,6 +63,7 @@ interface SessionStoreShape {
   readonly read: Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly requireRecord: Effect.Effect<SessionRecord, ScottyError>;
   readonly put: (record: SessionRecord) => Effect.Effect<void, ScottyError>;
+  readonly clearCreateIdempotency: Effect.Effect<void, ScottyError>;
   readonly inspectInitial: (
     record: SessionRecord,
     idempotency: CreateIdempotencyMetadata | undefined,
@@ -110,6 +112,7 @@ export const durableObjectSessionRecordStorage = (
 ): SessionRecordStorage => ({
   get: () => storage.get(RECORD_KEY),
   put: (record) => storage.put(RECORD_KEY, record),
+  deleteCreateIdempotency: () => storage.delete(CREATE_IDEMPOTENCY_KEY).then(() => undefined),
   transaction: (operation) =>
     storage.transaction((transaction) =>
       operation({
@@ -238,6 +241,13 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
     read: read(),
     requireRecord: requireRecord(),
     put,
+    clearCreateIdempotency:
+      storage.deleteCreateIdempotency === undefined
+        ? Effect.fail(storageFailure())
+        : Effect.tryPromise({
+            try: storage.deleteCreateIdempotency,
+            catch: storageFailure,
+          }),
     inspectInitial: (record, idempotency) => {
       const getRecord = storage.getInitialRecord;
       const getIdempotency = storage.getCreateIdempotency;

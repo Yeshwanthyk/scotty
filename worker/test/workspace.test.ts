@@ -79,7 +79,7 @@ const repoViewCommand = (repo: string): string =>
 const resetCommand = `rm -rf ${shellQuote(ROOT)} && mkdir -p '/workspace'`;
 
 const helperCommand = (root = ROOT): string =>
-  `git -C ${shellQuote(root)} config credential.helper ${shellQuote(HELPER)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --git-path info/exclude) && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`;
+  `git -C ${shellQuote(root)} config credential.helper ${shellQuote(HELPER)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`;
 
 describe("Workspace", () => {
   it.effect("prepares Rift from the baked cache with the dynamic default branch", () =>
@@ -99,19 +99,20 @@ describe("Workspace", () => {
         { command: repoViewCommand("anomalyco/rift"), options: { env: ENV, timeout: 60_000 } },
         { command: resetCommand, options: undefined },
         {
-          command: `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} -C '/cache/rift.git' fetch origin '+refs/heads/*:refs/remotes/origin/*'`,
+          command: `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} -C '/cache/rift.git' fetch origin '+refs/heads/*:refs/heads/*'`,
           options: { env: ENV, timeout: 180_000 },
         },
         {
-          command: `git -C '/cache/rift.git' worktree add -B 'scotty/${ID}' '${ROOT}' 'refs/remotes/origin/dev'`,
-          options: { env: ENV, timeout: 120_000 },
+          command: `git clone --no-hardlinks --branch 'dev' --single-branch '/cache/rift.git' '${ROOT}' && git -C '${ROOT}' remote set-url origin 'https://github.com/anomalyco/rift.git'`,
+          options: { env: ENV, timeout: 180_000 },
         },
+        { command: `git -C '${ROOT}' checkout -b 'scotty/${ID}'`, options: undefined },
         { command: helperCommand(), options: undefined },
       ]);
     }),
   );
 
-  it.effect("clones a per-session bare cache before fetch for a non-baked repository", () =>
+  it.effect("clones a self-contained repository so backup restore retains Git metadata", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
       capabilities.results.push(execResult("view", { stdout: "trunk\n" }));
@@ -119,25 +120,20 @@ describe("Workspace", () => {
 
       const prepared = yield* prepareWith(capabilities, makeSessionRecord({ repo }));
       const basic = btoa(`x-access-token:${SENTINEL}`);
-      const cache = `/tmp/scotty-cache-${ID}.git`;
 
       assert.deepStrictEqual(prepared, {
         root: ROOT,
         defaultBranch: "trunk",
         repoExists: true,
       });
-      assert.deepStrictEqual(capabilities.calls.slice(2, 5), [
+      assert.deepStrictEqual(capabilities.calls.slice(2, 4), [
         {
-          command: `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --bare 'https://github.com/${repo}.git' '${cache}'`,
+          command: `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch 'trunk' --single-branch 'https://github.com/${repo}.git' '${ROOT}'`,
           options: { env: ENV, timeout: 180_000 },
         },
         {
-          command: `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} -C '${cache}' fetch origin '+refs/heads/*:refs/remotes/origin/*'`,
-          options: { env: ENV, timeout: 180_000 },
-        },
-        {
-          command: `git -C '${cache}' worktree add -B 'scotty/${ID}' '${ROOT}' 'refs/remotes/origin/trunk'`,
-          options: { env: ENV, timeout: 120_000 },
+          command: `git -C '${ROOT}' checkout -b 'scotty/${ID}'`,
+          options: undefined,
         },
       ]);
       assert.strictEqual(capabilities.calls.at(-1)?.command, helperCommand());
@@ -196,6 +192,30 @@ describe("Workspace", () => {
     }),
   );
 
+  it.effect("keeps clone failures in the typed Effect error channel", () =>
+    Effect.gen(function* () {
+      const capabilities = new FakeWorkspaceCapabilities();
+      capabilities.results.push(
+        execResult("view", { stdout: "main\n" }),
+        execResult("reset"),
+        execResult("clone", { success: false, stderr: "clone failed" }),
+      );
+
+      const result = yield* Effect.result(
+        prepareWith(capabilities, makeSessionRecord({ repo: "acme/widgets" })),
+      );
+
+      assert.ok(Result.isFailure(result));
+      assert.deepStrictEqual(
+        result.failure,
+        new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "clone failed",
+        }),
+      );
+    }),
+  );
+
   it.effect("quotes hostile repository, branch, and discovered branch input", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
@@ -213,7 +233,7 @@ describe("Workspace", () => {
       assert.ok(surfaces.includes(repoViewCommand(hostileRepo)));
       assert.ok(surfaces.includes(shellQuote(`https://github.com/${hostileRepo}.git`)));
       assert.ok(surfaces.includes(shellQuote(hostileBranch)));
-      assert.ok(surfaces.includes(shellQuote(`refs/remotes/origin/${hostileDefault}`)));
+      assert.ok(surfaces.includes(shellQuote(hostileDefault)));
       assert.ok(!surfaces.includes("; touch /tmp/"));
     }),
   );
@@ -230,7 +250,7 @@ describe("Workspace", () => {
 
       assert.strictEqual(existing.repoExists, true);
       assert.strictEqual(missing.repoExists, false);
-      assert.strictEqual(first.calls.length, 5);
+      assert.strictEqual(first.calls.length, 6);
       assert.strictEqual(second.calls.length, 4);
       assert.notStrictEqual(first.calls, second.calls);
     }),

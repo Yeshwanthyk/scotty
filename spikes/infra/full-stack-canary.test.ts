@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   assertFullStackCanaryConfig,
   expectedFullStackCanaryApprovals,
+  fullStackCanaryAssetHash,
   fullStackCanaryNames,
 } from "./full-stack-canary.ts";
 
@@ -43,5 +44,13 @@ describe("full-stack canary safety", () => {
       assert.ok(name.length <= 63);
     }
     assert.strictEqual(new Set(Object.values(names)).size, 4);
+  });
+
+  it("namespaces the asset digest so initial creation cannot skip the manifest upload", () => {
+    const digest = "a".repeat(64);
+    const token = fullStackCanaryAssetHash(digest);
+
+    assert.strictEqual(token, `scotty-assets-v1:${digest}`);
+    assert.notStrictEqual(token, digest);
   });
 });

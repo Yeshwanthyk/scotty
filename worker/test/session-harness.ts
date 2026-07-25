@@ -62,6 +62,7 @@ export interface HarnessOptions {
   readonly destroyBehavior?: "pending" | "reject" | "success";
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
+  readonly initialExecutionSessions?: ReadonlyArray<string>;
   readonly initialProjections?: Readonly<Record<string, unknown>>;
   readonly onStorageGet?: (key: string, count: number, memory: InMemoryFaultInjectableFake) => void;
   readonly r2Objects?: ReadonlyArray<string>;
@@ -284,6 +285,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const commands: string[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
+  const executionSessions = new Set(options.initialExecutionSessions ?? []);
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
   const storage = new HarnessStorage(
@@ -443,13 +445,28 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     },
     createSession: {
-      value: async (_sessionOptions?: SessionOptions): Promise<void> => {
+      value: async (sessionOptions?: SessionOptions): Promise<void> => {
         events.push("host:createSession");
+        if (sessionOptions?.id) executionSessions.add(sessionOptions.id);
       },
     },
+    getSession: {
+      value: (sessionId: string) => ({
+        killAllProcesses: async (): Promise<number> => {
+          events.push(`host:killAllProcesses:${sessionId}`);
+          return 1;
+        },
+      }),
+    },
+    getState: {
+      value: async () => ({
+        status: executionSessions.size > 0 ? "running" : "stopped",
+      }),
+    },
     deleteSession: {
-      value: async (_sessionId: string): Promise<void> => {
+      value: async (sessionId: string): Promise<void> => {
         events.push("host:deleteSession");
+        executionSessions.delete(sessionId);
       },
     },
     createBackup: {
@@ -526,7 +543,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: {
         disconnect: () => undefined,
         utils: {
-          listSessions: async () => ({ sessions: [] }),
+          listSessions: async () => ({ sessions: [...executionSessions] }),
         },
       },
     },

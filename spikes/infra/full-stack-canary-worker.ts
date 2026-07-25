@@ -1,6 +1,11 @@
 import { ContainerProxy, getSandbox } from "@cloudflare/sandbox";
 import type { Bindings } from "../../worker/src/bindings";
-import type { SessionRecord, StoredCredential } from "../../worker/src/contracts";
+import {
+  SESSION_KV_PREFIX,
+  type SessionRecord,
+  type StoredCredential,
+} from "../../worker/src/contracts";
+import { denyOutbound, makeOutboundByHost } from "../../worker/src/egress";
 import app from "../../worker/src/index";
 import { SESSION_SCHEDULE_CALLBACKS } from "../../worker/src/session-lifecycle";
 import { Sandbox } from "../../worker/src/session";
@@ -59,7 +64,9 @@ export class ScottySandbox extends Sandbox {
         this.getState(),
       ]);
     const backupPage = await this.env.BACKUP_BUCKET.list();
-    const projection = record ? await this.env.SESSIONS.get(record.id) : null;
+    const projection = record
+      ? await this.env.SESSIONS.get(`${SESSION_KV_PREFIX}${record.id}`)
+      : null;
     const activeSchedules = schedules
       .filter(({ count }) => count > 0)
       .map(({ callback }) => callback);
@@ -86,8 +93,9 @@ export class ScottySandbox extends Sandbox {
     };
   }
 
-  e2eAbortHost(): void {
+  e2eAbortHost(): Promise<void> {
     this.ctx.abort("Full-stack E2E requested host reconstruction");
+    return Promise.resolve();
   }
 
   private async e2eSecurityProbe(
@@ -121,6 +129,9 @@ export class ScottySandbox extends Sandbox {
     };
   }
 }
+
+ScottySandbox.outboundByHost = makeOutboundByHost(fetch);
+ScottySandbox.outbound = denyOutbound;
 
 export { ContainerProxy, ScottyAuthRegistry };
 
@@ -166,7 +177,7 @@ export default {
     });
     if (probe[1] === "reconstruct") {
       if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-      sandbox.e2eAbortHost();
+      await sandbox.e2eAbortHost();
       return new Response(null, { status: 204 });
     }
     if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });

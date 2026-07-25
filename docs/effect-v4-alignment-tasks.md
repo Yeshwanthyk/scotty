@@ -28,13 +28,15 @@ now passes the outer `TestClock` service through that real boundary instead of a
 to wall time.
 
 B5 is partially complete: shared contracts run against the production SessionRecordStorage and
-BackupStore adapters behind explicit deployed gates. The governing packet's broader production
-matrix remains evidence work. The new full-stack disposable canary covers the integrated production
-paths for DO authority, KV projection, R2 backup/restore, credential isolation, egress, Sandbox
-runtime, lifecycle callbacks, HTTP, PTY reconnect, teardown, and host reconstruction.
+BackupStore adapters behind explicit deployed gates, and the deployed SessionRecordStorage adapter
+now performs the real create-idempotency deletion instead of a test-only no-op. The governing
+packet's broader production matrix remains evidence work.
 
-WS-G remains gated until that deployed canary passes, its following Alchemy plan is a no-op, and one
-stable Alchemy-managed release has run. The task briefs below remain as the audit trail and
+The full-stack disposable canary passed its real Cloudflare lifecycle on 2026-07-24: DO authority,
+KV projection, R2 backup/restore, credential isolation, egress, Sandbox runtime, lifecycle
+callbacks, HTTP, PTY reconnect, hard-cap sleep, host reconstruction, beam-down, and teardown with
+zero orphans. Its immediate following Alchemy plan reported four no-ops. WS-G remains gated only on
+one stable Alchemy-managed production release. The task briefs below remain as the audit trail and
 acceptance contracts; don't re-dispatch completed tasks.
 
 ## Dependency order

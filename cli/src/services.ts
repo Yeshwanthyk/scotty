@@ -156,8 +156,10 @@ export const defaultDependencies = (): CliDependencies => ({
   stderr: (text) => process.stderr.write(text),
   prompt: (label) => globalThis.prompt(label),
   openBrowser: async (url) => {
-    const command =
-      process.platform === "darwin"
+    const configuredBrowser = process.env.BROWSER?.trim();
+    const command = configuredBrowser
+      ? [configuredBrowser, url]
+      : process.platform === "darwin"
         ? ["open", url]
         : process.platform === "win32"
           ? ["cmd", "/c", "start", "", url]

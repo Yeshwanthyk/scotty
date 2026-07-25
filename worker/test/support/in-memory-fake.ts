@@ -134,6 +134,10 @@ export const sessionRecordStorageFake = (
   memory = new InMemoryFaultInjectableFake(),
 ): SessionRecordStorage => ({
   get: () => memory.invoke("get", [], () => memory.snapshot()),
+  deleteCreateIdempotency: () =>
+    memory.invoke("deleteCreateIdempotency", [], () => {
+      memory.values.delete("scotty:create-idempotency");
+    }),
   put: (record) =>
     memory.invoke("put", [record], () => {
       memory.value = structuredClone(record);
