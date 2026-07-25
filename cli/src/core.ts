@@ -28,7 +28,7 @@ export class CliError extends Data.TaggedError("CliError")<{
   }
 }
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.0.1";
 export const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const MUTATION_REQUEST_TIMEOUT_MS = 5 * 60_000;
