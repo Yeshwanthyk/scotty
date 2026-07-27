@@ -51,6 +51,7 @@ describe("Effect command tree", () => {
         const rootHelp = root.stdout.join("");
         assert.include(rootHelp, "scotty <subcommand> [flags]");
         assert.include(rootHelp, "beam");
+        assert.include(rootHelp, "runner");
         assert.include(rootHelp, "--version, -V");
         assert.notInclude(rootHelp, "--wizard");
         assert.notInclude(rootHelp, "--completions");
@@ -62,7 +63,58 @@ describe("Effect command tree", () => {
         assert.include(beam.stdout.join(""), "scotty beam <subcommand> [flags]");
         assert.include(beam.stdout.join(""), "up");
         assert.strictEqual(beam.stderr.join(""), "");
+
+        const runner = run(["runner", "--help"]);
+        assert.strictEqual(yield* runner.effect, EXIT.OK);
+        assert.include(runner.stdout.join(""), "scotty runner <subcommand> [flags]");
+        assert.include(runner.stdout.join(""), "serve");
+        assert.strictEqual(runner.stderr.join(""), "");
       }),
+  );
+
+  it.effect("keeps runner credentials out of shared token flags", () =>
+    Effect.gen(function* () {
+      const invocation = run([
+        "--host",
+        "https://worker.example",
+        "--token",
+        "owner-secret",
+        "runner",
+        "serve",
+        "--name",
+        "slumbers",
+        "--root",
+        "/srv/scotty",
+      ]);
+      const error = failure(yield* Effect.result(invocation.effect));
+      assert.strictEqual(error.code, "bad_usage");
+      assert.strictEqual(error.message, "runner serve does not accept --token");
+      assert.strictEqual(invocation.stdout.join(""), "");
+      assert.strictEqual(invocation.stderr.join(""), "");
+    }),
+  );
+
+  it.effect("rejects plaintext runner authentication away from loopback", () =>
+    Effect.gen(function* () {
+      const invocation = run(
+        [
+          "--host",
+          "http://worker.example",
+          "runner",
+          "serve",
+          "--name",
+          "slumbers",
+          "--root",
+          "/srv/scotty",
+        ],
+        { env: { SCOTTY_RUNNER_TOKEN: "runner-secret" } },
+      );
+      const error = failure(yield* Effect.result(invocation.effect));
+      assert.strictEqual(error.code, "bad_usage");
+      assert.strictEqual(error.message, "runner serve requires an HTTPS Scotty host");
+      assert.strictEqual(invocation.stdout.join(""), "");
+      assert.strictEqual(invocation.stderr.join(""), "");
+    }),
   );
 
   it.effect("keeps parser failures typed and generated help out of machine stdout", () =>

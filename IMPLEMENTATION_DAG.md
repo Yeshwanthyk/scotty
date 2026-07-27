@@ -37,13 +37,21 @@ flowchart TD
 
 Current slice:
 
-- `N`, `C1`, `C2`, `C3`, and Gate CF are complete. The repository-wide local gate and guarded
+- `N`, `C1`, `C2`, `C3`, Gate CF, and `R1` are complete. The repository-wide local gate and guarded
   deployed Cloudflare canary proved the forward-only path: create a stable Pican hosted-session
   identity, use its mounted `/s/<id>` UI, gracefully stop Pican before backup, restore, reconnect
   to the same hosted session, beam down, and leave no runtime, KV, R2, credential, schedule, or
   branch orphans.
-- `R1` is next. Slumbers begins with the narrow runner command contract proven by one vertical
-  slice; Box begins only after the Slumbers runner contract passes Gate Runner.
+- `R1` proves `scotty runner serve` over an authenticated outbound WebSocket. Its strict typed
+  protocol models ensure, inspect, one-shot exec, stop, and remove with process-lifetime receipt
+  deduplication. The local gate writes a marker, drains accepted same-session work before stop,
+  retains the marker across stop and ensure, keeps other sessions concurrent, reads it back, and
+  removes only the session workspace.
+- `R2` is next: add the Cloudflare control-plane endpoint and run this command on Slumbers. Before
+  Gate Runner, add durable started/completed receipts with an explicit unknown outcome after an
+  interrupted exec, and isolate each session with a dedicated container or OS-user boundary; cwd
+  checks and the child environment allowlist are not a sandbox. Box begins only after the Slumbers
+  runner contract passes Gate Runner.
 - Provider is immutable for a session. The Session DO remains lifecycle and credential authority;
   providers and runners own compute, while Pican owns the live agent/workspace runtime.
 
