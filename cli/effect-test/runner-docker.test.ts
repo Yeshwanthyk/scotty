@@ -171,7 +171,7 @@ describe("Docker runner compute", () => {
           assert.isTrue(yield* fs.exists(`${workspace}/.home`));
           const fixture = yield* fs.readFileString(`${workspace}/${RUNNER_FIXTURE_FILE}`);
           assert.include(fixture, 'SESSION = "session-a"');
-          assert.include(fixture, 'RUNNER = "slumbers-compatible"');
+          assert.include(fixture, 'RUNNER = "runner"');
           assert.notInclude(fixture, "must-not-cross");
           assert.strictEqual((yield* fs.stat(workspace)).mode & 0o777, 0o700);
           assert.strictEqual((yield* fs.stat(`${workspace}/.home`)).mode & 0o777, 0o700);

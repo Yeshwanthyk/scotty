@@ -995,7 +995,6 @@
                 <label for="session-provider">Execution</label>
                 <select class="control" id="session-provider" name="provider">
                   <option value="cloudflare">Cloudflare</option>
-                  <option value="runner">Runner → slumbers</option>
                 </select>
               </div>
               <div class="field">
@@ -1088,6 +1087,7 @@
       const newSessionButton = document.querySelector("#new-session");
       const composerRegion = document.querySelector("#new-session-region");
       const sessionForm = document.querySelector("#new-session-form");
+      const providerSelect = document.querySelector("#session-provider");
       const repoInput = document.querySelector("#session-repo");
       const capSelect = document.querySelector("#session-cap");
       const promptInput = document.querySelector("#session-prompt");
@@ -1387,6 +1387,33 @@
         }
       }
 
+      async function refreshRunners() {
+        try {
+          const response = await fetch("/api/runners", {
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) return;
+          const runners = await response.json();
+          if (!Array.isArray(runners)) return;
+          for (const runner of runners) {
+            if (
+              typeof runner?.name !== "string" ||
+              runner.desired !== "accepting" ||
+              runner.connection !== "connected"
+            )
+              continue;
+            const option = document.createElement("option");
+            option.value = `runner:${runner.name}`;
+            option.textContent = `Runner → ${runner.name}`;
+            providerSelect.append(option);
+          }
+        } catch {
+          // Cloudflare remains available when runner status cannot be loaded.
+        }
+      }
+
       async function createSession() {
         if (creating) return;
         const repo = repositoryName(repoInput.value);
@@ -1395,13 +1422,14 @@
         promptInput.setCustomValidity(prompt ? "" : "Tell Codex what to do.");
         if (!sessionForm.reportValidity() || !repo || !prompt) return;
 
+        const execution = providerSelect.value;
         const payload = {
           repo,
           prompt,
-          provider: document.querySelector("#session-provider").value,
+          provider: execution === "cloudflare" ? "cloudflare" : "runner",
           hardCapSeconds: Number(capSelect.value),
         };
-        if (payload.provider === "runner") payload.runner = "slumbers";
+        if (payload.provider === "runner") payload.runner = execution.slice("runner:".length);
         lastSubmission = submissionIdentity(lastSubmission, payload, () => crypto.randomUUID());
         setComposerFeedback(
           "pending",
@@ -1617,6 +1645,7 @@
         .catch(() => undefined);
 
       schedulePoll();
+      void refreshRunners();
       void refreshRepositories();
       void refresh();
     </script>
