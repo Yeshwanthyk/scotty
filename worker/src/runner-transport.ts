@@ -17,7 +17,7 @@ const DEFAULT_STATUS_TIMEOUT_MILLIS = 1_000;
 const MAX_STATUS_TIMEOUT_MILLIS = 5_000;
 
 const RunnerAttachmentSchema = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literal(2),
   runner: Schema.NonEmptyString,
   connectionId: Schema.NonEmptyString,
   ready: Schema.Boolean,
@@ -100,7 +100,7 @@ export class RunnerTransport {
 
   accept(socket: RunnerSocket): void {
     socket.serializeAttachment<RunnerAttachment>({
-      version: 1,
+      version: 2,
       runner: this.runnerName,
       connectionId: crypto.randomUUID(),
       ready: false,
@@ -129,7 +129,7 @@ export class RunnerTransport {
             .send(
               encodeRunnerRequest({
                 _tag: "RunnerProbe",
-                version: 1,
+                version: 2,
                 probeId,
               }),
             )
@@ -246,6 +246,13 @@ export class RunnerTransport {
       }
       if (Predicate.isTagged("RunnerProbeAck")(decoded.success)) {
         yield* this.#completeProbe(socket, attachment.value, decoded.success);
+        return;
+      }
+      if (
+        !Predicate.isTagged("RunnerSuccess")(decoded.success) &&
+        !Predicate.isTagged("RunnerFailure")(decoded.success)
+      ) {
+        yield* this.#reject(socket, "Invalid runner response");
         return;
       }
       yield* this.#complete(socket, attachment.value, decoded.success);

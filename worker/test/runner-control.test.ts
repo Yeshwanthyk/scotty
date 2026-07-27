@@ -12,17 +12,17 @@ import {
 const NOW = Date.parse("2026-07-27T12:00:00.000Z");
 
 const operations = [
-  { _tag: "EnsureRuntime", version: 1, sessionId: "session-a", operationId: "ensure" },
-  { _tag: "InspectRuntime", version: 1, sessionId: "session-a", operationId: "inspect" },
+  { _tag: "EnsureRuntime", version: 2, sessionId: "session-a", operationId: "ensure" },
+  { _tag: "InspectRuntime", version: 2, sessionId: "session-a", operationId: "inspect" },
   {
     _tag: "ExecRuntime",
-    version: 1,
+    version: 2,
     sessionId: "session-a",
     operationId: "exec",
     argv: ["true"],
   },
-  { _tag: "StopRuntime", version: 1, sessionId: "session-a", operationId: "stop" },
-  { _tag: "RemoveRuntime", version: 1, sessionId: "session-a", operationId: "remove" },
+  { _tag: "StopRuntime", version: 2, sessionId: "session-a", operationId: "stop" },
+  { _tag: "RemoveRuntime", version: 2, sessionId: "session-a", operationId: "remove" },
 ] satisfies ReadonlyArray<RunnerOperation>;
 
 const drainingFailure = {
