@@ -451,6 +451,73 @@ describe("runner transport", () => {
     }),
   );
 
+  it.effect("accepts HTTP response frames from rewrapped WebSocket event handles", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+      const eventSocket: RunnerSocket = {
+        send: socket.send,
+        close: socket.close,
+        serializeAttachment: (value) => socket.serializeAttachment(value),
+        deserializeAttachment: () => socket.deserializeAttachment(),
+      };
+      assert.notStrictEqual(eventSocket, socket);
+
+      const pending = yield* transport
+        .http({
+          request: new Request("https://scotty.test/s/session-a/health"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/s/session-a/health",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const open = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(open));
+      if (!Predicate.isTagged("HttpOpen")(open)) return;
+
+      yield* transport.message(
+        eventSocket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: open.streamId,
+          status: 200,
+          statusText: "OK",
+          headers: [["content-type", "application/json"]],
+          hasBody: true,
+        }),
+      );
+      const response = yield* Fiber.join(pending);
+      const body = new TextEncoder().encode('{"ok":true}');
+      yield* transport.message(
+        eventSocket,
+        encodeRunnerFrame({
+          _tag: "HttpData",
+          version: 2,
+          streamId: open.streamId,
+          direction: "response",
+          data: encodeBase64(body),
+        }),
+      );
+      yield* transport.message(
+        eventSocket,
+        encodeRunnerFrame({
+          _tag: "HttpEnd",
+          version: 2,
+          streamId: open.streamId,
+          direction: "response",
+        }),
+      );
+
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(yield* Effect.promise(() => response.text()), '{"ok":true}');
+      assert.deepStrictEqual(socket.closed, []);
+    }),
+  );
+
   it.effect("settles a blocked response read on cancellation and reuses stream capacity", () =>
     Effect.gen(function* () {
       const transport = new RunnerTransport("slumbers");
