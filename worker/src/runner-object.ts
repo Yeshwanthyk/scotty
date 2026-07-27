@@ -8,7 +8,7 @@ import {
 import type { RuntimeContext } from "alchemy";
 import { Effect, Result } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import type { RunnerOperation } from "../../protocol/runner.ts";
+import { RUNNER_HTTP_PATH_PREFIX, type RunnerOperation } from "../../protocol/runner.ts";
 import {
   makeRunnerControl,
   type RunnerControlAction,
@@ -19,7 +19,6 @@ import { RunnerTransport, type RunnerDispatchResult } from "./runner-transport.t
 
 const RUNNER_DESIRED_STORAGE_KEY = "runner:desired";
 const RUNNER_LAST_SEEN_STORAGE_KEY = "runner:last-seen-at-millis";
-export const RUNNER_HTTP_PATH_PREFIX = "/_scotty/runner-http/";
 
 interface ScottyRunnerShape extends DurableObjectShape {
   readonly status: () => Effect.Effect<"connected" | "disconnected", never, RuntimeContext>;

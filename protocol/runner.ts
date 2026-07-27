@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 export const RUNNER_PROTOCOL_VERSION = 2 as const;
+export const RUNNER_HTTP_PATH_PREFIX = "/_scotty/runner-http/";
 export const RUNNER_TEXT_FRAME_LIMIT = 256 * 1024;
 export const RUNNER_DATA_CHUNK_LIMIT = 32 * 1024;
 export const RUNNER_CREDIT_WINDOW = 128 * 1024;

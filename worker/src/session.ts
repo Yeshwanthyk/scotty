@@ -1,5 +1,9 @@
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
-import { RUNNER_PROTOCOL_VERSION, type RunnerOperation } from "../../protocol/runner";
+import {
+  RUNNER_HTTP_PATH_PREFIX,
+  RUNNER_PROTOCOL_VERSION,
+  type RunnerOperation,
+} from "../../protocol/runner";
 import {
   type Cause,
   Clock,
@@ -67,7 +71,6 @@ import {
   sessionProjectionLayer,
 } from "./session-projection";
 import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
-import { RUNNER_HTTP_PATH_PREFIX } from "./runner-object";
 import { sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
