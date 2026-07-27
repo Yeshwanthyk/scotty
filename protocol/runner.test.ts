@@ -80,6 +80,13 @@ describe("runner protocol v2 HTTP frames", () => {
 
   it.effect("rejects invalid open and response bounds", () =>
     Effect.gen(function* () {
+      const runtimeId = `runner-v1:${"a".repeat(64)}`;
+      assert.deepStrictEqual(
+        yield* decodeRunnerRequestText(encodeRunnerRequest(open({ runtimeId }))),
+        open({ runtimeId }),
+      );
+      yield* rejects(decodeRunnerRequestText, open({ runtimeId: "runner-v1:bad/runtime" }));
+      yield* rejects(decodeRunnerRequestText, open({ runtimeId: "runner-v1.runtime" }));
       yield* rejects(decodeRunnerRequestText, open({ headers: Array(129).fill(["x", "y"]) }));
       yield* rejects(decodeRunnerRequestText, open({ headers: [["x", "y".repeat(65_536)]] }));
       yield* rejects(decodeRunnerRequestText, open({ method: "NOT A METHOD" }));

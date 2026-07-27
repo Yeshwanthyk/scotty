@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, FileSystem, Result } from "effect";
 import {
   makeDockerRunnerCompute,
+  RUNNER_FIXTURE_FILE,
   RunnerComputeFailure,
+  runnerFixtureSource,
   type RunnerComputeCommandOutput,
   type RunnerComputeProcess,
 } from "../src/runner-docker";
@@ -38,6 +42,9 @@ const fakeDocker = (): FakeDocker => {
           return successfulOutput({ stdout: running.has(name) ? "container-id\n" : "" });
         }
         if (argv[0] === "container" && argv[1] === "inspect" && typeof argv[3] === "string") {
+          if (argv[2] === "--format={{.NetworkSettings.IPAddress}}") {
+            return successfulOutput({ stdout: "172.17.0.2\n" });
+          }
           return successfulOutput({ stdout: `${running.get(argv[3]) === true}\n` });
         }
         if (argv[0] === "container" && argv[1] === "create" && typeof argv[3] === "string") {
@@ -153,9 +160,8 @@ describe("Docker runner compute", () => {
             "--env",
             "LANG=C.UTF-8",
             "registry.example/scotty-pican@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "tail",
-            "-f",
-            "/dev/null",
+            "python3",
+            "/workspace/.scotty-runner-fixture.py",
           ]);
           assert.notInclude(fake.commands.flat().join("\n"), "must-not-cross");
           assert.notInclude(fake.commands.flat().join("\n"), "SCOTTY_RUNNER_TOKEN");
@@ -163,10 +169,169 @@ describe("Docker runner compute", () => {
           assert.notInclude(fake.commands.flat().join("\n"), "/host/tmp");
           assert.notInclude(fake.commands.flat().join("\n"), "/host/bin");
           assert.isTrue(yield* fs.exists(`${workspace}/.home`));
+          const fixture = yield* fs.readFileString(`${workspace}/${RUNNER_FIXTURE_FILE}`);
+          assert.include(fixture, 'SESSION = "session-a"');
+          assert.include(fixture, 'RUNNER = "slumbers-compatible"');
+          assert.notInclude(fixture, "must-not-cross");
           assert.strictEqual((yield* fs.stat(workspace)).mode & 0o777, 0o700);
           assert.strictEqual((yield* fs.stat(`${workspace}/.home`)).mode & 0o777, 0o700);
         }),
       ),
+  );
+
+  it.effect(
+    "forwards mounted HTTP only to the running session container's fixed bridge target",
+    () =>
+      withNode(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectoryScoped({ prefix: "scotty-docker-http-" });
+          const fake = fakeDocker();
+          const compute = yield* makeDockerRunnerCompute(
+            {
+              root,
+              image: `python@sha256:${"f".repeat(64)}`,
+              uid: 1000,
+              gid: 1000,
+              safePath: "/usr/local/bin:/usr/bin:/bin",
+              childEnvironment: {},
+            },
+            fake.process,
+          );
+          const absent = yield* Effect.result(
+            compute.mountedHttp(
+              { sessionId: "session-a", runtimeId: `runner-v1:${hash("session-a")}` },
+              new Request("http://127.0.0.1:31415/s/session-a/health"),
+              () => Promise.resolve(new Response()),
+            ),
+          );
+          assert.strictEqual(computeFailure(absent).code, "runtime_not_running");
+
+          yield* compute.ensure("session-a");
+          const commandsBeforeMismatch = fake.commands.length;
+          const mismatch = yield* Effect.result(
+            compute.mountedHttp(
+              { sessionId: "session-a", runtimeId: "runner-v1:wrong" },
+              new Request("http://ignored/s/session-a/health"),
+              () => Promise.resolve(new Response()),
+            ),
+          );
+          assert.strictEqual(computeFailure(mismatch).code, "runtime_not_running");
+          assert.strictEqual(fake.commands.length, commandsBeforeMismatch);
+
+          let forwarded: Request | undefined;
+          const controller = new AbortController();
+          const response = yield* compute.mountedHttp(
+            { sessionId: "session-a", runtimeId: `runner-v1:${hash("session-a")}` },
+            new Request("http://127.0.0.1:31415/s/session-a/echo?proof=yes", {
+              method: "POST",
+              body: "portable",
+              signal: controller.signal,
+            }),
+            (request) => {
+              forwarded = request;
+              return Promise.resolve(Response.json({ ok: true }));
+            },
+          );
+          assert.strictEqual(response.status, 200);
+          assert.strictEqual(forwarded?.url, "http://172.17.0.2:31415/s/session-a/echo?proof=yes");
+          assert.strictEqual(forwarded?.method, "POST");
+          controller.abort();
+          assert.isTrue(forwarded?.signal.aborted);
+          assert.deepStrictEqual(fake.commands.at(-1), [
+            "container",
+            "inspect",
+            "--format={{.NetworkSettings.IPAddress}}",
+            `scotty-runner-v1-${hash("session-a")}`,
+          ]);
+
+          yield* compute.stop("session-a");
+          const stopped = yield* Effect.result(
+            compute.mountedHttp(
+              { sessionId: "session-a", runtimeId: `runner-v1:${hash("session-a")}` },
+              new Request("http://ignored/s/session-a/health"),
+              () => Promise.resolve(new Response()),
+            ),
+          );
+          assert.strictEqual(computeFailure(stopped).code, "runtime_not_running");
+        }),
+      ),
+  );
+
+  it.effect("serves the portable fixture shell, asset, action, SSE, and health locally", () =>
+    withNode(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "scotty-fixture-" });
+        const script = `${root}/${RUNNER_FIXTURE_FILE}`;
+        const localPort = 43_145;
+        yield* fs.writeFileString(
+          script,
+          runnerFixtureSource("fixture-session", "slumbers-a", localPort),
+        );
+        const child = spawn("python3", [script], { stdio: "ignore" });
+        const base = `http://127.0.0.1:${localPort}/s/fixture-session`;
+        let healthy = false;
+        for (let attempt = 0; attempt < 30 && !healthy; attempt += 1) {
+          healthy = yield* Effect.tryPromise({
+            try: () => fetch(`${base}/health`).then((response) => response.ok),
+            catch: () => undefined,
+          }).pipe(Effect.catch(() => Effect.succeed(false)));
+          if (!healthy) yield* Effect.sleep("20 millis");
+        }
+        assert.isTrue(healthy);
+        const shell = yield* Effect.promise(() =>
+          fetch(base, { headers: { "x-secret-proof": "must-not-reflect" } }).then((response) =>
+            response.text(),
+          ),
+        );
+        assert.include(shell, "provider=runner");
+        assert.include(shell, "runner=slumbers-a");
+        assert.include(shell, "session=fixture-session");
+        assert.include(shell, "/s/fixture-session/fixture.css");
+        assert.notInclude(shell, "must-not-reflect");
+        const css = yield* Effect.promise(() => fetch(`${base}/fixture.css`).then((r) => r.text()));
+        assert.include(css, "font-family");
+        const echo = yield* Effect.promise(() =>
+          fetch(`${base}/echo`, { method: "POST", body: "portable-proof" }).then((r) => r.json()),
+        );
+        assert.deepStrictEqual(echo, { action: "echo", bytes: 14, body: "portable-proof" });
+        const oversized = yield* Effect.promise(
+          () =>
+            new Promise<{
+              readonly body: string;
+              readonly connection: string | undefined;
+              readonly status: number;
+            }>((resolve, reject) => {
+              const request = httpRequest(
+                `${base}/echo`,
+                { method: "POST", headers: { "content-length": "4097" } },
+                (response) => {
+                  const chunks: Array<Buffer> = [];
+                  response.on("data", (chunk: Buffer) => chunks.push(chunk));
+                  response.on("end", () =>
+                    resolve({
+                      body: Buffer.concat(chunks).toString(),
+                      connection: response.headers.connection,
+                      status: response.statusCode ?? 0,
+                    }),
+                  );
+                },
+              );
+              request.on("error", reject);
+              request.end("x".repeat(4097));
+            }),
+        );
+        assert.deepStrictEqual(oversized, {
+          body: "request body too large",
+          connection: "close",
+          status: 413,
+        });
+        const events = yield* Effect.promise(() => fetch(`${base}/events`).then((r) => r.text()));
+        assert.strictEqual(events.match(/event: fixture/g)?.length, 3);
+        child.kill("SIGTERM");
+      }),
+    ),
   );
 
   it.effect("stops and restores the same container while retaining only its workspace", () =>

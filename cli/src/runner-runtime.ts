@@ -45,6 +45,10 @@ interface RuntimeRecord {
 
 interface RunnerRuntimeShape {
   readonly handle: (operation: RunnerOperation) => Effect.Effect<RunnerResponse>;
+  readonly mountedHttp: (
+    identity: { readonly runtimeId: string; readonly sessionId: string },
+    request: Request,
+  ) => Effect.Effect<Response, unknown>;
 }
 
 export class RunnerRuntime extends Context.Service<RunnerRuntime, RunnerRuntimeShape>()(
@@ -57,6 +61,8 @@ export interface RunnerRuntimeConfig {
    */
   readonly root: string;
   readonly childEnvironment: Readonly<Record<string, string>>;
+  readonly runnerIdentity?: string;
+  readonly hostFetch?: (request: Request) => Promise<Response>;
   readonly isolation:
     | { readonly type: "process" }
     | {
@@ -234,7 +240,9 @@ const makeProcessRunnerCompute = Effect.fnUntraced(function* (
     return state(sessionId, "absent");
   });
 
-  return { ensure, inspect, exec, stop, remove } satisfies IsolatedRuntimeCompute;
+  const mountedHttp = () => Effect.fail(new RunnerComputeFailure({ code: "runtime_not_running" }));
+
+  return { ensure, inspect, exec, stop, remove, mountedHttp } satisfies IsolatedRuntimeCompute;
 });
 
 export const makeRunnerRuntimeWithCompute = Effect.fnUntraced(function* (
@@ -386,6 +394,12 @@ export const makeRunnerRuntimeWithCompute = Effect.fnUntraced(function* (
 
   return RunnerRuntime.of({
     handle: (operation) => sessionMutex(operation.sessionId).withPermit(handle(operation)),
+    mountedHttp: (identity, request) => {
+      const hostFetch = config.hostFetch;
+      return hostFetch === undefined
+        ? Effect.fail(new RunnerComputeFailure({ code: "process_failed" }))
+        : compute.mountedHttp(identity, request, hostFetch);
+    },
   });
 });
 
@@ -402,6 +416,7 @@ export const makeRunnerRuntime = Effect.fnUntraced(function* (config: RunnerRunt
             gid: isolation.gid,
             safePath: isolation.safePath,
             childEnvironment: config.childEnvironment,
+            runnerIdentity: config.runnerIdentity,
           },
           makeRunnerComputeProcess(childProcessSpawner, "/usr/bin/docker"),
         )

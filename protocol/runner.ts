@@ -18,7 +18,7 @@ const OperationIdSchema = Schema.String.check(
 );
 const ProbeIdSchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/));
 const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/));
-const RuntimeIdSchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/));
+const RuntimeIdSchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$/));
 const StreamIdSchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/));
 const ArgumentSchema = Schema.String.check(Schema.isMaxLength(64 * 1024));
 

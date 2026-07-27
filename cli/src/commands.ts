@@ -46,7 +46,7 @@ import {
 } from "./pure";
 import { BrowserLauncher, CliRuntime, ProcessRunner } from "./services";
 import { runRunnerSupervisor } from "./runner-link";
-import { runnerRuntimeLayer } from "./runner-runtime";
+import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { requestJson } from "./transport";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -518,22 +518,27 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               });
         const url = new URL(`/api/runners/${encodeURIComponent(name)}/connect`, host);
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        yield* runRunnerSupervisor({
-          url: url.href,
-          runnerName: name,
-          token,
-          onOpen: Effect.sync(() => {
-            if (autoJson) outputJson(runtime.stdout, { runner: name, status: "connected" });
-            else runtime.stdout(`Runner ${name} connected.\n`);
-          }),
-        }).pipe(
-          Effect.provide(
-            runnerRuntimeLayer({
-              root,
-              childEnvironment: runnerChildEnvironment(runtime.env),
-              isolation: runtimeIsolation,
+        const runtimeLayer = runnerRuntimeLayer({
+          root,
+          runnerIdentity: name,
+          hostFetch: runtime.hostFetch,
+          childEnvironment: runnerChildEnvironment(runtime.env),
+          isolation: runtimeIsolation,
+        });
+        yield* Effect.gen(function* () {
+          const runnerRuntime = yield* RunnerRuntime;
+          return yield* runRunnerSupervisor({
+            url: url.href,
+            runnerName: name,
+            token,
+            httpHandler: (identity, request) => runnerRuntime.mountedHttp(identity, request),
+            onOpen: Effect.sync(() => {
+              if (autoJson) outputJson(runtime.stdout, { runner: name, status: "connected" });
+              else runtime.stdout(`Runner ${name} connected.\n`);
             }),
-          ),
+          });
+        }).pipe(
+          Effect.provide(runtimeLayer),
           Effect.mapError(
             () =>
               new CliError(

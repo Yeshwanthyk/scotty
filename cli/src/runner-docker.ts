@@ -6,7 +6,80 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 const OUTPUT_LIMIT = 64 * 1024;
 const DEFAULT_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_PIDS_LIMIT = 512;
+export const RUNNER_FIXTURE_PORT = 31_415;
+export const RUNNER_FIXTURE_FILE = ".scotty-runner-fixture.py";
 const CHILD_ENVIRONMENT_KEYS = ["LANG", "LC_ALL", "SHELL", "TERM", "TZ", "USER"] as const;
+
+export const runnerFixtureSource = (
+  sessionId: string,
+  runnerIdentity: string,
+  port = RUNNER_FIXTURE_PORT,
+): string =>
+  `
+import json, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
+
+SESSION = ${JSON.stringify(sessionId)}
+RUNNER = ${JSON.stringify(runnerIdentity)}
+BASE = "/s/" + SESSION
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def send_body(self, status, content_type, body):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:
+            self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+
+    def do_GET(self):
+        path = urlsplit(self.path).path
+        if path == BASE + "/health":
+            return self.send_body(200, "application/json", b'{"ok":true}')
+        if path == BASE + "/fixture.css":
+            return self.send_body(200, "text/css; charset=utf-8", b"body{font-family:system-ui;background:#10131a;color:#f4f7ff}main{max-width:48rem;margin:4rem auto}")
+        if path == BASE + "/events":
+            events = [("event: fixture\\ndata: " + str(index) + "\\n\\n").encode() for index in range(1, 4)]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(sum(len(event) for event in events)))
+            self.end_headers()
+            for event in events:
+                self.wfile.write(event)
+                self.wfile.flush()
+                time.sleep(0.05)
+            self.close_connection = True
+            return
+        if path == BASE or path == BASE + "/":
+            body = ("<!doctype html><html><head><link rel=stylesheet href='" + BASE + "/fixture.css'></head>"
+                    "<body><main><h1>Scotty portable runner fixture</h1><p>provider=runner</p><p>runner=" + RUNNER +
+                    "</p><p>session=" + SESSION + "</p></main></body></html>").encode()
+            return self.send_body(200, "text/html; charset=utf-8", body)
+        self.send_body(404, "text/plain", b"not found")
+
+    def do_POST(self):
+        if urlsplit(self.path).path != BASE + "/echo":
+            return self.send_body(404, "text/plain", b"not found")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length > 4096:
+            self.close_connection = True
+            return self.send_body(413, "text/plain", b"request body too large")
+        proof = self.rfile.read(max(0, length)).decode("utf-8", "replace")
+        body = json.dumps({"action": "echo", "bytes": len(proof.encode()), "body": proof}, separators=(",", ":")).encode()
+        self.send_body(200, "application/json", body)
+
+ThreadingHTTPServer(("0.0.0.0", ${port}), Handler).serve_forever()
+`.trimStart();
 
 export const RunnerComputeFailureCodeSchema = Schema.Literals([
   "filesystem_failed",
@@ -70,6 +143,11 @@ export interface IsolatedRuntimeCompute {
   ) => Effect.Effect<RunnerComputeCommandOutput, RunnerComputeFailure>;
   readonly stop: (sessionId: string) => Effect.Effect<IsolatedRuntimeState, RunnerComputeFailure>;
   readonly remove: (sessionId: string) => Effect.Effect<IsolatedRuntimeState, RunnerComputeFailure>;
+  readonly mountedHttp: (
+    identity: { readonly runtimeId: string; readonly sessionId: string },
+    request: Request,
+    hostFetch: (request: Request) => Promise<Response>,
+  ) => Effect.Effect<Response, RunnerComputeFailure>;
 }
 
 export interface DockerRunnerComputeConfig {
@@ -79,6 +157,7 @@ export interface DockerRunnerComputeConfig {
   readonly gid: number;
   readonly safePath: string;
   readonly childEnvironment: Readonly<Record<string, string>>;
+  readonly runnerIdentity?: string;
   readonly memoryBytes?: number;
   readonly pidsLimit?: number;
 }
@@ -263,6 +342,14 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
       .makeDirectory(home, { recursive: true, mode: 0o700 })
       .pipe(fixedFailure("filesystem_failed"));
     yield* fs.chmod(home, 0o700).pipe(fixedFailure("filesystem_failed"));
+    const fixture = path.join(workspace, RUNNER_FIXTURE_FILE);
+    yield* fs
+      .writeFileString(
+        fixture,
+        runnerFixtureSource(sessionId, config.runnerIdentity ?? "slumbers-compatible"),
+      )
+      .pipe(fixedFailure("filesystem_failed"));
+    yield* fs.chmod(fixture, 0o600).pipe(fixedFailure("filesystem_failed"));
     const observed = yield* phase(container);
     if (observed === "absent") {
       yield* runRequired([
@@ -295,9 +382,8 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
         "/workspace",
         ...environmentArguments,
         config.image,
-        "tail",
-        "-f",
-        "/dev/null",
+        "python3",
+        `/workspace/${RUNNER_FIXTURE_FILE}`,
       ]);
       yield* runRequired(["container", "start", container]);
     } else if (observed === "stopped") {
@@ -336,11 +422,42 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
     return state(sessionId, "absent");
   });
 
+  const mountedHttp = Effect.fnUntraced(function* (
+    identity: { readonly runtimeId: string; readonly sessionId: string },
+    request: Request,
+    hostFetch: (request: Request) => Promise<Response>,
+  ) {
+    const { container, resourceId } = coordinates(identity.sessionId);
+    if (identity.runtimeId !== resourceId) {
+      return yield* new RunnerComputeFailure({ code: "runtime_not_running" });
+    }
+    if ((yield* phase(container)) !== "running") {
+      return yield* new RunnerComputeFailure({ code: "runtime_not_running" });
+    }
+    const inspected = yield* runRequired([
+      "container",
+      "inspect",
+      "--format={{.NetworkSettings.IPAddress}}",
+      container,
+    ]);
+    const address = inspected.stdout.trim();
+    if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)) {
+      return yield* new RunnerComputeFailure({ code: "process_failed" });
+    }
+    const source = new URL(request.url);
+    const target = `http://${address}:${RUNNER_FIXTURE_PORT}${source.pathname}${source.search}`;
+    return yield* Effect.tryPromise({
+      try: () => hostFetch(new Request(target, request)),
+      catch: () => new RunnerComputeFailure({ code: "process_failed" }),
+    });
+  });
+
   return {
     ensure,
     inspect,
     exec,
     stop,
     remove,
+    mountedHttp,
   } satisfies IsolatedRuntimeCompute;
 });
