@@ -24,7 +24,6 @@ const sleepingRecord = () =>
 const resumeEntries = (): Readonly<Record<string, unknown>> => ({
   [sessionHarnessKeys.record]: sleepingRecord(),
   [sessionHarnessKeys.credential]: makeStoredCredential(),
-  [sessionHarnessKeys.terminalAttachments]: [],
 });
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
@@ -51,28 +50,24 @@ describe("Sandbox resume orchestration", () => {
     assert.strictEqual(record?.operation, null);
     assert.strictEqual(record?.failure, undefined);
     assert.strictEqual(record?.backup?.current.id, "backup-1");
-    assert.strictEqual(harness.read(sessionHarnessKeys.terminalAttachments), undefined);
-
     const hardCapIndex = harness.events.indexOf("schedule:enforceHardCap");
     const restoreIndex = harness.events.indexOf("host:restoreBackup");
-    const attachmentDeleteIndex = harness.events.indexOf(
-      `storage:delete:${sessionHarnessKeys.terminalAttachments}`,
-    );
     const authIndex = harness.events.indexOf("host:mkdir");
-    const agentIndex = harness.events.indexOf("host:exec:agent");
+    const picanStartIndex = harness.events.indexOf("host:pican:start");
+    const picanReadyIndex = harness.events.indexOf("host:pican:ready");
     const warmIndex = harness.events.lastIndexOf("record:warm");
-    const captureIndex = harness.events.indexOf("schedule:captureThreadId");
     assert.ok(hardCapIndex >= 0);
     assert.ok(hardCapIndex < restoreIndex);
-    assert.ok(restoreIndex < attachmentDeleteIndex);
-    assert.ok(attachmentDeleteIndex < authIndex);
-    assert.ok(authIndex < agentIndex);
-    assert.ok(agentIndex < warmIndex);
-    assert.ok(warmIndex < captureIndex);
+    assert.ok(restoreIndex < authIndex);
+    assert.ok(authIndex < picanStartIndex);
+    assert.ok(picanStartIndex < picanReadyIndex);
+    assert.ok(picanReadyIndex < warmIndex);
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),
-      ["enforceHardCap", "captureThreadId"],
+      ["enforceHardCap"],
     );
+    assert.strictEqual(harness.picanStarts.length, 1);
+    assert.deepStrictEqual(harness.picanRequests, []);
     assert.deepStrictEqual(harness.aborts, []);
   });
 
@@ -117,13 +112,6 @@ describe("Sandbox resume orchestration", () => {
       },
     },
     {
-      name: "terminal attachment cleanup",
-      options: {
-        initialEntries: resumeEntries(),
-        failureStage: "terminalAttachmentCleanup" satisfies HarnessFailureStage,
-      },
-    },
-    {
       name: "credential require",
       options: {
         initialEntries: resumeEntries(),
@@ -138,10 +126,10 @@ describe("Sandbox resume orchestration", () => {
       },
     },
     {
-      name: "agent launch",
+      name: "Pican launch",
       options: {
         initialEntries: resumeEntries(),
-        failureStage: "agentLaunch" satisfies HarnessFailureStage,
+        failureStage: "picanLaunch" satisfies HarnessFailureStage,
       },
     },
   ] satisfies ReadonlyArray<{ readonly name: string; readonly options: HarnessOptions }>;

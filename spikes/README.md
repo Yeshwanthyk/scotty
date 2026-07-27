@@ -31,27 +31,3 @@ npx wrangler deploy --dry-run --config worker/wrangler.jsonc \
 
 `--containers-rollout none` skips the local Docker build while preserving the
 declared Container in Wrangler's generated metadata and binding report.
-
-## Disposable deployed probe
-
-Use a dedicated development account and R2 bucket. Never deploy this Worker
-without its random bearer token.
-
-```sh
-npx wrangler secret put PROBE_TOKEN --config spikes/wrangler.jsonc
-npx wrangler deploy --config spikes/wrangler.jsonc
-```
-
-Set `PROBE_URL` and `PROBE_TOKEN`, then exercise the RPC/storage, backup/restore,
-and scheduled callback surfaces:
-
-```sh
-curl -fsS -H "Authorization: Bearer $PROBE_TOKEN" "$PROBE_URL/rpc/probe-1"
-curl -fsS -X POST -H "Authorization: Bearer $PROBE_TOKEN" "$PROBE_URL/backup/probe-1"
-curl -fsS -X POST -H "Authorization: Bearer $PROBE_TOKEN" "$PROBE_URL/schedule/probe-1"
-```
-
-Connect a WebSocket client to `/terminal/probe-1` with the same Authorization
-header to inspect raw PTY bytes, input, resize behavior, and named-session
-reattachment. Production backup/restore also needs the Sandbox SDK's R2 access
-key secrets; the `BACKUP_BUCKET` binding alone only covers local backup mode.

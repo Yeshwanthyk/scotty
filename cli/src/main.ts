@@ -1,3 +1,4 @@
+import { NodeServices } from "@effect/platform-node";
 import { Effect } from "effect";
 import { execute } from "./commands";
 import { cliLayer, defaultDependencies, type CliDependencies } from "./dependencies";
@@ -18,6 +19,7 @@ export function main(
         return error.exitCode;
       }),
     ),
+    Effect.provide(NodeServices.layer),
     Effect.provide(cliLayer(overrides)),
   );
   // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: main is the single Bun/OS Promise boundary

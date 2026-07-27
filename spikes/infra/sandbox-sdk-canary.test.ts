@@ -75,16 +75,12 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
     );
     assert.match(workerSource, /export class ScottySandbox extends Sandbox/u);
     assert.match(workerSource, /export \{ ContainerProxy \}/u);
-    assert.match(
-      workerSource,
-      /terminal\(request, \{ cols: 80, rows: 24, shell: "\/bin\/cat" \}\)/u,
-    );
   });
 
   it("declares the public Alchemy topology and current Worker configuration", () => {
     const stackSource = readFileSync(new URL("./sandbox-sdk-canary.ts", import.meta.url), "utf8");
     const bindingSource = readFileSync(
-      new URL("./external-sandbox-container-binding.ts", import.meta.url),
+      new URL("../../infra/external-sandbox-container-binding.ts", import.meta.url),
       "utf8",
     );
     const providerSource = readFileSync(
@@ -131,7 +127,6 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
         "command",
         "files",
         "named-session",
-        "pty-websocket",
         "backup-restore",
         "lifecycle-callbacks",
         "outbound-interception",

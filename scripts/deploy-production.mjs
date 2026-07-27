@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
-import { PRODUCTION_CONTAINER_APPLICATION_ID } from "./reconcile-containers.mjs";
+import {
+  PRODUCTION_CONTAINER_APPLICATION_ID,
+  PRODUCTION_CONTAINER_APPLICATION_NAME,
+} from "./reconcile-containers.mjs";
 
 export const PRODUCTION_CLOUDFLARE_ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
 export const PRODUCTION_SCOTTY_HOST = "https://scotty-worker.example.workers.dev";
@@ -36,6 +39,10 @@ export const PRODUCTION_DEPLOY_STEPS = [
 ];
 
 const PRODUCTION_WORKER_NAME = "scotty-worker";
+const PRODUCTION_KV_TITLE = "scotty-sessions";
+const PRODUCTION_BACKUP_BUCKET_NAME = "scotty-backups";
+const PRODUCTION_SANDBOX_CLASS_NAME = "ScottySandbox";
+const PRODUCTION_AUTH_CLASS_NAME = "ScottyAuthRegistry";
 const DEPLOY_LOCK_PATH = join(tmpdir(), "scotty-production-deploy.lock");
 const DEFAULT_COMMAND_TIMEOUT_MS = 15 * 60 * 1_000;
 const CONTAINER_ROLLOUT_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -517,13 +524,22 @@ function sanitizedLocalEnvironment() {
 
 function productionEnvironment() {
   const accountId = PRODUCTION_CLOUDFLARE_ACCOUNT_ID;
+  const resourceConfirmation = [
+    "confirmed",
+    accountId,
+    `worker=${PRODUCTION_WORKER_NAME}`,
+    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME}`,
+    `container=${PRODUCTION_CONTAINER_APPLICATION_NAME}`,
+    `kv=${PRODUCTION_KV_TITLE}`,
+    `r2=${PRODUCTION_BACKUP_BUCKET_NAME}`,
+  ].join(":");
   return {
     ...sanitizedLocalEnvironment(),
     ALCHEMY_TELEMETRY_DISABLED: "1",
     CLOUDFLARE_ACCOUNT_ID: accountId,
     SCOTTY_CLOUDFLARE_ACCOUNT_ID: accountId,
-    SCOTTY_CHUNK2_ABSENCE_CONFIRMED: `absent:${accountId}:${PRODUCTION_WORKER_NAME}`,
-    SCOTTY_CHUNK2_APPROVE_GREENFIELD: `greenfield:${accountId}:${PRODUCTION_WORKER_NAME}`,
+    SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED: resourceConfirmation,
+    SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL: `deploy:${accountId}:${PRODUCTION_WORKER_NAME}`,
     SCOTTY_HOST: PRODUCTION_SCOTTY_HOST,
   };
 }

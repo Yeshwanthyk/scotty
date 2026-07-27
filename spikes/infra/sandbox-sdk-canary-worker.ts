@@ -68,7 +68,7 @@ export default {
   async fetch(request: Request, env: CanaryBindings): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") return Response.json({ ok: true, canary: "m01c" });
-    const match = /^\/m01c\/(core|backup|stop|state|reconstruct|pty)$/u.exec(url.pathname);
+    const match = /^\/m01c\/(core|backup|stop|state|reconstruct)$/u.exec(url.pathname);
     if (match === null || !match[1]) return new Response("Not found", { status: 404 });
     const sandboxId = `canary-${env.M01C_CANARY_STAGE}`;
     const sandbox = getSandbox<ScottySandbox>(env.SANDBOX, sandboxId, {
@@ -78,13 +78,6 @@ export default {
       normalizeId: true,
     });
 
-    if (match[1] === "pty") {
-      if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-        return new Response("WebSocket upgrade required", { status: 426 });
-      }
-      const session = await sandbox.getSession(sessionId);
-      return session.terminal(request, { cols: 80, rows: 24, shell: "/bin/cat" });
-    }
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
     if (match[1] === "state") {
       return Response.json({

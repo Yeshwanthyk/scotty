@@ -1,8 +1,8 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
-import { bindExternalSandboxContainer } from "./external-sandbox-container-binding.ts";
-import { MONOLITH_GREENFIELD_INHERITED_SECRETS } from "./monolith-greenfield.ts";
+import { CLOUDFLARE_WORKER_SECRETS } from "../../infra/cloudflare-stack.ts";
+import { bindExternalSandboxContainer } from "../../infra/external-sandbox-container-binding.ts";
 
 export const FULL_STACK_CANARY_STAGE_PREFIX = "scotty-e2e-";
 export const FULL_STACK_CANARY_DEPLOY_APPROVAL = "SCOTTY_E2E_APPROVE_DEPLOY";
@@ -79,16 +79,7 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   const assetConfig = {
     directory: "worker/public",
     binding: "ASSETS",
-    runWorkerFirst: [
-      "/__e2e/*",
-      "/api/*",
-      "/s/*",
-      "/sessions",
-      "/devices",
-      "/pair",
-      "/terminal",
-      "/health",
-    ],
+    runWorkerFirst: ["/__e2e/*", "/api/*", "/s/*", "/sessions", "/devices", "/pair", "/health"],
     htmlHandling: "none" as const,
     notFoundHandling: "404-page" as const,
   };
@@ -135,12 +126,11 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
       BACKUP_BUCKET: backups,
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: names.backups,
-      SCOTTY_FAKE_AGENT: "1",
       SCOTTY_E2E_CANARY_STAGE: config.stage,
     },
   }).pipe(removalPolicy);
   yield* worker.bind("InheritedWorkerSecrets", {
-    bindings: MONOLITH_GREENFIELD_INHERITED_SECRETS.map((name) => ({
+    bindings: CLOUDFLARE_WORKER_SECRETS.map((name) => ({
       type: "inherit" as const,
       name,
     })),

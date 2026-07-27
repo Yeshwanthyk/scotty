@@ -13,6 +13,7 @@ import { InMemoryFaultInjectableFake, makeCredentialVaultStorageFake } from "./s
 const NOW = Date.parse("2026-04-05T06:07:08.000Z");
 const CODEX_SENTINEL = "scotty-codex-session-sentinel";
 const GITHUB_SENTINEL = "scotty-github-session-sentinel";
+const PICAN_PROXY_TOKEN = "scotty-pican-proxy-token";
 const CODEX_SEED = JSON.stringify({
   tokens: {
     id_token: "seed-id-token",
@@ -25,6 +26,7 @@ const SEED = {
   codexAuthJson: CODEX_SEED,
   codexSentinel: CODEX_SENTINEL,
   githubSentinel: GITHUB_SENTINEL,
+  picanProxyToken: PICAN_PROXY_TOKEN,
 };
 
 const credential = (overrides: Partial<StoredCredential> = {}): StoredCredential => ({
@@ -42,6 +44,7 @@ const credential = (overrides: Partial<StoredCredential> = {}): StoredCredential
   githubToken: "stored-github-token",
   codexSentinel: CODEX_SENTINEL,
   githubSentinel: GITHUB_SENTINEL,
+  picanProxyToken: PICAN_PROXY_TOKEN,
   updatedAt: "2026-01-02T00:00:00.000Z",
   ...overrides,
 });
@@ -75,6 +78,7 @@ describe("CredentialVault", () => {
         githubToken: "seed-github-token",
         codexSentinel: CODEX_SENTINEL,
         githubSentinel: GITHUB_SENTINEL,
+        picanProxyToken: PICAN_PROXY_TOKEN,
         updatedAt: "2026-04-05T06:07:08.000Z",
       });
       assert.strictEqual(seeded.codex.tokens?.access_token, "seed-access-token");
@@ -97,6 +101,7 @@ describe("CredentialVault", () => {
                 codexAuthJson: JSON.stringify({ OPENAI_API_KEY: "codex-token-a" }),
                 codexSentinel: `${CODEX_SENTINEL}-a`,
                 githubSentinel: `${GITHUB_SENTINEL}-a`,
+                picanProxyToken: `${PICAN_PROXY_TOKEN}-a`,
               }),
             ),
           ),
@@ -109,6 +114,7 @@ describe("CredentialVault", () => {
                 codexAuthJson: JSON.stringify({ OPENAI_API_KEY: "codex-token-b" }),
                 codexSentinel: `${CODEX_SENTINEL}-b`,
                 githubSentinel: `${GITHUB_SENTINEL}-b`,
+                picanProxyToken: `${PICAN_PROXY_TOKEN}-b`,
               }),
             ),
           ),
@@ -122,11 +128,12 @@ describe("CredentialVault", () => {
         results[0].githubToken,
         results[0].codexSentinel,
         results[0].githubSentinel,
+        results[0].picanProxyToken,
       ].join("|");
       assert.ok(
         [
-          `codex-token-a|github-token-a|${CODEX_SENTINEL}-a|${GITHUB_SENTINEL}-a`,
-          `codex-token-b|github-token-b|${CODEX_SENTINEL}-b|${GITHUB_SENTINEL}-b`,
+          `codex-token-a|github-token-a|${CODEX_SENTINEL}-a|${GITHUB_SENTINEL}-a|${PICAN_PROXY_TOKEN}-a`,
+          `codex-token-b|github-token-b|${CODEX_SENTINEL}-b|${GITHUB_SENTINEL}-b|${PICAN_PROXY_TOKEN}-b`,
         ].includes(authorityTuple),
       );
     }),
@@ -148,35 +155,16 @@ describe("CredentialVault", () => {
     }),
   );
 
-  it.effect("fills a valid legacy GitHub field exactly once without changing legacy state", () =>
-    Effect.gen(function* () {
-      const { githubToken: _githubToken, ...legacy } = credential({
-        refreshLease: { nonce: "held", startedAt: "2026-01-02T00:00:01.000Z" },
-      });
-      const storage = makeCredentialVaultStorageFake(legacy);
-      const migrated = yield* withVault(
-        storage,
-        "first-github-token",
-        vaultEffect((vault) => vault.require),
-      );
-      assert.deepStrictEqual(migrated, { ...legacy, githubToken: "first-github-token" });
-
-      const reconstructed = yield* withVault(
-        storage,
-        "changed-github-token",
-        vaultEffect((vault) => vault.require),
-      );
-      assert.deepStrictEqual(reconstructed, migrated);
-    }),
-  );
-
   it.effect("fails closed for malformed present authority without reseeding", () =>
     Effect.gen(function* () {
       const honeypot = "honeypot-malformed-github-secret";
-      const { githubToken: _githubToken, ...legacy } = credential();
+      const { githubToken: _githubToken, ...missingGithubToken } = credential();
+      const { picanProxyToken: _picanProxyToken, ...missingPicanProxyToken } = credential();
       for (const malformed of [
         { ...credential(), githubToken: "" },
-        { ...legacy, unexpected: honeypot },
+        missingGithubToken,
+        missingPicanProxyToken,
+        { ...credential(), unexpected: honeypot },
         { ...credential(), updatedAt: "not-a-timestamp" },
         {
           ...credential(),
@@ -227,6 +215,18 @@ describe("CredentialVault", () => {
         reason: "invalid_seed",
         message: "GH_TOKEN is missing or invalid",
       });
+
+      const missingPicanProxyToken = yield* Effect.result(
+        withVault(
+          makeCredentialVaultStorageFake(),
+          "github-seed",
+          vaultEffect((vault) => vault.seed({ ...SEED, picanProxyToken: "" })),
+        ),
+      );
+      assert.deepInclude(failure(missingPicanProxyToken), {
+        reason: "invalid_seed",
+        message: "Credential seed is missing or invalid",
+      });
     }),
   );
 
@@ -249,6 +249,14 @@ describe("CredentialVault", () => {
           storage,
           "ignored",
           vaultEffect((vault) => vault.readForProxy(`${CODEX_SENTINEL}-wrong`)),
+        ),
+        null,
+      );
+      assert.strictEqual(
+        yield* withVault(
+          storage,
+          "ignored",
+          vaultEffect((vault) => vault.readForProxy(PICAN_PROXY_TOKEN)),
         ),
         null,
       );
@@ -350,6 +358,7 @@ describe("CredentialVault", () => {
       assert.strictEqual(read?.githubToken, "stored-github-token");
       assert.strictEqual(read?.codexSentinel, CODEX_SENTINEL);
       assert.strictEqual(read?.githubSentinel, GITHUB_SENTINEL);
+      assert.strictEqual(read?.picanProxyToken, PICAN_PROXY_TOKEN);
       assert.ok(!("ignored" in (read ?? {})));
       assert.strictEqual(read?.refreshLease, undefined);
       assert.strictEqual(read?.updatedAt, "2026-04-05T06:07:09.000Z");

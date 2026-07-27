@@ -6,18 +6,12 @@ const CLIENT_CREDENTIAL_PREFIX = "scotty_client";
 const PAIRING_CREDENTIAL_PREFIX = "scotty_pair";
 const OWNER_TRANSFER_CREDENTIAL_PREFIX = "scotty_transfer";
 const RECOVERY_CREDENTIAL_PREFIX = "scotty_recovery";
-const TERMINAL_TICKET_PREFIX = "scotty_pty";
 const MAX_CLIENTS = 64;
 const MAX_PAIRINGS = 32;
-const MAX_TERMINAL_TICKETS = 128;
 const OWNER_RENEWAL_WINDOW_MILLIS = 7 * 24 * 60 * 60 * 1_000;
 const OWNER_TTL_MILLIS = 30 * 24 * 60 * 60 * 1_000;
 
-export const STANDARD_AUTH_SCOPES = [
-  "sessions:read",
-  "sessions:write",
-  "terminal:connect",
-] as const;
+export const STANDARD_AUTH_SCOPES = ["sessions:read", "sessions:write"] as const;
 
 export const ADMIN_AUTH_SCOPES = [...STANDARD_AUTH_SCOPES, "access:read", "access:write"] as const;
 
@@ -50,21 +44,10 @@ const PairingGrantRecordV1Schema = Schema.Struct({
 });
 type PairingGrantRecordV1 = typeof PairingGrantRecordV1Schema.Type;
 
-const TerminalTicketRecordSchema = Schema.Struct({
-  id: Schema.String,
-  credentialDigest: Schema.String,
-  clientId: Schema.String,
-  sessionId: Schema.String,
-  createdAt: Schema.String,
-  expiresAt: Schema.String,
-});
-type TerminalTicketRecord = typeof TerminalTicketRecordSchema.Type;
-
 export const AuthAuthorityV1Schema = Schema.Struct({
   version: Schema.Literal(1),
   clients: Schema.Array(AuthClientRecordV1Schema),
   pairings: Schema.Array(PairingGrantRecordV1Schema),
-  terminalTickets: Schema.Array(TerminalTicketRecordSchema),
 });
 export type AuthAuthorityV1 = typeof AuthAuthorityV1Schema.Type;
 
@@ -132,7 +115,6 @@ export const AuthAuthoritySchema = Schema.Struct({
   pairings: Schema.Array(PairingGrantRecordSchema),
   ownerTransfer: Schema.optionalKey(OwnerTransferRecordSchema),
   recoveryGrant: Schema.optionalKey(RecoveryGrantRecordSchema),
-  terminalTickets: Schema.Array(TerminalTicketRecordSchema),
 });
 export type AuthAuthority = typeof AuthAuthoritySchema.Type;
 
@@ -177,13 +159,6 @@ const RecoveryGrantCandidateSchema = Schema.Struct({
   idempotencyKey: Schema.optionalKey(Schema.String),
 });
 export type RecoveryGrantCandidate = typeof RecoveryGrantCandidateSchema.Type;
-
-const TerminalTicketCandidateSchema = Schema.Struct({
-  credential: CredentialCandidateSchema,
-  sessionId: Schema.String,
-  ttlMillis: Schema.Number,
-});
-export type TerminalTicketCandidate = typeof TerminalTicketCandidateSchema.Type;
 
 export const AuthClientViewSchema = Schema.Struct({
   id: Schema.String,
@@ -236,11 +211,6 @@ export interface IssuedRecoveryGrant {
   readonly expiresAt: string;
 }
 
-export interface IssuedTerminalTicket {
-  readonly credential: string;
-  readonly expiresAt: string;
-}
-
 export type AuthRegistryFailureReason =
   | "capacity"
   | "client_missing"
@@ -254,7 +224,6 @@ export type AuthRegistryFailureReason =
   | "recovery_invalid"
   | "self_revoke"
   | "storage"
-  | "ticket_invalid"
   | "transfer_invalid"
   | "transfer_pending";
 
@@ -317,14 +286,6 @@ interface AuthRegistryShape {
     credential: unknown,
     ownerClient: unknown,
   ) => Effect.Effect<IssuedClientCredential, AuthRegistryFailure>;
-  readonly issueTerminalTicket: (
-    parentCredential: unknown,
-    candidate: unknown,
-  ) => Effect.Effect<IssuedTerminalTicket, AuthRegistryFailure>;
-  readonly consumeTerminalTicket: (
-    credential: unknown,
-    sessionId: string,
-  ) => Effect.Effect<AuthClientView, AuthRegistryFailure>;
 }
 
 export class AuthRegistry extends Context.Service<AuthRegistry, AuthRegistryShape>()(
@@ -371,16 +332,11 @@ const decodeReplacementCredentialCandidate = Schema.decodeUnknownResult(
 const decodeRecoveryGrantCandidate = Schema.decodeUnknownResult(RecoveryGrantCandidateSchema, {
   onExcessProperty: "error",
 });
-const decodeTerminalTicketCandidate = Schema.decodeUnknownResult(TerminalTicketCandidateSchema, {
-  onExcessProperty: "error",
-});
-
 const emptyAuthority = (): AuthAuthority => ({
   version: 2,
   ownership: { state: "unclaimed", epoch: 0 },
   clients: [],
   pairings: [],
-  terminalTickets: [],
 });
 
 const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
@@ -614,9 +570,6 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           ...(authority.recoveryGrant === undefined
             ? {}
             : { recoveryGrant: authority.recoveryGrant }),
-          terminalTickets: authority.terminalTickets.filter(
-            (ticket) => ticket.clientId !== clientId,
-          ),
         };
         return Result.succeed({ value: undefined, authority: nextAuthority });
       }),
@@ -645,9 +598,6 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           ...(authority.recoveryGrant === undefined
             ? {}
             : { recoveryGrant: authority.recoveryGrant }),
-          terminalTickets: authority.terminalTickets.filter(
-            (ticket) => ticket.clientId !== client.success.id,
-          ),
         };
         return Result.succeed({ value: undefined, authority: nextAuthority });
       }),
@@ -740,7 +690,6 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
             ...(authority.recoveryGrant === undefined
               ? {}
               : { recoveryGrant: authority.recoveryGrant }),
-            terminalTickets: authority.terminalTickets,
           },
         });
       }),
@@ -806,9 +755,6 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           },
           clients: nextClients,
           pairings: [],
-          terminalTickets: authority.terminalTickets.filter(
-            (ticket) => ticket.clientId !== source.id && ticket.clientId !== target.success.id,
-          ),
         };
         const nextTarget = nextClients[targetIndex];
         return Result.succeed({
@@ -896,7 +842,6 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           },
           clients: nextClients,
           pairings: [],
-          terminalTickets: [],
         };
         return Result.succeed({
           value: {
@@ -904,72 +849,6 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
             client: toClientView(client.success.record, nextAuthority, client.success.record.id),
           },
           authority: nextAuthority,
-        });
-      }),
-
-    issueTerminalTicket: (parentCredential, candidateValue) =>
-      transact(async (authority, nowMillis) => {
-        const authenticated = await authenticateClient(
-          authority,
-          parentCredential,
-          nowMillis,
-          failure,
-        );
-        if (Result.isFailure(authenticated)) return Result.fail(authenticated.failure);
-        const decoded = Result.mapError(
-          decodeTerminalTicketCandidate(candidateValue),
-          invalidInput,
-        );
-        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
-        const candidate = decoded.success;
-        if (!validCandidate(candidate.credential) || !validTtl(candidate.ttlMillis))
-          return Result.fail(invalidInput());
-        if (authority.terminalTickets.length >= MAX_TERMINAL_TICKETS)
-          return Result.fail(failure("capacity", "Active terminal ticket limit reached"));
-        const record: TerminalTicketRecord = {
-          id: candidate.credential.id,
-          credentialDigest: await sha256Hex(candidate.credential.secret),
-          clientId: authenticated.success.id,
-          sessionId: candidate.sessionId,
-          createdAt: toIso(nowMillis),
-          expiresAt: toIso(nowMillis + candidate.ttlMillis),
-        };
-        return Result.succeed({
-          value: {
-            credential: formatCredential(TERMINAL_TICKET_PREFIX, candidate.credential),
-            expiresAt: record.expiresAt,
-          },
-          authority: {
-            ...authority,
-            terminalTickets: [...authority.terminalTickets, record],
-          },
-        });
-      }),
-
-    consumeTerminalTicket: (credentialValue, sessionId) =>
-      transact(async (authority, nowMillis) => {
-        const parsed = parseCredential(credentialValue, TERMINAL_TICKET_PREFIX, () =>
-          ticketInvalid(failure),
-        );
-        if (Result.isFailure(parsed)) return Result.fail(parsed.failure);
-        const ticketIndex = authority.terminalTickets.findIndex(
-          (ticket) => ticket.id === parsed.success.id && ticket.sessionId === sessionId,
-        );
-        if (ticketIndex < 0) return Result.fail(ticketInvalid(failure));
-        const ticket = authority.terminalTickets[ticketIndex];
-        const digest = await sha256Hex(parsed.success.secret);
-        if (!safeDigestEqual(digest, ticket.credentialDigest))
-          return Result.fail(ticketInvalid(failure));
-        const client = activeClients(authority, nowMillis).find(
-          (candidate) => candidate.id === ticket.clientId,
-        );
-        if (!client) return Result.fail(ticketInvalid(failure));
-        return Result.succeed({
-          value: toClientView(client, authority),
-          authority: {
-            ...authority,
-            terminalTickets: authority.terminalTickets.filter((_, index) => index !== ticketIndex),
-          },
         });
       }),
   });
@@ -1056,13 +935,10 @@ function validAuthorityV1(authority: AuthAuthorityV1): boolean {
   return (
     authority.clients.length <= MAX_CLIENTS * 2 &&
     authority.pairings.length <= MAX_PAIRINGS &&
-    authority.terminalTickets.length <= MAX_TERMINAL_TICKETS &&
     uniqueIds(authority.clients) &&
     uniqueIds(authority.pairings) &&
-    uniqueIds(authority.terminalTickets) &&
     authority.clients.every(validClientRecordV1) &&
-    authority.pairings.every(validPairingRecordV1) &&
-    authority.terminalTickets.every(validTerminalTicketRecord)
+    authority.pairings.every(validPairingRecordV1)
   );
 }
 
@@ -1075,21 +951,12 @@ function validAuthority(authority: AuthAuthority): boolean {
   return (
     authority.clients.length <= MAX_CLIENTS * 2 + 1 &&
     authority.pairings.length <= MAX_PAIRINGS &&
-    authority.terminalTickets.length <= MAX_TERMINAL_TICKETS &&
     validEpoch(authority.ownership.epoch) &&
     (authority.ownership.state === "unclaimed" || Boolean(owner && !owner.revokedAt)) &&
     uniqueIds(authority.clients) &&
     uniqueIds(authority.pairings) &&
-    uniqueIds(authority.terminalTickets) &&
     authority.clients.every(validClientRecord) &&
     authority.pairings.every(validPairingRecord) &&
-    authority.terminalTickets.every(
-      (ticket) =>
-        validTerminalTicketRecord(ticket) &&
-        authority.clients.some(
-          (client) => client.id === ticket.clientId && client.revokedAt === undefined,
-        ),
-    ) &&
     (transfer === undefined ||
       (validOwnerTransferRecord(transfer) &&
         authority.ownership.state === "claimed" &&
@@ -1173,15 +1040,6 @@ function validRecoveryGrantRecord(grant: RecoveryGrantRecord): boolean {
   );
 }
 
-function validTerminalTicketRecord(ticket: TerminalTicketRecord): boolean {
-  return (
-    validStoredCredential(ticket.id, ticket.credentialDigest) &&
-    validClientId(ticket.clientId) &&
-    /^[a-z0-9][a-z0-9-]{5,31}$/u.test(ticket.sessionId) &&
-    validRecordTimestamps(ticket)
-  );
-}
-
 function validStoredCredential(id: string, digest: string): boolean {
   return validClientId(id) && /^[0-9a-f]{64}$/u.test(digest);
 }
@@ -1243,7 +1101,6 @@ function migrateAuthority(authority: AuthAuthorityV1, nowMillis: number): AuthAu
         ...(client.userAgent === undefined ? {} : { userAgent: client.userAgent }),
       })),
     pairings: [],
-    terminalTickets: [],
   };
 }
 
@@ -1274,15 +1131,11 @@ function purgeExpired(authority: AuthAuthority, nowMillis: number): AuthAuthorit
     authority.recoveryGrant.ownerEpoch === authority.ownership.epoch
       ? authority.recoveryGrant
       : undefined;
-  const terminalTickets = authority.terminalTickets.filter(
-    (ticket) => Date.parse(ticket.expiresAt) > nowMillis && activeIds.has(ticket.clientId),
-  );
   if (
     clients.length === authority.clients.length &&
     pairings.length === authority.pairings.length &&
     ownerTransfer === authority.ownerTransfer &&
-    recoveryGrant === authority.recoveryGrant &&
-    terminalTickets.length === authority.terminalTickets.length
+    recoveryGrant === authority.recoveryGrant
   )
     return authority;
   return {
@@ -1292,7 +1145,6 @@ function purgeExpired(authority: AuthAuthority, nowMillis: number): AuthAuthorit
     pairings,
     ...(ownerTransfer === undefined ? {} : { ownerTransfer }),
     ...(recoveryGrant === undefined ? {} : { recoveryGrant }),
-    terminalTickets,
   };
 }
 
@@ -1384,10 +1236,4 @@ function recoveryInvalid(
   failure: (reason: AuthRegistryFailureReason, message: string) => AuthRegistryFailure,
 ): AuthRegistryFailure {
   return failure("recovery_invalid", "Recovery link is invalid or expired");
-}
-
-function ticketInvalid(
-  failure: (reason: AuthRegistryFailureReason, message: string) => AuthRegistryFailure,
-): AuthRegistryFailure {
-  return failure("ticket_invalid", "Terminal ticket is invalid or expired");
 }

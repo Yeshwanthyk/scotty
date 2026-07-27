@@ -8,7 +8,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import { readFileSync } from "node:fs";
 import { assert, expect, it } from "vitest";
-import { bindExternalSandboxContainer } from "./external-sandbox-container-binding.ts";
+import { bindExternalSandboxContainer } from "../../infra/external-sandbox-container-binding.ts";
 
 interface ProofWorker extends AlchemyResource<
   "Scotty.ProofWorker",
@@ -309,7 +309,7 @@ test.provider("public binding topology converges through the synthetic provider 
 
 it("uses public Alchemy package entry points only", () => {
   const source = readFileSync(
-    new URL("./external-sandbox-container-binding.ts", import.meta.url),
+    new URL("../../infra/external-sandbox-container-binding.ts", import.meta.url),
     "utf8",
   );
 

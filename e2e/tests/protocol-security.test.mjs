@@ -13,7 +13,7 @@ async function create(service, prompt = "protocol fixture") {
   const response = await fetch(`${service.url}/api/sessions`, {
     method: "POST",
     headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, provider: "cloudflare", repo: "owner/project" }),
   });
   assert.equal(response.status, 200);
   return response.json();
@@ -23,7 +23,7 @@ async function createForRepo(service, repo) {
   const response = await fetch(`${service.url}/api/sessions`, {
     method: "POST",
     headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ prompt: `work on ${repo}`, repo }),
+    body: JSON.stringify({ prompt: `work on ${repo}`, provider: "cloudflare", repo }),
   });
   assert.equal(response.status, 200);
   return response.json();
@@ -101,50 +101,6 @@ async function pairClient(service, ownerCookie, label) {
   return { cookie: cookieHeader(consumed), client: body.client, pairing, token };
 }
 
-async function issueTerminalTicket(service, sessionId, cookie) {
-  const response = await fetch(`${service.url}/api/sessions/${sessionId}/pty-ticket`, {
-    method: "POST",
-    headers: { cookie, origin: service.url },
-  });
-  assert.equal(response.status, 200);
-  return response.json();
-}
-
-function connect(url) {
-  return new Promise((resolve, reject) => {
-    const messages = [];
-    const socket = new WebSocket(url);
-    const timer = setTimeout(() => reject(new Error("websocket ready timeout")), 3_000);
-    socket.binaryType = "arraybuffer";
-    socket.addEventListener("message", (event) => {
-      const value =
-        typeof event.data === "string" ? event.data : Buffer.from(event.data).toString();
-      messages.push(value);
-      if (messages.some((message) => message.includes('"type":"ready"'))) {
-        clearTimeout(timer);
-        resolve({ socket, messages });
-      }
-    });
-    socket.addEventListener("error", () => reject(new Error(`websocket failed: ${url}`)), {
-      once: true,
-    });
-  });
-}
-
-function waitForAck(socket) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("websocket ack timeout")), 3_000);
-    socket.addEventListener("message", function listener(event) {
-      const value =
-        typeof event.data === "string" ? event.data : Buffer.from(event.data).toString();
-      if (!value.includes('"type":"ack"')) return;
-      clearTimeout(timer);
-      socket.removeEventListener("message", listener);
-      resolve(JSON.parse(value));
-    });
-  });
-}
-
 test("root bearer stays out of browser URLs and recovery creates the only owner cookie", async (t) => {
   const service = await new FakeWorkerService().start();
   t.after(() => service.stop());
@@ -177,11 +133,7 @@ test("root bearer stays out of browser URLs and recovery creates the only owner 
   const authority = service.inspect().auth;
   assert.equal(authority.ownership.state, "claimed");
   assert.equal(authority.clients.length, 1);
-  assert.deepEqual(authority.clients[0].scopes, [
-    "sessions:read",
-    "sessions:write",
-    "terminal:connect",
-  ]);
+  assert.deepEqual(authority.clients[0].scopes, ["sessions:read", "sessions:write"]);
   assert.doesNotMatch(JSON.stringify(authority), new RegExp(owner.grant.token));
 });
 
@@ -198,7 +150,7 @@ test("V1 migration, recovery, pairing, transfer, and a second recovery preserve 
   assert.equal(migratedRead.status, 200);
   const migrated = service.inspect().auth;
   assert.deepEqual(migrated.ownership, { state: "unclaimed", epoch: 0 });
-  assert.ok(migrated.clients.every((client) => client.scopes.length === 3));
+  assert.ok(migrated.clients.every((client) => client.scopes.length === 2));
   assert.equal(migrated.pairings.length, 0);
   const legacyOwnerRoute = await fetch(`${service.url}/api/auth/clients`, {
     headers: { cookie: legacyCookie },
@@ -337,7 +289,13 @@ test("fake protocol matches production cap parsing, floor rounding, and backup h
   const response = await fetch(`${service.url}/api/sessions`, {
     method: "POST",
     headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ prompt: "contract fixture", cap: "1h", hardCapSeconds: 90 }),
+    body: JSON.stringify({
+      prompt: "contract fixture",
+      provider: "cloudflare",
+      repo: "owner/project",
+      cap: "1h",
+      hardCapSeconds: 90,
+    }),
   });
   assert.equal(response.status, 200);
   const session = await response.json();
@@ -436,80 +394,27 @@ test("source-control publishing route is unavailable", async (t) => {
   assert.equal(response.status, 404);
 });
 
-test("PTY auth, binary-before-ready, resize, and reconnect preserve the named runtime", async (t) => {
+test("Pican stays mounted below the authenticated session path", async (t) => {
   const service = await new FakeWorkerService().start();
   t.after(() => service.stop());
   const session = await create(service);
   const owner = await recoverOwner(service);
-  const wsBase = service.url.replace(/^http/, "ws");
+  const headers = { cookie: owner.cookie };
+  const shell = await fetch(`${service.url}/s/${session.id}`, { headers });
+  assert.equal(shell.status, 200);
+  assert.match(await shell.text(), new RegExp(`/s/${session.id}/assets/app\\.js`, "u"));
 
-  const rejected = await new Promise((resolve) => {
-    const socket = new WebSocket(`${wsBase}/api/sessions/${session.id}/pty`);
-    socket.addEventListener("open", () => resolve(false), { once: true });
-    socket.addEventListener("error", () => resolve(true), { once: true });
+  const asset = await fetch(`${service.url}/s/${session.id}/assets/app.js`, { headers });
+  assert.equal(asset.status, 200);
+  assert.match(await asset.text(), new RegExp(`/s/${session.id}`, "u"));
+
+  const hostedRuntime = await fetch(`${service.url}/s/${session.id}/api/hosted-runtime`, {
+    headers,
   });
-  assert.equal(rejected, true, "unauthenticated PTY must not upgrade");
-
-  const firstTicket = await issueTerminalTicket(service, session.id, owner.cookie);
-  const first = await connect(
-    `${wsBase}/api/sessions/${session.id}/pty?ticket=${encodeURIComponent(firstTicket.credential)}`,
-  );
-  assert.equal(
-    first.messages[0],
-    "fake-agent$ ",
-    "PTY may emit binary output before its ready control frame",
-  );
-  const firstReady = JSON.parse(
-    first.messages.find((message) => message.includes('"type":"ready"')),
-  );
-  const ackPromise = waitForAck(first.socket);
-  first.socket.send(JSON.stringify({ type: "resize", cols: 120, rows: 40 }));
-  const resizeAck = await ackPromise;
-  assert.equal(resizeAck.resizeCount, 1);
-  first.socket.close();
-
-  const replayRejected = await new Promise((resolve) => {
-    const socket = new WebSocket(
-      `${wsBase}/api/sessions/${session.id}/pty?ticket=${encodeURIComponent(firstTicket.credential)}`,
-    );
-    socket.addEventListener("open", () => resolve(false), { once: true });
-    socket.addEventListener("error", () => resolve(true), { once: true });
-  });
-  assert.equal(replayRejected, true, "terminal tickets must work exactly once");
-
-  const secondTicket = await issueTerminalTicket(service, session.id, owner.cookie);
-  const second = await connect(
-    `${wsBase}/api/sessions/${session.id}/pty?ticket=${encodeURIComponent(secondTicket.credential)}`,
-  );
-  const secondReady = JSON.parse(
-    second.messages.find((message) => message.includes('"type":"ready"')),
-  );
-  assert.equal(
-    secondReady.generation,
-    firstReady.generation,
-    "reconnect must attach to the same managed runtime generation",
-  );
-  const inputAckPromise = waitForAck(second.socket);
-  second.socket.send(JSON.stringify({ type: "input", data: "echo still-alive\\r" }));
-  const inputAck = await inputAckPromise;
-  assert.equal(inputAck.inputCount, 1);
-  await service.forceHardCap(session.id);
-  assert.equal(
-    service.sessions.get(session.id).status,
-    "sleeping",
-    "an attached PTY must not extend the hard cap",
-  );
-  assert.equal(
-    service.runtimes.has(session.id),
-    false,
-    "hard cap must destroy an attached runtime",
-  );
-  second.socket.close();
-  const backedUpRuntime = service.backups.get(
-    service.sessions.get(session.id).backup.current.id,
-  ).runtime;
-  assert.deepEqual(backedUpRuntime.ptyResizes, [{ cols: 120, rows: 40 }]);
-  assert.deepEqual(backedUpRuntime.ptyInputs, ["echo still-alive\\r"]);
+  assert.equal(hostedRuntime.status, 200);
+  assert.deepEqual(await hostedRuntime.json(), service.runtimes.get(session.id).pican);
+  assert.equal(service.runtimes.get(session.id).pican.processId, "scotty-pican");
+  assert.match(service.runtimes.get(session.id).processList, /\/usr\/local\/bin\/pican/u);
 });
 
 test("sentinels are visible, real credentials are absent, and egress is default-deny", async (t) => {

@@ -3,7 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
 export { accountSecretsStoreWorkerBinding as m01cAccountSecretBinding } from "./account-secrets-store-binding.ts";
-import { bindExternalSandboxContainer } from "./external-sandbox-container-binding.ts";
+import { bindExternalSandboxContainer } from "../../infra/external-sandbox-container-binding.ts";
 
 export const M01C_STACK_NAME = "ScottyM01CSandboxCanary";
 export const M01C_STAGE_PREFIX = "m01c-canary-";
@@ -47,7 +47,6 @@ export interface M01CLiveAssertion {
     | "command"
     | "files"
     | "named-session"
-    | "pty-websocket"
     | "backup-restore"
     | "lifecycle-callbacks"
     | "outbound-interception"
@@ -73,11 +72,6 @@ export const M01C_LIVE_ASSERTIONS: readonly M01CLiveAssertion[] = [
     id: "named-session",
     status: "verified-live",
     assertion: "A named execution session preserves cwd and environment between commands.",
-  },
-  {
-    id: "pty-websocket",
-    status: "verified-live",
-    assertion: "The native terminal callback upgrades, exchanges binary data, and reconnects.",
   },
   {
     id: "backup-restore",

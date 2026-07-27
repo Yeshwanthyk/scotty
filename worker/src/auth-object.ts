@@ -12,7 +12,6 @@ import {
   type IssuedOwnerTransfer,
   type IssuedPairingGrant,
   type IssuedRecoveryGrant,
-  type IssuedTerminalTicket,
   type OwnerTransferView,
 } from "./auth-registry";
 import { constantTimeStringEqual } from "./digest";
@@ -21,7 +20,6 @@ const PAIRING_TTL_MILLIS = 5 * 60 * 1_000;
 const CLIENT_TTL_MILLIS = 30 * 24 * 60 * 60 * 1_000;
 const OWNER_TRANSFER_TTL_MILLIS = 5 * 60 * 1_000;
 const RECOVERY_TTL_MILLIS = 5 * 60 * 1_000;
-const TERMINAL_TICKET_TTL_MILLIS = 5 * 60 * 1_000;
 
 export interface AuthRpcError {
   readonly reason: AuthRegistryFailure["reason"];
@@ -177,32 +175,6 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
     );
   }
 
-  issueTerminalTicket(
-    parentCredential: string,
-    sessionId: string,
-  ): Promise<AuthRpcResult<IssuedTerminalTicket>> {
-    return this.#run(
-      Effect.flatMap(AuthRegistry, (registry) =>
-        registry.issueTerminalTicket(parentCredential, {
-          credential: randomCredentialCandidate(),
-          sessionId,
-          ttlMillis: TERMINAL_TICKET_TTL_MILLIS,
-        }),
-      ),
-    );
-  }
-
-  consumeTerminalTicket(
-    credential: string,
-    sessionId: string,
-  ): Promise<AuthRpcResult<AuthClientView>> {
-    return this.#run(
-      Effect.flatMap(AuthRegistry, (registry) =>
-        registry.consumeTerminalTicket(credential, sessionId),
-      ),
-    );
-  }
-
   async #run<A>(
     operation: Effect.Effect<A, AuthRegistryFailure, AuthRegistry>,
   ): Promise<AuthRpcResult<A>> {
@@ -228,11 +200,9 @@ export type ScottyAuthRegistryStub = Pick<
   | "cancelOwnerTransfer"
   | "consumePairing"
   | "consumeRecoveryGrant"
-  | "consumeTerminalTicket"
   | "currentOwnerTransfer"
   | "issuePairing"
   | "issueRecoveryGrant"
-  | "issueTerminalTicket"
   | "listClients"
   | "logoutClient"
   | "revokeClient"

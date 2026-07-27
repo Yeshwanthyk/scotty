@@ -78,6 +78,7 @@ Use the project skills under `.agents/skills` when a matching lint diagnostic or
 - [`wrapping-promise-clients`](.agents/skills/wrapping-promise-clients/SKILL.md) for Promise SDK adapters.
 - [`testing-effect-programs`](.agents/skills/testing-effect-programs/SKILL.md) for `@effect/vitest`, `it.effect`, `assert`, and `TestClock`.
 - [`maintaining-typescript-safety`](.agents/skills/maintaining-typescript-safety/SKILL.md) for casts, host/runtime boundaries, and execution ownership.
+- [`modeling-effect-cli`](.agents/skills/modeling-effect-cli/SKILL.md) for typed commands, nested subcommands, flags, help, parser output, and exit behavior.
 - [`routing-effect-http`](.agents/skills/routing-effect-http/SKILL.md) for Effect HTTP routing with native Cloudflare host types.
 
 Raw fetch follows the same domain/host split as Effect execution. Migrated Effect domain modules use `HttpClient` and `HttpClientRequest` from `effect/unstable/http` for outbound HTTP. Native Cloudflare `Request`, `Response`, WebSocket, and stream handling; Worker handler methods; ASSETS and service-binding `.fetch` methods; egress native streaming proxy fetch; and CLI host-boundary fetch remain explicit host adapters. Enable `scotty/no-raw-fetch` only in the strict migrated-production override, not globally or for tests and host modules.

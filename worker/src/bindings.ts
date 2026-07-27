@@ -10,7 +10,6 @@ export interface Bindings {
   SCOTTY_TOKEN: string;
   CODEX_AUTH_JSON: string;
   GH_TOKEN: string;
-  SCOTTY_FAKE_AGENT?: string;
   SCOTTY_LOCAL_BACKUP?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;

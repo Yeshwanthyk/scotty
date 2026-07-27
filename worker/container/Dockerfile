@@ -93,10 +93,7 @@ ENV LANG=en_US.UTF-8 \
   UV_PYTHON_INSTALL_DIR=/opt/uv/python \
   UV_PYTHON_BIN_DIR=/usr/local/bin
 
-RUN mkdir -p /cache /workspace \
-  && git clone --bare https://github.com/anomalyco/rift.git /cache/rift.git \
-  && git -C /cache/rift.git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' \
-  && git -C /cache/rift.git fetch --prune origin
+RUN mkdir -p /workspace
 
 COPY --from=scotty-cli-build /out/scotty /usr/local/bin/scotty
 COPY worker/container/skills/bundled /opt/scotty/skills
@@ -104,21 +101,19 @@ COPY worker/container/skills/licenses /opt/scotty/licenses
 COPY worker/container/skills/THIRD_PARTY_NOTICES.md /opt/scotty/THIRD_PARTY_NOTICES.md
 COPY worker/container/skills/skills.lock.json /opt/scotty/skills.lock.json
 COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
-COPY worker/container/bootstrap.sh /usr/local/bin/scotty-bootstrap
-COPY worker/container/scotty-attach /usr/local/bin/scotty-attach
-COPY worker/container/sheppard-linux-amd64 /usr/local/bin/sheppard
+COPY worker/container/pican-linux-amd64.lock.json /opt/scotty/pican-linux-amd64.lock.json
+COPY worker/container/pican-linux-amd64 /usr/local/bin/pican
 RUN chmod 0755 \
+    /usr/local/bin/pican \
     /usr/local/bin/scotty \
-    /usr/local/bin/scotty-bootstrap \
-    /usr/local/bin/scotty-attach \
-    /usr/local/bin/sheppard \
   && chmod -R a-w /opt/scotty/skills \
-  && echo "2502c634d3ce34cccc3d55c8573b52c6ba29a46b66404bde65374aeff302ee4b  /usr/local/bin/sheppard" | sha256sum --check --strict \
+  && echo "$(jq --raw-output .binarySha256 /opt/scotty/pican-linux-amd64.lock.json)  /usr/local/bin/pican" | sha256sum --check --strict \
+  && test "$(pican --version)" = "$(jq --raw-output .sourceCommit /opt/scotty/pican-linux-amd64.lock.json)" \
   && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
   && scotty tools list --json >/dev/null \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python git gh tmux shellcheck \
-    node npm bun corepack cc pkg-config codex sheppard; do \
+    node npm bun corepack cc pkg-config codex pican; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done
 

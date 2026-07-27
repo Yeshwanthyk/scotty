@@ -2,7 +2,6 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   hardCapObservationIsCurrent,
   SESSION_SCHEDULE_CALLBACKS,
-  sessionAllowsTerminalAttachment,
   sessionAllowsRuntimeAccess,
   VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
 } from "../src/session-lifecycle";
@@ -26,74 +25,16 @@ describe("session lifecycle invariants", () => {
     assert.isFalse(sessionAllowsRuntimeAccess(undefined));
   });
 
-  it("allows new terminal attachments only while no lifecycle operation owns a warm session", () => {
-    assert.isTrue(sessionAllowsTerminalAttachment(record()));
-    assert.isFalse(
-      sessionAllowsTerminalAttachment(
-        record({
-          operation: {
-            kind: "snapshot",
-            nonce: "snapshot-acquired",
-            startedAt: "2026-01-01T00:00:02.000Z",
-          },
-        }),
-      ),
-    );
-    assert.isFalse(
-      sessionAllowsTerminalAttachment(
-        record({
-          operation: {
-            kind: "snapshot",
-            nonce: "snapshot-stopping",
-            startedAt: "2026-01-01T00:00:02.000Z",
-            checkpointedBackupId: "backup-1",
-            stopRequestedAt: "2026-01-01T00:00:03.000Z",
-          },
-        }),
-      ),
-    );
-    assert.isFalse(
-      sessionAllowsTerminalAttachment(
-        record({
-          operation: {
-            kind: "pr",
-            nonce: "pr-nonce",
-            startedAt: "2026-01-01T00:00:02.000Z",
-          },
-        }),
-      ),
-    );
-    assert.isFalse(
-      sessionAllowsTerminalAttachment(
-        record({
-          operation: {
-            kind: "vaporize",
-            nonce: "vaporize-nonce",
-            startedAt: "2026-01-01T00:00:02.000Z",
-          },
-        }),
-      ),
-    );
-    assert.isFalse(sessionAllowsTerminalAttachment(record({ status: "sleeping" })));
-    assert.isFalse(sessionAllowsTerminalAttachment(undefined));
-  });
-
   it("tracks every callback and preserves only vaporize retry during cleanup", () => {
     assert.deepStrictEqual(SESSION_SCHEDULE_CALLBACKS, [
-      "captureThreadId",
       "enforceHardCap",
-      "expireTerminalAttachment",
       "finalizeManagedStop",
-      "finalizeTerminalAttachment",
       "retryHardCapDestroy",
       "retryVaporizeSession",
     ]);
     assert.deepStrictEqual(VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS, [
-      "captureThreadId",
       "enforceHardCap",
-      "expireTerminalAttachment",
       "finalizeManagedStop",
-      "finalizeTerminalAttachment",
       "retryHardCapDestroy",
     ]);
   });

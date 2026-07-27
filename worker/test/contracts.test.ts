@@ -30,19 +30,62 @@ import {
 
 describe("request contracts", () => {
   it("parses and bounds create input", () => {
-    assert.deepStrictEqual(parseCreateInput({ prompt: "ship it" }), {
-      prompt: "ship it",
-      repo: "anomalyco/rift",
-      hardCapSeconds: 14_400,
-    });
-    assert.deepStrictEqual(parseCreateInput({ prompt: "ship it", cap: "90m" }), {
-      prompt: "ship it",
-      repo: "anomalyco/rift",
-      hardCapSeconds: 14_400,
-    });
+    assert.deepStrictEqual(
+      parseCreateInput({
+        prompt: "ship it",
+        provider: "cloudflare",
+        repo: "owner/project",
+      }),
+      {
+        prompt: "ship it",
+        provider: "cloudflare",
+        repo: "owner/project",
+        hardCapSeconds: 14_400,
+      },
+    );
+    assert.deepStrictEqual(
+      parseCreateInput({
+        prompt: "ship it",
+        provider: "cloudflare",
+        repo: "owner/project",
+        cap: "90m",
+      }),
+      {
+        prompt: "ship it",
+        provider: "cloudflare",
+        repo: "owner/project",
+        hardCapSeconds: 14_400,
+      },
+    );
     assert.throws(() => parseCreateInput({}), /prompt must be a non-empty string/u);
-    assert.throws(() => parseCreateInput({ prompt: "", repo: "bad" }), /prompt/u);
-    assert.throws(() => parseCreateInput({ prompt: "x", hardCapSeconds: 30 }), /hardCapSeconds/u);
+    assert.throws(() => parseCreateInput({ prompt: "ship it" }), /provider must be cloudflare/u);
+    assert.throws(
+      () => parseCreateInput({ prompt: "ship it", provider: "box", repo: "owner/project" }),
+      /provider must be cloudflare/u,
+    );
+    assert.throws(
+      () => parseCreateInput({ prompt: "ship it", provider: "cloudflare" }),
+      /repo must be a non-empty string/u,
+    );
+    assert.throws(
+      () =>
+        parseCreateInput({
+          prompt: "",
+          provider: "cloudflare",
+          repo: "bad",
+        }),
+      /prompt/u,
+    );
+    assert.throws(
+      () =>
+        parseCreateInput({
+          prompt: "x",
+          provider: "cloudflare",
+          repo: "owner/project",
+          hardCapSeconds: 30,
+        }),
+      /hardCapSeconds/u,
+    );
   });
 
   it("accepts only normalized session ids", () => {
@@ -57,7 +100,8 @@ describe("request contracts", () => {
       id: "a0b1c2d3e4f5",
       status: "warm",
       operation: { kind: "snapshot", nonce: "private", startedAt: "2026-01-01T00:00:01.000Z" },
-      repo: "anomalyco/rift",
+      provider: "cloudflare",
+      repo: "owner/project",
       repoExistsAtCreate: true,
       defaultBranch: "dev",
       branch: "scotty/a0b1c2d3e4f5",
@@ -80,7 +124,8 @@ describe("request contracts", () => {
       version: 1 as const,
       id: "a0b1c2d3e4f5",
       status: "warm" as const,
-      repo: "anomalyco/rift",
+      provider: "cloudflare" as const,
+      repo: "owner/project",
       defaultBranch: "dev",
       branch: "scotty/a0b1c2d3e4f5",
       createdAt: "2026-01-01T00:00:00.000Z",
@@ -100,7 +145,8 @@ const persistedRecord = {
   id: "a0b1c2d3e4f5",
   status: "sleeping",
   operation: null,
-  repo: "anomalyco/rift",
+  provider: "cloudflare",
+  repo: "owner/project",
   repoExistsAtCreate: true,
   defaultBranch: "dev",
   branch: "scotty/a0b1c2d3e4f5",
@@ -138,6 +184,32 @@ describe("persisted session schemas", () => {
       for (const malformed of [
         { ...persistedRecord, status: "unknown" },
         { ...persistedRecord, operation: undefined },
+        {
+          ...persistedRecord,
+          operation: {
+            kind: "create",
+            nonce: "private",
+            startedAt: "2026-01-01T00:00:01.000Z",
+          },
+        },
+        {
+          ...persistedRecord,
+          operation: {
+            kind: "create",
+            nonce: "private",
+            startedAt: "2026-01-01T00:00:01.000Z",
+            createPhase: "unknown",
+          },
+        },
+        {
+          ...persistedRecord,
+          operation: {
+            kind: "resume",
+            nonce: "private",
+            startedAt: "2026-01-01T00:00:01.000Z",
+            createPhase: "setup",
+          },
+        },
         { ...persistedRecord, secret: "excess" },
         {
           ...persistedRecord,
@@ -155,6 +227,7 @@ describe("persisted session schemas", () => {
       version: 1,
       id: persistedRecord.id,
       status: persistedRecord.status,
+      provider: persistedRecord.provider,
       repo: persistedRecord.repo,
       defaultBranch: persistedRecord.defaultBranch,
       branch: persistedRecord.branch,
@@ -242,6 +315,7 @@ describe("credential boundary", () => {
     githubToken: "real-github-token",
     codexSentinel: "scotty-codex-session-sentinel",
     githubSentinel: "scotty-github-session-sentinel",
+    picanProxyToken: "scotty-pican-proxy-token",
     updatedAt: "2026-01-01T00:00:00.000Z",
   });
   const assertFixedError = (evaluate: () => unknown, message: string): void => {
@@ -387,6 +461,7 @@ describe("credential boundary", () => {
     const realAccess = "honeypot-real-access";
     const realRefresh = "honeypot-real-refresh";
     const realGithub = "honeypot-real-github";
+    const picanProxyToken = "honeypot-pican-proxy-token";
     const stored = {
       ...storedCredential(
         parseCodexCredential(
@@ -400,12 +475,19 @@ describe("credential boundary", () => {
         ),
       ),
       githubToken: realGithub,
+      picanProxyToken,
     };
     const containerAuth = sentinelAuthJson(stored);
     const refreshResult = JSON.stringify(oauthContainerResult(stored));
     assert.ok(containerAuth.includes(stored.codexSentinel));
     assert.ok(refreshResult.includes(stored.codexSentinel));
-    for (const secret of [realAccess, realRefresh, realGithub, "honeypot-account"]) {
+    for (const secret of [
+      realAccess,
+      realRefresh,
+      realGithub,
+      picanProxyToken,
+      "honeypot-account",
+    ]) {
       assert.ok(!containerAuth.includes(secret));
       assert.ok(!refreshResult.includes(secret));
     }

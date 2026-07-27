@@ -7,6 +7,46 @@
 
 This is the execution plan for `PLAN.md`. Build one secure vertical slice first, then add lifecycle and shipping behavior behind explicit gates. The critical design choice is that each session's Sandbox Durable Object owns lifecycle state and credentials; KV is only the eventually consistent list projection.
 
+## Portable execution delivery DAG
+
+This is the active delivery order for provider portability. Each node must finish as an
+end-to-end, tested slice; a later provider cannot broaden an earlier node's contract speculatively.
+
+```mermaid
+flowchart TD
+    N[Canonical names and Cloudflare stack cleanup] --> C1
+    C1[beam up --provider cloudflare request contract] --> C4
+    C2[Cloudflare deployment through Alchemy] --> C4
+    C3[Pinned Pican executable in Sandbox image] --> C4
+    C4{Gate CF: mounted Pican workspace on Cloudflare Sandbox}
+
+    C4 --> R1[Runner command contract]
+    R1 --> R2[Slumbers runner over Tailscale]
+    R2 --> R3{Gate Runner: create + work + restore on Slumbers}
+
+    R3 --> B1[Box noEnv adapter]
+    B1 --> B2[Template fork + stop/resume]
+    B2 --> B3{Gate Box: credential-negative restored run}
+
+    C4 --> P1[Pican connection identity + pairing]
+    P1 --> P2[Local Pican controls remote Pican]
+
+    B3 --> T1[Six independent tasks across three providers]
+    P2 --> T1
+```
+
+Current slice:
+
+- `N`, `C1`, `C2`, `C3`, and Gate CF are complete. The repository-wide local gate and guarded
+  deployed Cloudflare canary proved the forward-only path: create a stable Pican hosted-session
+  identity, use its mounted `/s/<id>` UI, gracefully stop Pican before backup, restore, reconnect
+  to the same hosted session, beam down, and leave no runtime, KV, R2, credential, schedule, or
+  branch orphans.
+- `R1` is next. Slumbers begins with the narrow runner command contract proven by one vertical
+  slice; Box begins only after the Slumbers runner contract passes Gate Runner.
+- Provider is immutable for a session. The Session DO remains lifecycle and credential authority;
+  providers and runners own compute, while Pican owns the live agent/workspace runtime.
+
 ## Implementation corrections
 
 These normalize `PLAN.md` against the current Sandbox SDK contracts before code is written:
@@ -20,6 +60,11 @@ These normalize `PLAN.md` against the current Sandbox SDK contracts before code 
    client digests; do not persist browser credentials or a per-session `webToken` in KV.
 6. The Cloudflare Codex example proves sentinel injection, but not rotated ChatGPT OAuth persistence. Token refresh and DO persistence need a contract test before real credentials are used.
 7. Build the terminal/create path with a fake agent first. The real Codex end-to-end gate depends on credential isolation, reversing the unsafe implication of Phase 1 preceding Phase 1.5.
+
+The numbered corrections above record the original v1 plan. The current forward-only Cloudflare
+slice replaces correction 7's terminal path with Pican's mounted application. Scotty creates the
+hosted session idempotently with the outer session ID and persists Pican's stable native Codex
+identity; it does not discover identity later by scanning rollout files.
 
 ## State ownership and invariants
 
@@ -97,6 +142,10 @@ stateDiagram-v2
 
 ## Delivery DAG
 
+The remaining delivery DAG and work packages below are historical. Their state-ownership,
+credential-isolation, backup durability, and spend-bound invariants still apply, but their
+Sheppard, native PTY, terminal UI, and rollout-thread-capture implementation details do not.
+
 ```mermaid
 flowchart TD
     A[A: Prove upstream contracts] --> C[C: Domain and API contracts]
@@ -168,9 +217,9 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 #### D. Container image and bootstrap — 1 day
 
 - **Depends on:** A, B.
-- **Deliver:** pinned Ubuntu/Sandbox base, Codex `0.144.x`, pinned Sheppard binary, git/gh, bare Rift clone, UTF-8/TERM setup, noninteractive Git, `/workspace/<id>` conventions.
-- **Files:** `worker/container/Dockerfile`, optional `worker/container/bootstrap.sh`.
-- **Proof:** image smoke test verifies versions, bare-clone fetch, worktree creation from dynamically resolved default branch, and absence of credentials.
+- **Deliver:** pinned Ubuntu/Sandbox base, Codex `0.144.x`, pinned Sheppard binary, git/gh, UTF-8/TERM setup, noninteractive Git, `/workspace/<id>` conventions.
+- **Files:** `worker/container/Dockerfile`, `worker/src/workspace.ts`.
+- **Proof:** image smoke test verifies versions, repository cloning from the dynamically resolved default branch, and absence of credentials.
 
 #### E. Worker auth, routing, DO state, and KV projection — 1 day
 
@@ -191,7 +240,7 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 - **Depends on:** D, E, F.
 - **Deliver:** `POST /api/sessions`, ID allocation, booting/warm persistence, latest-default-branch worktree, Sheppard-managed agent, hard-cap schedule. Run a harmless fake agent command instead of Codex.
 - **Files/symbols:** `ScottySandbox.createScottySession`, `Workspace.prepare`, `Agent.launch`.
-- **Proof:** `scotty up --detach` creates a warm session whose managed process and worktree survive HTTP disconnects.
+- **Proof:** `scotty beam up "TASK" --repo owner/project --provider cloudflare --detach` creates a warm session whose managed process and worktree survive HTTP disconnects.
 
 #### H. Native PTY and ghostty-web — 1 day
 
@@ -232,7 +281,7 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 - **Files/symbols:** `seedSentinelAuth`, `startCodex`, `discoverCodexThread`.
 - **Proof:** a real Codex turn completes through the proxy; the container never observes the real credential; refreshing the browser reattaches to the same TUI and thread.
 
-**Gate V — secure live vertical slice:** `scotty up "hello"` opens a working terminal on latest `dev`, real credentials remain outside the container, and reconnect preserves the managed Codex process.
+**Gate V — secure live vertical slice:** `scotty beam up "hello" --repo owner/project --provider cloudflare` opens a working terminal from the selected repository's default branch, real credentials remain outside the container, and reconnect preserves the managed Codex process.
 
 ### Wave 3 — lifecycle and recovery
 
@@ -332,4 +381,4 @@ Expected effort: **10–15 focused engineering days**, plus Cloudflare deploymen
 - **Unexpected host loss:** `onActivityExpired()` covers managed idle, not infrastructure loss. Recovery is only as fresh as the latest successful manual/periodic/hard-cap checkpoint. Decide checkpoint cadence after measuring backup duration and R2 cost; this does not block the vertical slice.
 - **Backup consistency:** pausing the agent reduces write races. Beam-down runs under an operation lease; GitHub operations belong to Codex and aren't Scotty lifecycle transitions.
 - **KV freshness:** `ls` is a projection. Include `projectedAt`; direct commands always consult the DO.
-- **Allowed registries:** every allowed host remains an exfiltration channel for prompts/source, even without credentials. Start with the smallest host set needed by Rift and make additions explicit configuration changes.
+- **Allowed registries:** every allowed host remains an exfiltration channel for prompts/source, even without credentials. Start with the smallest host set needed by the selected repository and make additions explicit configuration changes.

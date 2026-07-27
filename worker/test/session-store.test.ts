@@ -271,14 +271,17 @@ runContractSuite<SessionRecordStorageFactory>(
       }),
     );
 
-    it.effect("marks failures recoverable only when a current backup exists", () =>
+    it.effect("persists the operation owner's recoverability decision", () =>
       Effect.gen(function* () {
-        for (const [backup, recoverable] of [
-          [undefined, false],
-          [
-            { current: { id: "backup-1", dir: "/workspace/a0b1c2d3e4f5", localBucket: true } },
-            true,
-          ],
+        for (const backup of [
+          undefined,
+          {
+            current: {
+              id: "backup-1",
+              dir: "/workspace/a0b1c2d3e4f5",
+              localBucket: true,
+            },
+          },
         ] as const) {
           const storage = make(
             record({
@@ -299,7 +302,7 @@ runContractSuite<SessionRecordStorageFactory>(
           assert.deepStrictEqual(failed.failure, {
             code: "resume_failed",
             message: "Session restore failed",
-            recoverable,
+            recoverable: true,
           });
           assert.strictEqual(failed.status, "failed");
           assert.strictEqual(failed.operation, null);
@@ -340,28 +343,6 @@ runContractSuite<SessionRecordStorageFactory>(
           },
           updatedAt: "2026-04-05T06:07:08.000Z",
         });
-      }),
-    );
-
-    it.effect("captures a thread only while warm and idle", () =>
-      Effect.gen(function* () {
-        yield* TestClock.setTime(NOW);
-        const storage = make(record()).storage;
-        const updated = yield* withStore(
-          storage,
-          Effect.flatMap(SessionStore, (store) => store.captureThreadId("thread-1")),
-        );
-        assert.deepInclude(Option.getOrThrow(updated), {
-          codexThreadId: "thread-1",
-          updatedAt: "2026-04-05T06:07:08.000Z",
-        });
-        assert.deepStrictEqual(
-          yield* withStore(
-            storage,
-            Effect.flatMap(SessionStore, (store) => store.captureThreadId("thread-1")),
-          ),
-          Option.none(),
-        );
       }),
     );
 

@@ -1,11 +1,8 @@
 import type { SessionRecord } from "./contracts";
 
 export const SESSION_SCHEDULE_CALLBACKS = [
-  "captureThreadId",
   "enforceHardCap",
-  "expireTerminalAttachment",
   "finalizeManagedStop",
-  "finalizeTerminalAttachment",
   "retryHardCapDestroy",
   "retryVaporizeSession",
 ] as const;
@@ -18,9 +15,6 @@ export const sessionAllowsRuntimeAccess = (
   record: SessionRecord | undefined,
 ): record is SessionRecord =>
   record !== undefined && record.status !== "gone" && record.operation?.kind !== "vaporize";
-
-export const sessionAllowsTerminalAttachment = (record: SessionRecord | undefined): boolean =>
-  sessionAllowsRuntimeAccess(record) && record.status === "warm" && record.operation === null;
 
 export const hardCapObservationIsCurrent = (
   observed: SessionRecord,

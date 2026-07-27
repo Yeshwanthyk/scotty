@@ -8,7 +8,6 @@ import {
   shellQuote,
   type SandboxExecOptions,
   type SandboxRuntimeCapabilities,
-  type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
 import { sessionRoot, Workspace, workspaceLayer } from "../src/workspace";
 import { makeSessionRecord } from "./support";
@@ -49,10 +48,6 @@ class FakeWorkspaceCapabilities implements SandboxRuntimeCapabilities {
     return Promise.resolve(this.results.shift() ?? execResult(command));
   };
 
-  createSession = (_options: SandboxSessionOptions): Promise<void> => Promise.resolve();
-
-  deleteSession = (_sessionId: string): Promise<void> => Promise.resolve();
-
   mkdir = (): Promise<unknown> => Promise.resolve(undefined);
   writeFile = (): Promise<unknown> => Promise.resolve(undefined);
   setEnvVars = (): Promise<void> => Promise.resolve();
@@ -79,39 +74,9 @@ const repoViewCommand = (repo: string): string =>
 const resetCommand = `rm -rf ${shellQuote(ROOT)} && mkdir -p '/workspace'`;
 
 const helperCommand = (root = ROOT): string =>
-  `git -C ${shellQuote(root)} config credential.helper ${shellQuote(HELPER)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`;
+  `git -C ${shellQuote(root)} config credential.helper ${shellQuote(HELPER)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; grep -qxF '.pican/' "$exclude" 2>/dev/null || printf '.pican/\\n' >> "$exclude"; }`;
 
 describe("Workspace", () => {
-  it.effect("prepares Rift from the baked cache with the dynamic default branch", () =>
-    Effect.gen(function* () {
-      const capabilities = new FakeWorkspaceCapabilities();
-      capabilities.results.push(execResult("view", { stdout: "dev\n" }));
-
-      const prepared = yield* prepareWith(capabilities);
-      const basic = btoa(`x-access-token:${SENTINEL}`);
-
-      assert.deepStrictEqual(prepared, {
-        root: ROOT,
-        defaultBranch: "dev",
-        repoExists: true,
-      });
-      assert.deepStrictEqual(capabilities.calls, [
-        { command: repoViewCommand("anomalyco/rift"), options: { env: ENV, timeout: 60_000 } },
-        { command: resetCommand, options: undefined },
-        {
-          command: `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} -C '/cache/rift.git' fetch origin '+refs/heads/*:refs/heads/*'`,
-          options: { env: ENV, timeout: 180_000 },
-        },
-        {
-          command: `git clone --no-hardlinks --branch 'dev' --single-branch '/cache/rift.git' '${ROOT}' && git -C '${ROOT}' remote set-url origin 'https://github.com/anomalyco/rift.git'`,
-          options: { env: ENV, timeout: 180_000 },
-        },
-        { command: `git -C '${ROOT}' checkout -b 'scotty/${ID}'`, options: undefined },
-        { command: helperCommand(), options: undefined },
-      ]);
-    }),
-  );
-
   it.effect("clones a self-contained repository so backup restore retains Git metadata", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
@@ -250,7 +215,7 @@ describe("Workspace", () => {
 
       assert.strictEqual(existing.repoExists, true);
       assert.strictEqual(missing.repoExists, false);
-      assert.strictEqual(first.calls.length, 6);
+      assert.strictEqual(first.calls.length, 5);
       assert.strictEqual(second.calls.length, 4);
       assert.notStrictEqual(first.calls, second.calls);
     }),

@@ -69,30 +69,49 @@ describe("configuration and transport", () => {
           id: "s1",
           url: "https://flag.example/s/s1?t=server-secret",
           branch: "scotty/s1",
+          provider: "cloudflare",
           status: "warm",
         });
       },
     });
 
     const code = await main(
-      ["up", "fix it", "--detach", "--host", "https://flag.example/", "--token", "flag-token"],
+      [
+        "beam",
+        "up",
+        "fix it",
+        "--repo",
+        "owner/project",
+        "--provider",
+        "cloudflare",
+        "--detach",
+        "--host",
+        "https://flag.example/",
+        "--token",
+        "flag-token",
+      ],
       h.deps,
     );
 
     expect(code).toBe(EXIT.OK);
     expect(request?.url).toBe("https://flag.example/api/sessions");
     expect(request?.headers.get("authorization")).toBe("Bearer flag-token");
-    expect(await request?.json()).toEqual({ prompt: "fix it" });
+    expect(await request?.json()).toEqual({
+      prompt: "fix it",
+      provider: "cloudflare",
+      repo: "owner/project",
+    });
     expect(h.json()).toEqual({
       id: "s1",
       url: "https://flag.example/s/s1",
       branch: "scotty/s1",
+      provider: "cloudflare",
       status: "warm",
     });
     expect(h.stdout.join("")).not.toContain("server-secret");
   });
 
-  test("up converts the human cap to the Worker contract", async () => {
+  test("beam up converts the human cap to the Worker contract", async () => {
     let body: unknown;
     const h = harness({
       fetch: async (_input, init) => {
@@ -101,6 +120,7 @@ describe("configuration and transport", () => {
           id: "s1",
           url: "https://worker.example/s/s1",
           branch: "scotty/s1",
+          provider: "cloudflare",
           status: "warm",
         });
       },
@@ -108,8 +128,13 @@ describe("configuration and transport", () => {
     expect(
       await main(
         [
+          "beam",
           "up",
           "fix it",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
           "--cap",
           "90m",
           "--detach",
@@ -121,14 +146,25 @@ describe("configuration and transport", () => {
         h.deps,
       ),
     ).toBe(EXIT.OK);
-    expect(body).toEqual({ prompt: "fix it", cap: "90m", hardCapSeconds: 5_400 });
+    expect(body).toEqual({
+      prompt: "fix it",
+      provider: "cloudflare",
+      repo: "owner/project",
+      cap: "90m",
+      hardCapSeconds: 5_400,
+    });
 
     const invalid = harness();
     expect(
       await main(
         [
+          "beam",
           "up",
           "fix it",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
           "--cap",
           "2d",
           "--detach",
@@ -143,7 +179,7 @@ describe("configuration and transport", () => {
     expect(invalid.error().error.code).toBe("bad_usage");
   });
 
-  test("up reuses a pending idempotency key after an ambiguous network failure", async () => {
+  test("beam up reuses a pending idempotency key after an ambiguous network failure", async () => {
     const home = await temporaryDirectory();
     const keys: string[] = [];
     let requests = 0;
@@ -156,12 +192,18 @@ describe("configuration and transport", () => {
         id: "s1",
         url: "https://worker.example/s/s1",
         branch: "scotty/s1",
+        provider: "cloudflare",
         status: "warm",
       });
     };
     const args = [
+      "beam",
       "up",
       "fix it",
+      "--repo",
+      "owner/project",
+      "--provider",
+      "cloudflare",
       "--detach",
       "--host",
       "https://worker.example",
@@ -312,7 +354,8 @@ describe("configuration and transport", () => {
     const session = {
       id: "s1",
       status: "warm",
-      repo: "anomalyco/rift",
+      provider: "cloudflare",
+      repo: "owner/project",
       defaultBranch: "dev",
       branch: "scotty/s1",
       createdAt: "2026-07-20T12:00:00Z",
@@ -333,7 +376,8 @@ describe("configuration and transport", () => {
       {
         id: "s1",
         status: "warm",
-        repo: "anomalyco/rift",
+        provider: "cloudflare",
+        repo: "owner/project",
         defaultBranch: "dev",
         branch: "scotty/s1",
         createdAt: "2026-07-20T12:00:00Z",
@@ -351,7 +395,8 @@ describe("configuration and transport", () => {
     const session = {
       id: "s1",
       status: "failed",
-      repo: "anomalyco/rift",
+      provider: "cloudflare",
+      repo: "owner/project",
       defaultBranch: "dev",
       branch: "scotty/s1",
       createdAt: "2026-07-20T12:00:00Z",
@@ -373,7 +418,8 @@ describe("configuration and transport", () => {
       {
         id: "s1",
         status: "failed",
-        repo: "anomalyco/rift",
+        provider: "cloudflare",
+        repo: "owner/project",
         defaultBranch: "dev",
         branch: "scotty/s1",
         createdAt: "2026-07-20T12:00:00Z",
@@ -536,20 +582,111 @@ describe("commands and schemas", () => {
     }
   });
 
-  test("up strips same-origin tokens and rejects cross-origin terminal URLs", async () => {
+  test("beam up hard-cuts the old command and requires repository and provider", async () => {
+    const removed = harness();
+    expect(
+      await main(
+        [
+          "up",
+          "fix",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
+          "--detach",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "secret",
+        ],
+        removed.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(removed.error().error.message).toBe("Unknown command: up");
+
+    const h = harness();
+    expect(
+      await main(
+        ["beam", "up", "fix", "--detach", "--host", "https://worker.example", "--token", "secret"],
+        h.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(h.error().error).toMatchObject({
+      code: "bad_usage",
+      message: "--repo OWNER/NAME is required",
+    });
+
+    const missingProvider = harness();
+    expect(
+      await main(
+        [
+          "beam",
+          "up",
+          "fix",
+          "--repo",
+          "owner/project",
+          "--detach",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "secret",
+        ],
+        missingProvider.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(missingProvider.error().error.message).toBe("--provider cloudflare is required");
+
+    const unsupportedProvider = harness();
+    expect(
+      await main(
+        [
+          "beam",
+          "up",
+          "fix",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "box",
+          "--detach",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "secret",
+        ],
+        unsupportedProvider.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(unsupportedProvider.error().error.message).toBe("--provider must be cloudflare");
+  });
+
+  test("beam up strips same-origin tokens and rejects cross-origin session URLs", async () => {
     const tokenized = harness({
       fetch: async () =>
         Response.json({
           id: "s1",
           url: "https://worker.example/s/s1?t=server-secret#fragment",
           branch: "scotty/s1",
+          provider: "cloudflare",
           status: "warm",
           internal: "must-not-leak",
         }),
     });
     expect(
       await main(
-        ["up", "fix", "--detach", "--host", "https://worker.example", "--token", "secret"],
+        [
+          "beam",
+          "up",
+          "fix",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
+          "--detach",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "secret",
+        ],
         tokenized.deps,
       ),
     ).toBe(EXIT.OK);
@@ -557,6 +694,7 @@ describe("commands and schemas", () => {
       id: "s1",
       url: "https://worker.example/s/s1",
       branch: "scotty/s1",
+      provider: "cloudflare",
       status: "warm",
     });
 
@@ -566,12 +704,26 @@ describe("commands and schemas", () => {
           id: "s1",
           url: "https://attacker.example/s/s1?t=secret",
           branch: "scotty/s1",
+          provider: "cloudflare",
           status: "warm",
         }),
     });
     expect(
       await main(
-        ["up", "fix", "--detach", "--host", "https://worker.example", "--token", "secret"],
+        [
+          "beam",
+          "up",
+          "fix",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
+          "--detach",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "secret",
+        ],
         crossOrigin.deps,
       ),
     ).toBe(EXIT.GENERIC);
@@ -584,12 +736,26 @@ describe("commands and schemas", () => {
           id: "s1",
           url: "https://url-secret@worker.example/s/s1",
           branch: "scotty/s1",
+          provider: "cloudflare",
           status: "warm",
         }),
     });
     expect(
       await main(
-        ["up", "fix", "--detach", "--host", "https://worker.example", "--token", "secret"],
+        [
+          "beam",
+          "up",
+          "fix",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
+          "--detach",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "secret",
+        ],
         userInfo.deps,
       ),
     ).toBe(EXIT.GENERIC);
@@ -649,7 +815,7 @@ describe("commands and schemas", () => {
     expect(h.stdout.join("")).not.toContain("secret");
   });
 
-  test("up strips server query data before opening the session browser", async () => {
+  test("beam up strips server query data before opening the session browser", async () => {
     let opened = "";
     const h = harness({
       fetch: async () =>
@@ -657,6 +823,7 @@ describe("commands and schemas", () => {
           id: "s1",
           url: "https://worker.example/s/s1?t=legacy-root#fragment",
           branch: "scotty/s1",
+          provider: "cloudflare",
           status: "warm",
         }),
       openBrowser: async (url) => {
@@ -665,7 +832,19 @@ describe("commands and schemas", () => {
     });
     expect(
       await main(
-        ["up", "fix it", "--host", "https://worker.example", "--token", "root-secret"],
+        [
+          "beam",
+          "up",
+          "fix it",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "root-secret",
+        ],
         h.deps,
       ),
     ).toBe(EXIT.OK);
@@ -818,7 +997,7 @@ describe("beam down and embedded skill", () => {
           JSON.stringify({
             version: 1,
             id: "s1",
-            repo: "anomalyco/rift",
+            repo: "owner/project",
             branch: "scotty/s1",
             sha,
             codexThreadId: threadId,
@@ -907,7 +1086,7 @@ describe("beam down and embedded skill", () => {
           JSON.stringify({
             version: 1,
             id: "s1",
-            repo: "anomalyco/rift",
+            repo: "owner/project",
             branch: "scotty/s1",
             sha,
           }),

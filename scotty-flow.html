@@ -625,7 +625,7 @@
               <text class="zone-label" x="790" y="45">BROWSER</text>
               <path class="zone-rule" d="M790 54h176" />
               <rect class="zone" x="774" y="232" width="208" height="266" rx="5" />
-              <text class="zone-label" x="790" y="255">GITHUB · ANOMALYCO/RIFT</text>
+              <text class="zone-label" x="790" y="255">GITHUB · OWNER/PROJECT</text>
               <path class="zone-rule" d="M790 264h176" />
               <!-- components -->
               <g
@@ -639,7 +639,7 @@
                 <rect x="34" y="70" width="218" height="55" rx="4" />
                 <circle class="box-dot" cx="49" cy="87" r="3" />
                 <text class="box-title" x="59" y="91">scotty CLI</text>
-                <text class="box-sub" x="49" y="109">up · resume · pr · down</text>
+                <text class="box-sub" x="49" y="109">beam up · resume · down</text>
               </g>
               <g
                 id="auth"
@@ -665,7 +665,7 @@
                 <rect x="34" y="217" width="218" height="62" rx="4" />
                 <circle class="box-dot" cx="49" cy="234" r="3" />
                 <text class="box-title" x="59" y="238">local repo</text>
-                <text class="box-sub" x="49" y="257">rift / working copy</text>
+                <text class="box-sub" x="49" y="257">selected repository</text>
               </g>
               <g
                 id="worker"
@@ -740,12 +740,12 @@
                 tabindex="0"
                 role="group"
                 aria-label="git worktree"
-                data-tip="A session branch worktree created from the latest dev SHA. A baked bare clone only fet&#99;hes the delta, keeping boot sub-second."
+                data-tip="A session branch created from the selected repository's current default branch."
               >
                 <rect x="344" y="328" width="354" height="66" rx="4" />
                 <circle class="box-dot" cx="359" cy="347" r="3" />
                 <text class="box-title" x="369" y="351">git worktree</text>
-                <text class="box-sub" x="359" y="372">off latest dev · baked bare clone</text>
+                <text class="box-sub" x="359" y="372">from the default branch</text>
               </g>
               <g
                 id="seeded"
@@ -778,12 +778,12 @@
                 class="component"
                 tabindex="0"
                 role="group"
-                aria-label="GitHub dev branch"
-                data-tip="The authoritative integration base. Session worktrees start from its latest SHA; Codex can target it when the user asks for source-control work."
+                aria-label="GitHub default branch"
+                data-tip="The selected repository's default branch. Session worktrees start from its latest SHA."
               >
                 <rect x="790" y="281" width="176" height="72" rx="4" />
                 <circle class="box-dot" cx="805" cy="300" r="3" />
-                <text class="box-title" x="815" y="304">dev branch</text>
+                <text class="box-title" x="815" y="304">default branch</text>
                 <text class="box-sub" x="805" y="326">latest base SHA</text>
               </g>
               <g
@@ -826,7 +826,7 @@
                 style="--flow-color: var(--blue); --end-marker: url(#arrow-blue)"
                 d="M516 93H532"
               />
-              <text class="callout" data-step="1" x="271" y="88">POST /sessions</text>
+              <text class="callout" data-step="1" x="271" y="88">POST /api/sessions</text>
               <path
                 class="flow"
                 data-step="2"
@@ -999,18 +999,18 @@
       const steps = [
         {
           title: "Beam up",
-          command: 'scotty up "task"',
-          copy: "The CLI calls the Worker, which creates a session identifier and writes its initial registry record to KV. One command turns local intent into addressable cloud state.",
+          command: 'scotty beam up "PROMPT" --repo owner/project --provider cloudflare',
+          copy: "The CLI sends {prompt, repo, provider}. The Worker creates a session identifier and writes its initial registry record to KV.",
           color: "#60a9ff",
           boxes: ["cli", "worker", "kv"],
         },
         {
           title: "Boot",
-          command: 'scotty up "task"',
+          command: 'scotty beam up "PROMPT" --repo owner/project --provider cloudflare',
           copy:
             "The Worker boots a per-session Sandbox, " +
             ("fet" + "ches") +
-            " only the delta on its baked bare clone, and creates a worktree at the latest dev SHA. It seeds auth.json, starts Codex under Sheppard, and is ready in sub-second infrastructure time.",
+            " the selected repository, creates a session branch from its default branch, seeds auth.json, and starts Codex under Sheppard.",
           color: "#60a9ff",
           boxes: ["worker", "sandbox", "sheppard", "worktree", "seeded", "dev"],
         },

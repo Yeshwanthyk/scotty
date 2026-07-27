@@ -13,14 +13,37 @@ See `IMPLEMENTATION_DAG.md` for dependency order, work packages, proof gates, an
 
 ---
 
-## Architecture (final, agreed)
+## Current forward-only runtime
+
+The Cloudflare vertical runs one private Pican process per Sandbox workspace. Scotty authenticates
+the public `/s/<id>` route, preserves that mount prefix while proxying to Pican, strips browser
+credentials, and injects one DO-owned internal proxy header. Pican launches Codex with
+container-visible Codex and GitHub sentinels; real credentials remain in Worker secrets and the
+session Durable Object.
+
+`beam up` creates the Pican hosted session idempotently with the outer Scotty session ID. Pican's
+returned native Codex identity is the stable session mapping; Scotty does not scan rollout files
+later to discover it. Resume restores `/workspace/<id>`, launches Pican, and reconnects through the
+same mounted URL.
+
+Before snapshot, idle sleep, or hard-cap shutdown, Scotty sends Pican `SIGTERM` and waits for a
+graceful exit so accepted work and Pican's SQLite state can drain. Scotty then runs `sync`, creates
+the immutable backup, and either relaunches Pican for an on-demand snapshot or stops the Sandbox.
+A bounded `SIGKILL` fallback preserves the hard spend cap.
+
+There is no legacy Sheppard, native PTY, ghostty-web, or delayed thread-capture fallback. The
+detailed architecture and phases below record the original v1 plan; their security, state
+authority, backup durability, and spend-bound invariants remain binding, but those runtime details
+are superseded.
+
+## Historical v1 architecture (superseded)
 
 ```
 scotty CLI ──► Worker (Hono, single route file)
                  │
                  ├─ Sandbox DO per session (@cloudflare/sandbox, RPC API — NOT the
                  │    deprecated HTTP/WS transports)
-                 │    • image: codex CLI (pinned), Sheppard, git, gh + baked bare clone of repo
+                 │    • image: Codex CLI (pinned), Sheppard, git, gh
                  │    • Sheppard-managed Codex TUI with independent client views
                  │    • sleepAfter: "60m" (idle) + scheduled hard cap (default 4h)
                  │    • createBackup() → R2 before any sleep; restoreBackup() on resume
@@ -52,7 +75,7 @@ scotty/
 
 ## Key decisions (do not relitigate)
 
-- **Repo**: default `anomalyco/rift`. Default branch is **`dev`** (there is NO `main`). "Latest" always means latest `dev` unless the repo's default branch differs — resolve default branch dynamically via `gh repo view --json defaultBranchRef` and cache it in the session record.
+- **Repo**: required `owner/name` input. Resolve the repository's default branch dynamically via `gh repo view --json defaultBranchRef` and cache it in the session record.
 - **Codex auth**: real tokens NEVER enter the container. Seed from `CODEX_AUTH_JSON` secret into the **session DO storage** (authoritative copy); container gets a sentinel auth.json. The egress proxy (see Credential safety) injects/refreshes real tokens. Refreshed bundles are persisted to DO storage, so snapshots contain only the sentinel — nothing sensitive.
 - **Codex version**: pin in Dockerfile to the same minor as the user's local (`codex-cli 0.144.x`) so beam-down rollout files stay compatible.
 - **Sheppard is the terminal backbone**: Codex runs in a Sheppard-managed PTY. Every browser attachment runs an independent Sheppard client, so scroll position, viewport size, and disconnect cleanup are per device while Codex survives client disconnects. Set `GIT_TERMINAL_PROMPT=0` and `TERM=xterm-256color`.
@@ -113,16 +136,16 @@ Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.c
 
 - Base: `ubuntu:24.04` or the Sandbox SDK base image if required by the SDK.
 - Install: git, gh, curl, ca-certificates, codex CLI (pinned), a pinned static Sheppard binary, and locales (UTF-8).
-- Bake: `git clone --bare https://github.com/anomalyco/rift /cache/rift.git` (public repo, no creds at build time). Configure fetch refspec `+refs/heads/*:refs/remotes/origin/*`.
+- Clone the selected repository when the session starts. The image contains no repository-specific cache.
 - Entrypoint per Sandbox SDK requirements.
 
 ## Session lifecycle (worker/src/session.ts)
 
-**create** (`POST /api/sessions {prompt, repo?}`):
+**create** (`POST /api/sessions {prompt, repo, provider}`):
 
 1. Generate id (short, url-safe). Write KV record `status=booting`.
 2. `getSandbox(env.SANDBOX, id)` — boots container.
-3. In container: `git -C /cache/rift.git fetch origin` → resolve `origin/<defaultBranch>` SHA → `git -C /cache/rift.git worktree add -b scotty/<id> /workspace/<id> <sha>`.
+3. In container: resolve the selected repository's default branch, clone it into `/workspace/<id>`, and create `scotty/<id>`.
 4. Set `CODEX_HOME=/workspace/<id>/.codex`. Write **sentinel** auth.json (`scotty-sentinel-<id>`) there; store the real bundle in DO storage.
 5. Start a Sheppard daemon on the session-private socket and spawn a managed `codex "<prompt>"` tab in `/workspace/<id>`. Capture the Codex thread id later from `$CODEX_HOME/sessions` (newest rollout file's UUID) and store it in KV.
 6. Schedule `enforceHardCap` for `now + HARD_CAP_MS` (default 4h, override via `?cap=`).
@@ -155,7 +178,7 @@ Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.c
 ## CLI (cli/scotty.ts)
 
 ```
-scotty up "prompt" [--repo owner/name] [--cap 4h] [--detach]   # create; prints web URL; opens browser unless --detach
+scotty beam up "PROMPT" --repo owner/project --provider cloudflare [--cap 4h] [--detach]   # create; prints web URL; opens browser unless --detach
 scotty ls [--json]
 scotty attach <id>            # opens web URL (browser)
 scotty snapshot <id>
@@ -173,7 +196,7 @@ AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
 **Machine-readable by default when piped**
 
 - Every command supports `--json`; additionally, auto-detect non-TTY stdout and emit JSON (same as `--json`). Human tables only on a TTY.
-- JSON shapes are stable and minimal: `up` → `{id, url, branch, status}`; `ls` → array of session records; `down` → `{branch, sha, rolloutPath, resumeCmd}`. Errors → `{error: {code, message, hint}}` on stderr, non-zero exit.
+- JSON shapes are stable and minimal: `beam up` → `{id, url, branch, status}`; `ls` → array of session records; `down` → `{branch, sha, rolloutPath, resumeCmd}`. Errors → `{error: {code, message, hint}}` on stderr, non-zero exit.
 - Exit codes: 0 ok, 1 generic, 2 bad usage, 3 not found, 4 auth, 5 session in wrong state (e.g. resume on a warm session). Never exit 0 on failure.
 - No interactive prompts anywhere except `scotty init`. Every command must run unattended. `vaporize` takes `--yes` to skip its confirm; confirm is skipped automatically when non-TTY.
 
@@ -184,7 +207,7 @@ AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
 
 **`scotty skills` command**
 
-- `scotty skills` prints a complete SKILL.md to stdout: what scotty is, the full command reference with JSON output shapes, the canonical workflows (up → work in Codex; up → snapshot → resume; down → local resume), state machine (booting → warm → sleeping → gone), and rules of thumb (always `--json`, poll `ls` for status transitions, vaporize when done to stop spend, hard cap means sessions self-sleep).
+- `scotty skills` prints a complete SKILL.md to stdout: what scotty is, the full command reference with JSON output shapes, the canonical workflows (beam up → work in Codex; beam up → snapshot → resume; down → local resume), state machine (booting → warm → sleeping → gone), and rules of thumb (always `--json`, poll `ls` for status transitions, vaporize when done to stop spend, hard cap means sessions self-sleep).
 - `cli/skills/scotty/SKILL.md` is the source of truth. Bun's text loader compiles it into the standalone CLI, so the installed executable serves the guide without copying skill files into agent or project directories.
 
 **Statelessness for agents**
@@ -202,8 +225,8 @@ AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
 
 ## Phases
 
-**Phase 1 — credential-free vertical infrastructure (up → web terminal)**
-Worker + Dockerfile + `scotty up` + `/s/:id` page with working PTY. Use a harmless fake agent until Phase 1.5 passes. Acceptance: `scotty up "hello"` prints a URL; opening it shows the Sheppard-managed session on a fresh worktree of latest `dev`; refreshing the page reattaches without killing the process.
+**Phase 1 — credential-free vertical infrastructure (beam up → web terminal)**
+Worker + Dockerfile + `scotty beam up` + `/s/:id` page with working PTY. Use a harmless fake agent until Phase 1.5 passes. Acceptance: `scotty beam up "hello" --repo owner/project --provider cloudflare` prints a URL; opening it shows the Sheppard-managed session on a fresh checkout of the selected repository's default branch; refreshing the page reattaches without killing the process.
 
 **Phase 1.5 — credential safety + live Codex (before any real-token use)**
 Egress proxy with sentinel injection + allowlist, DO-stored codex bundle with proxy-side refresh, cookie-based web auth, then Codex startup. Acceptance: `env`, `cat ~/.codex/auth.json`, and `git config --list` inside the container show only sentinels; a curl from inside the container to a non-allowlisted host fails; codex completes a turn (proxy injection works); after a forced token refresh the DO bundle is updated and a resumed session still authenticates.
@@ -218,7 +241,7 @@ Keep GitHub credentials available through the sentinel boundary, but expose no S
 `scotty down`, `scotty vaporize`. Acceptance: after beam down, `codex resume <uuid>` locally replays the cloud conversation and the branch is fetchable; vaporize leaves no KV record, no R2 objects, no sandbox (and no DO credential bundle).
 
 **Phase 5 — agent ergonomics**
-`--json` on operational commands + non-TTY auto-JSON, stable exit codes, and `scotty skills` as raw Markdown. Acceptance: an agent given only `scotty skills` output can run up → snapshot → vaporize unattended with no prompts; piping an operational command produces valid JSON; wrong-state operations exit 5 with a hint.
+`--json` on operational commands + non-TTY auto-JSON, stable exit codes, and `scotty skills` as raw Markdown. Acceptance: an agent given only `scotty skills` output can run beam up → snapshot → vaporize unattended with no prompts; piping an operational command produces valid JSON; wrong-state operations exit 5 with a hint.
 
 ## Risks / gotchas (implementers: read)
 
@@ -268,7 +291,6 @@ Warm pools, multi-user auth, D1 event replay, SSH gateway, VNC, exposePort previ
 
 **Git / GitHub**
 
-- Target repo (public, default branch `dev`, no `main`): https://github.com/anomalyco/rift
 - git worktree: https://git-scm.com/docs/git-worktree
 - gh env vars (`GH_TOKEN` precedence): https://cli.github.com/manual/gh_help_environment
 - Fine-grained PATs: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
