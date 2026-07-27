@@ -48,7 +48,7 @@ const validateRunnerUrl = (value: string): Result.Result<string, RunnerLinkError
 
 const rejected: RunnerFrame = {
   _tag: "RunnerProtocolRejected",
-  version: 1,
+  version: 2,
   code: "invalid_message",
 };
 
@@ -108,16 +108,24 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
               if (Predicate.isTagged("RunnerProbe")(decoded.success))
                 return yield* send({
                   _tag: "RunnerProbeAck",
-                  version: 1,
+                  version: 2,
                   probeId: decoded.success.probeId,
                 });
+              if (
+                !Predicate.isTagged("EnsureRuntime")(decoded.success) &&
+                !Predicate.isTagged("InspectRuntime")(decoded.success) &&
+                !Predicate.isTagged("ExecRuntime")(decoded.success) &&
+                !Predicate.isTagged("StopRuntime")(decoded.success) &&
+                !Predicate.isTagged("RemoveRuntime")(decoded.success)
+              )
+                return yield* send(rejected);
               const response = yield* runtime.handle(decoded.success);
               return yield* send(response);
             });
 
       const announce = send({
         _tag: "RunnerHello",
-        version: 1,
+        version: 2,
         runner: config.runnerName,
       }).pipe(
         Effect.matchEffect({

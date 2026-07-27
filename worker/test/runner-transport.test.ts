@@ -36,12 +36,12 @@ class FakeSocket implements RunnerSocket {
 }
 
 const hello = (runner = "slumbers"): string =>
-  JSON.stringify({ _tag: "RunnerHello", version: 1, runner });
+  JSON.stringify({ _tag: "RunnerHello", version: 2, runner });
 
 const response = (sessionId: string, operationId: string): string =>
   JSON.stringify({
     _tag: "RunnerSuccess",
-    version: 1,
+    version: 2,
     sessionId,
     operationId,
     result: {
@@ -54,7 +54,7 @@ const response = (sessionId: string, operationId: string): string =>
 
 const ensure = (sessionId: string, operationId: string) => ({
   _tag: "EnsureRuntime" as const,
-  version: 1 as const,
+  version: 2 as const,
   sessionId,
   operationId,
 });
@@ -76,7 +76,7 @@ const acknowledgeStatus = (transport: RunnerTransport, socket: FakeSocket) =>
       socket,
       JSON.stringify({
         _tag: "RunnerProbeAck",
-        version: 1,
+        version: 2,
         probeId: probe.probeId,
       }),
     );

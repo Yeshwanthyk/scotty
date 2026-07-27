@@ -18,14 +18,14 @@ import { RunnerRuntime } from "../src/runner-runtime";
 
 const inspect = (operationId: string): InspectRuntime => ({
   _tag: "InspectRuntime",
-  version: 1,
+  version: 2,
   operationId,
   sessionId: "session-a",
 });
 
 const response = (operation: InspectRuntime): RunnerResponse => ({
   _tag: "RunnerSuccess",
-  version: 1,
+  version: 2,
   operationId: operation.operationId,
   sessionId: operation.sessionId,
   result: {
@@ -123,18 +123,32 @@ describe("RunnerLink", () => {
               fake.receive(
                 encodeRunnerRequest({
                   _tag: "RunnerProbe",
-                  version: 1,
+                  version: 2,
                   probeId: "probe-1",
                 }),
               );
+              fake.receive(
+                encodeRunnerRequest({
+                  _tag: "HttpOpen",
+                  version: 2,
+                  streamId: "stream-1",
+                  sessionId: "session-a",
+                  runtimeId: "runtime-a",
+                  method: "GET",
+                  target: "/",
+                  headers: [],
+                  hasBody: false,
+                  responseCredit: 131_072,
+                }),
+              );
             });
-          } else if (fake.sent.length === 4) {
+          } else if (fake.sent.length === 5) {
             queueMicrotask(() => {
               fake.receive("{");
               fake.receive(new Uint8Array([1, 2, 3]));
               fake.receive("x".repeat(256 * 1024 + 1));
             });
-          } else if (fake.sent.length === 7) {
+          } else if (fake.sent.length === 8) {
             fake.remoteClose(1000);
           }
         };
@@ -157,27 +171,36 @@ describe("RunnerLink", () => {
       assert.strictEqual(authorization, "Bearer runner-secret");
       assert.isTrue(openedAfterHello);
       assert.deepStrictEqual(socket?.sent, [
-        encodeRunnerFrame({ _tag: "RunnerHello", version: 1, runner: "runner-a" }),
+        encodeRunnerFrame({
+          _tag: "RunnerHello",
+          version: 2,
+          runner: "runner-a",
+        }),
         encodeRunnerFrame(response(first)),
         encodeRunnerFrame(response(second)),
         encodeRunnerFrame({
           _tag: "RunnerProbeAck",
-          version: 1,
+          version: 2,
           probeId: "probe-1",
         }),
         encodeRunnerFrame({
           _tag: "RunnerProtocolRejected",
-          version: 1,
+          version: 2,
           code: "invalid_message",
         }),
         encodeRunnerFrame({
           _tag: "RunnerProtocolRejected",
-          version: 1,
+          version: 2,
           code: "invalid_message",
         }),
         encodeRunnerFrame({
           _tag: "RunnerProtocolRejected",
-          version: 1,
+          version: 2,
+          code: "invalid_message",
+        }),
+        encodeRunnerFrame({
+          _tag: "RunnerProtocolRejected",
+          version: 2,
           code: "invalid_message",
         }),
       ]);
