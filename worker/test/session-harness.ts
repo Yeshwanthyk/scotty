@@ -68,6 +68,11 @@ export interface HarnessOptions {
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
   readonly initialPicanRunning?: boolean;
+  readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
+    ? Stub extends { dispatch: infer Dispatch }
+      ? Dispatch
+      : never
+    : never;
   readonly initialProjections?: Readonly<Record<string, unknown>>;
   readonly onStorageGet?: (
     key: string,
@@ -402,7 +407,45 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 
   const env: Bindings = {
     AUTH: undefined as never,
-    RUNNERS: undefined as never,
+    RUNNERS: {
+      getByName: () => ({
+        dispatch:
+          options.runnerDispatch ??
+          (async (operation) => {
+            // oxlint-disable-next-line scotty/no-manual-tag-check -- test fake records the protocol operation without introducing an Effect dependency into the host harness
+            const ensuring = operation._tag === "EnsureRuntime";
+            events.push(
+              `runner:dispatch:${ensuring ? "EnsureRuntime" : "RemoveRuntime"}:${operation.operationId}`,
+            );
+            return {
+              ok: true,
+              response: {
+                _tag: "RunnerSuccess",
+                version: 2,
+                operationId: operation.operationId,
+                sessionId: operation.sessionId,
+                result: {
+                  _tag: ensuring ? "EnsureRuntimeResult" : "RemoveRuntimeResult",
+                  phase: ensuring ? "running" : "absent",
+                  resourceId: `runner-v1:${operation.sessionId}`,
+                  workspace: `/runner/${operation.sessionId}`,
+                },
+              },
+            } as never;
+          }),
+        fetch: async (request) => {
+          events.push(`runner:fetch:${new URL(request.url).pathname}`);
+          return new Response("runner fixture");
+        },
+        status: async () => "connected",
+        controlStatus: async () => ({
+          desired: "accepting",
+          connection: "connected",
+          lastSeenAt: "2026-07-24T12:00:00.000Z",
+        }),
+        control: async () => undefined,
+      }),
+    },
     SANDBOX: undefined as never,
     SESSIONS: sessions,
     BACKUP_BUCKET: {

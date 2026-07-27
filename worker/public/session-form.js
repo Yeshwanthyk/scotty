@@ -32,7 +32,13 @@ export function mergeRepositorySuggestions(tracked, sessions) {
 }
 
 export function submissionIdentity(previous, payload, createKey) {
-  const fingerprint = JSON.stringify([payload.repo, payload.prompt, payload.hardCapSeconds]);
+  const fingerprint = JSON.stringify([
+    payload.repo,
+    payload.prompt,
+    payload.hardCapSeconds,
+    payload.provider,
+    payload.runner,
+  ]);
   if (previous?.fingerprint === fingerprint && typeof previous.key === "string") return previous;
   return { fingerprint, key: createKey() };
 }

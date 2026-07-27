@@ -151,7 +151,7 @@ export function stableUp(
       id: string;
       url: string;
       branch: string;
-      provider: "cloudflare";
+      provider: "cloudflare" | "runner";
       status: string;
     };
     sessionUrl: string;

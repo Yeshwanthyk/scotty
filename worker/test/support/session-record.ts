@@ -5,6 +5,7 @@ export const makeSessionRecord = (overrides: Partial<SessionRecord> = {}): Sessi
   id: "a0b1c2d3e4f5",
   status: "warm",
   operation: null,
+  execution: { provider: "cloudflare" },
   provider: "cloudflare",
   repo: "owner/project",
   repoExistsAtCreate: true,

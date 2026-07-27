@@ -332,6 +332,15 @@ app.post("/api/sessions", async (c) => {
     throw badRequest("Request body must be valid JSON");
   });
   const input = parseCreateInput(body);
+  if (input.provider === "runner") {
+    const name = requireConfiguredRunnerName(c.env, input.runner ?? "");
+    const status = await c.env.RUNNERS.getByName(name).controlStatus();
+    if (status.desired !== "accepting" || status.connection !== "connected")
+      throw new ScottyError("upstream", "Runner is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      });
+  }
   const { id, session } = await createTrackedSession(c.env, c.req.header("idempotency-key"), input);
   const origin = new URL(c.req.url).origin;
   return c.json({
@@ -339,6 +348,7 @@ app.post("/api/sessions", async (c) => {
     url: `${origin}/s/${id}`,
     branch: session.branch,
     provider: session.provider,
+    ...(session.runner === undefined ? {} : { runner: session.runner }),
     status: session.status,
   });
 });
@@ -686,7 +696,13 @@ async function createSessionIdempotency(
   parseIdempotencyKey(key);
   const [keyDigest, inputDigest] = await Promise.all([
     sha256Hex(key),
-    sha256Hex(JSON.stringify([input.prompt, input.provider, input.repo, input.hardCapSeconds])),
+    sha256Hex(
+      JSON.stringify(
+        input.provider === "runner"
+          ? [input.prompt, input.provider, input.runner, input.repo, input.hardCapSeconds]
+          : [input.prompt, input.provider, input.repo, input.hardCapSeconds],
+      ),
+    ),
   ]);
   return { keyDigest, inputDigest };
 }

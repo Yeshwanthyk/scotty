@@ -1,4 +1,5 @@
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
+import { RUNNER_PROTOCOL_VERSION, type RunnerOperation } from "../../protocol/runner";
 import {
   type Cause,
   Clock,
@@ -66,6 +67,7 @@ import {
   sessionProjectionLayer,
 } from "./session-projection";
 import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
+import { RUNNER_HTTP_PATH_PREFIX } from "./runner-object";
 import { sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -330,6 +332,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict("Session destruction is already in progress");
     if (record.operation)
       return yield* conflict(`Session is already running ${record.operation.kind}`);
+    if (record.execution.provider === "runner") {
+      const execution = record.execution;
+      const source = new URL(request.url);
+      const target = `${RUNNER_HTTP_PATH_PREFIX}${encodeURIComponent(record.id)}/${encodeURIComponent(execution.runtimeId)}${source.pathname}${source.search}`;
+      return yield* Effect.tryPromise({
+        try: () =>
+          this.env.RUNNERS.getByName(execution.runner).fetch(
+            new Request(new URL(target, "https://runner.internal"), request),
+          ),
+        catch: (cause) => this.upstreamError("Runner upstream request failed", cause, record.id),
+      });
+    }
     const pican = yield* Pican;
     return yield* pican
       .fetch(request)
@@ -584,6 +598,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     if (record.status === "booting" && record.operation?.kind === "create") {
       const operation = record.operation;
+      if (record.execution.provider === "runner")
+        return yield* this.ensureRunnerCreateProgram(record, operation.nonce);
       if (operation.createPhase === "setup") {
         const reconciled = yield* Effect.result(
           this.prepareCreateForPicanProgram(record, prompt, operation.nonce, operation.startedAt),
@@ -613,6 +629,95 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return toSessionView(toProjection(record, new Date(replayNow)), replayNow);
   });
 
+  private readonly dispatchRunnerProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    operation: RunnerOperation,
+  ) {
+    if (record.execution.provider !== "runner")
+      return yield* new ScottyError("internal", "Runner binding is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    const execution = record.execution;
+    return yield* Effect.tryPromise({
+      try: () => this.env.RUNNERS.getByName(execution.runner).dispatch(operation),
+      catch: (cause) => this.upstreamError("Runner dispatch failed", cause, record.id),
+    });
+  });
+
+  private readonly ensureRunnerCreateProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    nonce: string,
+  ) {
+    if (record.execution.provider !== "runner")
+      return yield* new ScottyError("internal", "Runner binding is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    const dispatched = yield* Effect.result(
+      this.dispatchRunnerProgram(record, {
+        _tag: "EnsureRuntime",
+        version: RUNNER_PROTOCOL_VERSION,
+        operationId: `create-${nonce}`,
+        sessionId: record.id,
+      }),
+    );
+    const result = Result.isSuccess(dispatched) ? dispatched.success : undefined;
+    const response = result?.ok ? result.response : undefined;
+    if (
+      !Predicate.isTagged("RunnerSuccess")(response) ||
+      !Predicate.isTagged("EnsureRuntimeResult")(response.result) ||
+      response.result.phase !== "running" ||
+      response.result.resourceId !== record.execution.runtimeId
+    ) {
+      const failed = yield* this.failOperationProgram(
+        nonce,
+        "runner_create_failed",
+        "Runner session creation failed",
+        false,
+      );
+      yield* this.removeRunnerRuntimeProgram(failed, `create-cleanup-${nonce}`);
+      return yield* new ScottyError("upstream", "Runner session creation failed", {
+        httpStatus: 502,
+        exitCode: 1,
+      });
+    }
+    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    const ready = yield* this.updateForOperationProgram(nonce, (current) => ({
+      ...current,
+      status: "warm",
+      operation: null,
+      failure: undefined,
+      updatedAt,
+    }));
+    const now = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(ready, new Date(now)), now);
+  });
+
+  private readonly removeRunnerRuntimeProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    operationId: string,
+  ) {
+    if (record.execution.provider !== "runner") return;
+    const result = yield* this.dispatchRunnerProgram(record, {
+      _tag: "RemoveRuntime",
+      version: RUNNER_PROTOCOL_VERSION,
+      operationId,
+      sessionId: record.id,
+    });
+    const response = result.ok ? result.response : undefined;
+    if (
+      !Predicate.isTagged("RunnerSuccess")(response) ||
+      !Predicate.isTagged("RemoveRuntimeResult")(response.result) ||
+      response.result.phase !== "absent" ||
+      response.result.resourceId !== record.execution.runtimeId
+    )
+      return yield* this.upstreamError("Runner cleanup failed", result, record.id);
+  });
+
   private readonly createScottySessionProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     input: CreateSessionInput,
@@ -628,7 +733,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       id,
       status: "booting",
       operation: { kind: "create", nonce, startedAt: nowIso, createPhase: "setup" },
+      execution:
+        input.provider === "runner"
+          ? { provider: "runner", runner: input.runner ?? "", runtimeId: `runner-v1:${id}` }
+          : { provider: "cloudflare" },
       provider: input.provider,
+      ...(input.runner === undefined ? {} : { runner: input.runner }),
       repo: input.repo,
       repoExistsAtCreate: true,
       defaultBranch: "dev",
@@ -682,6 +792,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
     }
 
+    if (initial.execution.provider === "runner")
+      return yield* this.ensureRunnerCreateProgram(initial, nonce);
     const setup = yield* Effect.result(
       this.prepareCreateForPicanProgram(initial, input.prompt, nonce, nowIso),
     );
@@ -698,6 +810,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly resumeScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const authoritative = yield* this.requireRecordProgram();
+    if (authoritative.execution.provider === "runner")
+      return yield* wrongState(
+        authoritative.status,
+        "resume",
+        "Runner lifecycle is not supported yet",
+      );
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
@@ -784,10 +903,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict("Session vaporize lease changed");
 
     yield* Effect.sync(() => this.cancelVaporizeConflictingSchedules());
-    const destroyed = yield* Effect.raceFirst(
-      hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
-      Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
-    );
+    const destroyed =
+      current.execution.provider === "runner"
+        ? yield* this.removeRunnerRuntimeProgram(current, `vaporize-${payload.nonce}`).pipe(
+            Effect.as(true),
+          )
+        : yield* Effect.raceFirst(
+            hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
+            Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
+          );
     if (!destroyed) {
       yield* this.armVaporizeRetryProgram(payload);
       yield* Effect.sync(() => this.ctx.abort(`Sandbox destroy exceeded ${DESTROY_DEADLINE_MS}ms`));
@@ -877,6 +1001,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly prepareDownArchiveProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const authoritative = yield* this.requireRecordProgram();
+    if (authoritative.execution.provider === "runner")
+      return yield* wrongState(
+        authoritative.status,
+        "beam down",
+        "Runner lifecycle is not supported yet",
+      );
     const runtime = yield* SandboxRuntime;
     const discovery = yield* RolloutDiscovery;
     const operation = yield* this.acquireOperationProgram("down", ["warm"]);
@@ -932,6 +1063,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     sessionId: string,
   ) {
+    const record = yield* this.readRecordProgram();
+    if (record?.execution.provider === "runner") {
+      yield* this.removeRunnerRuntimeProgram(record, `failed-cleanup-${sessionId}`);
+      return;
+    }
     yield* Effect.sync(() => this.deleteSchedules("retryHardCapDestroy"));
     const destroyed = yield* Effect.result(
       Effect.raceFirst(
@@ -1002,6 +1138,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         record,
         "A session operation exceeded the hard-cap grace period",
       );
+      return;
+    }
+
+    if (record.execution.provider === "runner") {
+      yield* this.markHardCapFailureProgram(record, "Runner session reached its hard cap");
       return;
     }
 
@@ -1397,6 +1538,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly snapshotScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const authoritative = yield* this.requireRecordProgram();
+    if (authoritative.execution.provider === "runner")
+      return yield* wrongState(
+        authoritative.status,
+        "snapshot",
+        "Runner lifecycle is not supported yet",
+      );
     const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
     const result = yield* Effect.result(this.checkpointProgram(operation.nonce, true));
     if (Result.isFailure(result)) {
@@ -1409,6 +1557,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly sleepScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const authoritative = yield* this.requireRecordProgram();
+    if (authoritative.execution.provider === "runner")
+      return yield* wrongState(
+        authoritative.status,
+        "sleep",
+        "Runner lifecycle is not supported yet",
+      );
     const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
     const result = yield* Effect.result(
       Effect.gen({ self: this }, function* () {

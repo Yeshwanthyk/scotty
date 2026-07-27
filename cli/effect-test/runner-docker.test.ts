@@ -200,7 +200,7 @@ describe("Docker runner compute", () => {
           );
           const absent = yield* Effect.result(
             compute.mountedHttp(
-              { sessionId: "session-a", runtimeId: `runner-v1:${hash("session-a")}` },
+              { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
               new Request("http://127.0.0.1:31415/s/session-a/health"),
               () => Promise.resolve(new Response()),
             ),
@@ -222,7 +222,7 @@ describe("Docker runner compute", () => {
           let forwarded: Request | undefined;
           const controller = new AbortController();
           const response = yield* compute.mountedHttp(
-            { sessionId: "session-a", runtimeId: `runner-v1:${hash("session-a")}` },
+            { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
             new Request("http://127.0.0.1:31415/s/session-a/echo?proof=yes", {
               method: "POST",
               body: "portable",
@@ -248,7 +248,7 @@ describe("Docker runner compute", () => {
           yield* compute.stop("session-a");
           const stopped = yield* Effect.result(
             compute.mountedHttp(
-              { sessionId: "session-a", runtimeId: `runner-v1:${hash("session-a")}` },
+              { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
               new Request("http://ignored/s/session-a/health"),
               () => Promise.resolve(new Response()),
             ),

@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 
-export const PROVIDERS = ["cloudflare"] as const;
+export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
 
 export const ConfigSchema = Schema.Struct({
