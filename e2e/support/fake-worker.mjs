@@ -128,33 +128,6 @@ export class FakeWorkerService {
     };
   }
 
-  seedV1Authority(labels = ["Legacy admin A", "Legacy admin B"]) {
-    const credentials = labels.map(() => this.#credential("scotty_client"));
-    const now = Date.now();
-    this.auth = {
-      version: 1,
-      clients: credentials.map((credential, index) => ({
-        id: credential.id,
-        credentialDigest: this.#digest(credential.secret),
-        label: labels[index],
-        scopes: [...OWNER_SCOPES],
-        createdAt: new Date(now - 60_000).toISOString(),
-        expiresAt: new Date(now + THIRTY_DAYS).toISOString(),
-        lastSeenAt: new Date(now - 1_000).toISOString(),
-      })),
-      pairings: [
-        {
-          id: "eeeeeeeeeeee",
-          credentialDigest: this.#digest("e".repeat(43)),
-          scopes: [...OWNER_SCOPES],
-          createdAt: new Date(now - 1_000).toISOString(),
-          expiresAt: new Date(now + FIVE_MINUTES).toISOString(),
-        },
-      ],
-    };
-    return credentials.map((credential) => credential.raw);
-  }
-
   publicSurfaces(id) {
     const record = this.sessions.get(id);
     const runtime = this.runtimes.get(id);
@@ -262,21 +235,7 @@ export class FakeWorkerService {
     return match ? { id: match[1], secret: match[2] } : undefined;
   }
 
-  #migrateAuth() {
-    if (this.auth.version === 2) return;
-    const now = Date.now();
-    this.auth = {
-      version: 2,
-      ownership: { state: "unclaimed", epoch: 0 },
-      clients: this.auth.clients
-        .filter((client) => !client.revokedAt && Date.parse(client.expiresAt) > now)
-        .map((client) => ({ ...client, scopes: [...STANDARD_SCOPES] })),
-      pairings: [],
-    };
-  }
-
   #purgeAuth() {
-    this.#migrateAuth();
     const now = Date.now();
     const ownerId =
       this.auth.ownership.state === "claimed" ? this.auth.ownership.ownerClientId : undefined;
