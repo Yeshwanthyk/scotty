@@ -1,6 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Predicate, Result } from "effect";
-import { encodeRunnerFrame, type InspectRuntime, type RunnerResponse } from "../../protocol/runner";
+import {
+  encodeRunnerFrame,
+  encodeRunnerRequest,
+  type InspectRuntime,
+  type RunnerResponse,
+} from "../../protocol/runner";
 import {
   RunnerLinkError,
   runRunnerLinkWith,
@@ -112,14 +117,21 @@ describe("RunnerLink", () => {
             queueMicrotask(() => {
               fake.receive(JSON.stringify(first));
               fake.receive(JSON.stringify(second));
+              fake.receive(
+                encodeRunnerRequest({
+                  _tag: "RunnerProbe",
+                  version: 1,
+                  probeId: "probe-1",
+                }),
+              );
             });
-          } else if (fake.sent.length === 3) {
+          } else if (fake.sent.length === 4) {
             queueMicrotask(() => {
               fake.receive("{");
               fake.receive(new Uint8Array([1, 2, 3]));
               fake.receive("x".repeat(256 * 1024 + 1));
             });
-          } else if (fake.sent.length === 6) {
+          } else if (fake.sent.length === 7) {
             fake.remoteClose(1000);
           }
         };
@@ -145,6 +157,11 @@ describe("RunnerLink", () => {
         encodeRunnerFrame({ _tag: "RunnerHello", version: 1, runner: "runner-a" }),
         encodeRunnerFrame(response(first)),
         encodeRunnerFrame(response(second)),
+        encodeRunnerFrame({
+          _tag: "RunnerProbeAck",
+          version: 1,
+          probeId: "probe-1",
+        }),
         encodeRunnerFrame({
           _tag: "RunnerProtocolRejected",
           version: 1,

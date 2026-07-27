@@ -51,6 +51,7 @@ describe("runner serve", () => {
                     operationId: "ensure-initial",
                   }),
                 ),
+              RunnerProbeAck: () => undefined,
               RunnerProtocolRejected: () => undefined,
               RunnerFailure: (response) => {
                 responses.push(response);

@@ -8,12 +8,22 @@ const OWNER_TRANSFER_CREDENTIAL_PREFIX = "scotty_transfer";
 const RECOVERY_CREDENTIAL_PREFIX = "scotty_recovery";
 const MAX_CLIENTS = 64;
 const MAX_PAIRINGS = 32;
+const MAX_V1_TERMINAL_TICKETS = 128;
 const OWNER_RENEWAL_WINDOW_MILLIS = 7 * 24 * 60 * 60 * 1_000;
 const OWNER_TTL_MILLIS = 30 * 24 * 60 * 60 * 1_000;
 
 export const STANDARD_AUTH_SCOPES = ["sessions:read", "sessions:write"] as const;
 
 export const ADMIN_AUTH_SCOPES = [...STANDARD_AUTH_SCOPES, "access:read", "access:write"] as const;
+
+const LegacyAuthScopeSchema = Schema.Literals([
+  "sessions:read",
+  "sessions:write",
+  "terminal:connect",
+  "access:read",
+  "access:write",
+]);
+type LegacyAuthScope = typeof LegacyAuthScopeSchema.Type;
 
 export const StandardAuthScopeSchema = Schema.Literals(STANDARD_AUTH_SCOPES);
 export type StandardAuthScope = typeof StandardAuthScopeSchema.Type;
@@ -25,7 +35,7 @@ const AuthClientRecordV1Schema = Schema.Struct({
   id: Schema.String,
   credentialDigest: Schema.String,
   label: Schema.String,
-  scopes: Schema.Array(AuthScopeSchema),
+  scopes: Schema.Array(LegacyAuthScopeSchema),
   createdAt: Schema.String,
   expiresAt: Schema.String,
   lastSeenAt: Schema.String,
@@ -38,16 +48,27 @@ const PairingGrantRecordV1Schema = Schema.Struct({
   id: Schema.String,
   credentialDigest: Schema.String,
   label: Schema.optionalKey(Schema.String),
-  scopes: Schema.Array(AuthScopeSchema),
+  scopes: Schema.Array(LegacyAuthScopeSchema),
   createdAt: Schema.String,
   expiresAt: Schema.String,
 });
 type PairingGrantRecordV1 = typeof PairingGrantRecordV1Schema.Type;
 
+const TerminalTicketRecordV1Schema = Schema.Struct({
+  id: Schema.String,
+  credentialDigest: Schema.String,
+  clientId: Schema.String,
+  sessionId: Schema.String,
+  createdAt: Schema.String,
+  expiresAt: Schema.String,
+});
+type TerminalTicketRecordV1 = typeof TerminalTicketRecordV1Schema.Type;
+
 export const AuthAuthorityV1Schema = Schema.Struct({
   version: Schema.Literal(1),
   clients: Schema.Array(AuthClientRecordV1Schema),
   pairings: Schema.Array(PairingGrantRecordV1Schema),
+  terminalTickets: Schema.Array(TerminalTicketRecordV1Schema),
 });
 export type AuthAuthorityV1 = typeof AuthAuthorityV1Schema.Type;
 
@@ -935,10 +956,13 @@ function validAuthorityV1(authority: AuthAuthorityV1): boolean {
   return (
     authority.clients.length <= MAX_CLIENTS * 2 &&
     authority.pairings.length <= MAX_PAIRINGS &&
+    authority.terminalTickets.length <= MAX_V1_TERMINAL_TICKETS &&
     uniqueIds(authority.clients) &&
     uniqueIds(authority.pairings) &&
+    uniqueIds(authority.terminalTickets) &&
     authority.clients.every(validClientRecordV1) &&
-    authority.pairings.every(validPairingRecordV1)
+    authority.pairings.every(validPairingRecordV1) &&
+    authority.terminalTickets.every(validTerminalTicketRecordV1)
   );
 }
 
@@ -1012,6 +1036,15 @@ function validPairingRecordV1(pairing: PairingGrantRecordV1): boolean {
   );
 }
 
+function validTerminalTicketRecordV1(ticket: TerminalTicketRecordV1): boolean {
+  return (
+    validStoredCredential(ticket.id, ticket.credentialDigest) &&
+    validClientId(ticket.clientId) &&
+    /^[a-z0-9][a-z0-9-]{5,31}$/u.test(ticket.sessionId) &&
+    validRecordTimestamps(ticket)
+  );
+}
+
 function validPairingRecord(pairing: PairingGrantRecord): boolean {
   return (
     validStoredCredential(pairing.id, pairing.credentialDigest) &&
@@ -1048,7 +1081,7 @@ function validOptionalDigest(value: string | undefined): boolean {
   return value === undefined || /^[0-9a-f]{64}$/u.test(value);
 }
 
-function validLegacyScopes(scopes: ReadonlyArray<AuthScope>): boolean {
+function validLegacyScopes(scopes: ReadonlyArray<LegacyAuthScope>): boolean {
   return scopes.length > 0 && new Set(scopes).size === scopes.length;
 }
 

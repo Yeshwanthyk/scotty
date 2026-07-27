@@ -1,16 +1,20 @@
-import { Deferred, Effect, Option, Result, Schema } from "effect";
+import { Deferred, Effect, Option, Predicate, Result, Schema } from "effect";
 import {
   RunnerHelloSchema,
   RunnerOperationSchema,
-  RunnerResponseSchema,
+  RunnerReplySchema,
   encodeRunnerOperation,
+  encodeRunnerRequest,
   type RunnerOperation,
+  type RunnerProbeAck,
   type RunnerResponse,
 } from "../../protocol/runner.ts";
 
 const MAX_RUNNER_MESSAGE_CHARACTERS = 256 * 1024;
 const DEFAULT_DISPATCH_TIMEOUT_MILLIS = 30_000;
 const MAX_DISPATCH_TIMEOUT_MILLIS = 5 * 60_000;
+const DEFAULT_STATUS_TIMEOUT_MILLIS = 1_000;
+const MAX_STATUS_TIMEOUT_MILLIS = 5_000;
 
 const RunnerAttachmentSchema = Schema.Struct({
   version: Schema.Literal(1),
@@ -29,7 +33,7 @@ const decodeOperation = Schema.decodeUnknownEffect(RunnerOperationSchema, {
 const decodeHelloText = Schema.decodeUnknownEffect(Schema.fromJsonString(RunnerHelloSchema), {
   onExcessProperty: "error",
 });
-const decodeResponseText = Schema.decodeUnknownEffect(Schema.fromJsonString(RunnerResponseSchema), {
+const decodeReplyText = Schema.decodeUnknownEffect(Schema.fromJsonString(RunnerReplySchema), {
   onExcessProperty: "error",
 });
 
@@ -64,6 +68,11 @@ interface PendingDispatch {
   waiters: number;
 }
 
+interface PendingProbe {
+  readonly connectionId: string;
+  readonly deferred: Deferred.Deferred<boolean>;
+}
+
 const failure = (code: RunnerDispatchFailureCode, message: string): RunnerDispatchResult => ({
   ok: false,
   error: { code, message },
@@ -74,6 +83,7 @@ const attachmentOf = (socket: RunnerSocket): Option.Option<RunnerAttachment> =>
 
 export class RunnerTransport {
   readonly #pending = new Map<string, PendingDispatch>();
+  readonly #probes = new Map<string, PendingProbe>();
   readonly #sockets = new Set<RunnerSocket>();
   readonly runnerName: string;
 
@@ -96,8 +106,63 @@ export class RunnerTransport {
     this.#sockets.add(socket);
   }
 
-  status(): "connected" | "disconnected" {
-    return Option.isSome(this.#activeSocket()) ? "connected" : "disconnected";
+  status(
+    timeoutMillis = DEFAULT_STATUS_TIMEOUT_MILLIS,
+  ): Effect.Effect<"connected" | "disconnected"> {
+    return Effect.gen({ self: this }, function* () {
+      const active = this.#activeSocket();
+      if (Option.isNone(active)) return "disconnected";
+
+      const probeId = crypto.randomUUID();
+      const deferred = yield* Deferred.make<boolean>();
+      const pending: PendingProbe = {
+        connectionId: active.value.attachment.connectionId,
+        deferred,
+      };
+      this.#probes.set(probeId, pending);
+
+      return yield* Effect.gen({ self: this }, function* () {
+        const sent = yield* Effect.result(
+          active.value.socket
+            .send(
+              encodeRunnerRequest({
+                _tag: "RunnerProbe",
+                version: 1,
+                probeId,
+              }),
+            )
+            .pipe(Effect.sandbox),
+        );
+        if (Result.isFailure(sent)) {
+          yield* this.#disconnectSocket(
+            active.value.socket,
+            active.value.attachment,
+            1011,
+            "Runner probe failed",
+          );
+          return "disconnected";
+        }
+
+        const acknowledged = yield* Deferred.await(deferred).pipe(
+          Effect.timeoutOption(normalizedStatusTimeout(timeoutMillis)),
+        );
+        if (Option.isSome(acknowledged)) return acknowledged.value ? "connected" : "disconnected";
+
+        yield* this.#disconnectSocket(
+          active.value.socket,
+          active.value.attachment,
+          1011,
+          "Runner probe timed out",
+        );
+        return "disconnected";
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (this.#probes.get(probeId) === pending) this.#probes.delete(probeId);
+          }),
+        ),
+      );
+    });
   }
 
   dispatch(
@@ -172,9 +237,13 @@ export class RunnerTransport {
         return;
       }
 
-      const decoded = yield* Effect.result(decodeResponseText(message));
+      const decoded = yield* Effect.result(decodeReplyText(message));
       if (Result.isFailure(decoded)) {
         yield* this.#reject(socket, "Invalid runner response");
+        return;
+      }
+      if (Predicate.isTagged("RunnerProbeAck")(decoded.success)) {
+        yield* this.#completeProbe(socket, attachment.value, decoded.success);
         return;
       }
       yield* this.#complete(socket, attachment.value, decoded.success);
@@ -240,6 +309,19 @@ export class RunnerTransport {
     return Deferred.succeed(pending.deferred, { ok: true, response }).pipe(Effect.asVoid);
   }
 
+  #completeProbe(
+    socket: RunnerSocket,
+    attachment: RunnerAttachment,
+    response: RunnerProbeAck,
+  ): Effect.Effect<void> {
+    const pending = this.#probes.get(response.probeId);
+    if (pending === undefined) return Effect.void;
+    if (pending.connectionId !== attachment.connectionId)
+      return this.#reject(socket, "Runner probe identity mismatch");
+    this.#probes.delete(response.probeId);
+    return Deferred.succeed(pending.deferred, true).pipe(Effect.asVoid);
+  }
+
   #reject(socket: RunnerSocket, reason: string): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       const attachment = attachmentOf(socket);
@@ -275,6 +357,11 @@ export class RunnerTransport {
           failure("runner_disconnected", "Runner disconnected before replying"),
         );
       }
+      for (const [probeId, pending] of this.#probes) {
+        if (pending.connectionId !== connectionId) continue;
+        this.#probes.delete(probeId);
+        yield* Deferred.succeed(pending.deferred, false);
+      }
     });
   }
 
@@ -306,6 +393,11 @@ export class RunnerTransport {
 function normalizedTimeout(timeoutMillis: number): number {
   if (!Number.isFinite(timeoutMillis)) return DEFAULT_DISPATCH_TIMEOUT_MILLIS;
   return Math.min(MAX_DISPATCH_TIMEOUT_MILLIS, Math.max(1, Math.floor(timeoutMillis)));
+}
+
+function normalizedStatusTimeout(timeoutMillis: number): number {
+  if (!Number.isFinite(timeoutMillis)) return DEFAULT_STATUS_TIMEOUT_MILLIS;
+  return Math.min(MAX_STATUS_TIMEOUT_MILLIS, Math.max(1, Math.floor(timeoutMillis)));
 }
 
 const operationKey = (sessionId: string, operationId: string): string =>

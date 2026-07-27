@@ -18,6 +18,13 @@ import { sha256Hex } from "../src/digest";
 const NOW = Date.parse("2026-07-22T12:00:00.000Z");
 const FIVE_MINUTES = 5 * 60 * 1_000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1_000;
+const LEGACY_ADMIN_AUTH_SCOPES = [
+  "sessions:read",
+  "sessions:write",
+  "terminal:connect",
+  "access:read",
+  "access:write",
+] as const;
 
 const secret = (character: string): string => character.repeat(43);
 
@@ -155,11 +162,12 @@ describe("AuthRegistry ownership authority", () => {
     }),
   );
 
-  it.effect("migrates V1 clients to standard access without guessing an owner", () =>
+  it.effect("migrates the exact historical V1 authority without guessing an owner", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const clientSecret = secret("b");
       const pairingSecret = secret("c");
+      const ticketSecret = secret("d");
       const storage = new MemoryAuthAuthorityStorage({
         version: 1,
         clients: [
@@ -167,7 +175,7 @@ describe("AuthRegistry ownership authority", () => {
             id: "222222222222",
             credentialDigest: yield* Effect.promise(() => sha256Hex(clientSecret)),
             label: "Former admin",
-            scopes: [...ADMIN_AUTH_SCOPES],
+            scopes: [...LEGACY_ADMIN_AUTH_SCOPES],
             createdAt: "2026-07-01T00:00:00.000Z",
             expiresAt: "2026-08-01T00:00:00.000Z",
             lastSeenAt: "2026-07-21T00:00:00.000Z",
@@ -177,7 +185,17 @@ describe("AuthRegistry ownership authority", () => {
           {
             id: "333333333333",
             credentialDigest: yield* Effect.promise(() => sha256Hex(pairingSecret)),
-            scopes: [...ADMIN_AUTH_SCOPES],
+            scopes: [...LEGACY_ADMIN_AUTH_SCOPES],
+            createdAt: "2026-07-22T11:59:00.000Z",
+            expiresAt: "2026-07-22T12:04:00.000Z",
+          },
+        ],
+        terminalTickets: [
+          {
+            id: "444444444444",
+            credentialDigest: yield* Effect.promise(() => sha256Hex(ticketSecret)),
+            clientId: "222222222222",
+            sessionId: "legacy-session",
             createdAt: "2026-07-22T11:59:00.000Z",
             expiresAt: "2026-07-22T12:04:00.000Z",
           },
@@ -197,6 +215,7 @@ describe("AuthRegistry ownership authority", () => {
       assert.deepStrictEqual(authority.ownership, { state: "unclaimed", epoch: 0 });
       assert.deepStrictEqual(authority.clients[0]?.scopes, [...STANDARD_AUTH_SCOPES]);
       assert.lengthOf(authority.pairings, 0);
+      assert.notProperty(authority, "terminalTickets");
 
       const ownerOnly = yield* withRegistry(
         storage,
