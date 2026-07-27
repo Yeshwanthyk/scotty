@@ -1,6 +1,10 @@
 import { Deferred, Effect, Result, Schema } from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
-import { decodeRunnerOperationText, encodeRunnerFrame, type RunnerFrame } from "./runner-protocol";
+import {
+  decodeRunnerOperationText,
+  encodeRunnerFrame,
+  type RunnerFrame,
+} from "../../protocol/runner";
 import { RunnerRuntime } from "./runner-runtime";
 
 const MAX_RUNNER_MESSAGE_CHARACTERS = 256 * 1024;

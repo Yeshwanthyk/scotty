@@ -966,6 +966,14 @@
         <div>
           <h1>Sessions</h1>
           <p class="subtitle" id="summary">Your cloud workspaces</p>
+          <div class="control-status" aria-label="Control plane status">
+            <span class="control-status-item" id="cloudflare-status" data-state="unknown"
+              >Cloudflare unknown</span
+            >
+            <span class="control-status-item" id="slumbers-status" data-state="unknown"
+              >Slumbers unknown</span
+            >
+          </div>
         </div>
         <button
           class="button button-primary"
@@ -1072,6 +1080,8 @@
       const content = document.querySelector("#content");
       const devicesLink = document.querySelector("#devices");
       const summary = document.querySelector("#summary");
+      const cloudflareStatus = document.querySelector("#cloudflare-status");
+      const slumbersStatus = document.querySelector("#slumbers-status");
       const notice = document.querySelector("#notice");
       const noticeText = document.querySelector("#notice-text");
       const refreshButton = document.querySelector("#refresh");
@@ -1093,6 +1103,7 @@
       let trackedRepositories = [];
       let loaded = false;
       let fetching = false;
+      let statusFetching = false;
       let creating = false;
       let createController;
       let createAbortReason;
@@ -1104,6 +1115,37 @@
 
       function sessionPath(id, suffix = "") {
         return `/api/sessions/${encodeURIComponent(id)}${suffix}`;
+      }
+
+      function renderControlStatus(cloudflare, slumbers) {
+        cloudflareStatus.dataset.state = cloudflare;
+        cloudflareStatus.textContent = `Cloudflare ${cloudflare}`;
+        slumbersStatus.dataset.state = slumbers;
+        slumbersStatus.textContent = `Slumbers ${slumbers}`;
+      }
+
+      async function refreshControlStatus() {
+        if (statusFetching) return;
+        statusFetching = true;
+        try {
+          const response = await fetch("/api/status", {
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) throw new Error("Status could not be loaded.");
+          const body = await response.json();
+          if (
+            body?.cloudflare !== "available" ||
+            (body?.slumbers !== "connected" && body?.slumbers !== "disconnected")
+          )
+            throw new Error("Scotty returned an unexpected status response.");
+          renderControlStatus(body.cloudflare, body.slumbers);
+        } catch {
+          renderControlStatus("unknown", "unknown");
+        } finally {
+          statusFetching = false;
+        }
       }
 
       function duration(value) {
@@ -1459,6 +1501,7 @@
       }
 
       async function refresh(options = {}) {
+        void refreshControlStatus();
         if (fetching) return;
         fetching = true;
         refreshButton.disabled = true;

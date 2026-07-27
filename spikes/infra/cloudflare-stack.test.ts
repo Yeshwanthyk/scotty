@@ -8,6 +8,7 @@ import {
   CLOUDFLARE_CONTAINER_APPLICATION_NAME,
   CLOUDFLARE_WORKER_SECRETS,
   CLOUDFLARE_KV_TITLE,
+  CLOUDFLARE_RUNNER_WORKER_NAME,
   CLOUDFLARE_STAGE,
   CLOUDFLARE_STACK,
   CLOUDFLARE_WORKER_NAME,
@@ -17,6 +18,14 @@ import {
 const accountId = "0123456789abcdef0123456789abcdef";
 const source = readFileSync(new URL("../../infra/cloudflare-stack.ts", import.meta.url), "utf8");
 const entrypointSource = readFileSync(new URL("../../alchemy.run.ts", import.meta.url), "utf8");
+const externalWorkerSource = readFileSync(
+  new URL("../../worker/src/index.ts", import.meta.url),
+  "utf8",
+);
+const runnerWorkerSource = readFileSync(
+  new URL("../../worker/src/runner-worker.ts", import.meta.url),
+  "utf8",
+);
 
 const approvedConfig = (): CloudflareStackConfig => ({
   stage: "production",
@@ -72,7 +81,8 @@ describe("Cloudflare stack guard", () => {
         "confirmed",
         accountId,
         "worker=scotty-worker",
-        "durableObjects=ScottySandbox,ScottyAuthRegistry",
+        "runnerWorker=scotty-runner",
+        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunner",
         "container=scotty-sandboxcontainer-production-ytkhty6mswuofjo5",
         "kv=scotty-sessions",
         "r2=scotty-backups",
@@ -102,13 +112,19 @@ describe("Cloudflare stack topology", () => {
   it("exports the exact production topology", () => {
     assert.strictEqual(CLOUDFLARE_STAGE, "production");
     assert.strictEqual(CLOUDFLARE_WORKER_NAME, "scotty-worker");
+    assert.strictEqual(CLOUDFLARE_RUNNER_WORKER_NAME, "scotty-runner");
     assert.strictEqual(CLOUDFLARE_KV_TITLE, "scotty-sessions");
     assert.strictEqual(CLOUDFLARE_BACKUP_BUCKET_NAME, "scotty-backups");
     assert.strictEqual(
       CLOUDFLARE_CONTAINER_APPLICATION_NAME,
       "scotty-sandboxcontainer-production-ytkhty6mswuofjo5",
     );
-    assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["CODEX_AUTH_JSON", "GH_TOKEN", "SCOTTY_TOKEN"]);
+    assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, [
+      "CODEX_AUTH_JSON",
+      "GH_TOKEN",
+      "SCOTTY_RUNNER_TOKEN",
+      "SCOTTY_TOKEN",
+    ]);
     assert.deepEqual(CLOUDFLARE_STACK, {
       worker: {
         logicalId: "MonolithWorker",
@@ -136,6 +152,12 @@ describe("Cloudflare stack topology", () => {
         bindingName: "AUTH",
         className: "ScottyAuthRegistry",
       },
+      runnerDurableObject: {
+        logicalId: "Runner",
+        bindingName: "RUNNERS",
+        className: "ScottyRunner",
+        workerName: "scotty-runner",
+      },
       container: {
         logicalId: "SandboxContainer",
         name: "scotty-sandboxcontainer-production-ytkhty6mswuofjo5",
@@ -146,7 +168,11 @@ describe("Cloudflare stack topology", () => {
       },
       kv: { logicalId: "SessionsProjection", bindingName: "SESSIONS", title: "scotty-sessions" },
       r2: { logicalId: "BackupBucket", bindingName: "BACKUP_BUCKET", name: "scotty-backups" },
-      vars: { SANDBOX_TRANSPORT: "rpc", BACKUP_BUCKET_NAME: "scotty-backups" },
+      vars: {
+        SANDBOX_TRANSPORT: "rpc",
+        BACKUP_BUCKET_NAME: "scotty-backups",
+        SCOTTY_RUNNER_NAME: "slumbers",
+      },
       outputKeys: ["url"],
       removalPolicy: "retain",
     });
@@ -181,7 +207,10 @@ describe("Cloudflare stack source contract", () => {
 
   it("retains every resource and omits R2 lifecycle rules", () => {
     assert.match(source, /const removalPolicy = RemovalPolicy\.retain\(\)/u);
-    assert.strictEqual(source.match(/\.pipe\(removalPolicy\)/gu)?.length, 4);
+    assert.strictEqual(
+      source.match(/(?:\.pipe\(removalPolicy\)|^\s+removalPolicy,$)/gmu)?.length,
+      5,
+    );
     assert.notMatch(source, /RemovalPolicy\.destroy|lifecycleRules/u);
   });
 
@@ -190,6 +219,8 @@ describe("Cloudflare stack source contract", () => {
     assert.notMatch(source, /readAssets|assetHash/u);
     assert.match(source, /SANDBOX: durableObject/u);
     assert.match(source, /AUTH: authDurableObject/u);
+    assert.match(source, /RUNNERS: runnerDurableObject/u);
+    assert.match(source, /scriptName: runnerWorker\.workerName/u);
     assert.match(source, /SESSIONS: sessions/u);
     assert.match(source, /BACKUP_BUCKET: backups/u);
     assert.match(source, /\.\.\.CLOUDFLARE_STACK\.vars/u);
@@ -201,6 +232,15 @@ describe("Cloudflare stack source contract", () => {
     assert.match(source, /instanceType: CLOUDFLARE_STACK\.container\.instanceType/u);
     assert.match(source, /maxInstances: CLOUDFLARE_STACK\.container\.maxInstances/u);
     assert.match(source, /bindExternalSandboxContainer\(\{ worker, container, durableObject \}\)/u);
+  });
+
+  it("hosts the Effect Runner only in the private cross-script Worker", () => {
+    assert.notMatch(externalWorkerSource, /(?:import|export).*\bScottyRunner\b/u);
+    assert.match(runnerWorkerSource, /Worker<[\s\S]*ScottyRunner/u);
+    assert.match(runnerWorkerSource, /yield\* ScottyRunner/u);
+    assert.match(runnerWorkerSource, /Effect\.provide\(ScottyRunnerLive\)/u);
+    assert.match(runnerWorkerSource, /url: false/u);
+    assert.notMatch(runnerWorkerSource, /SCOTTY_RUNNER_TOKEN|InheritedWorkerSecrets/u);
   });
 
   it("leaves credentials out of Alchemy props and state", () => {

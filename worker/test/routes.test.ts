@@ -32,6 +32,12 @@ const auth = vi.hoisted(() => ({
   startOwnerTransfer: vi.fn(),
 }));
 
+const runner = vi.hoisted(() => ({
+  fetch: vi.fn(),
+  getByName: vi.fn(),
+  status: vi.fn(),
+}));
+
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@cloudflare/sandbox")>()),
   getSandbox: vi.fn(() => sandboxTarget.current),
@@ -78,10 +84,13 @@ function env(): Bindings {
   };
   return {
     SCOTTY_TOKEN: TOKEN,
+    SCOTTY_RUNNER_NAME: "slumbers",
+    SCOTTY_RUNNER_TOKEN: "runner-test-token",
     CODEX_AUTH_JSON: "{}",
     GH_TOKEN: "github-test-sentinel",
     ASSETS: assets,
     AUTH: authNamespace(),
+    RUNNERS: { getByName: runner.getByName },
     SANDBOX: {} as DurableObjectNamespace<import("../src/session").Sandbox>,
     SESSIONS: {} as KVNamespace,
     BACKUP_BUCKET: {} as R2Bucket,
@@ -122,6 +131,73 @@ describe("real Hono boundary", () => {
         renewed: false,
       },
     });
+    runner.getByName.mockReturnValue({ fetch: runner.fetch, status: runner.status });
+    runner.fetch.mockResolvedValue(new Response(null, { status: 204 }));
+    runner.status.mockResolvedValue("connected");
+  });
+
+  it("accepts only the configured authenticated runner and strips its credential", async () => {
+    runner.fetch.mockImplementation(async (request: Request) => {
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("user-agent")).toBeNull();
+      expect(request.headers.get("upgrade")).toBe("websocket");
+      return new Response(null, { status: 204 });
+    });
+
+    const response = await app.request(
+      "/api/runners/slumbers/connect",
+      {
+        headers: {
+          authorization: "Bearer runner-test-token",
+          cookie: "scotty_client=must-not-forward",
+          "user-agent": "browser-metadata",
+          upgrade: "websocket",
+        },
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(204);
+    expect(runner.getByName).toHaveBeenCalledWith("slumbers");
+    expect(runner.fetch).toHaveBeenCalledTimes(1);
+    expect(auth.authenticate).not.toHaveBeenCalled();
+  });
+
+  it("rejects unconfigured, unauthenticated, and non-upgrade runner requests before the DO", async () => {
+    const requests = [
+      app.request(
+        "/api/runners/other/connect",
+        {
+          headers: {
+            authorization: "Bearer runner-test-token",
+            upgrade: "websocket",
+          },
+        },
+        env(),
+      ),
+      app.request("/api/runners/slumbers/connect", { headers: { upgrade: "websocket" } }, env()),
+      app.request(
+        "/api/runners/slumbers/connect",
+        {
+          headers: {
+            authorization: "Bearer wrong-runner-token",
+            upgrade: "websocket",
+          },
+        },
+        env(),
+      ),
+      app.request(
+        "/api/runners/slumbers/connect",
+        { headers: { authorization: "Bearer runner-test-token" } },
+        env(),
+      ),
+    ];
+    const responses = await Promise.all(requests);
+
+    expect(responses.map(({ status }) => status)).toEqual([404, 401, 401, 426]);
+    expect(runner.fetch).not.toHaveBeenCalled();
+    expect(auth.authenticate).not.toHaveBeenCalled();
   });
 
   it("rejects unauthenticated API requests before touching bindings", async () => {
@@ -133,6 +209,55 @@ describe("real Hono boundary", () => {
         message: "Authentication required",
         hint: "Open a fresh pairing or recovery link, or configure the CLI root token.",
       },
+    });
+  });
+
+  it("reports authenticated control-plane availability without mutating runner state", async () => {
+    const unauthenticated = await app.request("/api/status", undefined, env());
+    expect(unauthenticated.status).toBe(401);
+    expect(runner.getByName).not.toHaveBeenCalled();
+    expect(runner.status).not.toHaveBeenCalled();
+
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, scopes: [] },
+        renewed: false,
+      },
+    });
+    const forbidden = await app.request(
+      "/api/status",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(forbidden.status).toBe(401);
+    expect(runner.getByName).not.toHaveBeenCalled();
+    expect(runner.status).not.toHaveBeenCalled();
+
+    const connected = await app.request(
+      "/api/status",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(connected.status).toBe(200);
+    await expect(connected.json()).resolves.toEqual({
+      cloudflare: "available",
+      slumbers: "connected",
+    });
+    expect(runner.getByName).toHaveBeenCalledWith("slumbers");
+    expect(runner.status).toHaveBeenCalledTimes(1);
+    expect(runner.fetch).not.toHaveBeenCalled();
+
+    runner.status.mockResolvedValueOnce("disconnected");
+    const disconnected = await app.request(
+      "/api/status",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(disconnected.status).toBe(200);
+    await expect(disconnected.json()).resolves.toEqual({
+      cloudflare: "available",
+      slumbers: "disconnected",
     });
   });
 

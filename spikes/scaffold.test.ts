@@ -33,11 +33,15 @@ describe("pinned Task 4 contracts", () => {
     });
   });
 
-  it("pairs the Sandbox package, container image, and Codex minor", async () => {
+  it("pairs the Sandbox image, Codex minor, and CLI build context", async () => {
     const dockerfile = await readFile(new URL("worker/container/Dockerfile", root), "utf8");
+    const dockerignore = await readFile(new URL(".dockerignore", root), "utf8");
 
     expect(dockerfile).toContain("cloudflare/sandbox:0.12.3@sha256:");
     expect(dockerfile).toContain("ARG CODEX_VERSION=0.144.6");
+    expect(dockerfile).toContain("COPY protocol protocol");
+    expect(dockerignore).toContain("!protocol/");
+    expect(dockerignore).toContain("!protocol/**");
     expect(dockerfile).not.toContain("AGENT_BROWSER");
     expect(dockerfile).not.toContain("agent-browser");
     expect(dockerfile).not.toMatch(/(?:TOKEN|SECRET|PASSWORD)=\S+/);

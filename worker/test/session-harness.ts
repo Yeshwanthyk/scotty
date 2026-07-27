@@ -402,6 +402,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 
   const env: Bindings = {
     AUTH: undefined as never,
+    RUNNERS: undefined as never,
     SANDBOX: undefined as never,
     SESSIONS: sessions,
     BACKUP_BUCKET: {
@@ -425,6 +426,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     } as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
+    SCOTTY_RUNNER_NAME: "slumbers",
+    SCOTTY_RUNNER_TOKEN: "runner-test-token",
     CODEX_AUTH_JSON: JSON.stringify({
       tokens: {
         id_token: "seed-id-token",

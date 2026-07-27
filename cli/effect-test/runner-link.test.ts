@@ -1,10 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Predicate, Result } from "effect";
-import {
-  encodeRunnerFrame,
-  type InspectRuntime,
-  type RunnerResponse,
-} from "../src/runner-protocol";
+import { encodeRunnerFrame, type InspectRuntime, type RunnerResponse } from "../../protocol/runner";
 import {
   RunnerLinkError,
   runRunnerLinkWith,

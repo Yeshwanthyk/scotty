@@ -15,7 +15,7 @@ import {
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
-import { sha256Hex } from "./digest";
+import { constantTimeStringEqual, sha256Hex } from "./digest";
 import {
   authRegistry,
   browserLabel,
@@ -81,6 +81,47 @@ app.use("*", async (c, next) => {
   if (new URL(c.req.url).searchParams.has("t")) c.header("cache-control", "no-store");
   rejectRootQuery(c.req.raw);
   await next();
+});
+
+app.get("/api/runners/:name/connect", async (c) => {
+  const name = c.req.param("name");
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(name) ||
+    !c.env.SCOTTY_RUNNER_NAME ||
+    name !== c.env.SCOTTY_RUNNER_NAME
+  )
+    return c.json({ error: { code: "not_found", message: "Runner not found" } }, 404);
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
+    return c.json(
+      {
+        error: {
+          code: "upgrade_required",
+          message: "Runner connection requires a WebSocket upgrade",
+        },
+      },
+      426,
+    );
+  const authorization = c.req.header("authorization");
+  if (
+    !c.env.SCOTTY_RUNNER_TOKEN ||
+    !authorization?.startsWith("Bearer ") ||
+    !(await constantTimeStringEqual(authorization.slice(7), c.env.SCOTTY_RUNNER_TOKEN))
+  )
+    return c.json({ error: { code: "auth", message: "Runner authorization failed" } }, 401);
+
+  const headers = new Headers();
+  for (const name of [
+    "connection",
+    "sec-websocket-extensions",
+    "sec-websocket-key",
+    "sec-websocket-protocol",
+    "sec-websocket-version",
+    "upgrade",
+  ]) {
+    const value = c.req.header(name);
+    if (value !== undefined) headers.set(name, value);
+  }
+  return c.env.RUNNERS.getByName(name).fetch(new Request(c.req.url, { method: "GET", headers }));
 });
 
 app.use("/api/*", async (c, next) => {
@@ -248,6 +289,12 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
   );
   setClientAuthCookie(c, issued);
   return c.json({ client: issued.client });
+});
+
+app.get("/api/status", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const slumbers = await c.env.RUNNERS.getByName(c.env.SCOTTY_RUNNER_NAME).status();
+  return c.json({ cloudflare: "available" as const, slumbers });
 });
 
 app.post("/api/sessions", async (c) => {

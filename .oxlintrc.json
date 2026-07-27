@@ -44,6 +44,7 @@
         "cli/scotty.ts",
         "cli/src/**/*.ts",
         "infra/**/*.ts",
+        "protocol/**/*.ts",
         "worker/src/**/*.ts",
         "alchemy.run.ts",
         "spikes/infra/account-secrets-store-canary.run.ts",
