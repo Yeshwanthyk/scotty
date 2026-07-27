@@ -1,14 +1,13 @@
 import { Clock, Context, Data, Effect, Layer, Result, Schema } from "effect";
 import { sha256Hex } from "./digest";
 
-const AUTHORITY_KEY = "scotty:auth-authority";
+const AUTHORITY_KEY = "scotty:auth-authority:2";
 const CLIENT_CREDENTIAL_PREFIX = "scotty_client";
 const PAIRING_CREDENTIAL_PREFIX = "scotty_pair";
 const OWNER_TRANSFER_CREDENTIAL_PREFIX = "scotty_transfer";
 const RECOVERY_CREDENTIAL_PREFIX = "scotty_recovery";
 const MAX_CLIENTS = 64;
 const MAX_PAIRINGS = 32;
-const MAX_V1_TERMINAL_TICKETS = 128;
 const OWNER_RENEWAL_WINDOW_MILLIS = 7 * 24 * 60 * 60 * 1_000;
 const OWNER_TTL_MILLIS = 30 * 24 * 60 * 60 * 1_000;
 
@@ -16,61 +15,11 @@ export const STANDARD_AUTH_SCOPES = ["sessions:read", "sessions:write"] as const
 
 export const ADMIN_AUTH_SCOPES = [...STANDARD_AUTH_SCOPES, "access:read", "access:write"] as const;
 
-const LegacyAuthScopeSchema = Schema.Literals([
-  "sessions:read",
-  "sessions:write",
-  "terminal:connect",
-  "access:read",
-  "access:write",
-]);
-type LegacyAuthScope = typeof LegacyAuthScopeSchema.Type;
-
 export const StandardAuthScopeSchema = Schema.Literals(STANDARD_AUTH_SCOPES);
 export type StandardAuthScope = typeof StandardAuthScopeSchema.Type;
 
 export const AuthScopeSchema = Schema.Literals(ADMIN_AUTH_SCOPES);
 export type AuthScope = typeof AuthScopeSchema.Type;
-
-const AuthClientRecordV1Schema = Schema.Struct({
-  id: Schema.String,
-  credentialDigest: Schema.String,
-  label: Schema.String,
-  scopes: Schema.Array(LegacyAuthScopeSchema),
-  createdAt: Schema.String,
-  expiresAt: Schema.String,
-  lastSeenAt: Schema.String,
-  userAgent: Schema.optionalKey(Schema.String),
-  revokedAt: Schema.optionalKey(Schema.String),
-});
-type AuthClientRecordV1 = typeof AuthClientRecordV1Schema.Type;
-
-const PairingGrantRecordV1Schema = Schema.Struct({
-  id: Schema.String,
-  credentialDigest: Schema.String,
-  label: Schema.optionalKey(Schema.String),
-  scopes: Schema.Array(LegacyAuthScopeSchema),
-  createdAt: Schema.String,
-  expiresAt: Schema.String,
-});
-type PairingGrantRecordV1 = typeof PairingGrantRecordV1Schema.Type;
-
-const TerminalTicketRecordV1Schema = Schema.Struct({
-  id: Schema.String,
-  credentialDigest: Schema.String,
-  clientId: Schema.String,
-  sessionId: Schema.String,
-  createdAt: Schema.String,
-  expiresAt: Schema.String,
-});
-type TerminalTicketRecordV1 = typeof TerminalTicketRecordV1Schema.Type;
-
-export const AuthAuthorityV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
-  clients: Schema.Array(AuthClientRecordV1Schema),
-  pairings: Schema.Array(PairingGrantRecordV1Schema),
-  terminalTickets: Schema.Array(TerminalTicketRecordV1Schema),
-});
-export type AuthAuthorityV1 = typeof AuthAuthorityV1Schema.Type;
 
 const AuthClientRecordSchema = Schema.Struct({
   id: Schema.String,
@@ -328,9 +277,6 @@ export const durableObjectAuthAuthorityStorage = (
 export const authRegistryLayer = (storage: AuthAuthorityStorage): Layer.Layer<AuthRegistry> =>
   Layer.succeed(AuthRegistry)(makeAuthRegistry(storage));
 
-const decodeAuthorityV1 = Schema.decodeUnknownResult(AuthAuthorityV1Schema, {
-  onExcessProperty: "error",
-});
 const decodeAuthorityV2 = Schema.decodeUnknownResult(AuthAuthoritySchema, {
   onExcessProperty: "error",
 });
@@ -380,10 +326,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
       return validAuthority(v2.success)
         ? Result.succeed(purgeExpired(v2.success, nowMillis))
         : Result.fail(invalidAuthority());
-    const v1 = decodeAuthorityV1(value);
-    if (Result.isFailure(v1) || !validAuthorityV1(v1.success))
-      return Result.fail(invalidAuthority());
-    return Result.succeed(migrateAuthority(v1.success, nowMillis));
+    return Result.fail(invalidAuthority());
   };
 
   const transact = <A>(
@@ -952,20 +895,6 @@ function validIdempotencyKey(value: string | undefined): boolean {
   return value === undefined || /^[A-Za-z0-9._:-]{16,128}$/u.test(value);
 }
 
-function validAuthorityV1(authority: AuthAuthorityV1): boolean {
-  return (
-    authority.clients.length <= MAX_CLIENTS * 2 &&
-    authority.pairings.length <= MAX_PAIRINGS &&
-    authority.terminalTickets.length <= MAX_V1_TERMINAL_TICKETS &&
-    uniqueIds(authority.clients) &&
-    uniqueIds(authority.pairings) &&
-    uniqueIds(authority.terminalTickets) &&
-    authority.clients.every(validClientRecordV1) &&
-    authority.pairings.every(validPairingRecordV1) &&
-    authority.terminalTickets.every(validTerminalTicketRecordV1)
-  );
-}
-
 function validAuthority(authority: AuthAuthority): boolean {
   const ownerId = ownerClientId(authority);
   const owner =
@@ -995,16 +924,6 @@ function validAuthority(authority: AuthAuthority): boolean {
   );
 }
 
-function validClientRecordV1(client: AuthClientRecordV1): boolean {
-  return (
-    validStoredCredential(client.id, client.credentialDigest) &&
-    validLabel(client.label) &&
-    validLegacyScopes(client.scopes) &&
-    validRecordTimestamps(client) &&
-    validClientMetadata(client)
-  );
-}
-
 function validClientRecord(client: AuthClientRecord): boolean {
   return (
     validStoredCredential(client.id, client.credentialDigest) &&
@@ -1024,24 +943,6 @@ function validClientMetadata(client: {
     Number.isFinite(Date.parse(client.lastSeenAt)) &&
     (client.userAgent === undefined || client.userAgent.length <= 512) &&
     (client.revokedAt === undefined || Number.isFinite(Date.parse(client.revokedAt)))
-  );
-}
-
-function validPairingRecordV1(pairing: PairingGrantRecordV1): boolean {
-  return (
-    validStoredCredential(pairing.id, pairing.credentialDigest) &&
-    validLegacyScopes(pairing.scopes) &&
-    validRecordTimestamps(pairing) &&
-    (pairing.label === undefined || validLabel(pairing.label))
-  );
-}
-
-function validTerminalTicketRecordV1(ticket: TerminalTicketRecordV1): boolean {
-  return (
-    validStoredCredential(ticket.id, ticket.credentialDigest) &&
-    validClientId(ticket.clientId) &&
-    /^[a-z0-9][a-z0-9-]{5,31}$/u.test(ticket.sessionId) &&
-    validRecordTimestamps(ticket)
   );
 }
 
@@ -1081,10 +982,6 @@ function validOptionalDigest(value: string | undefined): boolean {
   return value === undefined || /^[0-9a-f]{64}$/u.test(value);
 }
 
-function validLegacyScopes(scopes: ReadonlyArray<LegacyAuthScope>): boolean {
-  return scopes.length > 0 && new Set(scopes).size === scopes.length;
-}
-
 function exactStandardScopes(scopes: ReadonlyArray<StandardAuthScope>): boolean {
   return (
     scopes.length === STANDARD_AUTH_SCOPES.length &&
@@ -1115,26 +1012,6 @@ function validRecordTimestamps(record: {
   const createdAt = Date.parse(record.createdAt);
   const expiresAt = Date.parse(record.expiresAt);
   return Number.isFinite(createdAt) && Number.isFinite(expiresAt) && expiresAt > createdAt;
-}
-
-function migrateAuthority(authority: AuthAuthorityV1, nowMillis: number): AuthAuthority {
-  return {
-    version: 2,
-    ownership: { state: "unclaimed", epoch: 0 },
-    clients: authority.clients
-      .filter((client) => !client.revokedAt && Date.parse(client.expiresAt) > nowMillis)
-      .map((client) => ({
-        id: client.id,
-        credentialDigest: client.credentialDigest,
-        label: client.label,
-        scopes: [...STANDARD_AUTH_SCOPES],
-        createdAt: client.createdAt,
-        expiresAt: client.expiresAt,
-        lastSeenAt: client.lastSeenAt,
-        ...(client.userAgent === undefined ? {} : { userAgent: client.userAgent }),
-      })),
-    pairings: [],
-  };
 }
 
 function purgeExpired(authority: AuthAuthority, nowMillis: number): AuthAuthority {

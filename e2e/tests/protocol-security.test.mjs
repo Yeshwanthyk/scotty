@@ -137,34 +137,11 @@ test("root bearer stays out of browser URLs and recovery creates the only owner 
   assert.doesNotMatch(JSON.stringify(authority), new RegExp(owner.grant.token));
 });
 
-test("V1 migration, recovery, pairing, transfer, and a second recovery preserve single ownership", async (t) => {
-  const service = new FakeWorkerService();
-  const legacyCredentials = service.seedV1Authority();
-  await service.start();
+test("recovery, pairing, transfer, and a second recovery preserve single ownership", async (t) => {
+  const service = await new FakeWorkerService().start();
   t.after(() => service.stop());
 
-  const legacyCookie = `${COOKIE}=${legacyCredentials[0]}`;
-  const migratedRead = await fetch(`${service.url}/api/sessions`, {
-    headers: { cookie: legacyCookie },
-  });
-  assert.equal(migratedRead.status, 200);
-  const migrated = service.inspect().auth;
-  assert.deepEqual(migrated.ownership, { state: "unclaimed", epoch: 0 });
-  assert.ok(migrated.clients.every((client) => client.scopes.length === 2));
-  assert.equal(migrated.pairings.length, 0);
-  const legacyOwnerRoute = await fetch(`${service.url}/api/auth/clients`, {
-    headers: { cookie: legacyCookie },
-  });
-  assert.equal(legacyOwnerRoute.status, 401);
-
   const ownerA = await recoverOwner(service, "Owner A");
-  for (const legacyCredential of legacyCredentials) {
-    const rejected = await fetch(`${service.url}/api/sessions`, {
-      headers: { cookie: `${COOKIE}=${legacyCredential}` },
-    });
-    assert.equal(rejected.status, 401);
-  }
-
   const clientB = await pairClient(service, ownerA.cookie, "Target B");
   const clientsBefore = await fetch(`${service.url}/api/auth/clients`, {
     headers: { cookie: ownerA.cookie },
@@ -190,7 +167,7 @@ test("V1 migration, recovery, pairing, transfer, and a second recovery preserve 
   const wrongTarget = await fetch(`${service.url}/api/auth/owner-transfers/accept`, {
     method: "POST",
     headers: {
-      cookie: legacyCookie,
+      cookie: ownerA.cookie,
       origin: service.url,
       "content-type": "application/json",
     },
