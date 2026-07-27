@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Predicate, Result } from "effect";
+import { TestClock } from "effect/testing";
 import {
   encodeRunnerFrame,
   encodeRunnerRequest,
@@ -9,6 +10,8 @@ import {
 import {
   RunnerLinkError,
   runRunnerLinkWith,
+  runRunnerSupervisorWith,
+  type RunnerConnector,
   type RunnerWebSocketConstructor,
 } from "../src/runner-link";
 import { RunnerRuntime } from "../src/runner-runtime";
@@ -236,6 +239,72 @@ describe("RunnerLink", () => {
       const failure = Result.merge(failed);
       assert.instanceOf(failure, RunnerLinkError);
       assert.isFalse(JSON.stringify(failure).includes("runner-secret"));
+    }),
+  );
+
+  it.effect("reconnects with exponential delays capped at thirty seconds", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const connect: RunnerConnector = () =>
+        Effect.gen(function* () {
+          attempts += 1;
+          if (attempts === 7) return;
+          return yield* new RunnerLinkError({ reason: "socket_failed" });
+        });
+      const supervisor = yield* runRunnerSupervisorWith(
+        {
+          url: "wss://control.test/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+        },
+        connect,
+      ).pipe(Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      assert.strictEqual(attempts, 1);
+      let expectedAttempts = 1;
+      for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]) {
+        yield* TestClock.adjust(delay - 1);
+        assert.strictEqual(attempts, expectedAttempts);
+        yield* TestClock.adjust(1);
+        expectedAttempts += 1;
+        assert.strictEqual(attempts, expectedAttempts);
+      }
+      assert.strictEqual(attempts, 7);
+      yield* Fiber.join(supervisor);
+    }),
+  );
+
+  it.effect("resets backoff after a connection opens", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const connect: RunnerConnector = (config) =>
+        Effect.gen(function* () {
+          attempts += 1;
+          if (attempts === 3) yield* config.onOpen ?? Effect.void;
+          if (attempts === 4) return;
+          return yield* new RunnerLinkError({ reason: "socket_failed" });
+        });
+      const supervisor = yield* runRunnerSupervisorWith(
+        {
+          url: "wss://control.test/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+        },
+        connect,
+      ).pipe(Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      assert.strictEqual(attempts, 1);
+      yield* TestClock.adjust(1_000);
+      assert.strictEqual(attempts, 2);
+      yield* TestClock.adjust(2_000);
+      assert.strictEqual(attempts, 3);
+      yield* TestClock.adjust(999);
+      assert.strictEqual(attempts, 3);
+      yield* TestClock.adjust(1);
+      assert.strictEqual(attempts, 4);
+      yield* Fiber.join(supervisor);
     }),
   );
 });

@@ -79,7 +79,16 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   const assetConfig = {
     directory: "worker/public",
     binding: "ASSETS",
-    runWorkerFirst: ["/__e2e/*", "/api/*", "/s/*", "/sessions", "/devices", "/pair", "/health"],
+    runWorkerFirst: [
+      "/__e2e/*",
+      "/api/*",
+      "/s/*",
+      "/sessions",
+      "/providers",
+      "/devices",
+      "/pair",
+      "/health",
+    ],
     htmlHandling: "none" as const,
     notFoundHandling: "404-page" as const,
   };

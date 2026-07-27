@@ -46,7 +46,9 @@ export interface RunnerSocket {
 
 export type RunnerDispatchFailureCode =
   | "invalid_operation"
+  | "runner_disabled"
   | "runner_disconnected"
+  | "runner_draining"
   | "runner_timeout"
   | "runner_unavailable";
 
@@ -255,6 +257,27 @@ export class RunnerTransport {
       const attachment = attachmentOf(socket);
       this.#sockets.delete(socket);
       if (Option.isSome(attachment)) yield* this.#failConnection(attachment.value.connectionId);
+    });
+  }
+
+  disconnect(): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      for (const socket of Array.from(this.#sockets)) {
+        const attachment = attachmentOf(socket);
+        if (Option.isSome(attachment))
+          yield* this.#disconnectSocket(
+            socket,
+            attachment.value,
+            1012,
+            "Runner disconnected by operator",
+          );
+        else {
+          this.#sockets.delete(socket);
+          yield* socket
+            .close(1012, "Runner disconnected by operator")
+            .pipe(Effect.sandbox, Effect.ignore);
+        }
+      }
     });
   }
 

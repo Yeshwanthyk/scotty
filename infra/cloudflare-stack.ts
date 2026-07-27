@@ -40,7 +40,7 @@ export const CLOUDFLARE_STACK = {
   assets: {
     directory: "worker/public",
     binding: "ASSETS",
-    runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/devices", "/pair", "/health"],
+    runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/providers", "/devices", "/pair", "/health"],
     htmlHandling: "none",
     notFoundHandling: "404-page",
   },

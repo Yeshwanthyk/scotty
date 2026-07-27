@@ -5,13 +5,25 @@ import {
   type DurableObjectShape,
   type WebSocket,
 } from "alchemy/Cloudflare/Workers";
+import type { RuntimeContext } from "alchemy";
 import { Effect } from "effect";
 import { HttpServerResponse } from "effect/unstable/http";
 import type { RunnerOperation } from "../../protocol/runner.ts";
+import {
+  makeRunnerControl,
+  type RunnerControlAction,
+  type RunnerControlStatus,
+  type RunnerDesiredState,
+} from "./runner-control.ts";
 import { RunnerTransport, type RunnerDispatchResult } from "./runner-transport.ts";
 
+const RUNNER_DESIRED_STORAGE_KEY = "runner:desired";
+const RUNNER_LAST_SEEN_STORAGE_KEY = "runner:last-seen-at-millis";
+
 interface ScottyRunnerShape extends DurableObjectShape {
-  readonly status: () => Effect.Effect<"connected" | "disconnected">;
+  readonly status: () => Effect.Effect<"connected" | "disconnected", never, RuntimeContext>;
+  readonly controlStatus: () => Effect.Effect<RunnerControlStatus, never, RuntimeContext>;
+  readonly control: (action: RunnerControlAction) => Effect.Effect<void, never, RuntimeContext>;
   readonly dispatch: (
     operation: RunnerOperation,
     timeoutMillis?: number,
@@ -33,6 +45,29 @@ export default ScottyRunner.make<never>(
       // activation-local: if the activation dies, the caller observes a rejected RPC and may
       // retry the same durable runner operation identity.
       const transport = new RunnerTransport(runnerName ?? "", sockets);
+      const control = yield* makeRunnerControl(
+        {
+          load: () =>
+            state.storage
+              .get<unknown>([RUNNER_DESIRED_STORAGE_KEY, RUNNER_LAST_SEEN_STORAGE_KEY])
+              .pipe(
+                Effect.map((stored) => ({
+                  desired: stored.get(RUNNER_DESIRED_STORAGE_KEY),
+                  lastSeenAtMillis: stored.get(RUNNER_LAST_SEEN_STORAGE_KEY),
+                })),
+              ),
+          saveDesired: (desired) => state.storage.put(RUNNER_DESIRED_STORAGE_KEY, desired),
+          saveLastSeenAtMillis: (lastSeenAtMillis) =>
+            state.storage.put(RUNNER_LAST_SEEN_STORAGE_KEY, lastSeenAtMillis),
+        },
+        () => transport.status(),
+      );
+      const applyControl = Effect.fnUntraced(function* (action: RunnerControlAction) {
+        if (action === "disconnect") return yield* transport.disconnect();
+        const desired: RunnerDesiredState =
+          action === "enable" ? "accepting" : action === "drain" ? "draining" : "disabled";
+        yield* control.setDesired(desired);
+      });
 
       return {
         fetch: Effect.gen(function* () {
@@ -44,9 +79,14 @@ export default ScottyRunner.make<never>(
           transport.accept(socket);
           return response;
         }),
-        dispatch: (operation: RunnerOperation, timeoutMillis?: number) =>
-          transport.dispatch(operation, timeoutMillis),
-        status: () => transport.status(),
+        dispatch: Effect.fnUntraced(function* (operation: RunnerOperation, timeoutMillis?: number) {
+          const admissionFailure = control.admission(operation);
+          if (admissionFailure !== null) return { ok: false as const, error: admissionFailure };
+          return yield* transport.dispatch(operation, timeoutMillis);
+        }),
+        status: () => control.status().pipe(Effect.map((status) => status.connection)),
+        controlStatus: control.status,
+        control: applyControl,
         webSocketMessage: (socket: WebSocket, message: string | ArrayBuffer) =>
           transport.message(socket, message),
         webSocketClose: (socket: WebSocket, _code: number, _reason: string, _wasClean: boolean) =>
@@ -62,6 +102,8 @@ export default ScottyRunner.make<never>(
 export interface ScottyRunnerStub {
   readonly fetch: (request: Request) => Promise<Response>;
   readonly status: () => Promise<"connected" | "disconnected">;
+  readonly controlStatus: () => Promise<RunnerControlStatus>;
+  readonly control: (action: RunnerControlAction) => Promise<void>;
   readonly dispatch: (
     operation: RunnerOperation,
     timeoutMillis?: number,

@@ -44,6 +44,11 @@ import {
   repoProjectionLayer,
   trackRepoBestEffort,
 } from "./repo-projection";
+import {
+  RunnerControlActionSchema,
+  type RunnerControlAction,
+  type RunnerControlStatus,
+} from "./runner-control";
 import { Sandbox as ScottySandbox } from "./session";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottySandbox };
@@ -291,10 +296,33 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
   return c.json({ client: issued.client });
 });
 
-app.get("/api/status", async (c) => {
+app.get("/api/providers", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
-  const slumbers = await c.env.RUNNERS.getByName(c.env.SCOTTY_RUNNER_NAME).status();
-  return c.json({ cloudflare: "available" as const, slumbers });
+  const runners = await configuredRunnerStatuses(c.env);
+  const runnerAvailable = runners.some(
+    (runner) => runner.desired === "accepting" && runner.connection === "connected",
+  );
+  return c.json([
+    { name: "cloudflare" as const, status: "configured" as const },
+    {
+      name: "runner" as const,
+      status: runnerAvailable ? ("available" as const) : ("unavailable" as const),
+    },
+  ]);
+});
+
+app.get("/api/runners", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  return c.json(await configuredRunnerStatuses(c.env));
+});
+
+app.post("/api/runners/:name/:action", async (c) => {
+  requireOwnerPrincipal(c.get("auth"));
+  const name = requireConfiguredRunnerName(c.env, c.req.param("name"));
+  const action = parseRunnerControlAction(c.req.param("action"));
+  const runner = c.env.RUNNERS.getByName(name);
+  await runner.control(action);
+  return c.json(runnerStatus(name, await runner.controlStatus()));
 });
 
 app.post("/api/sessions", async (c) => {
@@ -426,6 +454,14 @@ app.get("/devices", async (c) => {
   return authAsset(c.env, c.req.raw, "/devices.html");
 });
 
+app.get("/providers", async (c) => {
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  requireOwnerPrincipal(principal);
+  refreshClientAuthCookie(c, principal);
+  return authAsset(c.env, c.req.raw, "/providers.html");
+});
+
 app.get("/pair", (c) => authAsset(c.env, c.req.raw, "/pair.html"));
 app.get("/owner-transfer", (c) => authAsset(c.env, c.req.raw, "/owner-transfer.html"));
 app.get("/recover", (c) => authAsset(c.env, c.req.raw, "/recover.html"));
@@ -465,6 +501,7 @@ const decodeOwnerTransferInput = Schema.decodeUnknownOption(OwnerTransferInputSc
 const decodeGrantConsumeInput = Schema.decodeUnknownOption(GrantConsumeInputSchema, {
   onExcessProperty: "error",
 });
+const decodeRunnerControlAction = Schema.decodeUnknownOption(RunnerControlActionSchema);
 
 function parsePairingConsumeInput(value: unknown): {
   readonly token: string;
@@ -491,6 +528,33 @@ function parseGrantConsumeInput(value: unknown, errorMessage: string): { readonl
   const decoded = decodeGrantConsumeInput(value);
   if (Option.isNone(decoded)) throw badRequest(errorMessage);
   return decoded.value;
+}
+
+function parseRunnerControlAction(value: unknown): RunnerControlAction {
+  const decoded = decodeRunnerControlAction(value);
+  if (Option.isSome(decoded)) return decoded.value;
+  throw new ScottyError("not_found", "Runner action not found", {
+    httpStatus: 404,
+    exitCode: 3,
+  });
+}
+
+function requireConfiguredRunnerName(env: Bindings, value: string): string {
+  if (env.SCOTTY_RUNNER_NAME && value === env.SCOTTY_RUNNER_NAME) return value;
+  throw new ScottyError("not_found", "Runner not found", {
+    httpStatus: 404,
+    exitCode: 3,
+  });
+}
+
+function runnerStatus(name: string, status: RunnerControlStatus) {
+  return { name, ...status, assignedSessions: 0 };
+}
+
+async function configuredRunnerStatuses(env: Bindings) {
+  const name = env.SCOTTY_RUNNER_NAME?.trim();
+  if (!name) return [];
+  return [runnerStatus(name, await env.RUNNERS.getByName(name).controlStatus())];
 }
 
 async function readJsonBody(request: Request): Promise<unknown> {

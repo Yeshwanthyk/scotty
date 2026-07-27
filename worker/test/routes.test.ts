@@ -33,9 +33,10 @@ const auth = vi.hoisted(() => ({
 }));
 
 const runner = vi.hoisted(() => ({
+  control: vi.fn(),
+  controlStatus: vi.fn(),
   fetch: vi.fn(),
   getByName: vi.fn(),
-  status: vi.fn(),
 }));
 
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
@@ -131,9 +132,18 @@ describe("real Hono boundary", () => {
         renewed: false,
       },
     });
-    runner.getByName.mockReturnValue({ fetch: runner.fetch, status: runner.status });
+    runner.getByName.mockReturnValue({
+      control: runner.control,
+      controlStatus: runner.controlStatus,
+      fetch: runner.fetch,
+    });
+    runner.control.mockResolvedValue(undefined);
+    runner.controlStatus.mockResolvedValue({
+      desired: "accepting",
+      connection: "connected",
+      lastSeenAt: "2026-07-27T12:00:00.000Z",
+    });
     runner.fetch.mockResolvedValue(new Response(null, { status: 204 }));
-    runner.status.mockResolvedValue("connected");
   });
 
   it("accepts only the configured authenticated runner and strips its credential", async () => {
@@ -212,53 +222,122 @@ describe("real Hono boundary", () => {
     });
   });
 
-  it("reports authenticated control-plane availability without mutating runner state", async () => {
-    const unauthenticated = await app.request("/api/status", undefined, env());
-    expect(unauthenticated.status).toBe(401);
-    expect(runner.getByName).not.toHaveBeenCalled();
-    expect(runner.status).not.toHaveBeenCalled();
+  it("reports providers separately from dynamically named runners", async () => {
+    const providers = await app.request(
+      "/api/providers",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(providers.status).toBe(200);
+    await expect(providers.json()).resolves.toEqual([
+      { name: "cloudflare", status: "configured" },
+      { name: "runner", status: "available" },
+    ]);
+
+    const runners = await app.request(
+      "/api/runners",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(runners.status).toBe(200);
+    await expect(runners.json()).resolves.toEqual([
+      {
+        name: "slumbers",
+        desired: "accepting",
+        connection: "connected",
+        lastSeenAt: "2026-07-27T12:00:00.000Z",
+        assignedSessions: 0,
+      },
+    ]);
+
+    runner.controlStatus.mockResolvedValueOnce({
+      desired: "draining",
+      connection: "connected",
+      lastSeenAt: "2026-07-27T12:00:00.000Z",
+    });
+    const unavailable = await app.request(
+      "/api/providers",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    await expect(unavailable.json()).resolves.toEqual([
+      { name: "cloudflare", status: "configured" },
+      { name: "runner", status: "unavailable" },
+    ]);
+  });
+
+  it("allows only the owner browser to control the configured runner", async () => {
+    for (const action of ["enable", "drain", "disable", "disconnect"]) {
+      const response = await app.request(
+        `/api/runners/slumbers/${action}`,
+        {
+          method: "POST",
+          headers: {
+            cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+            origin: "http://localhost",
+            "sec-fetch-site": "same-origin",
+          },
+        },
+        env(),
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(runner.control.mock.calls.map(([action]) => action)).toEqual([
+      "enable",
+      "drain",
+      "disable",
+      "disconnect",
+    ]);
 
     auth.authenticate.mockResolvedValueOnce({
       ok: true,
       value: {
-        client: { ...REGISTERED_CLIENT, scopes: [] },
+        client: { ...REGISTERED_CLIENT, role: "standard" },
         renewed: false,
       },
     });
-    const forbidden = await app.request(
-      "/api/status",
-      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+    const standard = await app.request(
+      "/api/runners/slumbers/drain",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
       env(),
     );
-    expect(forbidden.status).toBe(401);
-    expect(runner.getByName).not.toHaveBeenCalled();
-    expect(runner.status).not.toHaveBeenCalled();
+    expect(standard.status).toBe(401);
 
-    const connected = await app.request(
-      "/api/status",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+    const unknownRunner = await app.request(
+      "/api/runners/helium/drain",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
       env(),
     );
-    expect(connected.status).toBe(200);
-    await expect(connected.json()).resolves.toEqual({
-      cloudflare: "available",
-      slumbers: "connected",
-    });
-    expect(runner.getByName).toHaveBeenCalledWith("slumbers");
-    expect(runner.status).toHaveBeenCalledTimes(1);
-    expect(runner.fetch).not.toHaveBeenCalled();
+    expect(unknownRunner.status).toBe(404);
 
-    runner.status.mockResolvedValueOnce("disconnected");
-    const disconnected = await app.request(
-      "/api/status",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+    const unknownAction = await app.request(
+      "/api/runners/slumbers/restart",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
       env(),
     );
-    expect(disconnected.status).toBe(200);
-    await expect(disconnected.json()).resolves.toEqual({
-      cloudflare: "available",
-      slumbers: "disconnected",
-    });
+    expect(unknownAction.status).toBe(404);
+    expect(runner.control).toHaveBeenCalledTimes(4);
   });
 
   it("preserves the create status, output shape, and ignored legacy cap", async () => {
@@ -928,7 +1007,7 @@ describe("real Hono boundary", () => {
     expect(auth.revokeClient).toHaveBeenCalledWith(CLIENT_CREDENTIAL, "222222222222");
   });
 
-  it("does not let a standard paired browser manage devices", async () => {
+  it("does not let a standard paired browser manage owner control pages", async () => {
     const standard = {
       ...REGISTERED_CLIENT,
       scopes: ["sessions:read", "sessions:write"],
@@ -945,6 +1024,14 @@ describe("real Hono boundary", () => {
     );
     expect(denied.status).toBe(401);
     expect(auth.listClients).not.toHaveBeenCalled();
+    for (const path of ["/devices", "/providers"]) {
+      const page = await app.request(
+        path,
+        { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+        env(),
+      );
+      expect(page.status, path).toBe(401);
+    }
   });
 
   it("binds owner transfer issuance to the owner and acceptance to the target cookie", async () => {
@@ -1339,6 +1426,14 @@ describe("real Hono boundary", () => {
     );
     expect(devices.status).toBe(200);
     expect(devices.headers.get("content-security-policy")).toContain("script-src 'self'");
+
+    const providers = await app.request(
+      "/providers",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(providers.status).toBe(200);
+    expect(providers.headers.get("content-security-policy")).toContain("script-src 'self'");
   });
 
   it("refreshes an owner cookie only when the Auth Durable Object reports renewal", async () => {
