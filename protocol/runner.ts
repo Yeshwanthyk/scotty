@@ -3,6 +3,7 @@ import { Schema } from "effect";
 const OperationIdSchema = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/),
 );
+const ProbeIdSchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/));
 const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/));
 const ArgumentSchema = Schema.String.check(Schema.isMaxLength(64 * 1024));
 
@@ -39,6 +40,15 @@ export const RunnerOperationSchema = Schema.Union([
   RemoveRuntimeSchema,
 ]);
 export type RunnerOperation = typeof RunnerOperationSchema.Type;
+
+export const RunnerProbeSchema = Schema.TaggedStruct("RunnerProbe", {
+  version: Schema.Literal(1),
+  probeId: ProbeIdSchema,
+});
+export type RunnerProbe = typeof RunnerProbeSchema.Type;
+
+export const RunnerRequestSchema = Schema.Union([RunnerOperationSchema, RunnerProbeSchema]);
+export type RunnerRequest = typeof RunnerRequestSchema.Type;
 
 export const RunnerPhaseSchema = Schema.Literals(["absent", "running", "stopped"]);
 export type RunnerPhase = typeof RunnerPhaseSchema.Type;
@@ -128,9 +138,19 @@ export const RunnerHelloSchema = Schema.TaggedStruct("RunnerHello", {
 });
 export type RunnerHello = typeof RunnerHelloSchema.Type;
 
+export const RunnerProbeAckSchema = Schema.TaggedStruct("RunnerProbeAck", {
+  version: Schema.Literal(1),
+  probeId: ProbeIdSchema,
+});
+export type RunnerProbeAck = typeof RunnerProbeAckSchema.Type;
+
+export const RunnerReplySchema = Schema.Union([RunnerResponseSchema, RunnerProbeAckSchema]);
+export type RunnerReply = typeof RunnerReplySchema.Type;
+
 export const RunnerFrameSchema = Schema.Union([
   RunnerHelloSchema,
   RunnerResponseSchema,
+  RunnerProbeAckSchema,
   RunnerProtocolRejectedSchema,
 ]);
 export type RunnerFrame = typeof RunnerFrameSchema.Type;
@@ -139,10 +159,16 @@ export const decodeRunnerOperationText = Schema.decodeUnknownEffect(
   Schema.fromJsonString(RunnerOperationSchema),
   { onExcessProperty: "error" },
 );
+export const decodeRunnerRequestText = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(RunnerRequestSchema),
+  { onExcessProperty: "error" },
+);
 
 const encodeFrame = Schema.encodeSync(Schema.fromJsonString(RunnerFrameSchema));
 const encodeOperation = Schema.encodeSync(Schema.fromJsonString(RunnerOperationSchema));
+const encodeRequest = Schema.encodeSync(Schema.fromJsonString(RunnerRequestSchema));
 
 export const encodeRunnerFrame = (frame: RunnerFrame): string => encodeFrame(frame);
 export const encodeRunnerOperation = (operation: RunnerOperation): string =>
   encodeOperation(operation);
+export const encodeRunnerRequest = (request: RunnerRequest): string => encodeRequest(request);

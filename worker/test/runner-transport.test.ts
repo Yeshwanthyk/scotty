@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Schema } from "effect";
 import { TestClock } from "effect/testing";
+import { RunnerProbeSchema } from "../../protocol/runner";
 import {
   RunnerTransport,
   type RunnerDispatchResult,
@@ -64,6 +65,24 @@ const connect = (transport: RunnerTransport, socket: FakeSocket): Effect.Effect<
     yield* transport.message(socket, hello());
   });
 
+const decodeProbe = Schema.decodeUnknownEffect(Schema.fromJsonString(RunnerProbeSchema));
+
+const acknowledgeStatus = (transport: RunnerTransport, socket: FakeSocket) =>
+  Effect.gen(function* () {
+    const status = yield* transport.status(1_000).pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+    const probe = yield* decodeProbe(socket.sent.at(-1));
+    yield* transport.message(
+      socket,
+      JSON.stringify({
+        _tag: "RunnerProbeAck",
+        version: 1,
+        probeId: probe.probeId,
+      }),
+    );
+    return yield* Fiber.join(status);
+  });
+
 const expectSuccess = (result: RunnerDispatchResult): void => {
   assert.isTrue(result.ok);
 };
@@ -73,9 +92,9 @@ describe("runner transport", () => {
     Effect.gen(function* () {
       const transport = new RunnerTransport("slumbers");
       const socket = new FakeSocket();
-      assert.equal(transport.status(), "disconnected");
+      assert.equal(yield* transport.status(), "disconnected");
       transport.accept(socket);
-      assert.equal(transport.status(), "disconnected");
+      assert.equal(yield* transport.status(), "disconnected");
 
       const unavailable = yield* transport.dispatch(ensure("session-a", "ensure"), 10);
       assert.deepEqual(unavailable, {
@@ -85,7 +104,7 @@ describe("runner transport", () => {
 
       yield* transport.message(socket, hello("other"));
       assert.deepEqual(socket.closed, [{ code: 1008, reason: "Runner identity mismatch" }]);
-      assert.equal(transport.status(), "disconnected");
+      assert.equal(yield* transport.status(), "disconnected");
     }),
   );
 
@@ -94,12 +113,28 @@ describe("runner transport", () => {
       const transport = new RunnerTransport("slumbers");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
-      assert.equal(transport.status(), "connected");
+      assert.equal(yield* acknowledgeStatus(transport, socket), "connected");
 
       const rehydrated = new RunnerTransport("slumbers", [socket]);
-      assert.equal(rehydrated.status(), "connected");
+      assert.equal(yield* acknowledgeStatus(rehydrated, socket), "connected");
       yield* rehydrated.close(socket);
-      assert.equal(rehydrated.status(), "disconnected");
+      assert.equal(yield* rehydrated.status(), "disconnected");
+    }),
+  );
+
+  it.effect("disconnects a stale ready attachment when its liveness probe times out", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+
+      const status = yield* transport.status(1_000).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(1_000);
+
+      assert.equal(yield* Fiber.join(status), "disconnected");
+      assert.deepEqual(socket.closed, [{ code: 1011, reason: "Runner probe timed out" }]);
+      assert.equal(yield* transport.status(), "disconnected");
     }),
   );
 

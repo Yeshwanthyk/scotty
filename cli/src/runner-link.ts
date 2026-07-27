@@ -1,7 +1,7 @@
-import { Deferred, Effect, Result, Schema } from "effect";
+import { Deferred, Effect, Predicate, Result, Schema } from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
 import {
-  decodeRunnerOperationText,
+  decodeRunnerRequestText,
   encodeRunnerFrame,
   type RunnerFrame,
 } from "../../protocol/runner";
@@ -98,10 +98,16 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
         typeof message !== "string" || message.length > MAX_RUNNER_MESSAGE_CHARACTERS
           ? send(rejected)
           : Effect.gen(function* () {
-              const decoded = yield* Effect.result(decodeRunnerOperationText(message));
+              const decoded = yield* Effect.result(decodeRunnerRequestText(message));
               if (Result.isFailure(decoded)) {
                 return yield* send(rejected);
               }
+              if (Predicate.isTagged("RunnerProbe")(decoded.success))
+                return yield* send({
+                  _tag: "RunnerProbeAck",
+                  version: 1,
+                  probeId: decoded.success.probeId,
+                });
               const response = yield* runtime.handle(decoded.success);
               return yield* send(response);
             });

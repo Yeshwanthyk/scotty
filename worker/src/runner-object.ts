@@ -46,7 +46,7 @@ export default ScottyRunner.make<never>(
         }),
         dispatch: (operation: RunnerOperation, timeoutMillis?: number) =>
           transport.dispatch(operation, timeoutMillis),
-        status: () => Effect.succeed(transport.status()),
+        status: () => transport.status(),
         webSocketMessage: (socket: WebSocket, message: string | ArrayBuffer) =>
           transport.message(socket, message),
         webSocketClose: (socket: WebSocket, _code: number, _reason: string, _wasClean: boolean) =>

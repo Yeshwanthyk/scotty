@@ -199,6 +199,7 @@ export function unwrapAuthRpc<A>(result: AuthRpcResult<A>): A {
   if (reason === "invalid_input") {
     throw new ScottyError("bad_request", message, { httpStatus: 400, exitCode: 2 });
   }
+  console.error("Authentication authority RPC failed", { reason });
   throw new ScottyError("internal", "Authentication authority failed", {
     httpStatus: 500,
     exitCode: 1,
