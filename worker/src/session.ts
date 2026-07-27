@@ -348,13 +348,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       });
     }
     const pican = yield* Pican;
-    return yield* pican
-      .fetch(request)
-      .pipe(
-        Effect.mapError((error) =>
-          this.upstreamError("Pican upstream request failed", error, record.id),
-        ),
-      );
+    return yield* pican.launch(record.id).pipe(
+      Effect.andThen(pican.fetch(request)),
+      Effect.mapError((error) =>
+        this.upstreamError("Pican upstream request failed", error, record.id),
+      ),
+    );
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {

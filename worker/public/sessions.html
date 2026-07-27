@@ -772,6 +772,10 @@
         font-size: 0.7rem;
       }
 
+      .placement {
+        color: var(--ink);
+      }
+
       .actions {
         display: flex;
         flex-wrap: wrap;
@@ -1288,6 +1292,16 @@
           details.append(statusLine);
           const metrics = document.createElement("div");
           metrics.className = "metrics";
+          addText(
+            metrics,
+            "placement",
+            session.provider === "runner"
+              ? `Runner · ${session.runner || "unknown"}`
+              : session.provider === "cloudflare"
+                ? "Cloudflare"
+                : "Unknown execution",
+            "span",
+          );
           addText(metrics, "", `${duration(session.ageSeconds)} old`, "span");
           addText(
             metrics,

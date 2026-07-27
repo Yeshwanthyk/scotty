@@ -169,8 +169,8 @@ describe("Cloudflare stack topology", () => {
       container: {
         logicalId: "SandboxContainer",
         name: "scotty-sandboxcontainer-production-ytkhty6mswuofjo5",
-        context: ".",
-        dockerfile: "worker/container/Dockerfile",
+        context: ".alchemy/scotty-container-context",
+        dockerfile: ".alchemy/scotty-container-context/worker/container/Dockerfile",
         instanceType: "standard-2",
         maxInstances: 10,
       },
