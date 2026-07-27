@@ -47,6 +47,51 @@ main {
   gap: 6px;
 }
 
+.button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 680;
+  line-height: 1;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    scale 120ms var(--ease-out),
+    box-shadow 150ms var(--ease-out),
+    background-color 150ms var(--ease-out),
+    color 150ms var(--ease-out),
+    opacity 150ms var(--ease-out);
+}
+
+.button:active {
+  scale: 0.96;
+}
+
+.button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.masthead-actions .button {
+  min-height: 40px;
+  padding-inline: 11px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.masthead-actions .button:hover {
+  background: rgb(238 231 211 / 0.05);
+  box-shadow: none;
+  color: var(--ink);
+}
+
 main {
   padding: 28px max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom))
     max(16px, env(safe-area-inset-left));
