@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { Clock, Console, Effect, Option, Predicate, Ref, Result } from "effect";
 import {
   Argument,
@@ -45,10 +45,24 @@ import {
   usage,
 } from "./pure";
 import { BrowserLauncher, CliRuntime, ProcessRunner } from "./services";
+import { runRunnerLink } from "./runner-link";
+import { runnerRuntimeLayer } from "./runner-runtime";
 import { requestJson } from "./transport";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const RUNNER_CHILD_ENV_KEYS = [
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "PATH",
+  "SHELL",
+  "TERM",
+  "TMPDIR",
+  "TZ",
+  "USER",
+] as const;
 const trailingArguments: Argument.Argument<ReadonlyArray<string>> = Param.withHidden(
   Argument.variadic(Argument.string("unexpected")),
 );
@@ -95,6 +109,23 @@ const validateSessionId = (id: string): Effect.Effect<string, CliError> =>
 
 const rejectTrailingArguments = (values: ReadonlyArray<string>): Effect.Effect<void, CliError> =>
   values.length === 0 ? Effect.void : Effect.fail(usage(`Unexpected argument: ${values[0]}`));
+
+const runnerChildEnvironment = (
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string> => {
+  const childEnvironment: Record<string, string> = {};
+  for (const key of RUNNER_CHILD_ENV_KEYS) {
+    const value = environment[key];
+    if (value !== undefined) childEnvironment[key] = value;
+  }
+  return childEnvironment;
+};
+
+const isLoopbackHost = (hostname: string): boolean =>
+  hostname === "localhost" ||
+  hostname === "127.0.0.1" ||
+  hostname === "::1" ||
+  hostname === "[::1]";
 
 const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
   for (const item of error.errors) {
@@ -391,6 +422,79 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([toolsList, toolsDoctor]),
   );
 
+  const runnerServe = Command.make(
+    "serve",
+    {
+      name: Flag.string("name").pipe(Flag.withDescription("Stable runner name")),
+      root: Flag.string("root").pipe(Flag.withDescription("Absolute runner workspace root")),
+      trailing: trailingArguments,
+    },
+    ({ name, root, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (options.token !== undefined)
+          return yield* usage(
+            "runner serve does not accept --token",
+            "Set SCOTTY_RUNNER_TOKEN in the runner process environment.",
+          );
+        if (!RUNNER_NAME_PATTERN.test(name))
+          return yield* usage("--name must contain only letters, numbers, underscores, or dashes");
+        if (!isAbsolute(root)) return yield* usage("--root must be an absolute path");
+        const hostValue = options.host ?? runtime.env.SCOTTY_HOST;
+        if (!hostValue)
+          return yield* usage(
+            "Scotty host is not configured",
+            "Pass --host or set SCOTTY_HOST in the runner process environment.",
+          );
+        const token = runtime.env.SCOTTY_RUNNER_TOKEN?.trim();
+        if (!token)
+          return yield* usage(
+            "Runner token is not configured",
+            "Set SCOTTY_RUNNER_TOKEN in the runner process environment.",
+          );
+        const host = yield* Effect.fromResult(normalizeHost(hostValue));
+        const hostUrl = new URL(host);
+        if (hostUrl.protocol !== "https:" && !isLoopbackHost(hostUrl.hostname))
+          return yield* usage(
+            "runner serve requires an HTTPS Scotty host",
+            "Use HTTPS, or use HTTP only for a loopback development host.",
+          );
+        const url = new URL(`/api/runners/${encodeURIComponent(name)}/connect`, host);
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        yield* runRunnerLink({
+          url: url.href,
+          runnerName: name,
+          token,
+          onOpen: Effect.sync(() => {
+            if (autoJson) outputJson(runtime.stdout, { runner: name, status: "connected" });
+            else runtime.stdout(`Runner ${name} connected.\n`);
+          }),
+        }).pipe(
+          Effect.provide(
+            runnerRuntimeLayer({
+              root,
+              childEnvironment: runnerChildEnvironment(runtime.env),
+            }),
+          ),
+          Effect.mapError(
+            () =>
+              new CliError(
+                "runner_connection_failed",
+                "Runner connection ended unexpectedly",
+                "Check the Scotty host, runner token, and network, then retry.",
+                EXIT.GENERIC,
+              ),
+          ),
+        );
+      }),
+  ).pipe(Command.withDescription("Serve work over an outbound control-plane connection"));
+
+  const runner = Command.make("runner").pipe(
+    Command.withDescription("Run a Scotty compute runner"),
+    Command.withSubcommands([runnerServe]),
+  );
+
   const sessionOperation = Effect.fnUntraced(function* (
     command: "snapshot" | "resume" | "vaporize",
     id: string,
@@ -506,6 +610,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       vaporize,
       skills,
       tools,
+      runner,
     ]),
   );
 };
