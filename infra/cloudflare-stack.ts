@@ -1,15 +1,25 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
+import ScottyRunnerWorkerLive, {
+  SCOTTY_RUNNER_WORKER_NAME,
+  ScottyRunnerWorker,
+} from "../worker/src/runner-worker.ts";
 import { bindExternalSandboxContainer } from "./external-sandbox-container-binding.ts";
 
 export const CLOUDFLARE_STAGE = "production";
 export const CLOUDFLARE_WORKER_NAME = "scotty-worker";
+export const CLOUDFLARE_RUNNER_WORKER_NAME = SCOTTY_RUNNER_WORKER_NAME;
 export const CLOUDFLARE_KV_TITLE = "scotty-sessions";
 export const CLOUDFLARE_BACKUP_BUCKET_NAME = "scotty-backups";
 export const CLOUDFLARE_CONTAINER_APPLICATION_NAME =
   "scotty-sandboxcontainer-production-ytkhty6mswuofjo5";
-export const CLOUDFLARE_WORKER_SECRETS = ["CODEX_AUTH_JSON", "GH_TOKEN", "SCOTTY_TOKEN"] as const;
+export const CLOUDFLARE_WORKER_SECRETS = [
+  "CODEX_AUTH_JSON",
+  "GH_TOKEN",
+  "SCOTTY_RUNNER_TOKEN",
+  "SCOTTY_TOKEN",
+] as const;
 
 const EXISTING_ALCHEMY_LOGICAL_IDS = {
   // Alchemy state is keyed by logical ID. Changing this value would create a
@@ -44,6 +54,12 @@ export const CLOUDFLARE_STACK = {
     bindingName: "AUTH",
     className: "ScottyAuthRegistry",
   },
+  runnerDurableObject: {
+    logicalId: "Runner",
+    bindingName: "RUNNERS",
+    className: "ScottyRunner",
+    workerName: CLOUDFLARE_RUNNER_WORKER_NAME,
+  },
   container: {
     logicalId: "SandboxContainer",
     name: CLOUDFLARE_CONTAINER_APPLICATION_NAME,
@@ -65,6 +81,7 @@ export const CLOUDFLARE_STACK = {
   vars: {
     SANDBOX_TRANSPORT: "rpc",
     BACKUP_BUCKET_NAME: CLOUDFLARE_BACKUP_BUCKET_NAME,
+    SCOTTY_RUNNER_NAME: "slumbers",
   },
   outputKeys: ["url"],
   removalPolicy: "retain",
@@ -83,7 +100,8 @@ export const expectedCloudflareResourceConfirmation = (accountId: string): strin
     "confirmed",
     accountId,
     `worker=${CLOUDFLARE_STACK.worker.name}`,
-    `durableObjects=${CLOUDFLARE_STACK.durableObject.className},${CLOUDFLARE_STACK.authDurableObject.className}`,
+    `runnerWorker=${CLOUDFLARE_STACK.runnerDurableObject.workerName}`,
+    `durableObjects=${CLOUDFLARE_STACK.durableObject.className},${CLOUDFLARE_STACK.authDurableObject.className},${CLOUDFLARE_STACK.runnerDurableObject.className}`,
     `container=${CLOUDFLARE_STACK.container.name}`,
     `kv=${CLOUDFLARE_STACK.kv.title}`,
     `r2=${CLOUDFLARE_STACK.r2.name}`,
@@ -132,6 +150,17 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   const authDurableObject = Cloudflare.DurableObject(CLOUDFLARE_STACK.authDurableObject.logicalId, {
     className: CLOUDFLARE_STACK.authDurableObject.className,
   });
+  const runnerWorker = yield* ScottyRunnerWorker.pipe(
+    Effect.provide(ScottyRunnerWorkerLive),
+    removalPolicy,
+  );
+  const runnerDurableObject = Cloudflare.DurableObject(
+    CLOUDFLARE_STACK.runnerDurableObject.logicalId,
+    {
+      className: CLOUDFLARE_STACK.runnerDurableObject.className,
+      scriptName: runnerWorker.workerName,
+    },
+  );
   const assetConfig = {
     directory: CLOUDFLARE_STACK.assets.directory,
     binding: CLOUDFLARE_STACK.assets.binding,
@@ -151,6 +180,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
     observability: { enabled: CLOUDFLARE_STACK.worker.observability },
     env: {
       AUTH: authDurableObject,
+      RUNNERS: runnerDurableObject,
       SANDBOX: durableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,

@@ -96,6 +96,8 @@ export type RunnerSuccess = typeof RunnerSuccessSchema.Type;
 
 export const RunnerFailureCodeSchema = Schema.Literals([
   "idempotency_conflict",
+  "operation_unknown",
+  "recovery_required",
   "runtime_not_running",
   "invalid_cwd",
   "filesystem_failed",

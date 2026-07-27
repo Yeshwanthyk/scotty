@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Match } from "effect";
 import { EXIT, main, type CliDependencies } from "../scotty";
-import type { RunnerFrame, RunnerResponse } from "../src/runner-protocol";
+import type { RunnerFrame, RunnerResponse } from "../../protocol/runner";
 
 const temporaryDirectories: string[] = [];
 
@@ -150,6 +150,8 @@ describe("runner serve", () => {
           "slumbers",
           "--root",
           root,
+          "--isolation",
+          "process",
           "--host",
           `http://127.0.0.1:${server.port}`,
         ],

@@ -207,6 +207,35 @@ body.scotty-ui {
   color: var(--muted);
 }
 
+.sessions-page .control-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.sessions-page .control-status-item::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--quiet);
+  content: "";
+  vertical-align: 1px;
+}
+
+.sessions-page .control-status-item[data-state="available"]::before,
+.sessions-page .control-status-item[data-state="connected"]::before {
+  background: var(--accent-strong);
+}
+
+.sessions-page .control-status-item[data-state="disconnected"]::before {
+  background: var(--danger);
+}
+
 .sessions-page .composer {
   border: 1px solid rgb(207 99 63 / 0.42);
   background: var(--panel);

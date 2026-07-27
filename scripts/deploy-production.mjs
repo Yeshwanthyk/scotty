@@ -39,10 +39,12 @@ export const PRODUCTION_DEPLOY_STEPS = [
 ];
 
 const PRODUCTION_WORKER_NAME = "scotty-worker";
+const PRODUCTION_RUNNER_WORKER_NAME = "scotty-runner";
 const PRODUCTION_KV_TITLE = "scotty-sessions";
 const PRODUCTION_BACKUP_BUCKET_NAME = "scotty-backups";
 const PRODUCTION_SANDBOX_CLASS_NAME = "ScottySandbox";
 const PRODUCTION_AUTH_CLASS_NAME = "ScottyAuthRegistry";
+const PRODUCTION_RUNNER_CLASS_NAME = "ScottyRunner";
 const DEPLOY_LOCK_PATH = join(tmpdir(), "scotty-production-deploy.lock");
 const DEFAULT_COMMAND_TIMEOUT_MS = 15 * 60 * 1_000;
 const CONTAINER_ROLLOUT_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -528,7 +530,8 @@ function productionEnvironment() {
     "confirmed",
     accountId,
     `worker=${PRODUCTION_WORKER_NAME}`,
-    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME}`,
+    `runnerWorker=${PRODUCTION_RUNNER_WORKER_NAME}`,
+    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME},${PRODUCTION_RUNNER_CLASS_NAME}`,
     `container=${PRODUCTION_CONTAINER_APPLICATION_NAME}`,
     `kv=${PRODUCTION_KV_TITLE}`,
     `r2=${PRODUCTION_BACKUP_BUCKET_NAME}`,

@@ -162,6 +162,7 @@ describe("production deployment ownership", () => {
     ]);
     const verificationEnv = environments.get("Check repository").env;
     assert.equal(verificationEnv.CLOUDFLARE_API_TOKEN, undefined);
+    assert.equal(verificationEnv.SCOTTY_RUNNER_TOKEN, undefined);
     assert.equal(verificationEnv.SCOTTY_TOKEN, undefined);
     assert.equal(verificationEnv.SCOTTY_E2E_EXPLICIT, undefined);
     for (const name of [
@@ -175,6 +176,7 @@ describe("production deployment ownership", () => {
       assert.equal(env.CLOUDFLARE_ACCOUNT_ID, PRODUCTION_CLOUDFLARE_ACCOUNT_ID);
       assert.equal(env.SCOTTY_HOST, PRODUCTION_SCOTTY_HOST);
       assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
+      assert.equal(env.SCOTTY_RUNNER_TOKEN, undefined);
       assert.equal(env.SCOTTY_TOKEN, undefined);
       assert.equal(
         env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
@@ -182,7 +184,8 @@ describe("production deployment ownership", () => {
           "confirmed",
           PRODUCTION_CLOUDFLARE_ACCOUNT_ID,
           "worker=scotty-worker",
-          "durableObjects=ScottySandbox,ScottyAuthRegistry",
+          "runnerWorker=scotty-runner",
+          "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunner",
           `container=${PRODUCTION_CONTAINER_APPLICATION_NAME}`,
           "kv=scotty-sessions",
           "r2=scotty-backups",

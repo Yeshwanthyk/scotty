@@ -84,7 +84,7 @@ Do not bypass it with a raw production Wrangler or Alchemy command.
 `alchemy.run.ts` accepts only the exact `production` stage. Its guarded Cloudflare stack
 requires `CLOUDFLARE_ACCOUNT_ID` and matching `SCOTTY_CLOUDFLARE_ACCOUNT_ID`, telemetry disabled
 with `ALCHEMY_TELEMETRY_DISABLED=1`, and account-scoped confirmations:
-`SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED=confirmed:<account-id>:worker=scotty-worker:durableObjects=ScottySandbox,ScottyAuthRegistry:container=<container-name>:kv=scotty-sessions:r2=scotty-backups`
+`SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED=confirmed:<account-id>:worker=scotty-worker:runnerWorker=scotty-runner:durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunner:container=<container-name>:kv=scotty-sessions:r2=scotty-backups`
 and
 `SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL=deploy:<account-id>:scotty-worker`. The production wrapper
 derives and supplies these values after auditing the pinned account; operators should not export
@@ -93,7 +93,12 @@ them to bypass its checks.
 Alchemy declares the Worker, Durable Objects, Container application, KV namespace, R2 bucket,
 assets, bindings, migrations, and retained-resource policy. Existing inherited Worker secrets
 remain managed outside Alchemy state. Use a fine-grained GitHub PAT restricted to managed
-repositories.
+repositories. `SCOTTY_RUNNER_TOKEN` is a separate inherited Worker secret used only by the
+configured `slumbers` runner; set it before deploying and provide the same value only to that
+runner's protected service environment. The external `scotty-worker` keeps the public Hono routes
+and native Sandbox/Auth classes; the private, URL-disabled `scotty-runner` Worker alone hosts
+`ScottyRunner`, receives no inherited secrets, and is reached only through the external Worker's
+cross-script `RUNNERS` binding.
 
 The current Cloudflare gate is forward-only: the full local suite must pass with the pinned Pican
 binary, then the guarded deployment and deployed canary must prove `beam up → mounted Pican UI →

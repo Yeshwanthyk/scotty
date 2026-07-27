@@ -52,6 +52,8 @@ import { requestJson } from "./transport";
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const RUNNER_IMAGE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
+const RUNNER_CONTAINER_PATH = "/usr/local/bin:/usr/bin:/bin";
 const RUNNER_CHILD_ENV_KEYS = [
   "HOME",
   "LANG",
@@ -127,6 +129,14 @@ const isLoopbackHost = (hostname: string): boolean =>
   hostname === "::1" ||
   hostname === "[::1]";
 
+const processIdentity = (): { readonly uid: number; readonly gid: number } | undefined => {
+  const getuid = process.getuid;
+  const getgid = process.getgid;
+  return getuid === undefined || getgid === undefined
+    ? undefined
+    : { uid: getuid(), gid: getgid() };
+};
+
 const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
   for (const item of error.errors) {
     // Effect beta.99 currently exposes this misspelled runtime tag on the public error class.
@@ -135,9 +145,12 @@ const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
     if (Predicate.isTagged(item, "MissingOption")) {
       if (item.option === "repo") return usage("--repo OWNER/NAME is required");
       if (item.option === "provider") return usage("--provider cloudflare is required");
+      if (item.option === "isolation") return usage("--isolation process|docker is required");
     }
     if (Predicate.isTagged(item, "InvalidValue") && item.option === "provider")
       return usage("--provider must be cloudflare");
+    if (Predicate.isTagged(item, "InvalidValue") && item.option === "isolation")
+      return usage("--isolation must be process or docker");
   }
   return usage(error.errors.map((item) => item.message).join("; "));
 };
@@ -427,9 +440,16 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     {
       name: Flag.string("name").pipe(Flag.withDescription("Stable runner name")),
       root: Flag.string("root").pipe(Flag.withDescription("Absolute runner workspace root")),
+      isolation: Flag.choice("isolation", ["process", "docker"]).pipe(
+        Flag.withDescription("Runner isolation mode"),
+      ),
+      image: Flag.string("image").pipe(
+        Flag.withDescription("Digest-pinned Docker image"),
+        Flag.optional,
+      ),
       trailing: trailingArguments,
     },
-    ({ name, root, trailing }) =>
+    ({ image, isolation, name, root, trailing }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
@@ -460,6 +480,42 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             "runner serve requires an HTTPS Scotty host",
             "Use HTTPS, or use HTTP only for a loopback development host.",
           );
+        const imageValue = Option.getOrUndefined(image);
+        if (isolation === "process" && !isLoopbackHost(hostUrl.hostname))
+          return yield* usage(
+            "--isolation process is only allowed with a loopback Scotty host",
+            "Use --isolation docker for Slumbers and other remote runners.",
+          );
+        if (isolation === "process" && imageValue !== undefined)
+          return yield* usage("--image is only valid with --isolation docker");
+        if (isolation === "docker" && imageValue === undefined)
+          return yield* usage(
+            "--image is required with --isolation docker",
+            "Use a digest-pinned image: REPOSITORY@sha256:DIGEST.",
+          );
+        if (
+          isolation === "docker" &&
+          imageValue !== undefined &&
+          !RUNNER_IMAGE_PATTERN.test(imageValue)
+        )
+          return yield* usage("--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX");
+        const runtimeIsolation =
+          isolation === "process"
+            ? ({ type: "process" } as const)
+            : yield* Effect.gen(function* () {
+                if (imageValue === undefined)
+                  return yield* usage("--image is required with --isolation docker");
+                const identity = processIdentity();
+                if (identity === undefined)
+                  return yield* usage("--isolation docker requires a numeric process uid and gid");
+                return {
+                  type: "docker" as const,
+                  image: imageValue,
+                  uid: identity.uid,
+                  gid: identity.gid,
+                  safePath: RUNNER_CONTAINER_PATH,
+                };
+              });
         const url = new URL(`/api/runners/${encodeURIComponent(name)}/connect`, host);
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
         yield* runRunnerLink({
@@ -475,6 +531,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             runnerRuntimeLayer({
               root,
               childEnvironment: runnerChildEnvironment(runtime.env),
+              isolation: runtimeIsolation,
             }),
           ),
           Effect.mapError(

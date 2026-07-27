@@ -1,8 +1,28 @@
 import { createHash } from "node:crypto";
-import { Context, Effect, FileSystem, Layer, Match, Path, Ref, Semaphore, Stream } from "effect";
+import {
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Match,
+  Path,
+  Predicate,
+  Ref,
+  Result,
+  Semaphore,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
-  encodeRunnerOperation,
+  type IsolatedRuntimeCompute,
+  type IsolatedRuntimeExecInput,
+  type IsolatedRuntimeState,
+  makeDockerRunnerCompute,
+  makeRunnerComputeProcess,
+  RunnerComputeFailure,
+} from "./runner-docker";
+import { makeRunnerOperationJournal } from "./runner-operation-journal";
+import {
   type ExecRuntime,
   type RunnerFailure,
   type RunnerFailureCode,
@@ -10,7 +30,7 @@ import {
   type RunnerPhase,
   type RunnerResponse,
   type RunnerResult,
-} from "./runner-protocol";
+} from "../../protocol/runner";
 
 const OUTPUT_LIMIT = 64 * 1024;
 
@@ -23,11 +43,6 @@ interface RuntimeRecord {
   readonly phase: Exclude<RunnerPhase, "absent">;
 }
 
-interface Receipt {
-  readonly intent: string;
-  readonly response: RunnerResponse;
-}
-
 interface RunnerRuntimeShape {
   readonly handle: (operation: RunnerOperation) => Effect.Effect<RunnerResponse>;
 }
@@ -37,8 +52,20 @@ export class RunnerRuntime extends Context.Service<RunnerRuntime, RunnerRuntimeS
 ) {}
 
 export interface RunnerRuntimeConfig {
+  /**
+   * A runner root may have exactly one live runtime writer.
+   */
   readonly root: string;
   readonly childEnvironment: Readonly<Record<string, string>>;
+  readonly isolation:
+    | { readonly type: "process" }
+    | {
+        readonly type: "docker";
+        readonly image: string;
+        readonly uid: number;
+        readonly gid: number;
+        readonly safePath: string;
+      };
 }
 
 const encodeSessionId = (sessionId: string): string =>
@@ -93,13 +120,131 @@ const collectOutput = <E, R>(
     }),
   );
 
-export const makeRunnerRuntime = Effect.fnUntraced(function* (config: RunnerRuntimeConfig) {
+const makeProcessRunnerCompute = Effect.fnUntraced(function* (
+  config: RunnerRuntimeConfig,
+  childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const root = path.resolve(config.root);
   const runtimes = yield* Ref.make(new Map<string, RuntimeRecord>());
-  const receipts = yield* Ref.make(new Map<string, Receipt>());
+
+  const coordinates = (sessionId: string) => {
+    const encoded = encodeSessionId(sessionId);
+    return {
+      workspace: path.join(root, "sessions", `session-${encoded}`),
+      resourceId: `runner-v1:${encoded}`,
+    };
+  };
+
+  const observe = Effect.fnUntraced(function* (sessionId: string) {
+    const { workspace } = coordinates(sessionId);
+    const exists = yield* fs
+      .exists(workspace)
+      .pipe(Effect.mapError(() => new RunnerComputeFailure({ code: "filesystem_failed" })));
+    if (!exists) {
+      yield* Ref.update(runtimes, (records) => {
+        const next = new Map(records);
+        next.delete(sessionId);
+        return next;
+      });
+      return "absent";
+    }
+    return (yield* Ref.get(runtimes)).get(sessionId)?.phase ?? "stopped";
+  });
+
+  const state = (sessionId: string, phase: RunnerPhase): IsolatedRuntimeState => {
+    const { resourceId, workspace } = coordinates(sessionId);
+    return { phase, resourceId, workspace };
+  };
+
+  const ensure = Effect.fnUntraced(function* (sessionId: string) {
+    const { workspace } = coordinates(sessionId);
+    const phase = yield* observe(sessionId);
+    if (phase === "absent") {
+      yield* fs
+        .makeDirectory(workspace, { recursive: true })
+        .pipe(Effect.mapError(() => new RunnerComputeFailure({ code: "filesystem_failed" })));
+    }
+    yield* Ref.update(runtimes, (records) => {
+      const next = new Map(records);
+      next.set(sessionId, { phase: "running" });
+      return next;
+    });
+    return state(sessionId, "running");
+  });
+
+  const inspect = Effect.fnUntraced(function* (sessionId: string) {
+    return state(sessionId, yield* observe(sessionId));
+  });
+
+  const exec = Effect.fnUntraced(function* (sessionId: string, input: IsolatedRuntimeExecInput) {
+    if ((yield* observe(sessionId)) !== "running") {
+      return yield* new RunnerComputeFailure({ code: "runtime_not_running" });
+    }
+    const { workspace } = coordinates(sessionId);
+    const cwd =
+      input.relativeCwd === undefined ? workspace : path.resolve(workspace, input.relativeCwd);
+    const command = ChildProcess.make(input.argv[0], input.argv.slice(1), {
+      cwd,
+      env: { ...config.childEnvironment },
+      extendEnv: false,
+      forceKillAfter: "2 seconds",
+      killSignal: "SIGTERM",
+      shell: false,
+    });
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* command;
+        const [stdout, stderr, exitCode] = yield* Effect.all(
+          [collectOutput(handle.stdout), collectOutput(handle.stderr), handle.exitCode],
+          { concurrency: "unbounded" },
+        );
+        return {
+          exitCode: Number(exitCode),
+          stdout,
+          stderr,
+        };
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner)),
+    ).pipe(Effect.mapError(() => new RunnerComputeFailure({ code: "process_failed" })));
+  });
+
+  const stop = Effect.fnUntraced(function* (sessionId: string) {
+    const phase = yield* observe(sessionId);
+    if (phase === "running") {
+      yield* Ref.update(runtimes, (records) => {
+        const next = new Map(records);
+        next.set(sessionId, { phase: "stopped" });
+        return next;
+      });
+    }
+    return state(sessionId, phase === "absent" ? "absent" : "stopped");
+  });
+
+  const remove = Effect.fnUntraced(function* (sessionId: string) {
+    const { workspace } = coordinates(sessionId);
+    yield* fs
+      .remove(workspace, { recursive: true, force: true })
+      .pipe(Effect.mapError(() => new RunnerComputeFailure({ code: "filesystem_failed" })));
+    yield* Ref.update(runtimes, (records) => {
+      const next = new Map(records);
+      next.delete(sessionId);
+      return next;
+    });
+    return state(sessionId, "absent");
+  });
+
+  return { ensure, inspect, exec, stop, remove } satisfies IsolatedRuntimeCompute;
+});
+
+export const makeRunnerRuntimeWithCompute = Effect.fnUntraced(function* (
+  config: RunnerRuntimeConfig,
+  compute: IsolatedRuntimeCompute,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = path.resolve(config.root);
+  const journal = yield* makeRunnerOperationJournal(root);
   const sessionMutexes = new Map<string, Semaphore.Semaphore>();
 
   const sessionMutex = (sessionId: string): Semaphore.Semaphore => {
@@ -114,43 +259,14 @@ export const makeRunnerRuntime = Effect.fnUntraced(function* (config: RunnerRunt
     const encoded = encodeSessionId(sessionId);
     return {
       workspace: path.join(root, "sessions", `session-${encoded}`),
-      resourceId: `runner-v1:${encoded}`,
     };
   };
 
-  const observe = Effect.fnUntraced(function* (operation: RunnerOperation) {
-    const { workspace } = coordinates(operation.sessionId);
-    const exists = yield* fs
-      .exists(workspace)
-      .pipe(mapExternalFailure(operation, "filesystem_failed"));
-    if (!exists) {
-      yield* Ref.update(runtimes, (records) => {
-        const next = new Map(records);
-        next.delete(operation.sessionId);
-        return next;
-      });
-      return "absent";
-    }
-    return (yield* Ref.get(runtimes)).get(operation.sessionId)?.phase ?? "stopped";
-  });
-
-  const stateResult = (
-    operation: RunnerOperation,
-    resultTag:
-      | "EnsureRuntimeResult"
-      | "InspectRuntimeResult"
-      | "StopRuntimeResult"
-      | "RemoveRuntimeResult",
-    phase: RunnerPhase,
-  ): RunnerResult => {
-    const { resourceId, workspace } = coordinates(operation.sessionId);
-    return { _tag: resultTag, phase, resourceId, workspace };
-  };
-
-  const resolveCwd = Effect.fnUntraced(function* (operation: ExecRuntime, workspace: string) {
-    if (operation.cwd === undefined) {
-      return workspace;
-    }
+  const resolveRelativeCwd = Effect.fnUntraced(function* (
+    operation: ExecRuntime,
+    workspace: string,
+  ) {
+    if (operation.cwd === undefined) return undefined;
     if (path.isAbsolute(operation.cwd)) {
       return yield* Effect.fail(failure(operation, "invalid_cwd"));
     }
@@ -171,118 +287,126 @@ export const makeRunnerRuntime = Effect.fnUntraced(function* (config: RunnerRunt
     ) {
       return yield* Effect.fail(failure(operation, "invalid_cwd"));
     }
-    return realTarget;
+    return realRelative;
   });
 
-  const execute = (operation: RunnerOperation) => {
-    const { workspace } = coordinates(operation.sessionId);
-    return Match.value(operation).pipe(
+  const computeResult = <A>(
+    operation: RunnerOperation,
+    effect: Effect.Effect<A, RunnerComputeFailure>,
+  ): Effect.Effect<A, RunnerFailure> =>
+    Effect.mapError(effect, (computeFailure) => failure(operation, computeFailure.code));
+
+  const stateResult = (
+    resultTag:
+      | "EnsureRuntimeResult"
+      | "InspectRuntimeResult"
+      | "StopRuntimeResult"
+      | "RemoveRuntimeResult",
+    state: IsolatedRuntimeState,
+  ): RunnerResult => ({ _tag: resultTag, ...state });
+
+  const execute = (operation: RunnerOperation) =>
+    Match.value(operation).pipe(
       Match.tagsExhaustive({
         EnsureRuntime: (operation) =>
-          Effect.gen(function* () {
-            const phase = yield* observe(operation);
-            if (phase === "absent") {
-              yield* fs
-                .makeDirectory(workspace, { recursive: true })
-                .pipe(mapExternalFailure(operation, "filesystem_failed"));
-            }
-            yield* Ref.update(runtimes, (records) => {
-              const next = new Map(records);
-              next.set(operation.sessionId, { phase: "running" });
-              return next;
-            });
-            return success(operation, stateResult(operation, "EnsureRuntimeResult", "running"));
-          }),
+          Effect.map(computeResult(operation, compute.ensure(operation.sessionId)), (state) =>
+            success(operation, stateResult("EnsureRuntimeResult", state)),
+          ),
         InspectRuntime: (operation) =>
-          Effect.map(observe(operation), (phase) =>
-            success(operation, stateResult(operation, "InspectRuntimeResult", phase)),
+          Effect.map(computeResult(operation, compute.inspect(operation.sessionId)), (state) =>
+            success(operation, stateResult("InspectRuntimeResult", state)),
           ),
         ExecRuntime: (operation) =>
           Effect.gen(function* () {
-            const phase = yield* observe(operation);
-            if (phase !== "running") {
-              return failure(operation, "runtime_not_running");
-            }
-            const cwd = yield* resolveCwd(operation, workspace);
-            const command = ChildProcess.make(operation.argv[0], operation.argv.slice(1), {
-              cwd,
-              env: { ...config.childEnvironment },
-              extendEnv: false,
-              forceKillAfter: "2 seconds",
-              killSignal: "SIGTERM",
-              shell: false,
+            const { workspace } = coordinates(operation.sessionId);
+            const relativeCwd = yield* resolveRelativeCwd(operation, workspace);
+            const output = yield* computeResult(
+              operation,
+              compute.exec(operation.sessionId, {
+                argv: operation.argv,
+                ...(relativeCwd === undefined ? {} : { relativeCwd }),
+              }),
+            );
+            return success(operation, {
+              _tag: "ExecRuntimeResult",
+              exitCode: output.exitCode,
+              stdout: output.stdout,
+              stderr: output.stderr,
             });
-            const result = yield* Effect.scoped(
-              Effect.gen(function* () {
-                const handle = yield* command;
-                const [stdout, stderr, exitCode] = yield* Effect.all(
-                  [collectOutput(handle.stdout), collectOutput(handle.stderr), handle.exitCode],
-                  { concurrency: "unbounded" },
-                );
-                return {
-                  _tag: "ExecRuntimeResult" as const,
-                  exitCode: Number(exitCode),
-                  stdout,
-                  stderr,
-                };
-              }).pipe(
-                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-              ),
-            ).pipe(mapExternalFailure(operation, "process_failed"));
-            return success(operation, result);
           }),
         StopRuntime: (operation) =>
-          Effect.gen(function* () {
-            const phase = yield* observe(operation);
-            if (phase === "running") {
-              yield* Ref.update(runtimes, (records) => {
-                const next = new Map(records);
-                next.set(operation.sessionId, { phase: "stopped" });
-                return next;
-              });
-            }
-            const stoppedPhase = phase === "absent" ? "absent" : "stopped";
-            return success(operation, stateResult(operation, "StopRuntimeResult", stoppedPhase));
-          }),
+          Effect.map(computeResult(operation, compute.stop(operation.sessionId)), (state) =>
+            success(operation, stateResult("StopRuntimeResult", state)),
+          ),
         RemoveRuntime: (operation) =>
-          Effect.gen(function* () {
-            yield* fs
-              .remove(workspace, { recursive: true, force: true })
-              .pipe(mapExternalFailure(operation, "filesystem_failed"));
-            yield* Ref.update(runtimes, (records) => {
-              const next = new Map(records);
-              next.delete(operation.sessionId);
-              return next;
-            });
-            return success(operation, stateResult(operation, "RemoveRuntimeResult", "absent"));
-          }),
+          Effect.map(computeResult(operation, compute.remove(operation.sessionId)), (state) =>
+            success(operation, stateResult("RemoveRuntimeResult", state)),
+          ),
       }),
     );
-  };
 
   const handle = Effect.fnUntraced(function* (operation: RunnerOperation) {
-    const key = `${operation.sessionId}\0${operation.operationId}`;
-    const intent = encodeRunnerOperation(operation);
-    const existing = (yield* Ref.get(receipts)).get(key);
-    if (existing !== undefined) {
-      return existing.intent === intent
-        ? existing.response
-        : failure(operation, "idempotency_conflict");
+    const preparedReceipt = yield* Effect.result(
+      journal.prepare(operation).pipe(mapExternalFailure(operation, "filesystem_failed")),
+    );
+    if (Result.isFailure(preparedReceipt)) {
+      return preparedReceipt.failure;
     }
+    const preparation = preparedReceipt.success;
+    const prepared = Match.value(preparation).pipe(
+      Match.tagsExhaustive({
+        ExecuteOperation: () => undefined,
+        OperationConflict: () => failure(operation, "idempotency_conflict"),
+        OperationUnknown: () => failure(operation, "operation_unknown"),
+        RecoveryRequired: () => failure(operation, "recovery_required"),
+        ReplayOperation: ({ response }) => response,
+      }),
+    );
+    if (prepared !== undefined) return prepared;
+
     const response = yield* execute(operation).pipe(
       Effect.catch((runnerFailure) => Effect.succeed(runnerFailure)),
     );
-    yield* Ref.update(receipts, (entries) => {
-      const next = new Map(entries);
-      next.set(key, { intent, response });
-      return next;
-    });
+    const completed = yield* Effect.result(journal.complete(operation, response));
+    if (Result.isFailure(completed)) {
+      return failure(operation, "operation_unknown");
+    }
+    const clearsRecoveryFence =
+      Predicate.isTagged(operation, "ExecRuntime") ||
+      (Predicate.isTagged(operation, "StopRuntime") &&
+        Predicate.isTagged(response, "RunnerSuccess"));
+    if (clearsRecoveryFence) {
+      const cleared = yield* Effect.result(journal.clearRecoveryFence(operation.sessionId));
+      if (Result.isFailure(cleared)) {
+        return failure(operation, "operation_unknown");
+      }
+    }
     return response;
   });
 
   return RunnerRuntime.of({
     handle: (operation) => sessionMutex(operation.sessionId).withPermit(handle(operation)),
   });
+});
+
+export const makeRunnerRuntime = Effect.fnUntraced(function* (config: RunnerRuntimeConfig) {
+  const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const isolation = config.isolation;
+  const compute =
+    isolation.type === "docker"
+      ? yield* makeDockerRunnerCompute(
+          {
+            root: config.root,
+            image: isolation.image,
+            uid: isolation.uid,
+            gid: isolation.gid,
+            safePath: isolation.safePath,
+            childEnvironment: config.childEnvironment,
+          },
+          makeRunnerComputeProcess(childProcessSpawner, "/usr/bin/docker"),
+        )
+      : yield* makeProcessRunnerCompute(config, childProcessSpawner);
+  return yield* makeRunnerRuntimeWithCompute(config, compute);
 });
 
 export const runnerRuntimeLayer = (

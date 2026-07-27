@@ -85,6 +85,10 @@ describe("Effect command tree", () => {
         "slumbers",
         "--root",
         "/srv/scotty",
+        "--isolation",
+        "docker",
+        "--image",
+        "registry.example/scotty@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       ]);
       const error = failure(yield* Effect.result(invocation.effect));
       assert.strictEqual(error.code, "bad_usage");
@@ -106,6 +110,10 @@ describe("Effect command tree", () => {
           "slumbers",
           "--root",
           "/srv/scotty",
+          "--isolation",
+          "docker",
+          "--image",
+          "registry.example/scotty@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ],
         { env: { SCOTTY_RUNNER_TOKEN: "runner-secret" } },
       );
@@ -114,6 +122,77 @@ describe("Effect command tree", () => {
       assert.strictEqual(error.message, "runner serve requires an HTTPS Scotty host");
       assert.strictEqual(invocation.stdout.join(""), "");
       assert.strictEqual(invocation.stderr.join(""), "");
+    }),
+  );
+
+  it.effect("requires an explicit safe runner isolation configuration", () =>
+    Effect.gen(function* () {
+      const base = [
+        "--host",
+        "https://worker.example",
+        "runner",
+        "serve",
+        "--name",
+        "slumbers",
+        "--root",
+        "/srv/scotty",
+      ];
+      const environment = { env: { SCOTTY_RUNNER_TOKEN: "runner-secret" } };
+
+      const missing = run(base, environment);
+      assert.strictEqual(
+        failure(yield* Effect.result(missing.effect)).message,
+        "--isolation process|docker is required",
+      );
+
+      const invalid = run([...base, "--isolation", "host"], environment);
+      assert.strictEqual(
+        failure(yield* Effect.result(invalid.effect)).message,
+        "--isolation must be process or docker",
+      );
+
+      const remoteProcess = run([...base, "--isolation", "process"], environment);
+      assert.strictEqual(
+        failure(yield* Effect.result(remoteProcess.effect)).message,
+        "--isolation process is only allowed with a loopback Scotty host",
+      );
+
+      const missingImage = run([...base, "--isolation", "docker"], environment);
+      assert.strictEqual(
+        failure(yield* Effect.result(missingImage.effect)).message,
+        "--image is required with --isolation docker",
+      );
+
+      const invalidImage = run(
+        [...base, "--isolation", "docker", "--image", "registry.example/scotty:latest"],
+        environment,
+      );
+      assert.strictEqual(
+        failure(yield* Effect.result(invalidImage.effect)).message,
+        "--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX",
+      );
+
+      const processImage = run(
+        [
+          "--host",
+          "http://127.0.0.1:8787",
+          "runner",
+          "serve",
+          "--name",
+          "local",
+          "--root",
+          "/srv/scotty",
+          "--isolation",
+          "process",
+          "--image",
+          "registry.example/scotty@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+        environment,
+      );
+      assert.strictEqual(
+        failure(yield* Effect.result(processImage.effect)).message,
+        "--image is only valid with --isolation docker",
+      );
     }),
   );
 
