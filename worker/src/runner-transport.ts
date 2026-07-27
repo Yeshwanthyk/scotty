@@ -590,7 +590,6 @@ export class RunnerTransport {
       pending === undefined ||
       frame.direction !== "request" ||
       pending.connectionId !== attachment.connectionId ||
-      pending.socket !== socket ||
       !pending.requestHasBody ||
       pending.requestEnded ||
       pending.requestCredit + frame.credit > RUNNER_CREDIT_WINDOW
@@ -612,7 +611,6 @@ export class RunnerTransport {
       if (
         pending === undefined ||
         pending.connectionId !== attachment.connectionId ||
-        pending.socket !== socket ||
         pending.responseStarted ||
         frame.status < 200
       ) {
@@ -696,7 +694,6 @@ export class RunnerTransport {
       pending === undefined ||
       frame.direction !== "response" ||
       pending.connectionId !== attachment.connectionId ||
-      pending.socket !== socket ||
       !pending.responseStarted ||
       !pending.responseHasBody ||
       pending.responseEnded ||
@@ -719,7 +716,6 @@ export class RunnerTransport {
       if (
         pending === undefined ||
         pending.connectionId !== attachment.connectionId ||
-        pending.socket !== socket ||
         !pending.responseStarted ||
         !pending.responseHasBody ||
         pending.responseEnded
@@ -741,11 +737,7 @@ export class RunnerTransport {
     const pending = this.#http.get(frame.streamId);
     if (pending === undefined && this.#isRecentTerminal(frame.streamId, attachment.connectionId))
       return Effect.void;
-    if (
-      pending === undefined ||
-      pending.connectionId !== attachment.connectionId ||
-      pending.socket !== socket
-    )
+    if (pending === undefined || pending.connectionId !== attachment.connectionId)
       return this.#reject(socket, "Invalid runner HTTP cancellation");
     if (frame.direction === "request") {
       if (!pending.requestHasBody || pending.requestEnded)
@@ -775,7 +767,6 @@ export class RunnerTransport {
     if (
       pending === undefined ||
       pending.connectionId !== attachment.connectionId ||
-      pending.socket !== socket ||
       (pending.responseStarted && frame.code !== "response_failed") ||
       (!pending.responseStarted && frame.code === "response_failed")
     )

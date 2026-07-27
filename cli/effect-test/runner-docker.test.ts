@@ -42,7 +42,7 @@ const fakeDocker = (): FakeDocker => {
           return successfulOutput({ stdout: running.has(name) ? "container-id\n" : "" });
         }
         if (argv[0] === "container" && argv[1] === "inspect" && typeof argv[3] === "string") {
-          if (argv[2] === "--format={{.NetworkSettings.IPAddress}}") {
+          if (argv[2] === "--format={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}") {
             return successfulOutput({ stdout: "172.17.0.2\n" });
           }
           return successfulOutput({ stdout: `${running.get(argv[3]) === true}\n` });
@@ -241,7 +241,7 @@ describe("Docker runner compute", () => {
           assert.deepStrictEqual(fake.commands.at(-1), [
             "container",
             "inspect",
-            "--format={{.NetworkSettings.IPAddress}}",
+            "--format={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
             `scotty-runner-v1-${hash("session-a")}`,
           ]);
 

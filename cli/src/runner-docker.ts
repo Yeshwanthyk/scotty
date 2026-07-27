@@ -434,7 +434,7 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
     const inspected = yield* runRequired([
       "container",
       "inspect",
-      "--format={{.NetworkSettings.IPAddress}}",
+      "--format={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
       container,
     ]);
     const address = inspected.stdout.trim();
