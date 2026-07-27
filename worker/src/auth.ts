@@ -168,15 +168,6 @@ export function requireClientCredential(principal: AuthPrincipal): string {
   throw authenticationRequired();
 }
 
-export function terminalTicketCredential(principal: AuthPrincipal): string {
-  if (principal.kind === "client" && principal.source === "cookie" && principal.credential)
-    return principal.credential;
-  throw new ScottyError("auth", "Pair this browser before opening a terminal", {
-    httpStatus: 401,
-    exitCode: 4,
-  });
-}
-
 export function authRegistry(env: AuthBindings): ScottyAuthRegistryStub {
   return env.AUTH.getByName(AUTH_OBJECT_NAME);
 }
@@ -188,7 +179,6 @@ export function unwrapAuthRpc<A>(result: AuthRpcResult<A>): A {
     reason === "credential_invalid" ||
     reason === "pairing_invalid" ||
     reason === "recovery_invalid" ||
-    reason === "ticket_invalid" ||
     reason === "transfer_invalid" ||
     reason === "forbidden" ||
     reason === "owner_required"

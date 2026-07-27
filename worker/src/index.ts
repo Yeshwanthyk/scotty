@@ -10,9 +10,6 @@ import {
   parseCreateInput,
   parseIdempotencyKey,
   parseSessionId,
-  parseSessionIdFromTerminalPath,
-  parseTerminalClientId,
-  parseTerminalDimension,
   ScottyError,
   type CreateSessionInput,
 } from "./contracts";
@@ -33,7 +30,6 @@ import {
   requireClientCredential,
   requireOwnerPrincipal,
   setClientAuthCookie,
-  terminalTicketCredential,
   unwrapAuthRpc,
 } from "./auth";
 import { ScottyAuthRegistry } from "./auth-object";
@@ -94,32 +90,7 @@ app.use("/api/*", async (c, next) => {
     return;
   }
 
-  const terminalTicket =
-    c.req.method === "GET" &&
-    url.pathname.endsWith("/pty") &&
-    c.req.header("upgrade")?.toLowerCase() === "websocket"
-      ? url.searchParams.get("ticket")
-      : undefined;
-  let principal: AuthPrincipal;
-  if (c.req.header("upgrade")?.toLowerCase() === "websocket" && !terminalTicket) {
-    throw new ScottyError("auth", "A one-time terminal ticket is required", {
-      httpStatus: 401,
-      exitCode: 4,
-    });
-  } else if (terminalTicket) {
-    const id = parseSessionIdFromTerminalPath(url.pathname);
-    const client = unwrapAuthRpc(
-      await authRegistry(c.env).consumeTerminalTicket(terminalTicket, id),
-    );
-    principal = {
-      kind: "client",
-      source: "ticket",
-      client,
-      scopes: client.scopes,
-    };
-  } else {
-    principal = await requireAuthRequest(c.req.raw, c.env);
-  }
+  const principal: AuthPrincipal = await requireAuthRequest(c.req.raw, c.env);
   c.set("auth", principal);
   refreshClientAuthCookie(c, principal);
   if (isUnsafeMethod(c.req.method) && principal.kind === "client")
@@ -292,6 +263,7 @@ app.post("/api/sessions", async (c) => {
     id,
     url: `${origin}/s/${id}`,
     branch: session.branch,
+    provider: session.provider,
     status: session.status,
   });
 });
@@ -376,68 +348,20 @@ app.delete("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).vaporizeScottySession());
 });
 
-app.post("/api/sessions/:id/pty-ticket", async (c) => {
-  const principal = c.get("auth");
-  requireAuthScope(principal, "terminal:connect");
+app.all("/s/:id", async (c) => {
   const id = parseSessionId(c.req.param("id"));
-  const credential = terminalTicketCredential(principal);
-  return c.json(unwrapAuthRpc(await authRegistry(c.env).issueTerminalTicket(credential, id)));
-});
-
-app.get("/api/sessions/:id/pty", async (c) => {
-  requireAuthScope(c.get("auth"), "terminal:connect");
-  const id = parseSessionId(c.req.param("id"));
-  const clientId = parseTerminalClientId(c.req.query("client"));
-  const sandbox = sessionSandbox(c.env, id);
-  if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
-    return new Response("WebSocket upgrade required", { status: 426 });
-  }
-  const cols = parseTerminalDimension(c.req.query("cols"), 80);
-  const rows = parseTerminalDimension(c.req.query("rows"), 24);
-  const terminalSessionId = await sandbox.prepareTerminalAttachment(clientId);
-  try {
-    const terminalSession = await sandbox.getSession(terminalSessionId);
-    const response = await terminalSession.terminal(c.req.raw, {
-      cols,
-      rows,
-      shell: "/usr/local/bin/scotty-attach",
-    });
-    return bridgeTerminalWebSocket(
-      response,
-      () => sandbox.releaseTerminalAttachment(clientId),
-      (task) => c.executionCtx.waitUntil(task),
-      c.req.raw.signal,
-    );
-  } catch (error) {
-    await sandbox
-      .releaseTerminalAttachment(clientId)
-      .catch((cleanupError) => logTerminalCleanupFailure(cleanupError));
-    throw error;
-  }
-});
-
-app.delete("/api/sessions/:id/pty/:client", async (c) => {
-  requireAuthScope(c.get("auth"), "terminal:connect");
-  const id = parseSessionId(c.req.param("id"));
-  const clientId = parseTerminalClientId(c.req.param("client"));
-  await sessionSandbox(c.env, id).releaseTerminalAttachment(clientId);
-  return c.json({ ok: true });
-});
-
-app.post("/api/sessions/:id/pty/:client/heartbeat", async (c) => {
-  requireAuthScope(c.get("auth"), "terminal:connect");
-  const id = parseSessionId(c.req.param("id"));
-  const clientId = parseTerminalClientId(c.req.param("client"));
-  await sessionSandbox(c.env, id).touchTerminalAttachment(clientId);
-  return c.json({ ok: true });
-});
-
-app.get("/s/:id", async (c) => {
-  parseSessionId(c.req.param("id"));
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return terminalAsset(c.env, c.req.raw);
+  return proxyPicanRequest(c.env, c.req.raw, id);
+});
+
+app.all("/s/:id/*", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  return proxyPicanRequest(c.env, c.req.raw, id);
 });
 
 app.get("/sessions", async (c) => {
@@ -460,11 +384,6 @@ app.get("/owner-transfer", (c) => authAsset(c.env, c.req.raw, "/owner-transfer.h
 app.get("/recover", (c) => authAsset(c.env, c.req.raw, "/recover.html"));
 
 app.get("/", (c) => c.redirect("/sessions", 302));
-
-app.get(
-  "/terminal",
-  () => new Response("Open a session with scotty attach ID or use its /s/ID URL.", { status: 404 }),
-);
 
 app.get("/health", (c) => c.json({ ok: true }));
 
@@ -656,93 +575,9 @@ async function createSessionIdempotency(
   parseIdempotencyKey(key);
   const [keyDigest, inputDigest] = await Promise.all([
     sha256Hex(key),
-    sha256Hex(JSON.stringify([input.prompt, input.repo, input.hardCapSeconds])),
+    sha256Hex(JSON.stringify([input.prompt, input.provider, input.repo, input.hardCapSeconds])),
   ]);
   return { keyDigest, inputDigest };
-}
-
-function bridgeTerminalWebSocket(
-  response: Response,
-  cleanup: () => Promise<void>,
-  waitUntil: (task: Promise<void>) => void,
-  requestSignal: AbortSignal,
-): Response {
-  const upstream = response.webSocket;
-  if (!upstream)
-    throw new ScottyError("upstream", "Terminal did not return a WebSocket", {
-      httpStatus: 502,
-      exitCode: 4,
-    });
-  const [client, server] = Object.values(new WebSocketPair());
-  const settle = terminalBridgeCleanup(cleanup, waitUntil, requestSignal);
-  const closeCode = (code: number) => (code === 1005 || code === 1006 ? 1000 : code);
-
-  upstream.accept();
-  server.accept();
-  server.addEventListener("message", async (event) => {
-    try {
-      upstream.send(event.data instanceof Blob ? await event.data.arrayBuffer() : event.data);
-    } catch {
-      server.close(1011, "Terminal forwarding failed");
-    }
-  });
-  upstream.addEventListener("message", async (event) => {
-    try {
-      server.send(event.data instanceof Blob ? await event.data.arrayBuffer() : event.data);
-    } catch {
-      upstream.close(1011, "Terminal forwarding failed");
-    }
-  });
-  server.addEventListener("close", (event) => {
-    settle();
-    upstream.close(closeCode(event.code), event.reason);
-  });
-  upstream.addEventListener("close", (event) => {
-    settle();
-    server.close(closeCode(event.code), event.reason);
-  });
-  server.addEventListener("error", () => {
-    settle();
-    upstream.close(1011, "Terminal client failed");
-  });
-  upstream.addEventListener("error", () => {
-    settle();
-    server.close(1011, "Terminal upstream failed");
-  });
-
-  return new Response(null, {
-    status: response.status,
-    headers: response.headers,
-    webSocket: client,
-  });
-}
-
-/**
- * Scope ownership contract: the native Worker request and socket own the bridge lifetime; no
- * Effect scope encloses the returned WebSocket. Socket close/error and request abort trigger
- * best-effort release. The Sandbox DO's heartbeat lease and scheduled expiry remain the durable
- * backstop when an isolate disappears without delivering any native disconnect event.
- */
-export function terminalBridgeCleanup(
-  cleanup: () => Promise<void>,
-  waitUntil: (task: Promise<void>) => void,
-  requestSignal: AbortSignal,
-): () => void {
-  let settled = false;
-  const settle = () => {
-    if (settled) return;
-    settled = true;
-    waitUntil(cleanup().catch((error) => logTerminalCleanupFailure(error)));
-  };
-  if (requestSignal.aborted) settle();
-  else requestSignal.addEventListener("abort", settle, { once: true });
-  return settle;
-}
-
-function logTerminalCleanupFailure(error: unknown): void {
-  console.error("Terminal attachment cleanup failed", {
-    name: error instanceof Error ? error.name : "UnknownError",
-  });
 }
 
 function normalizeError(error: unknown): ScottyError {
@@ -794,10 +629,6 @@ function normalizeError(error: unknown): ScottyError {
   return new ScottyError("internal", "Internal error", { httpStatus: 500, exitCode: 1 });
 }
 
-async function terminalAsset(env: Bindings, request: Request): Promise<Response> {
-  return secureAsset(env, request, "/terminal.html");
-}
-
 async function secureAsset(env: Bindings, request: Request, pathname: string): Promise<Response> {
   const url = new URL(request.url);
   url.pathname = pathname;
@@ -830,4 +661,52 @@ async function authAsset(env: Bindings, request: Request, pathname: string): Pro
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "DENY");
   return new Response(asset.body, { status: asset.status, headers });
+}
+
+async function proxyPicanRequest(
+  env: Bindings,
+  request: Request,
+  sessionId: string,
+): Promise<Response> {
+  if (request.headers.get("upgrade")?.toLowerCase() === "websocket")
+    return new Response("Pican WebSocket proxying is not supported", { status: 501 });
+
+  const headers = sanitizePicanProxyHeaders(request.headers);
+  const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
+  const init: RequestInit = {
+    method: request.method,
+    headers,
+    body,
+    redirect: "manual",
+    signal: request.signal,
+  };
+  if (body !== undefined) Reflect.set(init, "duplex", "half");
+  return sessionSandbox(env, sessionId).fetchPican(new Request(request.url, init));
+}
+
+function sanitizePicanProxyHeaders(source: Headers): Headers {
+  const headers = new Headers(source);
+  for (const name of source.get("connection")?.split(",") ?? []) headers.delete(name.trim());
+  headers.delete("host");
+  headers.delete("cookie");
+  headers.delete("authorization");
+  headers.delete("proxy-authorization");
+  headers.delete("proxy-authenticate");
+  headers.delete("x-pican-proxy-token");
+  headers.delete("forwarded");
+  headers.delete("cf-connecting-ip");
+  headers.delete("cf-ipcountry");
+  headers.delete("cf-ray");
+  headers.delete("x-forwarded-for");
+  headers.delete("x-forwarded-host");
+  headers.delete("x-forwarded-proto");
+  headers.delete("x-forwarded-port");
+  headers.delete("via");
+  headers.delete("keep-alive");
+  headers.delete("te");
+  headers.delete("trailer");
+  headers.delete("transfer-encoding");
+  headers.delete("upgrade");
+  headers.delete("connection");
+  return headers;
 }

@@ -1,7 +1,6 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Option, Schema } from "effect";
 
-export const DEFAULT_REPO = "anomalyco/rift";
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
 export const MIN_HARD_CAP_SECONDS = 60;
 export const MAX_HARD_CAP_SECONDS = 24 * 60 * 60;
@@ -9,23 +8,16 @@ export const SESSION_ROOT = "/workspace";
 export const SESSION_KV_PREFIX = "session:";
 export const REPO_KV_PREFIX = "repo:";
 
+export const ProviderSchema = Schema.Literal("cloudflare");
+export type Provider = typeof ProviderSchema.Type;
+
 const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/));
 const ShortHexIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u));
 const IdempotencyKeySchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{16,128}$/u));
-const TerminalSessionPathSchema = Schema.TemplateLiteralParser([
-  "/api/sessions/",
-  SessionIdSchema,
-  "/pty",
-]);
-const TerminalDimensionSchema = Schema.NumberFromString.pipe(
-  Schema.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 1_000 })),
-);
-
 const decodeSessionId = Schema.decodeUnknownOption(SessionIdSchema);
 const decodeShortHexId = Schema.decodeUnknownOption(ShortHexIdSchema);
 const decodeIdempotencyKey = Schema.decodeUnknownOption(IdempotencyKeySchema);
-const decodeTerminalSessionPath = Schema.decodeUnknownOption(TerminalSessionPathSchema);
-const decodeTerminalDimension = Schema.decodeUnknownOption(TerminalDimensionSchema);
+const decodeProvider = Schema.decodeUnknownOption(ProviderSchema);
 
 export const SessionStatusSchema = Schema.Literals([
   "booting",
@@ -45,18 +37,22 @@ export const OperationKindSchema = Schema.Literals([
 ]);
 export type OperationKind = typeof OperationKindSchema.Type;
 
-// Decode leases written by versions that exposed the removed publish endpoint so lifecycle
-// recovery can clear them. New operations can only use OperationKindSchema.
-const PersistedOperationKindSchema = Schema.Union([OperationKindSchema, Schema.Literal("pr")]);
-
 export const SessionOperationSchema = Schema.Struct({
-  kind: PersistedOperationKindSchema,
+  kind: OperationKindSchema,
   nonce: Schema.String,
   startedAt: Schema.String,
+  createPhase: Schema.optionalKey(Schema.Literals(["setup", "pican"])),
   checkpointedBackupId: Schema.optionalKey(Schema.String),
   stopRequestedAt: Schema.optionalKey(Schema.String),
   stopRollbackAt: Schema.optionalKey(Schema.String),
-});
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (operation) => (operation.kind === "create") === (operation.createPhase !== undefined),
+      { expected: "only create operations to include a create phase" },
+    ),
+  ),
+);
 export type SessionOperation = typeof SessionOperationSchema.Type;
 
 export const SessionFailureSchema = Schema.Struct({
@@ -65,16 +61,6 @@ export const SessionFailureSchema = Schema.Struct({
   recoverable: Schema.Boolean,
 });
 export type SessionFailure = typeof SessionFailureSchema.Type;
-
-export const TerminalAttachmentLeaseSchema = Schema.Struct({
-  sessionId: Schema.String,
-  status: Schema.Literals(["creating", "active", "releasing"]),
-  lastSeenAt: Schema.String,
-  createSettled: Schema.Boolean,
-});
-export type TerminalAttachmentLease = typeof TerminalAttachmentLeaseSchema.Type;
-
-export const TerminalAttachmentLeasesSchema = Schema.Array(TerminalAttachmentLeaseSchema);
 
 export const DirectoryBackupSchema = Schema.Struct({
   id: Schema.String,
@@ -97,6 +83,7 @@ export const SessionRecordSchema = Schema.Struct({
   id: Schema.String,
   status: SessionStatusSchema,
   operation: Schema.NullOr(SessionOperationSchema),
+  provider: ProviderSchema,
   repo: Schema.String,
   repoExistsAtCreate: Schema.Boolean,
   defaultBranch: Schema.String,
@@ -140,6 +127,7 @@ export const SessionProjectionSchema = Schema.Struct({
   version: Schema.Literal(1),
   id: Schema.String,
   status: SessionStatusSchema,
+  provider: ProviderSchema,
   repo: Schema.String,
   defaultBranch: Schema.String,
   branch: Schema.String,
@@ -181,6 +169,7 @@ export type RepoView = typeof RepoViewSchema.Type;
 
 export const CreateSessionInputSchema = Schema.Struct({
   prompt: Schema.String,
+  provider: ProviderSchema,
   repo: Schema.String,
   hardCapSeconds: Schema.Number,
 });
@@ -232,24 +221,17 @@ export const StoredCredentialSchema = Schema.Struct({
   githubToken: Schema.NonEmptyString,
   codexSentinel: Schema.NonEmptyString,
   githubSentinel: Schema.NonEmptyString,
+  picanProxyToken: Schema.NonEmptyString,
   updatedAt: Schema.NonEmptyString,
   refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
 });
 export type StoredCredential = typeof StoredCredentialSchema.Type;
 
-export const LegacyStoredCredentialSchema = Schema.Struct({
-  codex: CodexCredentialBundleSchema,
-  codexSentinel: Schema.NonEmptyString,
-  githubSentinel: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
-  refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
-});
-export type LegacyStoredCredential = typeof LegacyStoredCredentialSchema.Type;
-
 export const CredentialSeedSchema = Schema.Struct({
   codexAuthJson: Schema.NonEmptyString,
   codexSentinel: Schema.NonEmptyString,
   githubSentinel: Schema.NonEmptyString,
+  picanProxyToken: Schema.NonEmptyString,
 });
 export type CredentialSeed = typeof CredentialSeedSchema.Type;
 
@@ -314,10 +296,6 @@ export const decodeStoredCredentialOption = Schema.decodeUnknownOption(StoredCre
 export const decodeStoredCredentialResult = Schema.decodeUnknownResult(StoredCredentialSchema, {
   onExcessProperty: "error",
 });
-export const decodeLegacyStoredCredentialResult = Schema.decodeUnknownResult(
-  LegacyStoredCredentialSchema,
-  { onExcessProperty: "error" },
-);
 export const decodeCredentialSeedResult = Schema.decodeUnknownResult(CredentialSeedSchema, {
   onExcessProperty: "error",
 });
@@ -464,6 +442,7 @@ export function conflict(message: string): ScottyError {
 
 const RawCreateSessionInputSchema = Schema.Struct({
   prompt: Schema.optionalKey(Schema.Unknown),
+  provider: Schema.optionalKey(Schema.Unknown),
   repo: Schema.optionalKey(Schema.Unknown),
   hardCapSeconds: Schema.optionalKey(Schema.Unknown),
 });
@@ -474,7 +453,8 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
   if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
   const prompt = readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
-  const repo = decoded.value.repo === undefined ? DEFAULT_REPO : parseRepo(decoded.value.repo);
+  const provider = parseProvider(decoded.value.provider);
+  const repo = parseRepo(decoded.value.repo);
   const hardCapSeconds =
     decoded.value.hardCapSeconds === undefined
       ? DEFAULT_HARD_CAP_SECONDS
@@ -484,7 +464,7 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
           MIN_HARD_CAP_SECONDS,
           MAX_HARD_CAP_SECONDS,
         );
-  return { prompt, repo, hardCapSeconds };
+  return { prompt, provider, repo, hardCapSeconds };
 }
 
 export function parseSessionId(value: string): string {
@@ -501,32 +481,10 @@ export function parseAuthClientId(value: string): string {
   return decoded.value;
 }
 
-export function parseTerminalClientId(value: string | undefined): string {
-  const decoded = decodeShortHexId(value);
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono path parser preserves the existing thrown ScottyError contract
-  if (Option.isNone(decoded)) throw badRequest("Invalid terminal client id");
-  return decoded.value;
-}
-
-export function parseSessionIdFromTerminalPath(pathname: string): string {
-  const decoded = decodeTerminalSessionPath(pathname);
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono path parser preserves the existing thrown ScottyError contract
-  if (Option.isNone(decoded)) throw badRequest("Invalid terminal path");
-  return decoded.value[1];
-}
-
 export function parseIdempotencyKey(value: string): string {
   const decoded = decodeIdempotencyKey(value);
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono header parser preserves the existing thrown ScottyError contract
   if (Option.isNone(decoded)) throw badRequest("Invalid idempotency key");
-  return decoded.value;
-}
-
-export function parseTerminalDimension(value: string | undefined, fallback: number): number {
-  if (value === undefined) return fallback;
-  const decoded = decodeTerminalDimension(value);
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono query parser preserves the existing thrown ScottyError contract
-  if (Option.isNone(decoded)) throw badRequest("Invalid terminal dimensions");
   return decoded.value;
 }
 
@@ -539,11 +497,19 @@ export function parseRepo(value: unknown): string {
   return repo;
 }
 
+export function parseProvider(value: unknown): Provider {
+  const decoded = decodeProvider(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("provider must be cloudflare");
+  return decoded.value;
+}
+
 export function toProjection(record: SessionRecord, now: Date): SessionProjection {
   return {
     version: 1,
     id: record.id,
     status: record.status,
+    provider: record.provider,
     repo: record.repo,
     defaultBranch: record.defaultBranch,
     branch: record.branch,

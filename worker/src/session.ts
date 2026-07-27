@@ -1,10 +1,20 @@
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
-import { Clock, Data, Effect, Layer, Option, Predicate, Result, Schedule } from "effect";
-import { Agent, agentLayer } from "./agent";
-import { pauseAgentCommand, resumeAgentCommand } from "./agent-runtime";
+import {
+  type Cause,
+  Clock,
+  Data,
+  Effect,
+  Exit,
+  Layer,
+  Match,
+  Option,
+  Predicate,
+  Result,
+  Schedule,
+} from "effect";
 import { BackupStore, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
-import { agentEnv, ContainerAuth, containerAuthLayer } from "./container-auth";
+import { ContainerAuth, containerAuthLayer } from "./container-auth";
 import {
   CredentialVault,
   credentialVaultLayer,
@@ -12,7 +22,6 @@ import {
 } from "./credential-vault";
 import {
   conflict,
-  isRecord,
   notFound,
   ScottyError,
   toProjection,
@@ -25,7 +34,6 @@ import {
   type SessionRecord,
   type SessionStatus,
   type SessionView,
-  type TerminalAttachmentLease,
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import {
@@ -43,9 +51,9 @@ import {
   SessionStore,
   sessionStoreLayer,
 } from "./session-store";
+import { Pican, picanLayer, type PicanCreateResult } from "./pican";
 import {
   SESSION_SCHEDULE_CALLBACKS,
-  sessionAllowsTerminalAttachment,
   sessionAllowsRuntimeAccess,
   VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
 } from "./session-lifecycle";
@@ -58,24 +66,15 @@ import {
   sessionProjectionLayer,
 } from "./session-projection";
 import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
-import {
-  durableObjectTerminalAttachmentStorage,
-  isTerminalAttachmentSessionId,
-  TerminalAttachments,
-  TERMINAL_ATTACHMENT_TTL_MS,
-  terminalAttachmentCleanupBestEffort,
-  terminalAttachmentsLayer,
-  type TerminalAttachmentReleaseCondition,
-} from "./terminal-attachments";
 import { sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
-const TERMINAL_ATTACHMENT_RETRY_SECONDS = 2;
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
 const HARD_CAP_GRACE_MS = 30_000;
 const ABANDONED_OPERATION_MS = 5 * 60_000;
 const MANAGED_STOP_RETRY_SECONDS = 2;
 const DESTROY_DEADLINE_MS = 30_000;
 const DESTROY_RETRY_SECONDS = 35;
+const PICAN_PROXY_TOKEN_PREFIX = "scotty-pican-";
 
 export const decodeSandboxFileStream = (
   source: ReadableStream<Uint8Array>,
@@ -102,15 +101,14 @@ export const decodeSandboxFileStream = (
 };
 
 type SandboxServices =
-  | Agent
   | BackupStore
   | ContainerAuth
   | CredentialVault
+  | Pican
   | RolloutDiscovery
   | SandboxRuntime
   | SessionProjection
   | SessionStore
-  | TerminalAttachments
   | Workspace;
 
 interface HardCapPayload {
@@ -120,19 +118,6 @@ interface HardCapPayload {
 interface ManagedStopPayload {
   nonce: string;
   armedAt: string;
-}
-
-interface TerminalAttachmentPayload {
-  sessionId: string;
-  condition?:
-    | { kind: "always" }
-    | { kind: "observedAt"; value: string }
-    | { kind: "staleBefore"; value: string };
-}
-
-interface TerminalAttachmentExpiryPayload {
-  sessionId: string;
-  observedAt: string;
 }
 
 interface VaporizeRetryPayload {
@@ -150,11 +135,99 @@ class ManagedStopArmedError extends Data.TaggedError("ManagedStopArmedError")<{
 
 class SessionShutdownPending extends Data.TaggedError("SessionShutdownPending")<{}> {}
 
-const hostEffect = <A>(operation: () => Promise<A>): Effect.Effect<A, unknown> =>
+class PicanCreateRetryable extends Data.TaggedError("PicanCreateRetryable")<{
+  readonly reason: "pending" | "transport";
+}> {}
+
+class PicanCreateAmbiguous extends Data.TaggedError("PicanCreateAmbiguous")<{
+  readonly reason: "pending" | "transport" | "unknown";
+}> {}
+
+class PicanCreateRejected extends Data.TaggedError("PicanCreateRejected")<{
+  readonly reason: "conflict" | "invalid";
+}> {}
+
+class PicanCreateUncertain extends Data.TaggedError("PicanCreateUncertain")<{
+  readonly cause: unknown;
+}> {}
+
+class PicanCreatePersistenceUncertain extends Data.TaggedError("PicanCreatePersistenceUncertain")<{
+  readonly cause: unknown;
+}> {}
+
+export interface CheckpointExitClassification {
+  readonly failed: boolean;
+  readonly hasDefect: boolean;
+  readonly hasTypedFailure: boolean;
+  readonly wasInterrupted: boolean;
+}
+
+export class CheckpointRuntimeUnavailable extends Data.TaggedError("CheckpointRuntimeUnavailable")<{
+  readonly checkpoint: CheckpointExitClassification;
+  readonly checkpointCause: Cause.Cause<unknown> | undefined;
+  readonly relaunchCause: unknown;
+}> {}
+
+type HostOperation = "destroy" | "schedule" | "stop";
+
+class HostOperationFailure extends Data.TaggedError("HostOperationFailure")<{
+  readonly operation: HostOperation;
+  readonly cause: unknown;
+}> {}
+
+type StablePicanCreateResult = Extract<PicanCreateResult, { readonly state: "stable" }>;
+type PicanCreateClassificationFailure =
+  | PicanCreateAmbiguous
+  | PicanCreateRejected
+  | PicanCreateRetryable;
+
+interface InFlightCreate {
+  readonly id: string;
+  readonly keyDigest: string | undefined;
+  readonly inputDigest: string | undefined;
+  readonly promise: Promise<SessionView>;
+}
+
+const hostEffect = <A>(
+  operation: HostOperation,
+  evaluate: () => Promise<A>,
+): Effect.Effect<A, HostOperationFailure> =>
   Effect.tryPromise({
-    try: operation,
-    catch: (cause) => cause,
+    try: evaluate,
+    catch: (cause) => new HostOperationFailure({ operation, cause }),
   });
+
+const classifyCheckpointExit = <A, E>(exit: Exit.Exit<A, E>): CheckpointExitClassification => ({
+  failed: Exit.isFailure(exit),
+  hasDefect: Exit.hasDies(exit),
+  hasTypedFailure: Exit.hasFails(exit),
+  wasInterrupted: Exit.hasInterrupts(exit),
+});
+
+export const withCheckpointRuntimeRestore = <A, E, R, RestoreE, RestoreR>(
+  checkpoint: Effect.Effect<A, E, R>,
+  options: {
+    readonly restore: Effect.Effect<void, RestoreE, RestoreR>;
+    readonly resumeRuntime: boolean;
+    readonly stopAttempted: () => boolean;
+  },
+): Effect.Effect<A, E | CheckpointRuntimeUnavailable, R | RestoreR> =>
+  checkpoint.pipe(
+    Effect.onExit((exit) =>
+      options.stopAttempted() && (options.resumeRuntime || Exit.isFailure(exit))
+        ? options.restore.pipe(
+            Effect.mapError(
+              (relaunchCause) =>
+                new CheckpointRuntimeUnavailable({
+                  checkpoint: classifyCheckpointExit(exit),
+                  checkpointCause: Exit.isFailure(exit) ? exit.cause : undefined,
+                  relaunchCause,
+                }),
+            ),
+          )
+        : Effect.void,
+    ),
+  );
 
 export class Sandbox extends BaseSandbox<Bindings> {
   override sleepAfter = "60m";
@@ -163,72 +236,63 @@ export class Sandbox extends BaseSandbox<Bindings> {
   allowedHosts = [...ALLOWED_HOSTS];
   private readonly layer: Layer.Layer<SandboxServices>;
   private readonly clock: Clock.Clock | undefined;
+  // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
+  // after eviction or a crash.
+  private createInFlight: InFlightCreate | undefined;
 
   constructor(ctx: DurableObjectState<{}>, env: Bindings, options: SandboxEffectOptions = {}) {
     super(ctx, env);
     this.clock = options.clock;
 
-    const runtime = sandboxRuntimeLayer({
-      exec: async (command, options) => {
-        await this.assertRuntimeAccess();
-        return this.exec(command, options);
+    // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning SessionStore adapter
+    const store = sessionStoreLayer(durableObjectSessionRecordStorage(ctx.storage));
+    const runtimeAccess = this.assertRuntimeAccessProgram().pipe(
+      Effect.asVoid,
+      Effect.provide(store),
+    );
+    const runtime = sandboxRuntimeLayer(
+      {
+        exec: (command, execOptions) => this.exec(command, execOptions),
+        mkdir: (path, mkdirOptions) => this.mkdir(path, mkdirOptions),
+        writeFile: (path, content) => this.writeFile(path, content),
+        setEnvVars: (envVars) => this.setEnvVars(envVars),
+        startProcess: (command, processOptions) => this.startProcess(command, processOptions),
+        getProcess: (processId) => this.getProcess(processId),
       },
-      createSession: async (options) => {
-        await this.assertRuntimeAccess();
-        return this.createSession(options);
-      },
-      deleteSession: async (sessionId) => {
-        await this.assertRuntimeAccess();
-        return this.deleteSession(sessionId);
-      },
-      mkdir: async (path, options) => {
-        await this.assertRuntimeAccess();
-        return this.mkdir(path, options);
-      },
-      writeFile: async (path, content) => {
-        await this.assertRuntimeAccess();
-        return this.writeFile(path, content);
-      },
-      setEnvVars: async (envVars) => {
-        await this.assertRuntimeAccess();
-        return this.setEnvVars(envVars);
-      },
-    });
+      runtimeAccess,
+    );
     const vault = credentialVaultLayer(
       // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning CredentialVault adapter
       durableObjectCredentialVaultStorage(ctx.storage),
       env.GH_TOKEN,
     );
-    const agentDependencies = Layer.merge(runtime, vault);
-    const backup = backupStoreLayer({
-      createBackup: async (options) => {
-        await this.assertRuntimeAccess();
-        return this.createBackup(options);
+    const runtimeAndVault = Layer.merge(runtime, vault);
+    const pican = picanLayer({
+      containerFetch: (request, port) => this.containerFetch(request, port),
+    }).pipe(Layer.provide(runtimeAndVault));
+    const backup = backupStoreLayer(
+      {
+        createBackup: (backupOptions) => this.createBackup(backupOptions),
+        restoreBackup: (directoryBackup) => this.restoreBackup(directoryBackup),
+        listObjects: (prefix, cursor) =>
+          env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
+            keys: page.objects.map((object) => object.key),
+            cursor: page.truncated ? page.cursor : undefined,
+          })),
+        deleteObjects: (keys) => env.BACKUP_BUCKET.delete([...keys]),
       },
-      restoreBackup: async (backup) => {
-        await this.assertRuntimeAccess();
-        return this.restoreBackup(backup);
-      },
-      listObjects: (prefix, cursor) =>
-        env.BACKUP_BUCKET.list({ prefix, cursor }).then((page) => ({
-          keys: page.objects.map((object) => object.key),
-          cursor: page.truncated ? page.cursor : undefined,
-        })),
-      deleteObjects: (keys) => env.BACKUP_BUCKET.delete([...keys]),
-    });
+      runtimeAccess,
+    );
 
     this.layer = Layer.mergeAll(
-      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning SessionStore adapter
-      sessionStoreLayer(durableObjectSessionRecordStorage(ctx.storage)),
-      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning TerminalAttachments adapter
-      terminalAttachmentsLayer(durableObjectTerminalAttachmentStorage(ctx.storage)),
+      store,
       sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS)),
       backup,
-      agentDependencies,
+      runtimeAndVault,
+      pican,
       rolloutDiscoveryLayer.pipe(Layer.provide(runtime)),
       workspaceLayer.pipe(Layer.provide(runtime)),
       containerAuthLayer.pipe(Layer.provide(runtime)),
-      agentLayer(env.SCOTTY_FAKE_AGENT === "1").pipe(Layer.provide(agentDependencies)),
     );
   }
 
@@ -242,29 +306,38 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return Option.getOrUndefined(yield* store.read);
   });
 
-  private readonly terminalAttachmentAllowedProgram = Effect.fnUntraced(function* (
-    record: SessionRecord | undefined,
-  ) {
-    if (sessionAllowsTerminalAttachment(record)) return record;
-    if (!record) return yield* notFound("unknown");
-    if (record.status !== "warm")
-      return yield* wrongState(
-        record.status,
-        "attach",
-        record.status === "sleeping" ? "Resume the session before attaching" : undefined,
-      );
-    if (!sessionAllowsRuntimeAccess(record))
-      return yield* conflict("Session destruction is already in progress");
-    if (record.operation)
-      return yield* conflict(`Session is already running ${record.operation.kind}`);
-    return yield* conflict("Session is not accepting terminal attachments");
-  });
-
   private readonly assertRuntimeAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.readRecordProgram();
     if (!sessionAllowsRuntimeAccess(record))
       return yield* conflict("Session destruction is already in progress");
     return record;
+  });
+
+  private readonly fetchPicanProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    request: Request,
+  ) {
+    const record = yield* this.requireRecordProgram();
+    const ambiguousCreate =
+      record.status === "failed" && record.failure?.code === "create_ambiguous";
+    if (record.status !== "warm" && !ambiguousCreate)
+      return yield* wrongState(
+        record.status,
+        "access",
+        record.status === "sleeping" ? "Resume the session before accessing Pican" : undefined,
+      );
+    if (!sessionAllowsRuntimeAccess(record))
+      return yield* conflict("Session destruction is already in progress");
+    if (record.operation)
+      return yield* conflict(`Session is already running ${record.operation.kind}`);
+    const pican = yield* Pican;
+    return yield* pican
+      .fetch(request)
+      .pipe(
+        Effect.mapError((error) =>
+          this.upstreamError("Pican upstream request failed", error, record.id),
+        ),
+      );
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
@@ -332,16 +405,220 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   });
 
+  private readonly createHostedPicanSessionProgram = Effect.fnUntraced(function* (
+    id: string,
+    prompt: string,
+  ) {
+    const pican = yield* Pican;
+    const attempt = Effect.gen(function* () {
+      const result: PicanCreateResult = yield* pican
+        .createHostedSession(id, prompt)
+        .pipe(
+          Effect.mapError((error) =>
+            Predicate.isTagged(error, "PicanTransportFailure")
+              ? new PicanCreateRetryable({ reason: "transport" })
+              : error,
+          ),
+        );
+      const classified: Effect.Effect<StablePicanCreateResult, PicanCreateClassificationFailure> =
+        Match.value(result).pipe(
+          Match.discriminatorsExhaustive("state")({
+            stable: (stable) => Effect.succeed(stable),
+            pending: () => Effect.fail(new PicanCreateRetryable({ reason: "pending" })),
+            unknown: () => Effect.fail(new PicanCreateAmbiguous({ reason: "unknown" })),
+            conflict: () => Effect.fail(new PicanCreateRejected({ reason: "conflict" })),
+            invalid: () => Effect.fail(new PicanCreateRejected({ reason: "invalid" })),
+          }),
+        );
+      return yield* classified;
+    });
+    return yield* attempt.pipe(
+      Effect.retry({
+        times: 2,
+        schedule: Schedule.spaced("250 millis"),
+        while: Predicate.isTagged("PicanCreateRetryable"),
+      }),
+      Effect.catchTag(
+        "PicanCreateRetryable",
+        (error) => new PicanCreateAmbiguous({ reason: error.reason }),
+      ),
+    );
+  });
+
+  private readonly completeHostedPicanCreateProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    id: string,
+    prompt: string,
+    nonce: string,
+  ) {
+    const pican = yield* Pican;
+    yield* pican.launch(id);
+    const hosted = yield* this.createHostedPicanSessionProgram(id, prompt);
+    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    return yield* this.updateForOperationProgram(nonce, (record) => ({
+      ...record,
+      status: "warm",
+      operation: null,
+      codexThreadId: hosted.nativeId,
+      failure: undefined,
+      updatedAt,
+    })).pipe(Effect.mapError((cause) => new PicanCreatePersistenceUncertain({ cause })));
+  });
+
+  private readonly prepareCreateForPicanProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    prompt: string,
+    nonce: string,
+    startedAt: string,
+  ) {
+    const vault = yield* CredentialVault;
+    const workspace = yield* Workspace;
+    const credential = yield* vault.seed({
+      codexAuthJson: this.env.CODEX_AUTH_JSON,
+      codexSentinel: `${CODEX_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
+      githubSentinel: `${GITHUB_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
+      picanProxyToken: `${PICAN_PROXY_TOKEN_PREFIX}${record.id}-${randomToken(12)}`,
+    });
+    const worktree = yield* workspace.prepare(record, credential.githubSentinel);
+    yield* this.updateForOperationProgram(nonce, (current) => ({
+      ...current,
+      operation: {
+        kind: "create",
+        nonce,
+        startedAt,
+        createPhase: "pican",
+      },
+      repoExistsAtCreate: worktree.repoExists,
+      defaultBranch: worktree.defaultBranch,
+    })).pipe(Effect.mapError((cause) => new PicanCreateUncertain({ cause })));
+    return yield* this.continueCreateFromPicanProgram(record, prompt, nonce);
+  });
+
+  private readonly continueCreateFromPicanProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    prompt: string,
+    nonce: string,
+  ) {
+    const vault = yield* CredentialVault;
+    const containerAuth = yield* ContainerAuth;
+    const picanPhase = Effect.gen({ self: this }, function* () {
+      const credential = yield* vault.require;
+      yield* containerAuth.seed(record.id, credential);
+      return yield* this.completeHostedPicanCreateProgram(record.id, prompt, nonce);
+    });
+    return yield* picanPhase.pipe(
+      Effect.mapError((failure) =>
+        Predicate.isTagged(failure, "PicanCreateAmbiguous") ||
+        Predicate.isTagged(failure, "PicanCreateRejected") ||
+        Predicate.isTagged(failure, "PicanCreatePersistenceUncertain")
+          ? failure
+          : new PicanCreateUncertain({ cause: failure }),
+      ),
+    );
+  });
+
+  private readonly failCreateSetupProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    id: string,
+    nonce: string,
+    failure: unknown,
+  ) {
+    const ambiguousError = (): ScottyError =>
+      new ScottyError("upstream", "Pican session creation is ambiguous", {
+        httpStatus: 502,
+        exitCode: 4,
+        hint: `The runtime was preserved. Retry session ${id} with the same idempotency key.`,
+      });
+    if (Predicate.isTagged(failure, "PicanCreatePersistenceUncertain"))
+      return yield* ambiguousError();
+    if (Predicate.isTagged(failure, "PicanCreateUncertain")) {
+      yield* Effect.result(
+        this.updateForOperationProgram(nonce, (record) => ({
+          ...record,
+          failure: {
+            code: "create_ambiguous",
+            message: "Pican session creation is ambiguous",
+            recoverable: true,
+          },
+        })),
+      );
+      return yield* ambiguousError();
+    }
+    if (Predicate.isTagged(failure, "PicanCreateAmbiguous")) {
+      yield* this.failOperationProgram(
+        nonce,
+        "create_ambiguous",
+        "Pican session creation is ambiguous",
+        true,
+      );
+      return yield* ambiguousError();
+    }
+    const failed = yield* this.failOperationProgram(
+      nonce,
+      "create_failed",
+      "Session setup failed",
+      false,
+    );
+    yield* this.destroyFailedRuntimeProgram(failed.id);
+    return yield* this.upstreamError("Session setup failed", failure, failed.id);
+  });
+
+  private readonly finishCreateReconciliationProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    id: string,
+    nonce: string,
+    reconciled: Result.Result<SessionRecord, unknown>,
+  ) {
+    if (Result.isFailure(reconciled))
+      return yield* this.failCreateSetupProgram(id, nonce, reconciled.failure);
+    const completedAt = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(reconciled.success, new Date(completedAt)), completedAt);
+  });
+
+  private readonly replayCreateProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    prompt: string,
+  ) {
+    if (record.status === "booting" && record.operation?.kind === "create") {
+      const operation = record.operation;
+      if (operation.createPhase === "setup") {
+        const reconciled = yield* Effect.result(
+          this.prepareCreateForPicanProgram(record, prompt, operation.nonce, operation.startedAt),
+        );
+        return yield* this.finishCreateReconciliationProgram(
+          record.id,
+          operation.nonce,
+          reconciled,
+        );
+      }
+      if (operation.createPhase === "pican") {
+        const reconciled = yield* Effect.result(
+          this.continueCreateFromPicanProgram(record, prompt, operation.nonce),
+        );
+        return yield* this.finishCreateReconciliationProgram(
+          record.id,
+          operation.nonce,
+          reconciled,
+        );
+      }
+      return yield* new ScottyError("internal", "Authoritative create phase is invalid", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    }
+    const replayNow = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(record, new Date(replayNow)), replayNow);
+  });
+
   private readonly createScottySessionProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     input: CreateSessionInput,
     id: string,
     idempotency?: CreateIdempotencyMetadata,
   ) {
-    const vault = yield* CredentialVault;
-    const workspace = yield* Workspace;
-    const containerAuth = yield* ContainerAuth;
-    const agent = yield* Agent;
     const store = yield* SessionStore;
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
@@ -350,7 +627,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       version: 1,
       id,
       status: "booting",
-      operation: { kind: "create", nonce, startedAt: nowIso },
+      operation: { kind: "create", nonce, startedAt: nowIso, createPhase: "setup" },
+      provider: input.provider,
       repo: input.repo,
       repoExistsAtCreate: true,
       defaultBranch: "dev",
@@ -363,17 +641,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
     };
 
     const inspected = yield* Effect.result(store.inspectInitial(initial, idempotency));
-    if (Result.isFailure(inspected)) {
-      if (Predicate.isTagged(inspected.failure, "InitialSessionStorageFailure"))
-        return yield* Effect.fail(inspected.failure.cause);
-      return yield* inspected.failure;
-    }
+    if (Result.isFailure(inspected)) return yield* inspected.failure;
     const decisionBeforeSchedule = inspected.success;
     if (decisionBeforeSchedule.kind === "replay")
-      return toSessionView(toProjection(decisionBeforeSchedule.record, new Date(now)), now);
+      return yield* this.replayCreateProgram(decisionBeforeSchedule.record, input.prompt);
 
     const hardCapSchedule = yield* Effect.result(
-      hostEffect(() =>
+      hostEffect("schedule", () =>
         this.schedule(new Date(initial.hardCapAt), "enforceHardCap", {
           hardCapAt: initial.hardCapAt,
         } satisfies HardCapPayload),
@@ -393,16 +667,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
       : initial;
 
     const committed = yield* Effect.result(store.createInitial(recordToCommit, idempotency));
-    if (Result.isFailure(committed)) {
-      if (Predicate.isTagged(committed.failure, "InitialSessionStorageFailure"))
-        return yield* Effect.fail(committed.failure.cause);
-      return yield* committed.failure;
-    }
+    if (Result.isFailure(committed)) return yield* committed.failure;
     const decision = committed.success;
-    if (decision.kind === "replay") {
-      const replayNow = yield* Clock.currentTimeMillis;
-      return toSessionView(toProjection(decision.record, new Date(replayNow)), replayNow);
-    }
+    if (decision.kind === "replay")
+      return yield* this.replayCreateProgram(decision.record, input.prompt);
     yield* this.projectProgram(recordToCommit);
 
     if (Result.isFailure(hardCapSchedule)) {
@@ -415,38 +683,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
 
     const setup = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        const credential = yield* vault.seed({
-          codexAuthJson: this.env.CODEX_AUTH_JSON,
-          codexSentinel: `${CODEX_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
-          githubSentinel: `${GITHUB_SENTINEL_PREFIX}${id}-${randomToken(12)}`,
-        });
-        const worktree = yield* workspace.prepare(initial, credential.githubSentinel);
-        yield* containerAuth.seed(initial.id, credential);
-        yield* agent.launch(initial.id, { kind: "start", prompt: input.prompt });
-        const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-        const ready = yield* this.updateForOperationProgram(nonce, (record) => ({
-          ...record,
-          status: "warm",
-          operation: null,
-          repoExistsAtCreate: worktree.repoExists,
-          defaultBranch: worktree.defaultBranch,
-          updatedAt,
-        }));
-        yield* hostEffect(() => this.schedule(5, "captureThreadId"));
-        return ready;
-      }),
+      this.prepareCreateForPicanProgram(initial, input.prompt, nonce, nowIso),
     );
-    if (Result.isFailure(setup)) {
-      const failed = yield* this.failOperationProgram(
-        nonce,
-        "create_failed",
-        "Session setup failed",
-        false,
-      );
-      yield* this.destroyFailedRuntimeProgram(failed.id);
-      return yield* this.upstreamError("Session setup failed", setup.failure, failed.id);
-    }
+    if (Result.isFailure(setup))
+      return yield* this.failCreateSetupProgram(initial.id, nonce, setup.failure);
     const completedAt = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(setup.success, new Date(completedAt)), completedAt);
   });
@@ -461,8 +701,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
-    const agent = yield* Agent;
-    const terminalAttachments = yield* TerminalAttachments;
+    const pican = yield* Pican;
     const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
     let record = yield* this.requireRecordProgram();
     const backup = record.backup?.current;
@@ -490,12 +729,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
           hardCapAt,
           updatedAt: hardCapUpdatedAt,
         }));
-        yield* hostEffect(() => this.scheduleHardCap(hardCapAt));
+        yield* hostEffect("schedule", () => this.scheduleHardCap(hardCapAt));
         yield* backups.restore(backup);
-        yield* terminalAttachments.clear;
         const credential = yield* vault.require;
         yield* containerAuth.seed(record.id, credential);
-        yield* agent.launch(record.id, { kind: "resume", threadId: record.codexThreadId });
+        yield* pican.launch(record.id);
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
           ...current,
@@ -505,7 +743,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           hardCapAt,
           updatedAt: readyAt,
         }));
-        yield* hostEffect(() => this.schedule(5, "captureThreadId"));
         return ready;
       }),
     );
@@ -528,7 +765,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     payload: VaporizeRetryPayload,
   ) {
     yield* Effect.sync(() => this.deleteSchedules("retryVaporizeSession"));
-    yield* hostEffect(() => this.schedule(DESTROY_RETRY_SECONDS, "retryVaporizeSession", payload));
+    yield* hostEffect("schedule", () =>
+      this.schedule(DESTROY_RETRY_SECONDS, "retryVaporizeSession", payload),
+    );
   });
 
   private readonly continueVaporizeSessionProgram = Effect.fnUntraced(function* (
@@ -538,7 +777,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
     const store = yield* SessionStore;
-    const terminalAttachments = yield* TerminalAttachments;
     const current = yield* this.readRecordProgram();
     if (!current) return yield* notFound(payload.id);
     if (current.status === "gone") return yield* this.repairGoneSessionProgram(current);
@@ -546,11 +784,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict("Session vaporize lease changed");
 
     yield* Effect.sync(() => this.cancelVaporizeConflictingSchedules());
-    yield* hostEffect(() => this.releaseAllTerminalAttachments());
-    yield* this.removeOrphanedTerminalExecutionSessionsProgram();
-    yield* terminalAttachments.clear;
     const destroyed = yield* Effect.raceFirst(
-      hostEffect(() => this.destroy()).pipe(Effect.as(true)),
+      hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
       Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
     );
     if (!destroyed) {
@@ -625,11 +860,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const vault = yield* CredentialVault;
     const store = yield* SessionStore;
-    const terminalAttachments = yield* TerminalAttachments;
-    yield* this.removeOrphanedTerminalExecutionSessionsProgram();
-    yield* terminalAttachments.clear;
     const destroyed = yield* Effect.raceFirst(
-      hostEffect(() => this.destroy()).pipe(Effect.as(true)),
+      hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
       Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
     );
     if (!destroyed)
@@ -643,18 +875,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* Effect.sync(() => this.cancelAllSessionSchedules());
     return { id: record.id, status: "gone" as const };
   });
-
-  private readonly removeOrphanedTerminalExecutionSessionsProgram = Effect.fnUntraced(
-    function* (this: Sandbox) {
-      const state = yield* hostEffect(() => this.getState());
-      if (state.status === "stopped" || state.status === "stopped_with_code") return;
-      const { sessions } = yield* hostEffect(() => this.client.utils.listSessions());
-      for (const sessionId of sessions.filter(isTerminalAttachmentSessionId)) {
-        yield* hostEffect(async () => (await this.getSession(sessionId)).killAllProcesses());
-        yield* hostEffect(() => this.deleteSession(sessionId));
-      }
-    },
-  );
 
   private readonly prepareDownArchiveProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const runtime = yield* SandboxRuntime;
@@ -715,12 +935,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* Effect.sync(() => this.deleteSchedules("retryHardCapDestroy"));
     const destroyed = yield* Effect.result(
       Effect.raceFirst(
-        hostEffect(() => this.destroy()).pipe(Effect.as(true)),
+        hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
         Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
       ),
     );
     if (Result.isSuccess(destroyed) && destroyed.success) return;
-    yield* hostEffect(() => this.schedule(DESTROY_RETRY_SECONDS, "retryHardCapDestroy", sessionId));
+    yield* hostEffect("schedule", () =>
+      this.schedule(DESTROY_RETRY_SECONDS, "retryHardCapDestroy", sessionId),
+    );
     yield* Effect.sync(() => this.ctx.abort(`Sandbox destroy did not complete for ${sessionId}`));
   });
 
@@ -761,25 +983,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
   });
 
-  private readonly captureThreadIdProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    payload: { attempt?: number } = {},
-  ) {
-    const discovery = yield* RolloutDiscovery;
-    const store = yield* SessionStore;
-    const record = yield* this.readRecordProgram();
-    if (!sessionAllowsRuntimeAccess(record) || record.status !== "warm" || record.operation) return;
-    const threadIdOption = yield* discovery.discoverThreadId(record.id);
-    if (Option.isNone(threadIdOption)) {
-      const attempt = payload.attempt ?? 0;
-      if (attempt < 11)
-        yield* hostEffect(() => this.schedule(5, "captureThreadId", { attempt: attempt + 1 }));
-      return;
-    }
-    const updated = yield* store.captureThreadId(threadIdOption.value);
-    if (Option.isSome(updated)) yield* this.projectProgram(updated.value);
-  });
-
   private readonly enforceHardCapProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     payload: HardCapPayload,
@@ -792,7 +995,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const operationAge =
         (yield* Clock.currentTimeMillis) - Date.parse(record.operation.startedAt);
       if (operationAge < HARD_CAP_GRACE_MS) {
-        yield* hostEffect(() => this.schedule(5, "enforceHardCap", payload));
+        yield* hostEffect("schedule", () => this.schedule(5, "enforceHardCap", payload));
         return;
       }
       yield* this.markHardCapFailureProgram(
@@ -847,6 +1050,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }),
     );
     if (Result.isSuccess(stopped)) return;
+    if (Predicate.isTagged(stopped.failure, "CheckpointRuntimeUnavailable")) {
+      yield* Effect.sync(() =>
+        console.error("Managed idle checkpoint failed", {
+          sessionId: record.id,
+          error: errorName(stopped.failure),
+        }),
+      );
+      return;
+    }
     const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
     if (!Predicate.isTagged(stopped.failure, "ManagedStopArmedError") && !pending)
       yield* this.releaseOperationIfHeldProgram(operation.nonce);
@@ -860,19 +1072,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly onStopProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const store = yield* SessionStore;
-    const terminalAttachments = yield* TerminalAttachments;
     const next = yield* store.recordRuntimeStop;
-    if (Option.isSome(next)) {
-      yield* terminalAttachments.clear;
-      yield* this.projectProgram(next.value);
-    }
+    if (Option.isSome(next)) yield* this.projectProgram(next.value);
   });
 
   private readonly finalizeManagedStopProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     payload: ManagedStopPayload,
   ) {
-    const runtime = yield* SandboxRuntime;
+    const pican = yield* Pican;
     const store = yield* SessionStore;
     const record = yield* this.readRecordProgram();
     if (!sessionAllowsRuntimeAccess(record)) return;
@@ -883,19 +1091,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
     ) {
       const now = yield* Clock.currentTimeMillis;
       if (now - Date.parse(payload.armedAt) < 30_000) {
-        yield* hostEffect(() =>
+        yield* hostEffect("schedule", () =>
           this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
         );
         return;
       }
-      yield* hostEffect(() =>
+      yield* hostEffect("schedule", () =>
         this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
       );
       const rollbackClaimed = yield* store.claimManagedStopRollback(payload.nonce);
       if (!rollbackClaimed) return;
-      const resumed = yield* Effect.result(
-        runtime.execChecked(resumeAgentCommand(), { timeout: 10_000 }),
-      );
+      const resumed = yield* Effect.result(pican.launch(record.id));
       if (Result.isSuccess(resumed)) {
         yield* this.releaseOperationIfHeldProgram(payload.nonce);
         return;
@@ -914,10 +1120,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return;
     }
     if (!(yield* this.isManagedStopPendingProgram(payload.nonce))) return;
-    yield* hostEffect(() =>
+    yield* hostEffect("schedule", () =>
       this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
     );
-    const stopped = yield* Effect.result(hostEffect(() => this.stop()));
+    const stopped = yield* Effect.result(hostEffect("stop", () => this.stop()));
     if (Result.isFailure(stopped)) {
       yield* Effect.sync(() =>
         console.error("Managed stop reconciliation failed", {
@@ -947,91 +1153,41 @@ export class Sandbox extends BaseSandbox<Bindings> {
     id: string,
     idempotency?: CreateIdempotencyMetadata,
   ): Promise<SessionView> {
-    return this.#run(this.createScottySessionProgram(input, id, idempotency));
+    const inFlight = this.createInFlight;
+    if (inFlight !== undefined) {
+      if (
+        idempotency !== undefined &&
+        inFlight.id === id &&
+        inFlight.keyDigest === idempotency.keyDigest &&
+        inFlight.inputDigest === idempotency.inputDigest
+      )
+        return inFlight.promise;
+      const afterCurrent = (): Promise<SessionView> =>
+        this.createScottySession(input, id, idempotency);
+      return inFlight.promise.then(afterCurrent, afterCurrent);
+    }
+
+    const promise = this.#run(this.createScottySessionProgram(input, id, idempotency));
+    const flight: InFlightCreate = {
+      id,
+      keyDigest: idempotency?.keyDigest,
+      inputDigest: idempotency?.inputDigest,
+      promise,
+    };
+    this.createInFlight = flight;
+    const clear = (): void => {
+      if (this.createInFlight === flight) this.createInFlight = undefined;
+    };
+    void promise.then(clear, clear);
+    return promise;
   }
 
   async getScottySession(): Promise<SessionView> {
     return this.#run(this.getScottySessionProgram());
   }
 
-  async prepareTerminalAttachment(clientId: string): Promise<string> {
-    const record = await this.requireRecord();
-    await this.#run(this.terminalAttachmentAllowedProgram(record));
-    const sessionId = `scotty-web-${clientId}`;
-    const credential = await this.requireCredential();
-    await this.reconcileExpiredTerminalAttachments();
-    const creating = await this.#run(
-      Effect.flatMap(TerminalAttachments, (attachments) => attachments.begin(sessionId)),
-    );
-    const prepared = await this.#run(
-      Effect.gen({ self: this }, function* () {
-        yield* hostEffect(() =>
-          this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
-            sessionId,
-            observedAt: creating.lastSeenAt,
-          } satisfies TerminalAttachmentExpiryPayload),
-        );
-        yield* this.terminalAttachmentAllowedProgram(yield* this.readRecordProgram());
-        yield* hostEffect(() =>
-          this.createSession({
-            id: sessionId,
-            cwd: sessionRoot(record.id),
-            env: agentEnv(record.id, credential),
-          }),
-        );
-        const attachments = yield* TerminalAttachments;
-        const activated = yield* attachments.activate(sessionId);
-        if (activated?.status !== "active")
-          return yield* conflict("Terminal attachment was released during creation");
-        return sessionId;
-      }).pipe(Effect.result),
-    );
-    if (Result.isSuccess(prepared)) return prepared.success;
-    await this.requestTerminalAttachmentRelease(sessionId);
-    return this.#run(Effect.fail(prepared.failure));
-  }
-
-  async releaseTerminalAttachment(clientId: string): Promise<void> {
-    await this.requestTerminalAttachmentRelease(`scotty-web-${clientId}`);
-  }
-
-  async touchTerminalAttachment(clientId: string): Promise<void> {
-    const record = await this.#run(this.readRecordProgram());
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    const sessionId = `scotty-web-${clientId}`;
-    const touched = await this.#run(
-      Effect.flatMap(TerminalAttachments, (attachments) => attachments.touch(sessionId)),
-    );
-    if (!touched) return;
-    await this.schedule(TERMINAL_ATTACHMENT_TTL_MS / 1000, "expireTerminalAttachment", {
-      sessionId,
-      observedAt: touched.lastSeenAt,
-    } satisfies TerminalAttachmentExpiryPayload);
-  }
-
-  async expireTerminalAttachment(payload: TerminalAttachmentExpiryPayload): Promise<void> {
-    const record = await this.#run(this.readRecordProgram());
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    await this.requestTerminalAttachmentRelease(payload.sessionId, {
-      kind: "observedAt",
-      value: payload.observedAt,
-    });
-  }
-
-  async finalizeTerminalAttachment(payload: TerminalAttachmentPayload): Promise<void> {
-    const record = await this.#run(this.readRecordProgram());
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    const attachment = await this.#run(
-      Effect.flatMap(TerminalAttachments, (attachments) =>
-        attachments.finalizeRelease(payload.sessionId, payload.condition),
-      ),
-    );
-    if (!attachment) return;
-    await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
-      sessionId: payload.sessionId,
-      condition: { kind: "always" },
-    } satisfies TerminalAttachmentPayload);
-    await this.finishTerminalAttachmentRelease(attachment);
+  async fetchPican(request: Request): Promise<Response> {
+    return this.#run(this.fetchPicanProgram(request));
   }
 
   async snapshotScottySession(): Promise<SessionView> {
@@ -1089,10 +1245,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
-  async captureThreadId(payload: { attempt?: number } = {}): Promise<void> {
-    return this.#run(this.captureThreadIdProgram(payload));
-  }
-
   async enforceHardCap(payload: HardCapPayload): Promise<void> {
     return this.#run(this.enforceHardCapProgram(payload));
   }
@@ -1110,26 +1262,23 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.finalizeManagedStopProgram(payload));
   }
 
-  private async requireCredential(): Promise<StoredCredential> {
-    return this.#run(Effect.flatMap(CredentialVault, (vault) => vault.require));
-  }
   private readonly checkpointProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     nonce: string,
-    resumeAgent: boolean,
-    releaseLease = resumeAgent,
+    resumeRuntime: boolean,
+    releaseLease = resumeRuntime,
   ) {
     const record = yield* this.requireRecordProgram();
     const runtime = yield* SandboxRuntime;
+    const pican = yield* Pican;
     const backups = yield* BackupStore;
     const root = sessionRoot(record.id);
-    let paused = false;
-    let checkpointSucceeded = false;
+    let picanStopAttempted = false;
 
-    const outcome = yield* Effect.result(
+    const checkpoint = withCheckpointRuntimeRestore(
       Effect.gen({ self: this }, function* () {
-        yield* runtime.execChecked(pauseAgentCommand(), { timeout: 10_000 });
-        paused = true;
+        picanStopAttempted = true;
+        yield* pican.stop();
         yield* runtime.execChecked("sync", { timeout: 30_000 });
         const now = yield* Clock.currentTimeMillis;
         const backup = yield* backups.create({
@@ -1146,12 +1295,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
         ).toISOString();
         const updated = yield* this.updateForOperationProgram(nonce, (current) => ({
           ...current,
-          operation: releaseLease
-            ? null
-            : current.operation && {
-                ...current.operation,
-                checkpointedBackupId: backup.id,
-              },
+          operation: current.operation && {
+            ...current.operation,
+            checkpointedBackupId: backup.id,
+          },
           backup: { current: backup, previous: current.backup?.current },
           ownedBackupIds: [...new Set([...current.ownedBackupIds, backup.id])],
           backupExpiresAt,
@@ -1159,18 +1306,37 @@ export class Sandbox extends BaseSandbox<Bindings> {
           updatedAt,
         }));
         if (priorPrevious) yield* backups.delete(priorPrevious.id).pipe(Effect.ignore);
-        checkpointSucceeded = true;
         return updated;
       }),
+      {
+        restore: pican.launch(record.id),
+        resumeRuntime,
+        stopAttempted: () => picanStopAttempted,
+      },
     );
+    const outcome = yield* Effect.result(checkpoint);
 
-    if (paused && (resumeAgent || !checkpointSucceeded)) {
-      yield* runtime.exec(resumeAgentCommand(), { timeout: 10_000 }).pipe(Effect.ignore);
+    if (
+      Result.isFailure(outcome) &&
+      Predicate.isTagged(outcome.failure, "CheckpointRuntimeUnavailable")
+    ) {
+      yield* Effect.gen({ self: this }, function* () {
+        const current = yield* this.requireRecordProgram();
+        if (current.operation?.nonce !== nonce) return;
+        yield* this.failOperationProgram(
+          nonce,
+          "checkpoint_runtime_unavailable",
+          "Pican failed to relaunch after checkpoint",
+          Boolean(current.backup?.current),
+        );
+      }).pipe(Effect.ignore);
+      return yield* outcome.failure;
     }
-    return yield* Result.match(outcome, {
+    const updated = yield* Result.match(outcome, {
       onFailure: Effect.fail,
       onSuccess: Effect.succeed,
     });
+    return releaseLease ? yield* this.releaseOperationProgram(nonce) : updated;
   });
 
   private readonly stopAfterCheckpointProgram = Effect.fnUntraced(function* (
@@ -1179,7 +1345,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const armedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     const payload = { nonce, armedAt } satisfies ManagedStopPayload;
-    yield* hostEffect(() =>
+    yield* hostEffect("schedule", () =>
       this.schedule(MANAGED_STOP_RETRY_SECONDS, "finalizeManagedStop", payload),
     );
 
@@ -1197,8 +1363,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           },
           updatedAt: stopRequestedAt,
         }));
-        yield* hostEffect(() => this.releaseAllTerminalAttachments());
-        yield* hostEffect(() => this.stop());
+        yield* hostEffect("stop", () => this.stop());
       }),
     );
     if (Result.isFailure(beforeStop)) {
@@ -1211,7 +1376,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const stopped = yield* this.requireRecordProgram();
       if (stopped.status === "sleeping") return stopped;
       if (stopped.status === "failed") return yield* wrongState(stopped.status, "stop");
-      const stoppedAgain = yield* hostEffect(() => this.stop()).pipe(
+      const stoppedAgain = yield* hostEffect("stop", () => this.stop()).pipe(
         Effect.mapError((cause) => new ManagedStopArmedError({ cause })),
       );
       void stoppedAgain;
@@ -1235,7 +1400,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
     const result = yield* Effect.result(this.checkpointProgram(operation.nonce, true));
     if (Result.isFailure(result)) {
-      yield* this.releaseOperationProgram(operation.nonce);
+      if (!Predicate.isTagged(result.failure, "CheckpointRuntimeUnavailable"))
+        yield* this.releaseOperationProgram(operation.nonce);
       return yield* this.upstreamError("Snapshot failed", result.failure);
     }
     const now = yield* Clock.currentTimeMillis;
@@ -1251,6 +1417,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }),
     );
     if (Result.isFailure(result)) {
+      if (Predicate.isTagged(result.failure, "CheckpointRuntimeUnavailable"))
+        return yield* this.upstreamError("Session stop failed", result.failure);
       const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
       if (!Predicate.isTagged(result.failure, "ManagedStopArmedError") && !pending)
         yield* this.releaseOperationIfHeldProgram(operation.nonce);
@@ -1259,118 +1427,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const now = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(result.success, new Date(now)), now);
   });
-
-  private async releaseAllTerminalAttachments(): Promise<void> {
-    const attachments = await this.#run(
-      Effect.flatMap(TerminalAttachments, (service) => service.read),
-    );
-    await Promise.all(
-      attachments.map((attachment) => this.requestTerminalAttachmentRelease(attachment.sessionId)),
-    );
-  }
-
-  private async removeTerminalAttachment(sessionId: string): Promise<void> {
-    await this.#run(
-      Effect.flatMap(TerminalAttachments, (attachments) => attachments.remove(sessionId)),
-    );
-  }
-
-  private async finishTerminalAttachmentRelease(
-    attachment: TerminalAttachmentLease,
-  ): Promise<void> {
-    const lifecycle = await this.#run(this.readRecordProgram());
-    if (!sessionAllowsRuntimeAccess(lifecycle)) return;
-    let settled = attachment;
-    if (!settled.createSettled) {
-      const record = await this.requireRecord();
-      if (record.status !== "warm" || !sessionAllowsRuntimeAccess(record)) {
-        await this.removeTerminalAttachment(settled.sessionId);
-        return;
-      }
-      const credential = await this.requireCredential();
-      const beforeCreate = await this.#run(this.readRecordProgram());
-      if (!sessionAllowsRuntimeAccess(beforeCreate)) return;
-      const created = await this.#run(
-        Effect.result(
-          hostEffect(() =>
-            this.createSession({
-              id: settled.sessionId,
-              cwd: sessionRoot(record.id),
-              env: agentEnv(record.id, credential),
-            }),
-          ),
-        ),
-      );
-      if (
-        Result.isFailure(created) &&
-        (!isRecord(created.failure) || created.failure.code !== "SESSION_ALREADY_EXISTS")
-      )
-        return;
-      const updated = await this.#run(
-        Effect.flatMap(TerminalAttachments, (attachments) =>
-          attachments.settleCreate(settled.sessionId),
-        ),
-      );
-      if (!updated) return;
-      settled = updated;
-    }
-    await this.#run(
-      terminalAttachmentCleanupBestEffort(
-        settled.sessionId,
-        Effect.gen({ self: this }, function* () {
-          const attachments = yield* TerminalAttachments;
-          const beforeList = yield* this.readRecordProgram();
-          if (!sessionAllowsRuntimeAccess(beforeList)) return;
-          const { sessions } = yield* hostEffect(() => this.client.utils.listSessions());
-          if (!sessions.includes(settled.sessionId)) {
-            yield* attachments.remove(settled.sessionId);
-            return;
-          }
-          const beforeDelete = yield* this.readRecordProgram();
-          if (!sessionAllowsRuntimeAccess(beforeDelete)) return;
-          yield* hostEffect(async () =>
-            (await this.getSession(settled.sessionId)).killAllProcesses(),
-          );
-          yield* hostEffect(() => this.deleteSession(settled.sessionId));
-          yield* attachments.remove(settled.sessionId);
-        }),
-      ),
-    );
-  }
-
-  private async requestTerminalAttachmentRelease(
-    sessionId: string,
-    condition: TerminalAttachmentReleaseCondition = { kind: "always" },
-  ): Promise<void> {
-    const record = await this.#run(this.readRecordProgram());
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    await this.schedule(TERMINAL_ATTACHMENT_RETRY_SECONDS, "finalizeTerminalAttachment", {
-      sessionId,
-      condition,
-    } satisfies TerminalAttachmentPayload);
-    const updated = await this.#run(
-      Effect.flatMap(TerminalAttachments, (attachments) =>
-        attachments.requestRelease(sessionId, condition),
-      ),
-    );
-    if (updated) await this.finishTerminalAttachmentRelease(updated);
-  }
-
-  private async reconcileExpiredTerminalAttachments(): Promise<void> {
-    const record = await this.#run(this.readRecordProgram());
-    if (!sessionAllowsRuntimeAccess(record)) return;
-    const now = await this.#run(Clock.currentTimeMillis);
-    const cutoff = now - TERMINAL_ATTACHMENT_TTL_MS;
-    const attachments = await this.#run(
-      Effect.flatMap(TerminalAttachments, (service) => service.expired),
-    );
-    for (const attachment of attachments) {
-      await this.requestTerminalAttachmentRelease(attachment.sessionId, {
-        kind: "staleBefore",
-        value: new Date(cutoff).toISOString(),
-      });
-    }
-  }
 
   private async scheduleHardCap(hardCapAt: string): Promise<void> {
     this.deleteSchedules("enforceHardCap");

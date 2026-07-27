@@ -2,9 +2,8 @@
 
 The default suite uses a real Scotty CLI process and an in-memory fake Worker/session service. It
 needs Node 22+, Bun, Git, and no Cloudflare or GitHub credentials. The fake models authoritative
-sessions, KV projections, backups, runtimes, a credential vault, hard-cap behavior, egress policy,
-V1 auth migration, owner recovery and transfer, per-browser cookies, and one-use WebSocket PTY
-tickets.
+sessions, KV projections, backups, runtimes, mounted Pican, a credential vault, hard-cap behavior,
+egress policy, V1 auth migration, owner recovery and transfer, and per-browser cookies.
 
 ## Run locally
 
@@ -24,9 +23,9 @@ SCOTTY_E2E_CLI="$PWD/dist/scotty" node e2e/scripts/run.mjs
 The default suite covers `up`, `ls`, `snapshot`, hard-cap sleep, `resume`, `down`, and idempotent
 `vaporize`; V1 multi-admin migration to unclaimed standard clients; destructive owner recovery;
 pairing; target-bound transfer; stale-cookie rejection; a second recovery reset; strict auth-page
-scripts; tracked-repo creation and retention; exit codes; backup restoration; one-use PTY auth,
-resize, and reconnect; root-query/root-cookie rejection; sentinel and credential scans; denied
-egress; tar traversal rejection; rollout mode 0600; and resource cleanup.
+scripts; tracked-repo creation and retention; exit codes; backup restoration; mounted Pican
+path/auth/streaming; root-query/root-cookie rejection; sentinel and credential scans; denied egress;
+tar traversal rejection; rollout mode 0600; and resource cleanup.
 
 ## Run against a disposable deployment
 
@@ -54,9 +53,12 @@ chmod 600 "$token_file"
 openssl rand -hex 32 >"$token_file"
 npx wrangler secret put SCOTTY_TOKEN --name "$worker" <"$token_file"
 gh auth token | tr -d '\n' | npx wrangler secret put GH_TOKEN --name "$worker"
-printf '%s' '{"OPENAI_API_KEY":"scotty-e2e-fake-agent"}' |
-  npx wrangler secret put CODEX_AUTH_JSON --name "$worker"
+test -s "$HOME/.codex/auth.json"
+npx wrangler secret put CODEX_AUTH_JSON --name "$worker" <"$HOME/.codex/auth.json"
 ```
+
+`CODEX_AUTH_JSON` and `GH_TOKEN` stay in the Worker/Durable Object credential boundary. The
+Container receives only its session-bound Codex and GitHub sentinels.
 
 Use a disposable clone of the repository. The canary pushes one random `scotty/<id>` branch so
 beam-down exercises a real remote fetch; the test deletes that branch in its cleanup hook.
@@ -75,11 +77,11 @@ node e2e/scripts/run.mjs --deployed
 ```
 
 The test performs the real sequence
-`up → root recovery on the disposable stage → attach → PTY reconnect → snapshot → scheduled
+`up → root recovery on the disposable stage → mounted Pican UI/API → snapshot → scheduled
 hard-cap sleep → resume → down → vaporize`.
 Its canary-only authenticated probe verifies DO reconstruction, credential persistence,
-sentinel-only container state, non-secret KV, default-deny egress, restored backups, closed terminal
-leases, and complete runtime/KV/R2/credential/schedule cleanup. After it passes, prove a second plan
+sentinel-only container state, non-secret KV, default-deny egress, restored backups,
+and complete runtime/KV/R2/credential/schedule cleanup. After it passes, prove a second plan
 is a no-op, then destroy the entire stage:
 
 ```sh
@@ -99,4 +101,8 @@ recovers, logs out, or revokes that client.
 
 ## Red-capable failure signals
 
-Each assertion is placed at a contract boundary. A CLI failure prints the exact command stderr; lifecycle tests inspect the first divergent fake resource; security tests identify the leaking surface; PTY tests identify auth, frame ordering, resize, or generation continuity; and teardown names the orphan class. Keep the fake deterministic—product behavior belongs in `cli/**` and `worker/**`, not in this harness.
+Each assertion is placed at a contract boundary. A CLI failure prints the exact command stderr;
+lifecycle tests inspect the first divergent fake resource; security tests identify the leaking
+surface; mounted-Pican tests identify auth, path, or streaming failures; and teardown names the
+orphan class. Keep the fake deterministic—product behavior belongs in `cli/**` and `worker/**`, not
+in this harness.

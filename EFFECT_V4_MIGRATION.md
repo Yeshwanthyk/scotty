@@ -562,7 +562,7 @@ Keep the official native outbound callback signatures and delegate to Effect pro
 
 Migrate `execChecked`, worktree preparation, Git helper, sentinel auth seed, agent start/resume, environment construction, rollout discovery, and command redaction behind typed services.
 
-The production worktree is `/workspace/<id>`. `worker/container/bootstrap.sh` still describes the earlier `/workspace/<id>/repo` layout and disables the credential helper; it is not called by the current production create/resume path and remains unchanged until its owning container-bootstrap slice either removes it or aligns it with the production contract.
+The production worktree is `/workspace/<id>`. Workspace preparation owns repository cloning and credential-helper configuration; there is no separate container bootstrap path.
 
 The official Sandbox SDK remains the implementation; Scotty writes Effect wrappers with `Effect.tryPromise`, typed errors, scopes, and interruption policy.
 

@@ -45,6 +45,7 @@ const credential: StoredCredential = {
   githubToken: "real-github-token",
   codexSentinel: CODEX,
   githubSentinel: GITHUB,
+  picanProxyToken: "scotty-pican-proxy-token",
   updatedAt: "2026-01-02T00:00:00.000Z",
 };
 const lease: CredentialRefreshLease = { credential, nonce: "lease-nonce" };

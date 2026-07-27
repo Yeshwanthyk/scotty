@@ -16,7 +16,7 @@ import {
   type CreateIdempotencyDecision,
   type CreateIdempotencyMetadata,
 } from "./create-idempotency";
-import { hardCapObservationIsCurrent, sessionAllowsRuntimeAccess } from "./session-lifecycle";
+import { hardCapObservationIsCurrent } from "./session-lifecycle";
 
 const RECORD_KEY = "scotty:session";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
@@ -89,9 +89,6 @@ interface SessionStoreShape {
   readonly markHardCapFailure: (
     observed: SessionRecord,
     message: string,
-  ) => Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
-  readonly captureThreadId: (
-    threadId: string,
   ) => Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly recordRuntimeStop: Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly claimManagedStopRollback: (nonce: string) => Effect.Effect<boolean, ScottyError>;
@@ -344,26 +341,6 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
         return Result.succeed(Option.some(failed));
       });
     }),
-    captureThreadId: Effect.fnUntraced(function* (threadId) {
-      const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* transact(async (transaction) => {
-        const stored = await transaction.get();
-        if (stored === undefined) return Result.succeed(Option.none());
-        const decoded = decode(stored);
-        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
-        const current = decoded.success;
-        if (
-          !sessionAllowsRuntimeAccess(current) ||
-          current.status !== "warm" ||
-          current.operation ||
-          current.codexThreadId === threadId
-        )
-          return Result.succeed(Option.none());
-        const updated = { ...current, codexThreadId: threadId, updatedAt };
-        await transaction.put(updated);
-        return Result.succeed(Option.some(updated));
-      });
-    }),
     recordRuntimeStop: Effect.gen(function* () {
       const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
       return yield* transact(async (transaction) => {
@@ -431,7 +408,7 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
         ...record,
         status: "failed",
         operation: null,
-        failure: { code, message, recoverable: recoverable && Boolean(record.backup?.current) },
+        failure: { code, message, recoverable },
         updatedAt: now,
       }));
     }),

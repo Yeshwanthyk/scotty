@@ -4,7 +4,6 @@
   --panel: #07131a;
   --panel-raised: #0b1a21;
   --control: #020b10;
-  --terminal: #02090e;
   --ink: #eee7d3;
   --muted: #b5ad95;
   --quiet: #847d6a;
@@ -129,19 +128,14 @@ body.scotty-ui {
   color: #ffd0cc;
 }
 
-.scotty-ui .button-primary,
-.terminal-page .action,
-.terminal-page .latest-output,
-.terminal-page .send-prompt {
+.scotty-ui .button-primary {
   border-color: transparent;
   background: var(--beam);
   box-shadow: none;
   color: #091117;
 }
 
-.scotty-ui .button-primary:hover,
-.terminal-page .action:hover,
-.terminal-page .latest-output:hover {
+.scotty-ui .button-primary:hover {
   background: #ece3c8;
   box-shadow: none;
 }
@@ -397,72 +391,6 @@ body.scotty-ui {
 
 .pair-page .button:hover {
   background: #ece3c8;
-}
-
-.terminal-page .app {
-  background: var(--space);
-}
-
-.terminal-page .masthead {
-  background: var(--shell);
-}
-
-.terminal-page .stage {
-  background: var(--terminal);
-  box-shadow: 0 0 0 1px var(--line);
-}
-
-.terminal-page .veil {
-  background: rgb(1 6 12 / 0.94);
-}
-
-.terminal-page .state-art {
-  display: block;
-  width: 88px;
-  height: 88px;
-  margin: 0 auto 18px;
-  border-radius: 14px;
-  box-shadow: 0 0 0 1px var(--line-soft);
-}
-
-.terminal-page .state-mark {
-  color: var(--accent-strong);
-}
-
-.terminal-page .state-mark::before {
-  background: var(--accent);
-  box-shadow: 0 0 0 4px rgb(207 99 63 / 0.12);
-}
-
-.terminal-page .app[data-state="connected"] .signal {
-  background: var(--accent);
-  box-shadow:
-    0 0 0 3px rgb(207 99 63 / 0.13),
-    0 0 12px rgb(207 99 63 / 0.3);
-}
-
-.terminal-page .transport-line::after {
-  background: var(--accent);
-}
-
-.terminal-page .terminal-keys,
-.terminal-page .prompt-composer {
-  background: var(--panel-raised);
-}
-
-.terminal-page .mobile-key {
-  background: var(--terminal);
-}
-
-.terminal-page .prompt-composer:focus-within {
-  background: #0d2028;
-  box-shadow:
-    0 0 0 1px rgb(207 99 63 / 0.62),
-    0 8px 24px rgb(0 0 0 / 0.52);
-}
-
-.terminal-page .prompt-input {
-  caret-color: var(--accent-strong);
 }
 
 @media (max-width: 620px) {

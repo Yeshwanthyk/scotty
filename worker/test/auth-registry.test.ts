@@ -160,7 +160,6 @@ describe("AuthRegistry ownership authority", () => {
       yield* TestClock.setTime(NOW);
       const clientSecret = secret("b");
       const pairingSecret = secret("c");
-      const ticketSecret = secret("d");
       const storage = new MemoryAuthAuthorityStorage({
         version: 1,
         clients: [
@@ -183,16 +182,6 @@ describe("AuthRegistry ownership authority", () => {
             expiresAt: "2026-07-22T12:04:00.000Z",
           },
         ],
-        terminalTickets: [
-          {
-            id: "444444444444",
-            credentialDigest: yield* Effect.promise(() => sha256Hex(ticketSecret)),
-            clientId: "222222222222",
-            sessionId: "abcdef123456",
-            createdAt: "2026-07-22T11:59:00.000Z",
-            expiresAt: "2026-07-22T12:04:00.000Z",
-          },
-        ],
       });
 
       const authenticated = yield* withRegistry(
@@ -208,7 +197,6 @@ describe("AuthRegistry ownership authority", () => {
       assert.deepStrictEqual(authority.ownership, { state: "unclaimed", epoch: 0 });
       assert.deepStrictEqual(authority.clients[0]?.scopes, [...STANDARD_AUTH_SCOPES]);
       assert.lengthOf(authority.pairings, 0);
-      assert.lengthOf(authority.terminalTickets, 0);
 
       const ownerOnly = yield* withRegistry(
         storage,
@@ -338,7 +326,7 @@ describe("AuthRegistry ownership authority", () => {
     }),
   );
 
-  it.effect("prevents owner self-revocation and revokes standard clients with their tickets", () =>
+  it.effect("prevents owner self-revocation and revokes standard clients", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const storage = new MemoryAuthAuthorityStorage();
@@ -350,17 +338,6 @@ describe("AuthRegistry ownership authority", () => {
         secret("b"),
         "Phone",
       );
-      yield* withRegistry(
-        storage,
-        Effect.flatMap(AuthRegistry, (registry) =>
-          registry.issueTerminalTicket(standard.credential, {
-            credential: { id: "333333333333", secret: secret("c") },
-            sessionId: "abcdef123456",
-            ttlMillis: FIVE_MINUTES,
-          }),
-        ),
-      );
-
       const listed = yield* withRegistry(
         storage,
         Effect.flatMap(AuthRegistry, (registry) => registry.listClients(owner.credential)),
@@ -399,7 +376,6 @@ describe("AuthRegistry ownership authority", () => {
         ),
       );
       assert.deepInclude(failure(standardAuth), { reason: "credential_invalid" });
-      assert.lengthOf((storage.snapshot() as AuthAuthority).terminalTickets, 0);
     }),
   );
 
@@ -432,11 +408,6 @@ describe("AuthRegistry ownership authority", () => {
           });
           yield* registry.issueRecoveryGrant({
             credential: { id: "555555555555", secret: secret("e") },
-            ttlMillis: FIVE_MINUTES,
-          });
-          yield* registry.issueTerminalTicket(target.credential, {
-            credential: { id: "666666666666", secret: secret("f") },
-            sessionId: "abcdef123456",
             ttlMillis: FIVE_MINUTES,
           });
         }),
@@ -486,7 +457,6 @@ describe("AuthRegistry ownership authority", () => {
         epoch: 2,
       });
       assert.lengthOf(authority.pairings, 0);
-      assert.lengthOf(authority.terminalTickets, 0);
       assert.notProperty(authority, "ownerTransfer");
       assert.notProperty(authority, "recoveryGrant");
 
@@ -595,11 +565,6 @@ describe("AuthRegistry ownership authority", () => {
             credential: { id: "333333333333", secret: secret("c") },
             ttlMillis: FIVE_MINUTES,
           });
-          yield* registry.issueTerminalTicket(standard.credential, {
-            credential: { id: "444444444444", secret: secret("d") },
-            sessionId: "abcdef123456",
-            ttlMillis: FIVE_MINUTES,
-          });
           return yield* registry.issueRecoveryGrant({
             credential: { id: "555555555555", secret: secret("e") },
             ttlMillis: FIVE_MINUTES,
@@ -625,7 +590,6 @@ describe("AuthRegistry ownership authority", () => {
         epoch: 2,
       });
       assert.lengthOf(authority.pairings, 0);
-      assert.lengthOf(authority.terminalTickets, 0);
       assert.notProperty(authority, "ownerTransfer");
       assert.notProperty(authority, "recoveryGrant");
       assert.isTrue(
@@ -727,7 +691,6 @@ describe("AuthRegistry ownership authority", () => {
         },
         clients,
         pairings: [],
-        terminalTickets: [],
       });
       const replacement = yield* withRegistry(
         storage,
@@ -772,7 +735,6 @@ describe("AuthRegistry ownership authority", () => {
         },
         clients: [],
         pairings: [],
-        terminalTickets: [],
       });
       const result = yield* withRegistry(
         storage,

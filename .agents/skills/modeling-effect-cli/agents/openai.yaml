@@ -1,0 +1,4 @@
+interface:
+  display_name: "Model Effect CLIs"
+  short_description: "Build typed Effect CLI command trees"
+  default_prompt: "Use $modeling-effect-cli to build or refactor a Scotty CLI command from the pinned Effect v4 sources."

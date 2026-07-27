@@ -33,7 +33,7 @@ describe("session form", () => {
         ],
         [
           { repo: "yeshwanthyk/SCOTTY", defaultBranch: "trunk" },
-          { repo: "anomalyco/rift", defaultBranch: "main" },
+          { repo: "owner/project", defaultBranch: "main" },
           { repo: "invalid" },
         ],
       ),
@@ -43,7 +43,7 @@ describe("session form", () => {
           defaultBranch: "main",
           lastUsedAt: "2026-07-23T15:00:00.000Z",
         },
-        { repo: "anomalyco/rift", defaultBranch: "main", lastUsedAt: undefined },
+        { repo: "owner/project", defaultBranch: "main", lastUsedAt: undefined },
       ],
     );
   });

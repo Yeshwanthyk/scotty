@@ -176,6 +176,22 @@ describe("production deployment ownership", () => {
       assert.equal(env.SCOTTY_HOST, PRODUCTION_SCOTTY_HOST);
       assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
       assert.equal(env.SCOTTY_TOKEN, undefined);
+      assert.equal(
+        env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
+        [
+          "confirmed",
+          PRODUCTION_CLOUDFLARE_ACCOUNT_ID,
+          "worker=scotty-worker",
+          "durableObjects=ScottySandbox,ScottyAuthRegistry",
+          `container=${PRODUCTION_CONTAINER_APPLICATION_NAME}`,
+          "kv=scotty-sessions",
+          "r2=scotty-backups",
+        ].join(":"),
+      );
+      assert.equal(
+        env.SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL,
+        `deploy:${PRODUCTION_CLOUDFLARE_ACCOUNT_ID}:scotty-worker`,
+      );
     }
     assert.deepEqual(environments.get("Audit deployed runtime inventory").options, {
       allowAfterSignal: true,
@@ -504,9 +520,9 @@ describe("production deployment ownership", () => {
   });
 
   it("pins the live Container application identity in infrastructure and audit code", () => {
-    const infrastructure = read("spikes/infra/monolith-greenfield.ts");
+    const infrastructure = read("infra/cloudflare-stack.ts");
     assert.match(infrastructure, new RegExp(PRODUCTION_CONTAINER_APPLICATION_NAME, "u"));
-    assert.match(infrastructure, /name: MONOLITH_GREENFIELD_TOPOLOGY\.container\.name/u);
+    assert.match(infrastructure, /name: CLOUDFLARE_STACK\.container\.name/u);
     assert.match(read("scripts/deploy-production.mjs"), /PRODUCTION_CONTAINER_APPLICATION_ID/u);
   });
 

@@ -13,7 +13,6 @@ import {
   sandboxRuntimeLayer,
   type SandboxExecOptions,
   type SandboxRuntimeCapabilities,
-  type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
 import { sessionRoot } from "../src/workspace";
 
@@ -25,6 +24,7 @@ const REAL_REFRESH = "honeypot-real-codex-refresh";
 const REAL_GITHUB = "honeypot-real-github-token";
 const REAL_ACCOUNT = "honeypot-real-account";
 const REAL_API_KEY = "honeypot-real-api-key";
+const PICAN_PROXY_TOKEN = "honeypot-pican-proxy-token";
 
 const credential: StoredCredential = {
   codex: {
@@ -41,6 +41,7 @@ const credential: StoredCredential = {
   githubToken: REAL_GITHUB,
   codexSentinel: CODEX_SENTINEL,
   githubSentinel: GITHUB_SENTINEL,
+  picanProxyToken: PICAN_PROXY_TOKEN,
   updatedAt: "2026-07-22T01:02:03.000Z",
 };
 
@@ -79,10 +80,6 @@ class CapturingSandboxCapabilities implements SandboxRuntimeCapabilities {
       timestamp: "2026-07-22T01:02:03.000Z",
     });
   };
-
-  createSession = (_options: SandboxSessionOptions): Promise<void> => Promise.resolve();
-
-  deleteSession = (_sessionId: string): Promise<void> => Promise.resolve();
 
   mkdir = (path: string, options?: { readonly recursive?: boolean }): Promise<unknown> => {
     this.calls.push({ operation: "mkdir", path, recursive: options?.recursive });
@@ -247,6 +244,7 @@ trust_level = "trusted"
         REAL_REFRESH,
         REAL_GITHUB,
         REAL_ACCOUNT,
+        PICAN_PROXY_TOKEN,
         "honeypot-real-id-token",
       ]) {
         assert.ok(!surfaces.includes(secret));

@@ -8,13 +8,14 @@ import { createTar } from "./tar.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_ROLLOUT = fs.readFileSync(path.join(HERE, "../fixtures/rollout.jsonl"), "utf8");
 const COOKIE = "__Host-scotty";
-const STANDARD_SCOPES = ["sessions:read", "sessions:write", "terminal:connect"];
+const STANDARD_SCOPES = ["sessions:read", "sessions:write"];
 const OWNER_SCOPES = [...STANDARD_SCOPES, "access:read", "access:write"];
 const FIVE_MINUTES = 5 * 60 * 1_000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1_000;
 const PUBLIC_SESSION_FIELDS = [
   "id",
   "status",
+  "provider",
   "repo",
   "defaultBranch",
   "branch",
@@ -74,36 +75,6 @@ function readBody(request) {
   });
 }
 
-function websocketAccept(key) {
-  return crypto
-    .createHash("sha1")
-    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-    .digest("base64");
-}
-
-function websocketFrame(opcode, payload) {
-  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
-  if (body.length >= 126) throw new Error("fake websocket frames must stay under 126 bytes");
-  return Buffer.concat([Buffer.from([0x80 | opcode, body.length]), body]);
-}
-
-function decodeWebsocketFrame(buffer) {
-  if (buffer.length < 2) return null;
-  const opcode = buffer[0] & 0x0f;
-  const masked = Boolean(buffer[1] & 0x80);
-  const length = buffer[1] & 0x7f;
-  if (length >= 126) return null;
-  const maskOffset = 2;
-  const bodyOffset = masked ? 6 : 2;
-  if (buffer.length < bodyOffset + length) return null;
-  const body = Buffer.from(buffer.subarray(bodyOffset, bodyOffset + length));
-  if (masked) {
-    const mask = buffer.subarray(maskOffset, maskOffset + 4);
-    for (let index = 0; index < body.length; index++) body[index] ^= mask[index % 4];
-  }
-  return { opcode, body, bytes: bodyOffset + length };
-}
-
 export class FakeWorkerService {
   constructor(options = {}) {
     this.token = options.token ?? "scotty-e2e-control-token";
@@ -123,7 +94,6 @@ export class FakeWorkerService {
       ownership: { state: "unclaimed", epoch: 0 },
       clients: [],
       pairings: [],
-      terminalTickets: [],
     };
     this.server = null;
     this.url = null;
@@ -131,7 +101,6 @@ export class FakeWorkerService {
 
   async start() {
     this.server = http.createServer((request, response) => this.#handle(request, response));
-    this.server.on("upgrade", (request, socket) => this.#upgrade(request, socket));
     await new Promise((resolve) => this.server.listen(0, "127.0.0.1", resolve));
     const address = this.server.address();
     this.url = `http://127.0.0.1:${address.port}`;
@@ -182,7 +151,6 @@ export class FakeWorkerService {
           expiresAt: new Date(now + FIVE_MINUTES).toISOString(),
         },
       ],
-      terminalTickets: [],
     };
     return credentials.map((credential) => credential.raw);
   }
@@ -304,7 +272,6 @@ export class FakeWorkerService {
         .filter((client) => !client.revokedAt && Date.parse(client.expiresAt) > now)
         .map((client) => ({ ...client, scopes: [...STANDARD_SCOPES] })),
       pairings: [],
-      terminalTickets: [],
     };
   }
 
@@ -323,9 +290,6 @@ export class FakeWorkerService {
         .map((client) => client.id),
     );
     this.auth.pairings = this.auth.pairings.filter((grant) => Date.parse(grant.expiresAt) > now);
-    this.auth.terminalTickets = this.auth.terminalTickets.filter(
-      (ticket) => Date.parse(ticket.expiresAt) > now && activeIds.has(ticket.clientId),
-    );
     if (
       this.auth.ownerTransfer &&
       (Date.parse(this.auth.ownerTransfer.expiresAt) <= now ||
@@ -504,7 +468,6 @@ export class FakeWorkerService {
         epoch: this.auth.ownership.epoch + 1,
       };
       this.auth.pairings = [];
-      this.auth.terminalTickets = [];
       delete this.auth.ownerTransfer;
       delete this.auth.recoveryGrant;
       return this.#authJson({ client: this.#view(client, client.id) }, 200, {
@@ -570,7 +533,6 @@ export class FakeWorkerService {
         epoch: this.auth.ownership.epoch + 1,
       };
       this.auth.pairings = [];
-      this.auth.terminalTickets = [];
       delete this.auth.ownerTransfer;
       delete this.auth.recoveryGrant;
       return this.#authJson({ client: this.#view(target.client, target.client.id) }, 200, {
@@ -603,9 +565,6 @@ export class FakeWorkerService {
       )
         return error(409, "conflict", "Transfer ownership or use recovery before signing out");
       principal.client.revokedAt = new Date().toISOString();
-      this.auth.terminalTickets = this.auth.terminalTickets.filter(
-        (ticket) => ticket.clientId !== principal.client.id,
-      );
       if (this.auth.ownerTransfer?.targetClientId === principal.client.id)
         delete this.auth.ownerTransfer;
       return this.#authJson({ ok: true }, 200, {
@@ -658,9 +617,6 @@ export class FakeWorkerService {
       );
       if (!target) return error(404, "not_found", "Registered client was not found");
       target.revokedAt = new Date().toISOString();
-      this.auth.terminalTickets = this.auth.terminalTickets.filter(
-        (ticket) => ticket.clientId !== target.id,
-      );
       if (this.auth.ownerTransfer?.targetClientId === target.id) delete this.auth.ownerTransfer;
       return this.#authJson({ ok: true });
     }
@@ -734,11 +690,24 @@ export class FakeWorkerService {
     const authResult = await this.#routeAuth(request, url);
     if (authResult) return authResult;
 
-    const pageMatch = /^\/s\/([^/]+)$/.exec(url.pathname);
-    if (pageMatch) {
+    const picanMatch = /^\/s\/([^/]+)(\/.*)?$/u.exec(url.pathname);
+    if (picanMatch) {
       if (!this.#clientFromRequest(request)) return this.#authError();
-      if (!this.sessions.has(pageMatch[1]))
-        return error(404, "not_found", "Session not found", "Run scotty ls --json");
+      const record = this.sessions.get(picanMatch[1]);
+      const runtime = this.runtimes.get(picanMatch[1]);
+      if (!record) return error(404, "not_found", "Session not found", "Run scotty ls --json");
+      if (record.status !== "warm" || !runtime) return this.#wrongState(record, "open", "warm");
+      const suffix = picanMatch[2] ?? "";
+      if (suffix === "/assets/app.js") {
+        return {
+          status: 200,
+          headers: { "content-type": "text/javascript", "cache-control": "no-store" },
+          body: Buffer.from(`globalThis.__PICAN_BASE_PATH__ = "/s/${record.id}";`),
+        };
+      }
+      if (suffix === "/api/hosted-runtime") return json(runtime.pican);
+      if (suffix !== "")
+        return error(404, "not_found", "Pican route not found", "Check the mounted Pican path");
       return {
         status: 200,
         headers: {
@@ -746,7 +715,9 @@ export class FakeWorkerService {
           "cache-control": "no-store",
           "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
         },
-        body: Buffer.from("<!doctype html><title>Scotty E2E terminal</title>"),
+        body: Buffer.from(
+          `<!doctype html><title>Pican</title><script src="/s/${record.id}/assets/app.js"></script>`,
+        ),
       };
     }
 
@@ -799,6 +770,10 @@ export class FakeWorkerService {
       const body = await readBody(request);
       if (typeof body.prompt !== "string" || !body.prompt.trim())
         return error(400, "bad_request", "prompt must be a non-empty string");
+      if (body.provider !== "cloudflare")
+        return error(400, "bad_request", "provider must be cloudflare");
+      if (typeof body.repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(body.repo))
+        return error(400, "bad_request", "repo must be in owner/name form");
       const id = `e2e-${String(++this.counter).padStart(4, "0")}`;
       const now = new Date();
       const hardCapSeconds = Number.isInteger(body.hardCapSeconds)
@@ -809,7 +784,8 @@ export class FakeWorkerService {
         id,
         status: "warm",
         operation: null,
-        repo: body.repo ?? "anomalyco/rift",
+        provider: body.provider,
+        repo: body.repo,
         defaultBranch: "dev",
         branch: `scotty/${id}`,
         createdAt: now.toISOString(),
@@ -824,14 +800,21 @@ export class FakeWorkerService {
       this.credentials.set(id, { codex: this.realCodexSecret, github: this.realGithubSecret });
       this.runtimes.set(id, {
         generation: 1,
-        ptyInputs: [],
-        ptyResizes: [],
         worktree: "fixture worktree\n",
         env: { CODEX_HOME: `/workspace/${id}/.codex`, GH_TOKEN: sentinel, SCOTTY_AUTH: sentinel },
         authJson: JSON.stringify({ tokens: { access_token: sentinel, refresh_token: sentinel } }),
-        gitConfig:
-          "credential.helper=!scotty-sentinel-helper\nremote.origin.url=https://github.com/anomalyco/rift.git",
-        processList: `sheppard spawn --title agent --cmd fake-agent --session ${id}`,
+        gitConfig: `credential.helper=!scotty-sentinel-helper\nremote.origin.url=https://github.com/${record.repo}.git`,
+        pican: {
+          processId: "scotty-pican",
+          mode: "hosted",
+          runtime: "codex",
+          basePath: `/s/${id}`,
+          workspaceRoot: `/workspace/${id}`,
+          stateRoot: `/workspace/${id}/.pican`,
+          createState: "created",
+          promptDispatchState: "accepted",
+        },
+        processList: `/usr/local/bin/pican -host 0.0.0.0 -p 31415 -runtime codex -codex-command /usr/local/bin/codex`,
       });
       this.#project(record);
       this.#trackRepo(record);
@@ -841,15 +824,14 @@ export class FakeWorkerService {
           id,
           url: `${this.url}/s/${id}`,
           branch: record.branch,
+          provider: record.provider,
           status: record.status,
         },
         200,
       );
     }
 
-    const match = /^\/api\/sessions\/([^/]+)(?:\/(snapshot|resume|down|pty|pty-ticket))?$/.exec(
-      url.pathname,
-    );
+    const match = /^\/api\/sessions\/([^/]+)(?:\/(snapshot|resume|down))?$/.exec(url.pathname);
     if (!match) return error(404, "not_found", "Route not found", "Check the command");
     const [, id, action] = match;
     const record = this.sessions.get(id);
@@ -876,8 +858,6 @@ export class FakeWorkerService {
       this.runtimes.set(id, {
         ...structuredClone(backup.runtime),
         generation: (backup.runtime.generation ?? 0) + 1,
-        ptyInputs: [],
-        ptyResizes: [],
       });
       this.#project(record);
       return json({
@@ -927,28 +907,6 @@ export class FakeWorkerService {
       this.logs.push({ event: "session.vaporized", sessionId: id, outcome: "ok" });
       return json({ id, status: "gone" });
     }
-    if (request.method === "POST" && action === "pty-ticket") {
-      if (principal.kind !== "client")
-        return this.#authError("Pair this browser before opening a terminal");
-      const credential = this.#credential("scotty_pty");
-      const expiresAt = new Date(Date.now() + FIVE_MINUTES).toISOString();
-      this.auth.terminalTickets.push({
-        id: credential.id,
-        credentialDigest: this.#digest(credential.secret),
-        clientId: principal.client.id,
-        sessionId: id,
-        createdAt: new Date().toISOString(),
-        expiresAt,
-      });
-      return json({ credential: credential.raw, expiresAt });
-    }
-    if (action === "pty")
-      return error(
-        426,
-        "upgrade_required",
-        "WebSocket upgrade required",
-        "Connect with a WebSocket client",
-      );
     return error(405, "method_not_allowed", "Method not allowed", "Check the command method");
   }
 
@@ -1006,97 +964,5 @@ export class FakeWorkerService {
       `Cannot ${operation} session ${record.id} while it is ${record.status}`,
       `Wait for status ${expected}, then retry`,
     );
-  }
-
-  #consumeTerminalTicket(raw, sessionId) {
-    this.#purgeAuth();
-    const parsed = this.#parseCredential(raw, "scotty_pty");
-    if (!parsed) return false;
-    const index = this.auth.terminalTickets.findIndex(
-      (ticket) =>
-        ticket.id === parsed.id &&
-        ticket.sessionId === sessionId &&
-        ticket.credentialDigest === this.#digest(parsed.secret) &&
-        Date.parse(ticket.expiresAt) > Date.now(),
-    );
-    if (index < 0) return false;
-    const ticket = this.auth.terminalTickets[index];
-    const client = this.auth.clients.find(
-      (candidate) =>
-        candidate.id === ticket.clientId &&
-        !candidate.revokedAt &&
-        Date.parse(candidate.expiresAt) > Date.now(),
-    );
-    if (!client) return false;
-    this.auth.terminalTickets.splice(index, 1);
-    return true;
-  }
-
-  #upgrade(request, socket) {
-    const url = new URL(request.url, this.url);
-    const match = /^\/api\/sessions\/([^/]+)\/pty$/.exec(url.pathname);
-    const record = match && this.sessions.get(match[1]);
-    const ticket = url.searchParams.get("ticket");
-    if (
-      !match ||
-      !ticket ||
-      !record ||
-      record.status !== "warm" ||
-      !this.#consumeTerminalTicket(ticket, match[1])
-    ) {
-      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-      return;
-    }
-    const key = request.headers["sec-websocket-key"];
-    socket.write(
-      [
-        "HTTP/1.1 101 Switching Protocols",
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        `Sec-WebSocket-Accept: ${websocketAccept(key)}`,
-        "",
-        "",
-      ].join("\r\n"),
-    );
-    const runtime = this.runtimes.get(record.id);
-    socket.write(websocketFrame(2, Buffer.from("fake-agent$ ")));
-    socket.write(
-      websocketFrame(
-        1,
-        JSON.stringify({ type: "ready", sessionId: record.id, generation: runtime.generation }),
-      ),
-    );
-    let pending = Buffer.alloc(0);
-    socket.on("data", (chunk) => {
-      pending = Buffer.concat([pending, chunk]);
-      for (;;) {
-        const frame = decodeWebsocketFrame(pending);
-        if (!frame) break;
-        pending = pending.subarray(frame.bytes);
-        if (frame.opcode === 8) {
-          socket.write(websocketFrame(8, frame.body));
-          return socket.end();
-        }
-        let message;
-        try {
-          message = JSON.parse(frame.body.toString());
-        } catch {
-          message = { type: "input", data: frame.body.toString() };
-        }
-        if (message.type === "resize")
-          runtime.ptyResizes.push({ cols: message.cols, rows: message.rows });
-        else runtime.ptyInputs.push(message.data ?? frame.body.toString());
-        socket.write(
-          websocketFrame(
-            1,
-            JSON.stringify({
-              type: "ack",
-              inputCount: runtime.ptyInputs.length,
-              resizeCount: runtime.ptyResizes.length,
-            }),
-          ),
-        );
-      }
-    });
   }
 }

@@ -11,6 +11,7 @@ const requiredSkills = new Set([
   "deriving-schema-types",
   "inferring-value-types",
   "maintaining-typescript-safety",
+  "modeling-effect-cli",
   "modeling-effect-errors",
   "routing-effect-http",
   "testing-effect-programs",

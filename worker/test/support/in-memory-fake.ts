@@ -6,11 +6,7 @@ import type {
   CredentialVaultTransaction,
 } from "../../src/credential-vault";
 import type { RepoProjectionStorage } from "../../src/repo-projection";
-import type {
-  SandboxExecOptions,
-  SandboxRuntimeCapabilities,
-  SandboxSessionOptions,
-} from "../../src/sandbox-runtime";
+import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox-runtime";
 import type { SessionProjectionStorage } from "../../src/session-projection";
 import type { SessionRecordStorage, SessionRecordTransaction } from "../../src/session-store";
 
@@ -251,8 +247,6 @@ export const sandboxRuntimeCapabilitiesFake = (
 ): SandboxRuntimeCapabilities => ({
   exec: (command: string, options?: SandboxExecOptions) =>
     memory.invoke("exec", [command, options], defaultExecResult),
-  createSession: (options: SandboxSessionOptions) => memory.invoke("createSession", [options]),
-  deleteSession: (sessionId: string) => memory.invoke("deleteSession", [sessionId]),
   mkdir: (path, options) =>
     memory.invoke("mkdir", [path, options], () => ({
       success: true,

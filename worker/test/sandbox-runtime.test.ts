@@ -8,8 +8,8 @@ import {
   sandboxRuntimeLayer,
   shellQuote,
   type SandboxExecOptions,
+  type SandboxProcessOptions,
   type SandboxRuntimeCapabilities,
-  type SandboxSessionOptions,
 } from "../src/sandbox-runtime";
 import { InMemoryFaultInjectableFake, sandboxRuntimeCapabilitiesFake } from "./support";
 
@@ -42,11 +42,11 @@ const execChecked = (command: string, options?: SandboxExecOptions) =>
 const exec = (command: string, options?: SandboxExecOptions) =>
   Effect.flatMap(SandboxRuntime, (runtime) => runtime.exec(command, options));
 
-const createSession = (options: SandboxSessionOptions) =>
-  Effect.flatMap(SandboxRuntime, (runtime) => runtime.createSession(options));
+const startProcess = (command: string, options?: SandboxProcessOptions) =>
+  Effect.flatMap(SandboxRuntime, (runtime) => runtime.startProcess(command, options));
 
-const deleteSession = (sessionId: string) =>
-  Effect.flatMap(SandboxRuntime, (runtime) => runtime.deleteSession(sessionId));
+const getProcess = (processId: string) =>
+  Effect.flatMap(SandboxRuntime, (runtime) => runtime.getProcess(processId));
 
 const failure = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRuntimeFailure => {
   assert.ok(Result.isFailure(result));
@@ -139,27 +139,31 @@ describe("SandboxRuntime", () => {
     }),
   );
 
-  it.effect("maps named-session transport rejections to operation-specific redacted failures", () =>
+  it.effect("denies access inside the Effect adapter before invoking the Sandbox capability", () =>
     Effect.gen(function* () {
-      const providerDetail = "provider leaked github_pat_provider-secret";
-      for (const [capabilityOperation, operation, message] of [
-        [
-          "createSession",
-          createSession({ id: "scotty-web" }),
-          "Sandbox session creation transport failed",
-        ],
-        ["deleteSession", deleteSession("scotty-web"), "Sandbox session deletion transport failed"],
-      ] as const) {
-        const memory = new InMemoryFaultInjectableFake();
-        const capabilities = sandboxRuntimeCapabilitiesFake(memory);
-        memory.injectFailure(capabilityOperation, { error: new Error(providerDetail) });
-        const result = yield* Effect.result(withRuntime(capabilities, operation));
-        const error = failure(result);
+      let calls = 0;
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(new InMemoryFaultInjectableFake()),
+        exec: (command) => {
+          calls += 1;
+          return Promise.resolve(successResult(command));
+        },
+      };
+      const result = yield* Effect.result(
+        Effect.provide(
+          exec("git status"),
+          sandboxRuntimeLayer(capabilities, Effect.fail("runtime access denied")),
+        ),
+      );
 
-        assert.deepStrictEqual(error, new SandboxRuntimeFailure({ reason: "transport", message }));
-        assert.ok(!JSON.stringify(error).includes("provider"));
-        assert.ok(!JSON.stringify(error).includes("github_pat_"));
-      }
+      assert.deepStrictEqual(
+        failure(result),
+        new SandboxRuntimeFailure({
+          reason: "transport",
+          message: "Sandbox command transport failed",
+        }),
+      );
+      assert.strictEqual(calls, 0);
     }),
   );
 
@@ -225,6 +229,101 @@ describe("SandboxRuntime", () => {
       resolvePending(successResult("long-running"));
       yield* Effect.promise(() => pending);
       assert.strictEqual(remoteSettled, true);
+    }),
+  );
+
+  it.effect(
+    "wraps process start, readiness, exit wait, kill, and lookup without leaking the SDK",
+    () =>
+      Effect.gen(function* () {
+        const memory = new InMemoryFaultInjectableFake();
+        const calls: Array<readonly [string, ...ReadonlyArray<unknown>]> = [];
+        const sdkProcess = {
+          id: "scotty-pican",
+          status: "running" as const,
+          kill: (signal?: string) => {
+            calls.push(["kill", signal]);
+            return Promise.resolve();
+          },
+          waitForExit: (timeout?: number) => {
+            calls.push(["waitForExit", timeout]);
+            return Promise.resolve({ exitCode: 0 });
+          },
+          waitForPort: (port: number, options?: { readonly mode?: "http" | "tcp" }) => {
+            calls.push(["waitForPort", port, options]);
+            return Promise.resolve();
+          },
+        };
+        const capabilities: SandboxRuntimeCapabilities = {
+          ...sandboxRuntimeCapabilitiesFake(memory),
+          startProcess: (command, options) => {
+            calls.push(["startProcess", command, options]);
+            return Promise.resolve(sdkProcess);
+          },
+          getProcess: (processId) => {
+            calls.push(["getProcess", processId]);
+            return Promise.resolve(sdkProcess);
+          },
+        };
+        const options = {
+          cwd: "/workspace/a0b1c2d3e4f5",
+          env: { PICAN_PROXY_TOKEN: "private" },
+          processId: "scotty-pican",
+          autoCleanup: true,
+        } as const;
+
+        const process = yield* withRuntime(
+          capabilities,
+          startProcess("/usr/local/bin/pican -host 127.0.0.1", options),
+        );
+        yield* process.waitForPort(31_415, { mode: "tcp" });
+        assert.strictEqual(yield* process.waitForExit(10_000), 0);
+        yield* process.kill("SIGTERM");
+        const observed = yield* withRuntime(capabilities, getProcess("scotty-pican"));
+
+        assert.ok(observed);
+        assert.strictEqual(observed.id, "scotty-pican");
+        assert.strictEqual(observed.status, "running");
+        assert.deepStrictEqual(calls, [
+          ["startProcess", "/usr/local/bin/pican -host 127.0.0.1", options],
+          ["waitForPort", 31_415, { mode: "tcp" }],
+          ["waitForExit", 10_000],
+          ["kill", "SIGTERM"],
+          ["getProcess", "scotty-pican"],
+        ]);
+      }),
+  );
+
+  it.effect("maps every process Promise rejection to an operation-specific redacted failure", () =>
+    Effect.gen(function* () {
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        startProcess: () => Promise.reject(new Error("provider leaked PICAN_PROXY_TOKEN=private")),
+        getProcess: () => Promise.reject(new Error("provider leaked PICAN_PROXY_TOKEN=private")),
+      };
+
+      const startResult = yield* Effect.result(
+        withRuntime(capabilities, startProcess("pican private")),
+      );
+      const lookupResult = yield* Effect.result(
+        withRuntime(capabilities, getProcess("scotty-pican")),
+      );
+
+      assert.deepStrictEqual(
+        failure(startResult),
+        new SandboxRuntimeFailure({
+          reason: "transport",
+          message: "Sandbox process start transport failed",
+        }),
+      );
+      assert.deepStrictEqual(
+        failure(lookupResult),
+        new SandboxRuntimeFailure({
+          reason: "transport",
+          message: "Sandbox process lookup transport failed",
+        }),
+      );
+      assert.ok(!JSON.stringify([startResult, lookupResult]).includes("private"));
     }),
   );
 });

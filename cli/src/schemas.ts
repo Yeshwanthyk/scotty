@@ -1,5 +1,8 @@
-import { Option, Schema } from "effect";
+import { Schema } from "effect";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
+
+export const PROVIDERS = ["cloudflare"] as const;
+export const ProviderSchema = Schema.Literals(PROVIDERS);
 
 export const ConfigSchema = Schema.Struct({
   host: Schema.optionalKey(Schema.String),
@@ -39,11 +42,8 @@ export const StandardToolsetSchema = Schema.Struct({
 });
 export type StandardToolset = typeof StandardToolsetSchema.Type;
 
-export const decodedStandardToolset =
-  Schema.decodeUnknownOption(StandardToolsetSchema)(rawStandardToolset);
-export const STANDARD_TOOLSET: StandardToolset = Option.isSome(decodedStandardToolset)
-  ? decodedStandardToolset.value
-  : (rawStandardToolset as StandardToolset);
+export const STANDARD_TOOLSET: StandardToolset =
+  Schema.decodeUnknownSync(StandardToolsetSchema)(rawStandardToolset);
 
 export const RawConfigSchema = Schema.Struct({
   host: Schema.optionalKey(Schema.Unknown),
@@ -53,6 +53,7 @@ export const UpResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   url: Schema.NonEmptyString,
   branch: Schema.NonEmptyString,
+  provider: ProviderSchema,
   status: Schema.NonEmptyString,
 });
 export const RecoveryGrantResponseSchema = Schema.Struct({
@@ -74,6 +75,7 @@ export const RawSessionFailureSchema = Schema.Struct({
 export const SessionResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   status: Schema.NonEmptyString,
+  provider: ProviderSchema,
   repo: Schema.NonEmptyString,
   defaultBranch: Schema.NonEmptyString,
   branch: Schema.NonEmptyString,

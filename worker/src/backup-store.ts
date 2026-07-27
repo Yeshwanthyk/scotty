@@ -31,19 +31,30 @@ export class BackupStore extends Context.Service<BackupStore, BackupStoreShape>(
   "scotty/BackupStore",
 ) {}
 
-export const backupStoreLayer = (capabilities: BackupCapabilities): Layer.Layer<BackupStore> =>
-  Layer.succeed(BackupStore)(makeBackupStore(capabilities));
+export const backupStoreLayer = <E = never>(
+  capabilities: BackupCapabilities,
+  beforeOperation?: Effect.Effect<void, E>,
+): Layer.Layer<BackupStore> =>
+  Layer.succeed(BackupStore)(makeBackupStore(capabilities, beforeOperation ?? Effect.void));
 
-const makeBackupStore = (capabilities: BackupCapabilities): BackupStoreShape => {
+const makeBackupStore = <E>(
+  capabilities: BackupCapabilities,
+  beforeOperation: Effect.Effect<void, E>,
+): BackupStoreShape => {
   const failure = (operation: BackupOperation): BackupStoreFailure =>
     new BackupStoreFailure({ operation });
+  const guard = (operation: BackupOperation): Effect.Effect<void, BackupStoreFailure> =>
+    beforeOperation.pipe(Effect.mapError(() => failure(operation)));
 
   return BackupStore.of({
     create: (options) =>
-      Effect.tryPromise({
-        try: () => capabilities.createBackup(options),
-        catch: () => failure("create"),
-      }).pipe(
+      guard("create").pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => capabilities.createBackup(options),
+            catch: () => failure("create"),
+          }),
+        ),
         // The SDK uses a fresh session and cleans partial R2 objects before a create rejection.
         Effect.retry({
           schedule: Schedule.spaced(CREATE_RETRY_DELAY),
@@ -51,10 +62,15 @@ const makeBackupStore = (capabilities: BackupCapabilities): BackupStoreShape => 
         }),
       ),
     restore: (backup) =>
-      Effect.tryPromise({
-        try: () => capabilities.restoreBackup(backup),
-        catch: () => failure("restore"),
-      }).pipe(Effect.asVoid),
+      guard("restore").pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => capabilities.restoreBackup(backup),
+            catch: () => failure("restore"),
+          }),
+        ),
+        Effect.asVoid,
+      ),
     delete: Effect.fnUntraced(function* (backupId) {
       const prefix = `backups/${backupId}/`;
       let cursor: string | undefined;

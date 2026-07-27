@@ -49,6 +49,7 @@ describe("SessionProjection", () => {
         version: 1,
         id: "a0b1c2d3e4f5",
         status: "warm",
+        provider: "cloudflare",
         repo: "owner/newer",
         defaultBranch: "main",
         branch: "scotty/a0b1c2d3e4f5",

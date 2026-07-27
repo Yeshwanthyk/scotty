@@ -44,21 +44,10 @@ export const workspaceLayer: Layer.Layer<Workspace, never, SandboxRuntime> = Lay
 
         const defaultBranch = repoView.stdout.trim();
         const basic = btoa(`x-access-token:${githubSentinel}`);
-        if (record.repo === "anomalyco/rift") {
-          yield* runtime.execChecked(
-            `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} -C '/cache/rift.git' fetch origin '+refs/heads/*:refs/heads/*'`,
-            { env, timeout: 180_000 },
-          );
-          yield* runtime.execChecked(
-            `git clone --no-hardlinks --branch ${shellQuote(defaultBranch)} --single-branch '/cache/rift.git' ${shellQuote(root)} && git -C ${shellQuote(root)} remote set-url origin ${shellQuote(url)}`,
-            { env, timeout: 180_000 },
-          );
-        } else {
-          yield* runtime.execChecked(
-            `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch ${shellQuote(defaultBranch)} --single-branch ${shellQuote(url)} ${shellQuote(root)}`,
-            { env, timeout: 180_000 },
-          );
-        }
+        yield* runtime.execChecked(
+          `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch ${shellQuote(defaultBranch)} --single-branch ${shellQuote(url)} ${shellQuote(root)}`,
+          { env, timeout: 180_000 },
+        );
         yield* runtime.execChecked(
           `git -C ${shellQuote(root)} checkout -b ${shellQuote(record.branch)}`,
         );
@@ -79,6 +68,6 @@ const configureGitCredentialHelper = Effect.fnUntraced(function* (
 ) {
   const helper = "!f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f";
   yield* runtime.execChecked(
-    `git -C ${shellQuote(root)} config credential.helper ${shellQuote(helper)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`,
+    `git -C ${shellQuote(root)} config credential.helper ${shellQuote(helper)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; grep -qxF '.pican/' "$exclude" 2>/dev/null || printf '.pican/\\n' >> "$exclude"; }`,
   );
 });

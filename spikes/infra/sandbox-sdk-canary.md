@@ -94,7 +94,7 @@ serialized for that stack and stage.
    state.
 
 The live suite is a starting harness for fixed command execution, file operations, a named session,
-native binary PTY WebSocket exchange/reconnect, binding-backed backup/restore, outbound
+binding-backed backup/restore, outbound
 allow/deny behavior, lifecycle callbacks, and Durable Object storage across host reconstruction.
 It exposes only one stage-derived DO and `/bin/cat`, never an interactive shell.
 
@@ -105,7 +105,6 @@ Disposable stage `m01c-canary-eeef23ea0ed2054a0f0f9797cdcb9273` passed the appro
 - the first plan contained only four creates;
 - fixed command, file round trip/deletion, named-session mutation, outbound allow/deny,
   credential-less R2 backup/restore, DO reconstruction with storage preservation, and two native
-  binary PTY connections passed;
 - after supplying a public `readAssets` input hash, the second plan contained four no-ops;
 - guarded destroy deleted four resources, and independent Cloudflare API reads confirmed the
   Worker, Container application, KV namespace, and R2 bucket were absent.

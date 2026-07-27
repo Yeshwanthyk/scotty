@@ -175,15 +175,6 @@
       "versionPolicy": "pinned",
       "expectedVersion": "0.144.6",
       "probe": ["codex", "--version"]
-    },
-    {
-      "name": "Sheppard",
-      "category": "scotty",
-      "commands": ["sheppard"],
-      "source": "Scotty image",
-      "versionPolicy": "pinned",
-      "expectedVersion": "0.1.2-scotty.2a7c6f8",
-      "probe": ["sheppard", "version"]
     }
   ]
 }

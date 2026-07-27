@@ -2,11 +2,9 @@ import { Clock, Context, Data, Effect, Layer, Result } from "effect";
 import {
   decodeCredentialPatchResult,
   decodeCredentialSeedResult,
-  decodeLegacyStoredCredentialResult,
   decodeNonEmptyStringResult,
   decodeStoredCredentialResult,
   type CredentialRefreshLease,
-  type LegacyStoredCredential,
   type StoredCredential,
 } from "./contracts";
 import { parseCodexCredential } from "./egress";
@@ -104,32 +102,6 @@ const makeCredentialVault = (
       ),
     );
 
-  const decodeLegacy = (
-    value: unknown,
-  ): Result.Result<LegacyStoredCredential, CredentialVaultFailure> =>
-    Result.mapError(decodeLegacyStoredCredentialResult(value), invalidAuthority).pipe(
-      Result.flatMap((credential) =>
-        validTimestamps(credential) ? Result.succeed(credential) : Result.fail(invalidAuthority()),
-      ),
-    );
-
-  const migrate = async (
-    transaction: CredentialVaultTransaction,
-    value: unknown,
-  ): Promise<Result.Result<StoredCredential, CredentialVaultFailure>> => {
-    const current = decodeCurrent(value);
-    if (Result.isSuccess(current)) return current;
-    const legacy = decodeLegacy(value);
-    if (Result.isFailure(legacy)) return Result.fail(legacy.failure);
-    const github = Result.mapError(decodeNonEmptyStringResult(githubSeed), () =>
-      failure("invalid_seed", "GH_TOKEN is missing or invalid"),
-    );
-    if (Result.isFailure(github)) return Result.fail(github.failure);
-    const next = { ...legacy.success, githubToken: github.success };
-    await transaction.put(next);
-    return Result.succeed(next);
-  };
-
   const transact = <A>(
     operation: (
       transaction: CredentialVaultTransaction,
@@ -146,7 +118,7 @@ const makeCredentialVault = (
     const stored = await transaction.get();
     if (stored === undefined)
       return Result.fail(failure("missing", "Session credential bundle is missing"));
-    return migrate(transaction, stored);
+    return decodeCurrent(stored);
   };
 
   return CredentialVault.of({
@@ -154,7 +126,7 @@ const makeCredentialVault = (
       const now = new Date(yield* Clock.currentTimeMillis).toISOString();
       return yield* transact(async (transaction) => {
         const stored = await transaction.get();
-        if (stored !== undefined) return migrate(transaction, stored);
+        if (stored !== undefined) return decodeCurrent(stored);
         const decodedSeed = Result.mapError(decodeCredentialSeedResult(seed), () =>
           failure("invalid_seed", "Credential seed is missing or invalid"),
         );
@@ -173,6 +145,7 @@ const makeCredentialVault = (
           githubToken: github.success,
           codexSentinel: decodedSeed.success.codexSentinel,
           githubSentinel: decodedSeed.success.githubSentinel,
+          picanProxyToken: decodedSeed.success.picanProxyToken,
           updatedAt: now,
         };
         await transaction.put(credential);
@@ -186,7 +159,7 @@ const makeCredentialVault = (
       return yield* transact(async (transaction) => {
         const stored = await transaction.get();
         if (stored === undefined) return Result.succeed(null);
-        const decoded = await migrate(transaction, stored);
+        const decoded = decodeCurrent(stored);
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const credential = decoded.success;
         return Result.succeed(
@@ -206,7 +179,7 @@ const makeCredentialVault = (
       return yield* transact(async (transaction) => {
         const stored = await transaction.get();
         if (stored === undefined) return Result.succeed(null);
-        const decoded = await migrate(transaction, stored);
+        const decoded = decodeCurrent(stored);
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const credential = decoded.success;
         if (
@@ -274,7 +247,7 @@ const makeCredentialVault = (
       yield* transact(async (transaction) => {
         const stored = await transaction.get();
         if (stored === undefined) return Result.succeed(undefined);
-        const decoded = await migrate(transaction, stored);
+        const decoded = decodeCurrent(stored);
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const credential = decoded.success;
         if (
@@ -310,7 +283,7 @@ const decodeNonce = (
     failure("lease_mismatch", "Credential refresh lease mismatch"),
   );
 
-const validTimestamps = (credential: LegacyStoredCredential | StoredCredential): boolean =>
+const validTimestamps = (credential: StoredCredential): boolean =>
   Number.isFinite(Date.parse(credential.updatedAt)) &&
   (credential.refreshLease === undefined ||
     Number.isFinite(Date.parse(credential.refreshLease.startedAt)));

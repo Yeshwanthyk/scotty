@@ -1,12 +1,15 @@
 # Scotty
 
-Scotty runs a persistent Codex TUI in a Cloudflare Sandbox, exposes it through an authenticated browser terminal, checkpoints it to R2, and can resume, beam down, or permanently destroy the session.
+Scotty runs a persistent Pican-hosted Codex workspace in a Cloudflare Sandbox, mounts Pican's UI
+at an authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, beam down, or
+permanently destroy the session.
 
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 
 ## Components
 
-- `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, Sheppard-backed lifecycle, and terminal UI.
+- `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, Pican process
+  lifecycle, and mounted Pican UI.
 - `cli/` — Effect-native Bun CLI and embedded `scotty skills` guide.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
@@ -27,8 +30,12 @@ bearer and break-glass recovery credential; it is never accepted from a cookie, 
 `?t=`. The singleton Auth Durable Object stores exactly one owner client ID plus an ownership
 epoch. Other browsers are standard clients. Pairing creates standard access, ownership transfer is
 bound to one existing target browser, and root recovery revokes every browser credential before
-creating a fresh owner. Raw client, pairing, transfer, recovery, and PTY secrets are never
-persisted.
+creating a fresh owner. Raw client, pairing, transfer, and recovery secrets are never persisted.
+
+The browser never receives Pican's internal proxy credential. The Worker authenticates the
+browser, strips browser credentials before forwarding, and injects one session-bound proxy header
+on the private hop to Pican. Pican keeps that proxy token out of child processes; Codex receives
+only session-bound Codex and GitHub sentinels.
 
 Residual limitation: any allowed package registry is still a potential source/prompt exfiltration channel. Keep `ALLOWED_HOSTS` in `worker/src/egress.ts` minimal for the target repository.
 
@@ -74,11 +81,12 @@ Alchemy to report a terminal no-op). An update without a rollout must remain unc
 bounded control-plane observation window. The command audits the result even if deployment fails.
 Do not bypass it with a raw production Wrangler or Alchemy command.
 
-`alchemy.run.ts` accepts only the exact `production` stage. Its guarded greenfield resource path
+`alchemy.run.ts` accepts only the exact `production` stage. Its guarded Cloudflare stack
 requires `CLOUDFLARE_ACCOUNT_ID` and matching `SCOTTY_CLOUDFLARE_ACCOUNT_ID`, telemetry disabled
 with `ALCHEMY_TELEMETRY_DISABLED=1`, and account-scoped confirmations:
-`SCOTTY_CHUNK2_ABSENCE_CONFIRMED=absent:<account-id>:scotty-worker` and
-`SCOTTY_CHUNK2_APPROVE_GREENFIELD=greenfield:<account-id>:scotty-worker`. The production wrapper
+`SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED=confirmed:<account-id>:worker=scotty-worker:durableObjects=ScottySandbox,ScottyAuthRegistry:container=<container-name>:kv=scotty-sessions:r2=scotty-backups`
+and
+`SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL=deploy:<account-id>:scotty-worker`. The production wrapper
 derives and supplies these values after auditing the pinned account; operators should not export
 them to bypass its checks.
 
@@ -87,21 +95,25 @@ assets, bindings, migrations, and retained-resource policy. Existing inherited W
 remain managed outside Alchemy state. Use a fine-grained GitHub PAT restricted to managed
 repositories.
 
+The current Cloudflare gate is forward-only: the full local suite must pass with the pinned Pican
+binary, then the guarded deployment and deployed canary must prove `beam up → mounted Pican UI →
+snapshot → resume → vaporize`. No Sheppard or browser-terminal fallback is part of that gate.
+
 ## CLI
 
 ```sh
 bun build cli/scotty.ts --compile --outfile dist/scotty
 ./dist/scotty init --host https://scotty-worker.<account>.workers.dev --token "$SCOTTY_TOKEN"
 ./dist/scotty owner recover
-./dist/scotty up "fix the failing tests" --repo anomalyco/rift --json
+./dist/scotty beam up "fix the failing tests" --repo owner/project --provider cloudflare --json
 ./dist/scotty skills
 ```
 
 Run `scotty owner recover` once on the intended primary browser after a fresh deployment or when
 moving to a replacement laptop. Keep `SCOTTY_TOKEN` in a password manager or another protected
-recovery location. `scotty attach <id>` opens a clean session URL and requires an already paired
-browser. See [`docs/owner-transfer-cutover.md`](docs/owner-transfer-cutover.md) before production
-migration.
+recovery location. `scotty attach <id>` opens the mounted Pican UI at the clean session URL and
+requires an already paired browser. See
+[`docs/owner-transfer-cutover.md`](docs/owner-transfer-cutover.md) before production migration.
 
 ## E2E
 

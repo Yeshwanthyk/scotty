@@ -93,7 +93,7 @@ describe("Sandbox beam-down orchestration", () => {
       manifest: {
         version: 1,
         id: SESSION_ID,
-        repo: "anomalyco/rift",
+        repo: "owner/project",
         branch: `scotty/${SESSION_ID}`,
         sha: "abc123def456",
         codexThreadId: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
@@ -172,17 +172,11 @@ describe("Sandbox vaporize orchestration", () => {
     assert.deepStrictEqual(result, { id: SESSION_ID, status: "gone" });
     assert.deepStrictEqual(harness.deletedSchedules, [
       "retryVaporizeSession",
-      "captureThreadId",
       "enforceHardCap",
-      "expireTerminalAttachment",
       "finalizeManagedStop",
-      "finalizeTerminalAttachment",
       "retryHardCapDestroy",
-      "captureThreadId",
       "enforceHardCap",
-      "expireTerminalAttachment",
       "finalizeManagedStop",
-      "finalizeTerminalAttachment",
       "retryHardCapDestroy",
       "retryVaporizeSession",
     ]);
@@ -227,7 +221,6 @@ describe("Sandbox vaporize orchestration", () => {
         [sessionHarnessKeys.record]: gone,
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
       },
-      initialExecutionSessions: ["scotty-web-123456abcdef"],
       initialProjections: {
         [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
       },
@@ -241,7 +234,6 @@ describe("Sandbox vaporize orchestration", () => {
     assert.deepStrictEqual(harness.readRecord(), gone);
     assert.strictEqual(harness.read(sessionHarnessKeys.createIdempotency), undefined);
     assert.ok(harness.events.includes("host:destroy"));
-    assert.ok(harness.events.includes("host:killAllProcesses:scotty-web-123456abcdef"));
     assert.ok(harness.events.includes(`projection:delete:session:${SESSION_ID}`));
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),
@@ -339,13 +331,6 @@ describe("Sandbox vaporize orchestration", () => {
   });
 
   for (const testCase of [
-    {
-      name: "terminal attachment cleanup",
-      options: {
-        failureStage: "terminalAttachmentCleanup",
-        initialEntries: authorityEntries(vaporizeRecord()),
-      },
-    },
     {
       name: "runtime destroy",
       options: {

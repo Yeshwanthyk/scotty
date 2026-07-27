@@ -5,7 +5,7 @@ import test from "node:test";
 import { FakeWorkerService } from "../support/fake-worker.mjs";
 import { cliEnvironment, makeGitFixture, makeTempDir, runCli } from "../support/harness.mjs";
 
-test("real CLI completes up/ls/snapshot/resume/down/vaporize against the fake Worker", async (t) => {
+test("real CLI completes beam up/ls/snapshot/resume/down/vaporize against the fake Worker", async (t) => {
   const service = await new FakeWorkerService().start();
   const root = makeTempDir();
   const home = path.join(root, "home");
@@ -18,10 +18,13 @@ test("real CLI completes up/ls/snapshot/resume/down/vaporize against the fake Wo
 
   const up = await runCli(
     [
+      "beam",
       "up",
       "exercise the complete E2E lifecycle",
       "--repo",
-      "anomalyco/rift",
+      "owner/project",
+      "--provider",
+      "cloudflare",
       "--cap",
       "1h",
       "--detach",
@@ -30,8 +33,9 @@ test("real CLI completes up/ls/snapshot/resume/down/vaporize against the fake Wo
     { env },
   );
   assert.equal(up.code, 0, up.stderr);
-  assert.deepEqual(Object.keys(up.json).sort(), ["branch", "id", "status", "url"]);
+  assert.deepEqual(Object.keys(up.json).sort(), ["branch", "id", "provider", "status", "url"]);
   assert.equal(up.json.status, "warm");
+  assert.equal(up.json.provider, "cloudflare");
   assert.match(up.json.branch, /^scotty\/e2e-/);
   assert.doesNotMatch(up.json.url, /[?&]t=/, "CLI JSON must not persist the one-time query token");
   const id = up.json.id;
@@ -41,6 +45,7 @@ test("real CLI completes up/ls/snapshot/resume/down/vaporize against the fake Wo
   assert.equal(ls.json.length, 1);
   assert.equal(ls.json[0].id, id);
   assert.equal(ls.json[0].status, "warm");
+  assert.equal(ls.json[0].provider, "cloudflare");
   assert.equal(typeof ls.json[0].ageSeconds, "number");
   assert.equal(typeof ls.json[0].capRemainingSeconds, "number");
 
@@ -156,7 +161,20 @@ test("beam-down rejects traversal entries without writing outside CODEX_HOME", a
     await service.stop();
     fs.rmSync(root, { recursive: true, force: true });
   });
-  const up = await runCli(["up", "unsafe tar regression", "--detach", "--json"], { env });
+  const up = await runCli(
+    [
+      "beam",
+      "up",
+      "unsafe tar regression",
+      "--repo",
+      "owner/project",
+      "--provider",
+      "cloudflare",
+      "--detach",
+      "--json",
+    ],
+    { env },
+  );
   assert.equal(up.code, 0, up.stderr);
   const record = service.sessions.get(up.json.id);
   service.setRolloutEntries(up.json.id, [

@@ -49,36 +49,6 @@ const decodeCoreResponse = Schema.decodeUnknownEffect(CoreResponse);
 const decodeStateResponse = Schema.decodeUnknownEffect(StateResponse);
 const decodeBackupResponse = Schema.decodeUnknownEffect(BackupResponse);
 
-const ptyRoundTrip = (): Promise<void> =>
-  new Promise((resolve, reject) => {
-    const websocketUrl = new URL(`${baseUrl}/m01c/pty`);
-    websocketUrl.protocol = "wss:";
-    const socket = new WebSocket(websocketUrl);
-    socket.binaryType = "arraybuffer";
-    let output = "";
-    const timeout = setTimeout(() => {
-      socket.close();
-      reject(new Error("M01C PTY did not exchange data"));
-    }, 30_000);
-    socket.addEventListener("message", (event) => {
-      if (typeof event.data === "string") {
-        if (event.data.includes('"type":"ready"')) {
-          socket.send(new TextEncoder().encode("m01c-pty\n"));
-        }
-        return;
-      }
-      output += new TextDecoder().decode(event.data);
-      if (!output.includes("m01c-pty")) return;
-      clearTimeout(timeout);
-      socket.close();
-      resolve();
-    });
-    socket.addEventListener("error", () => {
-      clearTimeout(timeout);
-      reject(new Error("M01C PTY WebSocket failed"));
-    });
-  });
-
 const post = <A, E, R>(action: string, decode: (value: unknown) => Effect.Effect<A, E, R>) =>
   Effect.tryPromise({
     try: () =>
@@ -140,16 +110,6 @@ describe.skipIf(!approved).sequential("M01C explicitly approved deployed asserti
       const result = yield* post("backup", decodeBackupResponse);
       assert.ok(result.backupId.length > 0);
       assert.equal(result.restored, true);
-    }),
-  );
-
-  it.effect("requires the native PTY WebSocket endpoint", () =>
-    Effect.tryPromise({
-      try: async () => {
-        await ptyRoundTrip();
-        await ptyRoundTrip();
-      },
-      catch: () => new Error("M01C PTY assertion failed"),
     }),
   );
 });

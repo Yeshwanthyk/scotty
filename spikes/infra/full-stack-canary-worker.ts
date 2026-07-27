@@ -14,7 +14,6 @@ import { ScottyAuthRegistry } from "../../worker/src/auth-object";
 const RECORD_KEY = "scotty:session";
 const CREDENTIAL_KEY = "scotty:credential";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
-const TERMINAL_ATTACHMENTS_KEY = "scotty:terminal-attachments";
 const SESSION_ID_PATTERN = /^[0-9a-f]{12}$/u;
 
 interface CanaryBindings extends Omit<Bindings, "SANDBOX"> {
@@ -41,28 +40,25 @@ interface CanaryOrphanProbe {
   readonly runtime: boolean;
   readonly schedules: ReadonlyArray<string>;
   readonly security: CanarySecurityProbe | null;
-  readonly terminalAttachments: number;
 }
 
 export class ScottySandbox extends Sandbox {
   private readonly e2eIncarnation = crypto.randomUUID();
 
   async e2eProbe(): Promise<CanaryOrphanProbe> {
-    const [record, credential, createIdempotency, terminalAttachments, alarm, schedules, state] =
-      await Promise.all([
-        this.ctx.storage.get<SessionRecord>(RECORD_KEY),
-        this.ctx.storage.get<StoredCredential>(CREDENTIAL_KEY),
-        this.ctx.storage.get(CREATE_IDEMPOTENCY_KEY),
-        this.ctx.storage.get<ReadonlyArray<unknown>>(TERMINAL_ATTACHMENTS_KEY),
-        this.ctx.storage.getAlarm(),
-        Promise.all(
-          SESSION_SCHEDULE_CALLBACKS.map(async (callback) => ({
-            callback,
-            count: (await this.listSchedules(callback)).length,
-          })),
-        ),
-        this.getState(),
-      ]);
+    const [record, credential, createIdempotency, alarm, schedules, state] = await Promise.all([
+      this.ctx.storage.get<SessionRecord>(RECORD_KEY),
+      this.ctx.storage.get<StoredCredential>(CREDENTIAL_KEY),
+      this.ctx.storage.get(CREATE_IDEMPOTENCY_KEY),
+      this.ctx.storage.getAlarm(),
+      Promise.all(
+        SESSION_SCHEDULE_CALLBACKS.map(async (callback) => ({
+          callback,
+          count: (await this.listSchedules(callback)).length,
+        })),
+      ),
+      this.getState(),
+    ]);
     const backupPage = await this.env.BACKUP_BUCKET.list();
     const projection = record
       ? await this.env.SESSIONS.get(`${SESSION_KV_PREFIX}${record.id}`)
@@ -89,7 +85,6 @@ export class ScottySandbox extends Sandbox {
       runtime,
       schedules: activeSchedules,
       security,
-      terminalAttachments: terminalAttachments?.length ?? 0,
     };
   }
 

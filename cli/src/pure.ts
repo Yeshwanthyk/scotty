@@ -1,14 +1,7 @@
 import { basename } from "node:path";
 import { Option, Result } from "effect";
 import scottySkill from "../skills/scotty/SKILL.md" with { type: "text" };
-import {
-  CliError,
-  EXIT,
-  type ExitCode,
-  type GlobalOptions,
-  type JsonObject,
-  type Writer,
-} from "./core";
+import { CliError, EXIT, type ExitCode, type JsonObject, type Writer } from "./core";
 import {
   decodeNonEmptyString,
   decodeRawSessionFailure,
@@ -17,22 +10,6 @@ import {
   decodeUpResponse,
   type SessionResponse,
 } from "./schemas";
-
-export const COMMAND_HELP: Record<string, string> = {
-  init: `Usage: scotty init [--host URL] [--token TOKEN] [--json]\n\nFlags:\n  --host URL      Worker origin\n  --token TOKEN    Scotty bearer token\n  --json           Emit JSON\n\nExamples:\n  scotty init\n  scotty init --host https://scotty.example.workers.dev --token "$SCOTTY_TOKEN"`,
-  up: `Usage: scotty up "PROMPT" [--repo OWNER/NAME] [--cap DURATION] [--detach] [--json]\n\nFlags:\n  --repo REPO      GitHub owner/name\n  --cap DURATION   Hard cap, for example 4h\n  --detach         Don't open a browser\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty up "fix the failing tests" --detach --json\n  scotty up "review auth" --repo anomalyco/rift --cap 2h`,
-  ls: `Usage: scotty ls [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty ls\n  scotty ls --json`,
-  attach: `Usage: scotty attach ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty attach abc123\n  scotty attach abc123 --json`,
-  owner: `Usage: scotty owner recover [--json]\n\nCommands:\n  recover          Open a five-minute owner-recovery flow\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured root token\n  --json           Emit JSON without the recovery URL\n\nExamples:\n  scotty owner recover\n  scotty owner recover --host https://scotty.example.workers.dev --token "$SCOTTY_TOKEN"`,
-  snapshot: `Usage: scotty snapshot ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty snapshot abc123\n  scotty snapshot abc123 --json`,
-  resume: `Usage: scotty resume ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty resume abc123\n  scotty resume abc123 --json`,
-  down: `Usage: scotty down ID [--json]\n\nFlags:\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty down abc123\n  scotty down abc123 --json`,
-  vaporize: `Usage: scotty vaporize ID [--yes] [--json]\n\nFlags:\n  --yes            Skip the TTY confirmation\n  --host URL       Override configured host\n  --token TOKEN    Override configured token\n  --json           Emit JSON\n\nExamples:\n  scotty vaporize abc123 --yes --json\n  scotty vaporize abc123`,
-  skills: `Usage: scotty skills\n\nPrint the embedded Scotty agent guide as Markdown.\n\nExample:\n  scotty skills`,
-  tools: `Usage: scotty tools <list | doctor> [--json]\n\nCommands:\n  list             Print the standard sandbox tool manifest\n  doctor           Probe every declared tool and report missing or mismatched installs\n\nFlags:\n  --json           Emit JSON\n\nExamples:\n  scotty tools list --json\n  scotty tools doctor --json`,
-};
-
-export const ROOT_HELP = `Usage: scotty <command> [flags]\n\nCommands:\n  init       Save Worker host and token\n  up         Start a cloud agent session\n  ls         List sessions\n  attach     Open a session terminal\n  owner      Recover ownership on a replacement device\n  snapshot   Checkpoint a warm session\n  resume     Restore a sleeping session\n  down       Fetch branch and install local rollout\n  vaporize   Permanently delete a session\n  skills     Print the embedded agent skill\n  tools      List or verify standard sandbox tools\n  help       Show command help\n\nFlags:\n  --host URL       Override SCOTTY_HOST and config\n  --token TOKEN    Override SCOTTY_TOKEN and config\n  --json           Emit JSON for operational commands\n  --help           Show command help\n  --version        Show version\n\nExamples:\n  scotty up "fix CI" --detach --json\n  scotty owner recover`;
 
 export const EMBEDDED_SKILL = scottySkill;
 
@@ -53,74 +30,8 @@ export function optionalString(value: unknown): string | undefined {
   return Option.getOrUndefined(decodeNonEmptyString(value));
 }
 
-export function parseGlobal(
-  args: string[],
-): Result.Result<{ args: string[]; options: GlobalOptions }, CliError> {
-  const rest: string[] = [];
-  const options: GlobalOptions = { json: false };
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
-    if (arg === "--json") options.json = true;
-    else if (arg === "--host" || arg === "--token") {
-      const value = args[++index];
-      if (!value || value.startsWith("--")) return Result.fail(usage(`Missing value for ${arg}`));
-      options[arg.slice(2) as "host" | "token"] = value;
-    } else if (arg.startsWith("--host=") || arg.startsWith("--token=")) {
-      const [key, ...parts] = arg.slice(2).split("=");
-      const value = parts.join("=");
-      if (!value) return Result.fail(usage(`Missing value for --${key}`));
-      options[key as "host" | "token"] = value;
-    } else rest.push(arg);
-  }
-  return Result.succeed({ args: rest, options });
-}
-
 export function usage(message: string, hint = "Run scotty --help for usage."): CliError {
   return new CliError("bad_usage", message, hint, EXIT.USAGE);
-}
-
-export function takeValue(
-  args: string[],
-  name: string,
-): Result.Result<string | undefined, CliError> {
-  const index = args.findIndex((arg) => arg === name || arg.startsWith(`${name}=`));
-  if (index < 0) return Result.succeed(undefined);
-  const arg = args[index];
-  if (arg.includes("=")) {
-    const value = arg.slice(arg.indexOf("=") + 1);
-    args.splice(index, 1);
-    if (!value) return Result.fail(usage(`Missing value for ${name}`));
-    return Result.succeed(value);
-  }
-  const value = args[index + 1];
-  if (!value || value.startsWith("--")) return Result.fail(usage(`Missing value for ${name}`));
-  args.splice(index, 2);
-  return Result.succeed(value);
-}
-
-export function takeBoolean(args: string[], name: string): boolean {
-  const index = args.indexOf(name);
-  if (index < 0) return false;
-  args.splice(index, 1);
-  return true;
-}
-
-export function assertNoFlags(args: string[]): Result.Result<void, CliError> {
-  const flag = args.find((arg) => arg.startsWith("-"));
-  if (flag) return Result.fail(usage(`Unknown flag: ${flag}`));
-  return Result.succeed(undefined);
-}
-
-export function requireId(args: string[], command: string): Result.Result<string, CliError> {
-  const flags = assertNoFlags(args);
-  if (Result.isFailure(flags)) return flags;
-  if (args.length !== 1 || !args[0])
-    return Result.fail(
-      usage(`Usage: scotty ${command} ID`, `Run scotty ${command} --help for examples.`),
-    );
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(args[0]))
-    return Result.fail(usage("Invalid session ID"));
-  return Result.succeed(args[0]);
 }
 
 export function normalizeHost(raw: string): Result.Result<string, CliError> {
@@ -147,13 +58,13 @@ export function sanitizeUrl(
   if (!URL.canParse(host) || !URL.canParse(raw, host))
     return Result.fail(
       invalidResponse(
-        id ? `Worker returned an invalid terminal URL for ${id}` : "Worker returned an invalid URL",
+        id ? `Worker returned an invalid session URL for ${id}` : "Worker returned an invalid URL",
       ),
     );
   const base = new URL(host);
   const url = new URL(raw, base);
   if (url.origin !== base.origin || url.username || url.password)
-    return Result.fail(invalidResponse("Worker returned an unsafe terminal URL"));
+    return Result.fail(invalidResponse("Worker returned an unsafe session URL"));
   url.search = "";
   url.hash = "";
   return Result.succeed(url.toString().replace(/\/$/, ""));
@@ -235,21 +146,31 @@ export function stableUp(
   value: unknown,
   host: string,
 ): Result.Result<
-  { output: { id: string; url: string; branch: string; status: string }; terminalUrl: string },
+  {
+    output: {
+      id: string;
+      url: string;
+      branch: string;
+      provider: "cloudflare";
+      status: string;
+    };
+    sessionUrl: string;
+  },
   CliError
 > {
   const decoded = decodeUpResponse(value);
   if (Option.isNone(decoded)) return Result.fail(invalidResponse());
   const sanitized = sanitizeUrl(decoded.value.url, host, decoded.value.id);
-  if (Result.isFailure(sanitized)) return sanitized;
+  if (Result.isFailure(sanitized)) return Result.fail(sanitized.failure);
   return Result.succeed({
     output: {
       id: decoded.value.id,
       url: sanitized.success,
       branch: decoded.value.branch,
+      provider: decoded.value.provider,
       status: decoded.value.status,
     },
-    terminalUrl: decoded.value.url,
+    sessionUrl: decoded.value.url,
   });
 }
 
@@ -257,6 +178,7 @@ export function stableSession(record: SessionResponse): JsonObject {
   const result: JsonObject = {
     id: record.id,
     status: record.status,
+    provider: record.provider,
     repo: record.repo,
     defaultBranch: record.defaultBranch,
     branch: record.branch,
@@ -284,6 +206,7 @@ export function stableSession(record: SessionResponse): JsonObject {
 export function humanSession(record: JsonObject): string {
   const id = String(record.id ?? "-");
   const status = String(record.status ?? "-");
+  const provider = String(record.provider ?? "-");
   const repo = String(record.repo ?? "-");
   const branch = String(record.branch ?? "-");
   const age =
@@ -292,7 +215,7 @@ export function humanSession(record: JsonObject): string {
     typeof record.capRemainingSeconds === "number"
       ? `${Math.max(0, Math.floor(record.capRemainingSeconds))}s`
       : "-";
-  return `${id.padEnd(14)} ${status.padEnd(10)} ${repo.padEnd(28)} ${branch.padEnd(24)} age ${age.padStart(7)} cap ${cap.padStart(7)}`;
+  return `${id.padEnd(14)} ${status.padEnd(10)} ${provider.padEnd(12)} ${repo.padEnd(28)} ${branch.padEnd(24)} age ${age.padStart(7)} cap ${cap.padStart(7)}`;
 }
 
 export function durationSeconds(value: string): Result.Result<number, CliError> {
@@ -320,7 +243,7 @@ export function probeOutput(stdout: string, stderr: string): string {
 }
 
 export function humanResult(command: string, value: JsonObject): string {
-  if (command === "up")
+  if (command === "beam up")
     return `${String(value.id)}  ${String(value.status)}  ${String(value.branch)}\n${String(value.url)}\n`;
   if (command === "attach") return `Opened ${String(value.url)}\n`;
   if (command === "snapshot") return `Snapshot ${String(value.id)}: ${String(value.status)}\n`;

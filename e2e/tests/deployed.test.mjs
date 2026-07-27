@@ -126,89 +126,6 @@ const recoverOwnerCookie = async () => {
   return cookie.split(";", 1)[0];
 };
 
-const waitForTerminalRoundTrip = async (
-  id,
-  browserCookie,
-  clientId,
-  command,
-  marker,
-  releaseAfterClose = false,
-) => {
-  const ticketResponse = await fetch(`${host}/api/sessions/${id}/pty-ticket`, {
-    method: "POST",
-    headers: { cookie: browserCookie, origin: new URL(host).origin },
-  });
-  if (ticketResponse.status !== 200)
-    assert.fail(`expected terminal ticket HTTP 200: ${await ticketResponse.text()}`);
-  const ticket = await ticketResponse.json();
-  assert.equal(typeof ticket.credential, "string");
-  const websocketUrl = new URL(`${host}/api/sessions/${id}/pty`);
-  websocketUrl.protocol = "wss:";
-  websocketUrl.searchParams.set("client", clientId);
-  websocketUrl.searchParams.set("cols", "100");
-  websocketUrl.searchParams.set("rows", "30");
-  websocketUrl.searchParams.set("ticket", ticket.credential);
-
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(websocketUrl);
-    socket.binaryType = "arraybuffer";
-    let output = "";
-    let commandSent = false;
-    let complete = false;
-    const timer = setTimeout(() => {
-      socket.close();
-      reject(
-        new Error(
-          complete
-            ? `terminal round-trip timed out detaching after ${marker}`
-            : `terminal round-trip timed out waiting for ${marker}`,
-        ),
-      );
-    }, 120_000);
-    socket.addEventListener("message", async (event) => {
-      if (typeof event.data === "string") {
-        const control = JSON.parse(event.data);
-        if (control.type === "ready" && !commandSent) {
-          commandSent = true;
-          socket.send(new TextEncoder().encode(command));
-        }
-        return;
-      }
-      const bytes =
-        event.data instanceof Blob
-          ? new Uint8Array(await event.data.arrayBuffer())
-          : new Uint8Array(event.data);
-      output += new TextDecoder().decode(bytes);
-      if (!output.includes(marker) || complete) return;
-      complete = true;
-      socket.close(1000, "E2E round-trip complete");
-    });
-    socket.addEventListener("close", async () => {
-      if (!complete) return;
-      clearTimeout(timer);
-      if (!releaseAfterClose) {
-        resolve(output);
-        return;
-      }
-      try {
-        const release = await fetch(`${host}/api/sessions/${id}/pty/${clientId}`, {
-          method: "DELETE",
-          headers: { cookie: browserCookie, origin: new URL(host).origin },
-        });
-        if (release.status !== 200)
-          throw new Error(`terminal release returned HTTP ${release.status}`);
-        resolve(output);
-      } catch (error) {
-        reject(error);
-      }
-    });
-    socket.addEventListener("error", () => {
-      clearTimeout(timer);
-      reject(new Error(`terminal WebSocket failed for ${id}`));
-    });
-  });
-};
-
 const noOrphans = (value) =>
   value.runtime === false &&
   value.kv === false &&
@@ -217,11 +134,10 @@ const noOrphans = (value) =>
   value.schedules?.length === 0 &&
   value.activeLease === false &&
   value.alarm === false &&
-  value.createIdempotency === false &&
-  value.terminalAttachments === 0;
+  value.createIdempotency === false;
 
 test(
-  "deployed canary: up/attach/reconnect/snapshot/hard-cap/resume/down/vaporize leaves no orphans",
+  "deployed canary: up/Pican/snapshot/hard-cap/resume/down/vaporize leaves no orphans",
   { skip: skipReason, timeout: 20 * 60_000 },
   async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-deployed-e2e-home-"));
@@ -267,10 +183,17 @@ test(
 
     const up = await runCli(
       [
+        "beam",
         "up",
-        `Scotty deployed E2E canary ${new Date().toISOString()}`,
+        [
+          `Scotty deployed E2E canary ${new Date().toISOString()}.`,
+          "Create scotty-e2e-agent.txt containing SCOTTY_E2E_PUSHED.",
+          "Commit it, push the current branch with git push -u origin HEAD, then finish.",
+        ].join(" "),
         "--repo",
         process.env.SCOTTY_E2E_REPO,
+        "--provider",
+        "cloudflare",
         "--cap",
         process.env.SCOTTY_E2E_CAP,
         "--detach",
@@ -293,37 +216,23 @@ test(
     });
     browserCookie = await recoverOwnerCookie();
 
-    const rolloutId = "11111111-2222-4333-8444-555555555555";
-    const firstOutput = await waitForTerminalRoundTrip(
-      id,
-      browserCookie,
-      "a1b2c3d4e5f6",
-      `mkdir -p "$CODEX_HOME/sessions/2026/07/24"; printf '%s\\n' '{"type":"session_meta","payload":{"id":"${rolloutId}"}}' > "$CODEX_HOME/sessions/2026/07/24/rollout-2026-07-24T00-00-00-${rolloutId}.jsonl"; printf runtime-survived > /tmp/scotty-e2e-runtime-marker; git push -u origin HEAD && printf '\\nSCOTTY_E2E_PUSHED\\n'\n`,
-      "SCOTTY_E2E_PUSHED",
-      true,
-    );
-    assert.match(firstOutput, /SCOTTY_E2E_PUSHED/u);
+    const picanShell = await fetch(`${host}/s/${id}`, {
+      headers: { cookie: browserCookie },
+    });
+    assert.equal(picanShell.status, 200);
+    assert.match(picanShell.headers.get("content-type") ?? "", /text\/html/iu);
+    assert.match(await picanShell.text(), new RegExp(`pican-base-path[^>]+/s/${id}`, "iu"));
+
+    const picanSessions = await fetch(`${host}/s/${id}/api/sessions?limit=100&view=all`, {
+      headers: { cookie: browserCookie },
+    });
+    assert.equal(picanSessions.status, 200);
+    assert.ok(Array.isArray((await picanSessions.json()).sessions));
 
     await poll(
-      () => probe(id),
-      (value) => value.terminalAttachments === 0,
-      { timeoutMs: 60_000, intervalMs: 1_000 },
-    );
-
-    const secondOutput = await waitForTerminalRoundTrip(
-      id,
-      browserCookie,
-      "a1b2c3d4e5f6",
-      `test "$(cat /tmp/scotty-e2e-runtime-marker)" = runtime-survived && printf '\\nSCOTTY_E2E_RECONNECTED\\n'\n`,
-      "SCOTTY_E2E_RECONNECTED",
-      true,
-    );
-    assert.match(secondOutput, /SCOTTY_E2E_RECONNECTED/u);
-
-    await poll(
-      () => probe(id),
-      (value) => value.terminalAttachments === 0,
-      { timeoutMs: 60_000, intervalMs: 1_000 },
+      () => git(["ls-remote", "origin", `refs/heads/${remoteBranch}`], cwd),
+      (value) => value.endsWith(`refs/heads/${remoteBranch}`),
+      { timeoutMs: 180_000, intervalMs: 2_000 },
     );
 
     const snapshot = await runCli(["snapshot", id, "--json"], {
