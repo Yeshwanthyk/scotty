@@ -28,6 +28,7 @@ const instance = (overrides = {}) => ({
 const session = (overrides = {}) => ({
   id: "5794c31210f3",
   status: "warm",
+  provider: "cloudflare",
   hardCapAt: "2026-07-23T06:51:13.713Z",
   ...overrides,
 });
@@ -141,5 +142,15 @@ describe("Container reconciliation", () => {
       report.issues.map((issue) => issue.code),
       ["active_session_without_instance"],
     );
+  });
+
+  it("accepts a warm runner projection without a Cloudflare instance", () => {
+    const report = reconcileContainerInventory({
+      applications: [application()],
+      instances: [],
+      sessions: [session({ provider: "runner" })],
+      now: NOW,
+    });
+    assert.equal(report.ok, true);
   });
 });

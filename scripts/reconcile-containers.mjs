@@ -112,6 +112,7 @@ export function reconcileContainerInventory({
     if (!isObject(session) || typeof session.id !== "string") continue;
     if (
       ACTIVE_SESSION_STATUSES.has(String(session.status)) &&
+      session.provider !== "runner" &&
       !activeInstanceByName.has(session.id)
     ) {
       issues.push({
@@ -147,6 +148,7 @@ export function reconcileContainerInventory({
     sessions: sessions.map((session) => ({
       id: session.id,
       status: session.status,
+      provider: session.provider,
       hardCapAt: session.hardCapAt,
     })),
     issues,
