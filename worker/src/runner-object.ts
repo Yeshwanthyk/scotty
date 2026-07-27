@@ -172,7 +172,7 @@ function runnerHttpRoute(value: string): Result.Result<RunnerHttpRoute, undefine
     sessionId === undefined ||
     runtimeId === undefined ||
     !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sessionId) ||
-    !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runtimeId)
+    !/^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$/.test(runtimeId)
   )
     return Result.fail(undefined);
   const pathname = runtimeSeparator === -1 ? "/" : remainder.slice(runtimeSeparator);

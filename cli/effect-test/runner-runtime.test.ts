@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Fiber, FileSystem, Match, Predicate, Result } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Match, Predicate, Result } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import {
   type IsolatedRuntimeCompute,
@@ -204,6 +204,7 @@ describe("RunnerRuntime", () => {
               yield* fs.remove(state(id, "absent").workspace, { recursive: true, force: true });
               return state(id, "absent");
             }),
+          mountedHttp: () => Effect.fail(new RunnerComputeFailure({ code: "runtime_not_running" })),
         };
         const runtime = yield* makeRunnerRuntimeWithCompute(
           { root, childEnvironment: {}, isolation: { type: "process" } },
@@ -232,6 +233,60 @@ describe("RunnerRuntime", () => {
         );
         assertPhase(yield* runtime.handle(stop("compute-stop", sessionId)), "stopped");
         assertPhase(yield* runtime.handle(remove("compute-remove", sessionId)), "absent");
+      }),
+    ),
+  );
+
+  it.effect("allows mounted HTTP calls for one session to overlap", () =>
+    withNode(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "scotty-runner-http-" });
+        const firstStarted = yield* Deferred.make<void>();
+        const releaseFirst = yield* Deferred.make<void>();
+        let calls = 0;
+        const state = {
+          phase: "running" as const,
+          resourceId: `runner-v1:${hash("session-a")}`,
+          workspace: `${root}/sessions/session-${hash("session-a")}`,
+        };
+        const compute: IsolatedRuntimeCompute = {
+          ensure: () => Effect.succeed(state),
+          inspect: () => Effect.succeed(state),
+          exec: () => Effect.succeed({ exitCode: 0, stdout: "", stderr: "" }),
+          stop: () => Effect.succeed({ ...state, phase: "stopped" }),
+          remove: () => Effect.succeed({ ...state, phase: "absent" }),
+          mountedHttp: () =>
+            Effect.gen(function* () {
+              calls += 1;
+              const call = calls;
+              if (call === 1) {
+                yield* Deferred.succeed(firstStarted, undefined);
+                yield* Deferred.await(releaseFirst);
+              }
+              return new Response(`call-${call}`);
+            }),
+        };
+        const runtime = yield* makeRunnerRuntimeWithCompute(
+          {
+            root,
+            childEnvironment: {},
+            hostFetch: () => Promise.resolve(new Response()),
+            isolation: { type: "docker", image: "unused", uid: 1000, gid: 1000, safePath: "/bin" },
+          },
+          compute,
+        );
+        const identity = { sessionId: "session-a", runtimeId: state.resourceId };
+        const first = yield* runtime
+          .mountedHttp(identity, new Request("http://runner/first"))
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(firstStarted);
+        const second = yield* runtime.mountedHttp(identity, new Request("http://runner/second"));
+        assert.strictEqual(yield* Effect.promise(() => second.text()), "call-2");
+        assert.isUndefined(first.pollUnsafe());
+        yield* Deferred.succeed(releaseFirst, undefined);
+        const firstResponse = yield* Fiber.join(first);
+        assert.strictEqual(yield* Effect.promise(() => firstResponse.text()), "call-1");
       }),
     ),
   );
@@ -517,6 +572,7 @@ describe("RunnerRuntime", () => {
               ? Effect.fail(new RunnerComputeFailure({ code: "process_failed" }))
               : Effect.succeed(state("stopped")),
           remove: () => Effect.succeed(state("stopped")),
+          mountedHttp: () => Effect.fail(new RunnerComputeFailure({ code: "runtime_not_running" })),
         };
         const interrupted = exec(
           "recovery-exec",

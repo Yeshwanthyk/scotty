@@ -19,6 +19,7 @@ export interface CliDependencies {
 }
 
 interface CliRuntimeShape {
+  readonly hostFetch: (request: Request) => Promise<Response>;
   readonly env: Record<string, string | undefined>;
   readonly home: string;
   readonly cwd: string;
@@ -193,6 +194,7 @@ export const cliLayer = (
   const dependencies = { ...defaultDependencies(), ...overrides };
   return Layer.mergeAll(
     Layer.succeed(CliRuntime)({
+      hostFetch: (request) => dependencies.fetch(request),
       env: dependencies.env,
       home: dependencies.home,
       cwd: dependencies.cwd,
