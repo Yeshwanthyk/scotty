@@ -992,6 +992,13 @@
 
             <div class="composer-grid">
               <div class="field">
+                <label for="session-provider">Execution</label>
+                <select class="control" id="session-provider" name="provider">
+                  <option value="cloudflare">Cloudflare</option>
+                  <option value="runner">Runner → slumbers</option>
+                </select>
+              </div>
+              <div class="field">
                 <label for="session-repo">Repository</label>
                 <input
                   class="control"
@@ -1391,8 +1398,10 @@
         const payload = {
           repo,
           prompt,
+          provider: document.querySelector("#session-provider").value,
           hardCapSeconds: Number(capSelect.value),
         };
+        if (payload.provider === "runner") payload.runner = "slumbers";
         lastSubmission = submissionIdentity(lastSubmission, payload, () => crypto.randomUUID());
         setComposerFeedback(
           "pending",

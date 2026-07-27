@@ -620,7 +620,7 @@ export class RunnerTransport {
         return;
       }
       const headersResult = Result.try({
-        try: () => new Headers(frame.headers),
+        try: () => new Headers(frame.headers.map(([name, value]) => [name, value])),
         catch: () => undefined,
       });
       if (Result.isFailure(headersResult)) {

@@ -8,8 +8,18 @@ export const SESSION_ROOT = "/workspace";
 export const SESSION_KV_PREFIX = "session:";
 export const REPO_KV_PREFIX = "repo:";
 
-export const ProviderSchema = Schema.Literal("cloudflare");
+export const ProviderSchema = Schema.Literals(["cloudflare", "runner"]);
 export type Provider = typeof ProviderSchema.Type;
+
+export const ExecutionBindingSchema = Schema.Union([
+  Schema.Struct({ provider: Schema.Literal("cloudflare") }),
+  Schema.Struct({
+    provider: Schema.Literal("runner"),
+    runner: Schema.String,
+    runtimeId: Schema.String,
+  }),
+]);
+export type ExecutionBinding = typeof ExecutionBindingSchema.Type;
 
 const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/));
 const ShortHexIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u));
@@ -83,7 +93,9 @@ export const SessionRecordSchema = Schema.Struct({
   id: Schema.String,
   status: SessionStatusSchema,
   operation: Schema.NullOr(SessionOperationSchema),
+  execution: ExecutionBindingSchema,
   provider: ProviderSchema,
+  runner: Schema.optionalKey(Schema.String),
   repo: Schema.String,
   repoExistsAtCreate: Schema.Boolean,
   defaultBranch: Schema.String,
@@ -116,18 +128,30 @@ export function hasCommittedManagedStop(record: SessionRecord): boolean {
   );
 }
 
-export const decodeSessionRecord = Schema.decodeUnknownEffect(SessionRecordSchema, {
+const decodeCurrentSessionRecord = Schema.decodeUnknownEffect(SessionRecordSchema, {
   onExcessProperty: "error",
 });
-export const decodeSessionRecordResult = Schema.decodeUnknownResult(SessionRecordSchema, {
+const decodeCurrentSessionRecordResult = Schema.decodeUnknownResult(SessionRecordSchema, {
   onExcessProperty: "error",
 });
+const withLegacyCloudflareBinding = (value: unknown): unknown =>
+  isRecord(value) &&
+  value.version === 1 &&
+  value.provider === "cloudflare" &&
+  !("execution" in value)
+    ? { ...value, execution: { provider: "cloudflare" } }
+    : value;
+export const decodeSessionRecord = (value: unknown) =>
+  decodeCurrentSessionRecord(withLegacyCloudflareBinding(value));
+export const decodeSessionRecordResult = (value: unknown) =>
+  decodeCurrentSessionRecordResult(withLegacyCloudflareBinding(value));
 
 export const SessionProjectionSchema = Schema.Struct({
   version: Schema.Literal(1),
   id: Schema.String,
   status: SessionStatusSchema,
   provider: ProviderSchema,
+  runner: Schema.optionalKey(Schema.String),
   repo: Schema.String,
   defaultBranch: Schema.String,
   branch: Schema.String,
@@ -170,6 +194,7 @@ export type RepoView = typeof RepoViewSchema.Type;
 export const CreateSessionInputSchema = Schema.Struct({
   prompt: Schema.String,
   provider: ProviderSchema,
+  runner: Schema.optionalKey(Schema.String),
   repo: Schema.String,
   hardCapSeconds: Schema.Number,
 });
@@ -443,6 +468,7 @@ export function conflict(message: string): ScottyError {
 const RawCreateSessionInputSchema = Schema.Struct({
   prompt: Schema.optionalKey(Schema.Unknown),
   provider: Schema.optionalKey(Schema.Unknown),
+  runner: Schema.optionalKey(Schema.Unknown),
   repo: Schema.optionalKey(Schema.Unknown),
   hardCapSeconds: Schema.optionalKey(Schema.Unknown),
 });
@@ -454,6 +480,16 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
   if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
   const prompt = readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
   const provider = parseProvider(decoded.value.provider);
+  const runner =
+    decoded.value.runner === undefined
+      ? undefined
+      : readNonEmptyString(decoded.value.runner, "runner", 128);
+  if (provider === "cloudflare" && runner !== undefined)
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+    throw badRequest("runner is not valid with cloudflare");
+  if (provider === "runner" && runner === undefined)
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+    throw badRequest("runner is required for runner");
   const repo = parseRepo(decoded.value.repo);
   const hardCapSeconds =
     decoded.value.hardCapSeconds === undefined
@@ -464,7 +500,7 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
           MIN_HARD_CAP_SECONDS,
           MAX_HARD_CAP_SECONDS,
         );
-  return { prompt, provider, repo, hardCapSeconds };
+  return { prompt, provider, ...(runner === undefined ? {} : { runner }), repo, hardCapSeconds };
 }
 
 export function parseSessionId(value: string): string {
@@ -500,7 +536,7 @@ export function parseRepo(value: unknown): string {
 export function parseProvider(value: unknown): Provider {
   const decoded = decodeProvider(value);
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
-  if (Option.isNone(decoded)) throw badRequest("provider must be cloudflare");
+  if (Option.isNone(decoded)) throw badRequest("provider must be cloudflare or runner");
   return decoded.value;
 }
 
@@ -510,6 +546,7 @@ export function toProjection(record: SessionRecord, now: Date): SessionProjectio
     id: record.id,
     status: record.status,
     provider: record.provider,
+    runner: record.runner,
     repo: record.repo,
     defaultBranch: record.defaultBranch,
     branch: record.branch,

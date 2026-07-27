@@ -228,6 +228,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       prompt: Argument.string("prompt").pipe(Argument.withDescription("Initial agent prompt")),
       repo: Flag.string("repo").pipe(Flag.withDescription("GitHub repository as OWNER/NAME")),
       provider: Flag.choice("provider", PROVIDERS).pipe(Flag.withDescription("Execution provider")),
+      runner: Flag.string("runner").pipe(
+        Flag.optional,
+        Flag.withDescription("Named runner (runner provider only)"),
+      ),
       cap: Flag.string("cap").pipe(
         Flag.optional,
         Flag.withDescription("Hard cap such as 30m, 4h, or 1d"),
@@ -235,15 +239,22 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       detach: Flag.boolean("detach").pipe(Flag.withDescription("Do not open the session browser")),
       trailing: trailingArguments,
     },
-    ({ cap, detach, prompt, provider, repo, trailing }) =>
+    ({ cap, detach, prompt, provider, repo, runner, trailing }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         const browser = yield* BrowserLauncher;
         if (!prompt.trim()) return yield* usage("Prompt must not be empty");
         if (!REPOSITORY_PATTERN.test(repo)) return yield* usage("--repo must be OWNER/NAME");
+        if (provider === "cloudflare" && Option.isSome(runner))
+          return yield* usage("--runner is not valid with --provider cloudflare");
+        if (provider === "runner" && Option.isNone(runner))
+          return yield* usage("--runner is required with --provider runner");
+        if (Option.isSome(runner) && runner.value !== "slumbers")
+          return yield* usage("--runner must be slumbers");
         const auth = yield* credentials(options);
         const body: JsonObject = { prompt, provider, repo };
+        if (Option.isSome(runner)) body.runner = runner.value;
         if (Option.isSome(cap)) {
           body.cap = cap.value;
           body.hardCapSeconds = yield* Effect.fromResult(durationSeconds(cap.value));

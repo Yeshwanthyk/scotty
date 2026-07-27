@@ -26,6 +26,30 @@ const assertUpstreamFailure = async (operation: Promise<unknown>): Promise<void>
 };
 
 describe("Sandbox create orchestration", () => {
+  it("commits the runner binding before ensuring the deterministic runtime", async () => {
+    const harness = await createSessionHarness();
+    const created = await harness.sandbox.createScottySession(
+      { ...CREATE_INPUT, provider: "runner", runner: "slumbers" },
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(created.status, "warm");
+    assert.deepStrictEqual(harness.readRecord()?.execution, {
+      provider: "runner",
+      runner: "slumbers",
+      runtimeId: `runner-v1:${SESSION_ID}`,
+    });
+    const recordIndex = harness.events.indexOf("record:booting");
+    const ensureIndex = harness.events.findIndex((event) =>
+      event.startsWith("runner:dispatch:EnsureRuntime:create-"),
+    );
+    assert.ok(recordIndex >= 0 && ensureIndex > recordIndex);
+    assert.isFalse(harness.events.some((event) => event.startsWith("host:pican")));
+    assert.isFalse(harness.events.some((event) => event.startsWith("credential:")));
+    assert.isFalse(harness.events.some((event) => event.startsWith("host:exec")));
+  });
+
   it("arms the hard cap before committing authority, then projects and reaches warm", async () => {
     const harness = await createSessionHarness();
 

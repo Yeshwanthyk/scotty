@@ -282,7 +282,7 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
     const encoded = encodeSessionId(sessionId);
     return {
       container: `scotty-runner-v1-${encoded}`,
-      resourceId: `runner-v1:${encoded}`,
+      resourceId: `runner-v1:${sessionId}`,
       workspace: path.join(root, "sessions", `session-${encoded}`),
     };
   };

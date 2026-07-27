@@ -522,7 +522,7 @@ describe("real Hono boundary", () => {
     );
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
-      error: { code: "bad_request", message: "provider must be cloudflare" },
+      error: { code: "bad_request", message: "provider must be cloudflare or runner" },
     });
     expect(sandbox.createScottySession).not.toHaveBeenCalled();
   });
