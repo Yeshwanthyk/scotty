@@ -344,10 +344,7 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
     yield* fs.chmod(home, 0o700).pipe(fixedFailure("filesystem_failed"));
     const fixture = path.join(workspace, RUNNER_FIXTURE_FILE);
     yield* fs
-      .writeFileString(
-        fixture,
-        runnerFixtureSource(sessionId, config.runnerIdentity ?? "slumbers-compatible"),
-      )
+      .writeFileString(fixture, runnerFixtureSource(sessionId, config.runnerIdentity ?? "runner"))
       .pipe(fixedFailure("filesystem_failed"));
     yield* fs.chmod(fixture, 0o600).pipe(fixedFailure("filesystem_failed"));
     const observed = yield* phase(container);

@@ -250,8 +250,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           return yield* usage("--runner is not valid with --provider cloudflare");
         if (provider === "runner" && Option.isNone(runner))
           return yield* usage("--runner is required with --provider runner");
-        if (Option.isSome(runner) && runner.value !== "slumbers")
-          return yield* usage("--runner must be slumbers");
         const auth = yield* credentials(options);
         const body: JsonObject = { prompt, provider, repo };
         if (Option.isSome(runner)) body.runner = runner.value;
