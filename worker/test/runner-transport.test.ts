@@ -272,4 +272,49 @@ describe("runner transport", () => {
       });
     }),
   );
+
+  it.effect("operator disconnect fails concurrent probes and dispatches", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+
+      const status = yield* transport.status(1_000).pipe(Effect.forkChild);
+      const dispatch = yield* transport
+        .dispatch(ensure("session-a", "ensure"), 1_000)
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* transport.disconnect();
+
+      assert.equal(yield* Fiber.join(status), "disconnected");
+      assert.deepEqual(yield* Fiber.join(dispatch), {
+        ok: false,
+        error: {
+          code: "runner_disconnected",
+          message: "Runner disconnected before replying",
+        },
+      });
+      assert.deepEqual(socket.closed, [{ code: 1012, reason: "Runner disconnected by operator" }]);
+      assert.equal(yield* transport.status(), "disconnected");
+
+      // Repeating the command with no current transport is harmless.
+      yield* transport.disconnect();
+      assert.equal(socket.closed.length, 1);
+    }),
+  );
+
+  it.effect("operator disconnect also closes a connection still in its handshake", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      transport.accept(socket);
+
+      yield* transport.disconnect();
+
+      assert.deepEqual(socket.closed, [{ code: 1012, reason: "Runner disconnected by operator" }]);
+      yield* transport.message(socket, hello());
+      assert.equal(yield* transport.status(), "disconnected");
+    }),
+  );
 });

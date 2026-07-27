@@ -1,4 +1,4 @@
-import { Deferred, Effect, Predicate, Result, Schema } from "effect";
+import { Deferred, Duration, Effect, Predicate, Result, Schema } from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
 import {
   decodeRunnerRequestText,
@@ -8,6 +8,9 @@ import {
 import { RunnerRuntime } from "./runner-runtime";
 
 const MAX_RUNNER_MESSAGE_CHARACTERS = 256 * 1024;
+const RUNNER_RECONNECT_BASE_MILLIS = 1_000;
+const RUNNER_RECONNECT_MAX_MILLIS = 30_000;
+const RUNNER_RECONNECT_MAX_STEP = 6;
 
 export interface RunnerLinkConfig {
   readonly url: string;
@@ -133,3 +136,39 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
 
 export const runRunnerLink = (config: RunnerLinkConfig) =>
   runRunnerLinkWith(config, makeBunWebSocket);
+
+export type RunnerConnector<R = never> = (
+  config: RunnerLinkConfig,
+) => Effect.Effect<void, RunnerLinkError, R>;
+
+const reconnectDelay = (step: number): Duration.Duration =>
+  Duration.millis(
+    Math.min(
+      RUNNER_RECONNECT_MAX_MILLIS,
+      RUNNER_RECONNECT_BASE_MILLIS * 2 ** Math.max(0, step - 1),
+    ),
+  );
+
+export const runRunnerSupervisorWith = Effect.fnUntraced(function* <R>(
+  config: RunnerLinkConfig,
+  connect: RunnerConnector<R>,
+) {
+  let backoffStep = 0;
+  while (true) {
+    let opened = false;
+    const result = yield* Effect.result(
+      connect({
+        ...config,
+        onOpen: Effect.sync(() => {
+          opened = true;
+        }).pipe(Effect.andThen(config.onOpen ?? Effect.void)),
+      }),
+    );
+    if (Result.isSuccess(result)) return;
+    backoffStep = opened ? 0 : Math.min(RUNNER_RECONNECT_MAX_STEP, backoffStep + 1);
+    yield* Effect.sleep(reconnectDelay(backoffStep));
+  }
+});
+
+export const runRunnerSupervisor = (config: RunnerLinkConfig) =>
+  runRunnerSupervisorWith(config, runRunnerLink);

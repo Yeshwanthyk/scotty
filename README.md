@@ -18,6 +18,8 @@ permanently destroy the session.
   architecture, migration order, and proof gates.
 - [`docs/effect-v4-alignment-tasks.md`](docs/effect-v4-alignment-tasks.md) — audited migration
   status and remaining agent-ready work.
+- [`PORTABLE_EXECUTION_PLAN.md`](PORTABLE_EXECUTION_PLAN.md) — active Cloudflare, runner,
+  Slumbers, Box, connection-control, and multi-provider delivery plan.
 - `PLAN.md` / `IMPLEMENTATION_DAG.md` — historical v1 behavior, state-machine, and invariant
   references.
 

@@ -45,7 +45,7 @@ import {
   usage,
 } from "./pure";
 import { BrowserLauncher, CliRuntime, ProcessRunner } from "./services";
-import { runRunnerLink } from "./runner-link";
+import { runRunnerSupervisor } from "./runner-link";
 import { runnerRuntimeLayer } from "./runner-runtime";
 import { requestJson } from "./transport";
 
@@ -518,7 +518,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               });
         const url = new URL(`/api/runners/${encodeURIComponent(name)}/connect`, host);
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        yield* runRunnerLink({
+        yield* runRunnerSupervisor({
           url: url.href,
           runnerName: name,
           token,
