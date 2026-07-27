@@ -97,6 +97,7 @@ describe("production deployment ownership", () => {
       [
         "Check repository",
         "Audit current runtime inventory",
+        "Prepare isolated Container context",
         "Deploy production through Alchemy",
         "Audit deployed runtime inventory",
       ],
@@ -105,7 +106,7 @@ describe("production deployment ownership", () => {
       ({ command, args }) => `${command} ${args.join(" ")}`,
     );
     assert.equal(
-      commands[2],
+      commands[3],
       "npx --no-install alchemy deploy alchemy.run.ts --stage production --yes",
     );
     assert.equal(commands.filter((command) => command === "npm run audit:containers").length, 2);
@@ -113,8 +114,9 @@ describe("production deployment ownership", () => {
       commands.some((command) => /wrangler\s+deploy/u.test(command)),
       false,
     );
-    assert.equal(PRODUCTION_DEPLOY_STEPS[2].capture, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[2].tee, true);
+    assert.equal(commands[2], `${process.execPath} scripts/prepare-container-context.mjs`);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].capture, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].tee, true);
     assert.equal(readAlchemyContainerAction("[SandboxContainer] updated\n"), "updated");
     assert.equal(
       readAlchemyContainerAction("\u001B[32m[SandboxContainer] noop\u001B[0m\n"),
@@ -154,6 +156,7 @@ describe("production deployment ownership", () => {
     assert.deepEqual(executed, [
       "Check repository",
       "Audit current runtime inventory",
+      "Prepare isolated Container context",
       "Revalidate release state",
       "Read Container baseline",
       "Deploy production through Alchemy",

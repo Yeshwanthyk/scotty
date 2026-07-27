@@ -24,6 +24,11 @@ export const PRODUCTION_DEPLOY_STEPS = [
     args: ["run", "audit:containers"],
   },
   {
+    name: "Prepare isolated Container context",
+    command: process.execPath,
+    args: ["scripts/prepare-container-context.mjs"],
+  },
+  {
     name: "Deploy production through Alchemy",
     command: "npx",
     args: ["--no-install", "alchemy", "deploy", "alchemy.run.ts", "--stage", "production", "--yes"],
@@ -570,6 +575,7 @@ export async function executeProductionDeploySteps(
   const productionEnv = productionEnvironment();
   await execute(PRODUCTION_DEPLOY_STEPS[0], verificationEnv);
   await execute(PRODUCTION_DEPLOY_STEPS[1], productionEnv);
+  await execute(PRODUCTION_DEPLOY_STEPS[2], verificationEnv);
   await revalidate();
   const controlPlaneBeforeDeploy = await readControlPlane(productionEnv);
   assertSettledContainerBaseline(controlPlaneBeforeDeploy);
@@ -577,7 +583,7 @@ export async function executeProductionDeploySteps(
   let deployError;
   let containerAction = "unknown";
   try {
-    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[2], productionEnv);
+    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[3], productionEnv);
     containerAction = readAlchemyContainerAction(deployOutput);
   } catch (error) {
     deployError = error;
@@ -593,7 +599,7 @@ export async function executeProductionDeploySteps(
 
   let auditError;
   try {
-    await execute(PRODUCTION_DEPLOY_STEPS[3], productionEnv, { allowAfterSignal: true });
+    await execute(PRODUCTION_DEPLOY_STEPS[4], productionEnv, { allowAfterSignal: true });
   } catch (error) {
     auditError = error;
   }

@@ -10,7 +10,7 @@ const rejection = (operation: Promise<unknown>): Promise<unknown> =>
   );
 
 describe("Sandbox Pican transport", () => {
-  it("forwards only while the authoritative session is warm and idle", async () => {
+  it("ensures Pican before forwarding while the authoritative session is warm and idle", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord(),
@@ -30,8 +30,10 @@ describe("Sandbox Pican transport", () => {
     );
 
     assert.strictEqual(await response.text(), "pican");
-    assert.strictEqual(calls.length, 1);
-    assert.strictEqual(calls[0]?.port, 31_415);
+    assert.strictEqual(calls.length, 2);
+    assert.match(calls[0]?.request.url ?? "", /\/api\/settings$/u);
+    assert.strictEqual(calls[1]?.port, 31_415);
+    assert.strictEqual(harness.picanStarts.length, 1);
   });
 
   for (const testCase of [
@@ -85,8 +87,10 @@ describe("Sandbox Pican transport", () => {
       },
     });
     Object.defineProperty(harness.sandbox, "containerFetch", {
-      value: (): Promise<Response> =>
-        Promise.reject(new Error("provider leaked ghp_secret and scotty-codex-secret")),
+      value: (request: Request): Promise<Response> =>
+        new URL(request.url).pathname.endsWith("/api/settings")
+          ? Promise.resolve(Response.json({ ready: true }))
+          : Promise.reject(new Error("provider leaked ghp_secret and scotty-codex-secret")),
     });
 
     const error = await rejection(
