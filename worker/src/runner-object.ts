@@ -96,7 +96,11 @@ export default ScottyRunner.make<never>(
               }),
             );
           }
-          if (new URL(request.url).pathname.startsWith(RUNNER_HTTP_PATH_PREFIX))
+          if (
+            new URL(request.url, "https://runner.internal").pathname.startsWith(
+              RUNNER_HTTP_PATH_PREFIX,
+            )
+          )
             return HttpServerResponse.text("Invalid runner HTTP route", {
               status: 400,
             });
@@ -155,7 +159,7 @@ interface RunnerHttpRoute {
 
 function runnerHttpRoute(value: string): Result.Result<RunnerHttpRoute, undefined> {
   const parsed = Result.try({
-    try: () => new URL(value),
+    try: () => new URL(value, "https://runner.internal"),
     catch: () => undefined,
   });
   if (Result.isFailure(parsed) || !parsed.success.pathname.startsWith(RUNNER_HTTP_PATH_PREFIX))
