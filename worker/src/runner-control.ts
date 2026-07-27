@@ -42,6 +42,7 @@ export interface RunnerControl<R = never> {
   readonly status: () => Effect.Effect<RunnerControlStatus, never, R>;
   readonly setDesired: (desired: RunnerDesiredState) => Effect.Effect<void, never, R>;
   readonly admission: (operation: RunnerOperation) => RunnerAdmissionFailure | null;
+  readonly mountedHttpEnabled: () => boolean;
 }
 
 const decodeDesired = Schema.decodeUnknownOption(RunnerDesiredStateSchema);
@@ -99,5 +100,6 @@ export const makeRunnerControl = Effect.fnUntraced(function* <R>(
       desired = next;
     }),
     admission: (operation: RunnerOperation) => admissionFor(desired, operation),
+    mountedHttpEnabled: () => desired !== "disabled",
   } satisfies RunnerControl<R>;
 });

@@ -115,6 +115,7 @@ describe("runner control", () => {
       );
 
       assert.deepEqual(operations.map(control.admission), [null, null, null, null, null]);
+      assert.isTrue(control.mountedHttpEnabled());
 
       yield* control.setDesired("draining");
       assert.deepEqual(operations.map(control.admission), [
@@ -124,6 +125,7 @@ describe("runner control", () => {
         null,
         null,
       ]);
+      assert.isTrue(control.mountedHttpEnabled());
 
       yield* control.setDesired("disabled");
       assert.deepEqual(operations.map(control.admission), [
@@ -133,6 +135,7 @@ describe("runner control", () => {
         null,
         null,
       ]);
+      assert.isFalse(control.mountedHttpEnabled());
     }),
   );
 

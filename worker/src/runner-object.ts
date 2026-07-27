@@ -6,8 +6,8 @@ import {
   type WebSocket,
 } from "alchemy/Cloudflare/Workers";
 import type { RuntimeContext } from "alchemy";
-import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { Effect, Result } from "effect";
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { RunnerOperation } from "../../protocol/runner.ts";
 import {
   makeRunnerControl,
@@ -19,6 +19,7 @@ import { RunnerTransport, type RunnerDispatchResult } from "./runner-transport.t
 
 const RUNNER_DESIRED_STORAGE_KEY = "runner:desired";
 const RUNNER_LAST_SEEN_STORAGE_KEY = "runner:last-seen-at-millis";
+export const RUNNER_HTTP_PATH_PREFIX = "/_scotty/runner-http/";
 
 interface ScottyRunnerShape extends DurableObjectShape {
   readonly status: () => Effect.Effect<"connected" | "disconnected", never, RuntimeContext>;
@@ -75,6 +76,31 @@ export default ScottyRunner.make<never>(
             return HttpServerResponse.text("Runner identity unavailable", {
               status: 500,
             });
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const route = runnerHttpRoute(request.url);
+          if (Result.isSuccess(route)) {
+            if (!control.mountedHttpEnabled())
+              return HttpServerResponse.text("Runner is disabled", {
+                status: 503,
+              });
+            const webRequest = HttpServerRequest.toWebResult(request);
+            if (Result.isFailure(webRequest))
+              return HttpServerResponse.text("Invalid runner HTTP request", {
+                status: 400,
+              });
+            return HttpServerResponse.fromWeb(
+              yield* transport.http({
+                request: webRequest.success,
+                sessionId: route.success.sessionId,
+                runtimeId: route.success.runtimeId,
+                target: route.success.target,
+              }),
+            );
+          }
+          if (new URL(request.url).pathname.startsWith(RUNNER_HTTP_PATH_PREFIX))
+            return HttpServerResponse.text("Invalid runner HTTP route", {
+              status: 400,
+            });
           const [response, socket] = yield* upgrade();
           transport.accept(socket);
           return response;
@@ -121,3 +147,46 @@ export const dispatchRunnerOperation = (
   timeoutMillis?: number,
 ): Promise<RunnerDispatchResult> =>
   runners.getByName(runnerName).dispatch(operation, timeoutMillis);
+
+interface RunnerHttpRoute {
+  readonly runtimeId: string;
+  readonly sessionId: string;
+  readonly target: string;
+}
+
+function runnerHttpRoute(value: string): Result.Result<RunnerHttpRoute, undefined> {
+  const parsed = Result.try({
+    try: () => new URL(value),
+    catch: () => undefined,
+  });
+  if (Result.isFailure(parsed) || !parsed.success.pathname.startsWith(RUNNER_HTTP_PATH_PREFIX))
+    return Result.fail(undefined);
+  const remainder = parsed.success.pathname.slice(RUNNER_HTTP_PATH_PREFIX.length);
+  const sessionSeparator = remainder.indexOf("/");
+  const runtimeSeparator = remainder.indexOf("/", sessionSeparator + 1);
+  if (sessionSeparator <= 0) return Result.fail(undefined);
+  const sessionId = decodeRoutePart(remainder.slice(0, sessionSeparator));
+  const runtimeEnd = runtimeSeparator === -1 ? remainder.length : runtimeSeparator;
+  const runtimeId = decodeRoutePart(remainder.slice(sessionSeparator + 1, runtimeEnd));
+  if (
+    sessionId === undefined ||
+    runtimeId === undefined ||
+    !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sessionId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runtimeId)
+  )
+    return Result.fail(undefined);
+  const pathname = runtimeSeparator === -1 ? "/" : remainder.slice(runtimeSeparator);
+  return Result.succeed({
+    sessionId,
+    runtimeId,
+    target: `${pathname}${parsed.success.search}`,
+  });
+}
+
+function decodeRoutePart(value: string): string | undefined {
+  const decoded = Result.try({
+    try: () => decodeURIComponent(value),
+    catch: () => undefined,
+  });
+  return Result.isSuccess(decoded) ? decoded.success : undefined;
+}
