@@ -1260,13 +1260,28 @@ describe("real Hono boundary", () => {
   });
 
   it("proxies the Pican root only for registered-client cookies", async () => {
+    sandbox.fetchPican.mockResolvedValueOnce(
+      new Response("<!doctype html><html><head><title>Pican</title></head><body></body></html>", {
+        headers: {
+          "content-encoding": "gzip",
+          "content-length": "72",
+          "content-type": "text/html; charset=utf-8",
+          etag: '"pican-shell"',
+        },
+      }),
+    );
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toContain("<title>Pican</title>");
+    const html = await response.text();
+    expect(html).toContain("<title>Pican</title>");
+    expect(html).toContain('id="scotty-sessions-link" href="/sessions"');
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(response.headers.get("etag")).toBeNull();
     expect(sandbox.fetchPican).toHaveBeenCalledOnce();
     const upstream = sandbox.fetchPican.mock.calls[0]?.[0];
     expect(upstream).toBeInstanceOf(Request);
