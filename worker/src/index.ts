@@ -808,7 +808,34 @@ async function proxyPicanRequest(
     signal: request.signal,
   };
   if (body !== undefined) Reflect.set(init, "duplex", "half");
-  return sessionSandbox(env, sessionId).fetchPican(new Request(request.url, init));
+  const response = await sessionSandbox(env, sessionId).fetchPican(new Request(request.url, init));
+  return addSessionsLink(request, response);
+}
+
+async function addSessionsLink(request: Request, response: Response): Promise<Response> {
+  if (
+    request.method !== "GET" ||
+    !response.headers.get("content-type")?.toLowerCase().startsWith("text/html")
+  )
+    return response;
+
+  const html = await response.clone().text();
+  if (!/<\/body\s*>/i.test(html)) return response;
+
+  const link = `<style id="scotty-sessions-link-style">
+#scotty-sessions-link{position:fixed;z-index:2147483647;left:max(12px,env(safe-area-inset-left));bottom:max(12px,env(safe-area-inset-bottom));display:inline-flex;align-items:center;min-height:36px;padding:8px 11px;border:1px solid #37404b;border-radius:8px;background:#0b1016eb;color:#e9eef4;font:600 13px/1.2 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-decoration:none;box-shadow:0 2px 8px #0006}
+#scotty-sessions-link:hover{background:#17202a;color:#fff}
+#scotty-sessions-link:focus-visible{outline:2px solid #6edcf0;outline-offset:2px}
+</style><a id="scotty-sessions-link" href="/sessions" aria-label="Back to sessions">← Sessions</a>`;
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  headers.delete("etag");
+  return new Response(html.replace(/<\/body\s*>/i, `${link}</body>`), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function sanitizePicanProxyHeaders(source: Headers): Headers {
