@@ -1,7 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Fiber, Schema } from "effect";
+import { Effect, Fiber, Predicate, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { RunnerProbeSchema } from "../../protocol/runner";
+import {
+  RUNNER_CREDIT_WINDOW,
+  HttpCreditSchema,
+  HttpDataSchema,
+  RunnerProbeSchema,
+  decodeRunnerRequestText,
+  encodeRunnerFrame,
+} from "../../protocol/runner";
 import {
   RunnerTransport,
   type RunnerDispatchResult,
@@ -86,6 +93,11 @@ const acknowledgeStatus = (transport: RunnerTransport, socket: FakeSocket) =>
 const expectSuccess = (result: RunnerDispatchResult): void => {
   assert.isTrue(result.ok);
 };
+
+const decodeSent = (socket: FakeSocket, index: number) =>
+  decodeRunnerRequestText(socket.sent[index] ?? "");
+const decodeCreditSent = Schema.decodeUnknownEffect(Schema.fromJsonString(HttpCreditSchema));
+const decodeDataSent = Schema.decodeUnknownEffect(Schema.fromJsonString(HttpDataSchema));
 
 describe("runner transport", () => {
   it.effect("requires the configured hello before accepting work", () =>
@@ -317,4 +329,475 @@ describe("runner transport", () => {
       assert.equal(yield* transport.status(), "disconnected");
     }),
   );
+
+  it.effect("streams a mounted GET response and replenishes response credit as chunks drain", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+
+      const pending = yield* transport
+        .http({
+          request: new Request("https://scotty.test/s/session-a/events"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/s/session-a/events",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const open = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(open));
+      if (!Predicate.isTagged("HttpOpen")(open)) return;
+      assert.strictEqual(open.method, "GET");
+      assert.strictEqual(open.target, "/s/session-a/events");
+      assert.strictEqual(open.responseCredit, RUNNER_CREDIT_WINDOW);
+
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: open.streamId,
+          status: 200,
+          statusText: "OK",
+          headers: [["content-type", "text/event-stream"]],
+          hasBody: true,
+        }),
+      );
+      const response = yield* Fiber.join(pending);
+      assert.strictEqual(response.headers.get("content-type"), "text/event-stream");
+      const reader = response.body?.getReader();
+      assert.isDefined(reader);
+      if (reader === undefined) return;
+
+      const first = new TextEncoder().encode("data: first\n\n");
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpData",
+          version: 2,
+          streamId: open.streamId,
+          direction: "response",
+          data: encodeBase64(first),
+        }),
+      );
+      const firstRead = yield* Effect.promise(() => reader.read());
+      assert.deepStrictEqual(firstRead.value, first);
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve))),
+      );
+      const credit = yield* decodeCreditSent(socket.sent[1] ?? "");
+      assert.strictEqual(credit.direction, "response");
+      assert.strictEqual(credit.credit, first.byteLength);
+
+      const second = new TextEncoder().encode("data: second\n\n");
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpData",
+          version: 2,
+          streamId: open.streamId,
+          direction: "response",
+          data: encodeBase64(second),
+        }),
+      );
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpEnd",
+          version: 2,
+          streamId: open.streamId,
+          direction: "response",
+        }),
+      );
+      const secondRead = yield* Effect.promise(() => reader.read());
+      const ended = yield* Effect.promise(() => reader.read());
+      assert.deepStrictEqual(secondRead.value, second);
+      assert.isTrue(ended.done);
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve))),
+      );
+      const lateCredit = yield* decodeCreditSent(socket.sent.at(-1) ?? "");
+      assert.strictEqual(lateCredit.streamId, open.streamId);
+
+      const next = yield* transport
+        .http({
+          request: new Request("https://scotty.test/after-terminal"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/after-terminal",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const nextOpen = yield* decodeSent(socket, socket.sent.length - 1);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(nextOpen));
+      if (!Predicate.isTagged("HttpOpen")(nextOpen)) return;
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: nextOpen.streamId,
+          status: 204,
+          statusText: "No Content",
+          headers: [],
+          hasBody: false,
+        }),
+      );
+      assert.strictEqual((yield* Fiber.join(next)).status, 204);
+      assert.deepStrictEqual(socket.closed, []);
+    }),
+  );
+
+  it.effect("settles a blocked response read on cancellation and reuses stream capacity", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+      const pending = yield* transport
+        .http({
+          request: new Request("https://scotty.test/blocked"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/blocked",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const open = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(open));
+      if (!Predicate.isTagged("HttpOpen")(open)) return;
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: open.streamId,
+          status: 200,
+          statusText: "OK",
+          headers: [],
+          hasBody: true,
+        }),
+      );
+      const response = yield* Fiber.join(pending);
+      const reader = response.body?.getReader();
+      assert.isDefined(reader);
+      if (reader === undefined) return;
+      const blockedRead = reader.read();
+      yield* Effect.promise(() => reader.cancel());
+      assert.isTrue((yield* Effect.promise(() => blockedRead)).done);
+
+      const reused = yield* transport
+        .http({
+          request: new Request("https://scotty.test/reused"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/reused",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const reusedOpen = yield* decodeSent(socket, socket.sent.length - 1);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(reusedOpen));
+      if (!Predicate.isTagged("HttpOpen")(reusedOpen)) return;
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: reusedOpen.streamId,
+          status: 204,
+          statusText: "No Content",
+          headers: [],
+          hasBody: false,
+        }),
+      );
+      assert.strictEqual((yield* Fiber.join(reused)).status, 204);
+      assert.deepStrictEqual(socket.closed, []);
+    }),
+  );
+
+  it.effect("strips forbidden runner response metadata at the Worker boundary", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+      const pending = yield* transport
+        .http({
+          request: new Request("https://scotty.test/headers"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/headers",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const open = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(open));
+      if (!Predicate.isTagged("HttpOpen")(open)) return;
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: open.streamId,
+          status: 204,
+          statusText: "No Content",
+          headers: [
+            ["connection", "x-runner-secret"],
+            ["x-runner-secret", "leak"],
+            ["set-cookie", "runtime=secret"],
+            ["transfer-encoding", "chunked"],
+            ["x-safe", "yes"],
+          ],
+          hasBody: false,
+        }),
+      );
+      const response = yield* Fiber.join(pending);
+      assert.strictEqual(response.headers.get("connection"), null);
+      assert.strictEqual(response.headers.get("x-runner-secret"), null);
+      assert.strictEqual(response.headers.get("set-cookie"), null);
+      assert.strictEqual(response.headers.get("transfer-encoding"), null);
+      assert.strictEqual(response.headers.get("x-safe"), "yes");
+    }),
+  );
+
+  it.effect("maps a pre-response request failure to 502 without closing the link", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+      const pending = yield* transport
+        .http({
+          request: new Request("https://scotty.test/oversized-headers"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/oversized-headers",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const open = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(open));
+      if (!Predicate.isTagged("HttpOpen")(open)) return;
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpFailed",
+          version: 2,
+          streamId: open.streamId,
+          code: "request_failed",
+        }),
+      );
+      assert.strictEqual((yield* Fiber.join(pending)).status, 502);
+      assert.deepStrictEqual(socket.closed, []);
+
+      const next = yield* transport
+        .http({
+          request: new Request("https://scotty.test/healthy"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/healthy",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const nextOpen = yield* decodeSent(socket, socket.sent.length - 1);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(nextOpen));
+      if (!Predicate.isTagged("HttpOpen")(nextOpen)) return;
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: nextOpen.streamId,
+          status: 204,
+          statusText: "No Content",
+          headers: [],
+          hasBody: false,
+        }),
+      );
+      assert.strictEqual((yield* Fiber.join(next)).status, 204);
+      assert.deepStrictEqual(socket.closed, []);
+    }),
+  );
+
+  it.effect("streams a sanitized bounded POST body only after request credit", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+      const pending = yield* transport
+        .http({
+          request: new Request("https://scotty.test/s/session-a/api", {
+            method: "POST",
+            headers: {
+              authorization: "Bearer browser-secret",
+              "content-type": "text/plain",
+              cookie: "session=secret",
+              "x-pican-proxy-token": "spoofed",
+            },
+            body: "hello",
+          }),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/s/session-a/api?mode=test",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const open = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(open));
+      if (!Predicate.isTagged("HttpOpen")(open)) return;
+      assert.deepStrictEqual(open.headers, [["content-type", "text/plain"]]);
+      assert.strictEqual(socket.sent.length, 1);
+
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpCredit",
+          version: 2,
+          streamId: open.streamId,
+          direction: "request",
+          credit: 5,
+        }),
+      );
+      yield* Effect.yieldNow;
+      const data = yield* decodeDataSent(socket.sent[1] ?? "");
+      const end = yield* decodeSent(socket, 2);
+      assert.strictEqual(new TextDecoder().decode(decodeBase64(data.data)), "hello");
+      assert.isTrue(Predicate.isTagged("HttpEnd")(end));
+
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: open.streamId,
+          status: 204,
+          statusText: "No Content",
+          headers: [],
+          hasBody: false,
+        }),
+      );
+      assert.strictEqual((yield* Fiber.join(pending)).status, 204);
+    }),
+  );
+
+  it.effect("propagates consumer cancellation and times out an unopened response", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+      const pending = yield* transport
+        .http({
+          request: new Request("https://scotty.test/s/session-a/events"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/events",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const open = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(open));
+      if (!Predicate.isTagged("HttpOpen")(open)) return;
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpResponse",
+          version: 2,
+          streamId: open.streamId,
+          status: 200,
+          statusText: "OK",
+          headers: [],
+          hasBody: true,
+        }),
+      );
+      const response = yield* Fiber.join(pending);
+      yield* Effect.promise(() => response.body?.cancel() ?? Promise.resolve());
+      const cancel = yield* decodeSent(socket, 1);
+      assert.isTrue(Predicate.isTagged("HttpCancel")(cancel));
+
+      const timed = yield* transport
+        .http({
+          request: new Request("https://scotty.test/s/session-b"),
+          sessionId: "session-b",
+          runtimeId: "runtime-b",
+          target: "/",
+          timeoutMillis: 1_000,
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(1_000);
+      assert.strictEqual((yield* Fiber.join(timed)).status, 504);
+      const timeoutCancel = yield* decodeSent(socket, socket.sent.length - 1);
+      assert.isTrue(Predicate.isTagged("HttpCancel")(timeoutCancel));
+    }),
+  );
+
+  it.effect("closes malformed stream sequences and enforces per-session concurrency", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+      const active: Array<Fiber.Fiber<Response>> = [];
+      for (let index = 0; index < 16; index += 1) {
+        active.push(
+          yield* transport
+            .http({
+              request: new Request(`https://scotty.test/${index}`),
+              sessionId: "session-a",
+              runtimeId: "runtime-a",
+              target: `/${index}`,
+              timeoutMillis: 1_000,
+            })
+            .pipe(Effect.forkChild),
+        );
+      }
+      yield* Effect.yieldNow;
+      assert.strictEqual(
+        (yield* transport.http({
+          request: new Request("https://scotty.test/overflow"),
+          sessionId: "session-a",
+          runtimeId: "runtime-a",
+          target: "/overflow",
+        })).status,
+        429,
+      );
+
+      const first = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("HttpOpen")(first));
+      if (!Predicate.isTagged("HttpOpen")(first)) return;
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "HttpData",
+          version: 2,
+          streamId: first.streamId,
+          direction: "response",
+          data: encodeBase64(new Uint8Array([1])),
+        }),
+      );
+      assert.deepStrictEqual(socket.closed, [
+        { code: 1008, reason: "Invalid runner HTTP response data" },
+      ]);
+      for (const fiber of active) assert.strictEqual((yield* Fiber.join(fiber)).status, 502);
+    }),
+  );
 });
+
+function encodeBase64(data: Uint8Array): string {
+  let binary = "";
+  for (const byte of data) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeBase64(data: string): Uint8Array {
+  const binary = atob(data);
+  const decoded = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) decoded[index] = binary.charCodeAt(index);
+  return decoded;
+}

@@ -1,10 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Fiber, Predicate, Result } from "effect";
+import { Effect, Fiber, Predicate, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import {
+  RUNNER_CREDIT_WINDOW,
+  RunnerFrameSchema,
+  HttpResponseSchema,
   encodeRunnerFrame,
   encodeRunnerRequest,
+  type HttpOpen,
   type InspectRuntime,
+  type RunnerFrame,
   type RunnerResponse,
 } from "../../protocol/runner";
 import {
@@ -12,6 +17,7 @@ import {
   runRunnerLinkWith,
   runRunnerSupervisorWith,
   type RunnerConnector,
+  type RunnerHttpHandler,
   type RunnerWebSocketConstructor,
 } from "../src/runner-link";
 import { RunnerRuntime } from "../src/runner-runtime";
@@ -43,6 +49,27 @@ const runtime = RunnerRuntime.of({
       ? Effect.succeed(response(operation))
       : Effect.die("unexpected operation");
   },
+});
+
+const decodeFrame = Schema.decodeUnknownResult(Schema.fromJsonString(RunnerFrameSchema));
+const decodeFrameSync = Schema.decodeUnknownSync(Schema.fromJsonString(RunnerFrameSchema));
+const decodeHttpResponse = Schema.decodeUnknownSync(Schema.fromJsonString(HttpResponseSchema));
+
+const sentFrame = (socket: FakeWebSocket, index: number): RunnerFrame =>
+  decodeFrameSync(socket.sent[index] ?? "");
+
+const openHttp = (overrides: Partial<HttpOpen> = {}): HttpOpen => ({
+  _tag: "HttpOpen",
+  version: 2,
+  streamId: "stream-1",
+  sessionId: "session-a",
+  runtimeId: "runtime-a",
+  method: "GET",
+  target: "/s/session-a",
+  headers: [],
+  hasBody: false,
+  responseCredit: RUNNER_CREDIT_WINDOW,
+  ...overrides,
 });
 
 const closeEvent = (code: number): Event => {
@@ -184,9 +211,10 @@ describe("RunnerLink", () => {
           probeId: "probe-1",
         }),
         encodeRunnerFrame({
-          _tag: "RunnerProtocolRejected",
+          _tag: "HttpFailed",
           version: 2,
-          code: "invalid_message",
+          streamId: "stream-1",
+          code: "request_failed",
         }),
         encodeRunnerFrame({
           _tag: "RunnerProtocolRejected",
@@ -330,4 +358,478 @@ describe("RunnerLink", () => {
       yield* Fiber.join(supervisor);
     }),
   );
+
+  it.effect("serves a sanitized GET from fixed loopback and streams credited SSE chunks", () =>
+    Effect.gen(function* () {
+      let socket: FakeWebSocket | undefined;
+      let capturedIdentity: { sessionId: string; runtimeId: string } | undefined;
+      let capturedRequest: Request | undefined;
+      const received: Array<Uint8Array> = [];
+      const handler: RunnerHttpHandler = (identity, request) =>
+        Effect.sync(() => {
+          capturedIdentity = identity;
+          capturedRequest = request;
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+                controller.enqueue(new TextEncoder().encode("data: second\n\n"));
+                controller.close();
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                connection: "x-remove-me",
+                "content-type": "text/event-stream",
+                "set-cookie": "runtime=secret",
+                "x-remove-me": "hop-by-hop",
+              },
+            },
+          );
+        });
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        fake.onSend = (text) => {
+          const frame = decodeFrame(text);
+          if (Result.isFailure(frame)) return;
+          if (Predicate.isTagged("RunnerHello")(frame.success)) {
+            queueMicrotask(() =>
+              fake.receive(
+                encodeRunnerRequest(
+                  openHttp({
+                    headers: [
+                      ["authorization", "Bearer browser-secret"],
+                      ["content-type", "text/plain"],
+                      ["cookie", "browser=secret"],
+                      ["x-pican-proxy-token", "spoofed"],
+                    ],
+                    target: "/s/session-a/events?after=1",
+                  }),
+                ),
+              ),
+            );
+          } else if (Predicate.isTagged("HttpData")(frame.success)) {
+            const bytes = decodeBase64(frame.success.data);
+            received.push(bytes);
+            fake.receive(
+              encodeRunnerRequest({
+                _tag: "HttpCredit",
+                version: 2,
+                streamId: frame.success.streamId,
+                direction: "response",
+                credit: bytes.byteLength,
+              }),
+            );
+          } else if (Predicate.isTagged("HttpEnd")(frame.success)) {
+            fake.remoteClose(1000);
+          }
+        };
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+
+      yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          httpHandler: handler,
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+
+      assert.deepStrictEqual(capturedIdentity, {
+        sessionId: "session-a",
+        runtimeId: "runtime-a",
+      });
+      assert.strictEqual(capturedRequest?.url, "http://127.0.0.1:31415/s/session-a/events?after=1");
+      assert.strictEqual(capturedRequest?.headers.get("content-type"), "text/plain");
+      assert.strictEqual(capturedRequest?.headers.get("authorization"), null);
+      assert.strictEqual(capturedRequest?.headers.get("cookie"), null);
+      assert.strictEqual(capturedRequest?.headers.get("x-pican-proxy-token"), null);
+      assert.strictEqual(
+        new TextDecoder().decode(concatenate(received)),
+        "data: first\n\ndata: second\n\n",
+      );
+      const responseIndex =
+        socket?.sent
+          .map((_, index) => sentFrame(socket, index))
+          .findIndex((frame) => Predicate.isTagged("HttpResponse")(frame)) ?? -1;
+      assert.notStrictEqual(responseIndex, -1);
+      const response = decodeHttpResponse(socket?.sent[responseIndex] ?? "");
+      assert.deepStrictEqual(response.headers, [["content-type", "text/event-stream"]]);
+    }),
+  );
+
+  it.effect("streams a credited POST body into the per-session handler", () =>
+    Effect.gen(function* () {
+      let socket: FakeWebSocket | undefined;
+      let body = "";
+      let requestUrl = "";
+      const handler: RunnerHttpHandler = (_identity, request) =>
+        Effect.tryPromise({
+          try: async () => {
+            requestUrl = request.url;
+            body = await request.text();
+            return new Response("accepted", { status: 202 });
+          },
+          catch: () => undefined,
+        });
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        let sentBody = false;
+        fake.onSend = (text) => {
+          const frame = decodeFrame(text);
+          if (Result.isFailure(frame)) return;
+          if (Predicate.isTagged("RunnerHello")(frame.success)) {
+            queueMicrotask(() =>
+              fake.receive(
+                encodeRunnerRequest(
+                  openHttp({
+                    method: "POST",
+                    target: "/s/session-a/api",
+                    headers: [["content-type", "text/plain"]],
+                    hasBody: true,
+                  }),
+                ),
+              ),
+            );
+          } else if (
+            Predicate.isTagged("HttpCredit")(frame.success) &&
+            frame.success.direction === "request" &&
+            !sentBody
+          ) {
+            sentBody = true;
+            fake.receive(
+              encodeRunnerRequest({
+                _tag: "HttpData",
+                version: 2,
+                streamId: frame.success.streamId,
+                direction: "request",
+                data: encodeBase64(new TextEncoder().encode("hello runner")),
+              }),
+            );
+            fake.receive(
+              encodeRunnerRequest({
+                _tag: "HttpEnd",
+                version: 2,
+                streamId: frame.success.streamId,
+                direction: "request",
+              }),
+            );
+          } else if (Predicate.isTagged("HttpEnd")(frame.success)) {
+            fake.remoteClose(1000);
+          }
+        };
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+
+      yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          httpHandler: handler,
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+
+      assert.strictEqual(requestUrl, "http://127.0.0.1:31415/s/session-a/api");
+      assert.strictEqual(body, "hello runner");
+      assert.isTrue(
+        socket?.sent.some((_, index) =>
+          Predicate.isTagged("HttpResponse")(sentFrame(socket, index)),
+        ),
+      );
+    }),
+  );
+
+  it.effect("cancels an active response and closes malformed stream identity", () =>
+    Effect.gen(function* () {
+      let cancelled = false;
+      let socket: FakeWebSocket | undefined;
+      const handler: RunnerHttpHandler = () =>
+        Effect.succeed(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                cancelled = true;
+              },
+            }),
+          ),
+        );
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        fake.onSend = (text) => {
+          const frame = decodeFrame(text);
+          if (Result.isFailure(frame)) return;
+          if (Predicate.isTagged("RunnerHello")(frame.success)) {
+            queueMicrotask(() => fake.receive(encodeRunnerRequest(openHttp())));
+          } else if (Predicate.isTagged("HttpResponse")(frame.success)) {
+            fake.receive(
+              encodeRunnerRequest({
+                _tag: "HttpCancel",
+                version: 2,
+                streamId: frame.success.streamId,
+                direction: "both",
+              }),
+            );
+            queueMicrotask(() => fake.remoteClose(1000));
+          }
+        };
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+      yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          httpHandler: handler,
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+      assert.isTrue(cancelled);
+      assert.deepStrictEqual(socket?.closeCodes, [1000]);
+
+      let malformedSocket: FakeWebSocket | undefined;
+      const malformed = yield* Effect.result(
+        runRunnerLinkWith(
+          {
+            url: "ws://127.0.0.1/runner",
+            runnerName: "runner-a",
+            token: "runner-secret",
+            httpHandler: handler,
+          },
+          (url) => {
+            const fake = new FakeWebSocket(url);
+            malformedSocket = fake;
+            fake.onSend = (text) => {
+              const frame = decodeFrame(text);
+              if (Result.isSuccess(frame) && Predicate.isTagged("RunnerHello")(frame.success)) {
+                queueMicrotask(() =>
+                  fake.receive(
+                    encodeRunnerRequest({
+                      _tag: "HttpData",
+                      version: 2,
+                      streamId: "unknown",
+                      direction: "request",
+                      data: "AQ==",
+                    }),
+                  ),
+                );
+              }
+            };
+            queueMicrotask(() => fake.open());
+            return fake;
+          },
+        ).pipe(Effect.provideService(RunnerRuntime, runtime)),
+      );
+      assert.isTrue(Result.isFailure(malformed));
+      assert.deepStrictEqual(malformedSocket?.closeCodes, [1008, 1000]);
+    }),
+  );
+
+  it.effect("ignores late response credit after HttpEnd and keeps the link usable", () =>
+    Effect.gen(function* () {
+      let socket: FakeWebSocket | undefined;
+      let completed = 0;
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        fake.onSend = (text) => {
+          const frame = decodeFrame(text);
+          if (Result.isFailure(frame)) return;
+          if (Predicate.isTagged("RunnerHello")(frame.success)) {
+            queueMicrotask(() => fake.receive(encodeRunnerRequest(openHttp())));
+          } else if (Predicate.isTagged("HttpEnd")(frame.success)) {
+            completed += 1;
+            if (completed === 1) {
+              fake.receive(
+                encodeRunnerRequest({
+                  _tag: "HttpCredit",
+                  version: 2,
+                  streamId: frame.success.streamId,
+                  direction: "response",
+                  credit: 1,
+                }),
+              );
+              fake.receive(
+                encodeRunnerRequest(openHttp({ streamId: "stream-2", target: "/second" })),
+              );
+            } else fake.remoteClose(1000);
+          }
+        };
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+
+      yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          httpHandler: () => Effect.succeed(new Response("x")),
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+
+      assert.strictEqual(completed, 2);
+      assert.deepStrictEqual(socket?.closeCodes, [1000]);
+    }),
+  );
+
+  it.effect("reports oversized pre-response headers per stream without closing the link", () =>
+    Effect.gen(function* () {
+      let socket: FakeWebSocket | undefined;
+      let failedCode: string | undefined;
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        fake.onSend = (text) => {
+          const frame = decodeFrame(text);
+          if (Result.isFailure(frame)) return;
+          if (Predicate.isTagged("RunnerHello")(frame.success)) {
+            queueMicrotask(() => fake.receive(encodeRunnerRequest(openHttp())));
+          } else if (Predicate.isTagged("HttpFailed")(frame.success)) {
+            failedCode = frame.success.code;
+            fake.receive(
+              encodeRunnerRequest(openHttp({ streamId: "stream-2", target: "/healthy" })),
+            );
+          } else if (
+            Predicate.isTagged("HttpResponse")(frame.success) &&
+            frame.success.streamId === "stream-2"
+          )
+            fake.remoteClose(1000);
+        };
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+
+      yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          httpHandler: (_identity, request) =>
+            Effect.succeed(
+              request.url.endsWith("/healthy")
+                ? new Response(null, { status: 204 })
+                : new Response(null, { headers: { "x-oversized": "x".repeat(65_537) } }),
+            ),
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+
+      assert.strictEqual(failedCode, "request_failed");
+      assert.isFalse(socket?.closeCodes.includes(1008));
+      assert.deepStrictEqual(socket?.closeCodes, [1000]);
+    }),
+  );
+
+  it.effect("bounds concurrent streams per session while admitting another session", () =>
+    Effect.gen(function* () {
+      let socket: FakeWebSocket | undefined;
+      let accepted = 0;
+      let limitFailed = false;
+      const handler: RunnerHttpHandler = () => Effect.never;
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        const sendOpen = (sessionId: string, index: number) =>
+          fake.receive(
+            encodeRunnerRequest(
+              openHttp({
+                streamId: `${sessionId}-${index}`,
+                sessionId,
+                runtimeId: `runtime-${sessionId}`,
+                method: "POST",
+                target: `/${index}`,
+                hasBody: true,
+              }),
+            ),
+          );
+        fake.onSend = (text) => {
+          const frame = decodeFrame(text);
+          if (Result.isFailure(frame)) return;
+          if (Predicate.isTagged("RunnerHello")(frame.success)) {
+            queueMicrotask(() => sendOpen("session-a", 0));
+          } else if (
+            Predicate.isTagged("HttpCredit")(frame.success) &&
+            frame.success.direction === "request"
+          ) {
+            accepted += 1;
+            if (accepted < 16) sendOpen("session-a", accepted);
+            else if (accepted === 16) sendOpen("session-b", 0);
+            else if (accepted === 17) sendOpen("session-a", 16);
+          } else if (Predicate.isTagged("HttpFailed")(frame.success)) {
+            limitFailed = true;
+            for (let index = 0; index < 16; index += 1) {
+              fake.receive(
+                encodeRunnerRequest({
+                  _tag: "HttpCancel",
+                  version: 2,
+                  streamId: `session-a-${index}`,
+                  direction: "both",
+                }),
+              );
+            }
+            fake.receive(
+              encodeRunnerRequest({
+                _tag: "HttpCancel",
+                version: 2,
+                streamId: "session-b-0",
+                direction: "both",
+              }),
+            );
+            queueMicrotask(() => fake.remoteClose(1000));
+          }
+        };
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+
+      yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          httpHandler: handler,
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+
+      assert.strictEqual(accepted, 17);
+      assert.isTrue(limitFailed);
+      assert.deepStrictEqual(socket?.closeCodes, [1000]);
+    }),
+  );
 });
+
+function encodeBase64(data: Uint8Array): string {
+  let binary = "";
+  for (const byte of data) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeBase64(data: string): Uint8Array {
+  const binary = atob(data);
+  const decoded = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) decoded[index] = binary.charCodeAt(index);
+  return decoded;
+}
+
+function concatenate(chunks: ReadonlyArray<Uint8Array>): Uint8Array {
+  const output = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
