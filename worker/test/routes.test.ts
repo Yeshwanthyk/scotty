@@ -58,6 +58,7 @@ import {
 import { makeSessionRecord } from "./support";
 
 const TOKEN = "worker-test-token-1234567890";
+const DISCORD_TOKEN = "discord-test-token-1234567890";
 const CLIENT_CREDENTIAL = "scotty_client.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const REGISTERED_CLIENT = {
   id: "111111111111",
@@ -100,6 +101,7 @@ function env(): Bindings {
     },
   };
   return {
+    SCOTTY_DISCORD_TOKEN: DISCORD_TOKEN,
     SCOTTY_TOKEN: TOKEN,
     SCOTTY_RUNNER_NAME: "slumbers",
     SCOTTY_RUNNER_TOKEN: "runner-test-token",
@@ -236,6 +238,174 @@ describe("real Hono boundary", () => {
         hint: "Open a fresh pairing or recovery link, or configure the CLI root token.",
       },
     });
+  });
+
+  it("keeps the Discord bridge behind its separate credential", async () => {
+    const missing = await app.request("/api/discord/sessions", undefined, env());
+    const root = await app.request(
+      "/api/discord/sessions",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+
+    expect([missing.status, root.status]).toEqual([401, 401]);
+    expect(auth.authenticate).not.toHaveBeenCalled();
+  });
+
+  it("lists only warm sessions through the Discord bridge", async () => {
+    const warm = {
+      ...projection,
+      id: "b0b1c2d3e4f5",
+      status: "warm",
+    };
+    const sessions = {
+      list: async () => ({
+        keys: [{ name: `session:${warm.id}` }, { name: `session:${projection.id}` }],
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      get: async (name: string) =>
+        name === `session:${warm.id}`
+          ? warm
+          : name === `session:${projection.id}`
+            ? projection
+            : null,
+    } as KVNamespace;
+
+    const response = await app.request(
+      "/api/discord/sessions",
+      { headers: { authorization: `Bearer ${DISCORD_TOKEN}` } },
+      { ...env(), SESSIONS: sessions },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      sessions: [
+        {
+          id: warm.id,
+          repo: warm.repo,
+          branch: warm.branch,
+          updatedAt: warm.updatedAt,
+        },
+      ],
+    });
+    expect(auth.authenticate).not.toHaveBeenCalled();
+  });
+
+  it("returns a normalized Pican transcript through the Discord bridge", async () => {
+    sandbox.getScottySession.mockResolvedValue({
+      ...projection,
+      status: "warm",
+      failure: undefined,
+      ageSeconds: 60,
+      capRemainingSeconds: 13_000,
+    });
+    sandbox.fetch.mockImplementation(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/api/sessions"))
+        return Response.json({
+          sessions: [{ ID: "codex-session.jsonl", nativeId: projection.codexThreadId }],
+        });
+      if (url.pathname.endsWith("/api/session"))
+        return Response.json({
+          entries: [
+            {
+              id: "message-1",
+              type: "message",
+              message: { role: "user", content: "Ship it" },
+            },
+            {
+              id: "message-2",
+              type: "message",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "Done." }],
+              },
+            },
+            {
+              id: "tool-1",
+              type: "message",
+              message: { role: "toolResult", content: "hidden" },
+            },
+          ],
+        });
+      if (url.pathname.endsWith("/api/worker-status")) return Response.json({ state: "idle" });
+      return new Response(null, { status: 404 });
+    });
+
+    const response = await app.request(
+      `/api/discord/sessions/${projection.id}`,
+      { headers: { authorization: `Bearer ${DISCORD_TOKEN}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      session: {
+        id: projection.id,
+        repo: projection.repo,
+        branch: projection.branch,
+        url: `http://localhost/s/${projection.id}`,
+      },
+      running: false,
+      messages: [
+        { id: "message-1", role: "user", text: "Ship it" },
+        { id: "message-2", role: "assistant", text: "Done." },
+      ],
+    });
+
+    const status = await app.request(
+      `/api/discord/sessions/${projection.id}/status`,
+      { headers: { authorization: `Bearer ${DISCORD_TOKEN}` } },
+      env(),
+    );
+    expect(status.status).toBe(200);
+    await expect(status.json()).resolves.toEqual({ running: false });
+  });
+
+  it("sends a Discord message to the matching Pican session", async () => {
+    const chatRequests: Request[] = [];
+    sandbox.getScottySession.mockResolvedValue({
+      ...projection,
+      status: "warm",
+      failure: undefined,
+      ageSeconds: 60,
+      capRemainingSeconds: 13_000,
+    });
+    sandbox.fetch.mockImplementation(async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/api/sessions"))
+        return Response.json({
+          sessions: [{ ID: "codex-session.jsonl", nativeId: projection.codexThreadId }],
+        });
+      if (url.pathname.endsWith("/api/worker-status")) return Response.json({ state: "idle" });
+      if (url.pathname.endsWith("/api/chat")) {
+        chatRequests.push(request);
+        return Response.json({ accepted: true });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    const response = await app.request(
+      `/api/discord/sessions/${projection.id}/messages`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${DISCORD_TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ message: " continue from Discord " }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ accepted: true });
+    expect(chatRequests).toHaveLength(1);
+    expect(chatRequests[0]?.method).toBe("POST");
+    const body = await chatRequests[0]?.formData();
+    expect(body?.get("message")).toBe("continue from Discord");
   });
 
   it("reports providers separately from dynamically named runners", async () => {

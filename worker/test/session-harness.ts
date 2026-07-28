@@ -542,6 +542,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     } as never,
     ASSETS: undefined as never,
+    SCOTTY_DISCORD_TOKEN: "discord-test-token",
     SCOTTY_TOKEN: "test-token",
     SCOTTY_RUNNER_NAME: "slumbers",
     SCOTTY_RUNNER_TOKEN: "runner-test-token",

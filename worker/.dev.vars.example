@@ -1,5 +1,6 @@
 # Copy to .dev.vars; never commit the populated file.
 SCOTTY_TOKEN="replace-with-a-random-32-byte-token"
+SCOTTY_DISCORD_TOKEN="replace-with-a-separate-random-32-byte-token"
 CODEX_AUTH_JSON='{"tokens":{"id_token":"replace","access_token":"replace","refresh_token":"replace","account_id":"replace"}}'
 GH_TOKEN="github_pat_replace"
 R2_ACCESS_KEY_ID="replace"

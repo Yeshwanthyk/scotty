@@ -122,6 +122,7 @@ describe("Cloudflare stack topology", () => {
     assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, [
       "CODEX_AUTH_JSON",
       "GH_TOKEN",
+      "SCOTTY_DISCORD_TOKEN",
       "SCOTTY_RUNNER_TOKEN",
       "SCOTTY_TOKEN",
     ]);

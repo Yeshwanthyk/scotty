@@ -6,17 +6,18 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const forbidden = [
   process.env.CODEX_AUTH_JSON,
   process.env.GH_TOKEN,
+  process.env.SCOTTY_DISCORD_TOKEN,
   process.env.SCOTTY_TOKEN,
   process.env.SCOTTY_E2E_TOKEN,
 ].filter((value) => value && value.length >= 8);
-const excluded = new Set(["node_modules", ".git", "work"]);
+const excluded = new Set(["node_modules", ".git", ".codex", "work"]);
 const files = [];
 function walk(directory) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (excluded.has(entry.name)) continue;
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) walk(target);
-    else files.push(target);
+    else if (entry.isFile()) files.push(target);
   }
 }
 walk(root);

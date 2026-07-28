@@ -9,6 +9,7 @@ export interface Bindings {
   SESSIONS: KVNamespace;
   BACKUP_BUCKET: R2Bucket;
   ASSETS: Fetcher;
+  SCOTTY_DISCORD_TOKEN: string;
   SCOTTY_TOKEN: string;
   SCOTTY_RUNNER_NAME: string;
   SCOTTY_RUNNER_TOKEN: string;

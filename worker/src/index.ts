@@ -24,6 +24,7 @@ import {
   type AuthVariables,
   refreshClientAuthCookie,
   requestClientCredential,
+  isAuthorizedRequest,
   requireAuthRequest,
   requireAuthScope,
   requireClientCookieRequest,
@@ -33,6 +34,11 @@ import {
   unwrapAuthRpc,
 } from "./auth";
 import { ScottyAuthRegistry } from "./auth-object";
+import {
+  decodeDiscordTranscript,
+  decodePicanRunning,
+  resolvePicanSessionId,
+} from "./discord-bridge";
 import {
   kvSessionProjectionStorage,
   listSessionProjections,
@@ -128,6 +134,80 @@ app.get("/api/runners/:name/connect", async (c) => {
     if (value !== undefined) headers.set(name, value);
   }
   return c.env.RUNNERS.getByName(name).fetch(new Request(c.req.url, { method: "GET", headers }));
+});
+
+app.use("/api/discord/*", async (c, next) => {
+  if (!(await isAuthorizedRequest(c.req.raw, c.env.SCOTTY_DISCORD_TOKEN)))
+    return c.json({ error: { code: "auth", message: "Discord authorization failed" } }, 401);
+  c.header("cache-control", "no-store");
+  await next();
+});
+
+app.get("/api/discord/sessions", async (c) => {
+  const sessions = await readSessionProjections(c.env);
+  return c.json({
+    sessions: sessions
+      .filter((session) => session.status === "warm" && session.codexThreadId)
+      .slice(0, 25)
+      .map(({ id, repo, branch, updatedAt }) => ({ id, repo, branch, updatedAt })),
+  });
+});
+
+app.get("/api/discord/sessions/:id/status", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  const sandbox = sessionSandbox(c.env, id);
+  const session = await sandbox.getScottySession();
+  const picanId = await requirePicanSessionId(sandbox, id, session.codexThreadId);
+  return c.json({ running: await readPicanRunning(sandbox, id, picanId) });
+});
+
+app.get("/api/discord/sessions/:id", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  const sandbox = sessionSandbox(c.env, id);
+  const session = await sandbox.getScottySession();
+  const picanId = await requirePicanSessionId(sandbox, id, session.codexThreadId);
+  const [snapshotJson, running] = await Promise.all([
+    readPicanResponse(sandbox, id, `/api/session?id=${encodeURIComponent(picanId)}&paginate=1`),
+    readPicanRunning(sandbox, id, picanId),
+  ]);
+  const messages = decodeDiscordTranscript(snapshotJson);
+  if (!messages)
+    throw new ScottyError("upstream", "Pican returned an invalid session response", {
+      httpStatus: 502,
+      exitCode: 1,
+    });
+  const origin = new URL(c.req.url).origin;
+  return c.json({
+    session: {
+      id,
+      repo: session.repo,
+      branch: session.branch,
+      url: `${origin}/s/${id}`,
+    },
+    running,
+    messages,
+  });
+});
+
+app.post("/api/discord/sessions/:id/messages", async (c) => {
+  requireJsonContentType(c.req.raw);
+  const id = parseSessionId(c.req.param("id"));
+  const input = parseDiscordMessageInput(await readJsonBody(c.req.raw));
+  const sandbox = sessionSandbox(c.env, id);
+  const session = await sandbox.getScottySession();
+  const picanId = await requirePicanSessionId(sandbox, id, session.codexThreadId);
+  if (await readPicanRunning(sandbox, id, picanId))
+    throw new ScottyError("conflict", "The Pican session is already running", {
+      httpStatus: 409,
+      exitCode: 5,
+    });
+  const body = new FormData();
+  body.set("message", input.message);
+  await readPicanResponse(sandbox, id, `/api/chat?id=${encodeURIComponent(picanId)}`, {
+    method: "POST",
+    body,
+  });
+  return c.json({ accepted: true }, 202);
 });
 
 app.use("/api/*", async (c, next) => {
@@ -375,21 +455,7 @@ app.get("/api/repos", async (c) => {
 
 app.get("/api/sessions", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
-  const result = await Effect.runPromise(
-    listSessionProjections.pipe(
-      Effect.provide(projectionLayers(c.env)),
-      Effect.scoped,
-      Effect.result,
-    ),
-  );
-  return c.json(
-    Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (sessions) => sessions,
-    }),
-  );
+  return c.json(await readSessionProjections(c.env));
 });
 
 app.get("/api/sessions/:id", async (c) => {
@@ -504,6 +570,9 @@ const OwnerTransferInputSchema = Schema.Struct({
 const GrantConsumeInputSchema = Schema.Struct({
   token: Schema.NonEmptyString,
 });
+const DiscordMessageInputSchema = Schema.Struct({
+  message: Schema.NonEmptyString,
+});
 const decodePairingConsumeInput = Schema.decodeUnknownOption(PairingConsumeInputSchema, {
   onExcessProperty: "error",
 });
@@ -514,6 +583,9 @@ const decodeOwnerTransferInput = Schema.decodeUnknownOption(OwnerTransferInputSc
   onExcessProperty: "error",
 });
 const decodeGrantConsumeInput = Schema.decodeUnknownOption(GrantConsumeInputSchema, {
+  onExcessProperty: "error",
+});
+const decodeDiscordMessageInput = Schema.decodeUnknownOption(DiscordMessageInputSchema, {
   onExcessProperty: "error",
 });
 const decodeRunnerControlAction = Schema.decodeUnknownOption(RunnerControlActionSchema);
@@ -543,6 +615,13 @@ function parseGrantConsumeInput(value: unknown, errorMessage: string): { readonl
   const decoded = decodeGrantConsumeInput(value);
   if (Option.isNone(decoded)) throw badRequest(errorMessage);
   return decoded.value;
+}
+
+function parseDiscordMessageInput(value: unknown): { readonly message: string } {
+  const decoded = decodeDiscordMessageInput(value);
+  if (Option.isNone(decoded) || !decoded.value.message.trim())
+    throw badRequest("Discord message must not be empty");
+  return { message: decoded.value.message.trim() };
 }
 
 function parseRunnerControlAction(value: unknown): RunnerControlAction {
@@ -683,6 +762,75 @@ function sessionSandbox(env: Bindings, id: string): ScottySandbox {
     transport: "rpc",
     enableDefaultSession: false,
     normalizeId: true,
+  });
+}
+
+async function requirePicanSessionId(
+  sandbox: ScottySandbox,
+  sessionId: string,
+  nativeId: string | undefined,
+): Promise<string> {
+  if (!nativeId)
+    throw new ScottyError("upstream", "The Scotty session has no Pican session", {
+      httpStatus: 502,
+      exitCode: 1,
+    });
+  const sessionsJson = await readPicanResponse(sandbox, sessionId, "/api/sessions?limit=100");
+  const picanId = resolvePicanSessionId(sessionsJson, nativeId);
+  if (picanId) return picanId;
+  throw new ScottyError("upstream", "The Pican session is unavailable", {
+    httpStatus: 502,
+    exitCode: 1,
+  });
+}
+
+async function readPicanResponse(
+  sandbox: ScottySandbox,
+  sessionId: string,
+  path: string,
+  init?: RequestInit,
+): Promise<string> {
+  const target = new URL(`/s/${sessionId}${path}`, PICAN_SANDBOX_ORIGIN);
+  const response = await sandbox.fetch(new Request(target, init));
+  if (!response.ok)
+    throw new ScottyError("upstream", "Pican request failed", {
+      httpStatus: 502,
+      exitCode: 1,
+    });
+  return response.text();
+}
+
+async function readPicanRunning(
+  sandbox: ScottySandbox,
+  sessionId: string,
+  picanId: string,
+): Promise<boolean> {
+  const statusJson = await readPicanResponse(
+    sandbox,
+    sessionId,
+    `/api/worker-status?id=${encodeURIComponent(picanId)}`,
+  );
+  const running = decodePicanRunning(statusJson);
+  if (running !== undefined) return running;
+  throw new ScottyError("upstream", "Pican returned an invalid worker status", {
+    httpStatus: 502,
+    exitCode: 1,
+  });
+}
+
+async function readSessionProjections(env: Bindings) {
+  const result = await Effect.runPromise(
+    listSessionProjections.pipe(
+      Effect.provide(projectionLayers(env)),
+      Effect.scoped,
+      Effect.result,
+    ),
+  );
+  return Result.match(result, {
+    onFailure: (error) => {
+      throw error;
+    },
+    onSuccess: (sessions) => sessions,
   });
 }
 
