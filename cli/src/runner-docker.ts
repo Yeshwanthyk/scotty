@@ -177,6 +177,8 @@ const childEnvironmentArguments = (
     "--env",
     "GH_CONFIG_DIR=/run/scotty/credentials/github",
     "--env",
+    "GIT_CONFIG_GLOBAL=/run/scotty/credentials/gitconfig",
+    "--env",
     "TMPDIR=/tmp",
     "--env",
     `PATH=${safePath}`,
