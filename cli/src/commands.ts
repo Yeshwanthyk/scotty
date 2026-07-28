@@ -1,5 +1,5 @@
 import { isAbsolute, join } from "node:path";
-import { Clock, Console, Effect, Option, Predicate, Ref, Result } from "effect";
+import { Clock, Console, Effect, FileSystem, Option, Predicate, Ref, Result } from "effect";
 import {
   Argument,
   CliConfig,
@@ -47,12 +47,13 @@ import {
 import { BrowserLauncher, CliRuntime, ProcessRunner } from "./services";
 import { runRunnerSupervisor } from "./runner-link";
 import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
+import { setupRunner } from "./runner-setup";
 import { requestJson } from "./transport";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-const RUNNER_IMAGE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
+const RUNNER_IMAGE_PATTERN = /^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*@)?sha256:[a-f0-9]{64}$/;
 const RUNNER_CONTAINER_PATH = "/usr/local/bin:/usr/bin:/bin";
 const RUNNER_CHILD_ENV_KEYS = [
   "HOME",
@@ -136,6 +137,20 @@ const processIdentity = (): { readonly uid: number; readonly gid: number } | und
     ? undefined
     : { uid: getuid(), gid: getgid() };
 };
+
+const validateCredentialSource = Effect.fnUntraced(function* (
+  flag: "--codex-auth" | "--github-config",
+  source: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const result = yield* Effect.result(fs.stat(source));
+  if (Result.isFailure(result) || result.success.type !== "File") {
+    return yield* usage(`${flag} must reference an existing regular file`);
+  }
+  if ((result.success.mode & 0o077) !== 0) {
+    return yield* usage(`${flag} source must not be accessible by group or other users`);
+  }
+});
 
 const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
   for (const item of error.errors) {
@@ -456,9 +471,17 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Digest-pinned Docker image"),
         Flag.optional,
       ),
+      codexAuth: Flag.string("codex-auth").pipe(
+        Flag.withDescription("Absolute host path to Codex auth.json"),
+        Flag.optional,
+      ),
+      githubConfig: Flag.string("github-config").pipe(
+        Flag.withDescription("Absolute host path to GitHub CLI hosts.yml"),
+        Flag.optional,
+      ),
       trailing: trailingArguments,
     },
-    ({ image, isolation, name, root, trailing }) =>
+    ({ codexAuth, githubConfig, image, isolation, name, root, trailing }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
@@ -490,6 +513,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             "Use HTTPS, or use HTTP only for a loopback development host.",
           );
         const imageValue = Option.getOrUndefined(image);
+        const codexAuthValue = Option.getOrUndefined(codexAuth);
+        const githubConfigValue = Option.getOrUndefined(githubConfig);
         if (isolation === "process" && !isLoopbackHost(hostUrl.hostname))
           return yield* usage(
             "--isolation process is only allowed with a loopback Scotty host",
@@ -497,6 +522,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           );
         if (isolation === "process" && imageValue !== undefined)
           return yield* usage("--image is only valid with --isolation docker");
+        if (isolation === "process" && codexAuthValue !== undefined)
+          return yield* usage("--codex-auth is only valid with --isolation docker");
+        if (isolation === "process" && githubConfigValue !== undefined)
+          return yield* usage("--github-config is only valid with --isolation docker");
         if (isolation === "docker" && imageValue === undefined)
           return yield* usage(
             "--image is required with --isolation docker",
@@ -507,13 +536,31 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           imageValue !== undefined &&
           !RUNNER_IMAGE_PATTERN.test(imageValue)
         )
-          return yield* usage("--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX");
+          return yield* usage(
+            "--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX or sha256:64_LOWER_HEX",
+          );
+        if (isolation === "docker" && codexAuthValue === undefined)
+          return yield* usage("--codex-auth is required with --isolation docker");
+        if (isolation === "docker" && githubConfigValue === undefined)
+          return yield* usage("--github-config is required with --isolation docker");
+        if (codexAuthValue !== undefined && !isAbsolute(codexAuthValue))
+          return yield* usage("--codex-auth must be an absolute path");
+        if (githubConfigValue !== undefined && !isAbsolute(githubConfigValue))
+          return yield* usage("--github-config must be an absolute path");
+        if (isolation === "docker" && codexAuthValue !== undefined)
+          yield* validateCredentialSource("--codex-auth", codexAuthValue);
+        if (isolation === "docker" && githubConfigValue !== undefined)
+          yield* validateCredentialSource("--github-config", githubConfigValue);
         const runtimeIsolation =
           isolation === "process"
             ? ({ type: "process" } as const)
             : yield* Effect.gen(function* () {
                 if (imageValue === undefined)
                   return yield* usage("--image is required with --isolation docker");
+                if (codexAuthValue === undefined)
+                  return yield* usage("--codex-auth is required with --isolation docker");
+                if (githubConfigValue === undefined)
+                  return yield* usage("--github-config is required with --isolation docker");
                 const identity = processIdentity();
                 if (identity === undefined)
                   return yield* usage("--isolation docker requires a numeric process uid and gid");
@@ -523,6 +570,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                   uid: identity.uid,
                   gid: identity.gid,
                   safePath: RUNNER_CONTAINER_PATH,
+                  codexAuthSource: codexAuthValue,
+                  githubConfigSource: githubConfigValue,
                 };
               });
         const url = new URL(`/api/runners/${encodeURIComponent(name)}/connect`, host);
@@ -561,9 +610,66 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Serve work over an outbound control-plane connection"));
 
+  const runnerSetup = Command.make(
+    "setup",
+    {
+      name: Flag.string("name").pipe(Flag.withDescription("Stable runner name")),
+      root: Flag.string("root").pipe(Flag.withDescription("Absolute runner workspace root")),
+      image: Flag.string("image").pipe(Flag.withDescription("Digest-pinned Docker image")),
+      codexAuth: Flag.string("codex-auth").pipe(
+        Flag.withDescription("Absolute host path to Codex auth.json"),
+      ),
+      sourceBinary: Flag.string("source-binary").pipe(
+        Flag.withDescription("Absolute path to the compiled Scotty executable"),
+        Flag.optional,
+      ),
+      trailing: trailingArguments,
+    },
+    ({ codexAuth, image, name, root, sourceBinary, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (options.token !== undefined)
+          return yield* usage(
+            "runner setup does not accept --token",
+            "Set SCOTTY_RUNNER_TOKEN in the setup process environment.",
+          );
+        if (!RUNNER_NAME_PATTERN.test(name))
+          return yield* usage("--name must contain only letters, numbers, underscores, or dashes");
+        if (!isAbsolute(root)) return yield* usage("--root must be an absolute path");
+        if (!RUNNER_IMAGE_PATTERN.test(image))
+          return yield* usage(
+            "--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX or sha256:64_LOWER_HEX",
+          );
+        if (!isAbsolute(codexAuth)) return yield* usage("--codex-auth must be an absolute path");
+        const sourceBinaryValue = Option.getOrUndefined(sourceBinary) ?? process.execPath;
+        if (!isAbsolute(sourceBinaryValue))
+          return yield* usage("--source-binary must be an absolute path");
+        const hostValue = options.host;
+        if (!hostValue) return yield* usage("runner setup requires --host");
+        const host = yield* Effect.fromResult(normalizeHost(hostValue));
+        const hostUrl = new URL(host);
+        if (hostUrl.protocol !== "https:" && !isLoopbackHost(hostUrl.hostname))
+          return yield* usage(
+            "runner setup requires an HTTPS Scotty host",
+            "Use HTTPS, or use HTTP only for a loopback development host.",
+          );
+        const result = yield* setupRunner({
+          codexAuthSource: codexAuth,
+          host,
+          image,
+          name,
+          root,
+          sourceBinary: sourceBinaryValue,
+        });
+        if (autoJson) outputJson(runtime.stdout, result);
+        else runtime.stdout(`Runner ${result.runner} service is active at ${result.service}.\n`);
+      }),
+  ).pipe(Command.withDescription("Install and start a trusted runner user service"));
+
   const runner = Command.make("runner").pipe(
     Command.withDescription("Run a Scotty compute runner"),
-    Command.withSubcommands([runnerServe]),
+    Command.withSubcommands([runnerServe, runnerSetup]),
   );
 
   const sessionOperation = Effect.fnUntraced(function* (

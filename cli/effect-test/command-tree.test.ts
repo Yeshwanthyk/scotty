@@ -1,6 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Effect, FileSystem, Result } from "effect";
 import { execute } from "../src/commands";
 import { CliError, EXIT, VERSION } from "../src/core";
 import { cliLayer, type CliDependencies } from "../src/dependencies";
@@ -68,6 +68,7 @@ describe("Effect command tree", () => {
         assert.strictEqual(yield* runner.effect, EXIT.OK);
         assert.include(runner.stdout.join(""), "scotty runner <subcommand> [flags]");
         assert.include(runner.stdout.join(""), "serve");
+        assert.include(runner.stdout.join(""), "setup");
         assert.strictEqual(runner.stderr.join(""), "");
       }),
   );
@@ -169,7 +170,7 @@ describe("Effect command tree", () => {
       );
       assert.strictEqual(
         failure(yield* Effect.result(invalidImage.effect)).message,
-        "--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX",
+        "--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX or sha256:64_LOWER_HEX",
       );
 
       const processImage = run(
@@ -193,7 +194,120 @@ describe("Effect command tree", () => {
         failure(yield* Effect.result(processImage.effect)).message,
         "--image is only valid with --isolation docker",
       );
-    }),
+
+      const missingCodexAuth = run(
+        [...base, "--isolation", "docker", "--image", `sha256:${"a".repeat(64)}`],
+        environment,
+      );
+      assert.strictEqual(
+        failure(yield* Effect.result(missingCodexAuth.effect)).message,
+        "--codex-auth is required with --isolation docker",
+      );
+
+      const relativeCodexAuth = run(
+        [
+          ...base,
+          "--isolation",
+          "docker",
+          "--image",
+          `sha256:${"a".repeat(64)}`,
+          "--codex-auth",
+          "auth.json",
+          "--github-config",
+          "/home/runner/.config/gh",
+        ],
+        environment,
+      );
+      assert.strictEqual(
+        failure(yield* Effect.result(relativeCodexAuth.effect)).message,
+        "--codex-auth must be an absolute path",
+      );
+
+      const processCredentials = run(
+        [
+          "--host",
+          "http://127.0.0.1:8787",
+          "runner",
+          "serve",
+          "--name",
+          "local",
+          "--root",
+          "/srv/scotty",
+          "--isolation",
+          "process",
+          "--codex-auth",
+          "/home/runner/.codex/auth.json",
+        ],
+        environment,
+      );
+      assert.strictEqual(
+        failure(yield* Effect.result(processCredentials.effect)).message,
+        "--codex-auth is only valid with --isolation docker",
+      );
+
+      const missingSource = run(
+        [
+          ...base,
+          "--isolation",
+          "docker",
+          "--image",
+          `sha256:${"a".repeat(64)}`,
+          "--codex-auth",
+          "/missing/codex-auth.json",
+          "--github-config",
+          "/missing/hosts.yml",
+        ],
+        environment,
+      );
+      assert.strictEqual(
+        failure(yield* Effect.result(missingSource.effect)).message,
+        "--codex-auth must reference an existing regular file",
+      );
+
+      const fs = yield* FileSystem.FileSystem;
+      const sourceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "scotty-runner-sources-" });
+      const unsafeCodex = `${sourceRoot}/auth.json`;
+      const safeCodex = `${sourceRoot}/safe-auth.json`;
+      yield* fs.writeFileString(unsafeCodex, "secret", { mode: 0o644 });
+      yield* fs.chmod(unsafeCodex, 0o644);
+      yield* fs.writeFileString(safeCodex, "secret", { mode: 0o600 });
+      const unsafeSource = run(
+        [
+          ...base,
+          "--isolation",
+          "docker",
+          "--image",
+          `sha256:${"a".repeat(64)}`,
+          "--codex-auth",
+          unsafeCodex,
+          "--github-config",
+          "/missing/hosts.yml",
+        ],
+        environment,
+      );
+      assert.strictEqual(
+        failure(yield* Effect.result(unsafeSource.effect)).message,
+        "--codex-auth source must not be accessible by group or other users",
+      );
+      const missingGitHub = run(
+        [
+          ...base,
+          "--isolation",
+          "docker",
+          "--image",
+          `sha256:${"a".repeat(64)}`,
+          "--codex-auth",
+          safeCodex,
+          "--github-config",
+          "/missing/hosts.yml",
+        ],
+        environment,
+      );
+      assert.strictEqual(
+        failure(yield* Effect.result(missingGitHub.effect)).message,
+        "--github-config must reference an existing regular file",
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("keeps parser failures typed and generated help out of machine stdout", () =>

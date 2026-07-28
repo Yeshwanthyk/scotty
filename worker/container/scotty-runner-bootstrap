@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ "$#" -ne 3 ]]; then
+  echo "usage: scotty-runner-bootstrap SESSION_ID OWNER/REPO BRANCH" >&2
+  exit 2
+fi
+
+session_id="$1"
+repo="$2"
+branch="$3"
+root="/workspace/${session_id}"
+codex_home="/run/scotty/credentials/codex"
+
+if [[ ! -d "${root}/.git" ]]; then
+  find "${root}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  if default_branch="$(gh repo view "${repo}" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)"; then
+    gh repo clone "${repo}" "${root}" -- --branch "${default_branch}" --single-branch
+    repo_exists=true
+  else
+    if ! gh api user --silent >/dev/null 2>&1; then
+      echo "GitHub authentication or network access is not available" >&2
+      exit 1
+    fi
+    default_branch=main
+    git init -b "${default_branch}" "${root}"
+    git -C "${root}" remote add origin "https://github.com/${repo}.git"
+    repo_exists=false
+  fi
+  git -C "${root}" checkout -b "${branch}"
+  git -C "${root}" config scotty.defaultBranch "${default_branch}"
+  git -C "${root}" config scotty.repoExists "${repo_exists}"
+else
+  repo_exists="$(git -C "${root}" config --get scotty.repoExists || true)"
+  default_branch="$(git -C "${root}" config --get scotty.defaultBranch || true)"
+  if [[ "${repo_exists}" != "true" && "${repo_exists}" != "false" ]]; then
+    repo_exists=true
+  fi
+  if [[ -z "${default_branch}" ]]; then
+    default_branch="$(git -C "${root}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  fi
+  if [[ -z "${default_branch}" ]]; then
+    default_branch=main
+  fi
+  if ! git -C "${root}" show-ref --verify --quiet "refs/heads/${branch}"; then
+    git -C "${root}" checkout -b "${branch}"
+  else
+    git -C "${root}" checkout "${branch}"
+  fi
+fi
+
+mkdir -p "${codex_home}" "${root}/.home" "${root}/.pican"
+ln -sfn /opt/scotty/skills "${codex_home}/skills"
+
+cat >"${codex_home}/config.toml" <<EOF
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[features]
+plugins = false
+
+[mcp_servers]
+
+[projects."${root}"]
+trust_level = "trusted"
+EOF
+
+cat >"${codex_home}/AGENTS.md" <<'EOF'
+- Read and follow the repository AGENTS.md first; repository instructions override this file.
+- Run `scotty tools list --json` to inspect the standard sandbox tools.
+- Prefer `rg`, `fd`, and `ast-grep` for search. Use `jq`, `yq`, and `qsv` for structured data.
+- Use `uv` and `uvx` for Python. Use Corepack and the repository's declared JavaScript package manager.
+- Use matching skills under `$CODEX_HOME/skills`; read the selected `SKILL.md` before acting.
+EOF
+
+chmod 700 "${codex_home}" "${root}/.home" "${root}/.pican"
+chmod 600 "${codex_home}/auth.json" "${codex_home}/config.toml" "${codex_home}/AGENTS.md"
+gh auth setup-git
+
+exclude="$(git -C "${root}" rev-parse --absolute-git-dir)/info/exclude"
+grep -qxF ".codex/" "${exclude}" 2>/dev/null || printf ".codex/\n" >>"${exclude}"
+grep -qxF ".pican/" "${exclude}" 2>/dev/null || printf ".pican/\n" >>"${exclude}"
+
+jq -cn \
+  --arg defaultBranch "${default_branch}" \
+  --argjson repoExists "${repo_exists}" \
+  '{defaultBranch: $defaultBranch, repoExists: $repoExists}'

@@ -71,6 +71,8 @@ export interface RunnerRuntimeConfig {
         readonly uid: number;
         readonly gid: number;
         readonly safePath: string;
+        readonly codexAuthSource: string;
+        readonly githubConfigSource: string;
       };
 }
 
@@ -332,6 +334,7 @@ export const makeRunnerRuntimeWithCompute = Effect.fnUntraced(function* (
               operation,
               compute.exec(operation.sessionId, {
                 argv: operation.argv,
+                ...(operation.detach === undefined ? {} : { detach: operation.detach }),
                 ...(relativeCwd === undefined ? {} : { relativeCwd }),
               }),
             );
@@ -415,6 +418,8 @@ export const makeRunnerRuntime = Effect.fnUntraced(function* (config: RunnerRunt
             uid: isolation.uid,
             gid: isolation.gid,
             safePath: isolation.safePath,
+            codexAuthSource: isolation.codexAuthSource,
+            githubConfigSource: isolation.githubConfigSource,
             childEnvironment: config.childEnvironment,
             runnerIdentity: config.runnerIdentity,
           },

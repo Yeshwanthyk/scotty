@@ -116,6 +116,23 @@ bun build cli/scotty.ts --compile --outfile dist/scotty
 ./dist/scotty skills
 ```
 
+For a trusted Linux VPS, first build or pull the pinned runtime image and sign in with `gh`.
+Then run the repeatable user-service setup:
+
+```sh
+SCOTTY_RUNNER_TOKEN="$SCOTTY_RUNNER_TOKEN" ./dist/scotty runner setup \
+  --host https://scotty-worker.<account>.workers.dev \
+  --name slumbers \
+  --root /home/runner/.local/state/scotty-runner \
+  --image sha256:<64-lowercase-hex> \
+  --codex-auth /home/runner/.codex/auth.json \
+  --source-binary /absolute/path/to/dist/scotty
+```
+
+The command imports the current GitHub CLI login, installs runner-only credential files, writes
+and restarts the hardened systemd user service, and fails if the service is not active. It never
+accepts the runner token as a command argument.
+
 Run `scotty owner recover` once on the intended primary browser after a fresh deployment or when
 moving to a replacement laptop. Keep `SCOTTY_TOKEN` in a password manager or another protected
 recovery location. `scotty attach <id>` opens the mounted Pican UI at the clean session URL and
