@@ -71,8 +71,10 @@ describe("runner setup", () => {
       const commands: Array<ReadonlyArray<string>> = [];
       const run = (command: string[]) => {
         commands.push(command);
-        if (command[0] === "gh")
+        if (command[0] === "gh" && command[1] === "auth")
           return Promise.resolve({ exitCode: 0, stdout: "github-secret\n", stderr: "" });
+        if (command[0] === "gh")
+          return Promise.resolve({ exitCode: 0, stdout: "Yeshwanthyk\n", stderr: "" });
         if (command.includes("is-active"))
           return Promise.resolve({ exitCode: 0, stdout: "active\n", stderr: "" });
         return Promise.resolve({ exitCode: 0, stdout: "ok\n", stderr: "" });
@@ -102,6 +104,7 @@ describe("runner setup", () => {
       assert.deepStrictEqual(commands, [
         ["docker", "info", "--format", "{{.ServerVersion}}"],
         ["gh", "auth", "token"],
+        ["gh", "api", "user", "--jq", ".login"],
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", "scotty-runner.service"],
         ["systemctl", "--user", "restart", "scotty-runner.service"],
@@ -120,6 +123,7 @@ describe("runner setup", () => {
         '{"access_token":"codex-secret"}',
       );
       assert.include(yield* fs.readFileString(installedGitHub), "github-secret");
+      assert.include(yield* fs.readFileString(installedGitHub), 'user: "Yeshwanthyk"');
       assert.strictEqual(
         yield* fs.readFileString(environmentFile),
         'SCOTTY_RUNNER_TOKEN="runner-secret"\n',

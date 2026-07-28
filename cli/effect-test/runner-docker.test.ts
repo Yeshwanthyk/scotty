@@ -145,6 +145,7 @@ describe("Docker runner compute", () => {
             "HOME=/workspace/session-a/.home",
             "CODEX_HOME=/run/scotty/credentials/codex",
             "GH_CONFIG_DIR=/run/scotty/credentials/github",
+            "GIT_CONFIG_GLOBAL=/run/scotty/credentials/gitconfig",
             "PICAN_MODE=hosted",
             "PICAN_BASE_PATH=/s/session-a",
             "PICAN_WORKSPACE_ROOT=/workspace/session-a",

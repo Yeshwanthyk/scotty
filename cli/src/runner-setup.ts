@@ -147,6 +147,18 @@ export const setupRunner = Effect.fnUntraced(function* (input: RunnerSetupInput)
       "Run gh auth login as the runner user, then retry.",
     );
   }
+  const githubLoginResult = yield* requireCommand(
+    ["gh", "api", "user", "--jq", ".login"],
+    "GitHub CLI could not resolve the active user",
+    "Run gh auth login as the runner user, then retry.",
+  );
+  const githubLogin = githubLoginResult.stdout.trim();
+  if (githubLogin.length === 0 || githubLogin.includes("\n") || githubLogin.includes("\r")) {
+    return yield* setupFailure(
+      "GitHub CLI returned an invalid user",
+      "Run gh auth login as the runner user, then retry.",
+    );
+  }
 
   const binaryDirectory = join(runtime.home, ".local", "bin");
   const binary = join(binaryDirectory, "scotty");
@@ -218,7 +230,7 @@ export const setupRunner = Effect.fnUntraced(function* (input: RunnerSetupInput)
   );
   yield* secureWrite(
     githubConfig,
-    `github.com:\n  git_protocol: https\n  oauth_token: ${JSON.stringify(githubToken)}\n`,
+    `github.com:\n  git_protocol: https\n  oauth_token: ${JSON.stringify(githubToken)}\n  user: ${JSON.stringify(githubLogin)}\n`,
   );
   yield* secureWrite(environmentFile, `SCOTTY_RUNNER_TOKEN=${JSON.stringify(token)}\n`);
 

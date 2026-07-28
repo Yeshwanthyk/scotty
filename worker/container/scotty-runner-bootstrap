@@ -15,6 +15,10 @@ codex_home="/run/scotty/credentials/codex"
 
 if [[ ! -d "${root}/.git" ]]; then
   find "${root}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+fi
+gh auth setup-git
+
+if [[ ! -d "${root}/.git" ]]; then
   if default_branch="$(gh repo view "${repo}" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)"; then
     gh repo clone "${repo}" "${root}" -- --branch "${default_branch}" --single-branch
     repo_exists=true
@@ -76,7 +80,6 @@ EOF
 
 chmod 700 "${codex_home}" "${root}/.home" "${root}/.pican"
 chmod 600 "${codex_home}/auth.json" "${codex_home}/config.toml" "${codex_home}/AGENTS.md"
-gh auth setup-git
 
 exclude="$(git -C "${root}" rev-parse --absolute-git-dir)/info/exclude"
 grep -qxF ".codex/" "${exclude}" 2>/dev/null || printf ".codex/\n" >>"${exclude}"
