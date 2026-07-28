@@ -63,6 +63,12 @@ export const RunnerProbeSchema = Schema.TaggedStruct("RunnerProbe", {
 });
 export type RunnerProbe = typeof RunnerProbeSchema.Type;
 
+export const RunnerProbeAckSchema = Schema.TaggedStruct("RunnerProbeAck", {
+  version: Schema.Literal(RUNNER_PROTOCOL_VERSION),
+  probeId: ProbeIdSchema,
+});
+export type RunnerProbeAck = typeof RunnerProbeAckSchema.Type;
+
 export const HeaderPairSchema = Schema.Tuple([
   Schema.String.check(Schema.isMaxLength(RUNNER_HEADER_BYTES_LIMIT)),
   Schema.String.check(Schema.isMaxLength(RUNNER_HEADER_BYTES_LIMIT)),
@@ -188,6 +194,7 @@ const ResponseEndSchema = HttpEndSchema.check(
 export const RunnerRequestSchema = Schema.Union([
   RunnerOperationSchema,
   RunnerProbeSchema,
+  RunnerProbeAckSchema,
   HttpOpenSchema,
   ResponseCreditSchema,
   RequestDataSchema,
@@ -284,14 +291,9 @@ export const RunnerHelloSchema = Schema.TaggedStruct("RunnerHello", {
 });
 export type RunnerHello = typeof RunnerHelloSchema.Type;
 
-export const RunnerProbeAckSchema = Schema.TaggedStruct("RunnerProbeAck", {
-  version: Schema.Literal(RUNNER_PROTOCOL_VERSION),
-  probeId: ProbeIdSchema,
-});
-export type RunnerProbeAck = typeof RunnerProbeAckSchema.Type;
-
 export const RunnerReplySchema = Schema.Union([
   RunnerResponseSchema,
+  RunnerProbeSchema,
   RunnerProbeAckSchema,
   RequestCreditSchema,
   ResponseDataSchema,
@@ -304,6 +306,7 @@ export type RunnerReply = typeof RunnerReplySchema.Type;
 
 export const RunnerFrameSchema = Schema.Union([
   RunnerHelloSchema,
+  RunnerProbeSchema,
   RunnerResponseSchema,
   RunnerProbeAckSchema,
   RunnerProtocolRejectedSchema,

@@ -1,4 +1,15 @@
-import { Deferred, Duration, Effect, Fiber, Predicate, Queue, Result, Schema, Scope } from "effect";
+import {
+  Deferred,
+  Duration,
+  Effect,
+  Fiber,
+  Option,
+  Predicate,
+  Queue,
+  Result,
+  Schema,
+  Scope,
+} from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
 import {
   RUNNER_CREDIT_WINDOW,
@@ -23,6 +34,8 @@ const MAX_RUNNER_MESSAGE_CHARACTERS = 256 * 1024;
 const RUNNER_RECONNECT_BASE_MILLIS = 1_000;
 const RUNNER_RECONNECT_MAX_MILLIS = 30_000;
 const RUNNER_RECONNECT_MAX_STEP = 6;
+const RUNNER_HEARTBEAT_INTERVAL_MILLIS = 15_000;
+const RUNNER_HEARTBEAT_ACK_TIMEOUT_MILLIS = 5_000;
 const RECENT_TERMINAL_STREAM_LIMIT = 256;
 const RUNNER_HTTP_ORIGIN = "http://127.0.0.1:31415";
 const HTTP_REQUEST_HEADERS_TO_STRIP = [
@@ -146,7 +159,7 @@ const makeSocket = (config: RunnerLinkConfig, makeWebSocket: RunnerWebSocketCons
           webSocket.close(1000);
         }),
     ),
-    { closeCodeIsError: (code) => code !== 1000 },
+    { closeCodeIsError: () => true },
   );
 
 interface ActiveHttpStream {
@@ -182,6 +195,12 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
       const write = yield* socket.writer;
       const announceFailure = yield* Deferred.make<void, Socket.SocketError>();
       const linkScope = yield* Scope.Scope;
+      let pendingHeartbeat:
+        | {
+            readonly probeId: string;
+            readonly acknowledged: Deferred.Deferred<void>;
+          }
+        | undefined;
       const streams = new Map<string, ActiveHttpStream>();
       const recentTerminalStreams = new Set<string>();
       const httpHandler = config.httpHandler ?? defaultHttpHandler;
@@ -540,6 +559,30 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
           }
           yield* cleanup(pending, true);
         });
+      const heartbeat = Effect.forever(
+        Effect.gen(function* () {
+          yield* Effect.sleep(RUNNER_HEARTBEAT_INTERVAL_MILLIS);
+          const probeId = crypto.randomUUID();
+          const acknowledged = yield* Deferred.make<void>();
+          const pending = { probeId, acknowledged };
+          pendingHeartbeat = pending;
+          yield* send({
+            _tag: "RunnerProbe",
+            version: 2,
+            probeId,
+          });
+          const result = yield* Deferred.await(acknowledged).pipe(
+            Effect.timeoutOption(RUNNER_HEARTBEAT_ACK_TIMEOUT_MILLIS),
+          );
+          if (pendingHeartbeat === pending) pendingHeartbeat = undefined;
+          if (Option.isSome(result)) return;
+          yield* write(new Socket.CloseEvent(1011, "Runner heartbeat timed out"));
+          return yield* Deferred.fail(
+            announceFailure,
+            socketOpenError("Runner heartbeat timed out"),
+          );
+        }),
+      );
       const handleMessage = (message: string | Uint8Array) =>
         typeof message !== "string" || message.length > MAX_RUNNER_MESSAGE_CHARACTERS
           ? send(rejected)
@@ -547,6 +590,12 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
               const decoded = yield* Effect.result(decodeRunnerRequestText(message));
               if (Result.isFailure(decoded)) {
                 return yield* send(rejected);
+              }
+              if (Predicate.isTagged("RunnerProbeAck")(decoded.success)) {
+                const pending = pendingHeartbeat;
+                if (pending?.probeId === decoded.success.probeId)
+                  yield* Deferred.succeed(pending.acknowledged, undefined);
+                return;
               }
               if (Predicate.isTagged("RunnerProbe")(decoded.success))
                 return yield* send({
@@ -575,7 +624,10 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
       }).pipe(
         Effect.matchEffect({
           onFailure: (error) => Deferred.fail(announceFailure, error).pipe(Effect.asVoid),
-          onSuccess: () => config.onOpen ?? Effect.void,
+          onSuccess: () =>
+            heartbeat
+              .pipe(Effect.forkIn(linkScope))
+              .pipe(Effect.andThen(config.onOpen ?? Effect.void), Effect.asVoid),
         }),
       );
 

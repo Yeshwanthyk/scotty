@@ -446,6 +446,27 @@ export class RunnerTransport {
         yield* this.#reject(socket, "Invalid runner response");
         return;
       }
+      if (Predicate.isTagged("RunnerProbe")(decoded.success)) {
+        const sent = yield* Effect.result(
+          socket
+            .send(
+              encodeRunnerRequest({
+                _tag: "RunnerProbeAck",
+                version: 2,
+                probeId: decoded.success.probeId,
+              }),
+            )
+            .pipe(Effect.sandbox),
+        );
+        if (Result.isFailure(sent))
+          yield* this.#disconnectSocket(
+            socket,
+            attachment.value,
+            1011,
+            "Runner probe reply failed",
+          );
+        return;
+      }
       if (Predicate.isTagged("RunnerProbeAck")(decoded.success)) {
         yield* this.#completeProbe(socket, attachment.value, decoded.success);
         return;

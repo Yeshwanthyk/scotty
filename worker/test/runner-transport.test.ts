@@ -134,6 +134,29 @@ describe("runner transport", () => {
     }),
   );
 
+  it.effect("acknowledges a runner-owned liveness probe", () =>
+    Effect.gen(function* () {
+      const transport = new RunnerTransport("slumbers");
+      const socket = new FakeSocket();
+      yield* connect(transport, socket);
+
+      yield* transport.message(
+        socket,
+        encodeRunnerFrame({
+          _tag: "RunnerProbe",
+          version: 2,
+          probeId: "runner-probe-1",
+        }),
+      );
+
+      const acknowledged = yield* decodeSent(socket, 0);
+      assert.isTrue(Predicate.isTagged("RunnerProbeAck")(acknowledged));
+      if (!Predicate.isTagged("RunnerProbeAck")(acknowledged)) return;
+      assert.strictEqual(acknowledged.probeId, "runner-probe-1");
+      assert.deepStrictEqual(socket.closed, []);
+    }),
+  );
+
   it.effect("disconnects a stale ready attachment when its liveness probe times out", () =>
     Effect.gen(function* () {
       const transport = new RunnerTransport("slumbers");
