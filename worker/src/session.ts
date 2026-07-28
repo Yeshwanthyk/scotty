@@ -849,6 +849,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const response = yield* create().pipe(
         Effect.mapError(() => new PicanCreateRetryable({ reason: "transport" })),
       );
+      if (response.status === 502 || response.status === 503 || response.status === 504)
+        return yield* new PicanCreateRetryable({ reason: "transport" });
       const text = yield* Effect.tryPromise({
         try: () => response.text(),
         catch: () => new PicanCreateRetryable({ reason: "transport" }),
