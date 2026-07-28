@@ -49,7 +49,7 @@ import {
   type RunnerControlAction,
   type RunnerControlStatus,
 } from "./runner-control";
-import { Sandbox as ScottySandbox } from "./session";
+import { PICAN_SANDBOX_ORIGIN, Sandbox as ScottySandbox } from "./session";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottySandbox };
 
@@ -800,6 +800,8 @@ async function proxyPicanRequest(
 
   const headers = sanitizePicanProxyHeaders(request.headers);
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
+  const source = new URL(request.url);
+  const target = new URL(`${source.pathname}${source.search}`, PICAN_SANDBOX_ORIGIN);
   const init: RequestInit = {
     method: request.method,
     headers,
@@ -808,7 +810,7 @@ async function proxyPicanRequest(
     signal: request.signal,
   };
   if (body !== undefined) Reflect.set(init, "duplex", "half");
-  const response = await sessionSandbox(env, sessionId).fetchPican(new Request(request.url, init));
+  const response = await sessionSandbox(env, sessionId).fetch(new Request(target, init));
   return addSessionsLink(request, response);
 }
 

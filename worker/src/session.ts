@@ -81,6 +81,8 @@ const DESTROY_DEADLINE_MS = 30_000;
 const DESTROY_RETRY_SECONDS = 35;
 const PICAN_PROXY_TOKEN_PREFIX = "scotty-pican-";
 
+export const PICAN_SANDBOX_ORIGIN = "https://pican-proxy.internal";
+
 export const decodeSandboxFileStream = (
   source: ReadableStream<Uint8Array>,
 ): ReadableStream<Uint8Array> => {
@@ -1327,6 +1329,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async getScottySession(): Promise<SessionView> {
     return this.#run(this.getScottySessionProgram());
+  }
+
+  override async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).origin === PICAN_SANDBOX_ORIGIN)
+      return this.#run(this.fetchPicanProgram(request));
+    return super.fetch(request);
   }
 
   async fetchPican(request: Request): Promise<Response> {

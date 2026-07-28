@@ -73,6 +73,7 @@ export interface HarnessOptions {
       ? Dispatch
       : never
     : never;
+  readonly runnerFetch?: (request: Request) => Promise<Response>;
   readonly initialProjections?: Readonly<Record<string, unknown>>;
   readonly onStorageGet?: (
     key: string,
@@ -433,10 +434,12 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
               },
             } as never;
           }),
-        fetch: async (request) => {
-          events.push(`runner:fetch:${new URL(request.url).pathname}`);
-          return new Response("runner fixture");
-        },
+        fetch:
+          options.runnerFetch ??
+          (async (request) => {
+            events.push(`runner:fetch:${new URL(request.url).pathname}`);
+            return new Response("runner fixture");
+          }),
         status: async () => "connected",
         controlStatus: async () => ({
           desired: "accepting",
