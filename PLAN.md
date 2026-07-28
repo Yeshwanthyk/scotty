@@ -13,6 +13,18 @@ See `IMPLEMENTATION_DAG.md` for dependency order, work packages, proof gates, an
 
 ---
 
+## Active portable v1 override
+
+`PORTABLE_EXECUTION_PLAN.md` is the active scope for Cloudflare plus explicitly configured trusted
+VPS runners. Pican remains the only session UI. Box, Daytona, and other managed providers are
+deferred.
+
+Cloudflare sessions keep the sentinel and egress-proxy credential boundary below. A trusted VPS
+host and its per-session containers are inside the owner trust boundary. They may read configured
+owner Codex and Git credential files through session-scoped copies outside the workspace. Those
+credentials must still stay out of prompts, URLs, process arguments, logs, KV, R2, API responses,
+and Cloudflare or Alchemy state. This is the only v1 override to the historical credential rule.
+
 ## Current forward-only runtime
 
 The Cloudflare vertical runs one private Pican process per Sandbox workspace. Scotty authenticates

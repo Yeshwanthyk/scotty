@@ -56,7 +56,14 @@ import {
   SessionStore,
   sessionStoreLayer,
 } from "./session-store";
-import { Pican, picanLayer, type PicanCreateResult } from "./pican";
+import {
+  classifyPicanCreateResponse,
+  decodePicanBootstrapResponseJson,
+  Pican,
+  picanCreateRequest,
+  picanLayer,
+  type PicanCreateResult,
+} from "./pican";
 import {
   SESSION_SCHEDULE_CALLBACKS,
   sessionAllowsRuntimeAccess,
@@ -80,6 +87,9 @@ const MANAGED_STOP_RETRY_SECONDS = 2;
 const DESTROY_DEADLINE_MS = 30_000;
 const DESTROY_RETRY_SECONDS = 35;
 const PICAN_PROXY_TOKEN_PREFIX = "scotty-pican-";
+const RUNNER_BOOTSTRAP_COMMAND = "/usr/local/bin/scotty-runner-bootstrap";
+const RUNNER_PICAN_COMMAND = "/usr/local/bin/scotty-runner-pican";
+const RUNNER_PICAN_READY_TIMEOUT_MILLIS = 30_000;
 
 export const PICAN_SANDBOX_ORIGIN = "https://pican-proxy.internal";
 
@@ -162,6 +172,10 @@ class PicanCreatePersistenceUncertain extends Data.TaggedError("PicanCreatePersi
   readonly cause: unknown;
 }> {}
 
+class RunnerCreateFailure extends Data.TaggedError("RunnerCreateFailure")<{
+  readonly step: "bootstrap" | "ensure" | "launch" | "readiness";
+}> {}
+
 export interface CheckpointExitClassification {
   readonly failed: boolean;
   readonly hasDefect: boolean;
@@ -187,6 +201,19 @@ type PicanCreateClassificationFailure =
   | PicanCreateAmbiguous
   | PicanCreateRejected
   | PicanCreateRetryable;
+
+const classifyStablePicanCreateResult = (
+  result: PicanCreateResult,
+): Effect.Effect<StablePicanCreateResult, PicanCreateClassificationFailure> =>
+  Match.value(result).pipe(
+    Match.discriminatorsExhaustive("state")({
+      stable: (stable) => Effect.succeed(stable),
+      pending: () => Effect.fail(new PicanCreateRetryable({ reason: "pending" })),
+      unknown: () => Effect.fail(new PicanCreateAmbiguous({ reason: "unknown" })),
+      conflict: () => Effect.fail(new PicanCreateRejected({ reason: "conflict" })),
+      invalid: () => Effect.fail(new PicanCreateRejected({ reason: "invalid" })),
+    }),
+  );
 
 interface InFlightCreate {
   readonly id: string;
@@ -337,18 +364,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict("Session destruction is already in progress");
     if (record.operation)
       return yield* conflict(`Session is already running ${record.operation.kind}`);
-    if (record.execution.provider === "runner") {
-      const execution = record.execution;
-      const source = new URL(request.url);
-      const target = `${RUNNER_HTTP_PATH_PREFIX}${encodeURIComponent(record.id)}/${encodeURIComponent(execution.runtimeId)}${source.pathname}${source.search}`;
-      return yield* Effect.tryPromise({
-        try: () =>
-          this.env.RUNNERS.getByName(execution.runner).fetch(
-            new Request(new URL(target, "https://runner.internal"), request),
-          ),
-        catch: (cause) => this.upstreamError("Runner upstream request failed", cause, record.id),
-      });
-    }
+    if (record.execution.provider === "runner")
+      return yield* this.fetchRunnerPicanProgram(record, request);
     const pican = yield* Pican;
     return yield* pican.launch(record.id).pipe(
       Effect.andThen(pican.fetch(request)),
@@ -356,6 +373,28 @@ export class Sandbox extends BaseSandbox<Bindings> {
         this.upstreamError("Pican upstream request failed", error, record.id),
       ),
     );
+  });
+
+  private readonly fetchRunnerPicanProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    request: Request,
+  ) {
+    if (record.execution.provider !== "runner")
+      return yield* new ScottyError("internal", "Runner binding is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    const execution = record.execution;
+    const source = new URL(request.url);
+    const target = `${RUNNER_HTTP_PATH_PREFIX}${encodeURIComponent(record.id)}/${encodeURIComponent(execution.runtimeId)}${source.pathname}${source.search}`;
+    return yield* Effect.tryPromise({
+      try: () =>
+        this.env.RUNNERS.getByName(execution.runner).fetch(
+          new Request(new URL(target, "https://runner.internal"), request),
+        ),
+      catch: (cause) => this.upstreamError("Runner upstream request failed", cause, record.id),
+    });
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
@@ -438,17 +477,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
               : error,
           ),
         );
-      const classified: Effect.Effect<StablePicanCreateResult, PicanCreateClassificationFailure> =
-        Match.value(result).pipe(
-          Match.discriminatorsExhaustive("state")({
-            stable: (stable) => Effect.succeed(stable),
-            pending: () => Effect.fail(new PicanCreateRetryable({ reason: "pending" })),
-            unknown: () => Effect.fail(new PicanCreateAmbiguous({ reason: "unknown" })),
-            conflict: () => Effect.fail(new PicanCreateRejected({ reason: "conflict" })),
-            invalid: () => Effect.fail(new PicanCreateRejected({ reason: "invalid" })),
-          }),
-        );
-      return yield* classified;
+      return yield* classifyStablePicanCreateResult(result);
     });
     return yield* attempt.pipe(
       Effect.retry({
@@ -603,7 +632,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (record.status === "booting" && record.operation?.kind === "create") {
       const operation = record.operation;
       if (record.execution.provider === "runner")
-        return yield* this.ensureRunnerCreateProgram(record, operation.nonce);
+        return yield* this.ensureRunnerCreateProgram(record, operation.nonce, prompt);
       if (operation.createPhase === "setup") {
         const reconciled = yield* Effect.result(
           this.prepareCreateForPicanProgram(record, prompt, operation.nonce, operation.startedAt),
@@ -654,28 +683,112 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     record: SessionRecord,
     nonce: string,
+    prompt: string,
   ) {
     if (record.execution.provider !== "runner")
       return yield* new ScottyError("internal", "Runner binding is unavailable", {
         httpStatus: 500,
         exitCode: 1,
       });
-    const dispatched = yield* Effect.result(
-      this.dispatchRunnerProgram(record, {
-        _tag: "EnsureRuntime",
-        version: RUNNER_PROTOCOL_VERSION,
-        operationId: `create-${nonce}`,
-        sessionId: record.id,
+    const execution = record.execution;
+    const dispatch = (operation: RunnerOperation) => this.dispatchRunnerProgram(record, operation);
+    const awaitReady = () => this.awaitRunnerPicanReadyProgram(record);
+    const createHosted = () =>
+      this.createRunnerHostedPicanSessionProgram(record, record.id, prompt);
+    const persistWarm = (
+      bootstrap: {
+        readonly defaultBranch: string;
+        readonly repoExists: boolean;
+      },
+      nativeId: string,
+      updatedAt: string,
+    ) =>
+      this.updateForOperationProgram(nonce, (current) => ({
+        ...current,
+        status: "warm",
+        operation: null,
+        repoExistsAtCreate: bootstrap.repoExists,
+        defaultBranch: bootstrap.defaultBranch,
+        codexThreadId: nativeId,
+        failure: undefined,
+        updatedAt,
+      }));
+    const created = yield* Effect.result(
+      Effect.gen(function* () {
+        const ensured = yield* dispatch({
+          _tag: "EnsureRuntime",
+          version: RUNNER_PROTOCOL_VERSION,
+          operationId: `create-${nonce}`,
+          sessionId: record.id,
+        });
+        const ensureResponse = ensured.ok ? ensured.response : undefined;
+        if (
+          !Predicate.isTagged("RunnerSuccess")(ensureResponse) ||
+          !Predicate.isTagged("EnsureRuntimeResult")(ensureResponse.result) ||
+          ensureResponse.result.phase !== "running" ||
+          ensureResponse.result.resourceId !== execution.runtimeId
+        )
+          return yield* new RunnerCreateFailure({ step: "ensure" });
+
+        const bootstrapped = yield* dispatch({
+          _tag: "ExecRuntime",
+          version: RUNNER_PROTOCOL_VERSION,
+          operationId: `create-bootstrap-${nonce}`,
+          sessionId: record.id,
+          argv: [RUNNER_BOOTSTRAP_COMMAND, record.id, record.repo, record.branch],
+        });
+        const bootstrapResponse = bootstrapped.ok ? bootstrapped.response : undefined;
+        if (
+          !Predicate.isTagged("RunnerSuccess")(bootstrapResponse) ||
+          !Predicate.isTagged("ExecRuntimeResult")(bootstrapResponse.result) ||
+          bootstrapResponse.result.exitCode !== 0
+        )
+          return yield* new RunnerCreateFailure({ step: "bootstrap" });
+        const bootstrap = decodePicanBootstrapResponseJson(bootstrapResponse.result.stdout);
+        if (Result.isFailure(bootstrap))
+          return yield* new RunnerCreateFailure({ step: "bootstrap" });
+
+        const launched = yield* dispatch({
+          _tag: "ExecRuntime",
+          version: RUNNER_PROTOCOL_VERSION,
+          operationId: `create-pican-${nonce}`,
+          sessionId: record.id,
+          argv: [
+            RUNNER_PICAN_COMMAND,
+            "-host",
+            "0.0.0.0",
+            "-p",
+            "31415",
+            "-runtime",
+            "codex",
+            "-codex-command",
+            "/usr/local/bin/codex",
+          ],
+          detach: true,
+        });
+        const launchResponse = launched.ok ? launched.response : undefined;
+        if (
+          !Predicate.isTagged("RunnerSuccess")(launchResponse) ||
+          !Predicate.isTagged("ExecRuntimeResult")(launchResponse.result) ||
+          launchResponse.result.exitCode !== 0
+        )
+          return yield* new RunnerCreateFailure({ step: "launch" });
+
+        yield* awaitReady();
+        const hosted = yield* createHosted();
+        const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        return yield* persistWarm(bootstrap.success, hosted.nativeId, updatedAt).pipe(
+          Effect.mapError((cause) => new PicanCreatePersistenceUncertain({ cause })),
+        );
       }),
     );
-    const result = Result.isSuccess(dispatched) ? dispatched.success : undefined;
-    const response = result?.ok ? result.response : undefined;
-    if (
-      !Predicate.isTagged("RunnerSuccess")(response) ||
-      !Predicate.isTagged("EnsureRuntimeResult")(response.result) ||
-      response.result.phase !== "running" ||
-      response.result.resourceId !== record.execution.runtimeId
-    ) {
+    if (Result.isFailure(created)) {
+      const failure = created.failure;
+      if (
+        Predicate.isTagged(failure, "PicanCreateAmbiguous") ||
+        Predicate.isTagged(failure, "PicanCreatePersistenceUncertain")
+      )
+        return yield* this.failCreateSetupProgram(record.id, nonce, failure);
       const failed = yield* this.failOperationProgram(
         nonce,
         "runner_create_failed",
@@ -688,16 +801,73 @@ export class Sandbox extends BaseSandbox<Bindings> {
         exitCode: 1,
       });
     }
-    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    const ready = yield* this.updateForOperationProgram(nonce, (current) => ({
-      ...current,
-      status: "warm",
-      operation: null,
-      failure: undefined,
-      updatedAt,
-    }));
     const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(ready, new Date(now)), now);
+    return toSessionView(toProjection(created.success, new Date(now)), now);
+  });
+
+  private readonly awaitRunnerPicanReadyProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+  ) {
+    const fetchSettings = () =>
+      this.fetchRunnerPicanProgram(
+        record,
+        new Request(`https://runner-pican.internal/s/${record.id}/api/settings`),
+      );
+    const attempt = Effect.gen(function* () {
+      const response = yield* fetchSettings();
+      yield* Effect.tryPromise({
+        try: () => response.arrayBuffer(),
+        catch: () => new RunnerCreateFailure({ step: "readiness" }),
+      });
+      if (!response.ok) return yield* new RunnerCreateFailure({ step: "readiness" });
+    });
+    return yield* attempt.pipe(
+      Effect.retry({
+        schedule: Schedule.spaced("500 millis"),
+        times: 59,
+      }),
+      Effect.timeoutOrElse({
+        duration: RUNNER_PICAN_READY_TIMEOUT_MILLIS,
+        orElse: () => Effect.fail(new RunnerCreateFailure({ step: "readiness" })),
+      }),
+    );
+  });
+
+  private readonly createRunnerHostedPicanSessionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    id: string,
+    prompt: string,
+  ) {
+    const create = () =>
+      this.fetchRunnerPicanProgram(
+        record,
+        picanCreateRequest("https://runner-pican.internal", id, prompt),
+      );
+    const attempt = Effect.gen(function* () {
+      const response = yield* create().pipe(
+        Effect.mapError(() => new PicanCreateRetryable({ reason: "transport" })),
+      );
+      const text = yield* Effect.tryPromise({
+        try: () => response.text(),
+        catch: () => new PicanCreateRetryable({ reason: "transport" }),
+      });
+      return yield* classifyStablePicanCreateResult(
+        classifyPicanCreateResponse(response.status, text),
+      );
+    });
+    return yield* attempt.pipe(
+      Effect.retry({
+        times: 2,
+        schedule: Schedule.spaced("250 millis"),
+        while: Predicate.isTagged("PicanCreateRetryable"),
+      }),
+      Effect.catchTag(
+        "PicanCreateRetryable",
+        (error) => new PicanCreateAmbiguous({ reason: error.reason }),
+      ),
+    );
   });
 
   private readonly removeRunnerRuntimeProgram = Effect.fnUntraced(function* (
@@ -797,7 +967,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
 
     if (initial.execution.provider === "runner")
-      return yield* this.ensureRunnerCreateProgram(initial, nonce);
+      return yield* this.ensureRunnerCreateProgram(initial, nonce, input.prompt);
     const setup = yield* Effect.result(
       this.prepareCreateForPicanProgram(initial, input.prompt, nonce, nowIso),
     );
@@ -988,15 +1158,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const vault = yield* CredentialVault;
     const store = yield* SessionStore;
-    const destroyed = yield* Effect.raceFirst(
-      hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
-      Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
-    );
-    if (!destroyed)
-      return yield* new ScottyError("upstream", "Sandbox destruction timed out", {
-        httpStatus: 502,
-        exitCode: 1,
-      });
+    if (record.execution.provider === "cloudflare") {
+      const destroyed = yield* Effect.raceFirst(
+        hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
+        Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
+      );
+      if (!destroyed)
+        return yield* new ScottyError("upstream", "Sandbox destruction timed out", {
+          httpStatus: 502,
+          exitCode: 1,
+        });
+    }
     yield* vault.delete;
     yield* store.clearCreateIdempotency;
     yield* removeSessionProjection(record.id);

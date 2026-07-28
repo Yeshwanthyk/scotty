@@ -138,6 +138,27 @@ describe("runner protocol", () => {
     Effect.gen(function* () {
       const valid = yield* decodeRunnerOperationText(JSON.stringify(ensure("ensure-valid")));
       assert.isTrue(Predicate.isTagged(valid, "EnsureRuntime"));
+      const detached = yield* decodeRunnerOperationText(
+        JSON.stringify({
+          _tag: "ExecRuntime",
+          version: 2,
+          operationId: "detached",
+          sessionId: "session-a",
+          argv: ["/usr/local/bin/pican"],
+          detach: true,
+        }),
+      );
+      assert.isTrue(Predicate.isTagged(detached, "ExecRuntime"));
+      const detachedValue = Match.value(detached).pipe(
+        Match.tagsExhaustive({
+          EnsureRuntime: () => assert.fail("expected exec operation"),
+          ExecRuntime: (operation) => operation.detach,
+          InspectRuntime: () => assert.fail("expected exec operation"),
+          RemoveRuntime: () => assert.fail("expected exec operation"),
+          StopRuntime: () => assert.fail("expected exec operation"),
+        }),
+      );
+      assert.isTrue(detachedValue);
 
       const malformed = [
         JSON.stringify({ ...ensure("wrong-version"), version: 1 }),
@@ -218,6 +239,18 @@ describe("RunnerRuntime", () => {
         );
         assert.strictEqual(execResult(delegated).stdout, "delegated");
         assert.deepStrictEqual(executions, [{ argv: ["tool", "arg"], relativeCwd: "nested" }]);
+        yield* runtime.handle({
+          _tag: "ExecRuntime",
+          version: 2,
+          operationId: "compute-detached",
+          sessionId,
+          argv: ["/usr/local/bin/pican"],
+          detach: true,
+        });
+        assert.deepStrictEqual(executions.at(-1), {
+          argv: ["/usr/local/bin/pican"],
+          detach: true,
+        });
 
         const outside = yield* fs.makeTempDirectoryScoped({ prefix: "scotty-runner-outside-" });
         yield* fs.symlink(outside, `${workspace}/escape`);
@@ -225,7 +258,7 @@ describe("RunnerRuntime", () => {
           yield* runtime.handle(exec("compute-escape", ["must-not-run"], "escape", sessionId)),
           "invalid_cwd",
         );
-        assert.strictEqual(executions.length, 1);
+        assert.strictEqual(executions.length, 2);
 
         assertFailure(
           yield* runtime.handle(exec("compute-failure", ["fail"], undefined, sessionId)),
@@ -272,7 +305,15 @@ describe("RunnerRuntime", () => {
             root,
             childEnvironment: {},
             hostFetch: () => Promise.resolve(new Response()),
-            isolation: { type: "docker", image: "unused", uid: 1000, gid: 1000, safePath: "/bin" },
+            isolation: {
+              type: "docker",
+              image: "unused",
+              uid: 1000,
+              gid: 1000,
+              safePath: "/bin",
+              codexAuthSource: "/host/auth.json",
+              githubConfigSource: "/host/gh",
+            },
           },
           compute,
         );

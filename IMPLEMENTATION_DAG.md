@@ -5,16 +5,20 @@
 > ownership model, state machine, lifecycle semantics, security and credential constraints, and
 > other invariants recorded here remain authoritative.
 >
-> `PORTABLE_EXECUTION_PLAN.md` is the active, current-status plan for Cloudflare, runners,
-> Slumbers, Box, runner connection control, and multi-provider verification. It supersedes the
-> portable-execution delivery section below.
+> `PORTABLE_EXECUTION_PLAN.md` is the active, current-status plan for Cloudflare and trusted VPS
+> runners such as Slumbers. It supersedes the portable-execution delivery section below,
+> including the Box nodes.
+>
+> Cloudflare keeps the credential-isolation rules in this document. An explicitly configured
+> trusted VPS host and its session containers may read owner Codex and Git credential files
+> through session-scoped copies outside the workspace. The files must not enter prompts, URLs,
+> arguments, logs, KV, R2, API responses, or Cloudflare state.
 
-This is the execution plan for `PLAN.md`. Build one secure vertical slice first, then add lifecycle and shipping behavior behind explicit gates. The critical design choice is that each session's Sandbox Durable Object owns lifecycle state and credentials; KV is only the eventually consistent list projection.
+This is the execution plan for `PLAN.md`. Build one secure vertical slice first, then add lifecycle and shipping behavior behind explicit gates. The critical design choice is that each session's Sandbox Durable Object owns lifecycle state, Cloudflare credentials, and trusted-runner credential policy; KV is only the eventually consistent list projection.
 
 ## Portable execution delivery DAG
 
-This is the active delivery order for provider portability. Each node must finish as an
-end-to-end, tested slice; a later provider cannot broaden an earlier node's contract speculatively.
+This graph is historical. Use the delivery DAG in `PORTABLE_EXECUTION_PLAN.md`.
 
 ```mermaid
 flowchart TD
@@ -39,7 +43,7 @@ flowchart TD
     P2 --> T1
 ```
 
-Current slice:
+Historical status at the time of this graph:
 
 - `N`, `C1`, `C2`, `C3`, Gate CF, and `R1` are complete. The repository-wide local gate and guarded
   deployed Cloudflare canary proved the forward-only path: create a stable Pican hosted-session

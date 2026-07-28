@@ -62,6 +62,14 @@ type PicanCreateResponse = typeof PicanCreateResponseSchema.Type;
 const decodePicanCreateResponseJson = Schema.decodeUnknownResult(
   Schema.fromJsonString(PicanCreateResponseSchema),
 );
+const PicanBootstrapResponseSchema = Schema.Struct({
+  defaultBranch: Schema.NonEmptyString,
+  repoExists: Schema.Boolean,
+});
+export type PicanBootstrapResponse = typeof PicanBootstrapResponseSchema.Type;
+export const decodePicanBootstrapResponseJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(PicanBootstrapResponseSchema),
+);
 
 export type PicanCreateResult =
   | ({ readonly state: "pending" } & PicanCreateResponse)
@@ -176,30 +184,13 @@ export const picanLayer = (
           return yield* awaitReady(id, credential.picanProxyToken);
         }),
         createHostedSession: Effect.fnUntraced(function* (id, prompt) {
-          const body =
-            prompt === undefined
-              ? { path: sessionRoot(id), runtime: "codex" }
-              : { path: sessionRoot(id), runtime: "codex", initialPrompt: prompt };
-          const response = yield* forward(
-            new Request(`http://pican.internal/s/${id}/api/new-session`, {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                "idempotency-key": id,
-              },
-              body: JSON.stringify(body),
-            }),
-          );
-          if (response.status === 409) return { state: "conflict" };
-          if (response.status === 400 || response.status === 413) return { state: "invalid" };
+          const response = yield* forward(picanCreateRequest("http://pican.internal", id, prompt));
 
           const text = yield* Effect.tryPromise({
             try: () => response.text(),
             catch: picanTransportFailure,
           });
-          const decoded = decodePicanCreateResponseJson(text);
-          if (Result.isFailure(decoded)) return { state: "invalid" };
-          return classifyCreateResponse(response.status, decoded.success);
+          return classifyPicanCreateResponse(response.status, text);
         }),
         stop: Effect.fnUntraced(function* () {
           const process = yield* runtime.getProcess(PICAN_PROCESS_ID);
@@ -218,7 +209,33 @@ export const picanLayer = (
     }),
   );
 
-function classifyCreateResponse(status: number, response: PicanCreateResponse): PicanCreateResult {
+export function picanCreateRequest(origin: string, id: string, prompt?: string): Request {
+  const body =
+    prompt === undefined
+      ? { path: sessionRoot(id), runtime: "codex" }
+      : { path: sessionRoot(id), runtime: "codex", initialPrompt: prompt };
+  return new Request(`${origin}/s/${id}/api/new-session`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": id,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+export function classifyPicanCreateResponse(status: number, text: string): PicanCreateResult {
+  if (status === 409) return { state: "conflict" };
+  if (status === 400 || status === 413) return { state: "invalid" };
+  const decoded = decodePicanCreateResponseJson(text);
+  if (Result.isFailure(decoded)) return { state: "invalid" };
+  return classifyDecodedCreateResponse(status, decoded.success);
+}
+
+function classifyDecodedCreateResponse(
+  status: number,
+  response: PicanCreateResponse,
+): PicanCreateResult {
   if (response.createState === "unknown" || response.promptDispatchState === "unknown")
     return status === 202 || status === 503
       ? { ...response, state: "unknown" }

@@ -241,6 +241,41 @@ describe("Sandbox vaporize orchestration", () => {
     );
   });
 
+  it("repairs a runner gone tombstone repeatedly without destroying Cloudflare", async () => {
+    const gone = vaporizeRecord({
+      status: "gone",
+      operation: null,
+      provider: "runner",
+      runner: "slumbers",
+      execution: {
+        provider: "runner",
+        runner: "slumbers",
+        runtimeId: `runner-v1:${SESSION_ID}`,
+      },
+      backup: undefined,
+      backupExpiresAt: undefined,
+      ownedBackupIds: [],
+      failure: undefined,
+    });
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: gone,
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+      initialProjections: {
+        [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
+      },
+    });
+
+    await harness.sandbox.vaporizeScottySession();
+    await harness.sandbox.retryVaporizeSession({ id: SESSION_ID, nonce: "gone" });
+
+    assert.deepStrictEqual(harness.readRecord(), gone);
+    assert.ok(!harness.events.includes("host:destroy"));
+    assert.strictEqual(harness.runnerOperations.length, 0);
+    assert.ok(harness.events.includes(`projection:delete:session:${SESSION_ID}`));
+  });
+
   it("preserves a changed vaporize lease and surfaces conflict without destroying", async () => {
     const original = vaporizeRecord({
       operation: {

@@ -6,13 +6,14 @@ status: active
 # Scotty portable execution — active plan
 
 This is the governing plan for portable execution after commit
-`9499e4d649c559e3dc50a85709a240471e822b99` on 2026-07-27. It records what is
-implemented, the shape selected in the architecture work, the gaps discovered during the
-Cloudflare and Slumbers deployment, and the vertical slices that take Scotty through Box.
+`d821a7381124e4ae2ef7f2734426a1b48627282b` on 2026-07-28. It records what is
+implemented, the v1 scope selected after the Cloudflare and Slumbers deployment, and the
+vertical slices that finish Cloudflare plus trusted VPS execution.
 
 This file supersedes the portable-execution delivery section in `IMPLEMENTATION_DAG.md`.
 `PLAN.md`, `IMPLEMENTATION_DAG.md`, and `EFFECT_V4_MIGRATION.md` still govern their existing
-security, state-authority, lifecycle, Effect, Alchemy, and deployment invariants.
+state-authority, lifecycle, Effect, Alchemy, and deployment invariants. This file overrides their
+credential-isolation rule only for explicitly configured trusted VPS runners, as defined below.
 
 Scotty is a new product. The remaining portability work may hard-cut internal schemas and routes.
 Do not add compatibility branches for unused pre-portability records, legacy PTYs, Sheppard, or
@@ -26,7 +27,6 @@ same Scotty URL and the same mounted Pican application:
 ```sh
 scotty beam up "PROMPT" --repo owner/repo --provider cloudflare
 scotty beam up "PROMPT" --repo owner/repo --provider runner --runner slumbers
-scotty beam up "PROMPT" --repo owner/repo --provider box
 ```
 
 The prompt remains a normal CLI argument and JSON request field. A prompt file is not required.
@@ -37,24 +37,24 @@ another provider and does not migrate between providers in this plan.
 
 ## Requirements
 
-| ID  | Requirement                                                                                                                                                                | Status    |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| R0  | A user can create, open, steer, stop, resume, and destroy the same kind of Scotty session on Cloudflare, a named runner, or Box.                                           | Core goal |
-| R1  | Pican is the only session UI and agent host; Scotty does not rebuild a terminal or a second Codex app-server UI.                                                           | Must-have |
-| R2  | The session Durable Object remains authoritative for session identity, lifecycle, operation leases, execution binding, credentials, and committed checkpoints.             | Must-have |
-| R3  | Provider selection is explicit and immutable per session; an unavailable provider fails visibly without automatic fallback.                                                | Must-have |
-| R4  | Real Codex, GitHub, Box, Cloudflare, and runner credentials never enter an untrusted workload, prompt, URL, process argument, log, KV record, R2 archive, or API response. | Must-have |
-| R5  | Desired provider/runner state, observed connection state, runtime state, and displayed UI state are distinct and have one owner each.                                      | Must-have |
-| R6  | Slumbers and manually managed Linux/VPS machines share one outbound runner path with per-session Docker isolation.                                                         | Must-have |
-| R7  | Box uses one no-env Box per session, created from a stopped template and restored with the same Box ID.                                                                    | Must-have |
-| R8  | Every delivery step is a small, demoable vertical slice with local, adapter-contract, live failure, cleanup, and credential-negative proof.                                | Must-have |
+| ID  | Requirement                                                                                                                                                                                                                               | Status    |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| R0  | A user can create, open, steer, stop, resume, and destroy the same kind of Scotty session on Cloudflare or a named trusted VPS runner.                                                                                                    | Core goal |
+| R1  | Pican is the only session UI and agent host; Scotty does not rebuild a terminal or a second Codex app-server UI.                                                                                                                          | Must-have |
+| R2  | The session Durable Object remains authoritative for session identity, lifecycle, operation leases, execution binding, credential policy, Cloudflare credentials, and committed checkpoints.                                              | Must-have |
+| R3  | Provider selection is explicit and immutable per session; an unavailable provider fails visibly without automatic fallback.                                                                                                               | Must-have |
+| R4  | Cloudflare keeps sentinel-only workload credentials. A trusted VPS session may read owner Codex and Git credential files, but credentials never enter prompts, URLs, process arguments, logs, KV, R2, API responses, or Cloudflare state. | Must-have |
+| R5  | Desired provider/runner state, observed connection state, runtime state, and displayed UI state are distinct and have one owner each.                                                                                                     | Must-have |
+| R6  | Slumbers and manually managed Linux/VPS machines share one outbound runner path with per-session Docker workspace and process isolation.                                                                                                  | Must-have |
+| R7  | A runner host and its session containers are inside the owner trust boundary; Docker isolation does not claim to hide owner credentials from the session workload.                                                                        | Must-have |
+| R8  | Every delivery step is a small, demoable vertical slice with local, live failure, lifecycle, and cleanup proof.                                                                                                                           | Must-have |
 
 ## Locked language
 
 | Term              | Meaning                                                                                          | Do not call it                      |
 | ----------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------- |
 | Session           | Durable user task with one workspace, lifecycle, Pican identity, and immutable provider binding. | sandbox, box, environment           |
-| Provider          | A compute implementation selected at session creation: `cloudflare`, `runner`, or `box`.         | location, execution target, backend |
+| Provider          | A compute implementation selected at session creation: `cloudflare` or `runner`.                 | location, execution target, backend |
 | Runner            | The Scotty service running on a user-controlled Linux machine. `slumbers` is a runner name.      | host daemon, machine enrollment     |
 | Connection        | A Pican client’s saved relationship to a remote Pican server.                                    | provider, runner                    |
 | Control plane     | The public Worker plus the authoritative Auth, Session, and Runner Durable Objects.              | host, provider                      |
@@ -160,26 +160,21 @@ probe. It does **not** mean a Scotty session can run on Slumbers.
 
 ## Current gaps
 
-1. `ProviderSchema` still accepts only `"cloudflare"`, and `SessionRecord` has no portable
-   execution binding.
-2. Session orchestration still calls the Cloudflare Sandbox directly. Runner operations are not
-   used by create, Pican proxying, checkpoint, resume, or vaporize.
-3. `Cloudflare available` is hardcoded. Runner connection is actively probed, but there is no
-   control-plane-owned desired state, drain command, disconnect command, reconnect supervisor, or
-   runner management UI.
-4. The runner protocol carries finite request/reply operations only. It cannot yet carry Pican’s
-   streaming HTTP/SSE traffic or large checkpoint streams.
-5. The current Slumbers image is an execution proof image, not the portable Pican/Codex runtime.
-6. External-workload egress cannot yet redeem session sentinels without allowing bypass. Do not
-   put real Codex or GitHub credentials on Slumbers or Box until that gate passes.
-7. There is no Box API adapter, stopped template, no-env fork, Box lifecycle mapping, or Box
-   canary.
-8. The creation UI cannot select a provider or runner. It cannot show task state separately from
-   provider, runner-connection, and runtime state.
-9. Local Pican cannot yet save a Scotty remote connection and load its remote sessions. The
-   mounted browser Pican is the current interaction path.
+1. The real runner create path and repeatable setup command pass local gates. Slumbers now runs
+   the generated service with the pinned real image, but the matching Worker change and real
+   Pican/Codex session have not completed the deployed gate.
+2. A refreshed Codex credential stays with its current trusted VPS session. Propagating a rotated
+   credential to a later or concurrent VPS session remains recovery work.
+3. Runner stop, resume, checkpoint, hard-cap, host-reboot recovery, and orphan cleanup are not
+   connected to the public session lifecycle.
+4. The setup command is reusable, but a clean second VPS install and image release procedure have
+   not passed a live proof.
+5. The latest deployed Cloudflare code path is ready, but the final simultaneous real-task proof
+   has not run after the latest deployment.
+6. Local Pican cannot yet save a Scotty remote connection and load its remote sessions. The
+   mounted browser Pican is the v1 interaction path.
 
-## A: Cloudflare authority with Pican runtimes and an outbound runner tunnel
+## A: Cloudflare authority with Pican on Cloudflare and trusted VPS runners
 
 ```mermaid
 flowchart LR
@@ -190,21 +185,14 @@ flowchart LR
 
     S -->|cloudflare binding| CF[Cloudflare Sandbox]
     S -->|runner operations and streams| RD
-    S -->|Box lifecycle API| BX[Box]
-
     RD <-->|one outbound authenticated link| SR[scotty runner serve]
     SR --> SD[Slumbers Docker runtime]
 
-    BX --> BR[Box systemd runner]
-    BR --> BD[Box Docker runtime]
-
     CF --> PC[Pican]
     SD --> PS[Pican]
-    BD --> PB[Pican]
 
     W -->|authenticated /s/:id proxy| PC
     W -->|authenticated /s/:id proxy through Session and Runner DOs| PS
-    W -->|same runner tunnel| PB
 ```
 
 The control plane owns the logical session. Providers supply compute. Pican owns the agent-facing
@@ -213,17 +201,17 @@ second scheduler.
 
 ### Fit check: R × A
 
-| Req | Requirement                                                                                                                                                                | Status    |  A  |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | :-: |
-| R0  | A user can create, open, steer, stop, resume, and destroy the same kind of Scotty session on Cloudflare, a named runner, or Box.                                           | Core goal | ✅  |
-| R1  | Pican is the only session UI and agent host; Scotty does not rebuild a terminal or a second Codex app-server UI.                                                           | Must-have | ✅  |
-| R2  | The session Durable Object remains authoritative for session identity, lifecycle, operation leases, execution binding, credentials, and committed checkpoints.             | Must-have | ✅  |
-| R3  | Provider selection is explicit and immutable per session; an unavailable provider fails visibly without automatic fallback.                                                | Must-have | ✅  |
-| R4  | Real Codex, GitHub, Box, Cloudflare, and runner credentials never enter an untrusted workload, prompt, URL, process argument, log, KV record, R2 archive, or API response. | Must-have | ✅  |
-| R5  | Desired provider/runner state, observed connection state, runtime state, and displayed UI state are distinct and have one owner each.                                      | Must-have | ✅  |
-| R6  | Slumbers and manually managed Linux/VPS machines share one outbound runner path with per-session Docker isolation.                                                         | Must-have | ✅  |
-| R7  | Box uses one no-env Box per session, created from a stopped template and restored with the same Box ID.                                                                    | Must-have | ✅  |
-| R8  | Every delivery step is a small, demoable vertical slice with local, adapter-contract, live failure, cleanup, and credential-negative proof.                                | Must-have | ✅  |
+| Req | Requirement                                                                                                                                                                                                                               | Status    |  A  |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | :-: |
+| R0  | A user can create, open, steer, stop, resume, and destroy the same kind of Scotty session on Cloudflare or a named trusted VPS runner.                                                                                                    | Core goal | ✅  |
+| R1  | Pican is the only session UI and agent host; Scotty does not rebuild a terminal or a second Codex app-server UI.                                                                                                                          | Must-have | ✅  |
+| R2  | The session Durable Object remains authoritative for session identity, lifecycle, operation leases, execution binding, credential policy, Cloudflare credentials, and committed checkpoints.                                              | Must-have | ✅  |
+| R3  | Provider selection is explicit and immutable per session; an unavailable provider fails visibly without automatic fallback.                                                                                                               | Must-have | ✅  |
+| R4  | Cloudflare keeps sentinel-only workload credentials. A trusted VPS session may read owner Codex and Git credential files, but credentials never enter prompts, URLs, process arguments, logs, KV, R2, API responses, or Cloudflare state. | Must-have | ✅  |
+| R5  | Desired provider/runner state, observed connection state, runtime state, and displayed UI state are distinct and have one owner each.                                                                                                     | Must-have | ✅  |
+| R6  | Slumbers and manually managed Linux/VPS machines share one outbound runner path with per-session Docker workspace and process isolation.                                                                                                  | Must-have | ✅  |
+| R7  | A runner host and its session containers are inside the owner trust boundary; Docker isolation does not claim to hide owner credentials from the session workload.                                                                        | Must-have | ✅  |
+| R8  | Every delivery step is a small, demoable vertical slice with local, live failure, lifecycle, and cleanup proof.                                                                                                                           | Must-have | ✅  |
 
 ### Execution intent and binding
 
@@ -244,12 +232,6 @@ type Execution =
       readonly runtimeId: string;
     }
   | {
-      readonly state: "provisioning";
-      readonly provider: "box";
-      readonly templateId: string;
-      readonly generation: number;
-    }
-  | {
       readonly state: "bound";
       readonly provider: "cloudflare";
       readonly sandboxId: string;
@@ -259,14 +241,6 @@ type Execution =
       readonly provider: "runner";
       readonly runner: string;
       readonly runtimeId: string;
-    }
-  | {
-      readonly state: "bound";
-      readonly provider: "box";
-      readonly boxId: string;
-      readonly runner: string;
-      readonly runtimeId: string;
-      readonly generation: number;
     };
 ```
 
@@ -278,13 +252,6 @@ that allow impossible combinations.
 The provider choice is written once and never changes. A bound provider resource identity is also
 immutable unless its exact provider case defines a generation change during recovery. This plan
 does not support moving a session between providers.
-
-Box’s documented create/fork API does not expose an idempotency key, and the list response does
-not expose per-Box environment tags. Never blindly repeat a timed-out Box provision request.
-The Box systemd runner must include its neutral `BOX_ID`, Scotty session ID, and generation in its
-authenticated hello so the Session Durable Object can complete a lost-response binding. If
-neither the API response nor the runner callback establishes identity, keep the operation
-`unknown` and reconcile the account before retrying.
 
 ### Small capability seams
 
@@ -298,8 +265,9 @@ Effect services one vertical at a time:
    including SSE, disconnect cancellation, and bounded backpressure.
 4. **Checkpoint stream** — quiesce Pican, export/import the workspace, then let the Session DO
    commit current/previous R2 generations.
-5. **Credential broker** — validate a session/generation capability and redeem only a sentinel at
-   an allowed upstream.
+5. **Credential delivery** — keep the Cloudflare sentinel path unchanged; on a trusted VPS, copy
+   only the configured owner Codex and Git credential files into one session area outside the
+   workspace, then mount that area into its runtime.
 
 Git cloning, branch naming, credential-helper setup, Pican launch, Codex launch, Pican identity,
 hard-cap policy, checkpoint-generation selection, and cleanup order are Scotty behavior. They do
@@ -319,7 +287,8 @@ Scotty owns:
 - session IDs, repository, branch, prompt, provider selection, and Pican identity;
 - session lifecycle, operation leases, hard-cap schedules, and failure recovery;
 - runner desired state and runner credential authority;
-- real Codex/GitHub credentials and sentinel redemption;
+- Cloudflare Codex/GitHub credentials and sentinel redemption;
+- the trusted VPS credential-file policy and session-scoped mount configuration;
 - current/previous R2 checkpoint selection;
 - the public `/s/<id>` route and all browser credential stripping;
 - provider resource IDs and orphan reconciliation;
@@ -359,10 +328,7 @@ checkpoint decision.
 - **Runner:** Slumbers or a manually managed Linux/VPS host runs one `scotty runner serve` systemd
   service and one isolated Docker runtime per session. Scotty can stop/remove session containers,
   but it does not power off the physical host.
-- **Box:** the Worker uses the Box API to fork/resume/stop the Box. The Box starts the same runner
-  through systemd; live commands and Pican traffic use the runner protocol, not provider-specific
-  Box command APIs after bootstrap.
-- **Future E2B, Daytona, exe.dev, Modal, or managed Hetzner:** add one concrete resource adapter,
+- **Future Box, E2B, Daytona, exe.dev, Modal, or managed Hetzner:** add one concrete resource adapter,
   then use the same mounted-app/checkpoint contract where the provider can run the Scotty runner.
   Do not expand the common contract for speculative provider features.
 
@@ -439,12 +405,9 @@ Provider status is not a socket status:
 
 - Cloudflare may report `configured`; a real create/inspect operation proves session readiness.
 - Runner provider readiness requires at least one `accepting + connected` runner.
-- Box may report `configured`, `limited`, or `unavailable` from an explicit Box account/limits
-  check. Do not poll the Box API every five seconds.
-
-The session card separately shows task/session status and runtime health. A disconnected runner
-does not mutate a warm session to failed until a session operation or bounded recovery policy
-establishes the failure.
+  The session card separately shows task/session status and runtime health. A disconnected runner
+  does not mutate a warm session to failed until a session operation or bounded recovery policy
+  establishes the failure.
 
 ## Secrets and capabilities
 
@@ -456,15 +419,13 @@ Worker secrets remain inherited bindings outside Alchemy state:
 - `CODEX_AUTH_JSON`;
 - `GH_TOKEN`;
 - current static Slumbers runner credential until runner-token management lands;
-- `BOX_API_KEY` when the Box slice begins.
 
-Non-secret configuration such as the Box template ID may be an ordinary Worker variable.
 `npm run deploy:production` remains the only Cloudflare deployment path and must preserve inherited
 secrets rather than serializing their values into Alchemy state.
 
 ### Slumbers and other self-hosted runners
 
-The root/user systemd environment contains only:
+The root/user systemd environment contains:
 
 - Scotty control-plane URL;
 - stable runner name;
@@ -472,30 +433,16 @@ The root/user systemd environment contains only:
 - runner workspace root and digest-pinned runtime image configuration.
 
 The runner credential never enters a session container. Session containers receive only
-session/generation capabilities, Pican’s internal proxy credential, and Codex/GitHub sentinels
-through an exact allowlist.
+Pican’s internal proxy credential plus the configured owner Codex and Git credential files. The
+host copies those files into only the owning session area and mounts that area into the runtime.
+It never copies them into the workspace or a checkpoint.
 
-### Box
+This trusted-runner rule is a deliberate v1 security contract change. The owner trusts the VPS
+host and the code that runs inside its session containers with these credentials. Docker provides
+workspace and process separation. It does not provide credential secrecy from the workload.
 
-Every user Box is created or forked with `noEnv: true`. It receives none of the Box account’s
-dashboard variables, GitHub login, model credentials, Codex auth files, Box CLI token, or secret
-files.
-
-The control plane passes only:
-
-- Scotty session ID;
-- control-plane URL;
-- a short-lived or generation-bound runner capability;
-- non-secret runtime metadata.
-
-The Box API key stays only in the Worker secret boundary. Real Codex/GitHub credentials stay in
-the Session Durable Object and credential broker. Do not ask the user to log Codex into each Box
-for product mode.
-
-The Box platform explicitly recommends `noEnv: true`, waiting for `ready` or `idle` before issuing
-commands, using a template rather than fresh installs, and using systemd for processes that must
-return after stop/resume. The runner capability is not a model credential; it is still secret,
-session/generation bound, revocable, and stripped from the nested workload.
+The v1 runner does not add a credential broker, sidecar, default-deny egress proxy, or sentinel
+redemption path.
 
 ### Pican proxy credential
 
@@ -524,7 +471,7 @@ Transient actions remain in the persisted operation lease rather than expanding 
 1. The Session Durable Object validates and persists the immutable execution binding.
 2. The selected provider provisions or ensures its resource.
 3. Scotty prepares the repository and `scotty/<id>` branch in the isolated workspace.
-4. Scotty installs only Pican/Codex/GitHub sentinels in the runtime.
+4. Scotty installs Cloudflare sentinels or mounts the configured trusted VPS credential files.
 5. Scotty starts Pican at the fixed workspace/state roots.
 6. Scotty waits for mounted-app readiness.
 7. Scotty idempotently creates the Pican hosted session with the outer Scotty session ID.
@@ -553,130 +500,99 @@ Provider-native snapshots may happen too, but do not replace step 5.
 5. Verify Pican readiness and stable session identity.
 6. Publish `warm`.
 
-Box resumes the same `boxId`. Box’s `idle`/`running` API states cannot be used as Pican liveness
-because Box documents those states as reflecting only work queued through Box’s own prompt API.
-Scotty uses its runner probe and Pican readiness instead.
-
 ### Vaporize
 
-1. Revoke session/generation capabilities.
+1. Stop new work for the session.
 2. Stop Pican and the provider runtime.
-3. Remove the runner runtime or archive/delete the Box using the supported provider lifecycle.
+3. Remove the runner runtime and its workspace.
 4. Delete every owned R2 checkpoint generation.
 5. Delete the DO credential bundle and KV projection.
 6. Persist only the minimal `gone` tombstone.
 7. Reconcile and report any provider resource the API could not remove.
 
-The current Box public API documents create, update, stop/archive, resume, fork, and snapshot
-inspection but does not expose a documented delete operation in its OpenAPI surface. The Box
-slice must verify the actual supported permanent-cleanup contract before claiming vaporize leaves
-no provider resource.
-
 ## Delivery DAG
 
 ```mermaid
 flowchart TD
-    D[Done: Cloudflare plus mounted Pican] --> C
-    D --> R
-    R[Done: runner protocol, Docker, Slumbers link, liveness] --> C
-
-    C[N1: runner control and honest provider status] --> S1
-    S1[N2: Slumbers mounted Pican fixture] --> S2
-    S2[N3: external credential and egress boundary] --> S3
-    S3[N4: Slumbers lifecycle and dual-provider proof] --> B1
-
-    B1[N5: Box no-env template and provisioning] --> B2
-    B2[N6: Box stop/resume, checkpoint, and security] --> M
-
-    M[N7: six-task three-provider product proof] --> P
-    P[N8: local Pican remote connection handoff]
+    D[Done: Cloudflare Pican plus runner transport] --> S0
+    S0[S0: repeatable trusted VPS setup] --> V1
+    V1[V1: real Pican and Codex on Slumbers] --> V2
+    V2[V2: two Cloudflare tasks plus one Slumbers task] --> V3
+    V3[V3: trusted VPS lifecycle and recovery] --> V4
+    V4[V4: repeatable generic VPS installation]
 ```
 
-Do not begin Box implementation before the same mounted Pican runner path works on Slumbers. Do
-not enable real credentials on an external provider before the external egress-negative gate.
+Finish one slice and its live proof before starting the next slice. Box, Daytona, and other
+managed providers do not change this v1 contract.
 
 ## Next vertical slices
 
-### N1 — Control-plane-owned runner state
+### S0 — Repeatable trusted VPS setup
 
-**User-visible result:** `/providers` truthfully shows Cloudflare configuration plus Slumbers
-desired state and live connection. The owner can enable, drain, disable, or disconnect Slumbers
-without SSHing into the host.
+**User-visible result:** one normal command installs or updates the runner on Slumbers before any
+session starts.
 
 Implement:
 
-- persistent desired state in the named Runner Durable Object;
-- active-probe connection state and `lastSeenAt`;
-- admission checks before dispatch;
-- explicit control messages and server-side socket close;
-- one reconnect supervisor in `scotty runner serve` with capped exponential backoff;
-- `/api/providers`, `/api/runners`, owner-only runner action routes, and the `/providers` UI;
-- remove the hardcoded `/api/status` display;
-- keep systemd responsible only for local process crashes/reboots.
+- `scotty runner setup` validates Docker, the digest-pinned image, the Codex auth source, the
+  current GitHub CLI login, and `SCOTTY_RUNNER_TOKEN`;
+- install the compiled runner, runner-only credential sources, secure environment file, and
+  hardened systemd user service;
+- reload, enable, restart, and verify the service without printing a token.
 
 Proof:
 
-- local protocol tests for every desired/observed combination;
-- race tests for disconnect during probe and dispatch;
-- route/auth tests for owner versus standard browser;
-- live Slumbers: stop service → disconnected, start → connected, drain → no new dispatch, existing
-  inspect/stop still work, Worker disconnect → automatic reconnect;
-- no session/provider schema changes in this slice.
+- run the command on Slumbers instead of editing the service by hand;
+- run it a second time and prove the same service becomes active;
+- confirm the service uses the installed binary, image digest, and runner-only credential paths.
 
-### N2 — Slumbers mounted Pican fixture
+### V1 — Real Pican and Codex on Slumbers
 
-**User-visible result:** create a `--provider runner --runner slumbers` session and open a mounted
-Pican-compatible fixture at the same `/s/<id>` route, including a live SSE response.
+**User-visible result:** create one Slumbers session, open Pican, watch Codex run the initial
+prompt in a private repository, and vaporize the session.
 
 Implement:
 
-- hard-cut the session/provider schemas to the tagged execution binding;
-- add one portable OCI runtime image for Slumbers and Box, sharing pinned Pican/Codex artifacts
-  with the Cloudflare image where possible;
-- add multiplexed, bounded HTTP request/response streaming to the runner protocol;
-- preserve the public mount prefix while the runner talks to the runtime’s private loopback port;
-- propagate browser disconnect as stream cancellation;
-- use a fixture app first so no real model or GitHub credential is involved;
-- persist provider/runtime identity in the Session Durable Object and projection;
-- add provider and runner selection to the session composer.
+- replace the Python fixture process with the pinned Pican and Codex runtime already present in
+  the portable image;
+- add explicit trusted-host paths for the owner Codex auth file and GitHub CLI config;
+- copy those files into the session area, mount that area outside the workspace, and keep the
+  runner credential out of the container;
+- prepare the repository and branch, start Pican, wait for readiness, create the hosted session
+  with the outer session ID, and publish `warm` only after Pican accepts the initial prompt;
+- stop Pican and remove the runtime plus workspace during vaporize.
 
 Proof:
 
-- assets, API, POST body, large body, SSE, cancellation, backpressure, header stripping, spoofed
-  proxy-token rejection, wrong-session access, reconnect, and two concurrent sessions;
-- the Slumbers runtime has no Docker socket, host filesystem beyond its workspace bind, host
-  network, runner token, or unrelated environment;
-- Cloudflare session creation still works in the same deployment.
+- the mounted Pican assets, API, POST body, and SSE stream work through the existing runner link;
+- the session clones one allowed private repository and Codex completes one real task;
+- credential files are absent from the workspace, Docker inspect output, logs, API responses, KV,
+  and R2;
+- vaporize removes the Docker container and session workspace;
+- the Cloudflare path remains unchanged.
 
-### N3 — External credential and real Pican boundary
+### V2 — Parallel Cloudflare and Slumbers proof
 
-**User-visible result:** a real Pican-hosted Codex session can clone an allowed private repository
-and work on Slumbers without any real credential entering the session container.
+**User-visible result:** two Cloudflare sessions and one Slumbers session run at the same time and
+remain available after the browser disconnects.
 
 Implement:
 
-- launch the pinned Pican binary and Codex app-server in the portable image;
-- session/generation-bound sentinel capabilities;
-- a root-owned broker and non-bypassable Docker network policy;
-- DNS, IPv4, IPv6, raw TCP, redirects, proxy variables, and alternate-route enforcement;
-- Git credential-helper and Codex sentinel redemption through the broker;
-- Pican process environment kept separate from Codex’s exact child environment;
-- capability revocation on stop generation change and vaporize.
+- add no new provider abstraction;
+- fix only defects found by the three-session proof;
+- keep every final inspection session alive until the user confirms inspection is complete.
 
-Proof with fake credentials first:
+Proof:
 
-- scan container env, `/proc`, files, Git config/remotes, Pican state, logs, Docker inspect,
-  checkpoints, HTTP responses, and command output;
-- copied sentinels fail outside the owning session/generation and against another session;
-- every bypass path fails;
-- forced Codex token rotation persists only in Session DO storage;
-- only after all negatives pass, run one real prompt against an allowed disposable repository.
+- all three tasks run different prompts;
+- each mounted Pican session opens in Helium;
+- browser disconnect and reconnect do not stop work;
+- one provider failure does not block the other sessions.
 
-### N4 — Slumbers lifecycle and simultaneous Cloudflare proof
+### V3 — Trusted VPS lifecycle and recovery
 
-**User-visible result:** one Cloudflare session and one Slumbers session run at the same time,
-appear in the same list, open through Pican, survive browser disconnect, snapshot, stop, and
-resume independently.
+**User-visible result:** a Slumbers session stops, resumes, and recovers after runner or host
+restart with the same workspace and Pican identity.
 
 Implement:
 
@@ -688,109 +604,27 @@ Implement:
 
 Proof:
 
-- create both providers concurrently;
-- steer/read both Pican sessions;
-- disconnect the browser and runner during work;
+- stop and resume one Slumbers session twice;
 - restart `scotty-runner.service`;
-- snapshot/resume both and verify exact repository marker plus Pican identity;
+- reboot Slumbers and verify the exact repository marker plus Pican identity;
 - inject failed checkpoint, process kill, host reboot, stale operation receipt, and cleanup retry;
-- vaporize both and scan runtime, KV, R2, credential, schedule, Docker, and branch orphans.
+- vaporize and scan runtime, KV, R2, schedule, Docker, and branch orphans.
 
-### N5 — Box no-env template and provisioning
+### V4 — Generic VPS portability proof
 
-**User-visible result:** `--provider box` creates a Box from a stopped template, waits for it, and
-opens the same mounted Pican fixture through the same runner tunnel.
-
-Implement:
-
-- an Effect service around the Box HTTP API with Schema-decoded inputs/outputs and typed,
-  redacted failures;
-- inherited `BOX_API_KEY` Worker secret and non-secret template ID configuration;
-- a stopped template containing the portable image, `scotty`, and an enabled systemd runner;
-- one Box per session, forked with `noEnv: true` and explicit session/generation metadata;
-- poll `GET /boxes/{id}` until `ready` or `idle` before relying on per-Box environment or commands;
-- let the Box runner report `BOX_ID`, session ID, and generation so a lost fork response can be
-  reconciled without a duplicate fork;
-- persist `boxId`, runner identity, runtime identity, and generation in the Session Durable Object;
-- use the runner tunnel for Pican traffic rather than exposing Box’s private hosting token.
-
-Proof:
-
-- Box adapter contract tests against a fake HttpClient;
-- lost-response provisioning becomes bound from the authenticated runner hello or remains
-  explicitly `unknown`; it never blindly creates a second Box;
-- a disposable live Box canary tagged with its Scotty session ID;
-- no account dashboard env/files, GitHub login, Codex auth, Box CLI credential, or Box API key;
-- systemd runner connects after fork without manual SSH;
-- mounted fixture assets/API/SSE work at `/s/<id>`;
-- Cloudflare and Slumbers paths remain green.
-
-### N6 — Box lifecycle, recovery, and security
-
-**User-visible result:** a real Box Pican session stops billing, resumes the same Box ID, reconnects
-automatically, restores the same work and Pican identity, and can recover from Scotty’s R2
-checkpoint if provider state is unavailable.
+**User-visible result:** install the same runner on another Linux VPS without changing Scotty code.
 
 Implement:
 
-- quiesce and commit R2 before `POST /boxes/{boxId}/stop`;
-- poll `archiving → archived`;
-- `POST /boxes/{boxId}/resume`, then wait for runner and Pican readiness;
-- preserve the same `boxId`; do not fork on ordinary resume;
-- distinguish Box resource state, runner connection, Pican readiness, and session state;
-- verify permanent Box cleanup semantics before wiring vaporize;
-- add orphan reconciliation for API timeouts and ambiguous lifecycle calls.
+- reuse the S0 command, versioned Linux runner binary, and digest-pinned runtime image;
+- add one documented health check and upgrade procedure;
+- no automatic host provisioning, fleet scheduler, or provider-specific VPS API.
 
 Proof:
 
-- stop/resume twice with exact workspace and identity checks;
-- systemd restarts runner; hand-run processes are never relied on;
-- failed final snapshot leaves Box running and Scotty does not publish `sleeping`;
-- stale or failed Box snapshots do not replace Scotty’s last committed R2 checkpoint;
-- restore the R2 checkpoint into a clean runtime;
-- repeat the full external credential-negative matrix;
-- always stop/archive disposable Boxes after the canary to stop billing.
-
-### N7 — Three-provider product proof
-
-**User-visible result:** launch six independent tasks—two Cloudflare, two Slumbers, and two Box—
-with different prompts, open any task, steer it, read it back, and operate each lifecycle without
-thinking about its infrastructure.
-
-Implement only the UI needed for this proof:
-
-- provider and runner choice in New session;
-- task status separate from provider/runtime status;
-- provider badge as secondary session metadata;
-- searchable active/recent sessions;
-- clear unavailable, draining, sleeping, and failed actions;
-- no fleet dashboard, automatic scheduler, migration UI, pricing engine, or generic plugin system.
-
-Proof:
-
-- all six provision concurrently within configured capacity;
-- one failing provider does not block the other sessions;
-- steer and reconnect to each session;
-- snapshot/resume one of each provider;
-- drain Slumbers while its existing tasks continue and new runner placement fails clearly;
-- clean up all six and produce a zero-orphan report.
-
-### N8 — Local Pican connection handoff
-
-**User-visible result:** `scotty beam up` can open or emit a pairing link that adds the remote
-Scotty/Pican session to a local Pican instance. The local Pican lists and operates the remote
-session without moving execution to the laptop.
-
-This is primarily Pican work and does not block Box:
-
-- stable connection identity;
-- one-use pairing and revocable device credential;
-- server-side credential storage;
-- canonical session reload plus live SSE after reconnect;
-- remote send, steer, cancel, files, diff, and Git views;
-- no provider-specific client protocol.
-
-The first proof uses Cloudflare, then the same path must work unchanged for Slumbers and Box.
+- install on a clean supported Linux host;
+- connect it as a new named runner;
+- repeat the V1 create, work, mounted Pican, and vaporize proof.
 
 ## Test strategy
 
@@ -827,7 +661,7 @@ Unsupported capabilities return a typed unsupported result. They do not fake suc
 
 ### Live failure matrix
 
-Run these against Slumbers and Box before declaring either provider complete:
+Run these against Slumbers before declaring the trusted VPS path complete:
 
 1. browser disconnect and reconnect during streamed output;
 2. runner WebSocket drop before, during, and after an operation;
@@ -836,7 +670,7 @@ Run these against Slumbers and Box before declaring either provider complete:
 5. duplicate operation, reply loss, timeout, and ambiguous process death;
 6. Pican graceful timeout and staged hard kill;
 7. checkpoint upload failure and restore failure;
-8. credential-copy and network-bypass attempts;
+8. credential-file mount scope and checkpoint exclusion;
 9. vaporize retry after every intermediate failure;
 10. simultaneous Cloudflare plus external-provider work.
 
@@ -849,33 +683,16 @@ Keep two separate Cloudflare gates:
 - guarded `npm run deploy:production` proves exact clean `main`, account/resource audit, Alchemy
   rollout/no-op, and post-deploy health.
 
-Adding Box or runner code must not make an unchanged Cloudflare Container rebuild necessary unless
+Adding runner code must not make an unchanged Cloudflare Container rebuild necessary unless
 the pinned runtime image changed. Separate runtime artifacts from Worker-only changes where
 Alchemy’s source hash currently couples them.
 
 ### Slumbers proof
 
 Deploy the exact compiled Linux binary and digest-pinned portable image, verify hashes, restart
-the enabled systemd unit, and prove control-plane liveness. Then run the N2–N4 API/UI sequence
+the enabled systemd unit, and prove control-plane liveness. Then run the V1–V3 API/UI sequence
 through production Scotty. SSH/systemctl is setup and failure injection only; normal session
 operations must come from Scotty.
-
-### Box proof
-
-Use a dedicated stopped template and disposable Box sessions. The canary must record every Box ID
-it creates, stop/archive each on success or failure, and fail if cleanup cannot be confirmed.
-Never run a Box live canary from the default credential-free suite.
-
-The Box gate covers:
-
-- `noEnv: true`;
-- wait-for-ready ordering;
-- systemd startup;
-- mounted Pican streaming;
-- real provider stop/resume with the same Box ID;
-- Scotty R2 recovery;
-- account/credential negative scan;
-- confirmed cleanup and stopped billing.
 
 ## Deployment and operations
 
@@ -889,7 +706,7 @@ The Box gate covers:
 - the Cloudflare Sandbox Container application;
 - KV, R2, assets, and migrations.
 
-It does not SSH into Slumbers, update a Hetzner host, or publish a Box template.
+It does not SSH into Slumbers or update another VPS.
 
 ### Runner release
 
@@ -898,26 +715,15 @@ image. Slumbers and manually managed VPS runners update through an explicit oper
 service-management workflow. The runner reports its protocol/build version during hello; the
 control plane rejects incompatible versions.
 
-### Box template release
-
-Publishing the Box template is a separate explicit operation:
-
-1. resume the template;
-2. install the exact runner binary and portable runtime image;
-3. verify versions and start it once to warm snapshot read order;
-4. stop the template and confirm its completed snapshot;
-5. update the non-secret production template ID/version only after the canary passes.
-
-Do not rebuild the template for ordinary Worker/UI changes.
-
 ## Deliberately deferred
 
 - automatic provider selection, fallback, or migration;
 - session movement between machines;
 - fleets, queues, pools, autoscaling, pricing, and usage billing;
 - generic Git, PTY, desktop, or provider-snapshot APIs;
-- E2B, Daytona, exe.dev, Modal, or managed Hetzner implementations before Box;
+- Box, Daytona, E2B, exe.dev, Modal, and managed VPS provisioning;
 - a second lightweight Codex UI;
+- periodic Pican application heartbeats; create and access use bounded readiness checks instead;
 - restoring legacy terminal or Sheppard behavior;
 - backward compatibility for unused pre-portability session schemas;
 - provider features that cannot pass the common security and recovery gates.
@@ -931,10 +737,3 @@ Do not rebuild the template for ordinary Worker/UI changes.
 - `docs/research/flue-primitives-review.md`
 - `docs/research/pican-remote-connections.md`
 - `docs/research/amp-orbs-product-patterns.md`
-- [ASCII Box documentation index](https://docs.ascii.dev/llms.txt)
-- [Build a Platform on Box](https://docs.ascii.dev/box/platform-guide)
-- [Box Secrets and no-env Boxes](https://docs.ascii.dev/box/secrets)
-- [Box Long-Running Tasks](https://docs.ascii.dev/box/long-running-tasks)
-- [Box Templates](https://docs.ascii.dev/box/templates)
-- [Box Snapshots](https://docs.ascii.dev/box/snapshots)
-- [Box Public API v1](https://docs.ascii.dev/box/api/v1)

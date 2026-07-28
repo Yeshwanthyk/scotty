@@ -3,6 +3,7 @@ import { Effect, Fiber, Layer, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { credentialVaultLayer } from "../src/credential-vault";
 import {
+  decodePicanBootstrapResponseJson,
   Pican,
   PicanTransportFailure,
   picanLayer,
@@ -69,6 +70,22 @@ const createHostedSession = (id: string, prompt?: string) =>
 const stopPican = () => Effect.flatMap(Pican, (pican) => pican.stop());
 
 describe("Pican", () => {
+  it("decodes only the bootstrap fields the Worker persists", () => {
+    const valid = decodePicanBootstrapResponseJson(
+      JSON.stringify({ defaultBranch: "main", repoExists: true }),
+    );
+    const invalid = decodePicanBootstrapResponseJson(
+      JSON.stringify({ defaultBranch: "", repoExists: "yes" }),
+    );
+
+    assert.ok(Result.isSuccess(valid));
+    assert.deepStrictEqual(valid.success, {
+      defaultBranch: "main",
+      repoExists: true,
+    });
+    assert.ok(Result.isFailure(invalid));
+  });
+
   it.effect("forwards the request exactly while replacing browser and proxy credentials", () =>
     Effect.gen(function* () {
       let forwarded: Request | undefined;

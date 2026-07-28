@@ -6,6 +6,8 @@ import type {
   ProcessOptions,
   RestoreBackupResult,
 } from "@cloudflare/sandbox";
+import { Data, Match } from "effect";
+import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
@@ -15,6 +17,13 @@ import { InMemoryFaultInjectableFake } from "./support";
 const RECORD_KEY = "scotty:session";
 const CREDENTIAL_KEY = "scotty:credential";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
+
+class InjectedHarnessFailure extends Data.TaggedError("InjectedHarnessFailure")<{
+  readonly message: string;
+}> {}
+
+export const injectedHarnessFailure = (message: string): InjectedHarnessFailure =>
+  new InjectedHarnessFailure({ message });
 
 interface StatusProjection {
   readonly status?: string;
@@ -114,6 +123,8 @@ export interface SessionHarness {
   readonly picanRequests: RecordedPicanRequest[];
   readonly picanSignals: string[];
   readonly picanStarts: RecordedPicanStart[];
+  readonly runnerOperations: ReadonlyArray<RunnerOperation>;
+  readonly runnerRequests: ReadonlyArray<Request>;
   readonly writtenFiles: ReadonlyArray<{
     readonly path: string;
     readonly content: string;
@@ -172,7 +183,7 @@ class HarnessStorage {
   get = async <A>(key: string): Promise<A | undefined> => {
     if (this.failNextGet) {
       this.failNextGet = false;
-      throw new Error("injected storage get failure");
+      throw injectedHarnessFailure("injected storage get failure");
     }
     const value = structuredClone(this.memory.values.get(key)) as A | undefined;
     const count = (this.getCounts.get(key) ?? 0) + 1;
@@ -240,7 +251,7 @@ class HarnessStorage {
               (mutation.value as SessionRecord).operation?.kind === "create",
           )
         ) {
-          throw new Error("simulated DO crash after initial record commit");
+          throw injectedHarnessFailure("simulated DO crash after initial record commit");
         }
         return result;
       } finally {
@@ -331,6 +342,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const picanRequests: RecordedPicanRequest[] = [];
   const picanSignals: string[] = [];
   const picanStarts: RecordedPicanStart[] = [];
+  const runnerOperations: RunnerOperation[] = [];
+  const runnerRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
   const failures = new Set<HarnessFailureStage>();
@@ -391,7 +404,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       );
     },
     delete: async (key: string): Promise<void> => {
-      if (failures.has("projectionDelete")) throw new Error("injected projection deletion failure");
+      if (failures.has("projectionDelete"))
+        throw injectedHarnessFailure("injected projection deletion failure");
       projections.delete(key);
       events.push(`projection:delete:${key}`);
     },
@@ -413,11 +427,59 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         dispatch:
           options.runnerDispatch ??
           (async (operation) => {
-            // oxlint-disable-next-line scotty/no-manual-tag-check -- test fake records the protocol operation without introducing an Effect dependency into the host harness
-            const ensuring = operation._tag === "EnsureRuntime";
-            events.push(
-              `runner:dispatch:${ensuring ? "EnsureRuntime" : "RemoveRuntime"}:${operation.operationId}`,
+            runnerOperations.push(operation);
+            const [operationTag, result] = Match.value(operation).pipe(
+              Match.discriminatorsExhaustive("_tag")({
+                EnsureRuntime: () => [
+                  "EnsureRuntime",
+                  {
+                    _tag: "EnsureRuntimeResult" as const,
+                    phase: "running" as const,
+                    resourceId: `runner-v1:${operation.sessionId}`,
+                    workspace: `/runner/${operation.sessionId}`,
+                  },
+                ],
+                InspectRuntime: () => [
+                  "InspectRuntime",
+                  {
+                    _tag: "InspectRuntimeResult" as const,
+                    phase: "running" as const,
+                    resourceId: `runner-v1:${operation.sessionId}`,
+                    workspace: `/runner/${operation.sessionId}`,
+                  },
+                ],
+                ExecRuntime: () => [
+                  "ExecRuntime",
+                  {
+                    _tag: "ExecRuntimeResult" as const,
+                    exitCode: 0,
+                    stdout: operation.operationId.includes("bootstrap")
+                      ? JSON.stringify({ defaultBranch: "main", repoExists: true })
+                      : "",
+                    stderr: "",
+                  },
+                ],
+                StopRuntime: () => [
+                  "StopRuntime",
+                  {
+                    _tag: "StopRuntimeResult" as const,
+                    phase: "stopped" as const,
+                    resourceId: `runner-v1:${operation.sessionId}`,
+                    workspace: `/runner/${operation.sessionId}`,
+                  },
+                ],
+                RemoveRuntime: () => [
+                  "RemoveRuntime",
+                  {
+                    _tag: "RemoveRuntimeResult" as const,
+                    phase: "absent" as const,
+                    resourceId: `runner-v1:${operation.sessionId}`,
+                    workspace: `/runner/${operation.sessionId}`,
+                  },
+                ],
+              }),
             );
+            events.push(`runner:dispatch:${operationTag}:${operation.operationId}`);
             return {
               ok: true,
               response: {
@@ -425,19 +487,26 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                 version: 2,
                 operationId: operation.operationId,
                 sessionId: operation.sessionId,
-                result: {
-                  _tag: ensuring ? "EnsureRuntimeResult" : "RemoveRuntimeResult",
-                  phase: ensuring ? "running" : "absent",
-                  resourceId: `runner-v1:${operation.sessionId}`,
-                  workspace: `/runner/${operation.sessionId}`,
-                },
+                result,
               },
             } as never;
           }),
         fetch:
           options.runnerFetch ??
           (async (request) => {
-            events.push(`runner:fetch:${new URL(request.url).pathname}`);
+            const copy = request.clone();
+            runnerRequests.push(copy);
+            const path = new URL(request.url).pathname;
+            events.push(`runner:fetch:${path}`);
+            if (path.endsWith("/api/settings")) return Response.json({ ready: true });
+            if (path.endsWith("/api/new-session"))
+              return Response.json({
+                id: "pican-session-1",
+                nativeId: "019d0f55-8d43-7b8c-b63f-f3875b66d03b",
+                runtime: "codex",
+                createState: "created",
+                promptDispatchState: "accepted",
+              });
             return new Response("runner fixture");
           }),
         status: async () => "connected",
@@ -454,7 +523,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     BACKUP_BUCKET: {
       list: async (listOptions?: { readonly prefix?: string }) => {
         events.push(`r2:list:${listOptions?.prefix ?? ""}`);
-        if (failures.has("backupList")) throw new Error("injected backup list failure");
+        if (failures.has("backupList"))
+          throw injectedHarnessFailure("injected backup list failure");
         return {
           objects: (options.r2Objects ?? [])
             .filter((key) => key.startsWith(listOptions?.prefix ?? ""))
@@ -464,7 +534,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         };
       },
       delete: async (keys: string | string[]) => {
-        if (failures.has("backupDelete")) throw new Error("injected backup delete failure");
+        if (failures.has("backupDelete"))
+          throw injectedHarnessFailure("injected backup delete failure");
         const deleted = typeof keys === "string" ? [keys] : keys;
         r2DeletedKeys.push(deleted);
         events.push(`r2:delete:${deleted.join(",")}`);
@@ -515,7 +586,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       picanSignals.push(signal);
       picanProcess = undefined;
       if (failures.has("picanStop"))
-        throw new Error("injected Pican stop failure after termination");
+        throw injectedHarnessFailure("injected Pican stop failure after termination");
     },
     waitForExit: async (): Promise<{ readonly exitCode: number }> => {
       events.push("host:pican:waitForExit");
@@ -523,7 +594,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     },
     waitForPort: async (port: number): Promise<void> => {
       events.push(`host:pican:waitForPort:${port}`);
-      if (failures.has("picanLaunch")) throw new Error("injected Pican launch failure");
+      if (failures.has("picanLaunch"))
+        throw injectedHarnessFailure("injected Pican launch failure");
     },
   });
   if (options.initialPicanRunning === true) picanProcess = makePicanProcess();
@@ -543,14 +615,14 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                 : "exec";
         events.push(`host:exec:${stage === "downRollout" ? "exec" : stage}`);
         if (failures.has("workspacePrepare") && stage === "workspace")
-          throw new Error("injected workspace failure");
+          throw injectedHarnessFailure("injected workspace failure");
         if (failures.has("checkpointSync") && command === "sync")
-          throw new Error("injected checkpoint sync failure");
+          throw injectedHarnessFailure("injected checkpoint sync failure");
         if (failures.has("checkpointDefect") && command === "sync") {
           return {
             ...successfulExec(command),
             get success(): boolean {
-              throw new Error("injected checkpoint defect");
+              throw injectedHarnessFailure("injected checkpoint defect");
             },
           };
         }
@@ -559,7 +631,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           (stage === "downRollout" && failures.has("downRollout")) ||
           (stage === "downTar" && failures.has("downTar"))
         )
-          throw new Error(`injected ${stage} failure`);
+          throw injectedHarnessFailure(`injected ${stage} failure`);
         const configured = options.commandStdout?.(command);
         const stdout =
           configured ??
@@ -576,7 +648,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     restoreBackup: {
       value: async (backup: DirectoryBackup): Promise<RestoreBackupResult> => {
         events.push("host:restoreBackup");
-        if (options.failureStage === "restoreBackup") throw new Error("injected restore failure");
+        if (options.failureStage === "restoreBackup")
+          throw injectedHarnessFailure("injected restore failure");
         return { success: true, id: backup.id, dir: backup.dir };
       },
     },
@@ -585,14 +658,14 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         writtenFiles.push({ path, content });
         events.push("host:writeFile");
         if (failures.has("downWriteManifest") && path === "/tmp/metadata.json")
-          throw new Error("injected manifest write failure");
+          throw injectedHarnessFailure("injected manifest write failure");
       },
     },
     mkdir: {
       value: async (_path: string): Promise<void> => {
         events.push("host:mkdir");
         if (options.failureStage === "containerAuthSeed")
-          throw new Error("injected container auth failure");
+          throw injectedHarnessFailure("injected container auth failure");
       },
     },
     setEnvVars: {
@@ -607,7 +680,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         if (failures.has("picanLaunch") || failures.has("rollbackResume")) {
           if (failures.has("checkpointFailureStateRead")) storage.injectNextGetFailure();
           if (failures.has("checkpointFailureStatePersist")) storage.injectNextTransactionFailure();
-          throw new Error("injected Pican launch failure");
+          throw injectedHarnessFailure("injected Pican launch failure");
         }
         picanProcess = makePicanProcess();
         return picanProcess;
@@ -634,7 +707,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           url: request.url,
         });
         events.push(`host:pican:fetch:${port}`);
-        if (failures.has("picanCreate")) throw new Error("injected Pican create failure");
+        if (failures.has("picanCreate"))
+          throw injectedHarnessFailure("injected Pican create failure");
         if (options.picanCreateResponse !== undefined) return options.picanCreateResponse();
         return Response.json({
           id: "pican-session-1",
@@ -655,7 +729,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async (): Promise<void> => {
         events.push("host:destroy");
         if (failures.has("vaporizeDestroy") || options.destroyBehavior === "reject")
-          throw new Error("injected destroy failure");
+          throw injectedHarnessFailure("injected destroy failure");
         if (options.destroyBehavior === "pending") return new Promise<void>(() => undefined);
       },
     },
@@ -667,10 +741,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
         if (failures.has("hardCapSchedule") && callback === "enforceHardCap") {
-          throw new Error("injected hard-cap schedule failure");
+          throw injectedHarnessFailure("injected hard-cap schedule failure");
         }
         if (failures.has("vaporizeRetrySchedule") && callback === "retryVaporizeSession")
-          throw new Error("injected vaporize retry schedule failure");
+          throw injectedHarnessFailure("injected vaporize retry schedule failure");
         const scheduled = { when, callback, payload };
         schedules.push(scheduled);
         return scheduled;
@@ -694,6 +768,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     picanRequests,
     picanSignals,
     picanStarts,
+    runnerOperations,
+    runnerRequests,
     writtenFiles,
     r2DeletedKeys,
     memory: storage.memory,

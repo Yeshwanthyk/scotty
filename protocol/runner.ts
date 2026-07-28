@@ -39,6 +39,7 @@ export const ExecRuntimeSchema = Schema.TaggedStruct("ExecRuntime", {
   ...OperationFields,
   argv: Schema.NonEmptyArray(ArgumentSchema).check(Schema.isMaxLength(128)),
   cwd: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(4096))),
+  detach: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecRuntime = typeof ExecRuntimeSchema.Type;
 

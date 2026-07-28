@@ -104,17 +104,22 @@ COPY worker/container/skills/skills.lock.json /opt/scotty/skills.lock.json
 COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
 COPY worker/container/pican-linux-amd64.lock.json /opt/scotty/pican-linux-amd64.lock.json
 COPY worker/container/pican-linux-amd64 /usr/local/bin/pican
+COPY worker/container/scotty-runner-bootstrap /usr/local/bin/scotty-runner-bootstrap
+COPY worker/container/scotty-runner-pican /usr/local/bin/scotty-runner-pican
 RUN chmod 0755 \
     /usr/local/bin/pican \
+    /usr/local/bin/scotty-runner-bootstrap \
+    /usr/local/bin/scotty-runner-pican \
     /usr/local/bin/scotty \
   && chmod -R a-w /opt/scotty/skills \
+  && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-runner-pican \
   && echo "$(jq --raw-output .binarySha256 /opt/scotty/pican-linux-amd64.lock.json)  /usr/local/bin/pican" | sha256sum --check --strict \
   && test "$(pican --version)" = "$(jq --raw-output .sourceCommit /opt/scotty/pican-linux-amd64.lock.json)" \
   && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
   && scotty tools list --json >/dev/null \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python git gh tmux shellcheck \
-    node npm bun corepack cc pkg-config codex pican; do \
+    node npm bun corepack cc pkg-config codex pican scotty-runner-bootstrap scotty-runner-pican; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done
 
