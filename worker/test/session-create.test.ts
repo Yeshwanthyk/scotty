@@ -278,7 +278,7 @@ describe("Sandbox create orchestration", () => {
     assert.ok(warmIndex < warmProjectionIndex);
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),
-      ["enforceHardCap"],
+      ["enforceHardCap", "observeAgentActivity"],
     );
     assert.strictEqual(harness.picanStarts.length, 1);
     assert.strictEqual(harness.picanStarts[0]?.options?.processId, "scotty-pican");
@@ -421,7 +421,9 @@ describe("Sandbox create orchestration", () => {
       runtime: "codex",
       initialPrompt: CREATE_INPUT.prompt,
     });
-    assert.deepStrictEqual(harness.schedules, []);
+    assert.deepStrictEqual(harness.schedules, [
+      { when: 10, callback: "observeAgentActivity", payload: {} },
+    ]);
     assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
     assert.ok(!harness.events.includes("credential:put"));
     assert.ok(!harness.events.includes("host:destroy"));
@@ -598,7 +600,7 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(conflictError.code, "conflict");
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),
-      ["enforceHardCap"],
+      ["enforceHardCap", "observeAgentActivity"],
     );
     assert.strictEqual(
       harness.commands.filter((command) => command.startsWith("gh repo view")).length,

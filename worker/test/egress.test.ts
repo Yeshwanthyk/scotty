@@ -329,6 +329,8 @@ describe("pass-through policy", () => {
         "registry.npmjs.org",
         "pypi.org",
         "files.pythonhosted.org",
+        "proxy.golang.org",
+        "sum.golang.org",
         "crates.io",
         "static.crates.io",
         "index.crates.io",

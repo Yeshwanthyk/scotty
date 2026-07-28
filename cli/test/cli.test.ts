@@ -362,6 +362,8 @@ describe("configuration and transport", () => {
       updatedAt: "2026-07-20T12:01:00Z",
       hardCapAt: "2026-07-20T16:00:00Z",
       projectedAt: "2026-07-20T12:01:01Z",
+      agentState: "working",
+      lastAgentEventAt: "2026-07-20T12:00:59Z",
       ageSeconds: 60,
       capRemainingSeconds: 14340,
       operation: { kind: "snapshot", nonce: "internal" },
@@ -386,6 +388,8 @@ describe("configuration and transport", () => {
         ageSeconds: 60,
         capRemainingSeconds: 14340,
         projectedAt: "2026-07-20T12:01:01Z",
+        agentState: "working",
+        lastAgentEventAt: "2026-07-20T12:00:59Z",
       },
     ]);
     expect(h.stdout.join("")).not.toContain("must-not-leak");

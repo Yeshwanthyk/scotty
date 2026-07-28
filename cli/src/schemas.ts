@@ -20,6 +20,7 @@ export type PendingUp = typeof PendingUpSchema.Type;
 export const ToolCategorySchema = Schema.Union([
   Schema.Literal("search-data"),
   Schema.Literal("python"),
+  Schema.Literal("go"),
   Schema.Literal("git-process"),
   Schema.Literal("javascript"),
   Schema.Literal("browser"),
@@ -86,6 +87,8 @@ export const SessionResponseSchema = Schema.Struct({
   capRemainingSeconds: Schema.Finite,
   projectedAt: Schema.optionalKey(Schema.Unknown),
   codexThreadId: Schema.optionalKey(Schema.Unknown),
+  agentState: Schema.optionalKey(Schema.Unknown),
+  lastAgentEventAt: Schema.optionalKey(Schema.Unknown),
   failure: Schema.optionalKey(Schema.Unknown),
 });
 export const SessionsResponseSchema = Schema.Array(SessionResponseSchema);

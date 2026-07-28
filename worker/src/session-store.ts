@@ -7,6 +7,7 @@ import {
   ScottyError,
   wrongState,
   type OperationKind,
+  type AgentActivityState,
   type SessionRecord,
   type SessionStatus,
 } from "./contracts";
@@ -82,6 +83,10 @@ interface SessionStoreShape {
     nonce: string,
     update: (record: SessionRecord) => SessionRecord,
   ) => Effect.Effect<SessionRecord, ScottyError>;
+  readonly updateAgentActivity: (
+    expectedLastEventAt: string | undefined,
+    state: AgentActivityState,
+  ) => Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly releaseOperation: (nonce: string) => Effect.Effect<SessionRecord, ScottyError>;
   readonly releaseOperationIfHeld: (
     nonce: string,
@@ -302,6 +307,31 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
       },
     ),
     updateForOperation,
+    updateAgentActivity: Effect.fnUntraced(function* (expectedLastEventAt, state) {
+      const lastAgentEventAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+      return yield* transact(async (transaction) => {
+        const stored = await transaction.get();
+        if (stored === undefined) return Result.succeed(Option.none());
+        const decoded = decode(stored);
+        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
+        const record = decoded.success;
+        if (
+          record.status !== "warm" ||
+          record.operation !== null ||
+          record.lastAgentEventAt !== expectedLastEventAt
+        )
+          return Result.succeed(Option.none());
+        if (record.agentState === state) return Result.succeed(Option.some(record));
+        const next: SessionRecord = {
+          ...record,
+          agentState: state,
+          lastAgentEventAt,
+          updatedAt: lastAgentEventAt,
+        };
+        await transaction.put(next);
+        return Result.succeed(Option.some(next));
+      });
+    }),
     releaseOperation,
     releaseOperationIfHeld: Effect.fnUntraced(function* (nonce) {
       const now = new Date(yield* Clock.currentTimeMillis).toISOString();

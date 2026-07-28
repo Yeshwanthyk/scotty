@@ -67,6 +67,8 @@ const fetchPican = (request: Request) => Effect.flatMap(Pican, (pican) => pican.
 const launchPican = (id: string) => Effect.flatMap(Pican, (pican) => pican.launch(id));
 const createHostedSession = (id: string, prompt?: string) =>
   Effect.flatMap(Pican, (pican) => pican.createHostedSession(id, prompt));
+const workerStatus = (id: string, nativeId: string) =>
+  Effect.flatMap(Pican, (pican) => pican.workerStatus(id, nativeId));
 const stopPican = () => Effect.flatMap(Pican, (pican) => pican.stop());
 
 describe("Pican", () => {
@@ -128,6 +130,29 @@ describe("Pican", () => {
       assert.strictEqual(captured.headers.get("connection"), null);
       assert.strictEqual(captured.headers.get("x-remove-me"), null);
       assert.strictEqual(captured.headers.get("x-forwarded-for"), null);
+    }),
+  );
+
+  it.effect("decodes the allow-listed worker activity state", () =>
+    Effect.gen(function* () {
+      let forwarded: Request | undefined;
+      const status = yield* withPican(
+        {
+          containerFetch: (request) => {
+            forwarded = request;
+            return Promise.resolve(
+              Response.json({ state: "running", ignoredCredentialLikeField: "never-retained" }),
+            );
+          },
+        },
+        workerStatus(SESSION_ID, "codex-thread"),
+      );
+
+      assert.deepStrictEqual(status, { state: "running" });
+      assert.strictEqual(
+        forwarded?.url,
+        `http://pican.internal/s/${SESSION_ID}/api/worker-status?id=codex-thread`,
+      );
     }),
   );
 
@@ -257,6 +282,10 @@ describe("Pican", () => {
         GH_TOKEN: `scotty-github-${SESSION_ID}-sentinel`,
         GITHUB_SENTINEL: `scotty-github-${SESSION_ID}-sentinel`,
         GIT_TERMINAL_PROMPT: "0",
+        NODE_OPTIONS: "--use-system-ca",
+        GOTOOLCHAIN: "auto",
+        GOPROXY: "https://proxy.golang.org",
+        GOSUMDB: "sum.golang.org",
         TERM: "xterm-256color",
         LANG: "C.UTF-8",
         LC_ALL: "C.UTF-8",

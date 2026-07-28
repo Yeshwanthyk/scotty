@@ -70,6 +70,13 @@ export type PicanBootstrapResponse = typeof PicanBootstrapResponseSchema.Type;
 export const decodePicanBootstrapResponseJson = Schema.decodeUnknownResult(
   Schema.fromJsonString(PicanBootstrapResponseSchema),
 );
+const PicanWorkerStatusSchema = Schema.Struct({
+  state: Schema.Literals(["idle", "running", "error"]),
+});
+export type PicanWorkerStatus = typeof PicanWorkerStatusSchema.Type;
+export const decodePicanWorkerStatusJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(PicanWorkerStatusSchema),
+);
 
 export type PicanCreateResult =
   | ({ readonly state: "pending" } & PicanCreateResponse)
@@ -102,6 +109,10 @@ interface PicanShape {
     id: string,
     prompt?: string,
   ) => Effect.Effect<PicanCreateResult, PicanCreateFailure>;
+  readonly workerStatus: (
+    id: string,
+    nativeId: string,
+  ) => Effect.Effect<PicanWorkerStatus, PicanCreateFailure>;
   readonly stop: () => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
@@ -191,6 +202,19 @@ export const picanLayer = (
             catch: picanTransportFailure,
           });
           return classifyPicanCreateResponse(response.status, text);
+        }),
+        workerStatus: Effect.fnUntraced(function* (id, nativeId) {
+          const url = new URL(`http://pican.internal/s/${id}/api/worker-status`);
+          url.searchParams.set("id", nativeId);
+          const response = yield* forward(new Request(url));
+          const text = yield* Effect.tryPromise({
+            try: () => response.text(),
+            catch: picanTransportFailure,
+          });
+          if (!response.ok) return yield* picanTransportFailure();
+          const decoded = decodePicanWorkerStatusJson(text);
+          if (Result.isFailure(decoded)) return yield* picanTransportFailure();
+          return decoded.success;
         }),
         stop: Effect.fnUntraced(function* () {
           const process = yield* runtime.getProcess(PICAN_PROCESS_ID);

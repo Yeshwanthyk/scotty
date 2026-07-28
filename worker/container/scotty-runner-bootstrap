@@ -74,7 +74,9 @@ cat >"${codex_home}/AGENTS.md" <<'EOF'
 - Read and follow the repository AGENTS.md first; repository instructions override this file.
 - Run `scotty tools list --json` to inspect the standard sandbox tools.
 - Prefer `rg`, `fd`, and `ast-grep` for search. Use `jq`, `yq`, and `qsv` for structured data.
-- Use `uv` and `uvx` for Python. Use Corepack and the repository's declared JavaScript package manager.
+- Use `uv` and `uvx` for Python. Use the repository's declared JavaScript package manager; use Corepack only when it declares Yarn or pnpm.
+- If a required tool is absent or a dependency download is blocked by Scotty policy (including HTTP 520), stop after one bounded retry. Run the focused checks that are available and report the exact unavailable gate. If publication was requested, continue to commit, push, and open the PR so CI can run the locked full gate.
+- Don't build a missing toolchain from source, install a third-party embedded toolchain, add temporary module replacements, or bypass the proxy with direct arbitrary-host downloads unless the user explicitly asks.
 - Use matching skills under `$CODEX_HOME/skills`; read the selected `SKILL.md` before acting.
 EOF
 
@@ -84,6 +86,12 @@ chmod 600 "${codex_home}/auth.json" "${codex_home}/config.toml" "${codex_home}/A
 exclude="$(git -C "${root}" rev-parse --absolute-git-dir)/info/exclude"
 grep -qxF ".codex/" "${exclude}" 2>/dev/null || printf ".codex/\n" >>"${exclude}"
 grep -qxF ".pican/" "${exclude}" 2>/dev/null || printf ".pican/\n" >>"${exclude}"
+
+github_identity="$(gh api user)"
+git_name="$(jq -r '.name // .login' <<<"${github_identity}")"
+git_email="$(jq -r 'if (.email // "") != "" then .email else "\(.id)+\(.login)@users.noreply.github.com" end' <<<"${github_identity}")"
+git -C "${root}" config user.name "${git_name}"
+git -C "${root}" config user.email "${git_email}"
 
 jq -cn \
   --arg defaultBranch "${default_branch}" \

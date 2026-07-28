@@ -1,6 +1,8 @@
 import type { SessionRecord } from "./contracts";
 
 export const SESSION_SCHEDULE_CALLBACKS = [
+  "observeAgentActivity",
+  "sleepAfterAgentCompletion",
   "enforceHardCap",
   "finalizeManagedStop",
   "retryHardCapDestroy",

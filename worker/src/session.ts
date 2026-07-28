@@ -59,6 +59,7 @@ import {
 import {
   classifyPicanCreateResponse,
   decodePicanBootstrapResponseJson,
+  decodePicanWorkerStatusJson,
   Pican,
   picanCreateRequest,
   picanLayer,
@@ -90,6 +91,9 @@ const PICAN_PROXY_TOKEN_PREFIX = "scotty-pican-";
 const RUNNER_BOOTSTRAP_COMMAND = "/usr/local/bin/scotty-runner-bootstrap";
 const RUNNER_PICAN_COMMAND = "/usr/local/bin/scotty-runner-pican";
 const RUNNER_PICAN_READY_TIMEOUT_MILLIS = 30_000;
+const AGENT_ACTIVITY_POLL_SECONDS = 10;
+const AGENT_ACTIVITY_RETRY_SECONDS = 30;
+const AGENT_COMPLETION_GRACE_MS = 2 * 60_000;
 
 export const PICAN_SANDBOX_ORIGIN = "https://pican-proxy.internal";
 
@@ -142,6 +146,10 @@ interface VaporizeRetryPayload {
   nonce: string;
 }
 
+interface AgentCompletionPayload {
+  lastAgentEventAt: string;
+}
+
 export interface SandboxEffectOptions {
   readonly clock?: Clock.Clock;
 }
@@ -175,6 +183,10 @@ class PicanCreatePersistenceUncertain extends Data.TaggedError("PicanCreatePersi
 class RunnerCreateFailure extends Data.TaggedError("RunnerCreateFailure")<{
   readonly step: "bootstrap" | "ensure" | "launch" | "readiness";
 }> {}
+
+class AgentActivityObservationFailure extends Data.TaggedError(
+  "AgentActivityObservationFailure",
+)<{}> {}
 
 export interface CheckpointExitClassification {
   readonly failed: boolean;
@@ -397,6 +409,31 @@ export class Sandbox extends BaseSandbox<Bindings> {
     });
   });
 
+  private readonly readPicanWorkerStatusProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+  ) {
+    if (!record.codexThreadId) return yield* new AgentActivityObservationFailure();
+    if (record.execution.provider === "cloudflare") {
+      const pican = yield* Pican;
+      return yield* pican
+        .launch(record.id)
+        .pipe(Effect.andThen(pican.workerStatus(record.id, record.codexThreadId)));
+    }
+
+    const url = new URL(`https://runner-pican.internal/s/${record.id}/api/worker-status`);
+    url.searchParams.set("id", record.codexThreadId);
+    const response = yield* this.fetchRunnerPicanProgram(record, new Request(url));
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: () => new AgentActivityObservationFailure(),
+    });
+    if (!response.ok) return yield* new AgentActivityObservationFailure();
+    const decoded = decodePicanWorkerStatusJson(text);
+    if (Result.isFailure(decoded)) return yield* new AgentActivityObservationFailure();
+    return decoded.success;
+  });
+
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
     yield* projectSessionBestEffort(record);
   });
@@ -502,14 +539,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* pican.launch(id);
     const hosted = yield* this.createHostedPicanSessionProgram(id, prompt);
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    return yield* this.updateForOperationProgram(nonce, (record) => ({
+    const ready = yield* this.updateForOperationProgram(nonce, (record) => ({
       ...record,
       status: "warm",
       operation: null,
       codexThreadId: hosted.nativeId,
+      agentState: "working",
+      lastAgentEventAt: updatedAt,
       failure: undefined,
       updatedAt,
     })).pipe(Effect.mapError((cause) => new PicanCreatePersistenceUncertain({ cause })));
+    yield* hostEffect("schedule", () => this.scheduleAgentObservation());
+    return ready;
   });
 
   private readonly prepareCreateForPicanProgram = Effect.fnUntraced(function* (
@@ -710,6 +751,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
         repoExistsAtCreate: bootstrap.repoExists,
         defaultBranch: bootstrap.defaultBranch,
         codexThreadId: nativeId,
+        agentState: "working",
+        lastAgentEventAt: updatedAt,
         failure: undefined,
         updatedAt,
       }));
@@ -801,6 +844,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         exitCode: 1,
       });
     }
+    yield* hostEffect("schedule", () => this.scheduleAgentObservation());
     const now = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(created.success, new Date(now)), now);
   });
@@ -1070,6 +1114,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ...current,
           status: "warm",
           operation: null,
+          agentState: "waiting",
+          lastAgentEventAt: readyAt,
           failure: undefined,
           hardCapAt,
           updatedAt: readyAt,
@@ -1087,6 +1133,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
       return yield* this.upstreamError("Session restore failed", resumed.failure, record.id);
     }
+    yield* hostEffect("schedule", () => this.scheduleAgentObservation());
     const now = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(resumed.success, new Date(now)), now);
   });
@@ -1221,10 +1268,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ...current,
           status: "warm",
           operation: null,
+          agentState: "waiting",
+          lastAgentEventAt: readyAt,
           failure: undefined,
           hardCapAt,
           updatedAt: readyAt,
         }));
+        yield* hostEffect("schedule", () => this.scheduleAgentObservation());
         return ready;
       }),
     );
@@ -1296,6 +1346,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ownedBackupIds: [],
       backupExpiresAt: undefined,
       codexThreadId: undefined,
+      agentState: undefined,
+      lastAgentEventAt: undefined,
       failure: undefined,
       updatedAt,
     }));
@@ -1633,10 +1685,132 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   });
 
+  private readonly observeAgentActivityProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.readRecordProgram();
+    if (!record || record.status !== "warm" || record.operation || !record.codexThreadId) return;
+    const observed = yield* Effect.result(this.readPicanWorkerStatusProgram(record));
+    if (Result.isFailure(observed)) {
+      yield* Effect.sync(() =>
+        console.error("Agent activity observation failed", {
+          sessionId: record.id,
+          error: errorName(observed.failure),
+        }),
+      );
+      yield* hostEffect("schedule", () =>
+        this.scheduleAgentObservation(AGENT_ACTIVITY_RETRY_SECONDS),
+      );
+      return;
+    }
+
+    const nextState =
+      observed.success.state === "running"
+        ? ("working" as const)
+        : observed.success.state === "error"
+          ? ("tool-stalled" as const)
+          : record.agentState === "working"
+            ? ("completed" as const)
+            : record.agentState === "completed"
+              ? ("completed" as const)
+              : ("waiting" as const);
+    let current = record;
+    if (record.agentState !== nextState) {
+      const store = yield* SessionStore;
+      const transitioned = yield* store.updateAgentActivity(record.lastAgentEventAt, nextState);
+      if (Option.isNone(transitioned)) return;
+      current = transitioned.value;
+      yield* this.projectProgram(current);
+    }
+
+    if (nextState === "completed" && current.lastAgentEventAt) {
+      yield* hostEffect("schedule", () =>
+        this.scheduleAgentCompletionSleep(current.lastAgentEventAt ?? ""),
+      );
+    } else {
+      yield* Effect.sync(() => this.deleteSchedules("sleepAfterAgentCompletion"));
+    }
+    yield* hostEffect("schedule", () =>
+      this.scheduleAgentObservation(
+        nextState === "tool-stalled" ? AGENT_ACTIVITY_RETRY_SECONDS : AGENT_ACTIVITY_POLL_SECONDS,
+      ),
+    );
+  });
+
+  private readonly sleepAfterAgentCompletionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: AgentCompletionPayload,
+  ) {
+    const record = yield* this.readRecordProgram();
+    if (
+      !record ||
+      record.status !== "warm" ||
+      record.operation ||
+      record.agentState !== "completed" ||
+      record.lastAgentEventAt !== payload.lastAgentEventAt ||
+      !record.codexThreadId
+    )
+      return;
+    const operation = yield* Effect.result(this.acquireOperationProgram("snapshot", ["warm"]));
+    if (Result.isFailure(operation)) return;
+    const confirmed = yield* Effect.result(this.readPicanWorkerStatusProgram(record));
+    if (Result.isFailure(confirmed) || confirmed.success.state !== "idle") {
+      yield* this.releaseOperationIfHeldProgram(operation.success.nonce);
+      if (Result.isFailure(confirmed)) {
+        yield* hostEffect("schedule", () =>
+          this.scheduleAgentCompletionSleep(payload.lastAgentEventAt, AGENT_ACTIVITY_RETRY_SECONDS),
+        );
+        return;
+      }
+      const store = yield* SessionStore;
+      const nextState = confirmed.success.state === "running" ? "working" : "tool-stalled";
+      const transitioned = yield* store.updateAgentActivity(payload.lastAgentEventAt, nextState);
+      if (Option.isSome(transitioned)) yield* this.projectProgram(transitioned.value);
+      yield* hostEffect("schedule", () => this.scheduleAgentObservation());
+      return;
+    }
+
+    yield* Effect.sync(() => {
+      this.deleteSchedules("observeAgentActivity");
+      this.deleteSchedules("sleepAfterAgentCompletion");
+    });
+    const stopped =
+      record.execution.provider === "runner"
+        ? yield* Effect.result(
+            this.stopRunnerIntoSleepingProgram(
+              record,
+              operation.success.nonce,
+              `agent-complete-${operation.success.nonce}`,
+              true,
+            ).pipe(Effect.asVoid),
+          )
+        : yield* Effect.result(
+            Effect.gen({ self: this }, function* () {
+              yield* this.checkpointProgram(operation.success.nonce, false, false);
+              yield* this.stopAfterCheckpointProgram(operation.success.nonce);
+            }),
+          );
+    if (Result.isSuccess(stopped)) return;
+    const pending = yield* this.isManagedStopPendingProgram(operation.success.nonce);
+    if (!Predicate.isTagged(stopped.failure, "ManagedStopArmedError") && !pending)
+      yield* this.releaseOperationIfHeldProgram(operation.success.nonce);
+    yield* Effect.sync(() =>
+      console.error("Agent completion checkpoint failed", {
+        sessionId: record.id,
+        error: errorName(stopped.failure),
+      }),
+    );
+  });
+
   private readonly onStopProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const store = yield* SessionStore;
     const next = yield* store.recordRuntimeStop;
-    if (Option.isSome(next)) yield* this.projectProgram(next.value);
+    if (Option.isSome(next)) {
+      yield* this.projectProgram(next.value);
+      if (next.value.status === "sleeping")
+        yield* Effect.sync(() => {
+          this.deleteSchedules("observeAgentActivity");
+          this.deleteSchedules("sleepAfterAgentCompletion");
+        });
+    }
   });
 
   private readonly finalizeManagedStopProgram = Effect.fnUntraced(function* (
@@ -1816,6 +1990,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async enforceHardCap(payload: HardCapPayload): Promise<void> {
     return this.#run(this.enforceHardCapProgram(payload));
+  }
+
+  async observeAgentActivity(): Promise<void> {
+    return this.#run(this.observeAgentActivityProgram());
+  }
+
+  async sleepAfterAgentCompletion(payload: AgentCompletionPayload): Promise<void> {
+    return this.#run(this.sleepAfterAgentCompletionProgram(payload));
   }
 
   override async onActivityExpired(): Promise<void> {
@@ -2024,6 +2206,27 @@ export class Sandbox extends BaseSandbox<Bindings> {
     await this.schedule(new Date(hardCapAt), "enforceHardCap", {
       hardCapAt,
     } satisfies HardCapPayload);
+  }
+
+  private async scheduleAgentObservation(
+    delaySeconds = AGENT_ACTIVITY_POLL_SECONDS,
+  ): Promise<void> {
+    this.deleteSchedules("observeAgentActivity");
+    await this.schedule(delaySeconds, "observeAgentActivity", {});
+  }
+
+  private async scheduleAgentCompletionSleep(
+    lastAgentEventAt: string,
+    delaySeconds?: number,
+  ): Promise<void> {
+    this.deleteSchedules("sleepAfterAgentCompletion");
+    const when =
+      delaySeconds === undefined
+        ? new Date(Date.parse(lastAgentEventAt) + AGENT_COMPLETION_GRACE_MS)
+        : delaySeconds;
+    await this.schedule(when, "sleepAfterAgentCompletion", {
+      lastAgentEventAt,
+    } satisfies AgentCompletionPayload);
   }
 
   private cancelVaporizeConflictingSchedules(): void {

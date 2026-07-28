@@ -125,6 +125,10 @@ describe("container auth values", () => {
       GH_TOKEN: GITHUB_SENTINEL,
       GITHUB_SENTINEL,
       GIT_TERMINAL_PROMPT: "0",
+      NODE_OPTIONS: "--use-system-ca",
+      GOTOOLCHAIN: "auto",
+      GOPROXY: "https://proxy.golang.org",
+      GOSUMDB: "sum.golang.org",
       TERM: "xterm-256color",
       LANG: "C.UTF-8",
       LC_ALL: "C.UTF-8",
@@ -185,6 +189,11 @@ trust_level = "trusted"
           operation: "setEnvVars",
           envVars: agentEnv(ID, credential),
         },
+        {
+          operation: "exec",
+          command: `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C '/workspace/${ID}' config user.name "$git_name" && git -C '/workspace/${ID}' config user.email "$git_email"`,
+          options: undefined,
+        },
       ]);
 
       assert.deepStrictEqual(JSON.parse(expectedAuth), {
@@ -226,8 +235,8 @@ trust_level = "trusted"
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 6);
-      assert.strictEqual(second.calls.length, 6);
+      assert.strictEqual(first.calls.length, 7);
+      assert.strictEqual(second.calls.length, 7);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),
@@ -274,6 +283,10 @@ trust_level = "trusted"
         GH_TOKEN: GITHUB_SENTINEL,
         GITHUB_SENTINEL,
         GIT_TERMINAL_PROMPT: "0",
+        NODE_OPTIONS: "--use-system-ca",
+        GOTOOLCHAIN: "auto",
+        GOPROXY: "https://proxy.golang.org",
+        GOSUMDB: "sum.golang.org",
         TERM: "xterm-256color",
         LANG: "C.UTF-8",
         LC_ALL: "C.UTF-8",

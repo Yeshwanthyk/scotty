@@ -83,6 +83,15 @@
       "probe": ["python", "--version"]
     },
     {
+      "name": "Go",
+      "category": "go",
+      "commands": ["go", "gofmt"],
+      "source": "go.dev release",
+      "versionPolicy": "pinned",
+      "expectedVersion": "go1.26.1",
+      "probe": ["go", "version"]
+    },
+    {
       "name": "git",
       "category": "git-process",
       "commands": ["git"],

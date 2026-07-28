@@ -90,6 +90,7 @@ export interface HarnessOptions {
     memory: InMemoryFaultInjectableFake,
   ) => void | Promise<void>;
   readonly picanCreateResponse?: () => Response;
+  readonly picanWorkerStatus?: () => Response;
   readonly r2Objects?: ReadonlyArray<string>;
   readonly stopCallsOnStop?: boolean;
   readonly transactionFailureCountdown?: number;
@@ -696,6 +697,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         if (new URL(request.url).pathname.endsWith("/api/settings")) {
           events.push("host:pican:ready");
           return Response.json({ ready: true });
+        }
+        if (new URL(request.url).pathname.endsWith("/api/worker-status")) {
+          events.push("host:pican:worker-status");
+          return options.picanWorkerStatus?.() ?? Response.json({ state: "idle" });
         }
         const clone = request.clone();
         const body: unknown =

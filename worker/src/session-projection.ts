@@ -120,7 +120,8 @@ const decodeProjection = (key: string, value: unknown) => {
     !isTimestamp(decoded.value.createdAt) ||
     !isTimestamp(decoded.value.updatedAt) ||
     !isTimestamp(decoded.value.hardCapAt) ||
-    !isTimestamp(decoded.value.projectedAt)
+    !isTimestamp(decoded.value.projectedAt) ||
+    (decoded.value.lastAgentEventAt !== undefined && !isTimestamp(decoded.value.lastAgentEventAt))
   )
     return undefined;
   return decoded.value;
