@@ -10,6 +10,7 @@ const SESSION_ID = /^[0-9a-f]{12}$/u;
 const ACTIVE_SESSION_STATUSES = new Set(["booting", "warm"]);
 const HEALTHY_APPLICATION_STATES = new Set(["active", "ready"]);
 const KNOWN_ACTIVE_INSTANCE_STATES = new Set(["running", "scheduling", "starting"]);
+const NON_RUNNING_INSTANCE_STATES = new Set(["inactive", "stopped"]);
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -57,10 +58,10 @@ export function reconcileContainerInventory({
   }
 
   const activeInstances = instances.filter(
-    (instance) => isObject(instance) && instance.state !== "inactive",
+    (instance) => isObject(instance) && !NON_RUNNING_INSTANCE_STATES.has(String(instance.state)),
   );
   const inactiveInstances = instances.filter(
-    (instance) => isObject(instance) && instance.state === "inactive",
+    (instance) => isObject(instance) && NON_RUNNING_INSTANCE_STATES.has(String(instance.state)),
   );
   const sessionById = new Map(
     sessions
@@ -153,7 +154,7 @@ export function reconcileContainerInventory({
     })),
     issues,
     notes: [
-      "Inactive instance rows are historical Durable Object identities, not running compute.",
+      "Inactive or stopped instance rows are Durable Object identities, not running compute.",
       "The application summary instance count can include platform-prewarmed capacity; reconciliation uses per-instance active states.",
     ],
   };
