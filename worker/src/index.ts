@@ -59,6 +59,7 @@ const PUBLIC_AUTH_MUTATIONS = new Set([
   "POST /api/auth/pairings/consume",
   "POST /api/auth/recovery-grants/consume",
 ]);
+const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["booting", "warm", "sleeping", "failed"]);
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -322,7 +323,11 @@ app.post("/api/runners/:name/:action", async (c) => {
   const action = parseRunnerControlAction(c.req.param("action"));
   const runner = c.env.RUNNERS.getByName(name);
   await runner.control(action);
-  return c.json(runnerStatus(name, await runner.controlStatus()));
+  const [status, assignedSessions] = await Promise.all([
+    runner.controlStatus(),
+    assignedRunnerSessionCount(c.env, name),
+  ]);
+  return c.json(runnerStatus(name, status, assignedSessions));
 });
 
 app.post("/api/sessions", async (c) => {
@@ -557,14 +562,40 @@ function requireConfiguredRunnerName(env: Bindings, value: string): string {
   });
 }
 
-function runnerStatus(name: string, status: RunnerControlStatus) {
-  return { name, ...status, assignedSessions: 0 };
+function runnerStatus(name: string, status: RunnerControlStatus, assignedSessions: number) {
+  return { name, ...status, assignedSessions };
+}
+
+async function assignedRunnerSessionCount(env: Bindings, name: string): Promise<number> {
+  const result = await Effect.runPromise(
+    listSessionProjections.pipe(
+      Effect.provide(projectionLayers(env)),
+      Effect.scoped,
+      Effect.result,
+    ),
+  );
+  return Result.match(result, {
+    onFailure: (error) => {
+      throw error;
+    },
+    onSuccess: (sessions) =>
+      sessions.filter(
+        (session) =>
+          session.provider === "runner" &&
+          session.runner === name &&
+          ASSIGNED_RUNNER_SESSION_STATUSES.has(session.status),
+      ).length,
+  });
 }
 
 async function configuredRunnerStatuses(env: Bindings) {
   const name = env.SCOTTY_RUNNER_NAME?.trim();
   if (!name) return [];
-  return [runnerStatus(name, await env.RUNNERS.getByName(name).controlStatus())];
+  const [status, assignedSessions] = await Promise.all([
+    env.RUNNERS.getByName(name).controlStatus(),
+    assignedRunnerSessionCount(env, name),
+  ]);
+  return [runnerStatus(name, status, assignedSessions)];
 }
 
 async function readJsonBody(request: Request): Promise<unknown> {

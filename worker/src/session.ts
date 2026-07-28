@@ -983,14 +983,201 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return toSessionView(toProjection(record, new Date(now)), now);
   });
 
+  private readonly resumeRunnerSessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const authoritative = yield* this.requireRecordProgram();
+    if (authoritative.execution.provider !== "runner")
+      return yield* new ScottyError("internal", "Runner binding is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    if (authoritative.operation?.kind === "resume")
+      yield* this.stopRunnerIntoSleepingProgram(
+        authoritative,
+        authoritative.operation.nonce,
+        `resume-cleanup-${authoritative.operation.nonce}`,
+        true,
+      );
+
+    const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
+    let record = yield* this.requireRecordProgram();
+    if (record.execution.provider !== "runner")
+      return yield* new ScottyError("internal", "Runner binding is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    const runtimeId = record.execution.runtimeId;
+
+    const bootingAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    record = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
+      ...current,
+      status: "booting",
+      failure: undefined,
+      updatedAt: bootingAt,
+    }));
+
+    const resumed = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        const ensured = yield* this.dispatchRunnerProgram(record, {
+          _tag: "EnsureRuntime",
+          version: RUNNER_PROTOCOL_VERSION,
+          operationId: `resume-${operation.nonce}`,
+          sessionId: record.id,
+        });
+        const ensureResponse = ensured.ok ? ensured.response : undefined;
+        if (
+          !Predicate.isTagged("RunnerSuccess")(ensureResponse) ||
+          !Predicate.isTagged("EnsureRuntimeResult")(ensureResponse.result) ||
+          ensureResponse.result.phase !== "running" ||
+          ensureResponse.result.resourceId !== runtimeId
+        )
+          return yield* this.upstreamError("Runner resume failed", ensured, record.id);
+
+        const launched = yield* this.dispatchRunnerProgram(record, {
+          _tag: "ExecRuntime",
+          version: RUNNER_PROTOCOL_VERSION,
+          operationId: `resume-pican-${operation.nonce}`,
+          sessionId: record.id,
+          argv: [
+            RUNNER_PICAN_COMMAND,
+            "-host",
+            "0.0.0.0",
+            "-p",
+            "31415",
+            "-runtime",
+            "codex",
+            "-codex-command",
+            "/usr/local/bin/codex",
+          ],
+          detach: true,
+        });
+        const launchResponse = launched.ok ? launched.response : undefined;
+        if (
+          !Predicate.isTagged("RunnerSuccess")(launchResponse) ||
+          !Predicate.isTagged("ExecRuntimeResult")(launchResponse.result) ||
+          launchResponse.result.exitCode !== 0
+        )
+          return yield* this.upstreamError("Runner Pican resume failed", launched, record.id);
+
+        yield* this.awaitRunnerPicanReadyProgram(record);
+        const hardCapAt = new Date(
+          (yield* Clock.currentTimeMillis) + record.hardCapDurationSeconds * 1_000,
+        ).toISOString();
+        yield* hostEffect("schedule", () => this.scheduleHardCap(hardCapAt));
+        const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        return yield* this.updateForOperationProgram(operation.nonce, (current) => ({
+          ...current,
+          status: "warm",
+          operation: null,
+          failure: undefined,
+          hardCapAt,
+          updatedAt: readyAt,
+        }));
+      }),
+    );
+    if (Result.isFailure(resumed)) {
+      yield* Effect.result(
+        this.stopRunnerIntoSleepingProgram(
+          record,
+          operation.nonce,
+          `resume-cleanup-${operation.nonce}`,
+          true,
+        ),
+      );
+      return yield* this.upstreamError("Session restore failed", resumed.failure, record.id);
+    }
+    const now = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(resumed.success, new Date(now)), now);
+  });
+
+  private readonly stopRunnerIntoSleepingProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    nonce: string,
+    operationId: string,
+    retryWhileRunning: boolean,
+  ) {
+    if (record.execution.provider !== "runner")
+      return yield* new ScottyError("internal", "Runner binding is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    const runtimeId = record.execution.runtimeId;
+    const stopped = yield* Effect.result(
+      this.dispatchRunnerProgram(record, {
+        _tag: "StopRuntime",
+        version: RUNNER_PROTOCOL_VERSION,
+        operationId,
+        sessionId: record.id,
+      }),
+    );
+    const stopDispatch = Result.isSuccess(stopped) ? stopped.success : undefined;
+    const stopResponse = stopDispatch?.ok ? stopDispatch.response : undefined;
+    let phase =
+      Predicate.isTagged("RunnerSuccess")(stopResponse) &&
+      Predicate.isTagged("StopRuntimeResult")(stopResponse.result) &&
+      stopResponse.result.resourceId === runtimeId
+        ? stopResponse.result.phase
+        : undefined;
+
+    if (phase !== "stopped") {
+      const inspected = yield* Effect.result(
+        this.dispatchRunnerProgram(record, {
+          _tag: "InspectRuntime",
+          version: RUNNER_PROTOCOL_VERSION,
+          operationId: `${operationId}-inspect`,
+          sessionId: record.id,
+        }),
+      );
+      const inspectDispatch = Result.isSuccess(inspected) ? inspected.success : undefined;
+      const inspectResponse = inspectDispatch?.ok ? inspectDispatch.response : undefined;
+      if (
+        Predicate.isTagged("RunnerSuccess")(inspectResponse) &&
+        Predicate.isTagged("InspectRuntimeResult")(inspectResponse.result) &&
+        inspectResponse.result.resourceId === runtimeId
+      )
+        phase = inspectResponse.result.phase;
+
+      if (phase !== "stopped") {
+        if (phase === "absent") {
+          yield* this.failOperationProgram(
+            nonce,
+            "runner_runtime_absent",
+            "Runner runtime is absent",
+            true,
+          );
+        } else {
+          if (phase === "running" && !retryWhileRunning) {
+            yield* this.releaseOperationIfHeldProgram(nonce);
+          } else {
+            yield* hostEffect("schedule", () =>
+              this.schedule(5, "enforceHardCap", { hardCapAt: record.hardCapAt }),
+            );
+          }
+        }
+        return yield* this.upstreamError(
+          "Session stop failed",
+          Result.isFailure(stopped) ? stopped.failure : stopDispatch,
+          record.id,
+        );
+      }
+    }
+
+    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    const sleeping = yield* this.updateForOperationProgram(nonce, (current) => ({
+      ...current,
+      status: "sleeping",
+      operation: null,
+      failure: undefined,
+      updatedAt,
+    }));
+    yield* Effect.sync(() => this.deleteSchedules("enforceHardCap"));
+    return sleeping;
+  });
+
   private readonly resumeScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const authoritative = yield* this.requireRecordProgram();
     if (authoritative.execution.provider === "runner")
-      return yield* wrongState(
-        authoritative.status,
-        "resume",
-        "Runner lifecycle is not supported yet",
-      );
+      return yield* this.resumeRunnerSessionProgram();
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
@@ -1302,6 +1489,27 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const record = yield* this.readRecordProgram();
     if (!record || record.status === "gone" || record.status === "sleeping") return;
     if (payload.hardCapAt !== record.hardCapAt) return;
+    if (
+      record.execution.provider === "runner" &&
+      (record.operation?.kind === "snapshot" || record.operation?.kind === "resume")
+    ) {
+      const stopped = yield* Effect.result(
+        this.stopRunnerIntoSleepingProgram(
+          record,
+          record.operation.nonce,
+          `hard-cap-${record.operation.nonce}`,
+          true,
+        ),
+      );
+      if (Result.isFailure(stopped))
+        yield* Effect.sync(() =>
+          console.error("Runner hard-cap stop failed", {
+            sessionId: record.id,
+            error: errorName(stopped.failure),
+          }),
+        );
+      return;
+    }
     if (record.operation) {
       if (record.operation.kind === "vaporize") return;
       const operationAge =
@@ -1318,7 +1526,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
 
     if (record.execution.provider === "runner") {
-      yield* this.markHardCapFailureProgram(record, "Runner session reached its hard cap");
+      const acquired = yield* Effect.result(
+        this.acquireOperationProgram("snapshot", ["warm", "booting"]),
+      );
+      if (Result.isFailure(acquired)) return;
+      const stopped = yield* Effect.result(
+        this.stopRunnerIntoSleepingProgram(
+          record,
+          acquired.success.nonce,
+          `hard-cap-${acquired.success.nonce}`,
+          true,
+        ),
+      );
+      if (Result.isFailure(stopped))
+        yield* Effect.sync(() =>
+          console.error("Runner hard-cap stop failed", {
+            sessionId: record.id,
+            error: errorName(stopped.failure),
+          }),
+        );
       return;
     }
 
@@ -1360,6 +1586,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return;
     }
     const operation = acquired.success;
+    if (record.execution.provider === "runner") {
+      const stopped = yield* Effect.result(
+        this.stopRunnerIntoSleepingProgram(
+          record,
+          operation.nonce,
+          `idle-${operation.nonce}`,
+          true,
+        ),
+      );
+      if (Result.isFailure(stopped))
+        yield* Effect.sync(() =>
+          console.error("Runner idle stop failed", {
+            sessionId: record.id,
+            error: errorName(stopped.failure),
+          }),
+        );
+      return;
+    }
     const stopped = yield* Effect.result(
       Effect.gen({ self: this }, function* () {
         yield* this.checkpointProgram(operation.nonce, false, false);
@@ -1740,12 +1984,20 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly sleepScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const authoritative = yield* this.requireRecordProgram();
-    if (authoritative.execution.provider === "runner")
-      return yield* wrongState(
-        authoritative.status,
-        "sleep",
-        "Runner lifecycle is not supported yet",
+    if (authoritative.execution.provider === "runner") {
+      const operation =
+        authoritative.operation?.kind === "snapshot"
+          ? authoritative.operation
+          : yield* this.acquireOperationProgram("snapshot", ["warm"]);
+      const sleeping = yield* this.stopRunnerIntoSleepingProgram(
+        authoritative,
+        operation.nonce,
+        `sleep-${operation.nonce}`,
+        false,
       );
+      const now = yield* Clock.currentTimeMillis;
+      return toSessionView(toProjection(sleeping, new Date(now)), now);
+    }
     const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
     const result = yield* Effect.result(
       Effect.gen({ self: this }, function* () {

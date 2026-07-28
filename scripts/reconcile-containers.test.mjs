@@ -144,13 +144,15 @@ describe("Container reconciliation", () => {
     );
   });
 
-  it("accepts a warm runner projection without a Cloudflare instance", () => {
+  it("accepts a warm runner projection with only a stopped Cloudflare identity", () => {
     const report = reconcileContainerInventory({
       applications: [application()],
-      instances: [],
+      instances: [instance({ state: "stopped" })],
       sessions: [session({ provider: "runner" })],
       now: NOW,
     });
     assert.equal(report.ok, true);
+    assert.equal(report.counts.activeInstances, 0);
+    assert.equal(report.counts.inactiveIdentityRows, 1);
   });
 });

@@ -1,7 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Cause, Clock, Effect, Fiber } from "effect";
+import { Cause, Clock, Effect, Fiber, Predicate } from "effect";
 import { TestClock } from "effect/testing";
-import { ScottyError } from "../src/contracts";
+import {
+  RUNNER_PROTOCOL_VERSION,
+  type RunnerOperation,
+  type RunnerResult,
+} from "../../protocol/runner";
+import { ScottyError, type SessionRecord } from "../src/contracts";
+import type { RunnerDispatchResult } from "../src/runner-transport";
 import { CheckpointRuntimeUnavailable, withCheckpointRuntimeRestore } from "../src/session";
 import {
   createSessionHarness,
@@ -50,7 +56,240 @@ const managedStopRecord = (
     },
   });
 
+const runnerRecord = (overrides: Partial<SessionRecord> = {}) =>
+  makeSessionRecord({
+    provider: "runner",
+    runner: "slumbers",
+    execution: {
+      provider: "runner",
+      runner: "slumbers",
+      runtimeId: `runner-v1:${SESSION_ID}`,
+    },
+    codexThreadId: "thread-1",
+    ...overrides,
+  });
+
+const runnerSuccess = (operation: RunnerOperation, result: RunnerResult): RunnerDispatchResult => ({
+  ok: true,
+  response: {
+    _tag: "RunnerSuccess",
+    version: RUNNER_PROTOCOL_VERSION,
+    operationId: operation.operationId,
+    sessionId: operation.sessionId,
+    result,
+  },
+});
+
+const runnerDispatchFailure = (): RunnerDispatchResult => ({
+  ok: false,
+  error: {
+    code: "runner_timeout",
+    message: "Runner operation timed out",
+  },
+});
+
 describe("Sandbox lifecycle machine", () => {
+  it.effect("stops and resumes a retained runner runtime without a Cloudflare checkpoint", () =>
+    Effect.gen(function* () {
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: runnerRecord(),
+        },
+      });
+
+      const sleeping = yield* Effect.promise(() => harness.sandbox.sleepScottySession());
+
+      assert.strictEqual(sleeping.status, "sleeping");
+      assert.strictEqual(harness.readRecord()?.status, "sleeping");
+      assert.strictEqual(harness.runnerOperations.length, 1);
+      assert.ok(Predicate.isTagged("StopRuntime")(harness.runnerOperations[0]));
+      assert.ok(!harness.events.includes("host:stop"));
+      assert.ok(!harness.events.some((event) => event.startsWith("backup:")));
+
+      const resumed = yield* Effect.promise(() => harness.sandbox.resumeScottySession());
+
+      assert.strictEqual(resumed.status, "warm");
+      assert.strictEqual(resumed.codexThreadId, "thread-1");
+      assert.strictEqual(harness.readRecord()?.operation, null);
+      assert.strictEqual(harness.runnerOperations.length, 3);
+      assert.ok(Predicate.isTagged("StopRuntime")(harness.runnerOperations[0]));
+      assert.ok(Predicate.isTagged("EnsureRuntime")(harness.runnerOperations[1]));
+      const picanLaunch = harness.runnerOperations[2];
+      assert.ok(Predicate.isTagged("ExecRuntime")(picanLaunch));
+      assert.strictEqual(picanLaunch.detach, true);
+      assert.ok(
+        harness.runnerRequests.some((request) =>
+          new URL(request.url).pathname.endsWith("/api/settings"),
+        ),
+      );
+    }),
+  );
+
+  it.effect("stops an idle runner into sleeping without a Cloudflare checkpoint", () =>
+    Effect.gen(function* () {
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: runnerRecord(),
+        },
+      });
+
+      yield* Effect.promise(() => harness.sandbox.onActivityExpired());
+
+      assert.strictEqual(harness.readRecord()?.status, "sleeping");
+      assert.strictEqual(harness.runnerOperations.length, 1);
+      assert.ok(Predicate.isTagged("StopRuntime")(harness.runnerOperations[0]));
+      assert.ok(!harness.events.includes("host:stop"));
+      assert.ok(!harness.events.some((event) => event.startsWith("backup:")));
+    }),
+  );
+
+  it.effect("stops a hard-capped runner into sleeping without removing its runtime", () =>
+    Effect.gen(function* () {
+      const record = runnerRecord();
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: record,
+        },
+      });
+
+      yield* Effect.promise(() => harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt }));
+
+      assert.strictEqual(harness.readRecord()?.status, "sleeping");
+      assert.strictEqual(harness.runnerOperations.length, 1);
+      assert.ok(Predicate.isTagged("StopRuntime")(harness.runnerOperations[0]));
+      assert.ok(!harness.runnerOperations.some(Predicate.isTagged("RemoveRuntime")));
+      assert.ok(!harness.events.includes("host:destroy"));
+    }),
+  );
+
+  it.effect("releases a sleep lease when runner inspection proves the runtime is running", () =>
+    Effect.gen(function* () {
+      const record = runnerRecord();
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: record,
+        },
+        runnerDispatch: async (operation) =>
+          Predicate.isTagged("InspectRuntime")(operation)
+            ? runnerSuccess(operation, {
+                _tag: "InspectRuntimeResult",
+                phase: "running",
+                resourceId:
+                  record.execution.provider === "runner" ? record.execution.runtimeId : "",
+                workspace: `/runner/${operation.sessionId}`,
+              })
+            : runnerDispatchFailure(),
+      });
+
+      const error = yield* Effect.promise(() => rejection(harness.sandbox.sleepScottySession()));
+
+      assert.ok(error instanceof ScottyError);
+      assert.strictEqual(harness.readRecord()?.status, "warm");
+      assert.strictEqual(harness.readRecord()?.operation, null);
+      assert.ok(!harness.schedules.some(({ callback }) => callback === "enforceHardCap"));
+    }),
+  );
+
+  it.effect("reconciles an ambiguous runner sleep on its scheduled retry", () =>
+    Effect.gen(function* () {
+      const record = runnerRecord();
+      let stopAttempts = 0;
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: record,
+        },
+        runnerDispatch: async (operation) => {
+          if (Predicate.isTagged("StopRuntime")(operation)) {
+            stopAttempts += 1;
+            if (stopAttempts > 1)
+              return runnerSuccess(operation, {
+                _tag: "StopRuntimeResult",
+                phase: "stopped",
+                resourceId:
+                  record.execution.provider === "runner" ? record.execution.runtimeId : "",
+                workspace: `/runner/${operation.sessionId}`,
+              });
+          }
+          return runnerDispatchFailure();
+        },
+      });
+
+      const error = yield* Effect.promise(() => rejection(harness.sandbox.sleepScottySession()));
+
+      assert.ok(error instanceof ScottyError);
+      assert.strictEqual(harness.readRecord()?.operation?.kind, "snapshot");
+      assert.ok(harness.schedules.some(({ callback }) => callback === "enforceHardCap"));
+
+      yield* Effect.promise(() => harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt }));
+
+      assert.strictEqual(stopAttempts, 2);
+      assert.strictEqual(harness.readRecord()?.status, "sleeping");
+      assert.strictEqual(harness.readRecord()?.operation, null);
+    }),
+  );
+
+  it.effect("retains resume ownership when failed cleanup cannot prove the runtime stopped", () =>
+    Effect.gen(function* () {
+      const record = runnerRecord({ status: "sleeping" });
+      let stopAttempts = 0;
+      const harness = yield* createTestHarness({
+        failureStage: "hardCapSchedule",
+        initialEntries: {
+          [sessionHarnessKeys.record]: record,
+        },
+        runnerDispatch: async (operation) => {
+          if (Predicate.isTagged("EnsureRuntime")(operation))
+            return runnerSuccess(operation, {
+              _tag: "EnsureRuntimeResult",
+              phase: "running",
+              resourceId: record.execution.provider === "runner" ? record.execution.runtimeId : "",
+              workspace: `/runner/${operation.sessionId}`,
+            });
+          if (Predicate.isTagged("ExecRuntime")(operation))
+            return runnerSuccess(operation, {
+              _tag: "ExecRuntimeResult",
+              exitCode: 0,
+              stdout: "",
+              stderr: "",
+            });
+          if (Predicate.isTagged("StopRuntime")(operation)) {
+            stopAttempts += 1;
+            if (stopAttempts > 1)
+              return runnerSuccess(operation, {
+                _tag: "StopRuntimeResult",
+                phase: "stopped",
+                resourceId:
+                  record.execution.provider === "runner" ? record.execution.runtimeId : "",
+                workspace: `/runner/${operation.sessionId}`,
+              });
+          }
+          if (Predicate.isTagged("InspectRuntime")(operation))
+            return runnerSuccess(operation, {
+              _tag: "InspectRuntimeResult",
+              phase: "running",
+              resourceId: record.execution.provider === "runner" ? record.execution.runtimeId : "",
+              workspace: `/runner/${operation.sessionId}`,
+            });
+          return runnerDispatchFailure();
+        },
+      });
+
+      const error = yield* Effect.promise(() => rejection(harness.sandbox.resumeScottySession()));
+
+      assert.ok(error instanceof ScottyError);
+      assert.strictEqual(harness.readRecord()?.status, "booting");
+      assert.strictEqual(harness.readRecord()?.operation?.kind, "resume");
+      assert.strictEqual(harness.readRecord()?.failure, undefined);
+
+      harness.clearFailure();
+      const resumed = yield* Effect.promise(() => harness.sandbox.resumeScottySession());
+
+      assert.strictEqual(stopAttempts, 2);
+      assert.strictEqual(resumed.status, "warm");
+      assert.strictEqual(harness.readRecord()?.operation, null);
+    }),
+  );
+
   it.effect("restores the runtime when an in-flight checkpoint is interrupted", () =>
     Effect.gen(function* () {
       let restores = 0;

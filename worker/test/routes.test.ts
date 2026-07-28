@@ -74,6 +74,21 @@ function authNamespace(): import("../src/auth-object").ScottyAuthRegistryNamespa
   return { getByName: () => auth };
 }
 
+function emptySessionsNamespace(): KVNamespace {
+  return {
+    list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
+    get: async (name: string | string[]) =>
+      Array.isArray(name) ? new Map(name.map((key) => [key, null])) : null,
+    getWithMetadata: async (name: string | string[]) => {
+      const missing = { value: null, metadata: null, cacheStatus: null };
+      return Array.isArray(name) ? new Map(name.map((key) => [key, missing])) : missing;
+    },
+    put: async (_name: string, _value: string | ArrayBuffer | ArrayBufferView | ReadableStream) =>
+      undefined,
+    delete: async (_name: string) => undefined,
+  } as KVNamespace;
+}
+
 function env(): Bindings {
   const assets: Fetcher = {
     fetch: async () =>
@@ -94,7 +109,7 @@ function env(): Bindings {
     AUTH: authNamespace(),
     RUNNERS: { getByName: runner.getByName },
     SANDBOX: {} as DurableObjectNamespace<import("../src/session").Sandbox>,
-    SESSIONS: {} as KVNamespace,
+    SESSIONS: emptySessionsNamespace(),
     BACKUP_BUCKET: {} as R2Bucket,
   };
 }
@@ -249,6 +264,43 @@ describe("real Hono boundary", () => {
         lastSeenAt: "2026-07-27T12:00:00.000Z",
         assignedSessions: 0,
       },
+    ]);
+
+    const assignedProjection = {
+      version: 1,
+      id: "b0b1c2d3e4f5",
+      status: "failed",
+      provider: "runner",
+      runner: "slumbers",
+      repo: "owner/repo",
+      defaultBranch: "main",
+      branch: "scotty/b0b1c2d3e4f5",
+      codexThreadId: "thread-2",
+      createdAt: "2026-07-27T11:00:00.000Z",
+      updatedAt: "2026-07-27T12:00:00.000Z",
+      hardCapAt: "2026-07-27T16:00:00.000Z",
+      projectedAt: "2026-07-27T12:00:00.000Z",
+      failure: {
+        code: "resume_failed",
+        message: "Session restore failed",
+        recoverable: true,
+      },
+    };
+    const sessions = {
+      list: async () => ({
+        keys: [{ name: `session:${assignedProjection.id}` }],
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      get: async (_name: string) => assignedProjection,
+    } as KVNamespace;
+    const assigned = await app.request(
+      "/api/runners",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: sessions },
+    );
+    await expect(assigned.json()).resolves.toEqual([
+      expect.objectContaining({ name: "slumbers", assignedSessions: 1 }),
     ]);
 
     runner.controlStatus.mockResolvedValueOnce({
