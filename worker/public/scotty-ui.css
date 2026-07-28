@@ -208,18 +208,42 @@ body.scotty-ui {
 }
 
 .sessions-page .composer {
-  border: 1px solid rgb(207 99 63 / 0.42);
+  padding: clamp(20px, 3vw, 28px);
+  border: 1px solid var(--line-soft);
   background: var(--panel);
-  box-shadow: 0 4px 8px rgb(0 0 0 / 0.3);
+  box-shadow:
+    0 12px 32px rgb(0 0 0 / 0.22),
+    inset 0 1px 0 rgb(238 231 211 / 0.03);
+}
+
+.sessions-page .composer-heading h2 {
+  color: var(--ink);
+  font-size: 1.12rem;
+}
+
+.sessions-page .composer-heading p {
+  color: var(--muted);
+}
+
+.sessions-page .field label {
+  color: var(--ink);
+}
+
+.sessions-page .field-hint,
+.sessions-page .recent-label {
+  color: var(--quiet);
 }
 
 .sessions-page .composer-feedback.is-pending {
   color: var(--accent-strong);
 }
 
-.sessions-page .repo-suggestion,
-.sessions-page .repo-suggestion:hover {
+.sessions-page .repo-suggestion {
   background: var(--panel-raised);
+}
+
+.sessions-page .repo-suggestion:hover {
+  background: #10232b;
 }
 
 .sessions-page .state {

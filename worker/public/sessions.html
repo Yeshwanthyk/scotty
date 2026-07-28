@@ -309,6 +309,8 @@
       }
 
       .composer {
+        position: relative;
+        overflow: hidden;
         padding: 20px;
         border: 0;
         border-radius: 12px;
@@ -323,12 +325,25 @@
           transform 200ms var(--ease-out);
       }
 
+      .composer::before {
+        position: absolute;
+        top: 0;
+        right: 24px;
+        left: 24px;
+        height: 2px;
+        border-radius: 0 0 2px 2px;
+        background: var(--accent);
+        content: "";
+      }
+
       .composer-region.is-open .composer {
         transform: translateY(0) scale(1);
       }
 
       .composer-heading {
-        margin-bottom: 20px;
+        margin-bottom: 24px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--line-soft);
       }
 
       .composer-heading h2 {
@@ -351,8 +366,12 @@
 
       .composer-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 180px;
-        gap: 16px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px 16px;
+      }
+
+      .field-repository {
+        grid-column: 1 / -1;
       }
 
       .field {
@@ -363,7 +382,7 @@
       }
 
       .field-prompt {
-        margin-top: 18px;
+        margin-top: 20px;
       }
 
       .field label {
@@ -995,13 +1014,7 @@
             </div>
 
             <div class="composer-grid">
-              <div class="field">
-                <label for="session-provider">Execution</label>
-                <select class="control" id="session-provider" name="provider">
-                  <option value="cloudflare">Cloudflare</option>
-                </select>
-              </div>
-              <div class="field">
+              <div class="field field-repository">
                 <label for="session-repo">Repository</label>
                 <input
                   class="control"
@@ -1020,7 +1033,15 @@
                 </div>
               </div>
 
-              <div class="field">
+              <div class="field field-execution">
+                <label for="session-provider">Execution</label>
+                <select class="control" id="session-provider" name="provider">
+                  <option value="cloudflare">Cloudflare</option>
+                </select>
+                <span class="field-hint">Choose where this workspace runs.</span>
+              </div>
+
+              <div class="field field-limit">
                 <label for="session-cap">Session limit</label>
                 <select class="control" id="session-cap" name="hardCapSeconds">
                   <option value="3600">1 hour</option>
