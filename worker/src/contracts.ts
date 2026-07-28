@@ -72,6 +72,14 @@ export const SessionFailureSchema = Schema.Struct({
 });
 export type SessionFailure = typeof SessionFailureSchema.Type;
 
+export const AgentActivityStateSchema = Schema.Literals([
+  "working",
+  "waiting",
+  "completed",
+  "tool-stalled",
+]);
+export type AgentActivityState = typeof AgentActivityStateSchema.Type;
+
 export const DirectoryBackupSchema = Schema.Struct({
   id: Schema.String,
   dir: Schema.String,
@@ -113,6 +121,8 @@ export const SessionRecordSchema = Schema.Struct({
     }),
   ),
   codexThreadId: Schema.optional(Schema.String),
+  agentState: Schema.optional(AgentActivityStateSchema),
+  lastAgentEventAt: Schema.optional(Schema.String),
   failure: Schema.optional(SessionFailureSchema),
 });
 export type SessionRecord = typeof SessionRecordSchema.Type;
@@ -157,6 +167,8 @@ export const SessionProjectionSchema = Schema.Struct({
   branch: Schema.String,
   backupId: Schema.optionalKey(Schema.String),
   codexThreadId: Schema.optionalKey(Schema.String),
+  agentState: Schema.optionalKey(AgentActivityStateSchema),
+  lastAgentEventAt: Schema.optionalKey(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   hardCapAt: Schema.String,
@@ -552,6 +564,8 @@ export function toProjection(record: SessionRecord, now: Date): SessionProjectio
     branch: record.branch,
     backupId: record.backup?.current.id,
     codexThreadId: record.codexThreadId,
+    agentState: record.agentState,
+    lastAgentEventAt: record.lastAgentEventAt,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     hardCapAt: record.hardCapAt,

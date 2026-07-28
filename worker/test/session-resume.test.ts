@@ -64,7 +64,7 @@ describe("Sandbox resume orchestration", () => {
     assert.ok(picanReadyIndex < warmIndex);
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),
-      ["enforceHardCap"],
+      ["enforceHardCap", "observeAgentActivity"],
     );
     assert.strictEqual(harness.picanStarts.length, 1);
     assert.deepStrictEqual(harness.picanRequests, []);

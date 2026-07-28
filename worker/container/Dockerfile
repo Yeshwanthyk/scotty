@@ -22,6 +22,8 @@ ARG CODEX_VERSION=0.144.6
 ARG COREPACK_VERSION=0.35.0
 ARG FD_VERSION=10.4.2
 ARG FD_SHA256=0e44eb5fca93f09bc6f5430b90acdf44c8e069d0a903700aeb4820629337b67b
+ARG GO_VERSION=1.26.1
+ARG GO_SHA256=031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a
 ARG QSV_VERSION=21.1.0
 ARG QSV_SHA256=6e1e322c2ac0d2e862e961f0bb5b30c8ceccb12ace37067bc8d911c77cf101f3
 ARG RIPGREP_VERSION=15.2.0
@@ -58,6 +60,11 @@ RUN apt-get update \
   && echo "${FD_SHA256}  /tmp/fd.deb" | sha256sum --check --strict \
   && dpkg --install /tmp/fd.deb \
   && curl --fail --location --silent --show-error \
+    "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+    --output /tmp/go.tar.gz \
+  && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum --check --strict \
+  && tar -xzf /tmp/go.tar.gz -C /usr/local \
+  && curl --fail --location --silent --show-error \
     "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
     --output /usr/local/bin/yq \
   && echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum --check --strict \
@@ -91,6 +98,10 @@ ENV LANG=en_US.UTF-8 \
   LC_ALL=en_US.UTF-8 \
   TERM=xterm-256color \
   GIT_TERMINAL_PROMPT=0 \
+  GOTOOLCHAIN=auto \
+  GOPROXY=https://proxy.golang.org \
+  GOSUMDB=sum.golang.org \
+  PATH=/usr/local/go/bin:${PATH} \
   UV_PYTHON_INSTALL_DIR=/opt/uv/python \
   UV_PYTHON_BIN_DIR=/usr/local/bin
 
@@ -118,7 +129,7 @@ RUN chmod 0755 \
   && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
   && scotty tools list --json >/dev/null \
   && for command_name in \
-    rg fd ast-grep jq yq qsv uv uvx python git gh tmux shellcheck \
+    rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh tmux shellcheck \
     node npm bun corepack cc pkg-config codex pican scotty-runner-bootstrap scotty-runner-pican; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done

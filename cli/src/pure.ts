@@ -190,8 +190,12 @@ export function stableSession(record: SessionResponse): JsonObject {
   };
   const projectedAt = optionalString(record.projectedAt);
   const codexThreadId = optionalString(record.codexThreadId);
+  const agentState = optionalString(record.agentState);
+  const lastAgentEventAt = optionalString(record.lastAgentEventAt);
   if (projectedAt) result.projectedAt = projectedAt;
   if (codexThreadId) result.codexThreadId = codexThreadId;
+  if (agentState) result.agentState = agentState;
+  if (lastAgentEventAt) result.lastAgentEventAt = lastAgentEventAt;
   const failure = decodeRawSessionFailure(record.failure);
   if (Option.isSome(failure)) {
     result.failure = {

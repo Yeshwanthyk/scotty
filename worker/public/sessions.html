@@ -564,6 +564,225 @@
         font-weight: 680;
       }
 
+      .launch-state {
+        display: none;
+        width: min(100%, 620px);
+        margin: auto;
+        padding: 32px 16px;
+        text-align: center;
+      }
+
+      .composer.is-creating {
+        min-height: min(620px, calc(100dvh - 122px));
+        display: grid;
+        place-items: center;
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .composer.is-creating::before,
+      .composer.is-creating > :not(.launch-state) {
+        display: none;
+      }
+
+      .composer.is-creating .launch-state {
+        display: grid;
+        justify-items: center;
+      }
+
+      .is-creating .page-heading,
+      .is-creating #content {
+        display: none;
+      }
+
+      .is-creating .composer-region.is-open {
+        margin-bottom: 0;
+      }
+
+      .launch-orbit {
+        position: relative;
+        display: grid;
+        width: 116px;
+        height: 116px;
+        place-items: center;
+        margin-bottom: 28px;
+      }
+
+      .launch-orbit::before {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: conic-gradient(
+          from 20deg,
+          transparent 0 58%,
+          oklch(79% 0.115 200 / 0.16) 70%,
+          var(--beam) 88%,
+          transparent 100%
+        );
+        content: "";
+        mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0);
+        animation: launch-orbit 1.8s linear infinite;
+      }
+
+      .launch-orbit::after {
+        position: absolute;
+        inset: 17px;
+        border: 1px solid oklch(79% 0.115 200 / 0.16);
+        border-radius: 50%;
+        content: "";
+      }
+
+      .launch-core {
+        position: relative;
+        display: grid;
+        width: 72px;
+        height: 72px;
+        place-items: center;
+        overflow: hidden;
+        border-radius: 18px;
+        background: oklch(12% 0.02 240);
+        box-shadow:
+          0 0 0 1px oklch(79% 0.115 200 / 0.28),
+          0 0 0 9px oklch(79% 0.115 200 / 0.035);
+      }
+
+      .launch-core img {
+        width: 72px;
+        height: 72px;
+        object-fit: cover;
+      }
+
+      .launch-state h2 {
+        max-width: 24ch;
+        margin: 0;
+        font-size: 1.4rem;
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        line-height: 1.2;
+        text-wrap: balance;
+      }
+
+      .launch-state:focus {
+        outline: none;
+      }
+
+      .launch-repository {
+        color: var(--beam);
+        overflow-wrap: anywhere;
+      }
+
+      .launch-copy {
+        max-width: 58ch;
+        min-height: 2.8em;
+        margin: 10px 0 0;
+        color: var(--muted);
+        font-size: 0.82rem;
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+
+      .launch-route {
+        position: relative;
+        display: grid;
+        width: min(100%, 460px);
+        grid-template-columns: repeat(3, 1fr);
+        margin-top: 34px;
+      }
+
+      .launch-route::before {
+        position: absolute;
+        top: 5px;
+        right: 16.66%;
+        left: 16.66%;
+        height: 1px;
+        background: var(--line);
+        content: "";
+      }
+
+      .launch-sweep {
+        position: absolute;
+        z-index: 1;
+        top: 4px;
+        left: 16.66%;
+        width: 18%;
+        height: 2px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, transparent, var(--beam));
+        animation: launch-sweep 2.6s var(--ease-out) infinite;
+      }
+
+      .launch-stage {
+        position: relative;
+        z-index: 2;
+        display: grid;
+        justify-items: center;
+        gap: 10px;
+        color: var(--quiet);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.68rem;
+      }
+
+      .launch-stage::before {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--panel-raised);
+        box-shadow: 0 0 0 1px var(--line);
+        content: "";
+      }
+
+      .launch-meta {
+        display: flex;
+        max-width: 100%;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 8px 18px;
+        margin-top: 28px;
+        color: var(--quiet);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.69rem;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .launch-meta span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .launch-meta strong {
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      .launch-cancel {
+        margin-top: 26px;
+      }
+
+      @keyframes launch-orbit {
+        to {
+          rotate: 1turn;
+        }
+      }
+
+      @keyframes launch-sweep {
+        0% {
+          translate: 0;
+          opacity: 0;
+        }
+        18% {
+          opacity: 1;
+        }
+        82% {
+          opacity: 1;
+        }
+        100% {
+          translate: 265%;
+          opacity: 0;
+        }
+      }
+
       .composer-actions {
         display: flex;
         flex: none;
@@ -861,6 +1080,11 @@
           border-radius: 10px;
         }
 
+        .composer.is-creating {
+          min-height: calc(100dvh - 106px);
+          padding: 24px 0;
+        }
+
         .composer-heading p {
           font-size: 0.875rem;
         }
@@ -944,6 +1168,18 @@
         .state {
           padding: 40px 20px;
         }
+
+        .launch-state {
+          padding-inline: 0;
+        }
+
+        .launch-state h2 {
+          font-size: 1.25rem;
+        }
+
+        .launch-stage {
+          font-size: 0.62rem;
+        }
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -964,6 +1200,16 @@
 
         .repo-suggestion:active {
           scale: none;
+        }
+
+        .launch-orbit::before,
+        .launch-sweep {
+          animation: none;
+        }
+
+        .launch-sweep {
+          left: 41%;
+          opacity: 1;
         }
       }
     </style>
@@ -1076,6 +1322,41 @@
                 </button>
               </div>
             </div>
+
+            <section
+              class="launch-state"
+              id="session-launch-state"
+              aria-labelledby="launch-title"
+              aria-describedby="launch-status"
+              tabindex="-1"
+              hidden
+            >
+              <div class="launch-orbit" aria-hidden="true">
+                <div class="launch-core">
+                  <img src="/brand/scotty-mark-128.png" alt="" />
+                </div>
+              </div>
+              <h2 id="launch-title">
+                Beaming up <span class="launch-repository" id="launch-repository"></span>
+              </h2>
+              <p class="launch-copy" id="launch-status" role="status" aria-live="polite">
+                Opening a secure path to your workspace…
+              </p>
+              <div class="launch-route" aria-hidden="true">
+                <span class="launch-sweep"></span>
+                <span class="launch-stage">Repository</span>
+                <span class="launch-stage">Workspace</span>
+                <span class="launch-stage">Codex</span>
+              </div>
+              <div class="launch-meta">
+                <span>Execution <strong id="launch-execution"></strong></span>
+                <span>Limit <strong id="launch-limit"></strong></span>
+                <span>Elapsed <strong id="launch-elapsed">0:00</strong></span>
+              </div>
+              <button class="button button-quiet launch-cancel" id="cancel-launch" type="button">
+                Cancel start
+              </button>
+            </section>
           </form>
         </div>
       </div>
@@ -1123,6 +1404,13 @@
       const startSessionButton = document.querySelector("#start-session");
       const startSessionLabel = document.querySelector("#start-session-label");
       const startSessionShortcut = document.querySelector("#start-session-shortcut");
+      const launchState = document.querySelector("#session-launch-state");
+      const launchRepository = document.querySelector("#launch-repository");
+      const launchStatus = document.querySelector("#launch-status");
+      const launchExecution = document.querySelector("#launch-execution");
+      const launchLimit = document.querySelector("#launch-limit");
+      const launchElapsed = document.querySelector("#launch-elapsed");
+      const cancelLaunchButton = document.querySelector("#cancel-launch");
       let sessions = [];
       let trackedRepositories = [];
       let loaded = false;
@@ -1130,6 +1418,9 @@
       let creating = false;
       let createController;
       let createAbortReason;
+      let launchStartedAt;
+      let launchTimer;
+      let launchMessage;
       let lastSubmission;
       let pollTimer;
       const busy = new Map();
@@ -1181,12 +1472,51 @@
       function setCreating(next) {
         creating = next;
         for (const element of sessionForm.elements) {
-          if (element !== cancelSessionButton) element.disabled = next;
+          if (element !== cancelSessionButton && element !== cancelLaunchButton)
+            element.disabled = next;
         }
         for (const button of recentRepos.querySelectorAll("button")) button.disabled = next;
+        document.body.classList.toggle("is-creating", next);
+        sessionForm.classList.toggle("is-creating", next);
+        sessionForm.setAttribute("aria-busy", next ? "true" : "false");
+        launchState.hidden = !next;
         cancelSessionButton.textContent = next ? "Cancel start" : "Cancel";
         startSessionLabel.textContent = next ? "Starting…" : "Start session";
         startSessionShortcut.hidden = next;
+        requestAnimationFrame(() => (next ? launchState : startSessionButton).focus());
+        if (!next) {
+          clearInterval(launchTimer);
+          launchTimer = undefined;
+          launchStartedAt = undefined;
+          launchMessage = undefined;
+        }
+      }
+
+      function updateLaunchState() {
+        if (!launchStartedAt) return;
+        const elapsed = Math.max(0, Math.floor((Date.now() - launchStartedAt) / 1000));
+        launchElapsed.textContent = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+        const message =
+          elapsed >= 25
+            ? "Your workspace will open automatically as soon as Codex is ready."
+            : elapsed >= 8
+              ? "Repository setup can take a little while. Scotty is still working."
+              : "Opening a secure path to your workspace…";
+        if (message !== launchMessage) {
+          launchMessage = message;
+          launchStatus.textContent = message;
+        }
+      }
+
+      function beginLaunchState(repo) {
+        launchRepository.textContent = repo;
+        launchExecution.textContent =
+          providerSelect.selectedOptions[0]?.textContent || "Cloudflare";
+        launchLimit.textContent = capSelect.selectedOptions[0]?.textContent || "4 hours";
+        launchStartedAt = Date.now();
+        updateLaunchState();
+        clearInterval(launchTimer);
+        launchTimer = setInterval(updateLaunchState, 1000);
       }
 
       function abortCreate(reason) {
@@ -1303,12 +1633,25 @@
           const details = document.createElement("div");
           const statusLine = document.createElement("div");
           statusLine.className = "status-line";
+          const agentState =
+            status === "warm" && typeof session.agentState === "string"
+              ? session.agentState.replace("-", " ")
+              : "";
+          if (agentState && typeof session.lastAgentEventAt === "string") {
+            statusLine.title = `Agent state changed ${new Date(session.lastAgentEventAt).toLocaleString()}`;
+          }
           const signal = document.createElement("span");
           signal.className = "signal";
           signal.setAttribute("aria-hidden", "true");
           statusLine.append(
             signal,
-            document.createTextNode(status === "stopping" ? "Stopping…" : status),
+            document.createTextNode(
+              status === "stopping"
+                ? "Stopping…"
+                : agentState
+                  ? `${status} · ${agentState}`
+                  : status,
+            ),
           );
           details.append(statusLine);
           const metrics = document.createElement("div");
@@ -1470,6 +1813,7 @@
           "pending",
           "Fetching the repository and launching Codex. This can take a moment…",
         );
+        beginLaunchState(repo);
         setCreating(true);
         const controller = new AbortController();
         createController = controller;
@@ -1647,9 +1991,13 @@
         setComposerOpen(!open);
       });
       cancelSessionButton.addEventListener("click", () => {
-        if (creating) abortCreate("cancel");
+        if (creating) {
+          abortCreate("cancel");
+          return;
+        }
         setComposerOpen(false);
       });
+      cancelLaunchButton.addEventListener("click", () => abortCreate("cancel"));
       sessionForm.addEventListener("submit", (event) => {
         event.preventDefault();
         void createSession();
