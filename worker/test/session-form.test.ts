@@ -1,5 +1,6 @@
 import { assert, describe, it } from "vitest";
 import {
+  groupSessionsByRepository,
   mergeRepositorySuggestions,
   promptText,
   repositoryName,
@@ -46,6 +47,19 @@ describe("session form", () => {
         { repo: "owner/project", defaultBranch: "main", lastUsedAt: undefined },
       ],
     );
+  });
+
+  it("groups workspaces by repository without creating duplicate case variants", () => {
+    const first = { id: "one", repo: "Yeshwanthyk/scotty" };
+    const second = { id: "two", repo: "yeshwanthyk/SCOTTY" };
+    const third = { id: "three", repo: "owner/pican" };
+    const unknown = { id: "four", repo: "invalid" };
+
+    assert.deepStrictEqual(groupSessionsByRepository([first, second, third, unknown]), [
+      { repo: "Yeshwanthyk/scotty", sessions: [first, second] },
+      { repo: "owner/pican", sessions: [third] },
+      { repo: "Unknown repository", sessions: [unknown] },
+    ]);
   });
 
   it("reuses an idempotency key only while the submitted payload is unchanged", () => {
