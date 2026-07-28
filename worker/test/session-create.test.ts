@@ -198,6 +198,48 @@ describe("Sandbox create orchestration", () => {
     }
   });
 
+  it("retries transient runner HTTP responses without deleting the runtime", async () => {
+    vi.useFakeTimers();
+    try {
+      let createAttempts = 0;
+      const harness = await createSessionHarness({
+        runnerFetch: async (request) => {
+          const path = new URL(request.url).pathname;
+          if (path.endsWith("/api/settings")) return Response.json({ ready: true });
+          createAttempts += 1;
+          return createAttempts === 1
+            ? new Response("Runner HTTP upstream failed", { status: 502 })
+            : Response.json({
+                id: "pican-session-1",
+                nativeId: "codex-thread-1",
+                runtime: "codex",
+                createState: "created",
+                promptDispatchState: "accepted",
+              });
+        },
+      });
+
+      const creating = harness.sandbox.createScottySession(
+        { ...CREATE_INPUT, provider: "runner", runner: "slumbers" },
+        SESSION_ID,
+        CREATE_IDEMPOTENCY,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      assert.strictEqual(createAttempts, 1);
+      await vi.advanceTimersByTimeAsync(250);
+
+      assert.strictEqual((await creating).status, "warm");
+      assert.strictEqual(createAttempts, 2);
+      assert.isFalse(
+        harness.runnerOperations.some((operation) =>
+          Predicate.isTagged("RemoveRuntime")(operation),
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("arms the hard cap before committing authority, then projects and reaches warm", async () => {
     const harness = await createSessionHarness();
 
