@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Match } from "effect";
-import { EXIT, main, type CliDependencies } from "../scotty";
 import type { RunnerFrame, RunnerResponse } from "../../protocol/runner";
 
 const temporaryDirectories: string[] = [];
@@ -24,6 +23,7 @@ describe("runner serve", () => {
   test("connects outbound and completes the local retained-workspace lifecycle", async () => {
     const root = await temporaryDirectory();
     const responses: RunnerResponse[] = [];
+    const completed = Promise.withResolvers<void>();
     let authorization: string | null = null;
     let pathname = "";
 
@@ -120,7 +120,7 @@ describe("runner serve", () => {
                       }),
                     ),
                   ),
-                  Match.when("remove", () => webSocket.close(1000, "complete")),
+                  Match.when("remove", () => completed.resolve()),
                   Match.option,
                 );
               },
@@ -130,40 +130,33 @@ describe("runner serve", () => {
       },
     });
 
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const dependencies: Partial<CliDependencies> = {
-      env: { SCOTTY_RUNNER_TOKEN: "runner-secret" },
-      home: root,
-      cwd: root,
-      stdinIsTTY: false,
-      stdoutIsTTY: false,
-      stdout: (text) => stdout.push(text),
-      stderr: (text) => stderr.push(text),
-    };
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, "..", "scotty.ts"),
+        "runner",
+        "serve",
+        "--name",
+        "slumbers",
+        "--root",
+        root,
+        "--isolation",
+        "process",
+        "--host",
+        `http://127.0.0.1:${server.port}`,
+      ],
+      {
+        cwd: join(import.meta.dir, "..", ".."),
+        env: { ...process.env, SCOTTY_RUNNER_TOKEN: "runner-secret" },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
 
     try {
-      const exitCode = await main(
-        [
-          "runner",
-          "serve",
-          "--name",
-          "slumbers",
-          "--root",
-          root,
-          "--isolation",
-          "process",
-          "--host",
-          `http://127.0.0.1:${server.port}`,
-        ],
-        dependencies,
-      );
-
-      expect(exitCode).toBe(EXIT.OK);
+      await completed.promise;
       expect(pathname).toBe("/api/runners/slumbers/connect");
       expect(authorization).toBe("Bearer runner-secret");
-      expect(stdout.join("")).toBe('{"runner":"slumbers","status":"connected"}\n');
-      expect(stderr).toEqual([]);
       expect(responses.map((response) => response.operationId)).toEqual([
         "ensure-initial",
         "write-marker",
@@ -178,7 +171,13 @@ describe("runner serve", () => {
         result: { _tag: "ExecRuntimeResult", stdout: "retained" },
       });
     } finally {
+      child.kill("SIGTERM");
+      await child.exited;
       server.stop(true);
     }
-  });
+    expect(await new Response(child.stdout).text()).toBe(
+      '{"runner":"slumbers","status":"connected"}\n',
+    );
+    expect(await new Response(child.stderr).text()).toBe("");
+  }, 10_000);
 });

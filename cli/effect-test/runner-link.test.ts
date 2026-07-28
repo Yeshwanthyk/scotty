@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Fiber, Predicate, Result, Schema } from "effect";
+import { Deferred, Effect, Fiber, Predicate, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import {
   RUNNER_CREDIT_WINDOW,
@@ -183,18 +183,21 @@ describe("RunnerLink", () => {
         return fake;
       };
 
-      yield* runRunnerLinkWith(
-        {
-          url: "ws://127.0.0.1/runner",
-          runnerName: "runner-a",
-          token: "runner-secret",
-          onOpen: Effect.sync(() => {
-            openedAfterHello = socket?.sent.length === 1;
-          }),
-        },
-        makeWebSocket,
-      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+      const result = yield* Effect.result(
+        runRunnerLinkWith(
+          {
+            url: "ws://127.0.0.1/runner",
+            runnerName: "runner-a",
+            token: "runner-secret",
+            onOpen: Effect.sync(() => {
+              openedAfterHello = socket?.sent.length === 1;
+            }),
+          },
+          makeWebSocket,
+        ).pipe(Effect.provideService(RunnerRuntime, runtime)),
+      );
 
+      assert.isTrue(Result.isFailure(result));
       assert.strictEqual(authorization, "Bearer runner-secret");
       assert.isTrue(openedAfterHello);
       assert.deepStrictEqual(socket?.sent, [
@@ -233,6 +236,226 @@ describe("RunnerLink", () => {
         }),
       ]);
       assert.deepStrictEqual(socket?.closeCodes, [1000]);
+    }),
+  );
+
+  it.effect("keeps the link healthy only with matching heartbeat acknowledgements", () =>
+    Effect.gen(function* () {
+      const opened = yield* Deferred.make<void>();
+      let socket: FakeWebSocket | undefined;
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        fake.onSend = (data) => {
+          const frame = decodeFrame(data);
+          if (Result.isSuccess(frame) && Predicate.isTagged("RunnerProbe")(frame.success))
+            queueMicrotask(() => {
+              fake.receive(
+                encodeRunnerRequest({
+                  _tag: "RunnerProbeAck",
+                  version: 2,
+                  probeId: frame.success.probeId,
+                }),
+              );
+            });
+        };
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+      const fiber = yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          onOpen: Deferred.succeed(opened, undefined).pipe(Effect.asVoid),
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.forkChild);
+      yield* Deferred.await(opened);
+
+      yield* TestClock.adjust(15_000);
+      yield* Effect.yieldNow;
+      assert.isDefined(socket);
+      if (socket === undefined) return;
+      assert.isTrue(Predicate.isTagged("RunnerProbe")(sentFrame(socket, 1)));
+      assert.deepStrictEqual(socket.closeCodes, []);
+
+      yield* TestClock.adjust(15_000);
+      yield* Effect.yieldNow;
+      assert.isTrue(Predicate.isTagged("RunnerProbe")(sentFrame(socket, 2)));
+      assert.deepStrictEqual(socket.closeCodes, []);
+
+      yield* Fiber.interrupt(fiber);
+      assert.deepStrictEqual(socket.closeCodes, [1000]);
+    }),
+  );
+
+  it.effect("fails a heartbeat after wrong and late acknowledgements", () =>
+    Effect.gen(function* () {
+      const opened = yield* Deferred.make<void>();
+      let socket: FakeWebSocket | undefined;
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+      const fiber = yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          onOpen: Deferred.succeed(opened, undefined).pipe(Effect.asVoid),
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.forkChild);
+      yield* Deferred.await(opened);
+      yield* TestClock.adjust(15_000);
+      assert.isDefined(socket);
+      if (socket === undefined) return;
+      const probe = sentFrame(socket, 1);
+      assert.isTrue(Predicate.isTagged("RunnerProbe")(probe));
+      if (!Predicate.isTagged("RunnerProbe")(probe)) return;
+
+      socket.receive(
+        encodeRunnerRequest({
+          _tag: "RunnerProbeAck",
+          version: 2,
+          probeId: "wrong-probe",
+        }),
+      );
+      yield* TestClock.adjust(4_999);
+      assert.deepStrictEqual(socket.closeCodes, []);
+      yield* TestClock.adjust(1);
+      socket.receive(
+        encodeRunnerRequest({
+          _tag: "RunnerProbeAck",
+          version: 2,
+          probeId: probe.probeId,
+        }),
+      );
+
+      assert.isTrue(Result.isFailure(yield* Effect.result(Fiber.join(fiber))));
+      assert.deepStrictEqual(socket.closeCodes, [1011, 1000]);
+    }),
+  );
+
+  it.effect("heartbeats while an operation remains pending", () =>
+    Effect.gen(function* () {
+      const opened = yield* Deferred.make<void>();
+      let socket: FakeWebSocket | undefined;
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        socket = fake;
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+      const pendingRuntime = RunnerRuntime.of({
+        handle: () => Effect.never,
+      });
+      const fiber = yield* runRunnerLinkWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+          onOpen: Deferred.succeed(opened, undefined).pipe(Effect.asVoid),
+        },
+        makeWebSocket,
+      ).pipe(Effect.provideService(RunnerRuntime, pendingRuntime), Effect.forkChild);
+      yield* Deferred.await(opened);
+      assert.isDefined(socket);
+      if (socket === undefined) return;
+      socket.receive(encodeRunnerRequest(inspect("pending-operation")));
+
+      yield* TestClock.adjust(15_000);
+      const probe = sentFrame(socket, 1);
+      assert.isTrue(Predicate.isTagged("RunnerProbe")(probe));
+      if (!Predicate.isTagged("RunnerProbe")(probe)) return;
+      socket.receive(
+        encodeRunnerRequest({
+          _tag: "RunnerProbeAck",
+          version: 2,
+          probeId: probe.probeId,
+        }),
+      );
+      yield* TestClock.adjust(5_000);
+      assert.deepStrictEqual(socket.closeCodes, []);
+
+      yield* Fiber.interrupt(fiber);
+      assert.deepStrictEqual(socket.closeCodes, [1000]);
+    }),
+  );
+
+  it.effect("reconnects after a missed heartbeat acknowledgement", () =>
+    Effect.gen(function* () {
+      const sockets: FakeWebSocket[] = [];
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        sockets.push(fake);
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+      const connect: RunnerConnector<RunnerRuntime> = (config) =>
+        runRunnerLinkWith(config, makeWebSocket);
+      const supervisor = yield* runRunnerSupervisorWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+        },
+        connect,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* TestClock.adjust(15_000);
+      yield* TestClock.adjust(5_000);
+      assert.deepStrictEqual(sockets[0]?.closeCodes, [1011, 1000]);
+      yield* TestClock.adjust(999);
+      assert.strictEqual(sockets.length, 1);
+      yield* TestClock.adjust(1);
+      assert.strictEqual(sockets.length, 2);
+
+      yield* Fiber.interrupt(supervisor);
+      assert.deepStrictEqual(sockets[1]?.closeCodes, [1000]);
+    }),
+  );
+
+  it.effect("reconnects after a remote clean close", () =>
+    Effect.gen(function* () {
+      const sockets: FakeWebSocket[] = [];
+      const makeWebSocket: RunnerWebSocketConstructor = (url) => {
+        const fake = new FakeWebSocket(url);
+        sockets.push(fake);
+        fake.onSend = (data) => {
+          const frame = decodeFrame(data);
+          if (
+            sockets.length === 1 &&
+            Result.isSuccess(frame) &&
+            Predicate.isTagged("RunnerHello")(frame.success)
+          )
+            queueMicrotask(() => fake.remoteClose(1000));
+        };
+        queueMicrotask(() => fake.open());
+        return fake;
+      };
+      const connect: RunnerConnector<RunnerRuntime> = (config) =>
+        runRunnerLinkWith(config, makeWebSocket);
+      const supervisor = yield* runRunnerSupervisorWith(
+        {
+          url: "ws://127.0.0.1/runner",
+          runnerName: "runner-a",
+          token: "runner-secret",
+        },
+        connect,
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(999);
+      assert.strictEqual(sockets.length, 1);
+      yield* TestClock.adjust(1);
+      assert.strictEqual(sockets.length, 2);
+
+      yield* Fiber.interrupt(supervisor);
+      assert.deepStrictEqual(sockets[1]?.closeCodes, [1000]);
     }),
   );
 
@@ -438,7 +661,7 @@ describe("RunnerLink", () => {
           httpHandler: handler,
         },
         makeWebSocket,
-      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.flip);
 
       assert.deepStrictEqual(capturedIdentity, {
         sessionId: "session-a",
@@ -536,7 +759,7 @@ describe("RunnerLink", () => {
           httpHandler: handler,
         },
         makeWebSocket,
-      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.flip);
 
       assert.strictEqual(requestUrl, "http://127.0.0.1:31415/s/session-a/api");
       assert.strictEqual(body, "hello runner");
@@ -593,7 +816,7 @@ describe("RunnerLink", () => {
           httpHandler: handler,
         },
         makeWebSocket,
-      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.flip);
       assert.isTrue(cancelled);
       assert.deepStrictEqual(socket?.closeCodes, [1000]);
 
@@ -677,7 +900,7 @@ describe("RunnerLink", () => {
           httpHandler: () => Effect.succeed(new Response("x")),
         },
         makeWebSocket,
-      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.flip);
 
       assert.strictEqual(completed, 2);
       assert.deepStrictEqual(socket?.closeCodes, [1000]);
@@ -724,7 +947,7 @@ describe("RunnerLink", () => {
             ),
         },
         makeWebSocket,
-      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.flip);
 
       assert.strictEqual(failedCode, "request_failed");
       assert.isFalse(socket?.closeCodes.includes(1008));
@@ -802,7 +1025,7 @@ describe("RunnerLink", () => {
           httpHandler: handler,
         },
         makeWebSocket,
-      ).pipe(Effect.provideService(RunnerRuntime, runtime));
+      ).pipe(Effect.provideService(RunnerRuntime, runtime), Effect.flip);
 
       assert.strictEqual(accepted, 17);
       assert.isTrue(limitFailed);
