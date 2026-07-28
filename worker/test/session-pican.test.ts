@@ -1,6 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
 import { ScottyError } from "../src/contracts";
-import { createSessionHarness, makeStoredCredential, sessionHarnessKeys } from "./session-harness";
+import { PICAN_SANDBOX_ORIGIN } from "../src/session";
+import {
+  createSessionHarness,
+  makeStoredCredential,
+  SESSION_ID,
+  sessionHarnessKeys,
+} from "./session-harness";
 import { makeSessionRecord } from "./support";
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
@@ -34,6 +40,57 @@ describe("Sandbox Pican transport", () => {
     assert.match(calls[0]?.request.url ?? "", /\/api\/settings$/u);
     assert.strictEqual(calls[1]?.port, 31_415);
     assert.strictEqual(harness.picanStarts.length, 1);
+  });
+
+  it("forwards exact request bytes and preserves runner response streaming", async () => {
+    const sentinel = Uint8Array.from([0, 1, 2, 127, 128, 254, 255]);
+    const encoder = new TextEncoder();
+    let closeResponse: (() => void) | undefined;
+    const responseStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("event: runner-ready\n\n"));
+        closeResponse = () => controller.close();
+      },
+    });
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          provider: "runner",
+          runner: "slumbers",
+          execution: {
+            provider: "runner",
+            runner: "slumbers",
+            runtimeId: `runner-v1:${SESSION_ID}`,
+          },
+        }),
+      },
+      runnerFetch: async (request) => {
+        assert.strictEqual(
+          new URL(request.url).pathname,
+          `/_scotty/runner-http/${SESSION_ID}/${encodeURIComponent(
+            `runner-v1:${SESSION_ID}`,
+          )}/s/${SESSION_ID}/api/sessions`,
+        );
+        assert.deepStrictEqual(new Uint8Array(await request.arrayBuffer()), sentinel);
+        return new Response(responseStream, {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+
+    const response = await harness.sandbox.fetch(
+      new Request(`${PICAN_SANDBOX_ORIGIN}/s/${SESSION_ID}/api/sessions`, {
+        method: "POST",
+        body: sentinel,
+      }),
+    );
+
+    assert.strictEqual(response.headers.get("content-type"), "text/event-stream");
+    const reader = response.body?.getReader();
+    const first = await reader?.read();
+    assert.strictEqual(new TextDecoder().decode(first?.value), "event: runner-ready\n\n");
+    closeResponse?.();
+    await reader?.cancel();
   });
 
   for (const testCase of [

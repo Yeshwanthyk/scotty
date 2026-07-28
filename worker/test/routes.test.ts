@@ -10,6 +10,7 @@ const sandbox = vi.hoisted(() => ({
   readScottyArchiveStream: vi.fn(),
   getSession: vi.fn(),
   vaporizeScottySession: vi.fn(),
+  fetch: vi.fn(),
   fetchPican: vi.fn(),
 }));
 
@@ -124,7 +125,7 @@ describe("real Hono boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sandboxTarget.current = sandbox;
-    sandbox.fetchPican.mockResolvedValue(new Response("<!doctype html><title>Pican</title>"));
+    sandbox.fetch.mockResolvedValue(new Response("<!doctype html><title>Pican</title>"));
     auth.authenticate.mockResolvedValue({
       ok: true,
       value: {
@@ -1260,7 +1261,7 @@ describe("real Hono boundary", () => {
   });
 
   it("proxies the Pican root only for registered-client cookies", async () => {
-    sandbox.fetchPican.mockResolvedValueOnce(
+    sandbox.fetch.mockResolvedValueOnce(
       new Response("<!doctype html><html><head><title>Pican</title></head><body></body></html>", {
         headers: {
           "content-encoding": "gzip",
@@ -1282,8 +1283,8 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(response.headers.get("content-length")).toBeNull();
     expect(response.headers.get("etag")).toBeNull();
-    expect(sandbox.fetchPican).toHaveBeenCalledOnce();
-    const upstream = sandbox.fetchPican.mock.calls[0]?.[0];
+    expect(sandbox.fetch).toHaveBeenCalledOnce();
+    const upstream = sandbox.fetch.mock.calls[0]?.[0];
     expect(upstream).toBeInstanceOf(Request);
     expect(new URL(upstream.url).pathname).toBe("/s/a0b1c2d3e4f5");
     expect(upstream.headers.has("cookie")).toBe(false);
@@ -1310,11 +1311,11 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(sessionRootBearer.status).toBe(401);
-    expect(sandbox.fetchPican).toHaveBeenCalledOnce();
+    expect(sandbox.fetch).toHaveBeenCalledOnce();
   });
 
   it("preserves mounted Pican paths and query while stripping boundary credentials", async () => {
-    sandbox.fetchPican.mockImplementationOnce(
+    sandbox.fetch.mockImplementationOnce(
       async () =>
         new Response("missing", {
           status: 418,
@@ -1344,7 +1345,7 @@ describe("real Hono boundary", () => {
     expect(response.status).toBe(418);
     expect(response.headers.get("x-pican-result")).toBe("preserved");
     await expect(response.text()).resolves.toBe("missing");
-    const upstream = sandbox.fetchPican.mock.calls[0]?.[0];
+    const upstream = sandbox.fetch.mock.calls[0]?.[0];
     const url = new URL(upstream.url);
     expect(url.pathname).toBe("/s/a0b1c2d3e4f5/assets/app.js");
     expect(url.search).toBe("?v=7");
@@ -1366,6 +1367,7 @@ describe("real Hono boundary", () => {
 
   it("streams Pican request and SSE response bodies without buffering", async () => {
     const encoder = new TextEncoder();
+    const sentinel = Uint8Array.from([0, 1, 2, 127, 128, 254, 255]);
     let closeStream: (() => void) | undefined;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -1373,8 +1375,8 @@ describe("real Hono boundary", () => {
         closeStream = () => controller.close();
       },
     });
-    sandbox.fetchPican.mockImplementationOnce(async (request: Request) => {
-      await expect(request.text()).resolves.toBe('{"prompt":"ship it"}');
+    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
+      expect(new Uint8Array(await request.arrayBuffer())).toEqual(sentinel);
       return new Response(stream, {
         headers: { "content-type": "text/event-stream", "x-stream": "live" },
       });
@@ -1386,9 +1388,9 @@ describe("real Hono boundary", () => {
         method: "POST",
         headers: {
           cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          "content-type": "application/json",
+          "content-type": "application/octet-stream",
         },
-        body: '{"prompt":"ship it"}',
+        body: sentinel,
       },
       env(),
     );
@@ -1415,7 +1417,7 @@ describe("real Hono boundary", () => {
     );
     expect(response.status).toBe(501);
     await expect(response.text()).resolves.toBe("Pican WebSocket proxying is not supported");
-    expect(sandbox.fetchPican).not.toHaveBeenCalled();
+    expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
   it("serves every critical auth page with the external-script CSP and no-store", async () => {
