@@ -17,7 +17,11 @@ export function titleText(value) {
 }
 
 export function sessionTitle(session) {
-  return titleText(session?.title) || `Session ${session?.id || "unknown"}`;
+  const title = titleText(session?.title);
+  if (title) return title;
+  const id = typeof session?.id === "string" && session.id.length > 0 ? session.id : "unknown";
+  const repo = repositoryName(session?.repo);
+  return repo ? `${repo} · ${id}` : `Session ${id}`;
 }
 
 export function mergeRepositorySuggestions(tracked, sessions) {
@@ -107,16 +111,11 @@ function arrayOrEmpty(value) {
 }
 
 function compareProjectGroups(left, right) {
-  const leftActive = left.sessions.filter((session) => session?.status !== "sleeping");
-  const rightActive = right.sessions.filter((session) => session?.status !== "sleeping");
-  if (leftActive.length > 0 && rightActive.length === 0) return -1;
-  if (leftActive.length === 0 && rightActive.length > 0) return 1;
-
-  const leftWarm = left.sessions.filter((session) => session?.status === "warm");
-  const rightWarm = right.sessions.filter((session) => session?.status === "warm");
-  const leftOrder = leftWarm[0] || leftActive[0] || left.sessions[0];
-  const rightOrder = rightWarm[0] || rightActive[0] || right.sessions[0];
-  return compareSessionsOldestFirst(leftOrder, rightOrder);
+  const leftWarm = left.sessions.some((session) => session?.status === "warm");
+  const rightWarm = right.sessions.some((session) => session?.status === "warm");
+  if (leftWarm && !rightWarm) return -1;
+  if (!leftWarm && rightWarm) return 1;
+  return compareSessionsOldestFirst(left.sessions[0], right.sessions[0]);
 }
 
 function compareSessionsOldestFirst(left, right) {

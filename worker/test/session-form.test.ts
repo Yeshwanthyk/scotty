@@ -32,6 +32,10 @@ describe("session form", () => {
       sessionTitle({ id: "a0b1c2d3e4f5", title: "Package Pi extensions" }),
       "Package Pi extensions",
     );
+    assert.strictEqual(
+      sessionTitle({ id: "a0b1c2d3e4f5", repo: "Yeshwanthyk/scotty" }),
+      "Yeshwanthyk/scotty · a0b1c2d3e4f5",
+    );
     assert.strictEqual(sessionTitle({ id: "a0b1c2d3e4f5" }), "Session a0b1c2d3e4f5");
   });
 
@@ -93,6 +97,49 @@ describe("session form", () => {
       { repo: "Unknown repository", sessions: [unknown] },
       { repo: "owner/pican", sessions: [third] },
     ]);
+  });
+
+  it("puts warm projects first while preserving project creation order", () => {
+    const oldestProject = [
+      {
+        id: "old-sleeping",
+        repo: "owner/oldest",
+        status: "sleeping",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "new-warm",
+        repo: "owner/oldest",
+        status: "warm",
+        createdAt: "2026-04-01T00:00:00.000Z",
+      },
+    ];
+    const newerWarmProject = {
+      id: "middle-warm",
+      repo: "owner/newer",
+      status: "warm",
+      createdAt: "2026-02-01T00:00:00.000Z",
+    };
+    const olderFailedProject = {
+      id: "old-failed",
+      repo: "owner/failed",
+      status: "failed",
+      createdAt: "2025-01-01T00:00:00.000Z",
+    };
+
+    assert.deepStrictEqual(
+      groupSessionsByRepository([
+        newerWarmProject,
+        olderFailedProject,
+        oldestProject[1],
+        oldestProject[0],
+      ]),
+      [
+        { repo: "owner/oldest", sessions: oldestProject },
+        { repo: "owner/newer", sessions: [newerWarmProject] },
+        { repo: "owner/failed", sessions: [olderFailedProject] },
+      ],
+    );
   });
 
   it("reuses an idempotency key only while the submitted payload is unchanged", () => {
