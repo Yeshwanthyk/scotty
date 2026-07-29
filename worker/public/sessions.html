@@ -1487,6 +1487,7 @@
         </a>
         <div class="masthead-actions">
           <nav class="masthead-nav" aria-label="Primary navigation">
+            <a class="button" href="/stats">Stats</a>
             <a class="button" id="providers" href="/providers" hidden>Providers</a>
             <a class="button" id="devices" href="/devices" hidden>Devices</a>
           </nav>
@@ -1499,11 +1500,12 @@
           >
             New session
           </button>
-          <details class="mobile-utilities" id="mobile-utilities" hidden>
+          <details class="mobile-utilities">
             <summary aria-label="Open primary navigation">•••</summary>
             <nav aria-label="Primary navigation">
-              <a id="providers-mobile" href="/providers">Providers</a>
-              <a id="devices-mobile" href="/devices">Devices</a>
+              <a href="/stats">Stats</a>
+              <a id="providers-mobile" href="/providers" hidden>Providers</a>
+              <a id="devices-mobile" href="/devices" hidden>Devices</a>
             </nav>
           </details>
         </div>
@@ -1673,7 +1675,6 @@
       const content = document.querySelector("#content");
       const devicesLink = document.querySelector("#devices");
       const devicesMobileLink = document.querySelector("#devices-mobile");
-      const mobileUtilities = document.querySelector("#mobile-utilities");
       const providersLink = document.querySelector("#providers");
       const providersMobileLink = document.querySelector("#providers-mobile");
       const summary = document.querySelector("#summary");
@@ -2599,7 +2600,6 @@
           devicesMobileLink.hidden = !owner;
           providersLink.hidden = !owner;
           providersMobileLink.hidden = !owner;
-          mobileUtilities.hidden = !owner;
         })
         .catch(() => undefined);
 

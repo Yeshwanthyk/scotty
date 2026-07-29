@@ -14,7 +14,8 @@ and `recover.html` remove their link fragments before any fetch and require an e
 Their executable code lives in static JavaScript files so the Worker can apply the strict
 authentication-page CSP without `unsafe-inline` scripts.
 
-The page assumes these same-origin endpoints:
+The pages assume these same-origin endpoints:
 
 - `GET /api/sessions` returns either an array of session projections or `{ "sessions": [...] }` with `id` and `status` fields.
+- `GET /api/stats` returns retained workspace creation counts grouped by repository identity and joined to current warm or sleeping session projections.
 - `POST /api/sessions/:id/resume` starts restore/resume and returns a successful HTTP status when accepted.
