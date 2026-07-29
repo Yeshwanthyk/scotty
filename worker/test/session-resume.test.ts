@@ -53,20 +53,16 @@ describe("Sandbox resume orchestration", () => {
     const hardCapIndex = harness.events.indexOf("schedule:enforceHardCap");
     const restoreIndex = harness.events.indexOf("host:restoreBackup");
     const authIndex = harness.events.indexOf("host:mkdir");
-    const picanStartIndex = harness.events.indexOf("host:pican:start");
-    const picanReadyIndex = harness.events.indexOf("host:pican:ready");
     const warmIndex = harness.events.lastIndexOf("record:warm");
     assert.ok(hardCapIndex >= 0);
     assert.ok(hardCapIndex < restoreIndex);
     assert.ok(restoreIndex < authIndex);
-    assert.ok(authIndex < picanStartIndex);
-    assert.ok(picanStartIndex < picanReadyIndex);
-    assert.ok(picanReadyIndex < warmIndex);
+    assert.ok(authIndex < warmIndex);
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),
-      ["enforceHardCap", "observeAgentActivity"],
+      ["enforceHardCap"],
     );
-    assert.strictEqual(harness.picanStarts.length, 1);
+    assert.strictEqual(harness.picanStarts.length, 0);
     assert.deepStrictEqual(harness.picanRequests, []);
     assert.deepStrictEqual(harness.aborts, []);
   });
@@ -123,13 +119,6 @@ describe("Sandbox resume orchestration", () => {
       options: {
         initialEntries: resumeEntries(),
         failureStage: "containerAuthSeed" satisfies HarnessFailureStage,
-      },
-    },
-    {
-      name: "Pican launch",
-      options: {
-        initialEntries: resumeEntries(),
-        failureStage: "picanLaunch" satisfies HarnessFailureStage,
       },
     },
   ] satisfies ReadonlyArray<{ readonly name: string; readonly options: HarnessOptions }>;

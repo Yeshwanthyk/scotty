@@ -255,7 +255,7 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(record?.operation, null);
     assert.strictEqual(record?.repoExistsAtCreate, true);
     assert.strictEqual(record?.defaultBranch, "main");
-    assert.strictEqual(record?.codexThreadId, "019d0f55-8d43-7b8c-b63f-f3875b66d03b");
+    assert.strictEqual(record?.codexThreadId, `pi-${SESSION_ID}`);
     assert.deepStrictEqual(harness.read(sessionHarnessKeys.createIdempotency), CREATE_IDEMPOTENCY);
 
     const recordIndex = harness.events.indexOf("record:booting");
@@ -263,37 +263,28 @@ describe("Sandbox create orchestration", () => {
     const hardCapIndex = harness.events.indexOf("schedule:enforceHardCap");
     const warmIndex = harness.events.lastIndexOf("record:warm");
     const warmProjectionIndex = harness.events.lastIndexOf("projection:warm");
-    const picanStartIndex = harness.events.indexOf("host:pican:start");
-    const picanReadyIndex = harness.events.indexOf("host:pican:ready");
-    const picanCreateIndex = harness.events.indexOf("host:pican:fetch:31415");
+    const authIndex = harness.events.indexOf("host:mkdir");
     assert.ok(hardCapIndex >= 0);
     assert.ok(recordIndex >= 0);
     assert.ok(hardCapIndex < recordIndex);
     assert.ok(recordIndex < projectionIndex);
-    assert.ok(projectionIndex < picanStartIndex);
-    assert.ok(picanStartIndex < picanReadyIndex);
-    assert.ok(picanReadyIndex < picanCreateIndex);
-    assert.ok(picanCreateIndex < warmIndex);
+    assert.ok(projectionIndex < authIndex);
+    assert.ok(authIndex < warmIndex);
     assert.ok(projectionIndex < warmIndex);
     assert.ok(warmIndex < warmProjectionIndex);
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),
-      ["enforceHardCap", "observeAgentActivity"],
+      ["enforceHardCap"],
     );
-    assert.strictEqual(harness.picanStarts.length, 1);
-    assert.strictEqual(harness.picanStarts[0]?.options?.processId, "scotty-pican");
-    assert.strictEqual(harness.picanStarts[0]?.options?.env?.PICAN_BASE_PATH, `/s/${SESSION_ID}`);
-    assert.strictEqual(harness.picanRequests.length, 1);
-    assert.strictEqual(
-      harness.picanRequests[0]?.url,
-      `http://pican.internal/s/${SESSION_ID}/api/new-session`,
+    assert.strictEqual(harness.picanStarts.length, 0);
+    assert.strictEqual(harness.picanRequests.length, 0);
+    assert.deepStrictEqual(
+      harness.writtenFiles.find((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
+      {
+        path: `/workspace/${SESSION_ID}/.pi-agent/initial-prompt`,
+        content: CREATE_INPUT.prompt,
+      },
     );
-    assert.strictEqual(harness.picanRequests[0]?.headers.get("idempotency-key"), SESSION_ID);
-    assert.deepStrictEqual(harness.picanRequests[0]?.body, {
-      path: `/workspace/${SESSION_ID}`,
-      runtime: "codex",
-      initialPrompt: CREATE_INPUT.prompt,
-    });
     assert.deepStrictEqual(harness.aborts, []);
   });
 
@@ -378,7 +369,7 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(harness.schedules, []);
   });
 
-  it("reconciles a matching booting create through Pican with the same identity and payload", async () => {
+  it("reconciles a matching booting create through Pi with the same identity and payload", async () => {
     const nonce = "create-before-do-restart";
     const existing = makeSessionRecord({
       id: SESSION_ID,
@@ -411,25 +402,24 @@ describe("Sandbox create orchestration", () => {
 
     assert.strictEqual(replayed.status, "warm");
     assert.strictEqual(replayed.defaultBranch, "main");
-    assert.strictEqual(replayed.codexThreadId, "019d0f55-8d43-7b8c-b63f-f3875b66d03b");
+    assert.strictEqual(replayed.codexThreadId, `pi-${SESSION_ID}`);
     assert.strictEqual(harness.readRecord()?.operation, null);
     assert.strictEqual(harness.picanStarts.length, 0);
-    assert.strictEqual(harness.picanRequests.length, 1);
-    assert.strictEqual(harness.picanRequests[0]?.headers.get("idempotency-key"), SESSION_ID);
-    assert.deepStrictEqual(harness.picanRequests[0]?.body, {
-      path: `/workspace/${SESSION_ID}`,
-      runtime: "codex",
-      initialPrompt: CREATE_INPUT.prompt,
-    });
-    assert.deepStrictEqual(harness.schedules, [
-      { when: 10, callback: "observeAgentActivity", payload: {} },
-    ]);
+    assert.strictEqual(harness.picanRequests.length, 0);
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.deepStrictEqual(
+      harness.writtenFiles.find((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
+      {
+        path: `/workspace/${SESSION_ID}/.pi-agent/initial-prompt`,
+        content: CREATE_INPUT.prompt,
+      },
+    );
     assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
     assert.ok(!harness.events.includes("credential:put"));
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
-  it("replays setup only before advancing durably to the Pican phase", async () => {
+  it("replays setup only before advancing durably to the Pi phase", async () => {
     const nonce = "create-before-workspace-setup";
     const harness = await createSessionHarness({
       initialEntries: {
@@ -458,12 +448,10 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(replayed.status, "warm");
     assert.ok(harness.events.includes("credential:put"));
     assert.ok(harness.events.includes("host:exec:workspace"));
-    assert.strictEqual(harness.picanStarts.length, 1);
-    assert.strictEqual(harness.picanRequests.length, 1);
-    assert.strictEqual(harness.picanRequests[0]?.headers.get("idempotency-key"), SESSION_ID);
+    assert.strictEqual(harness.picanStarts.length, 0);
+    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(
-      harness.events.lastIndexOf("record:booting") <
-        harness.events.indexOf("host:pican:fetch:31415"),
+      harness.events.lastIndexOf("record:booting") < harness.events.lastIndexOf("record:warm"),
     );
   });
 
@@ -497,12 +485,12 @@ describe("Sandbox create orchestration", () => {
       harness.commands.filter((command) => command.startsWith("gh repo view")).length,
       1,
     );
-    assert.strictEqual(harness.picanStarts.length, 1);
-    assert.strictEqual(harness.picanRequests.length, 1);
+    assert.strictEqual(harness.picanStarts.length, 0);
+    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
-  it("singleflights concurrent matching Pican-phase replays", async () => {
+  it("singleflights concurrent matching Pi-phase replays", async () => {
     const nonce = "concurrent-create-pican";
     const harness = await createSessionHarness({
       initialEntries: {
@@ -529,8 +517,8 @@ describe("Sandbox create orchestration", () => {
     ]);
 
     assert.deepStrictEqual(first, second);
-    assert.strictEqual(harness.picanStarts.length, 1);
-    assert.strictEqual(harness.picanRequests.length, 1);
+    assert.strictEqual(harness.picanStarts.length, 0);
+    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
     assert.ok(!harness.events.includes("host:destroy"));
   });
@@ -600,19 +588,19 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(conflictError.code, "conflict");
     assert.deepStrictEqual(
       harness.schedules.map((schedule) => schedule.callback),
-      ["enforceHardCap", "observeAgentActivity"],
+      ["enforceHardCap"],
     );
     assert.strictEqual(
       harness.commands.filter((command) => command.startsWith("gh repo view")).length,
       1,
     );
-    assert.strictEqual(harness.picanStarts.length, 1);
-    assert.strictEqual(harness.picanRequests.length, 1);
+    assert.strictEqual(harness.picanStarts.length, 0);
+    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
-  for (const failureStage of ["containerAuthSeed", "picanLaunch"] as const) {
-    it(`preserves Pican phase after ${failureStage} uncertainty`, async () => {
+  for (const failureStage of ["containerAuthSeed"] as const) {
+    it(`preserves Pi phase after ${failureStage} uncertainty`, async () => {
       const nonce = `uncertain-${failureStage}`;
       const harness = await createSessionHarness({
         failureStage,
@@ -639,7 +627,7 @@ describe("Sandbox create orchestration", () => {
       );
 
       assert.ok(error instanceof ScottyError);
-      assert.strictEqual(error.message, "Pican session creation is ambiguous");
+      assert.strictEqual(error.message, "Pi session creation is ambiguous");
       assert.strictEqual(harness.readRecord()?.status, "booting");
       assert.deepInclude(harness.readRecord()?.operation, {
         kind: "create",
@@ -648,14 +636,14 @@ describe("Sandbox create orchestration", () => {
       });
       assert.deepStrictEqual(harness.readRecord()?.failure, {
         code: "create_ambiguous",
-        message: "Pican session creation is ambiguous",
+        message: "Pi session creation is ambiguous",
         recoverable: true,
       });
       assert.ok(!harness.events.includes("host:destroy"));
     });
   }
 
-  it("preserves Pican phase when stable native identity cannot be persisted", async () => {
+  it("preserves Pi phase when ready state cannot be persisted", async () => {
     const nonce = "stable-before-storage-failure";
     const harness = await createSessionHarness({
       initialEntries: {
@@ -674,7 +662,7 @@ describe("Sandbox create orchestration", () => {
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
         [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
-      transactionFailureCountdown: 3,
+      transactionFailureCountdown: 1,
     });
 
     const error = await rejection(
@@ -682,8 +670,8 @@ describe("Sandbox create orchestration", () => {
     );
 
     assert.ok(error instanceof ScottyError);
-    assert.strictEqual(error.message, "Pican session creation is ambiguous");
-    assert.strictEqual(harness.picanRequests.length, 1);
+    assert.strictEqual(error.message, "Pi session creation is ambiguous");
+    assert.strictEqual(harness.picanRequests.length, 0);
     assert.strictEqual(harness.readRecord()?.status, "booting");
     assert.deepInclude(harness.readRecord()?.operation, {
       kind: "create",
@@ -695,7 +683,7 @@ describe("Sandbox create orchestration", () => {
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
-  it("terminates only an explicit Pican create rejection", async () => {
+  it("does not call the legacy Pican create endpoint", async () => {
     const nonce = "explicit-pican-rejection";
     const harness = await createSessionHarness({
       initialEntries: {
@@ -718,21 +706,16 @@ describe("Sandbox create orchestration", () => {
       picanCreateResponse: () => new Response(null, { status: 409 }),
     });
 
-    await assertUpstreamFailure(
-      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
-    );
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
 
-    assert.strictEqual(harness.readRecord()?.status, "failed");
+    assert.strictEqual(harness.readRecord()?.status, "warm");
     assert.strictEqual(harness.readRecord()?.operation, null);
-    assert.deepStrictEqual(harness.readRecord()?.failure, {
-      code: "create_failed",
-      message: "Session setup failed",
-      recoverable: false,
-    });
-    assert.ok(harness.events.includes("host:destroy"));
+    assert.strictEqual(harness.readRecord()?.failure, undefined);
+    assert.strictEqual(harness.picanRequests.length, 0);
+    assert.ok(!harness.events.includes("host:destroy"));
   });
 
-  it("preserves a matching booting create as recoverable when Pican reports unknown", async () => {
+  it("reconciles a matching booting create without consulting Pican state", async () => {
     const nonce = "create-before-unknown-replay";
     const harness = await createSessionHarness({
       initialEntries: {
@@ -766,19 +749,11 @@ describe("Sandbox create orchestration", () => {
         ),
     });
 
-    const error = await rejection(
-      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
-    );
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
 
-    assert.ok(error instanceof ScottyError);
-    assert.strictEqual(error.message, "Pican session creation is ambiguous");
-    assert.deepStrictEqual(harness.readRecord()?.failure, {
-      code: "create_ambiguous",
-      message: "Pican session creation is ambiguous",
-      recoverable: true,
-    });
-    assert.strictEqual(harness.picanRequests.length, 1);
-    assert.strictEqual(harness.picanRequests[0]?.headers.get("idempotency-key"), SESSION_ID);
+    assert.strictEqual(harness.readRecord()?.status, "warm");
+    assert.strictEqual(harness.readRecord()?.failure, undefined);
+    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
@@ -800,27 +775,14 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(harness.events, []);
   });
 
-  it("retries an ambiguous Pican create with the same key and preserves the runtime", async () => {
+  it("does not exercise Pican retries during Pi create", async () => {
     const harness = await createSessionHarness({ failureStage: "picanCreate" });
 
-    const error = await rejection(
-      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
-    );
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
 
-    assert.ok(error instanceof ScottyError);
-    assert.strictEqual(error.code, "upstream");
-    assert.strictEqual(error.message, "Pican session creation is ambiguous");
-    assert.match(error.hint ?? "", /runtime was preserved/u);
-    assert.deepStrictEqual(harness.readRecord()?.failure, {
-      code: "create_ambiguous",
-      message: "Pican session creation is ambiguous",
-      recoverable: true,
-    });
-    assert.strictEqual(harness.picanRequests.length, 3);
-    assert.deepStrictEqual(
-      harness.picanRequests.map((request) => request.headers.get("idempotency-key")),
-      [SESSION_ID, SESSION_ID, SESSION_ID],
-    );
+    assert.strictEqual(harness.readRecord()?.status, "warm");
+    assert.strictEqual(harness.readRecord()?.failure, undefined);
+    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 

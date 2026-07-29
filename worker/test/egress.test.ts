@@ -22,6 +22,7 @@ import {
   type EgressVaultShape,
   makeOutboundByHost,
   passThroughProgram,
+  piAccessSentinel,
   proxyChatGptProgram,
   proxyGitHubProgram,
   proxyOAuthRefreshProgram,
@@ -519,6 +520,56 @@ describe("OAuth refresh", () => {
         assert.ok(text.includes(CODEX));
         assert.ok(!text.includes("rotated-access") && !text.includes("real-refresh-token"));
       }),
+  );
+
+  it.effect("accepts Pi form refresh and returns a JWT-shaped sentinel with expiry", () =>
+    Effect.gen(function* () {
+      const form = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: CODEX,
+        client_id: "pi-client",
+      });
+      const response = yield* run(
+        proxyOAuthRefreshProgram(
+          new Request("https://auth.openai.com/oauth/token", {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: form,
+          }),
+        ),
+        {
+          respond: (upstream) =>
+            Effect.gen(function* () {
+              const web = yield* HttpClientRequest.toWeb(upstream).pipe(Effect.orDie);
+              assert.equal(web.headers.get("content-type"), "application/x-www-form-urlencoded");
+              assert.deepEqual(
+                Object.fromEntries(new URLSearchParams(yield* Effect.promise(() => web.text()))),
+                {
+                  grant_type: "refresh_token",
+                  refresh_token: "real-refresh-token",
+                  client_id: "pi-client",
+                },
+              );
+              return new Response(
+                JSON.stringify({
+                  access_token: "rotated-access",
+                  refresh_token: "rotated-refresh",
+                  expires_in: 3600,
+                }),
+                { status: 200 },
+              );
+            }),
+        },
+      );
+      assert.equal(response.status, 200);
+      assert.deepEqual(yield* Effect.promise(() => response.json()), {
+        id_token:
+          "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoic2NvdHR5LXNlbnRpbmVsIiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJ1bmtub3duIn19.scotty",
+        access_token: piAccessSentinel(CODEX),
+        refresh_token: CODEX,
+        expires_in: 3600,
+      });
+    }),
   );
 
   it.effect("preserves upstream non-2xx status/envelope/no-store and cancels", () =>

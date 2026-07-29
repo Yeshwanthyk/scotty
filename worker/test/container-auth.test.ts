@@ -5,9 +5,10 @@ import {
   agentEnv,
   ContainerAuth,
   containerAuthLayer,
+  PI_PACKAGES,
   sandboxAgentsInstructions,
 } from "../src/container-auth";
-import { sentinelAuthJson, type StoredCredential } from "../src/egress";
+import { piAuthJson, sentinelAuthJson, type StoredCredential } from "../src/egress";
 import {
   SandboxRuntimeFailure,
   sandboxRuntimeLayer,
@@ -121,6 +122,9 @@ describe("container auth values", () => {
     assert.strictEqual(sessionRoot(ID), `/workspace/${ID}`);
     assert.deepStrictEqual(agentEnv(ID, credential), {
       CODEX_HOME: `/workspace/${ID}/.codex`,
+      PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
+      SCOTTY_SESSION_ID: ID,
+      GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
       OPENAI_API_KEY: CODEX_SENTINEL,
       GH_TOKEN: GITHUB_SENTINEL,
       GITHUB_SENTINEL,
@@ -149,52 +153,58 @@ describe("ContainerAuth", () => {
       yield* seedWith(capabilities);
       const expectedAuth = sentinelAuthJson(credential);
 
-      assert.deepStrictEqual(capabilities.calls, [
-        {
-          operation: "mkdir",
-          path: `/workspace/${ID}/.codex`,
-          recursive: true,
-        },
-        {
-          operation: "writeFile",
-          path: `/workspace/${ID}/.codex/auth.json`,
-          content: expectedAuth,
-        },
-        {
-          operation: "writeFile",
-          path: `/workspace/${ID}/.codex/config.toml`,
-          content: `model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
-
-[features]
-plugins = false
-
-[mcp_servers]
-
-[projects."/workspace/${ID}"]
-trust_level = "trusted"
-`,
-        },
-        {
-          operation: "writeFile",
-          path: `/workspace/${ID}/.codex/AGENTS.md`,
-          content: sandboxAgentsInstructions,
-        },
-        {
-          operation: "exec",
-          command: `chmod 700 '/workspace/${ID}/.codex' && chmod 600 '/workspace/${ID}/.codex/auth.json' '/workspace/${ID}/.codex/config.toml' '/workspace/${ID}/.codex/AGENTS.md' && ln -sfn /opt/scotty/skills '/workspace/${ID}/.codex/skills'`,
-          options: undefined,
-        },
-        {
-          operation: "setEnvVars",
-          envVars: agentEnv(ID, credential),
-        },
-        {
-          operation: "exec",
-          command: `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C '/workspace/${ID}' config user.name "$git_name" && git -C '/workspace/${ID}' config user.email "$git_email"`,
-          options: undefined,
-        },
-      ]);
+      assert.deepStrictEqual(
+        capabilities.calls.map((call) => call.operation),
+        [
+          "mkdir",
+          "mkdir",
+          "writeFile",
+          "writeFile",
+          "writeFile",
+          "writeFile",
+          "writeFile",
+          "writeFile",
+          "writeFile",
+          "writeFile",
+          "exec",
+          "setEnvVars",
+          "exec",
+        ],
+      );
+      const writes = capabilities.calls.filter(
+        (call): call is Extract<ContainerCall, { operation: "writeFile" }> =>
+          call.operation === "writeFile",
+      );
+      assert.deepStrictEqual(
+        writes.map((write) => write.path),
+        [
+          `/workspace/${ID}/.codex/auth.json`,
+          `/workspace/${ID}/.codex/config.toml`,
+          `/workspace/${ID}/.codex/AGENTS.md`,
+          `/workspace/${ID}/.pi-agent/auth.json`,
+          `/workspace/${ID}/.pi-agent/settings.json`,
+          `/workspace/${ID}/.pi-agent/AGENTS.md`,
+          `/workspace/${ID}/.pi-agent/web-search.json`,
+          `/workspace/${ID}/.pi-agent/gitconfig`,
+        ],
+      );
+      assert.strictEqual(writes[0]?.content, expectedAuth);
+      assert.deepStrictEqual(
+        JSON.parse(writes[3]?.content ?? ""),
+        JSON.parse(piAuthJson(credential)),
+      );
+      assert.deepInclude(JSON.parse(writes[4]?.content ?? ""), {
+        defaultProvider: "openai-codex",
+        defaultModel: "gpt-5.6-sol",
+        theme: "amp-neo",
+        packages: [...PI_PACKAGES],
+      });
+      assert.deepStrictEqual(JSON.parse(writes[6]?.content ?? ""), {
+        provider: "openai",
+        workflow: "none",
+        allowBrowserCookies: false,
+      });
+      assert.ok(writes[7]?.content.includes("password=$GITHUB_SENTINEL"));
 
       assert.deepStrictEqual(JSON.parse(expectedAuth), {
         auth_mode: "chatgpt",
@@ -235,8 +245,8 @@ trust_level = "trusted"
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 7);
-      assert.strictEqual(second.calls.length, 7);
+      assert.strictEqual(first.calls.length, 13);
+      assert.strictEqual(second.calls.length, 13);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),
@@ -279,6 +289,9 @@ trust_level = "trusted"
       });
       assert.deepStrictEqual(agentEnv(ID, apiKeyCredential), {
         CODEX_HOME: `/workspace/${ID}/.codex`,
+        PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
+        SCOTTY_SESSION_ID: ID,
+        GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
         OPENAI_API_KEY: CODEX_SENTINEL,
         GH_TOKEN: GITHUB_SENTINEL,
         GITHUB_SENTINEL,

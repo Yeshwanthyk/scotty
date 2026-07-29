@@ -24,6 +24,7 @@ ARG FD_VERSION=10.4.2
 ARG FD_SHA256=0e44eb5fca93f09bc6f5430b90acdf44c8e069d0a903700aeb4820629337b67b
 ARG GO_VERSION=1.26.1
 ARG GO_SHA256=031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a
+ARG PI_VERSION=0.82.1
 ARG QSV_VERSION=21.1.0
 ARG QSV_SHA256=6e1e322c2ac0d2e862e961f0bb5b30c8ceccb12ace37067bc8d911c77cf101f3
 ARG RIPGREP_VERSION=15.2.0
@@ -45,7 +46,6 @@ RUN apt-get update \
     locales \
     pkg-config \
     shellcheck \
-    tmux \
     unzip \
   && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
   && locale-gen \
@@ -84,6 +84,7 @@ RUN apt-get update \
   && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/uvx \
   && npm install --global --ignore-scripts --no-audit --no-fund \
     "@ast-grep/cli@${AST_GREP_VERSION}" \
+    "@earendil-works/pi-coding-agent@${PI_VERSION}" \
     "@openai/codex@${CODEX_VERSION}" \
     "corepack@${COREPACK_VERSION}" \
   && corepack enable \
@@ -117,20 +118,23 @@ COPY worker/container/pican-linux-amd64.lock.json /opt/scotty/pican-linux-amd64.
 COPY worker/container/pican-linux-amd64 /usr/local/bin/pican
 COPY worker/container/scotty-runner-bootstrap /usr/local/bin/scotty-runner-bootstrap
 COPY worker/container/scotty-runner-pican /usr/local/bin/scotty-runner-pican
+COPY worker/container/scotty-pi-shell /usr/local/bin/scotty-pi-shell
 RUN chmod 0755 \
     /usr/local/bin/pican \
     /usr/local/bin/scotty-runner-bootstrap \
     /usr/local/bin/scotty-runner-pican \
+    /usr/local/bin/scotty-pi-shell \
     /usr/local/bin/scotty \
   && chmod -R a-w /opt/scotty/skills \
-  && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-runner-pican \
+  && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-runner-pican /usr/local/bin/scotty-pi-shell \
   && echo "$(jq --raw-output .binarySha256 /opt/scotty/pican-linux-amd64.lock.json)  /usr/local/bin/pican" | sha256sum --check --strict \
   && test "$(pican --version)" = "$(jq --raw-output .sourceCommit /opt/scotty/pican-linux-amd64.lock.json)" \
   && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
+  && test "$(pi --version)" = "${PI_VERSION}" \
   && scotty tools list --json >/dev/null \
   && for command_name in \
-    rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh tmux shellcheck \
-    node npm bun corepack cc pkg-config codex pican scotty-runner-bootstrap scotty-runner-pican; do \
+    rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck \
+    node npm bun corepack cc pkg-config codex pi pican scotty-pi-shell scotty-runner-bootstrap scotty-runner-pican; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done
 

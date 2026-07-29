@@ -12,7 +12,7 @@ interface CompletionPayload {
 }
 
 describe("Sandbox agent activity lifecycle", () => {
-  it("projects Pican activity and stale-fences completion sleep", async () => {
+  it("does not poll legacy Pican activity for a Cloudflare Pi session", async () => {
     let workerState: "idle" | "running" | "error" = "idle";
     const harness = await createSessionHarness({
       initialEntries: {
@@ -29,34 +29,11 @@ describe("Sandbox agent activity lifecycle", () => {
     });
 
     await harness.sandbox.observeAgentActivity();
-    const completed = harness.readRecord();
-    assert.strictEqual(completed?.agentState, "completed");
-    assert.notStrictEqual(completed?.lastAgentEventAt, "2026-01-01T00:00:01.000Z");
-    const firstSleep = harness.schedules.findLast(
-      ({ callback }) => callback === "sleepAfterAgentCompletion",
-    );
-    assert.ok(firstSleep);
-
-    workerState = "running";
-    await harness.sandbox.sleepAfterAgentCompletion(firstSleep.payload as CompletionPayload);
-    assert.strictEqual(harness.readRecord()?.status, "warm");
     assert.strictEqual(harness.readRecord()?.agentState, "working");
-
-    workerState = "error";
-    await harness.sandbox.observeAgentActivity();
-    assert.strictEqual(harness.readRecord()?.agentState, "tool-stalled");
-
-    workerState = "running";
-    await harness.sandbox.observeAgentActivity();
-    workerState = "idle";
-    await harness.sandbox.observeAgentActivity();
-    const latestSleep = harness.schedules.findLast(
-      ({ callback }) => callback === "sleepAfterAgentCompletion",
-    );
-    assert.ok(latestSleep);
-
-    await harness.sandbox.sleepAfterAgentCompletion(latestSleep.payload as CompletionPayload);
-    assert.strictEqual(harness.readRecord()?.status, "sleeping");
+    assert.strictEqual(harness.readRecord()?.lastAgentEventAt, "2026-01-01T00:00:01.000Z");
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.ok(!harness.events.includes("host:pican:worker-status"));
+    void workerState;
   });
 
   it("observes retained runner activity through the same projection contract", async () => {
