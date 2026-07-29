@@ -177,7 +177,7 @@ body.scotty-ui {
 }
 
 .sessions-page main {
-  width: min(100%, 1080px);
+  width: min(100%, 980px);
 }
 
 .sessions-page .page-heading {
@@ -276,6 +276,16 @@ body.scotty-ui {
 .sessions-page .session:hover {
   border-color: var(--line-hover);
   background: #091820;
+  box-shadow: none;
+}
+
+.scotty-ui .masthead-nav .button {
+  background: transparent;
+  box-shadow: none;
+}
+
+.scotty-ui .masthead-nav .button:hover {
+  background: rgb(238 231 211 / 0.05);
   box-shadow: none;
 }
 

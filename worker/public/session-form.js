@@ -10,6 +10,16 @@ export function promptText(value) {
   return normalized.trim().length > 0 ? normalized : undefined;
 }
 
+export function titleText(value) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= 120 ? normalized : undefined;
+}
+
+export function sessionTitle(session) {
+  return titleText(session?.title) || `Session ${session?.id || "unknown"}`;
+}
+
 export function mergeRepositorySuggestions(tracked, sessions) {
   const merged = [];
   const seen = new Set();
@@ -47,11 +57,15 @@ export function groupSessionsByRepository(sessions) {
     group.sessions.push(session);
   }
 
-  return groups;
+  for (const group of groups) {
+    group.sessions.sort(compareSessionsOldestFirst);
+  }
+  return groups.sort(compareProjectGroups);
 }
 
 export function submissionIdentity(previous, payload, createKey) {
   const fingerprint = JSON.stringify([
+    payload.title,
     payload.repo,
     payload.prompt,
     payload.hardCapSeconds,
@@ -90,4 +104,26 @@ export function sessionDisplayStatus(value, pendingAction) {
 
 function arrayOrEmpty(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function compareProjectGroups(left, right) {
+  const leftActive = left.sessions.filter((session) => session?.status !== "sleeping");
+  const rightActive = right.sessions.filter((session) => session?.status !== "sleeping");
+  if (leftActive.length > 0 && rightActive.length === 0) return -1;
+  if (leftActive.length === 0 && rightActive.length > 0) return 1;
+
+  const leftWarm = left.sessions.filter((session) => session?.status === "warm");
+  const rightWarm = right.sessions.filter((session) => session?.status === "warm");
+  const leftOrder = leftWarm[0] || leftActive[0] || left.sessions[0];
+  const rightOrder = rightWarm[0] || rightActive[0] || right.sessions[0];
+  return compareSessionsOldestFirst(leftOrder, rightOrder);
+}
+
+function compareSessionsOldestFirst(left, right) {
+  const leftCreatedAt = Date.parse(left?.createdAt);
+  const rightCreatedAt = Date.parse(right?.createdAt);
+  const leftOrder = Number.isFinite(leftCreatedAt) ? leftCreatedAt : Number.MAX_SAFE_INTEGER;
+  const rightOrder = Number.isFinite(rightCreatedAt) ? rightCreatedAt : Number.MAX_SAFE_INTEGER;
+  if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+  return String(left?.id || "").localeCompare(String(right?.id || ""));
 }

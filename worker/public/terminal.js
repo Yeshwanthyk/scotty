@@ -1,4 +1,5 @@
 import { FitAddon, init, Terminal } from "/vendor/ghostty-web.js";
+import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
 
 const sessionMatch = window.location.pathname.match(/^\/s\/([^/]+)$/u);
 const sessionId = sessionMatch ? decodeURIComponent(sessionMatch[1]) : "";
@@ -7,6 +8,8 @@ const workspaceList = document.querySelector("#workspace-list");
 const workspaceCount = document.querySelector("#workspace-count");
 const currentRepo = document.querySelector("#current-repo");
 const currentMeta = document.querySelector("#current-meta");
+const pickerTitle = document.querySelector("#picker-title");
+const pickerProject = document.querySelector("#picker-project");
 const connectionState = document.querySelector("#connection-state");
 const connectionLabel = document.querySelector("#connection-label");
 const terminalError = document.querySelector("#terminal-error");
@@ -46,10 +49,10 @@ function setDrawer(open) {
 }
 
 function workspaceName(session) {
-  return session.repo || session.id;
+  return sessionTitle(session);
 }
 
-function addWorkspaceLink(session) {
+function addWorkspaceLink(parent, session) {
   const link = document.createElement("a");
   link.className = "workspace-link";
   link.href = `/s/${encodeURIComponent(session.id)}`;
@@ -69,7 +72,18 @@ function addWorkspaceLink(session) {
   detail.textContent = session.branch || session.id;
   copy.append(name, detail);
   link.append(presence, copy);
-  workspaceList.append(link);
+  parent.append(link);
+}
+
+function addWorkspaceProject(group) {
+  const section = document.createElement("section");
+  section.className = "workspace-project";
+  const name = document.createElement("h2");
+  name.className = "workspace-project-name";
+  name.textContent = group.repo;
+  section.append(name);
+  for (const session of group.sessions) addWorkspaceLink(section, session);
+  workspaceList.append(section);
 }
 
 async function loadWorkspaces() {
@@ -90,12 +104,17 @@ async function loadWorkspaces() {
     message.textContent = "No open containers. Resume one from Home.";
     workspaceList.append(message);
   } else {
-    for (const session of warm) addWorkspaceLink(session);
+    for (const group of groupSessionsByRepository(warm)) addWorkspaceProject(group);
   }
   const current = sessions.find((session) => session?.id === sessionId);
   if (current) {
-    currentRepo.textContent = workspaceName(current);
-    currentMeta.textContent = `${current.branch || current.id} · ${current.provider || "cloudflare"}`;
+    const title = workspaceName(current);
+    currentRepo.textContent = title;
+    currentMeta.textContent = `${current.repo || "Unknown project"} · ${
+      current.branch || current.id
+    }`;
+    pickerTitle.textContent = title;
+    pickerProject.textContent = current.repo || current.branch || current.id;
     document.title = `${workspaceName(current)} · Scotty`;
   }
 }
