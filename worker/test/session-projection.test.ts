@@ -48,6 +48,7 @@ describe("SessionProjection", () => {
       const valid = {
         version: 1,
         id: "a0b1c2d3e4f5",
+        title: "Test session",
         status: "warm",
         provider: "cloudflare",
         repo: "owner/newer",

@@ -14,6 +14,7 @@ const FIVE_MINUTES = 5 * 60 * 1_000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1_000;
 const PUBLIC_SESSION_FIELDS = [
   "id",
+  "title",
   "status",
   "provider",
   "repo",
@@ -731,6 +732,8 @@ export class FakeWorkerService {
     }
     if (request.method === "POST" && url.pathname === "/api/sessions") {
       const body = await readBody(request);
+      if (typeof body.title !== "string" || !body.title.trim() || body.title.trim().length > 120)
+        return error(400, "bad_request", "title must be between 1 and 120 characters");
       if (typeof body.prompt !== "string" || !body.prompt.trim())
         return error(400, "bad_request", "prompt must be a non-empty string");
       if (body.provider !== "cloudflare")
@@ -745,6 +748,7 @@ export class FakeWorkerService {
       const record = {
         version: 1,
         id,
+        title: body.title.trim(),
         status: "warm",
         operation: null,
         provider: body.provider,
@@ -794,6 +798,7 @@ export class FakeWorkerService {
       return json(
         {
           id,
+          title: record.title,
           url: `${this.url}/s/${id}`,
           branch: record.branch,
           provider: record.provider,

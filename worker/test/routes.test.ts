@@ -127,6 +127,7 @@ function useRealSandbox(harness: SessionHarness): void {
 const projection = {
   version: 1,
   id: "a0b1c2d3e4f5",
+  title: "Test session",
   status: "failed",
   provider: "cloudflare",
   repo: "owner/repo",
@@ -149,6 +150,7 @@ describe("real Hono boundary", () => {
     sandbox.fetch.mockResolvedValue(new Response("<!doctype html><title>Pican</title>"));
     sandbox.getScottySession.mockResolvedValue({
       id: "a0b1c2d3e4f5",
+      title: "Test session",
       status: "warm",
       provider: "cloudflare",
       repo: "owner/repo",
@@ -285,6 +287,7 @@ describe("real Hono boundary", () => {
     const assignedProjection = {
       version: 1,
       id: "b0b1c2d3e4f5",
+      title: "Runner recovery",
       status: "failed",
       provider: "runner",
       runner: "slumbers",
@@ -475,6 +478,7 @@ describe("real Hono boundary", () => {
         "idempotency-key": "01234567-89ab-4cde-8fab-0123456789ab",
       },
       body: JSON.stringify({
+        title: "Ship project",
         prompt: "ship it",
         provider: "cloudflare",
         repo: "owner/project",
@@ -518,6 +522,7 @@ describe("real Hono boundary", () => {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
+          title: "Ship repository",
           prompt: "ship it",
           provider: "cloudflare",
           repo: "owner/repo",
@@ -540,6 +545,7 @@ describe("real Hono boundary", () => {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
+          title: "Ship repository",
           prompt: "ship it",
           provider: "cloudflare",
           repo: "owner/repo",
@@ -590,7 +596,12 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ prompt: "ship it", provider: "box", repo: "owner/project" }),
+        body: JSON.stringify({
+          title: "Ship project",
+          prompt: "ship it",
+          provider: "box",
+          repo: "owner/project",
+        }),
       },
       env(),
     );

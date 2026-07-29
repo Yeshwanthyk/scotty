@@ -22,6 +22,11 @@ const terminalStyles = await readFile(
   new URL("../worker/public/terminal.css", import.meta.url),
   "utf8",
 );
+const sessionForm = await readFile(
+  new URL("../worker/public/session-form.js", import.meta.url),
+  "utf8",
+);
+const contracts = await readFile(new URL("../worker/src/contracts.ts", import.meta.url), "utf8");
 
 describe("sessions shell", () => {
   it("ships the approved production header instead of prototype-only chrome", () => {
@@ -62,6 +67,23 @@ describe("sessions shell", () => {
     assert.match(sessionsHtml, /actionButton\("Resume & open", "resume"/);
     assert.match(sessionsHtml, /method: "PATCH"/);
     assert.doesNotMatch(sessionsHtml, /Running tests|Editing terminal\.js|agent activity/i);
+  });
+
+  it("requires real session titles without a repository or ID display fallback", () => {
+    assert.match(
+      contracts,
+      /SessionRecordSchema = Schema\.Struct\(\{[\s\S]*?title: Schema\.String/,
+    );
+    assert.match(
+      contracts,
+      /SessionProjectionSchema = Schema\.Struct\(\{[\s\S]*?title: Schema\.String/,
+    );
+    assert.match(
+      contracts,
+      /CreateSessionInputSchema = Schema\.Struct\(\{[\s\S]*?title: Schema\.String/,
+    );
+    assert.match(sessionForm, /return titleText\(session\.title\) \|\| "";/);
+    assert.doesNotMatch(sessionForm, /session\.repo|session\.id|`Session \$\{/);
   });
 
   it("ships project-grouped desktop and mobile warm-session navigation", () => {

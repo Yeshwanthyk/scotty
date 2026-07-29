@@ -149,6 +149,7 @@ export function stableUp(
   {
     output: {
       id: string;
+      title: string;
       url: string;
       branch: string;
       provider: "cloudflare" | "runner";
@@ -165,6 +166,7 @@ export function stableUp(
   return Result.succeed({
     output: {
       id: decoded.value.id,
+      title: decoded.value.title,
       url: sanitized.success,
       branch: decoded.value.branch,
       provider: decoded.value.provider,
@@ -177,6 +179,7 @@ export function stableUp(
 export function stableSession(record: SessionResponse): JsonObject {
   const result: JsonObject = {
     id: record.id,
+    title: record.title,
     status: record.status,
     provider: record.provider,
     repo: record.repo,
@@ -209,6 +212,7 @@ export function stableSession(record: SessionResponse): JsonObject {
 
 export function humanSession(record: JsonObject): string {
   const id = String(record.id ?? "-");
+  const title = String(record.title ?? "-");
   const status = String(record.status ?? "-");
   const provider = String(record.provider ?? "-");
   const repo = String(record.repo ?? "-");
@@ -219,7 +223,7 @@ export function humanSession(record: JsonObject): string {
     typeof record.capRemainingSeconds === "number"
       ? `${Math.max(0, Math.floor(record.capRemainingSeconds))}s`
       : "-";
-  return `${id.padEnd(14)} ${status.padEnd(10)} ${provider.padEnd(12)} ${repo.padEnd(28)} ${branch.padEnd(24)} age ${age.padStart(7)} cap ${cap.padStart(7)}`;
+  return `${id.padEnd(14)} ${title.padEnd(24)} ${status.padEnd(10)} ${provider.padEnd(12)} ${repo.padEnd(28)} ${branch.padEnd(24)} age ${age.padStart(7)} cap ${cap.padStart(7)}`;
 }
 
 export function durationSeconds(value: string): Result.Result<number, CliError> {

@@ -28,15 +28,7 @@ describe("session form", () => {
     assert.strictEqual(titleText("  Package Pi extensions  "), "Package Pi extensions");
     assert.isUndefined(titleText(" "));
     assert.isUndefined(titleText("x".repeat(121)));
-    assert.strictEqual(
-      sessionTitle({ id: "a0b1c2d3e4f5", title: "Package Pi extensions" }),
-      "Package Pi extensions",
-    );
-    assert.strictEqual(
-      sessionTitle({ id: "a0b1c2d3e4f5", repo: "Yeshwanthyk/scotty" }),
-      "Yeshwanthyk/scotty · a0b1c2d3e4f5",
-    );
-    assert.strictEqual(sessionTitle({ id: "a0b1c2d3e4f5" }), "Session a0b1c2d3e4f5");
+    assert.strictEqual(sessionTitle({ title: "Package Pi extensions" }), "Package Pi extensions");
   });
 
   it("merges tracked repositories with current session repositories", () => {

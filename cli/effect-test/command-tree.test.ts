@@ -312,7 +312,17 @@ describe("Effect command tree", () => {
 
   it.effect("keeps parser failures typed and generated help out of machine stdout", () =>
     Effect.gen(function* () {
-      const invocation = run(["beam", "up", "fix", "--repo", "owner/project", "--provider", "box"]);
+      const invocation = run([
+        "beam",
+        "up",
+        "fix",
+        "--title",
+        "Fix build",
+        "--repo",
+        "owner/project",
+        "--provider",
+        "box",
+      ]);
       const result = yield* Effect.result(invocation.effect);
       const error = failure(result);
       assert.instanceOf(error, CliError);

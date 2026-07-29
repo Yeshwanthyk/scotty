@@ -52,6 +52,7 @@ export const RawConfigSchema = Schema.Struct({
 });
 export const UpResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
+  title: Schema.NonEmptyString,
   url: Schema.NonEmptyString,
   branch: Schema.NonEmptyString,
   provider: ProviderSchema,
@@ -75,6 +76,7 @@ export const RawSessionFailureSchema = Schema.Struct({
 });
 export const SessionResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
+  title: Schema.NonEmptyString,
   status: Schema.NonEmptyString,
   provider: ProviderSchema,
   repo: Schema.NonEmptyString,

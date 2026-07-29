@@ -17,11 +17,7 @@ export function titleText(value) {
 }
 
 export function sessionTitle(session) {
-  const title = titleText(session?.title);
-  if (title) return title;
-  const id = typeof session?.id === "string" && session.id.length > 0 ? session.id : "unknown";
-  const repo = repositoryName(session?.repo);
-  return repo ? `${repo} · ${id}` : `Session ${id}`;
+  return titleText(session.title) || "";
 }
 
 export function mergeRepositorySuggestions(tracked, sessions) {

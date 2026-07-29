@@ -921,7 +921,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const initial: SessionRecord = {
       version: 1,
       id,
-      ...(input.title === undefined ? {} : { title: input.title }),
+      title: input.title,
       status: "booting",
       operation: { kind: "create", nonce, startedAt: nowIso, createPhase: "setup" },
       execution:
