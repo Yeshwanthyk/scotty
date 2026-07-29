@@ -10,6 +10,7 @@ export interface RepositorySessionGroup<T> {
 }
 
 export interface SessionSubmissionPayload {
+  readonly title?: string;
   readonly repo: string;
   readonly prompt: string;
   readonly hardCapSeconds: number;
@@ -22,13 +23,20 @@ export interface SubmissionIdentity {
 
 export function repositoryName(value: unknown): string | undefined;
 export function promptText(value: unknown): string | undefined;
+export function titleText(value: unknown): string | undefined;
+export function sessionTitle(session: { readonly id?: unknown; readonly title?: unknown }): string;
 export function mergeRepositorySuggestions(
   tracked: unknown,
   sessions: unknown,
 ): RepositorySuggestion[];
-export function groupSessionsByRepository<T extends { readonly repo?: unknown }>(
-  sessions: readonly T[],
-): RepositorySessionGroup<T>[];
+export function groupSessionsByRepository<
+  T extends {
+    readonly id?: unknown;
+    readonly repo?: unknown;
+    readonly status?: unknown;
+    readonly createdAt?: unknown;
+  },
+>(sessions: readonly T[]): RepositorySessionGroup<T>[];
 export function submissionIdentity(
   previous: SubmissionIdentity | undefined,
   payload: SessionSubmissionPayload,

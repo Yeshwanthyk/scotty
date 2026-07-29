@@ -21,6 +21,7 @@
             <img src="/brand/scotty-mark-128.png" alt="" width="28" height="28" />
             <span>SCOTTY</span>
           </a>
+          <span class="sheet-title">Switch container</span>
           <button
             id="close-drawer"
             class="icon-button close-drawer"
@@ -56,13 +57,17 @@
         <header class="terminal-bar">
           <button
             id="open-drawer"
-            class="icon-button menu-button"
+            class="workspace-picker"
             type="button"
             aria-label="Open container switcher"
             aria-controls="workspace-rail"
             aria-expanded="false"
           >
-            <span aria-hidden="true">☰</span>
+            <span class="picker-copy">
+              <strong id="picker-title">Loading workspace…</strong>
+              <span id="picker-project">Connecting to container</span>
+            </span>
+            <span class="picker-chevron" aria-hidden="true">⌄</span>
           </button>
           <div class="current-context">
             <p id="current-repo" class="current-repo">Loading workspace…</p>
