@@ -42,11 +42,18 @@ const sessionForm = await readFile(
   new URL("../worker/public/session-form.js", import.meta.url),
   "utf8",
 );
+const statsHtml = await readFile(new URL("../worker/public/stats.html", import.meta.url), "utf8");
+const statsScript = await readFile(new URL("../worker/public/stats.js", import.meta.url), "utf8");
+const statsStyles = await readFile(new URL("../worker/public/stats.css", import.meta.url), "utf8");
+const statsView = await readFile(
+  new URL("../worker/public/stats-view.js", import.meta.url),
+  "utf8",
+);
 const contracts = await readFile(new URL("../worker/src/contracts.ts", import.meta.url), "utf8");
 
 describe("sessions shell", () => {
   it("ships one production header contract across app pages", () => {
-    for (const html of [sessionsHtml, providersHtml, devicesHtml]) {
+    for (const html of [sessionsHtml, statsHtml, providersHtml, devicesHtml]) {
       assert.match(html, /<body class="scotty-ui app-page /);
       assert.match(html, /<header class="masthead">/);
       assert.match(html, /<nav class="masthead-nav" aria-label="Primary navigation">/);
@@ -57,9 +64,13 @@ describe("sessions shell", () => {
 
     assert.match(sessionsHtml, /href="\/providers"/);
     assert.match(sessionsHtml, /href="\/devices"/);
+    assert.match(sessionsHtml, /href="\/stats"/);
     assert.match(sessionsHtml, /id="new-session"/);
+    assert.match(statsHtml, /href="\/sessions"/);
     assert.match(providersHtml, /href="\/sessions"[\s\S]*?href="\/devices"/);
+    assert.match(providersHtml, /href="\/stats"/);
     assert.match(devicesHtml, /href="\/sessions"[\s\S]*?href="\/providers"/);
+    assert.match(devicesHtml, /href="\/stats"/);
 
     assert.match(
       sharedStyles,
@@ -94,6 +105,23 @@ describe("sessions shell", () => {
     assert.match(sessionsHtml, /actionButton\("Resume & open", "resume"/);
     assert.match(sessionsHtml, /method: "PATCH"/);
     assert.doesNotMatch(sessionsHtml, /Running tests|Editing terminal\.js|agent activity/i);
+  });
+
+  it("ships only the V1 stats values with loading, empty, and error states", () => {
+    assert.equal(statsHtml.match(/data-stat=/g)?.length, 4);
+    for (const label of ["Workspaces created", "Projects", "Warm now", "Sleeping now"]) {
+      assert.match(statsHtml, new RegExp(`>${label}<`));
+    }
+    for (const label of ["Workspaces created", "Warm now", "Sleeping now", "Last created"]) {
+      assert.match(statsScript, new RegExp(`\\["${label}"`));
+    }
+    assert.match(statsHtml, /Loading tracking history/);
+    assert.match(statsScript, /Tracking starts with your next workspace/);
+    assert.match(statsScript, /Stats could not be loaded/);
+    assert.match(statsScript, /fetch\("\/api\/stats"/);
+    assert.match(statsView, /Number\.isSafeInteger/);
+    assert.match(statsStyles, /@media \(max-width: 760px\)/);
+    assert.doesNotMatch(statsHtml + statsScript, /chart|date filter|launch success|token|cost/i);
   });
 
   it("requires real session titles without a repository or ID display fallback", () => {

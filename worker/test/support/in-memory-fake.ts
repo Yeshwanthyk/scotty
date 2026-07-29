@@ -9,6 +9,7 @@ import type { RepoProjectionStorage } from "../../src/repo-projection";
 import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox-runtime";
 import type { SessionProjectionStorage } from "../../src/session-projection";
 import type { SessionRecordStorage, SessionRecordTransaction } from "../../src/session-store";
+import type { StatsProjectionStorage } from "../../src/stats-projection";
 
 interface InjectedFailure {
   readonly error: unknown;
@@ -213,6 +214,17 @@ export const repoProjectionStorageFake = (
     }),
   get: (key) => projectionGet(memory, key),
   list: (cursor) => projectionList(memory, cursor),
+  put: (key, value) => projectionPut(memory, key, value),
+});
+
+export const statsProjectionStorageFake = (
+  memory = new InMemoryFaultInjectableFake(),
+): StatsProjectionStorage => ({
+  get: (key) => projectionGet(memory, key),
+  list: (prefix, cursor) =>
+    memory.invoke("list", [prefix, cursor], () => ({
+      keys: [...memory.values.keys()].filter((key) => key.startsWith(prefix)),
+    })),
   put: (key, value) => projectionPut(memory, key, value),
 });
 

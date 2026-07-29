@@ -8,6 +8,7 @@ export const MAX_HARD_CAP_SECONDS = 24 * 60 * 60;
 export const SESSION_ROOT = "/workspace";
 export const SESSION_KV_PREFIX = "session:";
 export const REPO_KV_PREFIX = "repo:";
+export const WORKSPACE_CREATION_KV_PREFIX = "stats:workspace-created:";
 
 export const ProviderSchema = Schema.Literals(["cloudflare", "runner"]);
 export type Provider = typeof ProviderSchema.Type;
@@ -23,6 +24,9 @@ export const ExecutionBindingSchema = Schema.Union([
 export type ExecutionBinding = typeof ExecutionBindingSchema.Type;
 
 const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/));
+const RepositoryIdentitySchema = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+);
 const ShortHexIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u));
 const IdempotencyKeySchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{16,128}$/u));
 const decodeSessionId = Schema.decodeUnknownOption(SessionIdSchema);
@@ -188,6 +192,41 @@ export const SessionViewSchema = Schema.Struct({
   capRemainingSeconds: Schema.Number,
 });
 export type SessionView = typeof SessionViewSchema.Type;
+
+export const WorkspaceCreationMarkerSchema = Schema.Struct({
+  sessionId: SessionIdSchema,
+  repository: RepositoryIdentitySchema,
+  provider: ProviderSchema,
+  createdAt: Schema.String,
+});
+export type WorkspaceCreationMarker = typeof WorkspaceCreationMarkerSchema.Type;
+export const decodeWorkspaceCreationMarker = Schema.decodeUnknownOption(
+  WorkspaceCreationMarkerSchema,
+);
+
+const StatsCountSchema = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+const StatsCountsFields = {
+  workspacesCreated: StatsCountSchema,
+  warmNow: StatsCountSchema,
+  sleepingNow: StatsCountSchema,
+};
+
+export const StatsResponseSchema = Schema.Struct({
+  trackingSince: Schema.NullOr(Schema.String),
+  overall: Schema.Struct({
+    ...StatsCountsFields,
+    projects: StatsCountSchema,
+  }),
+  projects: Schema.Array(
+    Schema.Struct({
+      repository: RepositoryIdentitySchema,
+      ...StatsCountsFields,
+      lastCreated: Schema.String,
+    }),
+  ),
+});
+export type StatsResponse = typeof StatsResponseSchema.Type;
+export const decodeStatsResponse = Schema.decodeUnknownOption(StatsResponseSchema);
 
 export const RepoProjectionSchema = Schema.Struct({
   version: Schema.Literal(1),
