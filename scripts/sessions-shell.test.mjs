@@ -131,4 +131,23 @@ describe("sessions shell", () => {
       /@media \(max-width: 780px\)[\s\S]*?\.workspace-rail\s*\{[\s\S]*?position: fixed;[\s\S]*?inset: auto 0 0;/,
     );
   });
+
+  it("keeps terminal geometry and scrollback usable across viewport changes", () => {
+    assert.match(
+      terminalScript,
+      /socketUrl\.searchParams\.set\("cols", String\(terminal\.cols\)\)/,
+    );
+    assert.match(
+      terminalScript,
+      /socketUrl\.searchParams\.set\("rows", String\(terminal\.rows\)\)/,
+    );
+    assert.match(terminalScript, /addEventListener\("touchstart"/);
+    assert.match(terminalScript, /addEventListener\("touchmove"/);
+    assert.match(terminalScript, /fitAddon\.observeResize\(\)/);
+    assert.match(
+      terminalScript,
+      /terminal\.getViewportY\(\)[\s\S]*?terminal\.getScrollbackLength\(\)/,
+    );
+    assert.match(terminalStyles, /\.terminal\s*\{[\s\S]*?touch-action:\s*none;/);
+  });
 });
