@@ -139,7 +139,6 @@ RUN set -eu; \
         --no-fund \
         --legacy-peer-deps; \
   done \
-  && find /opt/scotty/pi-packages/sources -mindepth 2 -maxdepth 2 -name .git -delete \
   && test -z "$(find /opt/scotty/pi-packages/sources -mindepth 2 -maxdepth 2 -name .git -print -quit)" \
   && npm cache clean --force \
   && rm -rf /root/.cache

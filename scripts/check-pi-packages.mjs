@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -37,21 +38,26 @@ function packagePathsFromContainerAuth(root) {
 
 export function verifyPiPackagePins(root = scriptRoot) {
   const manifest = readJson(root, manifestPath);
-  if (manifest.schemaVersion !== 1) fail(`${manifestPath} has an unsupported schemaVersion`);
-  if (!Array.isArray(manifest.git) || !Array.isArray(manifest.npm))
-    fail(`${manifestPath} must contain git and npm arrays`);
+  if (manifest.schemaVersion !== 2) fail(`${manifestPath} has an unsupported schemaVersion`);
+  if (!Array.isArray(manifest.vendored) || !Array.isArray(manifest.npm))
+    fail(`${manifestPath} must contain vendored and npm arrays`);
 
   const configured = [];
-  for (const [index, entry] of manifest.git.entries()) {
-    const label = `git[${index}]`;
+  for (const [index, entry] of manifest.vendored.entries()) {
+    const label = `vendored[${index}]`;
     const name = requireString(entry.name, `${label}.name`);
     const order = requireOrder(entry.order, `${label}.order`);
     const repository = requireString(entry.repository, `${label}.repository`);
     const commit = requireString(entry.commit, `${label}.commit`);
+    const sourceSha256 = requireString(entry.sourceSha256, `${label}.sourceSha256`);
+    if (!/^[0-9a-f]{64}$/.test(sourceSha256))
+      fail(`${label}.sourceSha256 must be a lowercase SHA-256 digest`);
     const sourcePath = requireString(entry.sourcePath, `${label}.sourcePath`);
     const imagePath = requireString(entry.imagePath, `${label}.imagePath`);
     const sourceRoot = join(root, sourcePath);
-    if (!existsSync(join(sourceRoot, "package.json"))) fail(`${sourcePath} is not initialized`);
+    if (!existsSync(join(sourceRoot, "package.json"))) fail(`${sourcePath} is not vendored`);
+    if (existsSync(join(sourceRoot, ".git")))
+      fail(`${sourcePath} must not contain nested Git metadata`);
 
     const packageJson = readJson(root, `${sourcePath}/package.json`);
     if (packageJson.name !== name)
@@ -70,24 +76,39 @@ export function verifyPiPackagePins(root = scriptRoot) {
         fail(`${lockPath} root ${dependencyField} do not match ${sourcePath}/package.json`);
     }
 
-    const actualCommit = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
+    const stagedFiles = execFileSync("git", ["-C", root, "ls-files", "--stage", "--", sourcePath], {
       encoding: "utf8",
-    }).trim();
-    if (actualCommit !== commit) fail(`${sourcePath} is ${actualCommit}, expected ${commit}`);
+    })
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    if (stagedFiles.length === 0) fail(`${sourcePath} must contain tracked source files`);
+    if (stagedFiles.some((line) => line.startsWith("160000 ")))
+      fail(`${sourcePath} must be vendored as ordinary files, not a gitlink`);
+    if (!stagedFiles.some((line) => line.endsWith(`\t${sourcePath}/package.json`)))
+      fail(`${sourcePath}/package.json must be tracked`);
 
-    const stage = execFileSync("git", ["-C", root, "ls-files", "--stage", "--", sourcePath], {
-      encoding: "utf8",
-    }).trim();
-    if (!stage.startsWith(`160000 ${commit} `))
-      fail(`${sourcePath} must be a gitlink pinned to ${commit}`);
+    const sourceHash = createHash("sha256");
+    for (const line of stagedFiles) {
+      const match = line.match(/^(\d+) [0-9a-f]+ \d+\t(.+)$/);
+      if (!match?.[1] || !match[2]) fail(`${sourcePath} has an unexpected Git index entry`);
+      const [mode, trackedPath] = [match[1], match[2]];
+      const content = readFileSync(join(root, trackedPath));
+      sourceHash.update(mode);
+      sourceHash.update("\0");
+      sourceHash.update(trackedPath.slice(sourcePath.length + 1));
+      sourceHash.update("\0");
+      sourceHash.update(String(content.length));
+      sourceHash.update("\0");
+      sourceHash.update(content);
+    }
+    const actualSourceSha256 = sourceHash.digest("hex");
+    if (actualSourceSha256 !== sourceSha256)
+      fail(`${sourcePath} source digest is ${actualSourceSha256}, expected ${sourceSha256}`);
 
-    const actualRepository = execFileSync(
-      "git",
-      ["-C", sourceRoot, "config", "--get", "remote.origin.url"],
-      { encoding: "utf8" },
-    ).trim();
-    if (actualRepository !== repository)
-      fail(`${sourcePath} remote is ${actualRepository}, expected ${repository}`);
+    // Repository and commit remain immutable provenance for future vendor updates.
+    void repository;
+    void commit;
     configured.push({ order, imagePath });
   }
 
@@ -121,12 +142,12 @@ export function verifyPiPackagePins(root = scriptRoot) {
   if (JSON.stringify(containerAuthPaths) !== JSON.stringify(expectedPaths))
     fail(`${containerAuthPath} PI_PACKAGES does not match the pin manifest`);
 
-  return { gitPackages: manifest.git.length, npmPackages: manifest.npm.length };
+  return { vendoredPackages: manifest.vendored.length, npmPackages: manifest.npm.length };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const result = verifyPiPackagePins();
   console.log(
-    `Verified ${result.gitPackages} pinned Pi git packages and ${result.npmPackages} pinned Pi npm package.`,
+    `Verified ${result.vendoredPackages} vendored Pi packages and ${result.npmPackages} pinned Pi npm package.`,
   );
 }

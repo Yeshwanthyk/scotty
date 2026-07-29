@@ -1,1 +1,2 @@
 worker/container/skills/bundled/** -whitespace
+worker/container/pi-packages/sources/** -whitespace

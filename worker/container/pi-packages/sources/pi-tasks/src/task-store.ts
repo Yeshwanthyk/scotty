@@ -1,0 +1,437 @@
+/**
+ * task-store.ts — File-backed task store with CRUD, dependency management, and file locking.
+ *
+ * Session-scoped (default): in-memory Map — no disk I/O.
+ * Shared (PI_TASK_LIST_ID set): ~/.pi/tasks/<listId>.json with file locking.
+ */
+
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
+import { decodeTaskStoreData, encodeTaskStoreData } from "./task-schemas.js";
+import type { Task, TaskProject, TaskStatus, TaskStoreData } from "./types.js";
+
+export type ClaimTaskResult =
+  | { success: true; task: Task; changedFields: string[] }
+  | {
+      success: false;
+      reason: "task_not_found" | "already_claimed" | "already_completed" | "blocked" | "owner_busy";
+      task?: Task;
+      blockedBy?: string[];
+      busyWith?: string[];
+    };
+
+const TASKS_DIR = join(homedir(), ".pi", "tasks");
+const LOCK_RETRY_MS = 50;
+const LOCK_MAX_RETRIES = 100; // 5s max
+
+/** Block briefly without burning CPU while waiting for a file lock. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Simple file-based locking. */
+function acquireLock(lockPath: string): void {
+  for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
+    try {
+      // O_EXCL: fail if file exists
+      writeFileSync(lockPath, `${process.pid}`, { flag: "wx" });
+      return;
+    } catch (e: any) {
+      if (e.code === "EEXIST") {
+        // Check for stale lock (process no longer running)
+        try {
+          const pid = parseInt(readFileSync(lockPath, "utf-8"), 10);
+          if (pid && !isProcessRunning(pid)) {
+            unlinkSync(lockPath);
+            continue;
+          }
+        } catch { /* ignore read errors */ }
+        // Wait and retry without a CPU-burning spin loop.
+        sleepSync(LOCK_RETRY_MS);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error(`Failed to acquire lock: ${lockPath}`);
+}
+
+function releaseLock(lockPath: string): void {
+  try { unlinkSync(lockPath); } catch { /* ignore */ }
+}
+
+function isProcessRunning(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+export class TaskStore {
+  private filePath: string | undefined;
+  private lockPath: string | undefined;
+  private highWaterMarkPath: string | undefined;
+
+  // In-memory state (always kept in sync)
+  private nextId = 1;
+  private highWaterMark = 0;
+  private tasks = new Map<string, Task>();
+
+  constructor(listIdOrPath?: string) {
+    if (!listIdOrPath) return;
+    const isAbsPath = isAbsolute(listIdOrPath);
+    const filePath = isAbsPath ? listIdOrPath : join(TASKS_DIR, `${listIdOrPath}.json`);
+    mkdirSync(dirname(filePath), { recursive: true });
+    this.filePath = filePath;
+    this.lockPath = filePath + ".lock";
+    this.highWaterMarkPath = filePath + ".highwatermark";
+    this.load();
+  }
+
+  /** Read store from disk (file-backed mode only). */
+  private load(): void {
+    if (!this.filePath) return;
+
+    const diskHighWaterMark = this.readHighWaterMark();
+    if (!existsSync(this.filePath)) {
+      this.tasks.clear();
+      this.highWaterMark = Math.max(this.highWaterMark, diskHighWaterMark);
+      this.nextId = Math.max(this.nextId, this.highWaterMark + 1);
+      return;
+    }
+    try {
+      const data: TaskStoreData = decodeTaskStoreData(readFileSync(this.filePath, "utf-8"));
+      const highestTaskId = data.tasks.reduce((max, task) => Math.max(max, Number(task.id) || 0), 0);
+      this.highWaterMark = Math.max(diskHighWaterMark, data.highWaterMark ?? 0, highestTaskId, data.nextId - 1);
+      this.nextId = Math.max(data.nextId, this.highWaterMark + 1);
+      this.tasks.clear();
+      for (const t of data.tasks) {
+        this.tasks.set(t.id, t);
+      }
+    } catch { /* corrupt file — start fresh */ }
+  }
+
+  private readHighWaterMark(): number {
+    if (!this.highWaterMarkPath || !existsSync(this.highWaterMarkPath)) return 0;
+    const n = Number.parseInt(readFileSync(this.highWaterMarkPath, "utf-8"), 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  private writeHighWaterMark(): void {
+    if (!this.highWaterMarkPath) return;
+    writeFileSync(this.highWaterMarkPath, String(this.highWaterMark));
+  }
+
+  /** Write store to disk atomically (file-backed mode only). */
+  private save(): void {
+    if (!this.filePath) return;
+    this.highWaterMark = Math.max(this.highWaterMark, this.nextId - 1);
+    const data: TaskStoreData = {
+      nextId: this.nextId,
+      highWaterMark: this.highWaterMark,
+      tasks: Array.from(this.tasks.values()),
+    };
+    const tmpPath = this.filePath + ".tmp";
+    writeFileSync(tmpPath, encodeTaskStoreData(data));
+    renameSync(tmpPath, this.filePath);
+    this.writeHighWaterMark();
+  }
+
+  /** Execute a mutation with file locking (if file-backed). */
+  private withLock<T>(fn: () => T): T {
+    if (!this.lockPath) return fn();
+    acquireLock(this.lockPath);
+    try {
+      this.load(); // Re-read latest state
+      const result = fn();
+      this.save();
+      return result;
+    } finally {
+      releaseLock(this.lockPath);
+    }
+  }
+
+  create(
+    subject: string,
+    description: string,
+    activeForm?: string,
+    metadata?: Record<string, unknown>,
+    agentType?: string,
+    project?: TaskProject,
+    sessionId?: string,
+  ): Task {
+    return this.withLock(() => {
+      const normalizedAgentType = agentType ?? (typeof metadata?.agentType === "string" ? metadata.agentType : undefined);
+      const now = Date.now();
+      const id = Math.max(this.nextId, this.highWaterMark + 1);
+      this.nextId = id + 1;
+      this.highWaterMark = Math.max(this.highWaterMark, id);
+      const task: Task = {
+        id: String(id),
+        subject,
+        description,
+        status: "pending",
+        activeForm,
+        owner: undefined,
+        agentType: normalizedAgentType,
+        project,
+        sessionId,
+        metadata: metadata ?? {},
+        blocks: [],
+        blockedBy: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.tasks.set(task.id, task);
+      return task;
+    });
+  }
+
+  get(id: string): Task | undefined {
+    if (this.filePath) this.load();
+    return this.tasks.get(id);
+  }
+
+  /** List all tasks sorted by ID ascending. */
+  list(): Task[] {
+    if (this.filePath) this.load();
+    return Array.from(this.tasks.values()).sort((a, b) => Number(a.id) - Number(b.id));
+  }
+
+  update(id: string, fields: {
+    status?: TaskStatus | "deleted";
+    subject?: string;
+    description?: string;
+    activeForm?: string;
+    owner?: string;
+    agentType?: string;
+    execution?: Task["execution"];
+    metadata?: Record<string, unknown>;
+    addBlocks?: string[];
+    addBlockedBy?: string[];
+  }): { task: Task | undefined; changedFields: string[]; warnings: string[] } {
+    return this.withLock(() => {
+      const task = this.tasks.get(id);
+      if (!task) return { task: undefined, changedFields: [], warnings: [] };
+
+      const changedFields: string[] = [];
+      const warnings = this.validateDependencyUpdate(id, fields.addBlocks ?? [], fields.addBlockedBy ?? []);
+      if (warnings.length > 0) return { task, changedFields, warnings };
+
+      // Handle deletion
+      if (fields.status === "deleted") {
+        this.tasks.delete(id);
+        // Clean up dependency edges pointing to this task
+        for (const t of this.tasks.values()) {
+          t.blocks = t.blocks.filter(bid => bid !== id);
+          t.blockedBy = t.blockedBy.filter(bid => bid !== id);
+        }
+        return { task: undefined, changedFields: ["deleted"], warnings: [] };
+      }
+
+      if (fields.status !== undefined && task.status !== fields.status) {
+        task.status = fields.status;
+        changedFields.push("status");
+      }
+      if (fields.subject !== undefined) {
+        task.subject = fields.subject;
+        changedFields.push("subject");
+      }
+      if (fields.description !== undefined) {
+        task.description = fields.description;
+        changedFields.push("description");
+      }
+      if (fields.activeForm !== undefined) {
+        task.activeForm = fields.activeForm;
+        changedFields.push("activeForm");
+      }
+      if (fields.owner !== undefined) {
+        task.owner = fields.owner;
+        changedFields.push("owner");
+      }
+      if (fields.agentType !== undefined) {
+        task.agentType = fields.agentType;
+        changedFields.push("agentType");
+      }
+      if (fields.execution !== undefined) {
+        task.execution = fields.execution;
+        changedFields.push("execution");
+      }
+
+      // Metadata: shallow merge, null deletes keys
+      if (fields.metadata !== undefined) {
+        for (const [key, value] of Object.entries(fields.metadata)) {
+          if (value === null) {
+            delete task.metadata[key];
+          } else {
+            task.metadata[key] = value;
+          }
+        }
+        changedFields.push("metadata");
+      }
+
+      // Bidirectional dependency edges
+      if (fields.addBlocks && fields.addBlocks.length > 0) {
+        for (const targetId of fields.addBlocks) {
+          if (!task.blocks.includes(targetId)) {
+            task.blocks.push(targetId);
+          }
+          const target = this.tasks.get(targetId);
+          if (target && !target.blockedBy.includes(id)) {
+            target.blockedBy.push(id);
+            target.updatedAt = Date.now();
+          }
+        }
+        changedFields.push("blocks");
+      }
+
+      if (fields.addBlockedBy && fields.addBlockedBy.length > 0) {
+        for (const targetId of fields.addBlockedBy) {
+          if (!task.blockedBy.includes(targetId)) {
+            task.blockedBy.push(targetId);
+          }
+          const target = this.tasks.get(targetId);
+          if (target && !target.blocks.includes(id)) {
+            target.blocks.push(id);
+            target.updatedAt = Date.now();
+          }
+        }
+        changedFields.push("blockedBy");
+      }
+
+      task.updatedAt = Date.now();
+      return { task, changedFields, warnings };
+    });
+  }
+
+  private validateDependencyUpdate(id: string, addBlocks: string[], addBlockedBy: string[]): string[] {
+    const errors: string[] = [];
+    const additions = [
+      ...addBlocks.map(targetId => ({ from: id, to: targetId })),
+      ...addBlockedBy.map(blockerId => ({ from: blockerId, to: id })),
+    ];
+    if (additions.length === 0) return errors;
+
+    for (const edge of additions) {
+      if (edge.from === edge.to) errors.push("#" + id + " cannot depend on itself");
+      if (!this.tasks.has(edge.from)) errors.push("#" + edge.from + " does not exist");
+      if (!this.tasks.has(edge.to)) errors.push("#" + edge.to + " does not exist");
+    }
+    if (errors.length > 0) return [...new Set(errors)];
+
+    const graph = new Map<string, Set<string>>();
+    for (const task of this.tasks.values()) graph.set(task.id, new Set(task.blocks));
+
+    const hasPath = (from: string, to: string, seen = new Set<string>()): boolean => {
+      if (from === to) return true;
+      if (seen.has(from)) return false;
+      seen.add(from);
+      for (const next of graph.get(from) ?? []) {
+        if (hasPath(next, to, seen)) return true;
+      }
+      return false;
+    };
+
+    for (const edge of additions) {
+      if (graph.get(edge.from)?.has(edge.to)) continue;
+      if (hasPath(edge.to, edge.from)) {
+        errors.push("dependency would create a cycle between #" + edge.from + " and #" + edge.to);
+        continue;
+      }
+      graph.get(edge.from)?.add(edge.to);
+    }
+    return [...new Set(errors)];
+  }
+
+  /** Atomically claim a task for an owner if it is available. */
+  claim(id: string, owner: string, opts: { checkOwnerBusy?: boolean } = {}): ClaimTaskResult {
+    return this.withLock(() => {
+      const task = this.tasks.get(id);
+      if (!task) return { success: false, reason: "task_not_found" };
+      if (task.status === "completed") return { success: false, reason: "already_completed", task };
+      if (task.owner && task.owner !== owner) return { success: false, reason: "already_claimed", task };
+
+      const openBlockers = task.blockedBy.filter(blockerId => {
+        const blocker = this.tasks.get(blockerId);
+        return !blocker || blocker.status !== "completed";
+      });
+      if (openBlockers.length > 0) {
+        return { success: false, reason: "blocked", task, blockedBy: openBlockers };
+      }
+
+      if (opts.checkOwnerBusy) {
+        const busyWith = Array.from(this.tasks.values())
+          .filter(t => t.id !== id && t.owner === owner && t.status !== "completed")
+          .map(t => t.id);
+        if (busyWith.length > 0) return { success: false, reason: "owner_busy", task, busyWith };
+      }
+
+      if (task.owner === owner) return { success: true, task, changedFields: [] };
+      task.owner = owner;
+      task.updatedAt = Date.now();
+      return { success: true, task, changedFields: ["owner"] };
+    });
+  }
+
+  /** Delete a task by ID. Returns true if deleted. */
+  delete(id: string): boolean {
+    return this.withLock(() => {
+      if (!this.tasks.has(id)) return false;
+      this.tasks.delete(id);
+      // Clean up dependency edges
+      for (const t of this.tasks.values()) {
+        t.blocks = t.blocks.filter(bid => bid !== id);
+        t.blockedBy = t.blockedBy.filter(bid => bid !== id);
+      }
+      return true;
+    });
+  }
+
+  /** Remove all tasks. */
+  clearAll(): number {
+    return this.withLock(() => {
+      const count = this.tasks.size;
+      this.tasks.clear();
+      return count;
+    });
+  }
+
+  /** Delete the backing file (if file-backed and empty) without saving it again on lock release. */
+  deleteFileIfEmpty(): boolean {
+    if (!this.filePath || !this.lockPath) return false;
+    acquireLock(this.lockPath);
+    try {
+      this.load();
+      if (this.tasks.size > 0) return false;
+      try {
+        unlinkSync(this.filePath);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        return false;
+      }
+    } finally {
+      releaseLock(this.lockPath);
+    }
+  }
+
+  /** Remove all completed tasks. */
+  clearCompleted(): number {
+    return this.withLock(() => {
+      let count = 0;
+      for (const [id, task] of this.tasks) {
+        if (task.status === "completed") {
+          this.tasks.delete(id);
+          count++;
+        }
+      }
+      // Clean up dependency edges for deleted tasks
+      if (count > 0) {
+        const validIds = new Set(this.tasks.keys());
+        for (const t of this.tasks.values()) {
+          t.blocks = t.blocks.filter(bid => validIds.has(bid));
+          t.blockedBy = t.blockedBy.filter(bid => validIds.has(bid));
+        }
+      }
+      return count;
+    });
+  }
+}
