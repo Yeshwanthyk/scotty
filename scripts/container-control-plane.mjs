@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { Credentials, formatHeaders } from "@distilled.cloud/cloudflare/Credentials";
 import { AuthProviders } from "alchemy/Auth";
-import { CloudflareApiLive } from "alchemy/Cloudflare";
+import { CloudflareApiLive, CloudflareEnvironment } from "alchemy/Cloudflare";
 import { PlatformServices } from "alchemy/Util/PlatformServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -136,7 +136,9 @@ const fetchDecoded = Effect.fnUntraced(function* (url, decode) {
 });
 
 const readControlPlaneEffect = Effect.fnUntraced(function* ({ accountId, applicationId }) {
-  const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/containers/applications/${encodeURIComponent(applicationId)}`;
+  const profileCredentials = yield* yield* CloudflareEnvironment;
+  const resolvedAccountId = accountId ?? profileCredentials.accountId;
+  const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(resolvedAccountId)}/containers/applications/${encodeURIComponent(applicationId)}`;
   const [applicationEnvelope, rolloutsEnvelope] = yield* Effect.all(
     [
       fetchDecoded(baseUrl, decodeApplicationEnvelope),
@@ -187,11 +189,14 @@ export const parseContainerControlPlaneSnapshot = (output) =>
 async function main() {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const applicationId = process.argv[2];
-  if (!accountId || !applicationId) {
+  if (!applicationId) {
     // oxlint-disable-next-line scotty/no-raw-error-throw -- boundary: local CLI argument validation rejects an unusable operator invocation
-    throw new Error("Container control-plane read requires account and application IDs.");
+    throw new Error("Container control-plane read requires an application ID.");
   }
-  const snapshot = await readContainerControlPlane({ accountId, applicationId });
+  const snapshot = await readContainerControlPlane({
+    ...(accountId ? { accountId } : {}),
+    applicationId,
+  });
   process.stdout.write(`${JSON.stringify(snapshot)}\n`);
 }
 
