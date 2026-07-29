@@ -82,11 +82,12 @@
         position: sticky;
         z-index: var(--z-sticky);
         top: 0;
-        background: oklch(16% 0.014 248 / 0.96);
-        box-shadow: 0 1px 0 var(--line-soft);
+        border-bottom: 1px solid var(--line);
+        background: rgb(3 16 23 / 0.94);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
       }
 
-      .masthead-inner,
       main {
         width: min(100%, 1120px);
         margin-inline: auto;
@@ -94,33 +95,36 @@
 
       .masthead-inner {
         display: flex;
-        min-height: 58px;
+        width: 100%;
+        min-height: calc(60px + env(safe-area-inset-top));
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        padding: max(7px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 7px
-          max(16px, env(safe-area-inset-left));
+        padding: env(safe-area-inset-top) max(24px, env(safe-area-inset-right)) 0
+          max(24px, env(safe-area-inset-left));
       }
 
       .masthead-actions {
         display: flex;
         align-items: center;
-        gap: var(--space-lg);
+        gap: 10px;
       }
 
       .masthead-nav {
         display: flex;
         align-items: center;
-        gap: var(--space-sm);
+        gap: 10px;
       }
 
       .masthead-nav .button {
-        min-height: 44px;
-        padding-inline: var(--space-md);
-        border-radius: var(--space-sm);
+        min-height: 40px;
+        padding-inline: 13px;
+        border-radius: 7px;
         background: transparent;
         box-shadow: none;
         color: var(--muted);
+        font-size: 0.76rem;
+        font-weight: 700;
       }
 
       .masthead-nav .button:hover {
@@ -130,7 +134,11 @@
       }
 
       .masthead-actions > .button-primary {
-        min-height: 44px;
+        min-height: 40px;
+        padding-inline: 13px;
+        border-radius: 7px;
+        font-size: 0.76rem;
+        font-weight: 700;
       }
 
       .mobile-utilities {
@@ -148,9 +156,9 @@
       }
 
       .wordmark {
-        font-size: 0.78rem;
-        font-weight: 700;
-        letter-spacing: 0.09em;
+        font-size: 0.76rem;
+        font-weight: 760;
+        letter-spacing: 0.1em;
       }
 
       main {
@@ -1324,6 +1332,11 @@
       }
 
       @media (max-width: 720px) {
+        .masthead-inner {
+          padding-right: max(14px, env(safe-area-inset-right));
+          padding-left: max(14px, env(safe-area-inset-left));
+        }
+
         .masthead-actions {
           gap: var(--space-sm);
         }
