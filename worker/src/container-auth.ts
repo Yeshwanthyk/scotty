@@ -56,6 +56,22 @@ const gitConfig = (): string => `[credential]
 	useHttpPath = true
 `;
 
+export const terminalShellPath = (id: SessionRecord["id"]): string =>
+  `${sessionRoot(id)}/.pi-agent/scotty-shell`;
+
+const terminalShell = (id: SessionRecord["id"], credential: StoredCredential): string => {
+  const exports = Object.entries(agentEnv(id, credential))
+    .map(([name, value]) => `export ${name}=${shellQuote(value)}`)
+    .join("\n");
+  return `#!/usr/bin/env bash
+set -euo pipefail
+
+${exports}
+
+exec /usr/local/bin/scotty-pi-shell
+`;
+};
+
 export const sandboxAgentsInstructions = `- Read and follow the repository AGENTS.md first; repository instructions override this file.
 - Run \`scotty tools list --json\` to inspect the standard sandbox tools.
 - Prefer \`rg\`, \`fd\`, and \`ast-grep\` for search. Use \`jq\`, \`yq\`, and \`qsv\` for structured data.
@@ -75,6 +91,10 @@ interface ContainerAuthShape {
     credential: StoredCredential,
     options?: ContainerAuthSeedOptions,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly ensureTerminal: (
+    id: SessionRecord["id"],
+    credential: StoredCredential,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
 export class ContainerAuth extends Context.Service<ContainerAuth, ContainerAuthShape>()(
@@ -83,45 +103,57 @@ export class ContainerAuth extends Context.Service<ContainerAuth, ContainerAuthS
 
 export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntime> = Layer.effect(
   ContainerAuth,
-  Effect.map(SandboxRuntime, (runtime) =>
-    ContainerAuth.of({
-      seed: Effect.fnUntraced(function* (id, credential, options) {
-        const codexHome = `${sessionRoot(id)}/.codex`;
-        const piHome = `${sessionRoot(id)}/.pi-agent`;
-        const authPath = `${codexHome}/auth.json`;
-        const configPath = `${codexHome}/config.toml`;
-        const agentsPath = `${codexHome}/AGENTS.md`;
-        const skillsPath = `${codexHome}/skills`;
-        const piAuthPath = `${piHome}/auth.json`;
-        const piSettingsPath = `${piHome}/settings.json`;
-        const piAgentsPath = `${piHome}/AGENTS.md`;
-        const piSkillsPath = `${piHome}/skills`;
-        const piWebSearchPath = `${piHome}/web-search.json`;
-        const gitConfigPath = `${piHome}/gitconfig`;
-        const promptPath = `${piHome}/initial-prompt`;
-        yield* runtime.mkdir(codexHome, { recursive: true });
-        yield* runtime.mkdir(piHome, { recursive: true });
-        yield* runtime.writeFile(authPath, sentinelAuthJson(credential));
-        yield* runtime.writeFile(configPath, codexConfig(id));
-        yield* runtime.writeFile(agentsPath, sandboxAgentsInstructions);
-        yield* runtime.writeFile(piAuthPath, piAuthJson(credential));
-        yield* runtime.writeFile(piSettingsPath, piSettings(credential));
-        yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
-        yield* runtime.writeFile(piWebSearchPath, piWebSearchConfig);
-        yield* runtime.writeFile(gitConfigPath, gitConfig());
-        if (options?.initialPrompt !== undefined)
-          yield* runtime.writeFile(promptPath, options.initialPrompt);
-        yield* runtime.execChecked(
-          `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ln -sfn /opt/scotty/skills ${shellQuote(skillsPath)} && ln -sfn /opt/scotty/skills ${shellQuote(piSkillsPath)}`,
-        );
-        yield* runtime.setEnvVars(agentEnv(id, credential));
-        const root = sessionRoot(id);
-        yield* runtime.execChecked(
-          `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C ${shellQuote(root)} config user.name "$git_name" && git -C ${shellQuote(root)} config user.email "$git_email"`,
-        );
+  Effect.map(SandboxRuntime, (runtime) => {
+    const seed = Effect.fnUntraced(function* (
+      id: SessionRecord["id"],
+      credential: StoredCredential,
+      options?: ContainerAuthSeedOptions,
+    ) {
+      const codexHome = `${sessionRoot(id)}/.codex`;
+      const piHome = `${sessionRoot(id)}/.pi-agent`;
+      const authPath = `${codexHome}/auth.json`;
+      const configPath = `${codexHome}/config.toml`;
+      const agentsPath = `${codexHome}/AGENTS.md`;
+      const skillsPath = `${codexHome}/skills`;
+      const piAuthPath = `${piHome}/auth.json`;
+      const piSettingsPath = `${piHome}/settings.json`;
+      const piAgentsPath = `${piHome}/AGENTS.md`;
+      const piSkillsPath = `${piHome}/skills`;
+      const piWebSearchPath = `${piHome}/web-search.json`;
+      const gitConfigPath = `${piHome}/gitconfig`;
+      const shellPath = terminalShellPath(id);
+      const promptPath = `${piHome}/initial-prompt`;
+      yield* runtime.mkdir(codexHome, { recursive: true });
+      yield* runtime.mkdir(piHome, { recursive: true });
+      yield* runtime.writeFile(authPath, sentinelAuthJson(credential));
+      yield* runtime.writeFile(configPath, codexConfig(id));
+      yield* runtime.writeFile(agentsPath, sandboxAgentsInstructions);
+      yield* runtime.writeFile(piAuthPath, piAuthJson(credential));
+      yield* runtime.writeFile(piSettingsPath, piSettings(credential));
+      yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
+      yield* runtime.writeFile(piWebSearchPath, piWebSearchConfig);
+      yield* runtime.writeFile(gitConfigPath, gitConfig());
+      yield* runtime.writeFile(shellPath, terminalShell(id, credential));
+      if (options?.initialPrompt !== undefined)
+        yield* runtime.writeFile(promptPath, options.initialPrompt);
+      yield* runtime.execChecked(
+        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ln -sfn /opt/scotty/skills ${shellQuote(skillsPath)} && ln -sfn /opt/scotty/skills ${shellQuote(piSkillsPath)}`,
+      );
+      yield* runtime.setEnvVars(agentEnv(id, credential));
+      const root = sessionRoot(id);
+      yield* runtime.execChecked(
+        `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C ${shellQuote(root)} config user.name "$git_name" && git -C ${shellQuote(root)} config user.email "$git_email"`,
+      );
+    });
+    return ContainerAuth.of({
+      seed,
+      ensureTerminal: Effect.fnUntraced(function* (id, credential) {
+        const existing = yield* runtime.exec(`test -x ${shellQuote(terminalShellPath(id))}`);
+        if (existing.success) return;
+        yield* seed(id, credential);
       }),
-    }),
-  ),
+    });
+  }),
 );
 
 export function agentEnv(
