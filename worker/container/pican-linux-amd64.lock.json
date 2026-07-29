@@ -1,9 +1,9 @@
 {
   "sourceRepository": "https://github.com/Yeshwanthyk/pican",
-  "sourceCommit": "e2b185bcdef8eaba9e5dc0ff9c5ad1121dac2979",
-  "binarySha256": "7b3e200684ebbadfc240e150aed871135caf52a445174804b33f53e12b4c5820",
+  "sourceCommit": "d12fbfa7e653b6a9dd725673e67db82f9a3629c6",
+  "binarySha256": "137ac2dcbc633c249871b2747b8552f517ecce4422cadd1bafb990073839bc1f",
   "goVersion": "go1.26.1",
-  "nodeVersion": "v24.1.0",
+  "nodeVersion": "v22.22.2",
   "target": "linux/amd64",
   "cgoEnabled": false
 }
