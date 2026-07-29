@@ -19,6 +19,7 @@
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ring: 0 0 0 1px var(--line-soft);
   --ring-hover: 0 0 0 1px var(--line-hover);
+  --z-sticky: 10;
 }
 
 html {
@@ -41,12 +42,69 @@ body.scotty-ui {
   box-shadow: 0 1px 0 var(--line-soft);
 }
 
-.sessions-page .masthead {
+.app-page .masthead {
+  position: sticky;
+  z-index: var(--z-sticky);
+  top: 0;
+  border-bottom: 1px solid var(--line);
   border-color: var(--line);
   background: rgb(3 16 23 / 0.94);
   box-shadow: none;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+}
+
+.app-page .masthead-inner {
+  display: flex;
+  width: 100%;
+  min-height: calc(60px + env(safe-area-inset-top));
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: env(safe-area-inset-top) max(24px, env(safe-area-inset-right)) 0
+    max(24px, env(safe-area-inset-left));
+}
+
+.app-page .masthead-actions,
+.app-page .masthead-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-page .masthead-nav .button {
+  min-height: 40px;
+  padding-inline: 13px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.app-page .masthead-nav .button:hover {
+  background: rgb(238 231 211 / 0.05);
+  box-shadow: none;
+  color: var(--ink);
+}
+
+.app-page .masthead-actions > .button-primary {
+  min-height: 40px;
+  padding-inline: 13px;
+  border-radius: 7px;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.app-page .mobile-utilities {
+  display: none;
+}
+
+.app-page .mobile-utilities[hidden],
+.app-page .mobile-utilities a[hidden] {
+  display: none;
 }
 
 .scotty-ui .identity {
@@ -74,7 +132,12 @@ body.scotty-ui {
   letter-spacing: 0.08em;
 }
 
-.sessions-page .wordmark {
+.app-page .identity {
+  min-width: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.app-page .wordmark {
   font-size: 0.76rem;
   font-weight: 760;
   letter-spacing: 0.1em;
@@ -466,6 +529,81 @@ body.scotty-ui {
   .pair-page .card {
     margin-left: 0;
     padding: 24px 20px;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-page .masthead-inner {
+    padding-right: max(14px, env(safe-area-inset-right));
+    padding-left: max(14px, env(safe-area-inset-left));
+  }
+
+  .app-page .masthead-actions {
+    gap: 8px;
+  }
+
+  .app-page .masthead-nav {
+    display: none;
+  }
+
+  .app-page .mobile-utilities {
+    position: relative;
+    display: block;
+  }
+
+  .app-page .mobile-utilities summary {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border-radius: 8px;
+    color: var(--muted);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .app-page .mobile-utilities summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .app-page .mobile-utilities summary:hover,
+  .app-page .mobile-utilities[open] summary {
+    background: rgb(238 231 211 / 0.05);
+    color: var(--ink);
+  }
+
+  .app-page .mobile-utilities summary:focus-visible,
+  .app-page .mobile-utilities nav a:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  .app-page .mobile-utilities nav {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    display: grid;
+    width: 150px;
+    overflow: hidden;
+    border-radius: 8px;
+    background: var(--panel-raised);
+    box-shadow:
+      var(--ring-hover),
+      0 16px 36px rgb(0 0 0 / 0.42);
+  }
+
+  .app-page .mobile-utilities nav a {
+    min-height: 44px;
+    padding: 13px 16px;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 680;
+    text-decoration: none;
+  }
+
+  .app-page .mobile-utilities nav a:hover {
+    background: rgb(238 231 211 / 0.05);
+    color: var(--ink);
   }
 }
 

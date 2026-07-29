@@ -78,87 +78,9 @@
         color: inherit;
       }
 
-      .masthead {
-        position: sticky;
-        z-index: var(--z-sticky);
-        top: 0;
-        border-bottom: 1px solid var(--line);
-        background: rgb(3 16 23 / 0.94);
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-      }
-
       main {
         width: min(100%, 1120px);
         margin-inline: auto;
-      }
-
-      .masthead-inner {
-        display: flex;
-        width: 100%;
-        min-height: calc(60px + env(safe-area-inset-top));
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        padding: env(safe-area-inset-top) max(24px, env(safe-area-inset-right)) 0
-          max(24px, env(safe-area-inset-left));
-      }
-
-      .masthead-actions {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      .masthead-nav {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-
-      .masthead-nav .button {
-        min-height: 40px;
-        padding-inline: 13px;
-        border-radius: 7px;
-        background: transparent;
-        box-shadow: none;
-        color: var(--muted);
-        font-size: 0.76rem;
-        font-weight: 700;
-      }
-
-      .masthead-nav .button:hover {
-        background: oklch(93% 0.012 220 / 0.05);
-        box-shadow: none;
-        color: var(--ink);
-      }
-
-      .masthead-actions > .button-primary {
-        min-height: 40px;
-        padding-inline: 13px;
-        border-radius: 7px;
-        font-size: 0.76rem;
-        font-weight: 700;
-      }
-
-      .mobile-utilities {
-        display: none;
-      }
-
-      .mobile-utilities[hidden],
-      .mobile-utilities a[hidden] {
-        display: none;
-      }
-
-      .identity {
-        min-width: 0;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      }
-
-      .wordmark {
-        font-size: 0.76rem;
-        font-weight: 760;
-        letter-spacing: 0.1em;
       }
 
       main {
@@ -1370,73 +1292,6 @@
       }
 
       @media (max-width: 720px) {
-        .masthead-inner {
-          padding-right: max(14px, env(safe-area-inset-right));
-          padding-left: max(14px, env(safe-area-inset-left));
-        }
-
-        .masthead-actions {
-          gap: var(--space-sm);
-        }
-
-        .masthead-nav {
-          display: none;
-        }
-
-        .mobile-utilities {
-          position: relative;
-          display: block;
-        }
-
-        .mobile-utilities summary {
-          display: grid;
-          width: 44px;
-          height: 44px;
-          place-items: center;
-          border-radius: var(--space-sm);
-          color: var(--muted);
-          cursor: pointer;
-          list-style: none;
-        }
-
-        .mobile-utilities summary::-webkit-details-marker {
-          display: none;
-        }
-
-        .mobile-utilities summary:hover,
-        .mobile-utilities[open] summary {
-          background: oklch(93% 0.012 220 / 0.05);
-          color: var(--ink);
-        }
-
-        .mobile-utilities nav {
-          position: absolute;
-          top: calc(100% + 8px);
-          right: 0;
-          display: grid;
-          width: 150px;
-          overflow: hidden;
-          border-radius: var(--space-sm);
-          background: var(--panel-raised);
-          box-shadow:
-            var(--ring-hover),
-            0 16px 36px oklch(3% 0.01 245 / 0.42);
-        }
-
-        .mobile-utilities nav a {
-          min-height: 44px;
-          padding: 13px var(--space-lg);
-          color: var(--muted);
-          font-size: 0.78rem;
-          font-weight: 680;
-          text-decoration: none;
-        }
-
-        .mobile-utilities nav a:hover {
-          background: oklch(93% 0.012 220 / 0.05);
-          color: var(--ink);
-        }
-
         .rename-button {
           opacity: 1;
         }
@@ -1623,7 +1478,7 @@
     </style>
     <link rel="stylesheet" href="/scotty-ui.css" />
   </head>
-  <body class="scotty-ui sessions-page">
+  <body class="scotty-ui app-page sessions-page">
     <header class="masthead">
       <div class="masthead-inner">
         <a class="identity" href="/sessions" aria-label="Scotty sessions">
@@ -1631,7 +1486,7 @@
           <span class="wordmark">SCOTTY</span>
         </a>
         <div class="masthead-actions">
-          <nav class="masthead-nav" aria-label="Session utilities">
+          <nav class="masthead-nav" aria-label="Primary navigation">
             <a class="button" id="providers" href="/providers" hidden>Providers</a>
             <a class="button" id="devices" href="/devices" hidden>Devices</a>
           </nav>
@@ -1645,8 +1500,8 @@
             New session
           </button>
           <details class="mobile-utilities" id="mobile-utilities" hidden>
-            <summary aria-label="Open setup navigation">•••</summary>
-            <nav aria-label="Setup navigation">
+            <summary aria-label="Open primary navigation">•••</summary>
+            <nav aria-label="Primary navigation">
               <a id="providers-mobile" href="/providers">Providers</a>
               <a id="devices-mobile" href="/devices">Devices</a>
             </nav>
