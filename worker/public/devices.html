@@ -12,15 +12,26 @@
     <link rel="stylesheet" href="/devices.css" />
     <title>Scotty devices</title>
   </head>
-  <body class="scotty-ui devices-page">
+  <body class="scotty-ui app-page devices-page">
     <header class="masthead">
       <div class="masthead-inner">
         <a class="identity" href="/sessions" aria-label="Scotty sessions">
           <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
           <span class="wordmark">SCOTTY</span>
-          <span class="section-label">device authority</span>
         </a>
-        <a class="button" href="/sessions">Sessions</a>
+        <div class="masthead-actions">
+          <nav class="masthead-nav" aria-label="Primary navigation">
+            <a class="button" href="/sessions">Sessions</a>
+            <a class="button" href="/providers">Providers</a>
+          </nav>
+          <details class="mobile-utilities">
+            <summary aria-label="Open primary navigation">•••</summary>
+            <nav aria-label="Primary navigation">
+              <a href="/sessions">Sessions</a>
+              <a href="/providers">Providers</a>
+            </nav>
+          </details>
+        </div>
       </div>
     </header>
     <main>

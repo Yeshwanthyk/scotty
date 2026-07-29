@@ -14,7 +14,7 @@
   --good: #75b894;
   --danger: #dd817b;
   --focus: #a8d7df;
-  --rail-width: 276px;
+  --rail-width: 264px;
   font-family:
     ui-sans-serif,
     system-ui,
@@ -73,14 +73,13 @@ a:focus-visible {
   position: relative;
   z-index: 20;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
-  padding: max(16px, env(safe-area-inset-top)) 14px max(16px, env(safe-area-inset-bottom))
-    max(14px, env(safe-area-inset-left));
+  padding: max(16px, env(safe-area-inset-top)) 10px max(12px, env(safe-area-inset-bottom))
+    max(10px, env(safe-area-inset-left));
   overflow: hidden;
   border-right: 1px solid var(--line);
-  background:
-    radial-gradient(120% 42% at 18% -6%, rgb(76 127 142 / 12%), transparent 70%), var(--rail);
+  background: var(--rail);
 }
 
 .rail-brand,
@@ -118,43 +117,9 @@ a:focus-visible {
   display: none;
 }
 
-.rail-heading {
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 26px;
-  padding: 0 6px 12px;
-}
-
-.eyebrow {
-  margin: 0 0 4px;
-  color: var(--quiet);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-}
-
-.rail-heading h1 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-}
-
-.count {
-  min-width: 25px;
-  padding: 3px 7px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
 .workspace-list {
   min-height: 0;
-  padding: 2px;
+  padding: 14px 0;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -162,50 +127,41 @@ a:focus-visible {
 }
 
 .workspace-project + .workspace-project {
-  margin-top: 16px;
+  margin-top: 14px;
 }
 
 .workspace-project-name {
   display: block;
-  margin: 0 8px 7px;
+  margin: 0 10px 5px;
   overflow: hidden;
-  color: var(--quiet);
+  color: var(--muted);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 10px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .workspace-link {
   position: relative;
-  min-height: 58px;
-  gap: 10px;
-  margin-bottom: 5px;
-  padding: 9px 10px;
-  border: 1px solid transparent;
-  border-radius: 9px;
+  min-height: 48px;
+  margin-bottom: 2px;
+  padding: 7px 10px;
+  border-radius: 5px;
 }
 
 .workspace-link:hover {
-  border-color: var(--line);
-  background: rgb(255 255 255 / 3%);
+  background: rgb(255 255 255 / 4%);
 }
 
 .workspace-link[aria-current="page"] {
-  border-color: var(--line-bright);
-  background: var(--panel-raised);
-  box-shadow: inset 2px 0 0 var(--cyan);
+  background: rgb(126 183 194 / 10%);
 }
 
-.workspace-presence {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--good);
-  box-shadow: 0 0 0 3px rgb(117 184 148 / 12%);
+.workspace-link[aria-current="page"] .workspace-name {
+  color: #f2f3ee;
+  font-weight: 680;
 }
 
 .workspace-copy {
@@ -213,8 +169,7 @@ a:focus-visible {
   flex: 1;
 }
 
-.workspace-name,
-.workspace-detail {
+.workspace-name {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -226,29 +181,19 @@ a:focus-visible {
   font-weight: 620;
 }
 
-.workspace-detail {
-  margin-top: 4px;
-  color: var(--quiet);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 10px;
-}
-
 .rail-message {
   margin: 8px 6px;
-  color: var(--quiet);
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
 }
 
 .rail-footer {
-  padding: 13px 4px 0;
-  border-top: 1px solid var(--line);
+  padding: 7px 6px 0;
 }
 
 .home-link {
-  min-height: 40px;
-  gap: 9px;
-  border-radius: 8px;
+  min-height: 36px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
@@ -256,13 +201,6 @@ a:focus-visible {
 
 .home-link:hover {
   color: var(--ink);
-}
-
-.rail-footer p {
-  margin: 7px 0 0;
-  color: var(--quiet);
-  font-size: 10px;
-  line-height: 1.4;
 }
 
 .terminal-workspace {

@@ -5,7 +5,6 @@ const sessionMatch = window.location.pathname.match(/^\/s\/([^/]+)$/u);
 const sessionId = sessionMatch ? decodeURIComponent(sessionMatch[1]) : "";
 const terminalElement = document.querySelector("#terminal");
 const workspaceList = document.querySelector("#workspace-list");
-const workspaceCount = document.querySelector("#workspace-count");
 const currentRepo = document.querySelector("#current-repo");
 const currentMeta = document.querySelector("#current-meta");
 const pickerTitle = document.querySelector("#picker-title");
@@ -18,6 +17,9 @@ const reconnectButton = document.querySelector("#reconnect");
 const openDrawerButton = document.querySelector("#open-drawer");
 const closeDrawerButton = document.querySelector("#close-drawer");
 const drawerBackdrop = document.querySelector("#drawer-backdrop");
+const terminalWorkspace = document.querySelector(".terminal-workspace");
+const workspaceRail = document.querySelector("#workspace-rail");
+const compactViewport = window.matchMedia("(max-width: 780px)");
 
 let socket;
 let reconnectTimer;
@@ -25,6 +27,7 @@ let reconnectAttempt = 0;
 let disposed = false;
 let terminal;
 let fitAddon;
+let workspaceListSignature;
 
 function setConnection(state, label) {
   connectionState.dataset.state = state;
@@ -41,11 +44,20 @@ function hideError() {
 }
 
 function setDrawer(open) {
-  document.body.classList.toggle("drawer-open", open);
-  drawerBackdrop.hidden = !open;
-  openDrawerButton.setAttribute("aria-expanded", String(open));
-  if (open) closeDrawerButton.focus();
-  else openDrawerButton.focus();
+  const isOpen = compactViewport.matches && open;
+  document.body.classList.toggle("drawer-open", isOpen);
+  drawerBackdrop.hidden = !isOpen;
+  openDrawerButton.setAttribute("aria-expanded", String(isOpen));
+  if (isOpen) {
+    workspaceRail.setAttribute("role", "dialog");
+    workspaceRail.setAttribute("aria-modal", "true");
+  } else {
+    workspaceRail.removeAttribute("role");
+    workspaceRail.removeAttribute("aria-modal");
+  }
+  terminalWorkspace.inert = isOpen;
+  if (isOpen) closeDrawerButton.focus();
+  else if (compactViewport.matches) openDrawerButton.focus();
 }
 
 function workspaceName(session) {
@@ -56,22 +68,16 @@ function addWorkspaceLink(parent, session) {
   const link = document.createElement("a");
   link.className = "workspace-link";
   link.href = `/s/${encodeURIComponent(session.id)}`;
+  link.dataset.sessionId = session.id;
   if (session.id === sessionId) link.setAttribute("aria-current", "page");
-
-  const presence = document.createElement("span");
-  presence.className = "workspace-presence";
-  presence.setAttribute("aria-hidden", "true");
 
   const copy = document.createElement("span");
   copy.className = "workspace-copy";
   const name = document.createElement("span");
   name.className = "workspace-name";
   name.textContent = workspaceName(session);
-  const detail = document.createElement("span");
-  detail.className = "workspace-detail";
-  detail.textContent = session.branch || session.id;
-  copy.append(name, detail);
-  link.append(presence, copy);
+  copy.append(name);
+  link.append(copy);
   parent.append(link);
 }
 
@@ -86,6 +92,21 @@ function addWorkspaceProject(group) {
   workspaceList.append(section);
 }
 
+function focusableDrawerElements() {
+  return [
+    ...document.querySelectorAll("#workspace-rail a[href], #workspace-rail button:not([disabled])"),
+  ].filter((element) => element.getClientRects().length > 0);
+}
+
+function visibleWorkspaceSignature(groups) {
+  return JSON.stringify(
+    groups.map((group) => [
+      group.repo,
+      group.sessions.map((session) => [session.id, workspaceName(session)]),
+    ]),
+  );
+}
+
 async function loadWorkspaces() {
   const response = await fetch("/api/sessions", {
     headers: { accept: "application/json" },
@@ -96,15 +117,27 @@ async function loadWorkspaces() {
   const sessions = Array.isArray(body) ? body : body?.sessions;
   if (!Array.isArray(sessions)) throw new Error("Scotty returned an invalid session list");
   const warm = sessions.filter((session) => session?.status === "warm");
-  workspaceList.replaceChildren();
-  workspaceCount.textContent = String(warm.length);
-  if (warm.length === 0) {
-    const message = document.createElement("p");
-    message.className = "rail-message";
-    message.textContent = "No open containers. Resume one from Home.";
-    workspaceList.append(message);
-  } else {
-    for (const group of groupSessionsByRepository(warm)) addWorkspaceProject(group);
+  const groups = groupSessionsByRepository(warm);
+  const signature = visibleWorkspaceSignature(groups);
+  if (signature !== workspaceListSignature) {
+    const focusedSessionId =
+      document.activeElement?.closest?.(".workspace-link")?.dataset.sessionId;
+    workspaceList.replaceChildren();
+    if (warm.length === 0) {
+      const message = document.createElement("p");
+      message.className = "rail-message";
+      message.textContent = "No open containers. Resume one from Home.";
+      workspaceList.append(message);
+    } else {
+      for (const group of groups) addWorkspaceProject(group);
+    }
+    workspaceListSignature = signature;
+    if (focusedSessionId) {
+      const restoredLink = [...workspaceList.querySelectorAll(".workspace-link")].find(
+        (link) => link.dataset.sessionId === focusedSessionId,
+      );
+      restoredLink?.focus();
+    }
   }
   const current = sessions.find((session) => session?.id === sessionId);
   if (current) {
@@ -251,10 +284,26 @@ reconnectButton.addEventListener("click", () => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && document.body.classList.contains("drawer-open")) setDrawer(false);
+  if (event.key === "Tab" && document.body.classList.contains("drawer-open")) {
+    const elements = focusableDrawerElements();
+    const first = elements[0];
+    const last = elements.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
     event.preventDefault();
     setDrawer(!document.body.classList.contains("drawer-open"));
   }
+});
+compactViewport.addEventListener("change", (event) => {
+  if (!event.matches) setDrawer(false);
 });
 window.addEventListener("beforeunload", () => {
   disposed = true;
