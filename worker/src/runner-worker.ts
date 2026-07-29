@@ -8,19 +8,22 @@ export class ScottyRunnerWorker extends Cloudflare.Worker<ScottyRunnerWorker, {}
   "ScottyRunnerWorker",
 ) {}
 
-export default ScottyRunnerWorker.make(
-  {
-    main: "worker/src/runner-worker.ts",
-    name: SCOTTY_RUNNER_WORKER_NAME,
-    url: false,
-    compatibility: {
-      date: "2026-07-20",
-      flags: ["nodejs_compat"],
+export const makeScottyRunnerWorker = (name: string) =>
+  ScottyRunnerWorker.make(
+    {
+      main: "worker/src/runner-worker.ts",
+      name,
+      url: false,
+      compatibility: {
+        date: "2026-07-20",
+        flags: ["nodejs_compat"],
+      },
+      observability: { enabled: true },
     },
-    observability: { enabled: true },
-  },
-  Effect.gen(function* () {
-    yield* ScottyRunner;
-    return {};
-  }).pipe(Effect.provide(ScottyRunnerLive)),
-);
+    Effect.gen(function* () {
+      yield* ScottyRunner;
+      return {};
+    }).pipe(Effect.provide(ScottyRunnerLive)),
+  );
+
+export default makeScottyRunnerWorker(SCOTTY_RUNNER_WORKER_NAME);

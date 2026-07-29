@@ -537,8 +537,9 @@ session starts.
 
 Implement:
 
-- `scotty runner setup` validates Docker, the digest-pinned image, the Codex auth source, the
-  current GitHub CLI login, and `SCOTTY_RUNNER_TOKEN`;
+- `scotty runner setup` asks for a stable name, registers it through the authenticated control
+  plane, receives a one-time runner credential, and validates Docker, the digest-pinned image, the
+  Codex auth source, and the current GitHub CLI login;
 - install the compiled runner, runner-only credential sources, secure environment file, and
   hardened systemd user service;
 - reload, enable, restart, and verify the service without printing a token.

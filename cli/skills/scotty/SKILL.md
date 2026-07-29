@@ -74,8 +74,28 @@ vaporize ends at `gone`.
 
 ## Setup and diagnostics
 
-- `scotty init [--host URL] [--token TOKEN]` writes mode-0600 `~/.scotty.json`; it is the only
-  prompting command. Credential precedence is flags, environment, then config.
+- Before setup, ask the user for an installation name. Never infer it from their username, machine,
+  repository, Cloudflare account, or an existing Scotty deployment.
+- `scotty init --name NAME [--profile PROFILE]` authenticates with the user's own Cloudflare
+  account, deploys namespaced resources, creates the root token, and writes a mode-0600
+  `~/.scotty.json`. It is the only prompting command.
+- On a new machine, `scotty init --name NAME --existing [--profile PROFILE]` recovers the named
+  installation and rotates its root token. A legacy deployment can be preserved with a private,
+  uncommitted `--adoption-manifest PATH`.
+- `scotty init --host URL --token TOKEN` connects directly without managing infrastructure.
+  Credential precedence for later commands is flags, environment, then config.
+- `scotty doctor --json` verifies the local installation pointer, Worker reachability, and root
+  authentication without exposing the token.
+- Before runner setup, ask for a stable runner name. Never infer it from a username, hostname,
+  Cloudflare account, or installation name.
+- `scotty runner setup --name NAME --root ABSOLUTE_PATH --image
+IMAGE@sha256:DIGEST --codex-auth ABSOLUTE_PATH --source-binary ABSOLUTE_PATH --json` registers
+  the name with the control plane, receives a one-time runner credential, and installs the
+  hardened user service without exposing that credential. Use `--replace` only when the user
+  explicitly wants to move or reinstall an existing runner.
+- `scotty runner list --json` lists authoritative registrations plus desired, connection, and
+  assigned-session state. `scotty runner remove NAME --yes --json` is allowed only after assigned
+  sessions are gone.
 - `scotty owner recover --json` opens the five-minute recovery flow and returns only
   `{"opened":true,"expiresAt"}`.
 - `scotty tools list --json` prints the standard tool manifest. `scotty tools doctor --json`

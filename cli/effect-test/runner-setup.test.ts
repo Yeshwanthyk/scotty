@@ -18,13 +18,21 @@ const invoke = (args: ReadonlyArray<string>, overrides: Partial<CliDependencies>
       Effect.provide(NodeServices.layer),
       Effect.provide(
         cliLayer({
-          env: {},
+          env: { SCOTTY_TOKEN: "root-secret" },
           home: "/unused",
           cwd: "/unused",
           stdinIsTTY: false,
           stdoutIsTTY: false,
           stdout: (text) => stdout.push(text),
           stderr: (text) => stderr.push(text),
+          fetch: async () =>
+            Response.json({
+              name: "slumbers",
+              credential: "runner-secret",
+              replaced: false,
+              createdAt: "2026-07-29T16:00:00.000Z",
+              updatedAt: "2026-07-29T16:00:00.000Z",
+            }),
           ...overrides,
         }),
       ),
@@ -69,6 +77,10 @@ describe("runner setup", () => {
       yield* fs.writeFileString(sourceBinary, "compiled-scotty", { mode: 0o755 });
       yield* fs.chmod(sourceBinary, 0o755);
       const commands: Array<ReadonlyArray<string>> = [];
+      const registrations: Array<{
+        readonly authorization: string | null;
+        readonly body: string;
+      }> = [];
       const run = (command: string[]) => {
         commands.push(command);
         if (command[0] === "gh" && command[1] === "auth")
@@ -80,7 +92,20 @@ describe("runner setup", () => {
         return Promise.resolve({ exitCode: 0, stdout: "ok\n", stderr: "" });
       };
       const first = invoke(setupArguments(root, codexAuth, sourceBinary), {
-        env: { SCOTTY_RUNNER_TOKEN: "runner-secret" },
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          registrations.push({
+            authorization: request.headers.get("authorization"),
+            body: await request.text(),
+          });
+          return Response.json({
+            name: "slumbers",
+            credential: "runner-secret",
+            replaced: registrations.length > 1,
+            createdAt: "2026-07-29T16:00:00.000Z",
+            updatedAt: "2026-07-29T16:00:00.000Z",
+          });
+        },
         home,
         run,
       });
@@ -112,6 +137,12 @@ describe("runner setup", () => {
       ]);
       assert.notInclude(commands.flat().join("\n"), "github-secret");
       assert.notInclude(commands.flat().join("\n"), "runner-secret");
+      assert.deepStrictEqual(registrations, [
+        {
+          authorization: "Bearer root-secret",
+          body: '{"name":"slumbers","replace":false}',
+        },
+      ]);
 
       const installedAuth = `${home}/.local/share/scotty/runner/credentials/codex-auth.json`;
       const installedGitHub = `${home}/.local/share/scotty/runner/credentials/github-hosts.yml`;
@@ -148,8 +179,21 @@ describe("runner setup", () => {
       }
 
       commands.length = 0;
-      const repeated = invoke(setupArguments(root, codexAuth, sourceBinary), {
-        env: { SCOTTY_RUNNER_TOKEN: "runner-secret" },
+      const repeated = invoke([...setupArguments(root, codexAuth, sourceBinary), "--replace"], {
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          registrations.push({
+            authorization: request.headers.get("authorization"),
+            body: await request.text(),
+          });
+          return Response.json({
+            name: "slumbers",
+            credential: "runner-secret",
+            replaced: true,
+            createdAt: "2026-07-29T16:00:00.000Z",
+            updatedAt: "2026-07-29T16:00:01.000Z",
+          });
+        },
         home,
         run,
       });
@@ -161,6 +205,10 @@ describe("runner setup", () => {
         "is-active",
         "scotty-runner.service",
       ]);
+      assert.deepStrictEqual(registrations.at(-1), {
+        authorization: "Bearer root-secret",
+        body: '{"name":"slumbers","replace":true}',
+      });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -177,23 +225,7 @@ describe("runner setup", () => {
       yield* fs.writeFileString(sourceBinary, "compiled-scotty", { mode: 0o755 });
       yield* fs.chmod(sourceBinary, 0o755);
       const commands: Array<ReadonlyArray<string>> = [];
-      const noToken = invoke(setupArguments(root, codexAuth, sourceBinary), {
-        env: {},
-        home,
-        run: (command) => {
-          commands.push(command);
-          return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
-        },
-      });
-      const noTokenResult = yield* Effect.result(noToken.effect);
-      const noTokenFailure = failure(noTokenResult);
-      assert.instanceOf(noTokenFailure, CliError);
-      assert.strictEqual(noTokenFailure.message, "Runner token is not configured");
-      assert.deepStrictEqual(commands, []);
-      assert.isFalse(yield* fs.exists(`${home}/.config/scotty`));
-
       const unsafeRoot = invoke(setupArguments("/", codexAuth, sourceBinary), {
-        env: { SCOTTY_RUNNER_TOKEN: "runner-secret" },
         home,
         run: (command) => {
           commands.push(command);
@@ -206,7 +238,6 @@ describe("runner setup", () => {
 
       yield* fs.chmod(codexAuth, 0o644);
       const unsafe = invoke(setupArguments(root, codexAuth, sourceBinary), {
-        env: { SCOTTY_RUNNER_TOKEN: "runner-secret" },
         home,
         run: (command) => {
           commands.push(command);
@@ -219,7 +250,6 @@ describe("runner setup", () => {
 
       yield* fs.chmod(codexAuth, 0o600);
       const noDocker = invoke(setupArguments(root, codexAuth, sourceBinary), {
-        env: { SCOTTY_RUNNER_TOKEN: "runner-secret" },
         home,
         run: (command) => {
           commands.push(command);
@@ -237,7 +267,6 @@ describe("runner setup", () => {
 
       commands.length = 0;
       const noGitHub = invoke(setupArguments(root, codexAuth, sourceBinary), {
-        env: { SCOTTY_RUNNER_TOKEN: "runner-secret" },
         home,
         run: (command) => {
           commands.push(command);

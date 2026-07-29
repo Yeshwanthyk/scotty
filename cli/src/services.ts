@@ -18,6 +18,24 @@ export interface CliDependencies {
   prompt: (label: string) => string | null;
   openBrowser: (url: string) => Promise<void>;
   run: (command: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  deployInstallation: (request: InstallationDeployRequest) => Promise<InstallationDeployResult>;
+}
+
+export interface InstallationDeployRequest {
+  readonly installationName: string;
+  readonly profile: string;
+  readonly token: string;
+  readonly adoptionManifestPath?: string;
+}
+
+export interface InstallationDeployResult {
+  readonly installationName: string;
+  readonly profile: string;
+  readonly stackName: string;
+  readonly stage: string;
+  readonly accountId: string;
+  readonly workerName: string;
+  readonly host: string;
 }
 
 interface CliRuntimeShape {
@@ -64,6 +82,17 @@ interface BrowserLauncherShape {
 export class BrowserLauncher extends Context.Service<BrowserLauncher, BrowserLauncherShape>()(
   "scotty/cli/BrowserLauncher",
 ) {}
+
+interface InstallationDeployerShape {
+  readonly deploy: (
+    request: InstallationDeployRequest,
+  ) => Effect.Effect<InstallationDeployResult, CliError>;
+}
+
+export class InstallationDeployer extends Context.Service<
+  InstallationDeployer,
+  InstallationDeployerShape
+>()("scotty/cli/InstallationDeployer") {}
 
 interface FileSystemShape {
   readonly stat: (path: string) => Effect.Effect<Stats, CliError>;
@@ -190,11 +219,17 @@ export const defaultDependencies = (): CliDependencies => ({
     ]);
     return { exitCode, stdout, stderr };
   },
+  deployInstallation: async (request) => {
+    const { deployInstallation } = await import("./installation-deployment.ts");
+    return deployInstallation(request);
+  },
 });
 
 export const cliLayer = (
   overrides: Partial<CliDependencies>,
-): Layer.Layer<CliRuntime | HttpTransport | ProcessRunner | BrowserLauncher | FileSystem> => {
+): Layer.Layer<
+  CliRuntime | HttpTransport | ProcessRunner | BrowserLauncher | FileSystem | InstallationDeployer
+> => {
   const dependencies = { ...defaultDependencies(), ...overrides };
   return Layer.mergeAll(
     Layer.succeed(CliRuntime)({
@@ -227,6 +262,19 @@ export const cliLayer = (
         Effect.tryPromise({
           try: () => dependencies.openBrowser(url),
           catch: unexpected,
+        }),
+    }),
+    Layer.succeed(InstallationDeployer)({
+      deploy: (request) =>
+        Effect.tryPromise({
+          try: () => dependencies.deployInstallation(request),
+          catch: () =>
+            new CliError(
+              "installation_failed",
+              "Could not deploy the Scotty installation",
+              "Check Cloudflare authentication and permissions, then retry scotty init.",
+              EXIT.GENERIC,
+            ),
         }),
     }),
     Layer.succeed(FileSystem)({

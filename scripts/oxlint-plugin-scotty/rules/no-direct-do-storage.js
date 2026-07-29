@@ -3,6 +3,7 @@ import { getPropertyName, isIdentifier, toRepoRelative, unwrapExpression } from 
 const allowedFiles = new Set([
   "worker/src/auth-object.ts",
   "worker/src/credential-vault.ts",
+  "worker/src/runner-registry-object.ts",
   "worker/src/session-store.ts",
 ]);
 

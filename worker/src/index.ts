@@ -19,7 +19,7 @@ import {
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
-import { constantTimeStringEqual, sha256Hex } from "./digest";
+import { sha256Hex } from "./digest";
 import {
   authRegistry,
   browserLabel,
@@ -54,10 +54,15 @@ import {
   type RunnerControlAction,
   type RunnerControlStatus,
 } from "./runner-control";
+import {
+  ScottyRunnerRegistry,
+  type RunnerRegistryRpcResult,
+  type ScottyRunnerRegistryStub,
+} from "./runner-registry-object";
 import { PICAN_SANDBOX_ORIGIN, Sandbox as ScottySandbox } from "./session";
 import { terminalShellPath } from "./container-auth";
 
-export { ContainerProxy, ScottyAuthRegistry, ScottySandbox };
+export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
 
 const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
 const PUBLIC_AUTH_MUTATIONS = new Set([
@@ -66,6 +71,15 @@ const PUBLIC_AUTH_MUTATIONS = new Set([
   "POST /api/auth/recovery-grants/consume",
 ]);
 const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["booting", "warm", "sleeping", "failed"]);
+const RUNNER_REGISTRY_OBJECT_NAME = "account";
+const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
+const RunnerRegistrationInputSchema = Schema.Struct({
+  name: Schema.String,
+  replace: Schema.optionalKey(Schema.Boolean),
+});
+const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
+  onExcessProperty: "error",
+});
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -97,11 +111,7 @@ app.use("*", async (c, next) => {
 
 app.get("/api/runners/:name/connect", async (c) => {
   const name = c.req.param("name");
-  if (
-    !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(name) ||
-    !c.env.SCOTTY_RUNNER_NAME ||
-    name !== c.env.SCOTTY_RUNNER_NAME
-  )
+  if (!RUNNER_NAME_PATTERN.test(name))
     return c.json({ error: { code: "not_found", message: "Runner not found" } }, 404);
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
     return c.json(
@@ -114,12 +124,19 @@ app.get("/api/runners/:name/connect", async (c) => {
       426,
     );
   const authorization = c.req.header("authorization");
-  if (
-    !c.env.SCOTTY_RUNNER_TOKEN ||
-    !authorization?.startsWith("Bearer ") ||
-    !(await constantTimeStringEqual(authorization.slice(7), c.env.SCOTTY_RUNNER_TOKEN))
-  )
+  if (!authorization?.startsWith("Bearer "))
     return c.json({ error: { code: "auth", message: "Runner authorization failed" } }, 401);
+  const authenticated = await runnerRegistry(c.env).authenticate(name, authorization.slice(7));
+  if (!authenticated.ok) {
+    if (authenticated.error.reason === "runner_missing")
+      return c.json({ error: { code: "not_found", message: "Runner not found" } }, 404);
+    if (
+      authenticated.error.reason === "credential_invalid" ||
+      authenticated.error.reason === "invalid_input"
+    )
+      return c.json({ error: { code: "auth", message: "Runner authorization failed" } }, 401);
+    unwrapRunnerRegistryRpc(authenticated);
+  }
 
   const headers = new Headers();
   for (const name of [
@@ -337,9 +354,45 @@ app.get("/api/runners", async (c) => {
   return c.json(await configuredRunnerStatuses(c.env));
 });
 
+app.post("/api/runners", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  requireJsonContentType(c.req.raw);
+  const decoded = decodeRunnerRegistrationInput(await readJsonBody(c.req.raw));
+  if (Option.isNone(decoded) || !RUNNER_NAME_PATTERN.test(decoded.value.name))
+    throw badRequest("Runner registration request is invalid");
+  const issued = unwrapRunnerRegistryRpc(
+    await runnerRegistry(c.env).register(decoded.value.name, decoded.value.replace ?? false),
+  );
+  if (issued.replaced) await c.env.RUNNERS.getByName(issued.runner.name).control("disconnect");
+  return c.json({
+    name: issued.runner.name,
+    credential: issued.credential,
+    replaced: issued.replaced,
+    createdAt: issued.runner.createdAt,
+    updatedAt: issued.runner.updatedAt,
+  });
+});
+
+app.delete("/api/runners/:name", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  const name = await requireRegisteredRunnerName(c.env, c.req.param("name"));
+  const assignedSessions = await assignedRunnerSessionCount(c.env, name);
+  if (assignedSessions > 0)
+    throw new ScottyError("conflict", "Runner still owns active sessions", {
+      httpStatus: 409,
+      exitCode: 5,
+      hint: "Drain and vaporize or move every assigned session before removing this runner.",
+    });
+  const runner = c.env.RUNNERS.getByName(name);
+  await runner.control("disable");
+  await runner.control("disconnect");
+  unwrapRunnerRegistryRpc(await runnerRegistry(c.env).remove(name));
+  return c.json({ name, status: "removed" as const });
+});
+
 app.post("/api/runners/:name/:action", async (c) => {
   requireOwnerPrincipal(c.get("auth"));
-  const name = requireConfiguredRunnerName(c.env, c.req.param("name"));
+  const name = await requireRegisteredRunnerName(c.env, c.req.param("name"));
   const action = parseRunnerControlAction(c.req.param("action"));
   const runner = c.env.RUNNERS.getByName(name);
   await runner.control(action);
@@ -358,7 +411,7 @@ app.post("/api/sessions", async (c) => {
   });
   const input = parseCreateInput(body);
   if (input.provider === "runner") {
-    const name = requireConfiguredRunnerName(c.env, input.runner ?? "");
+    const name = await requireRegisteredRunnerName(c.env, input.runner ?? "");
     const status = await c.env.RUNNERS.getByName(name).controlStatus();
     if (status.desired !== "accepting" || status.connection !== "connected")
       throw new ScottyError("upstream", "Runner is unavailable", {
@@ -620,12 +673,23 @@ function parseRunnerControlAction(value: unknown): RunnerControlAction {
   });
 }
 
-function requireConfiguredRunnerName(env: Bindings, value: string): string {
-  if (env.SCOTTY_RUNNER_NAME && value === env.SCOTTY_RUNNER_NAME) return value;
-  throw new ScottyError("not_found", "Runner not found", {
-    httpStatus: 404,
-    exitCode: 3,
+function requireRootPrincipal(principal: AuthPrincipal): void {
+  if (principal.kind === "root") return;
+  throw new ScottyError("auth", "The CLI root credential is required", {
+    httpStatus: 401,
+    exitCode: 4,
+    hint: "Run this command from a machine configured with scotty init.",
   });
+}
+
+async function requireRegisteredRunnerName(env: Bindings, value: string): Promise<string> {
+  if (!RUNNER_NAME_PATTERN.test(value))
+    throw new ScottyError("not_found", "Runner not found", {
+      httpStatus: 404,
+      exitCode: 3,
+    });
+  const registration = unwrapRunnerRegistryRpc(await runnerRegistry(env).get(value));
+  return registration.name;
 }
 
 function runnerStatus(name: string, status: RunnerControlStatus, assignedSessions: number) {
@@ -655,13 +719,42 @@ async function assignedRunnerSessionCount(env: Bindings, name: string): Promise<
 }
 
 async function configuredRunnerStatuses(env: Bindings) {
-  const name = env.SCOTTY_RUNNER_NAME?.trim();
-  if (!name) return [];
-  const [status, assignedSessions] = await Promise.all([
-    env.RUNNERS.getByName(name).controlStatus(),
-    assignedRunnerSessionCount(env, name),
-  ]);
-  return [runnerStatus(name, status, assignedSessions)];
+  const registrations = unwrapRunnerRegistryRpc(await runnerRegistry(env).list());
+  return Promise.all(
+    registrations.map(async ({ name }) => {
+      const [status, assignedSessions] = await Promise.all([
+        env.RUNNERS.getByName(name).controlStatus(),
+        assignedRunnerSessionCount(env, name),
+      ]);
+      return runnerStatus(name, status, assignedSessions);
+    }),
+  );
+}
+
+function runnerRegistry(env: Bindings): ScottyRunnerRegistryStub {
+  return env.RUNNER_REGISTRY.getByName(RUNNER_REGISTRY_OBJECT_NAME);
+}
+
+function unwrapRunnerRegistryRpc<A>(result: RunnerRegistryRpcResult<A>): A {
+  if (result.ok) return result.value;
+  const { reason, message } = result.error;
+  if (reason === "runner_missing")
+    throw new ScottyError("not_found", message, { httpStatus: 404, exitCode: 3 });
+  if (reason === "runner_exists")
+    throw new ScottyError("conflict", message, {
+      httpStatus: 409,
+      exitCode: 5,
+      hint: "Choose another name or pass --replace to rotate this runner credential.",
+    });
+  if (reason === "invalid_input")
+    throw new ScottyError("bad_request", message, { httpStatus: 400, exitCode: 2 });
+  if (reason === "credential_invalid")
+    throw new ScottyError("auth", message, { httpStatus: 401, exitCode: 4 });
+  console.error("Runner registry RPC failed", { reason });
+  throw new ScottyError("internal", "Runner registry failed", {
+    httpStatus: 500,
+    exitCode: 1,
+  });
 }
 
 async function readJsonBody(request: Request): Promise<unknown> {
