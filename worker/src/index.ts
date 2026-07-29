@@ -50,6 +50,12 @@ import {
   trackRepoBestEffort,
 } from "./repo-projection";
 import {
+  kvStatsProjectionStorage,
+  readStats,
+  recordWorkspaceCreation,
+  statsProjectionLayer,
+} from "./stats-projection";
+import {
   RunnerControlActionSchema,
   type RunnerControlAction,
   type RunnerControlStatus,
@@ -471,6 +477,21 @@ app.get("/api/sessions", async (c) => {
   );
 });
 
+app.get("/api/stats", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const result = await Effect.runPromise(
+    readStats.pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped, Effect.result),
+  );
+  return c.json(
+    Result.match(result, {
+      onFailure: (error) => {
+        throw error;
+      },
+      onSuccess: (stats) => stats,
+    }),
+  );
+});
+
 app.get("/api/sessions/:id", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
@@ -574,6 +595,13 @@ app.get("/sessions", async (c) => {
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
   return secureAsset(c.env, c.req.raw, "/sessions.html");
+});
+
+app.get("/stats", async (c) => {
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  return secureAsset(c.env, c.req.raw, "/stats.html");
 });
 
 app.get("/devices", async (c) => {
@@ -898,6 +926,15 @@ async function createTrackedSession(
   const session = idempotency
     ? await sandbox.createScottySession(input, id, idempotency)
     : await sandbox.createScottySession(input, id);
+  if (session.status === "warm")
+    await Effect.runPromise(
+      recordWorkspaceCreation({
+        sessionId: session.id,
+        repository: session.repo,
+        provider: session.provider,
+        createdAt: session.createdAt,
+      }).pipe(Effect.provide(projectionLayers(env)), Effect.scoped),
+    );
   await Effect.runPromise(
     trackRepoBestEffort(session.repo, session.defaultBranch).pipe(
       Effect.provide(projectionLayers(env)),
@@ -908,9 +945,10 @@ async function createTrackedSession(
 }
 
 function projectionLayers(env: Bindings) {
-  return Layer.merge(
+  return Layer.mergeAll(
     repoProjectionLayer(kvRepoProjectionStorage(env.SESSIONS)),
     sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS)),
+    statsProjectionLayer(kvStatsProjectionStorage(env.SESSIONS)),
   );
 }
 
@@ -958,9 +996,14 @@ function normalizeError(error: unknown): ScottyError {
     const hint = fields.hint;
     const isSessionProjectionFailure = Predicate.isTagged(fields, "SessionProjectionFailure");
     const isRepoProjectionFailure = Predicate.isTagged(fields, "RepoProjectionFailure");
-    if (isSessionProjectionFailure || isRepoProjectionFailure) {
+    const isStatsProjectionFailure = Predicate.isTagged(fields, "StatsProjectionFailure");
+    if (isSessionProjectionFailure || isRepoProjectionFailure || isStatsProjectionFailure) {
       console.error("Projection failure", {
-        tag: isSessionProjectionFailure ? "SessionProjectionFailure" : "RepoProjectionFailure",
+        tag: isSessionProjectionFailure
+          ? "SessionProjectionFailure"
+          : isRepoProjectionFailure
+            ? "RepoProjectionFailure"
+            : "StatsProjectionFailure",
         reason: typeof operation === "string" ? operation : "unknown",
       });
       return new ScottyError("internal", "Internal error", { httpStatus: 500, exitCode: 1 });
