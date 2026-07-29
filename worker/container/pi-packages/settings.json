@@ -1,0 +1,12 @@
+{
+  "packages": [
+    "/opt/scotty/pi-packages/sources/pi-tasks",
+    "/opt/scotty/pi-packages/sources/pi-subagents",
+    "/opt/scotty/pi-packages/sources/pi-workflows",
+    "/opt/scotty/pi-packages/sources/pi-background-terminals",
+    "/opt/scotty/pi-packages/sources/pi-askuser",
+    "/opt/scotty/pi-packages/sources/pi-web-access",
+    "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
+    "/opt/scotty/pi-packages/sources/pi-amp-ui"
+  ]
+}

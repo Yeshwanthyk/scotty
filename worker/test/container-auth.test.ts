@@ -141,6 +141,25 @@ const failed = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRunt
 };
 
 describe("container auth values", () => {
+  it("uses only immutable image-local Pi packages at sandbox startup", () => {
+    assert.deepStrictEqual(PI_PACKAGES, [
+      "/opt/scotty/pi-packages/sources/pi-tasks",
+      "/opt/scotty/pi-packages/sources/pi-subagents",
+      "/opt/scotty/pi-packages/sources/pi-workflows",
+      "/opt/scotty/pi-packages/sources/pi-background-terminals",
+      "/opt/scotty/pi-packages/sources/pi-askuser",
+      "/opt/scotty/pi-packages/sources/pi-web-access",
+      "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
+      "/opt/scotty/pi-packages/sources/pi-amp-ui",
+    ]);
+    for (const source of PI_PACKAGES) {
+      assert.ok(source.startsWith("/opt/scotty/pi-packages/"));
+      assert.ok(!source.startsWith("git:"));
+      assert.ok(!source.startsWith("npm:"));
+      assert.ok(!source.includes("://"));
+    }
+  });
+
   it("constructs the exact session path and agent environment", () => {
     assert.strictEqual(sessionRoot(ID), `/workspace/${ID}`);
     assert.strictEqual(terminalShellPath(ID), `/workspace/${ID}/.pi-agent/scotty-shell`);

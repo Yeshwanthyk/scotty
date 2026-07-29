@@ -5,14 +5,14 @@ import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbo
 import { sessionRoot } from "./workspace";
 
 export const PI_PACKAGES = [
-  "git:github.com/Yeshwanthyk/pi-tasks",
-  "git:github.com/Yeshwanthyk/pi-subagents",
-  "git:github.com/Yeshwanthyk/pi-workflows",
-  "git:github.com/Yeshwanthyk/pi-background-terminals",
-  "git:github.com/Yeshwanthyk/pi-askuser",
-  "git:github.com/nicobailon/pi-web-access",
-  "npm:@ogulcancelik/pi-codex-compaction",
-  "git:github.com/Yeshwanthyk/pi-amp-ui",
+  "/opt/scotty/pi-packages/sources/pi-tasks",
+  "/opt/scotty/pi-packages/sources/pi-subagents",
+  "/opt/scotty/pi-packages/sources/pi-workflows",
+  "/opt/scotty/pi-packages/sources/pi-background-terminals",
+  "/opt/scotty/pi-packages/sources/pi-askuser",
+  "/opt/scotty/pi-packages/sources/pi-web-access",
+  "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
+  "/opt/scotty/pi-packages/sources/pi-amp-ui",
 ] as const;
 
 const codexConfig = (id: SessionRecord["id"]): string => `model = "gpt-5.6-sol"

@@ -7,8 +7,9 @@
   ],
   "type": "module",
   "scripts": {
-    "check": "npm run check:effect-version && npm run fmt:check && npm run lint && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
+    "check": "npm run check:effect-version && npm run check:pi-packages && npm run fmt:check && npm run lint && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
     "check:effect-version": "node e2e/scripts/check-effect-version.mjs",
+    "check:pi-packages": "node scripts/check-pi-packages.mjs",
     "fmt": "oxfmt --disable-nested-config --write .",
     "fmt:check": "oxfmt --disable-nested-config --check .",
     "lint": "npm run lint:skills && oxlint --disable-nested-config --deny-warnings .",

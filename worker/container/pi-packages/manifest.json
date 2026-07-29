@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "git": [
+    {
+      "name": "pi-tasks",
+      "order": 0,
+      "repository": "https://github.com/Yeshwanthyk/pi-tasks.git",
+      "commit": "e7c515bb48326ff2aee831d6cf6214445e1c5c8c",
+      "sourcePath": "worker/container/pi-packages/sources/pi-tasks",
+      "imagePath": "/opt/scotty/pi-packages/sources/pi-tasks"
+    },
+    {
+      "name": "pi-subagents",
+      "order": 1,
+      "repository": "https://github.com/Yeshwanthyk/pi-subagents.git",
+      "commit": "441999f5e6f608bcfc1462d563708361331852fe",
+      "sourcePath": "worker/container/pi-packages/sources/pi-subagents",
+      "imagePath": "/opt/scotty/pi-packages/sources/pi-subagents"
+    },
+    {
+      "name": "pi-workflows",
+      "order": 2,
+      "repository": "https://github.com/Yeshwanthyk/pi-workflows.git",
+      "commit": "31375528e368e4b9028a6b2ab62915f36ea57f21",
+      "sourcePath": "worker/container/pi-packages/sources/pi-workflows",
+      "imagePath": "/opt/scotty/pi-packages/sources/pi-workflows"
+    },
+    {
+      "name": "pi-background-terminals",
+      "order": 3,
+      "repository": "https://github.com/Yeshwanthyk/pi-background-terminals.git",
+      "commit": "e137c161f14c100720a30afd8f9363ca5162f472",
+      "sourcePath": "worker/container/pi-packages/sources/pi-background-terminals",
+      "imagePath": "/opt/scotty/pi-packages/sources/pi-background-terminals"
+    },
+    {
+      "name": "pi-askuser",
+      "order": 4,
+      "repository": "https://github.com/Yeshwanthyk/pi-askuser.git",
+      "commit": "e4ca19c18b0a36d1b021388ae720d91b103c4cf3",
+      "sourcePath": "worker/container/pi-packages/sources/pi-askuser",
+      "imagePath": "/opt/scotty/pi-packages/sources/pi-askuser"
+    },
+    {
+      "name": "pi-web-access",
+      "order": 5,
+      "repository": "https://github.com/nicobailon/pi-web-access.git",
+      "commit": "b537183632d555d1b2e61cb8f6bdf585766f2380",
+      "sourcePath": "worker/container/pi-packages/sources/pi-web-access",
+      "lockPath": "worker/container/pi-packages/locks/pi-web-access/package-lock.json",
+      "imagePath": "/opt/scotty/pi-packages/sources/pi-web-access"
+    },
+    {
+      "name": "pi-amp-ui",
+      "order": 7,
+      "repository": "https://github.com/Yeshwanthyk/pi-amp-ui.git",
+      "commit": "9f5a8dec14cc8be2c6692401ff34f54e79008edb",
+      "sourcePath": "worker/container/pi-packages/sources/pi-amp-ui",
+      "imagePath": "/opt/scotty/pi-packages/sources/pi-amp-ui"
+    }
+  ],
+  "npm": [
+    {
+      "name": "@ogulcancelik/pi-codex-compaction",
+      "order": 6,
+      "version": "0.1.2",
+      "integrity": "sha512-mtHAxK0H+AONGRpHSptyM8ind7bARQkZ1JW3vcq6gZunPhPSv+Yg81Za6aobdz6lTD35lZos0QeNAXOBkZ8kPA==",
+      "imagePath": "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction"
+    }
+  ]
+}
