@@ -60,9 +60,7 @@ import {
   classifyPicanCreateResponse,
   decodePicanBootstrapResponseJson,
   decodePicanWorkerStatusJson,
-  Pican,
   picanCreateRequest,
-  picanLayer,
   type PicanCreateResult,
 } from "./pican";
 import {
@@ -125,7 +123,6 @@ type SandboxServices =
   | BackupStore
   | ContainerAuth
   | CredentialVault
-  | Pican
   | RolloutDiscovery
   | SandboxRuntime
   | SessionProjection
@@ -177,6 +174,10 @@ class PicanCreateUncertain extends Data.TaggedError("PicanCreateUncertain")<{
 }> {}
 
 class PicanCreatePersistenceUncertain extends Data.TaggedError("PicanCreatePersistenceUncertain")<{
+  readonly cause: unknown;
+}> {}
+
+class PiTerminalStopFailure extends Data.TaggedError("PiTerminalStopFailure")<{
   readonly cause: unknown;
 }> {}
 
@@ -313,9 +314,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       env.GH_TOKEN,
     );
     const runtimeAndVault = Layer.merge(runtime, vault);
-    const pican = picanLayer({
-      containerFetch: (request, port) => this.containerFetch(request, port),
-    }).pipe(Layer.provide(runtimeAndVault));
     const backup = backupStoreLayer(
       {
         createBackup: (backupOptions) => this.createBackup(backupOptions),
@@ -335,7 +333,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS)),
       backup,
       runtimeAndVault,
-      pican,
       rolloutDiscoveryLayer.pipe(Layer.provide(runtime)),
       workspaceLayer.pipe(Layer.provide(runtime)),
       containerAuthLayer.pipe(Layer.provide(runtime)),
@@ -376,15 +373,27 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict("Session destruction is already in progress");
     if (record.operation)
       return yield* conflict(`Session is already running ${record.operation.kind}`);
-    if (record.execution.provider === "runner")
-      return yield* this.fetchRunnerPicanProgram(record, request);
-    const pican = yield* Pican;
-    return yield* pican.launch(record.id).pipe(
-      Effect.andThen(pican.fetch(request)),
-      Effect.mapError((error) =>
-        this.upstreamError("Pican upstream request failed", error, record.id),
-      ),
-    );
+    if (record.execution.provider !== "runner")
+      return yield* wrongState(record.status, "access", "Cloudflare sessions use the Pi terminal");
+    return yield* this.fetchRunnerPicanProgram(record, request);
+  });
+
+  private readonly assertTerminalAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.requireRecordProgram();
+    if (record.status !== "warm")
+      return yield* wrongState(
+        record.status,
+        "access",
+        record.status === "sleeping"
+          ? "Resume the session from Home before accessing the terminal"
+          : undefined,
+      );
+    if (!sessionAllowsRuntimeAccess(record))
+      return yield* conflict("Session destruction is already in progress");
+    if (record.operation)
+      return yield* conflict(`Session is already running ${record.operation.kind}`);
+    if (record.execution.provider !== "cloudflare")
+      return yield* wrongState(record.status, "access", "This session uses the runner terminal");
   });
 
   private readonly fetchRunnerPicanProgram = Effect.fnUntraced(function* (
@@ -414,12 +423,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     record: SessionRecord,
   ) {
     if (!record.codexThreadId) return yield* new AgentActivityObservationFailure();
-    if (record.execution.provider === "cloudflare") {
-      const pican = yield* Pican;
-      return yield* pican
-        .launch(record.id)
-        .pipe(Effect.andThen(pican.workerStatus(record.id, record.codexThreadId)));
-    }
+    if (record.execution.provider === "cloudflare")
+      return yield* new AgentActivityObservationFailure();
 
     const url = new URL(`https://runner-pican.internal/s/${record.id}/api/worker-status`);
     url.searchParams.set("id", record.codexThreadId);
@@ -499,61 +504,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   });
 
-  private readonly createHostedPicanSessionProgram = Effect.fnUntraced(function* (
-    id: string,
-    prompt: string,
-  ) {
-    const pican = yield* Pican;
-    const attempt = Effect.gen(function* () {
-      const result: PicanCreateResult = yield* pican
-        .createHostedSession(id, prompt)
-        .pipe(
-          Effect.mapError((error) =>
-            Predicate.isTagged(error, "PicanTransportFailure")
-              ? new PicanCreateRetryable({ reason: "transport" })
-              : error,
-          ),
-        );
-      return yield* classifyStablePicanCreateResult(result);
-    });
-    return yield* attempt.pipe(
-      Effect.retry({
-        times: 2,
-        schedule: Schedule.spaced("250 millis"),
-        while: Predicate.isTagged("PicanCreateRetryable"),
-      }),
-      Effect.catchTag(
-        "PicanCreateRetryable",
-        (error) => new PicanCreateAmbiguous({ reason: error.reason }),
-      ),
-    );
-  });
-
-  private readonly completeHostedPicanCreateProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    id: string,
-    prompt: string,
-    nonce: string,
-  ) {
-    const pican = yield* Pican;
-    yield* pican.launch(id);
-    const hosted = yield* this.createHostedPicanSessionProgram(id, prompt);
-    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    const ready = yield* this.updateForOperationProgram(nonce, (record) => ({
-      ...record,
-      status: "warm",
-      operation: null,
-      codexThreadId: hosted.nativeId,
-      agentState: "working",
-      lastAgentEventAt: updatedAt,
-      failure: undefined,
-      updatedAt,
-    })).pipe(Effect.mapError((cause) => new PicanCreatePersistenceUncertain({ cause })));
-    yield* hostEffect("schedule", () => this.scheduleAgentObservation());
-    return ready;
-  });
-
-  private readonly prepareCreateForPicanProgram = Effect.fnUntraced(function* (
+  private readonly prepareCloudflarePiCreateProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     record: SessionRecord,
     prompt: string,
@@ -580,10 +531,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
       repoExistsAtCreate: worktree.repoExists,
       defaultBranch: worktree.defaultBranch,
     })).pipe(Effect.mapError((cause) => new PicanCreateUncertain({ cause })));
-    return yield* this.continueCreateFromPicanProgram(record, prompt, nonce);
+    return yield* this.continueCloudflarePiCreateProgram(record, prompt, nonce);
   });
 
-  private readonly continueCreateFromPicanProgram = Effect.fnUntraced(function* (
+  private readonly continueCloudflarePiCreateProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     record: SessionRecord,
     prompt: string,
@@ -591,12 +542,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
-    const picanPhase = Effect.gen({ self: this }, function* () {
+    const piPhase = Effect.gen({ self: this }, function* () {
       const credential = yield* vault.require;
-      yield* containerAuth.seed(record.id, credential);
-      return yield* this.completeHostedPicanCreateProgram(record.id, prompt, nonce);
+      yield* containerAuth.seed(record.id, credential, { initialPrompt: prompt });
+      const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+      return yield* this.updateForOperationProgram(nonce, (current) => ({
+        ...current,
+        status: "warm",
+        operation: null,
+        codexThreadId: `pi-${record.id}`,
+        agentState: "waiting",
+        lastAgentEventAt: readyAt,
+        failure: undefined,
+        updatedAt: readyAt,
+      }));
     });
-    return yield* picanPhase.pipe(
+    return yield* piPhase.pipe(
       Effect.mapError((failure) =>
         Predicate.isTagged(failure, "PicanCreateAmbiguous") ||
         Predicate.isTagged(failure, "PicanCreateRejected") ||
@@ -614,7 +575,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     failure: unknown,
   ) {
     const ambiguousError = (): ScottyError =>
-      new ScottyError("upstream", "Pican session creation is ambiguous", {
+      new ScottyError("upstream", "Pi session creation is ambiguous", {
         httpStatus: 502,
         exitCode: 4,
         hint: `The runtime was preserved. Retry session ${id} with the same idempotency key.`,
@@ -627,7 +588,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ...record,
           failure: {
             code: "create_ambiguous",
-            message: "Pican session creation is ambiguous",
+            message: "Pi session creation is ambiguous",
             recoverable: true,
           },
         })),
@@ -638,7 +599,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* this.failOperationProgram(
         nonce,
         "create_ambiguous",
-        "Pican session creation is ambiguous",
+        "Pi session creation is ambiguous",
         true,
       );
       return yield* ambiguousError();
@@ -676,7 +637,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return yield* this.ensureRunnerCreateProgram(record, operation.nonce, prompt);
       if (operation.createPhase === "setup") {
         const reconciled = yield* Effect.result(
-          this.prepareCreateForPicanProgram(record, prompt, operation.nonce, operation.startedAt),
+          this.prepareCloudflarePiCreateProgram(
+            record,
+            prompt,
+            operation.nonce,
+            operation.startedAt,
+          ),
         );
         return yield* this.finishCreateReconciliationProgram(
           record.id,
@@ -686,7 +652,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }
       if (operation.createPhase === "pican") {
         const reconciled = yield* Effect.result(
-          this.continueCreateFromPicanProgram(record, prompt, operation.nonce),
+          this.continueCloudflarePiCreateProgram(record, prompt, operation.nonce),
         );
         return yield* this.finishCreateReconciliationProgram(
           record.id,
@@ -1015,7 +981,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (initial.execution.provider === "runner")
       return yield* this.ensureRunnerCreateProgram(initial, nonce, input.prompt);
     const setup = yield* Effect.result(
-      this.prepareCreateForPicanProgram(initial, input.prompt, nonce, nowIso),
+      this.prepareCloudflarePiCreateProgram(initial, input.prompt, nonce, nowIso),
     );
     if (Result.isFailure(setup))
       return yield* this.failCreateSetupProgram(initial.id, nonce, setup.failure);
@@ -1230,7 +1196,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
-    const pican = yield* Pican;
     const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
     let record = yield* this.requireRecordProgram();
     const backup = record.backup?.current;
@@ -1262,7 +1227,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* backups.restore(backup);
         const credential = yield* vault.require;
         yield* containerAuth.seed(record.id, credential);
-        yield* pican.launch(record.id);
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
           ...current,
@@ -1274,7 +1238,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           hardCapAt,
           updatedAt: readyAt,
         }));
-        yield* hostEffect("schedule", () => this.scheduleAgentObservation());
         return ready;
       }),
     );
@@ -1688,6 +1651,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly observeAgentActivityProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.readRecordProgram();
     if (!record || record.status !== "warm" || record.operation || !record.codexThreadId) return;
+    if (record.execution.provider === "cloudflare") return;
     const observed = yield* Effect.result(this.readPicanWorkerStatusProgram(record));
     if (Result.isFailure(observed)) {
       yield* Effect.sync(() =>
@@ -1817,7 +1781,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     payload: ManagedStopPayload,
   ) {
-    const pican = yield* Pican;
     const store = yield* SessionStore;
     const record = yield* this.readRecordProgram();
     if (!sessionAllowsRuntimeAccess(record)) return;
@@ -1838,22 +1801,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
       const rollbackClaimed = yield* store.claimManagedStopRollback(payload.nonce);
       if (!rollbackClaimed) return;
-      const resumed = yield* Effect.result(pican.launch(record.id));
-      if (Result.isSuccess(resumed)) {
-        yield* this.releaseOperationIfHeldProgram(payload.nonce);
-        return;
-      }
-      const rollbackAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-      yield* this.updateForOperationProgram(payload.nonce, (current) => ({
-        ...current,
-        operation: current.operation && {
-          kind: current.operation.kind,
-          nonce: current.operation.nonce,
-          startedAt: current.operation.startedAt,
-          checkpointedBackupId: current.operation.checkpointedBackupId,
-        },
-        updatedAt: rollbackAt,
-      })).pipe(Effect.ignore);
+      yield* this.releaseOperationIfHeldProgram(payload.nonce);
       return;
     }
     if (!(yield* this.isManagedStopPendingProgram(payload.nonce))) return;
@@ -1929,8 +1877,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return super.fetch(request);
   }
 
-  async fetchPican(request: Request): Promise<Response> {
-    return this.#run(this.fetchPicanProgram(request));
+  async assertTerminalAccess(): Promise<void> {
+    return this.#run(this.assertTerminalAccessProgram());
   }
 
   async snapshotScottySession(): Promise<SessionView> {
@@ -2021,15 +1969,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const record = yield* this.requireRecordProgram();
     const runtime = yield* SandboxRuntime;
-    const pican = yield* Pican;
     const backups = yield* BackupStore;
     const root = sessionRoot(record.id);
-    let picanStopAttempted = false;
+    let terminalStopAttempted = false;
 
     const checkpoint = withCheckpointRuntimeRestore(
       Effect.gen({ self: this }, function* () {
-        picanStopAttempted = true;
-        yield* pican.stop();
+        terminalStopAttempted = true;
+        yield* Effect.tryPromise({
+          try: () => this.deleteSession(record.id),
+          catch: (cause) => new PiTerminalStopFailure({ cause }),
+        });
         yield* runtime.execChecked("sync", { timeout: 30_000 });
         const now = yield* Clock.currentTimeMillis;
         const backup = yield* backups.create({
@@ -2060,9 +2010,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return updated;
       }),
       {
-        restore: pican.launch(record.id),
+        restore: Effect.void,
         resumeRuntime,
-        stopAttempted: () => picanStopAttempted,
+        stopAttempted: () => terminalStopAttempted,
       },
     );
     const outcome = yield* Effect.result(checkpoint);
@@ -2077,11 +2027,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* this.failOperationProgram(
           nonce,
           "checkpoint_runtime_unavailable",
-          "Pican failed to relaunch after checkpoint",
+          "Pi terminal failed to recover after checkpoint",
           Boolean(current.backup?.current),
         );
       }).pipe(Effect.ignore);
-      return yield* outcome.failure;
+      return yield* Effect.fail(outcome.failure);
     }
     const updated = yield* Result.match(outcome, {
       onFailure: Effect.fail,

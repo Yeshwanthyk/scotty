@@ -1,12 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { ScottyError } from "../src/contracts";
 import { PICAN_SANDBOX_ORIGIN } from "../src/session";
-import {
-  createSessionHarness,
-  makeStoredCredential,
-  SESSION_ID,
-  sessionHarnessKeys,
-} from "./session-harness";
+import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
@@ -15,31 +10,34 @@ const rejection = (operation: Promise<unknown>): Promise<unknown> =>
     (error: unknown) => error,
   );
 
-describe("Sandbox Pican transport", () => {
-  it("ensures Pican before forwarding while the authoritative session is warm and idle", async () => {
+const runnerRecord = (
+  overrides: Parameters<typeof makeSessionRecord>[0] = {},
+): ReturnType<typeof makeSessionRecord> =>
+  makeSessionRecord({
+    provider: "runner",
+    runner: "slumbers",
+    execution: {
+      provider: "runner",
+      runner: "slumbers",
+      runtimeId: `runner-v1:${SESSION_ID}`,
+    },
+    ...overrides,
+  });
+
+describe("runner Pican transport", () => {
+  it("does not expose the removed Cloudflare Pican runtime", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord(),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
-      },
-    });
-    const calls: Array<{ readonly request: Request; readonly port: number }> = [];
-    Object.defineProperty(harness.sandbox, "containerFetch", {
-      value: (request: Request, port: number): Promise<Response> => {
-        calls.push({ request, port });
-        return Promise.resolve(new Response("pican"));
       },
     });
 
-    const response = await harness.sandbox.fetchPican(
-      new Request("https://scotty.example.test/api/sessions"),
-    );
+    const error = await rejection(harness.sandbox.fetch(new Request(`${PICAN_SANDBOX_ORIGIN}/`)));
 
-    assert.strictEqual(await response.text(), "pican");
-    assert.strictEqual(calls.length, 2);
-    assert.match(calls[0]?.request.url ?? "", /\/api\/settings$/u);
-    assert.strictEqual(calls[1]?.port, 31_415);
-    assert.strictEqual(harness.picanStarts.length, 1);
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "wrong_state");
+    assert.strictEqual(error.hint, "Cloudflare sessions use the Pi terminal");
+    assert.strictEqual(harness.picanStarts.length, 0);
   });
 
   it("forwards exact request bytes and preserves runner response streaming", async () => {
@@ -54,15 +52,7 @@ describe("Sandbox Pican transport", () => {
     });
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
-          provider: "runner",
-          runner: "slumbers",
-          execution: {
-            provider: "runner",
-            runner: "slumbers",
-            runtimeId: `runner-v1:${SESSION_ID}`,
-          },
-        }),
+        [sessionHarnessKeys.record]: runnerRecord(),
       },
       runnerFetch: async (request) => {
         assert.strictEqual(
@@ -96,12 +86,12 @@ describe("Sandbox Pican transport", () => {
   for (const testCase of [
     {
       name: "sleeping",
-      record: makeSessionRecord({ status: "sleeping" }),
+      record: runnerRecord({ status: "sleeping" }),
       code: "wrong_state",
     },
     {
       name: "active operation",
-      record: makeSessionRecord({
+      record: runnerRecord({
         operation: {
           kind: "snapshot",
           nonce: "snapshot-in-progress",
@@ -111,24 +101,19 @@ describe("Sandbox Pican transport", () => {
       code: "conflict",
     },
   ] as const) {
-    it(`rejects ${testCase.name} state before containerFetch can auto-resume it`, async () => {
+    it(`rejects ${testCase.name} state before contacting the runner`, async () => {
+      let calls = 0;
       const harness = await createSessionHarness({
         initialEntries: {
           [sessionHarnessKeys.record]: testCase.record,
-          [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
-      });
-      let calls = 0;
-      Object.defineProperty(harness.sandbox, "containerFetch", {
-        value: (): Promise<Response> => {
+        runnerFetch: () => {
           calls += 1;
           return Promise.resolve(new Response());
         },
       });
 
-      const error = await rejection(
-        harness.sandbox.fetchPican(new Request("https://scotty.example.test/")),
-      );
+      const error = await rejection(harness.sandbox.fetch(new Request(`${PICAN_SANDBOX_ORIGIN}/`)));
 
       assert.ok(error instanceof ScottyError);
       assert.strictEqual(error.code, testCase.code);
@@ -136,27 +121,20 @@ describe("Sandbox Pican transport", () => {
     });
   }
 
-  it("maps Pican transport rejection to one fixed public upstream error", async () => {
+  it("maps runner transport rejection to one fixed public error", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord(),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
+        [sessionHarnessKeys.record]: runnerRecord(),
       },
-    });
-    Object.defineProperty(harness.sandbox, "containerFetch", {
-      value: (request: Request): Promise<Response> =>
-        new URL(request.url).pathname.endsWith("/api/settings")
-          ? Promise.resolve(Response.json({ ready: true }))
-          : Promise.reject(new Error("provider leaked ghp_secret and scotty-codex-secret")),
+      runnerFetch: () =>
+        Promise.reject(new Error("provider leaked ghp_secret and scotty-codex-secret")),
     });
 
-    const error = await rejection(
-      harness.sandbox.fetchPican(new Request("https://scotty.example.test/")),
-    );
+    const error = await rejection(harness.sandbox.fetch(new Request(`${PICAN_SANDBOX_ORIGIN}/`)));
 
     assert.ok(error instanceof ScottyError);
     assert.strictEqual(error.code, "upstream");
-    assert.strictEqual(error.message, "Pican upstream request failed");
+    assert.strictEqual(error.message, "Runner upstream request failed");
     assert.ok(!JSON.stringify(error).includes("ghp_"));
     assert.ok(!JSON.stringify(error).includes("codex-secret"));
   });

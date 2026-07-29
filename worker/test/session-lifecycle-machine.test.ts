@@ -508,7 +508,7 @@ describe("Sandbox lifecycle machine", () => {
   );
 
   it.effect(
-    "finalizeManagedStop claims an expired rollback, relaunches Pican, and releases the lease",
+    "finalizeManagedStop claims an expired rollback and releases the Pi terminal lease",
     () =>
       Effect.gen(function* () {
         const now = yield* currentTestTime;
@@ -529,7 +529,7 @@ describe("Sandbox lifecycle machine", () => {
         const released = harness.readRecord();
         assert.strictEqual(released?.status, "warm");
         assert.strictEqual(released?.operation, null);
-        assert.ok(harness.events.includes("host:pican:start"));
+        assert.ok(!harness.events.includes("host:pican:start"));
         assert.deepStrictEqual(
           harness.schedules.map((schedule) => schedule.callback),
           ["finalizeManagedStop"],
@@ -538,38 +538,36 @@ describe("Sandbox lifecycle machine", () => {
       }),
   );
 
-  it.effect(
-    "finalizeManagedStop clears a failed rollback claim and leaves a durable retry armed",
-    () =>
-      Effect.gen(function* () {
-        const now = yield* currentTestTime;
-        const record = managedStopRecord(now);
-        const harness = yield* createTestHarness({
-          failureStage: "rollbackResume",
-          initialEntries: {
-            [sessionHarnessKeys.record]: record,
-            [sessionHarnessKeys.credential]: makeStoredCredential(),
-          },
-        });
-        const payload = {
-          nonce: "managed-stop",
-          armedAt: isoAt(now - 30_001),
-        };
+  it.effect("finalizeManagedStop does not depend on the legacy Pican rollback path", () =>
+    Effect.gen(function* () {
+      const now = yield* currentTestTime;
+      const record = managedStopRecord(now);
+      const harness = yield* createTestHarness({
+        failureStage: "rollbackResume",
+        initialEntries: {
+          [sessionHarnessKeys.record]: record,
+          [sessionHarnessKeys.credential]: makeStoredCredential(),
+        },
+      });
+      const payload = {
+        nonce: "managed-stop",
+        armedAt: isoAt(now - 30_001),
+      };
 
-        yield* Effect.promise(() => harness.sandbox.finalizeManagedStop(payload));
+      yield* Effect.promise(() => harness.sandbox.finalizeManagedStop(payload));
 
-        const retryable = harness.readRecord();
-        assert.strictEqual(retryable?.status, "warm");
-        assert.deepStrictEqual(retryable?.operation, record.operation);
-        assert.deepStrictEqual(
-          harness.schedules.map((schedule) => schedule.callback),
-          ["finalizeManagedStop"],
-        );
-        assert.ok(!harness.events.includes("host:destroy"));
-      }),
+      const retryable = harness.readRecord();
+      assert.strictEqual(retryable?.status, "warm");
+      assert.strictEqual(retryable?.operation, null);
+      assert.deepStrictEqual(
+        harness.schedules.map((schedule) => schedule.callback),
+        ["finalizeManagedStop"],
+      );
+      assert.ok(!harness.events.includes("host:destroy"));
+    }),
   );
 
-  it.effect("a manual snapshot stops Pican, writes the backup, and relaunches it", () =>
+  it.effect("a manual snapshot stops the Pi PTY before writing the backup", () =>
     Effect.gen(function* () {
       const record = makeSessionRecord();
       const harness = yield* createTestHarness({
@@ -582,19 +580,18 @@ describe("Sandbox lifecycle machine", () => {
 
       yield* Effect.promise(() => harness.sandbox.snapshotScottySession());
 
-      const stopIndex = harness.events.indexOf("host:pican:kill:SIGTERM");
+      const stopIndex = harness.events.indexOf(`host:pi:delete:${SESSION_ID}`);
       const backupIndex = harness.events.indexOf("host:createBackup");
-      const restartIndex = harness.events.lastIndexOf("host:pican:start");
       assert.ok(stopIndex >= 0);
       assert.ok(stopIndex < backupIndex);
-      assert.ok(backupIndex < restartIndex);
+      assert.ok(!harness.events.includes("host:pican:start"));
       assert.strictEqual(harness.readRecord()?.status, "warm");
       assert.strictEqual(harness.readRecord()?.operation, null);
       assert.strictEqual(harness.readRecord()?.backup?.current.id, "backup-1");
     }),
   );
 
-  it.effect("a manual snapshot fails recoverably when Pican cannot relaunch", () =>
+  it.effect("a manual snapshot does not depend on the legacy Pican relaunch", () =>
     Effect.gen(function* () {
       const harness = yield* createTestHarness({
         failureStage: "picanLaunch",
@@ -605,27 +602,17 @@ describe("Sandbox lifecycle machine", () => {
         initialPicanRunning: true,
       });
 
-      const error = yield* Effect.promise(() => rejection(harness.sandbox.snapshotScottySession()));
+      yield* Effect.promise(() => harness.sandbox.snapshotScottySession());
 
-      assert.ok(error instanceof ScottyError);
-      assert.strictEqual(error.message, "Snapshot failed");
-      const failed = harness.readRecord();
-      assert.strictEqual(failed?.status, "failed");
-      assert.strictEqual(failed?.operation, null);
-      assert.strictEqual(failed?.backup?.current.id, "backup-1");
-      assert.deepStrictEqual(failed?.failure, {
-        code: "checkpoint_runtime_unavailable",
-        message: "Pican failed to relaunch after checkpoint",
-        recoverable: true,
-      });
-      assert.ok(
-        harness.events.indexOf("host:createBackup") <
-          harness.events.lastIndexOf("host:pican:start"),
-      );
+      const ready = harness.readRecord();
+      assert.strictEqual(ready?.status, "warm");
+      assert.strictEqual(ready?.operation, null);
+      assert.strictEqual(ready?.backup?.current.id, "backup-1");
+      assert.ok(!harness.events.includes("host:pican:start"));
     }),
   );
 
-  it.effect("a snapshot keeps its lease when Pican relaunch and failed-state read both fail", () =>
+  it.effect("a snapshot ignores legacy Pican relaunch failure injection", () =>
     Effect.gen(function* () {
       const harness = yield* createTestHarness({
         initialEntries: {
@@ -637,48 +624,43 @@ describe("Sandbox lifecycle machine", () => {
       harness.injectFailure("picanLaunch");
       harness.injectFailure("checkpointFailureStateRead");
 
-      const error = yield* Effect.promise(() => rejection(harness.sandbox.snapshotScottySession()));
+      yield* Effect.promise(() => harness.sandbox.snapshotScottySession());
 
-      assert.ok(error instanceof ScottyError);
-      assert.strictEqual(error.message, "Snapshot failed");
       const held = harness.readRecord();
       assert.strictEqual(held?.status, "warm");
-      assert.strictEqual(held?.operation?.kind, "snapshot");
-      assert.strictEqual(held?.operation?.checkpointedBackupId, "backup-1");
+      assert.strictEqual(held?.operation, null);
+      assert.strictEqual(held?.backup?.current.id, "backup-1");
       assert.ok(!harness.events.includes("host:stop"));
     }),
   );
 
-  it.effect(
-    "sleep keeps its lease when Pican relaunch and failed-state persistence both fail",
-    () =>
-      Effect.gen(function* () {
-        const harness = yield* createTestHarness({
-          initialEntries: {
-            [sessionHarnessKeys.record]: makeSessionRecord(),
-            [sessionHarnessKeys.credential]: makeStoredCredential(),
-          },
-          initialPicanRunning: true,
-        });
-        harness.injectFailure("checkpointSync");
-        harness.injectFailure("picanLaunch");
-        harness.injectFailure("checkpointFailureStatePersist");
+  it.effect("sleep releases its lease when checkpoint sync fails after stopping Pi", () =>
+    Effect.gen(function* () {
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: makeSessionRecord(),
+          [sessionHarnessKeys.credential]: makeStoredCredential(),
+        },
+        initialPicanRunning: true,
+      });
+      harness.injectFailure("checkpointSync");
+      harness.injectFailure("picanLaunch");
+      harness.injectFailure("checkpointFailureStatePersist");
 
-        const error = yield* Effect.promise(() => rejection(harness.sandbox.sleepScottySession()));
+      const error = yield* Effect.promise(() => rejection(harness.sandbox.sleepScottySession()));
 
-        assert.ok(error instanceof ScottyError);
-        assert.strictEqual(error.message, "Session stop failed");
-        const held = harness.readRecord();
-        assert.strictEqual(held?.status, "warm");
-        assert.strictEqual(held?.operation?.kind, "snapshot");
-        assert.strictEqual(held?.operation?.checkpointedBackupId, undefined);
-        assert.strictEqual(held?.backup, undefined);
-        assert.ok(!harness.events.includes("host:stop"));
-        assert.ok(!harness.schedules.some(({ callback }) => callback === "finalizeManagedStop"));
-      }),
+      assert.ok(error instanceof ScottyError);
+      assert.strictEqual(error.message, "Session stop failed");
+      const held = harness.readRecord();
+      assert.strictEqual(held?.status, "warm");
+      assert.strictEqual(held?.operation, null);
+      assert.strictEqual(held?.backup, undefined);
+      assert.ok(!harness.events.includes("host:stop"));
+      assert.ok(!harness.schedules.some(({ callback }) => callback === "finalizeManagedStop"));
+    }),
   );
 
-  it.effect("idle expiry keeps its lease when Pican relaunch recovery storage fails", () =>
+  it.effect("idle expiry releases its lease when checkpoint sync fails", () =>
     Effect.gen(function* () {
       const harness = yield* createTestHarness({
         initialEntries: {
@@ -695,14 +677,13 @@ describe("Sandbox lifecycle machine", () => {
 
       const held = harness.readRecord();
       assert.strictEqual(held?.status, "warm");
-      assert.strictEqual(held?.operation?.kind, "snapshot");
-      assert.strictEqual(held?.operation?.checkpointedBackupId, undefined);
+      assert.strictEqual(held?.operation, null);
       assert.strictEqual(held?.backup, undefined);
       assert.ok(!harness.events.includes("host:stop"));
     }),
   );
 
-  it.effect("a partial Pican stop failure is relaunched before snapshot failure returns", () =>
+  it.effect("a Pi terminal stop failure aborts the snapshot before backup", () =>
     Effect.gen(function* () {
       const harness = yield* createTestHarness({
         failureStage: "picanStop",
@@ -721,15 +702,12 @@ describe("Sandbox lifecycle machine", () => {
       assert.strictEqual(record?.status, "warm");
       assert.strictEqual(record?.operation, null);
       assert.strictEqual(record?.backup, undefined);
-      assert.ok(
-        harness.events.indexOf("host:pican:kill:SIGTERM") <
-          harness.events.lastIndexOf("host:pican:start"),
-      );
-      assert.ok(harness.events.includes("host:pican:ready"));
+      assert.ok(harness.events.includes(`host:pi:delete:${SESSION_ID}`));
+      assert.ok(!harness.events.includes("host:createBackup"));
     }),
   );
 
-  it.effect("a checkpoint defect still relaunches Pican before the defect escapes", () =>
+  it.effect("a checkpoint defect leaves the Pi PTY stopped before the defect escapes", () =>
     Effect.gen(function* () {
       const harness = yield* createTestHarness({
         failureStage: "checkpointDefect",
@@ -745,11 +723,8 @@ describe("Sandbox lifecycle machine", () => {
       );
 
       assert.notStrictEqual(defect, undefined);
-      assert.ok(
-        harness.events.indexOf("host:pican:kill:SIGTERM") <
-          harness.events.lastIndexOf("host:pican:start"),
-      );
-      assert.ok(harness.events.includes("host:pican:ready"));
+      assert.ok(harness.events.includes(`host:pi:delete:${SESSION_ID}`));
+      assert.ok(!harness.events.includes("host:pican:start"));
       assert.strictEqual(harness.readRecord()?.status, "warm");
       assert.strictEqual(harness.readRecord()?.operation?.kind, "snapshot");
     }),

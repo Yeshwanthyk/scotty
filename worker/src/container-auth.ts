@@ -1,8 +1,19 @@
 import { Context, Effect, Layer } from "effect";
 import type { SessionRecord } from "./contracts";
-import { sentinelAuthJson, type StoredCredential } from "./egress";
+import { piAuthJson, sentinelAuthJson, type StoredCredential } from "./egress";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
+
+export const PI_PACKAGES = [
+  "git:github.com/Yeshwanthyk/pi-tasks",
+  "git:github.com/Yeshwanthyk/pi-subagents",
+  "git:github.com/Yeshwanthyk/pi-workflows",
+  "git:github.com/Yeshwanthyk/pi-background-terminals",
+  "git:github.com/Yeshwanthyk/pi-askuser",
+  "git:github.com/nicobailon/pi-web-access",
+  "npm:@ogulcancelik/pi-codex-compaction",
+  "git:github.com/Yeshwanthyk/pi-amp-ui",
+] as const;
 
 const codexConfig = (id: SessionRecord["id"]): string => `model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
@@ -16,19 +27,53 @@ plugins = false
 trust_level = "trusted"
 `;
 
+const piSettings = (credential: StoredCredential): string =>
+  JSON.stringify({
+    defaultProvider: credential.codex.OPENAI_API_KEY ? "openai" : "openai-codex",
+    defaultModel: "gpt-5.6-sol",
+    defaultThinkingLevel: "high",
+    steeringMode: "one-at-a-time",
+    theme: "amp-neo",
+    hideThinkingBlock: false,
+    quietStartup: true,
+    defaultProjectTrust: "always",
+    compaction: {
+      enabled: true,
+      reserveTokens: 40960,
+      keepRecentTokens: 20000,
+    },
+    packages: PI_PACKAGES,
+  });
+
+const piWebSearchConfig = JSON.stringify({
+  provider: "openai",
+  workflow: "none",
+  allowBrowserCookies: false,
+});
+
+const gitConfig = (): string => `[credential]
+	helper = !f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f
+	useHttpPath = true
+`;
+
 export const sandboxAgentsInstructions = `- Read and follow the repository AGENTS.md first; repository instructions override this file.
 - Run \`scotty tools list --json\` to inspect the standard sandbox tools.
 - Prefer \`rg\`, \`fd\`, and \`ast-grep\` for search. Use \`jq\`, \`yq\`, and \`qsv\` for structured data.
 - Use \`uv\` and \`uvx\` for Python. Use the repository's declared JavaScript package manager; use Corepack only when it declares Yarn or pnpm.
 - If a required tool is absent or a dependency download is blocked by Scotty policy (including HTTP 520), stop after one bounded retry. Run the focused checks that are available and report the exact unavailable gate. If publication was requested, continue to commit, push, and open the PR so CI can run the locked full gate.
 - Don't build a missing toolchain from source, install a third-party embedded toolchain, add temporary module replacements, or bypass the proxy with direct arbitrary-host downloads unless the user explicitly asks.
-- Use matching skills under \`$CODEX_HOME/skills\`; read the selected \`SKILL.md\` before acting.
+- Use matching skills under \`$PI_CODING_AGENT_DIR/skills\` or \`$CODEX_HOME/skills\`; read the selected \`SKILL.md\` before acting.
 `;
+
+export interface ContainerAuthSeedOptions {
+  readonly initialPrompt?: string;
+}
 
 interface ContainerAuthShape {
   readonly seed: (
     id: SessionRecord["id"],
     credential: StoredCredential,
+    options?: ContainerAuthSeedOptions,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
@@ -40,18 +85,34 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
   ContainerAuth,
   Effect.map(SandboxRuntime, (runtime) =>
     ContainerAuth.of({
-      seed: Effect.fnUntraced(function* (id, credential) {
+      seed: Effect.fnUntraced(function* (id, credential, options) {
         const codexHome = `${sessionRoot(id)}/.codex`;
+        const piHome = `${sessionRoot(id)}/.pi-agent`;
         const authPath = `${codexHome}/auth.json`;
         const configPath = `${codexHome}/config.toml`;
         const agentsPath = `${codexHome}/AGENTS.md`;
         const skillsPath = `${codexHome}/skills`;
+        const piAuthPath = `${piHome}/auth.json`;
+        const piSettingsPath = `${piHome}/settings.json`;
+        const piAgentsPath = `${piHome}/AGENTS.md`;
+        const piSkillsPath = `${piHome}/skills`;
+        const piWebSearchPath = `${piHome}/web-search.json`;
+        const gitConfigPath = `${piHome}/gitconfig`;
+        const promptPath = `${piHome}/initial-prompt`;
         yield* runtime.mkdir(codexHome, { recursive: true });
+        yield* runtime.mkdir(piHome, { recursive: true });
         yield* runtime.writeFile(authPath, sentinelAuthJson(credential));
         yield* runtime.writeFile(configPath, codexConfig(id));
         yield* runtime.writeFile(agentsPath, sandboxAgentsInstructions);
+        yield* runtime.writeFile(piAuthPath, piAuthJson(credential));
+        yield* runtime.writeFile(piSettingsPath, piSettings(credential));
+        yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
+        yield* runtime.writeFile(piWebSearchPath, piWebSearchConfig);
+        yield* runtime.writeFile(gitConfigPath, gitConfig());
+        if (options?.initialPrompt !== undefined)
+          yield* runtime.writeFile(promptPath, options.initialPrompt);
         yield* runtime.execChecked(
-          `chmod 700 ${shellQuote(codexHome)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)} ${shellQuote(agentsPath)} && ln -sfn /opt/scotty/skills ${shellQuote(skillsPath)}`,
+          `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ln -sfn /opt/scotty/skills ${shellQuote(skillsPath)} && ln -sfn /opt/scotty/skills ${shellQuote(piSkillsPath)}`,
         );
         yield* runtime.setEnvVars(agentEnv(id, credential));
         const root = sessionRoot(id);
@@ -69,6 +130,9 @@ export function agentEnv(
 ): Record<string, string> {
   return {
     CODEX_HOME: `${sessionRoot(id)}/.codex`,
+    PI_CODING_AGENT_DIR: `${sessionRoot(id)}/.pi-agent`,
+    SCOTTY_SESSION_ID: id,
+    GIT_CONFIG_GLOBAL: `${sessionRoot(id)}/.pi-agent/gitconfig`,
     OPENAI_API_KEY: credential.codexSentinel,
     GH_TOKEN: credential.githubSentinel,
     GITHUB_SENTINEL: credential.githubSentinel,

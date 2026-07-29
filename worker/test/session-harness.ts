@@ -691,6 +691,18 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async (processId: string) =>
         processId === "scotty-pican" ? (picanProcess ?? null) : null,
     },
+    deleteSession: {
+      value: async (sessionId: string) => {
+        events.push(`host:pi:delete:${sessionId}`);
+        if (failures.has("picanStop"))
+          throw injectedHarnessFailure("injected Pi terminal stop failure");
+        return {
+          success: true,
+          sessionId,
+          timestamp: lifecycleWallClock.nowIso(),
+        };
+      },
+    },
     containerFetch: {
       configurable: true,
       value: async (request: Request, port: number): Promise<Response> => {
