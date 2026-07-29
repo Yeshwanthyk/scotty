@@ -41,6 +41,14 @@ body.scotty-ui {
   box-shadow: 0 1px 0 var(--line-soft);
 }
 
+.sessions-page .masthead {
+  border-color: var(--line);
+  background: rgb(3 16 23 / 0.94);
+  box-shadow: none;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
 .scotty-ui .identity {
   display: inline-flex;
   align-items: center;
@@ -64,6 +72,12 @@ body.scotty-ui {
   font-size: 0.78rem;
   font-weight: 750;
   letter-spacing: 0.08em;
+}
+
+.sessions-page .wordmark {
+  font-size: 0.76rem;
+  font-weight: 760;
+  letter-spacing: 0.1em;
 }
 
 .scotty-ui .section-label,
