@@ -515,7 +515,7 @@ function sanitizedLocalEnvironment() {
       key.startsWith("CLOUDFLARE_") ||
       key.startsWith("SCOTTY_") ||
       [
-        "CODEX_AUTH_JSON",
+        "PI_AUTH_JSON",
         "GH_TOKEN",
         "GITHUB_TOKEN",
         "OPENAI_API_KEY",

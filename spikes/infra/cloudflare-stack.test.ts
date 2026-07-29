@@ -120,8 +120,8 @@ describe("Cloudflare stack topology", () => {
       "scotty-sandboxcontainer-production-ytkhty6mswuofjo5",
     );
     assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, [
-      "CODEX_AUTH_JSON",
       "GH_TOKEN",
+      "PI_AUTH_JSON",
       "SCOTTY_RUNNER_TOKEN",
       "SCOTTY_TOKEN",
     ]);

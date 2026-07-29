@@ -100,16 +100,17 @@ export class ScottySandbox extends Sandbox {
   ): Promise<CanarySecurityProbe> {
     const root = `/workspace/${record.id}`;
     const surface = await this.exec(
-      `printf '%s\\n' "$OPENAI_API_KEY" "$GH_TOKEN" "$GITHUB_SENTINEL"; cat ${root}/.codex/auth.json; git -C ${root} config --local --list; curl --silent --output /dev/null --write-out '%{http_code}' https://example.com/`,
+      `printf '%s\\n' "$GH_TOKEN" "$GITHUB_SENTINEL"; cat ${root}/.pi-agent/auth.json; git -C ${root} config --local --list; curl --silent --output /dev/null --write-out '%{http_code}' https://example.com/`,
       { timeout: 30_000 },
     );
     const serializedSurface = `${surface.stdout}\n${surface.stderr}`;
     const realSecrets = [
       credential.githubToken,
-      credential.codex.OPENAI_API_KEY,
-      credential.codex.tokens?.id_token,
-      credential.codex.tokens?.access_token,
-      credential.codex.tokens?.refresh_token,
+      ...Object.values(credential.providers).flatMap((provider) =>
+        provider.credential.type === "api_key"
+          ? [provider.credential.key]
+          : [provider.credential.access, provider.credential.refresh],
+      ),
     ].filter((value): value is string => typeof value === "string" && value.length > 0);
     const containsRealSecret = (value: string): boolean =>
       realSecrets.some((secret) => value.includes(secret));
@@ -118,7 +119,9 @@ export class ScottySandbox extends Sandbox {
       defaultDeny: /(?:403|520)\s*$/u.test(surface.stdout.trim()),
       kvNonSecret: projection !== null && !containsRealSecret(projection),
       sentinelsOnly:
-        serializedSurface.includes(credential.codexSentinel) &&
+        Object.values(credential.providers).every((provider) =>
+          serializedSurface.includes(provider.sentinel),
+        ) &&
         serializedSurface.includes(credential.githubSentinel) &&
         !containsRealSecret(serializedSurface),
     };

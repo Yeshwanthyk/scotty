@@ -51,6 +51,7 @@ describe("Effect command tree", () => {
         const rootHelp = root.stdout.join("");
         assert.include(rootHelp, "scotty <subcommand> [flags]");
         assert.include(rootHelp, "beam");
+        assert.include(rootHelp, "auth");
         assert.include(rootHelp, "runner");
         assert.include(rootHelp, "--version, -V");
         assert.notInclude(rootHelp, "--wizard");
@@ -70,7 +71,29 @@ describe("Effect command tree", () => {
         assert.include(runner.stdout.join(""), "serve");
         assert.include(runner.stdout.join(""), "setup");
         assert.strictEqual(runner.stderr.join(""), "");
+
+        const auth = run(["auth", "--help"]);
+        assert.strictEqual(yield* auth.effect, EXIT.OK);
+        assert.include(auth.stdout.join(""), "status");
+        assert.include(auth.stdout.join(""), "sync");
+        assert.include(auth.stdout.join(""), "reseed");
+        assert.strictEqual(auth.stderr.join(""), "");
       }),
+  );
+
+  it.effect("requires exactly one auth reseed target", () =>
+    Effect.gen(function* () {
+      const missing = run(["auth", "reseed"]);
+      assert.strictEqual(
+        failure(yield* Effect.result(missing.effect)).message,
+        "Pass exactly one session ID or --all-active",
+      );
+      const both = run(["auth", "reseed", "abc123", "--all-active"]);
+      assert.strictEqual(
+        failure(yield* Effect.result(both.effect)).message,
+        "Pass exactly one session ID or --all-active",
+      );
+    }),
   );
 
   it.effect("keeps runner credentials out of shared token flags", () =>

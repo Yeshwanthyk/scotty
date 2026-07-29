@@ -29,22 +29,28 @@ import {
   proxyOpenAIProgram,
 } from "../src/egress";
 
-const CODEX = "scotty-codex-session-sentinel";
+const OPENAI = "scotty-pi-openai-session-sentinel";
+const CODEX = "scotty-pi-openai-codex-session-sentinel";
 const GITHUB = "scotty-github-session-sentinel";
 const HONEYPOT = "never-expose-honeypot-secret";
 const credential: StoredCredential = {
-  codex: {
-    OPENAI_API_KEY: "real-openai-key",
-    tokens: {
-      access_token: "real-chatgpt-token",
-      refresh_token: "real-refresh-token",
-      account_id: "account-123",
+  providers: {
+    openai: {
+      credential: { type: "api_key", key: "real-openai-key" },
+      sentinel: OPENAI,
     },
-    account_id: null,
-    last_refresh: null,
+    "openai-codex": {
+      credential: {
+        type: "oauth",
+        access: "real-chatgpt-token",
+        refresh: "real-refresh-token",
+        expires: 0,
+        accountId: "account-123",
+      },
+      sentinel: CODEX,
+    },
   },
   githubToken: "real-github-token",
-  codexSentinel: CODEX,
   githubSentinel: GITHUB,
   picanProxyToken: "scotty-pican-proxy-token",
   updatedAt: "2026-01-02T00:00:00.000Z",
@@ -176,7 +182,7 @@ describe("credential egress", () => {
         proxyOpenAIProgram(
           new Request("https://api.openai.com/v1/models", {
             headers: {
-              authorization: `Bearer ${CODEX}`,
+              authorization: `Bearer ${OPENAI}`,
               "x-api-key": HONEYPOT,
               cookie: HONEYPOT,
               "proxy-authorization": HONEYPOT,
@@ -204,7 +210,8 @@ describe("credential egress", () => {
   it.effect("uses the OpenAI token fallback", () =>
     Effect.gen(function* () {
       const requests: Array<Request> = [];
-      const tokenOnly = { ...credential, codex: { ...credential.codex, OPENAI_API_KEY: null } };
+      const { openai: _openai, ...oauthOnlyProviders } = credential.providers;
+      const tokenOnly = { ...credential, providers: oauthOnlyProviders };
       yield* run(
         proxyOpenAIProgram(
           new Request("https://api.openai.com/v1/models", { headers: { "x-api-key": CODEX } }),
@@ -460,13 +467,17 @@ describe("OAuth refresh", () => {
       });
       const withoutRefresh = {
         ...credential,
-        codex: {
-          ...credential.codex,
-          tokens: {
-            id_token: credential.codex.tokens?.id_token,
-            access_token: credential.codex.tokens?.access_token,
-            refresh_token: undefined,
-            account_id: credential.codex.tokens?.account_id ?? null,
+        providers: {
+          ...credential.providers,
+          "openai-codex": {
+            ...credential.providers["openai-codex"],
+            credential: {
+              type: "oauth" as const,
+              access: "real-chatgpt-token",
+              refresh: "",
+              expires: 0,
+              accountId: "account-123",
+            },
           },
         },
       };

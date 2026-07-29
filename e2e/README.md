@@ -53,11 +53,11 @@ chmod 600 "$token_file"
 openssl rand -hex 32 >"$token_file"
 npx wrangler secret put SCOTTY_TOKEN --name "$worker" <"$token_file"
 gh auth token | tr -d '\n' | npx wrangler secret put GH_TOKEN --name "$worker"
-test -s "$HOME/.codex/auth.json"
-npx wrangler secret put CODEX_AUTH_JSON --name "$worker" <"$HOME/.codex/auth.json"
+test -s "$HOME/.pi/agent/auth.json"
+npx wrangler secret put PI_AUTH_JSON --name "$worker" <"$HOME/.pi/agent/auth.json"
 ```
 
-`CODEX_AUTH_JSON` and `GH_TOKEN` stay in the Worker/Durable Object credential boundary. The
+`PI_AUTH_JSON` and `GH_TOKEN` stay in the Worker/Durable Object credential boundary. The
 Container receives only its session-bound Codex and GitHub sentinels.
 
 Use a disposable clone of the repository. The canary pushes one random `scotty/<id>` branch so

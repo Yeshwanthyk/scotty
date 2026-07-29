@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { parsePiAuthJsonOption } from "../../protocol/pi-auth";
 import { Effect, Option, Result } from "effect";
 import { isAuthorizedRequest } from "../src/auth";
 import {
@@ -22,10 +23,9 @@ import {
   decodeCredentialPatch,
   decodeStoredCredential,
   oauthContainerResult,
-  parseCodexCredential,
+  piAuthJson,
   parseOAuthRefreshRequest,
   parseOAuthUpstreamSuccess,
-  sentinelAuthJson,
   type StoredCredential,
 } from "../src/egress";
 
@@ -338,10 +338,20 @@ describe("public errors", () => {
 });
 
 describe("credential boundary", () => {
-  const storedCredential = (codex: StoredCredential["codex"]): StoredCredential => ({
-    codex,
+  const storedCredential = (): StoredCredential => ({
+    providers: {
+      "openai-codex": {
+        credential: {
+          type: "oauth",
+          access: "real-access-token",
+          refresh: "real-refresh-token",
+          expires: 0,
+          accountId: "real-account",
+        },
+        sentinel: "scotty-pi-session-sentinel",
+      },
+    },
     githubToken: "real-github-token",
-    codexSentinel: "scotty-codex-session-sentinel",
     githubSentinel: "scotty-github-session-sentinel",
     picanProxyToken: "scotty-pican-proxy-token",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -353,97 +363,67 @@ describe("credential boundary", () => {
     assert.strictEqual(result.failure.message, message);
   };
 
-  it("accepts API-key-only and token bundles without trimming", () => {
-    assert.deepStrictEqual(parseCodexCredential('{"OPENAI_API_KEY":" api-key "}'), {
-      OPENAI_API_KEY: " api-key ",
-      tokens: undefined,
-      account_id: null,
-      last_refresh: null,
-    });
-    assert.deepStrictEqual(
-      parseCodexCredential(
+  it("decodes Pi API-key and OAuth credentials while preserving provider fields", () => {
+    const decoded = Option.getOrThrow(
+      parsePiAuthJsonOption(
         JSON.stringify({
-          tokens: {
-            id_token: "real.id.token",
-            access_token: "real-access-token-value",
-            refresh_token: "real-refresh-token-value",
-            account_id: "account-real",
+          openai: { type: "api_key", key: "api-key" },
+          "openai-codex": {
+            type: "oauth",
+            access: "access",
+            refresh: "refresh",
+            expires: 0,
+            accountId: "account",
+          },
+          "github-copilot": {
+            type: "oauth",
+            access: "copilot-access",
+            refresh: "copilot-refresh",
+            expires: 1,
+            enterpriseUrl: "https://github.example",
+            availableModelIds: ["model-a"],
           },
         }),
       ),
-      {
-        OPENAI_API_KEY: null,
-        tokens: {
-          id_token: "real.id.token",
-          access_token: "real-access-token-value",
-          refresh_token: "real-refresh-token-value",
-          account_id: "account-real",
-        },
-        account_id: null,
-        last_refresh: null,
-      },
     );
-  });
-
-  it("collapses wrong optional seed values and strips unknown fields", () => {
-    const parsed = parseCodexCredential(
-      JSON.stringify({
-        OPENAI_API_KEY: 42,
-        account_id: false,
-        last_refresh: {},
-        honeypot: "must-not-survive",
-        tokens: {
-          id_token: 1,
-          access_token: "access",
-          refresh_token: "",
-          account_id: [],
-          secret: "must-not-survive",
-        },
-      }),
-    );
-    assert.deepStrictEqual(parsed, {
-      OPENAI_API_KEY: null,
-      tokens: {
-        id_token: undefined,
-        access_token: "access",
-        refresh_token: undefined,
-        account_id: null,
-      },
-      account_id: null,
-      last_refresh: null,
+    assert.deepInclude(decoded["openai-codex"], { accountId: "account" });
+    assert.deepInclude(decoded["github-copilot"], {
+      enterpriseUrl: "https://github.example",
+      availableModelIds: ["model-a"],
     });
-    assert.ok(!("honeypot" in parsed));
-    assert.ok(!("secret" in (parsed.tokens ?? {})));
   });
 
-  it("preserves exact fixed seed errors", () => {
-    assertFixedError(() => parseCodexCredential("{"), "CODEX_AUTH_JSON is not valid JSON");
-    assertFixedError(
-      () => parseCodexCredential("[]"),
-      "CODEX_AUTH_JSON must contain a JSON object",
-    );
-    assertFixedError(
-      () => parseCodexCredential('{"tokens":[]}'),
-      "CODEX_AUTH_JSON tokens must be an object",
-    );
-    assertFixedError(
-      () => parseCodexCredential("{}"),
-      "CODEX_AUTH_JSON must contain OPENAI_API_KEY or tokens.access_token",
+  it("rejects malformed Pi core fields and timestamps but accepts expired OAuth", () => {
+    for (const value of [
+      "{",
+      "[]",
+      '{"openai-codex":{"type":"oauth","access":"a","expires":0}}',
+      '{"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":"soon"}}',
+      '{"openai":{"type":"api_key","key":42}}',
+    ])
+      assert.ok(Option.isNone(parsePiAuthJsonOption(value)));
+    assert.ok(
+      Option.isSome(
+        parsePiAuthJsonOption(
+          '{"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":0}}',
+        ),
+      ),
     );
   });
 
   it("decodes stored authority, strips unknown fields, and fails closed with a fixed error", () => {
     const secret = "stored-honeypot-secret";
     const decoded = decodeStoredCredential({
-      ...storedCredential(parseCodexCredential('{"OPENAI_API_KEY":"api-key"}')),
+      ...storedCredential(),
       unknown: secret,
     });
     assert.ok(!("unknown" in decoded));
     assertFixedError(
       () =>
         decodeStoredCredential({
-          codex: { OPENAI_API_KEY: secret },
-          codexSentinel: "sentinel",
+          providers: {
+            openai: { credential: { type: "api_key", key: secret }, sentinel: "sentinel" },
+          },
         }),
       "Stored credential record is invalid",
     );
@@ -491,24 +471,39 @@ describe("credential boundary", () => {
     const realGithub = "honeypot-real-github";
     const picanProxyToken = "honeypot-pican-proxy-token";
     const stored = {
-      ...storedCredential(
-        parseCodexCredential(
-          JSON.stringify({
-            tokens: {
-              access_token: realAccess,
-              refresh_token: realRefresh,
-              account_id: "honeypot-account",
-            },
-          }),
-        ),
-      ),
+      ...storedCredential(),
+      providers: {
+        ...storedCredential().providers,
+        "openai-codex": {
+          credential: {
+            type: "oauth" as const,
+            access: realAccess,
+            refresh: realRefresh,
+            expires: 0,
+            accountId: "honeypot-account",
+          },
+          sentinel: "scotty-pi-session-sentinel",
+        },
+        anthropic: {
+          credential: {
+            type: "oauth" as const,
+            access: "honeypot-anthropic-access",
+            refresh: "honeypot-anthropic-refresh",
+            expires: 0,
+          },
+          sentinel: "scotty-pi-anthropic-sentinel",
+        },
+      },
       githubToken: realGithub,
       picanProxyToken,
     };
-    const containerAuth = sentinelAuthJson(stored);
-    const refreshResult = JSON.stringify(oauthContainerResult(stored));
-    assert.ok(containerAuth.includes(stored.codexSentinel));
-    assert.ok(refreshResult.includes(stored.codexSentinel));
+    const containerAuth = piAuthJson(stored);
+    const provider = stored.providers["openai-codex"];
+    assert.ok(provider);
+    const refreshResult = JSON.stringify(oauthContainerResult(provider));
+    assert.ok(containerAuth.includes(provider.sentinel));
+    assert.ok(refreshResult.includes(provider.sentinel));
+    assert.ok(!containerAuth.includes("anthropic"));
     for (const secret of [
       realAccess,
       realRefresh,

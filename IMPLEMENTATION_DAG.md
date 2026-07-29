@@ -106,7 +106,7 @@ persisted session state.
 - **KV:** list/read projection only. It may lag; it must never authorize a transition.
 - **R2:** immutable backup objects. The DO stores the active and previous backup handles.
 - **Container filesystem:** disposable working state. `/workspace/<id>` is recovered from R2.
-- **Worker secrets:** initial `CODEX_AUTH_JSON`, `GH_TOKEN`, and `SCOTTY_TOKEN`. An existing DO
+- **Worker secrets:** initial `PI_AUTH_JSON`, `GH_TOKEN`, and `SCOTTY_TOKEN`. An existing DO
   credential bundle is never overwritten from the seed. Browser ownership state, pairing/
   transfer/recovery grant digests, client digests, and PTY ticket digests live only in the
   retained singleton Auth DO. Stored client scopes never encode ownership.

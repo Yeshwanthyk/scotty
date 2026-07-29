@@ -9,7 +9,7 @@ import {
   sandboxAgentsInstructions,
   terminalShellPath,
 } from "../src/container-auth";
-import { piAuthJson, sentinelAuthJson, type StoredCredential } from "../src/egress";
+import { piAuthJson, type StoredCredential } from "../src/egress";
 import {
   SandboxRuntimeFailure,
   sandboxRuntimeLayer,
@@ -19,7 +19,7 @@ import {
 import { sessionRoot } from "../src/workspace";
 
 const ID = "a0b1c2d3e4f5";
-const CODEX_SENTINEL = `scotty-codex-${ID}-sentinel`;
+const PI_SENTINEL = `scotty-pi-${ID}-sentinel`;
 const GITHUB_SENTINEL = `scotty-github-${ID}-sentinel`;
 const REAL_ACCESS = "honeypot-real-codex-access";
 const REAL_REFRESH = "honeypot-real-codex-refresh";
@@ -29,19 +29,20 @@ const REAL_API_KEY = "honeypot-real-api-key";
 const PICAN_PROXY_TOKEN = "honeypot-pican-proxy-token";
 
 const credential: StoredCredential = {
-  codex: {
-    OPENAI_API_KEY: null,
-    tokens: {
-      id_token: "honeypot-real-id-token",
-      access_token: REAL_ACCESS,
-      refresh_token: REAL_REFRESH,
-      account_id: REAL_ACCOUNT,
+  providers: {
+    "openai-codex": {
+      credential: {
+        type: "oauth",
+        access: REAL_ACCESS,
+        refresh: REAL_REFRESH,
+        expires: 0,
+        accountId: REAL_ACCOUNT,
+        idToken: "honeypot-real-id-token",
+      },
+      sentinel: PI_SENTINEL,
     },
-    account_id: null,
-    last_refresh: "2026-07-22T01:02:03.000Z",
   },
   githubToken: REAL_GITHUB,
-  codexSentinel: CODEX_SENTINEL,
   githubSentinel: GITHUB_SENTINEL,
   picanProxyToken: PICAN_PROXY_TOKEN,
   updatedAt: "2026-07-22T01:02:03.000Z",
@@ -49,10 +50,11 @@ const credential: StoredCredential = {
 
 const apiKeyCredential: StoredCredential = {
   ...credential,
-  codex: {
-    ...credential.codex,
-    OPENAI_API_KEY: REAL_API_KEY,
-    tokens: undefined,
+  providers: {
+    openai: {
+      credential: { type: "api_key", key: REAL_API_KEY },
+      sentinel: PI_SENTINEL,
+    },
   },
 };
 
@@ -168,7 +170,6 @@ describe("container auth values", () => {
       PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
       SCOTTY_SESSION_ID: ID,
       GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
-      OPENAI_API_KEY: CODEX_SENTINEL,
       GH_TOKEN: GITHUB_SENTINEL,
       GITHUB_SENTINEL,
       GIT_TERMINAL_PROMPT: "0",
@@ -194,14 +195,11 @@ describe("ContainerAuth", () => {
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       yield* seedWith(capabilities);
-      const expectedAuth = sentinelAuthJson(credential);
-
       assert.deepStrictEqual(
         capabilities.calls.map((call) => call.operation),
         [
           "mkdir",
           "mkdir",
-          "writeFile",
           "writeFile",
           "writeFile",
           "writeFile",
@@ -222,7 +220,6 @@ describe("ContainerAuth", () => {
       assert.deepStrictEqual(
         writes.map((write) => write.path),
         [
-          `/workspace/${ID}/.codex/auth.json`,
           `/workspace/${ID}/.codex/config.toml`,
           `/workspace/${ID}/.codex/AGENTS.md`,
           `/workspace/${ID}/.pi-agent/auth.json`,
@@ -233,43 +230,29 @@ describe("ContainerAuth", () => {
           `/workspace/${ID}/.pi-agent/scotty-shell`,
         ],
       );
-      assert.strictEqual(writes[0]?.content, expectedAuth);
       assert.deepStrictEqual(
-        JSON.parse(writes[3]?.content ?? ""),
+        JSON.parse(writes[2]?.content ?? ""),
         JSON.parse(piAuthJson(credential)),
       );
-      assert.deepInclude(JSON.parse(writes[4]?.content ?? ""), {
+      assert.deepInclude(JSON.parse(writes[3]?.content ?? ""), {
         defaultProvider: "openai-codex",
         defaultModel: "gpt-5.6-sol",
         theme: "amp-neo",
         packages: [...PI_PACKAGES],
       });
-      assert.deepStrictEqual(JSON.parse(writes[6]?.content ?? ""), {
+      assert.deepStrictEqual(JSON.parse(writes[5]?.content ?? ""), {
         provider: "openai",
         workflow: "none",
         allowBrowserCookies: false,
       });
-      assert.ok(writes[7]?.content.includes("password=$GITHUB_SENTINEL"));
-      assert.ok(writes[8]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
+      assert.ok(writes[6]?.content.includes("password=$GITHUB_SENTINEL"));
+      assert.ok(writes[7]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
       assert.ok(
-        writes[8]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
+        writes[7]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
       );
-      assert.ok(writes[8]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
+      assert.ok(writes[7]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
       for (const secret of [REAL_ACCESS, REAL_REFRESH, REAL_GITHUB, REAL_ACCOUNT, REAL_API_KEY])
-        assert.ok(!writes[8]?.content.includes(secret));
-
-      assert.deepStrictEqual(JSON.parse(expectedAuth), {
-        auth_mode: "chatgpt",
-        OPENAI_API_KEY: null,
-        tokens: {
-          id_token:
-            "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoic2NvdHR5LXNlbnRpbmVsIiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJ1bmtub3duIn19.scotty",
-          access_token: CODEX_SENTINEL,
-          refresh_token: CODEX_SENTINEL,
-          account_id: CODEX_SENTINEL,
-        },
-        last_refresh: "2026-07-22T01:02:03.000Z",
-      });
+        assert.ok(!writes[7]?.content.includes(secret));
     }),
   );
 
@@ -328,8 +311,8 @@ describe("ContainerAuth", () => {
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 14);
-      assert.strictEqual(second.calls.length, 14);
+      assert.strictEqual(first.calls.length, 13);
+      assert.strictEqual(second.calls.length, 13);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),
@@ -351,31 +334,30 @@ describe("ContainerAuth", () => {
       ]) {
         assert.ok(!surfaces.includes(secret));
       }
-      assert.ok(surfaces.includes(CODEX_SENTINEL));
+      assert.ok(surfaces.includes(PI_SENTINEL));
       assert.ok(surfaces.includes(GITHUB_SENTINEL));
       assert.ok(surfaces.includes(".scotty"));
     }),
   );
 
-  it.effect("replaces API-key seed material in both auth JSON and environment", () =>
+  it.effect("replaces API-key seed material in Pi auth JSON", () =>
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       yield* seedWith(capabilities, apiKeyCredential);
       const surfaces = JSON.stringify(capabilities.calls);
 
       assert.ok(!surfaces.includes(REAL_API_KEY));
-      assert.deepStrictEqual(JSON.parse(sentinelAuthJson(apiKeyCredential)), {
-        auth_mode: "apikey",
-        OPENAI_API_KEY: CODEX_SENTINEL,
-        tokens: null,
-        last_refresh: "2026-07-22T01:02:03.000Z",
+      assert.deepStrictEqual(JSON.parse(piAuthJson(apiKeyCredential)), {
+        openai: {
+          type: "api_key",
+          key: PI_SENTINEL,
+        },
       });
       assert.deepStrictEqual(agentEnv(ID, apiKeyCredential), {
         CODEX_HOME: `/workspace/${ID}/.codex`,
         PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
         SCOTTY_SESSION_ID: ID,
         GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
-        OPENAI_API_KEY: CODEX_SENTINEL,
         GH_TOKEN: GITHUB_SENTINEL,
         GITHUB_SENTINEL,
         GIT_TERMINAL_PROMPT: "0",

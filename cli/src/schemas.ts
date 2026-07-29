@@ -113,6 +113,24 @@ export const VaporizeResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   status: Schema.Literal("gone"),
 });
+export const PiProviderMetadataSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  type: Schema.Literals(["api_key", "oauth"]),
+  adapter: Schema.Literals(["supported", "unsupported"]),
+});
+export const PiAuthStatusResponseSchema = Schema.Struct({
+  sourceDigest: Schema.NonEmptyString,
+  providers: Schema.Array(PiProviderMetadataSchema),
+});
+export type PiAuthStatusResponse = typeof PiAuthStatusResponseSchema.Type;
+export const PiAuthReseedResponseSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  updatedAt: Schema.NonEmptyString,
+  providers: Schema.Array(PiProviderMetadataSchema),
+});
+export const CloudflareApiEnvelopeSchema = Schema.Struct({
+  success: Schema.Boolean,
+});
 
 export type SessionResponse = typeof SessionResponseSchema.Type;
 
@@ -128,5 +146,8 @@ export const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchem
 export const decodeErrorFields = Schema.decodeUnknownOption(ErrorFieldsSchema);
 export const decodeDownMetadata = Schema.decodeUnknownOption(DownMetadataSchema);
 export const decodeVaporizeResponse = Schema.decodeUnknownOption(VaporizeResponseSchema);
+export const decodePiAuthStatusResponse = Schema.decodeUnknownOption(PiAuthStatusResponseSchema);
+export const decodePiAuthReseedResponse = Schema.decodeUnknownOption(PiAuthReseedResponseSchema);
+export const decodeCloudflareApiEnvelope = Schema.decodeUnknownOption(CloudflareApiEnvelopeSchema);
 export const decodeString = Schema.decodeUnknownOption(Schema.String);
 export const decodeNonEmptyString = Schema.decodeUnknownOption(Schema.NonEmptyString);

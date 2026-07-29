@@ -14,6 +14,7 @@ const sandbox = vi.hoisted(() => ({
   fetch: vi.fn(),
   fetchPican: vi.fn(),
   prepareTerminalAccess: vi.fn(),
+  reseedPiAuth: vi.fn(),
 }));
 
 const proxyTerminal = vi.hoisted(() => vi.fn());
@@ -109,7 +110,8 @@ function env(): Bindings {
     SCOTTY_TOKEN: TOKEN,
     SCOTTY_RUNNER_NAME: "slumbers",
     SCOTTY_RUNNER_TOKEN: "runner-test-token",
-    CODEX_AUTH_JSON: "{}",
+    PI_AUTH_JSON:
+      '{"openai-codex":{"type":"oauth","access":"access","refresh":"refresh","expires":0}}',
     GH_TOKEN: "github-test-sentinel",
     ASSETS: assets,
     AUTH: authNamespace(),
@@ -158,6 +160,11 @@ describe("real Hono boundary", () => {
     });
     sandbox.fetchPican.mockResolvedValue(new Response("ok"));
     sandbox.prepareTerminalAccess.mockResolvedValue(undefined);
+    sandbox.reseedPiAuth.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      updatedAt: "2026-07-29T12:00:00.000Z",
+      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
+    });
     auth.authenticate.mockResolvedValue({
       ok: true,
       value: {
@@ -336,6 +343,54 @@ describe("real Hono boundary", () => {
       { name: "cloudflare", status: "configured" },
       { name: "runner", status: "unavailable" },
     ]);
+  });
+
+  it("reports only redacted Pi auth metadata and explicitly reseeds one session", async () => {
+    const bindings = env();
+    bindings.PI_AUTH_JSON = JSON.stringify({
+      "openai-codex": {
+        type: "oauth",
+        access: "honeypot-access",
+        refresh: "honeypot-refresh",
+        expires: 0,
+        accountId: "honeypot-account",
+      },
+      anthropic: {
+        type: "oauth",
+        access: "honeypot-anthropic-access",
+        refresh: "honeypot-anthropic-refresh",
+        expires: 0,
+      },
+    });
+    const status = await app.request(
+      "/api/auth/pi",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      bindings,
+    );
+    expect(status.status).toBe(200);
+    const statusBody = await status.json();
+    expect(statusBody).toMatchObject({
+      providers: [
+        { id: "anthropic", type: "oauth", adapter: "unsupported" },
+        { id: "openai-codex", type: "oauth", adapter: "supported" },
+      ],
+    });
+    const serializedStatus = JSON.stringify(statusBody);
+    expect(serializedStatus).toMatch(/"sourceDigest":"[0-9a-f]{64}"/u);
+    expect(serializedStatus).not.toContain("honeypot");
+
+    const reseeded = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/auth/reseed",
+      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+      bindings,
+    );
+    expect(reseeded.status).toBe(200);
+    expect(sandbox.reseedPiAuth).toHaveBeenCalledTimes(1);
+    expect(await reseeded.json()).toEqual({
+      id: "a0b1c2d3e4f5",
+      updatedAt: "2026-07-29T12:00:00.000Z",
+      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
+    });
   });
 
   it("allows only the owner browser to control the configured runner", async () => {

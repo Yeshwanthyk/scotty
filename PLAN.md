@@ -92,7 +92,7 @@ scotty/
 ## Key decisions (do not relitigate)
 
 - **Repo**: required `owner/name` input. Resolve the repository's default branch dynamically via `gh repo view --json defaultBranchRef` and cache it in the session record.
-- **Codex auth**: real tokens NEVER enter the container. Seed from `CODEX_AUTH_JSON` secret into the **session DO storage** (authoritative copy); container gets a sentinel auth.json. The egress proxy (see Credential safety) injects/refreshes real tokens. Refreshed bundles are persisted to DO storage, so snapshots contain only the sentinel — nothing sensitive.
+- **Pi provider auth**: real credentials NEVER enter the container. Seed the provider-indexed `PI_AUTH_JSON` secret into the **session DO storage** (authoritative copy); the container gets a sentinel-only Pi auth.json for supported egress adapters. The egress proxy (see Credential safety) injects/refreshes real credentials. Refreshed bundles are persisted to DO storage, so snapshots contain only sentinels — nothing sensitive.
 - **Codex version**: pin in Dockerfile to the same minor as the user's local (`codex-cli 0.144.x`) so beam-down rollout files stay compatible.
 - **Sheppard is the terminal backbone**: Codex runs in a Sheppard-managed PTY. Every browser attachment runs an independent Sheppard client, so scroll position, viewport size, and disconnect cleanup are per device while Codex survives client disconnects. Set `GIT_TERMINAL_PROMPT=0` and `TERM=xterm-256color`.
 - **Terminal**: use the Sandbox SDK **native PTY/terminal API** (shipped Feb 2026) — do NOT run ttyd. Browser side uses `ghostty-web` (npm, xterm.js-compatible API) wired to the terminal websocket. If the SDK's xterm addon assumes xterm.js exactly, wiring raw WS ↔ ghostty-web write/onData is acceptable.
@@ -263,7 +263,7 @@ Keep GitHub credentials available through the sentinel boundary, but expose no S
 
 1. Cloudflare does not guarantee uninterrupted container lifetime — hosts can restart. Recovery is only as fresh as the latest successful checkpoint; `onStop()` cannot snapshot an already-stopped container. Don't fight it.
 2. Sandbox SDK HTTP/WS transports are deprecated (June 2026) — use the RPC API only. Check the current `@cloudflare/sandbox` README before coding against examples older than mid-2026.
-3. auth.json refresh tokens rotate; the **DO-stored bundle** is the single source of truth after first refresh (proxy persists rotations). Never re-seed from the `CODEX_AUTH_JSON` secret once a DO copy exists — a stale seed can invalidate the rotated refresh token.
+3. Pi OAuth refresh tokens rotate; the **DO-stored provider map** is the single source of truth after first refresh (proxy persists rotations). Never automatically re-seed from the `PI_AUTH_JSON` secret once a DO copy exists — a stale seed can invalidate the rotated refresh token. Reseeding is an explicit owner operation.
 4. Rollout beam-down is not an official Codex contract. Pin codex versions; treat failures as non-fatal (branch fetch alone is still a useful beam-down).
 5. Codex and Sheppard both use alternate-screen terminal modes. Keep browser wheel/touch translation and deployed phone/desktop interaction in the release gate; local emulator scrollback alone is not proof.
 6. `standard-2` idle-warm ≈ $0.057/hr; sleeping ≈ free. The hard cap bounds worst-case spend.
@@ -277,7 +277,7 @@ Warm pools, multi-user auth, D1 event replay, SSH gateway, VNC, exposePort previ
 **Cloudflare Sandbox SDK / Containers**
 
 - Sandbox SDK repo + examples: https://github.com/cloudflare/sandbox-sdk
-- **Codex example (egress proxy + sentinel + `CODEX_AUTH_JSON` — the credential-safety blueprint)**: https://github.com/cloudflare/sandbox-sdk/tree/main/examples/codex
+- **Codex example (egress proxy + sentinel — the original credential-safety blueprint)**: https://github.com/cloudflare/sandbox-sdk/tree/main/examples/codex
 - Codex app-server example (browser ↔ Worker ↔ codex, session naming): https://github.com/cloudflare/sandbox-sdk/tree/main/examples/codex-app-server
 - Claude Code example (egress allowlist pattern): https://github.com/cloudflare/sandbox-sdk/tree/main/examples/claude-code
 - Sandbox terminal/PTY concepts: https://developers.cloudflare.com/sandbox/concepts/terminal/

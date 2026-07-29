@@ -1,4 +1,5 @@
 import type { OutboundHandlerContext } from "@cloudflare/containers";
+import { supportedPiProvider, type PiCredential } from "../../protocol/pi-auth";
 import { Context, Data, Effect, Layer, Option, Result } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import type { Bindings } from "./bindings";
@@ -9,19 +10,17 @@ import {
   decodeOAuthContainerResultOption,
   decodeOAuthRefreshRequestOption,
   decodeOAuthUpstreamSuccessOption,
-  decodeRawCodexCredential,
-  decodeRawCodexTokenSet,
   decodeRawOAuthUpstreamSuccess,
   decodeStoredCredentialOption,
-  type CodexCredentialBundle,
   type CredentialPatch,
   type CredentialRefreshLease,
   type OAuthContainerResult,
   type OAuthRefreshRequest,
   type StoredCredential,
+  type StoredProviderCredential,
 } from "./contracts";
 
-export const CODEX_SENTINEL_PREFIX = "scotty-codex-";
+export const PI_SENTINEL_PREFIX = "scotty-pi-";
 export const GITHUB_SENTINEL_PREFIX = "scotty-github-";
 
 export const ALLOWED_HOSTS = [
@@ -44,12 +43,7 @@ export const ALLOWED_HOSTS = [
   "index.crates.io",
 ] as const;
 
-export type {
-  CodexCredentialBundle,
-  CredentialPatch,
-  CredentialRefreshLease,
-  StoredCredential,
-} from "./contracts";
+export type { CredentialPatch, CredentialRefreshLease, StoredCredential } from "./contracts";
 
 type EgressContext = OutboundHandlerContext<unknown>;
 
@@ -119,41 +113,6 @@ export function egressTransportLayer(
   );
 }
 
-export function parseCodexCredential(raw: string): CodexCredentialBundle {
-  const json = Option.getOrThrowWith(decodeJsonValue(raw), () =>
-    boundaryFailure("CODEX_AUTH_JSON is not valid JSON"),
-  );
-  const decoded = Option.getOrThrowWith(decodeRawCodexCredential(json), () =>
-    boundaryFailure("CODEX_AUTH_JSON must contain a JSON object"),
-  );
-
-  const apiKey = optionalString(decoded.OPENAI_API_KEY);
-  const legacyAccountId = optionalString(decoded.account_id);
-  let tokens: CodexCredentialBundle["tokens"];
-  if (decoded.tokens !== undefined && decoded.tokens !== null) {
-    const decodedTokens = Option.getOrThrowWith(decodeRawCodexTokenSet(decoded.tokens), () =>
-      boundaryFailure("CODEX_AUTH_JSON tokens must be an object"),
-    );
-    tokens = {
-      id_token: optionalString(decodedTokens.id_token) ?? undefined,
-      access_token: optionalString(decodedTokens.access_token) ?? undefined,
-      refresh_token: optionalString(decodedTokens.refresh_token) ?? undefined,
-      account_id: optionalString(decodedTokens.account_id),
-    };
-  }
-
-  Option.getOrThrowWith(Option.fromNullishOr(apiKey ?? tokens?.access_token), () =>
-    boundaryFailure("CODEX_AUTH_JSON must contain OPENAI_API_KEY or tokens.access_token"),
-  );
-
-  return {
-    OPENAI_API_KEY: apiKey,
-    tokens,
-    account_id: legacyAccountId,
-    last_refresh: optionalString(decoded.last_refresh),
-  };
-}
-
 export function decodeStoredCredential(value: unknown): StoredCredential {
   return Option.getOrThrowWith(decodeStoredCredentialOption(value), () =>
     boundaryFailure("Stored credential record is invalid"),
@@ -200,13 +159,17 @@ export function parseOAuthUpstreamSuccess(value: unknown): CredentialPatch | nul
 }
 
 export function oauthContainerResult(
-  credential: StoredCredential,
+  provider: StoredProviderCredential,
   expiresIn?: number,
 ): OAuthContainerResult {
+  if (provider.credential.type !== "oauth")
+    return Option.getOrThrowWith(Option.none(), () =>
+      boundaryFailure("OAuth container result is invalid"),
+    );
   const value = {
-    id_token: syntheticIdToken(credential.codex.tokens?.account_id ?? credential.codex.account_id),
-    access_token: piAccessSentinel(credential.codexSentinel),
-    refresh_token: credential.codexSentinel,
+    id_token: syntheticIdToken(optionalString(provider.credential.accountId)),
+    access_token: piAccessSentinel(provider.sentinel),
+    refresh_token: provider.sentinel,
     ...(expiresIn === undefined ? {} : { expires_in: expiresIn }),
   };
   return Option.getOrThrowWith(decodeOAuthContainerResultOption(value), () =>
@@ -214,45 +177,29 @@ export function oauthContainerResult(
   );
 }
 
-export function piAccessSentinel(codexSentinel: string): string {
-  return `${codexSentinel}.${syntheticTokenPayload()}.scotty-pi`;
+export function piAccessSentinel(sentinel: string): string {
+  return `${sentinel}.${syntheticTokenPayload()}.scotty-pi`;
 }
 
 export function piAuthJson(credential: StoredCredential): string {
-  if (credential.codex.OPENAI_API_KEY) {
-    return JSON.stringify({
-      openai: {
-        type: "api_key",
-        key: credential.codexSentinel,
-      },
-    });
+  const projected: Record<string, PiCredential> = {};
+  for (const [providerId, provider] of Object.entries(credential.providers)) {
+    if (!supportedPiProvider(providerId)) continue;
+    projected[providerId] =
+      provider.credential.type === "api_key"
+        ? {
+            type: "api_key",
+            key: provider.sentinel,
+          }
+        : {
+            type: "oauth",
+            access: piAccessSentinel(provider.sentinel),
+            refresh: provider.sentinel,
+            expires: 0,
+            ...(providerId === "openai-codex" ? { accountId: "scotty-sentinel" } : {}),
+          };
   }
-  return JSON.stringify({
-    "openai-codex": {
-      type: "oauth",
-      access: piAccessSentinel(credential.codexSentinel),
-      refresh: credential.codexSentinel,
-      expires: 0,
-      accountId: "scotty-sentinel",
-    },
-  });
-}
-
-export function sentinelAuthJson(credential: StoredCredential): string {
-  const accountId = credential.codex.tokens?.account_id ?? credential.codex.account_id;
-  return JSON.stringify({
-    auth_mode: credential.codex.OPENAI_API_KEY ? "apikey" : "chatgpt",
-    OPENAI_API_KEY: credential.codex.OPENAI_API_KEY ? credential.codexSentinel : null,
-    tokens: credential.codex.tokens
-      ? {
-          id_token: syntheticIdToken(accountId),
-          access_token: credential.codexSentinel,
-          refresh_token: credential.codexSentinel,
-          account_id: credential.codexSentinel,
-        }
-      : null,
-    last_refresh: credential.codex.last_refresh ?? null,
-  });
+  return JSON.stringify(projected);
 }
 
 export function proxyOpenAIProgram(
@@ -262,11 +209,12 @@ export function proxyOpenAIProgram(
     const vault = yield* EgressVault;
     const sentinel = presentedCredential(request.headers);
     const credential = sentinel ? yield* vault.read(sentinel) : null;
-    if (!credential || !matchesCodexSentinel(sentinel, credential.codexSentinel))
-      return forbidden();
-    const headers = sanitizedHeaders(request.headers);
-    const token = credential.codex.OPENAI_API_KEY ?? credential.codex.tokens?.access_token;
+    const provider = credential ? openAiProvider(credential, sentinel) : null;
+    if (!provider) return forbidden();
+    const token =
+      provider.credential.type === "api_key" ? provider.credential.key : provider.credential.access;
     if (!token) return forbidden();
+    const headers = sanitizedHeaders(request.headers);
     headers.set("authorization", `Bearer ${token}`);
     headers.delete("x-api-key");
     return yield* forward(request, new URL(request.url), headers);
@@ -277,14 +225,12 @@ export const proxyChatGptProgram = Effect.fnUntraced(function* (request: Request
   const vault = yield* EgressVault;
   const sentinel = presentedCredential(request.headers);
   const credential = sentinel ? yield* vault.read(sentinel) : null;
-  if (
-    !credential?.codex.tokens?.access_token ||
-    !matchesCodexSentinel(sentinel, credential.codexSentinel)
-  )
+  const provider = credential?.providers["openai-codex"];
+  if (provider?.credential.type !== "oauth" || !matchesPiSentinel(sentinel, provider.sentinel))
     return forbidden();
   const headers = sanitizedHeaders(request.headers);
-  headers.set("authorization", `Bearer ${credential.codex.tokens.access_token}`);
-  const accountId = credential.codex.tokens.account_id ?? credential.codex.account_id;
+  headers.set("authorization", `Bearer ${provider.credential.access}`);
+  const accountId = optionalString(provider.credential.accountId);
   if (accountId) headers.set("chatgpt-account-id", accountId);
   return yield* forward(request, new URL(request.url), headers);
 });
@@ -306,8 +252,10 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
   const vault = yield* EgressVault;
   const refresh = yield* vault.begin(body.refresh_token);
   const credential = refresh?.credential;
-  const realRefreshToken = credential?.codex.tokens?.refresh_token;
-  if (!refresh || !credential || !realRefreshToken) {
+  const provider = credential?.providers["openai-codex"];
+  const realRefreshToken =
+    provider?.credential.type === "oauth" ? provider.credential.refresh : undefined;
+  if (!refresh || !credential || !provider || !realRefreshToken) {
     return Response.json(
       { error: { code: "oauth_refresh_busy", message: "OAuth refresh is already in progress" } },
       { status: 409, headers: { "cache-control": "no-store" } },
@@ -333,13 +281,11 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
         () => new EgressFailure({ reason: "transport", message: "OAuth refresh failed" }),
       ),
       Effect.onError(() =>
-        vault
-          .cancel(credential.codexSentinel, refresh.nonce)
-          .pipe(Effect.catchCause(() => Effect.void)),
+        vault.cancel(provider.sentinel, refresh.nonce).pipe(Effect.catchCause(() => Effect.void)),
       ),
     );
   if (upstream.status < 200 || upstream.status >= 300) {
-    yield* vault.cancel(credential.codexSentinel, refresh.nonce);
+    yield* vault.cancel(provider.sentinel, refresh.nonce);
     return Response.json(
       { error: { code: "oauth_refresh_failed", message: "OAuth refresh failed" } },
       { status: upstream.status, headers: { "cache-control": "no-store" } },
@@ -351,9 +297,7 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
       () => new EgressFailure({ reason: "transport", message: "OAuth refresh failed" }),
     ),
     Effect.onError(() =>
-      vault
-        .cancel(credential.codexSentinel, refresh.nonce)
-        .pipe(Effect.catchCause(() => Effect.void)),
+      vault.cancel(provider.sentinel, refresh.nonce).pipe(Effect.catchCause(() => Effect.void)),
     ),
   );
   const responseJson = decodeJsonValue(responseText);
@@ -362,11 +306,11 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
     : Option.none();
   const patch = Option.isSome(responseJson) ? parseOAuthUpstreamSuccess(responseJson.value) : null;
   if (!patch) {
-    yield* vault.cancel(credential.codexSentinel, refresh.nonce);
+    yield* vault.cancel(provider.sentinel, refresh.nonce);
     return new Response("Invalid OAuth response", { status: 502 });
   }
 
-  yield* vault.persist(credential.codexSentinel, patch, refresh.nonce).pipe(
+  yield* vault.persist(provider.sentinel, patch, refresh.nonce).pipe(
     Effect.retry({ times: 2 }),
     Effect.mapError(
       () =>
@@ -381,7 +325,7 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
     ? optionalNumber(rawResponse.value.expires_in)
     : null;
   const safeBody = JSON.stringify(
-    oauthContainerResult(credential, formEncoded ? (expiresIn ?? 3600) : undefined),
+    oauthContainerResult(provider, formEncoded ? (expiresIn ?? 3600) : undefined),
   );
   const responseHeaders = new Headers({
     "content-type": "application/json",
@@ -467,7 +411,7 @@ function egressVaultLayer(env: Bindings, context: EgressContext): Layer.Layer<Eg
     EgressVault.of({
       read: (sentinel) => {
         if (
-          !sentinel.startsWith(CODEX_SENTINEL_PREFIX) &&
+          !sentinel.startsWith(PI_SENTINEL_PREFIX) &&
           !sentinel.startsWith(GITHUB_SENTINEL_PREFIX)
         )
           return Effect.succeed(null);
@@ -601,8 +545,19 @@ function storedSentinel(presented: string): string {
   return parts.length === 3 && parts[2] === "scotty-pi" ? (parts[0] ?? presented) : presented;
 }
 
-function matchesCodexSentinel(presented: string | null, stored: string): boolean {
+function matchesPiSentinel(presented: string | null, stored: string): boolean {
   return presented === stored || presented === piAccessSentinel(stored);
+}
+
+function openAiProvider(
+  credential: StoredCredential,
+  presented: string | null,
+): StoredProviderCredential | null {
+  for (const providerId of ["openai", "openai-codex"] as const) {
+    const provider = credential.providers[providerId];
+    if (provider && matchesPiSentinel(presented, provider.sentinel)) return provider;
+  }
+  return null;
 }
 
 function syntheticIdToken(accountId?: string | null): string {

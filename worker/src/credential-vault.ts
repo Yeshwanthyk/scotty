@@ -1,13 +1,19 @@
 import { Clock, Context, Data, Effect, Layer, Result } from "effect";
 import {
   decodeCredentialPatchResult,
+  decodeCredentialReseedResult,
   decodeCredentialSeedResult,
   decodeNonEmptyStringResult,
   decodeStoredCredentialResult,
   type CredentialRefreshLease,
   type StoredCredential,
 } from "./contracts";
-import { parseCodexCredential } from "./egress";
+import { Option } from "effect";
+import {
+  parsePiAuthJsonOption,
+  supportedPiProvider,
+  type PiAuthStore,
+} from "../../protocol/pi-auth";
 
 const CREDENTIAL_KEY = "scotty:credential";
 const REFRESH_LEASE_MILLIS = 60_000;
@@ -41,6 +47,7 @@ export interface CredentialVaultStorage {
 
 export interface CredentialVaultShape {
   readonly seed: (seed: unknown) => Effect.Effect<StoredCredential, CredentialVaultFailure>;
+  readonly reseed: (seed: unknown) => Effect.Effect<StoredCredential, CredentialVaultFailure>;
   readonly require: Effect.Effect<StoredCredential, CredentialVaultFailure>;
   readonly readForProxy: (
     sentinel: unknown,
@@ -121,6 +128,32 @@ const makeCredentialVault = (
     return decodeCurrent(stored);
   };
 
+  const decodeProviderStore = (raw: string): Result.Result<PiAuthStore, CredentialVaultFailure> => {
+    const decoded = parsePiAuthJsonOption(raw);
+    if (Option.isNone(decoded) || Object.keys(decoded.value).length === 0)
+      return Result.fail(failure("invalid_seed", "PI_AUTH_JSON is invalid"));
+    if (!Object.keys(decoded.value).some(supportedPiProvider))
+      return Result.fail(
+        failure("invalid_seed", "PI_AUTH_JSON has no provider supported by Scotty egress"),
+      );
+    return Result.succeed(decoded.value);
+  };
+
+  const storedProviders = (
+    providers: PiAuthStore,
+    sentinelSeed: string,
+    current?: StoredCredential,
+  ): StoredCredential["providers"] =>
+    Object.fromEntries(
+      Object.entries(providers).map(([providerId, credential], index) => [
+        providerId,
+        {
+          credential,
+          sentinel: current?.providers[providerId]?.sentinel ?? `${sentinelSeed}-${index}`,
+        },
+      ]),
+    );
+
   return CredentialVault.of({
     seed: Effect.fnUntraced(function* (seed) {
       const now = new Date(yield* Clock.currentTimeMillis).toISOString();
@@ -135,17 +168,38 @@ const makeCredentialVault = (
           failure("invalid_seed", "GH_TOKEN is missing or invalid"),
         );
         if (Result.isFailure(github)) return Result.fail(github.failure);
-        const codex = Result.try({
-          try: () => parseCodexCredential(decodedSeed.success.codexAuthJson),
-          catch: () => failure("invalid_seed", "CODEX_AUTH_JSON is invalid"),
-        });
-        if (Result.isFailure(codex)) return Result.fail(codex.failure);
+        const providers = decodeProviderStore(decodedSeed.success.piAuthJson);
+        if (Result.isFailure(providers)) return Result.fail(providers.failure);
         const credential: StoredCredential = {
-          codex: codex.success,
+          providers: storedProviders(providers.success, decodedSeed.success.providerSentinelSeed),
           githubToken: github.success,
-          codexSentinel: decodedSeed.success.codexSentinel,
           githubSentinel: decodedSeed.success.githubSentinel,
           picanProxyToken: decodedSeed.success.picanProxyToken,
+          updatedAt: now,
+        };
+        await transaction.put(credential);
+        return Result.succeed(credential);
+      });
+    }),
+    reseed: Effect.fnUntraced(function* (seed) {
+      const now = new Date(yield* Clock.currentTimeMillis).toISOString();
+      return yield* transact(async (transaction) => {
+        const current = await requireFrom(transaction);
+        if (Result.isFailure(current)) return Result.fail(current.failure);
+        const decodedSeed = Result.mapError(decodeCredentialReseedResult(seed), () =>
+          failure("invalid_seed", "Credential reseed is missing or invalid"),
+        );
+        if (Result.isFailure(decodedSeed)) return Result.fail(decodedSeed.failure);
+        const providers = decodeProviderStore(decodedSeed.success.piAuthJson);
+        if (Result.isFailure(providers)) return Result.fail(providers.failure);
+        const { refreshLease: _refreshLease, ...withoutLease } = current.success;
+        const credential: StoredCredential = {
+          ...withoutLease,
+          providers: storedProviders(
+            providers.success,
+            decodedSeed.success.providerSentinelSeed,
+            current.success,
+          ),
           updatedAt: now,
         };
         await transaction.put(credential);
@@ -163,8 +217,9 @@ const makeCredentialVault = (
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const credential = decoded.success;
         return Result.succeed(
-          decodedSentinel.success === credential.codexSentinel ||
-            decodedSentinel.success === credential.githubSentinel
+          Object.values(credential.providers).some(
+            (provider) => provider.sentinel === decodedSentinel.success,
+          ) || decodedSentinel.success === credential.githubSentinel
             ? credential
             : null,
         );
@@ -182,10 +237,8 @@ const makeCredentialVault = (
         const decoded = decodeCurrent(stored);
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const credential = decoded.success;
-        if (
-          credential.codexSentinel !== decodedSentinel.success ||
-          !credential.codex.tokens?.refresh_token
-        )
+        const provider = credential.providers["openai-codex"];
+        if (provider?.sentinel !== decodedSentinel.success || provider.credential.type !== "oauth")
           return Result.succeed(null);
         if (
           credential.refreshLease &&
@@ -214,25 +267,29 @@ const makeCredentialVault = (
         const required = await requireFrom(transaction);
         if (Result.isFailure(required)) return Result.fail(required.failure);
         const credential = required.success;
-        if (credential.codexSentinel !== decodedSentinel.success)
+        const provider = credential.providers["openai-codex"];
+        if (provider?.sentinel !== decodedSentinel.success)
           return Result.fail(failure("sentinel_mismatch", "Credential sentinel mismatch"));
         if (credential.refreshLease?.nonce !== decodedNonce.success)
           return Result.fail(failure("lease_mismatch", "Credential refresh lease mismatch"));
-        const tokens = credential.codex.tokens;
-        if (!tokens)
+        if (provider.credential.type !== "oauth")
           return Result.fail(failure("not_refreshable", "Credential is not refreshable"));
         const { refreshLease: _refreshLease, ...withoutLease } = credential;
         const next: StoredCredential = {
           ...withoutLease,
-          codex: {
-            ...credential.codex,
-            tokens: {
-              ...tokens,
-              id_token: decodedPatch.success.idToken ?? tokens.id_token,
-              access_token: decodedPatch.success.accessToken ?? tokens.access_token,
-              refresh_token: decodedPatch.success.refreshToken ?? tokens.refresh_token,
+          providers: {
+            ...credential.providers,
+            "openai-codex": {
+              ...provider,
+              credential: {
+                ...provider.credential,
+                access: decodedPatch.success.accessToken ?? provider.credential.access,
+                refresh: decodedPatch.success.refreshToken ?? provider.credential.refresh,
+                ...(decodedPatch.success.idToken === undefined
+                  ? {}
+                  : { idToken: decodedPatch.success.idToken }),
+              },
             },
-            last_refresh: now,
           },
           updatedAt: now,
         };
@@ -251,7 +308,7 @@ const makeCredentialVault = (
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const credential = decoded.success;
         if (
-          credential.codexSentinel !== decodedSentinel.success ||
+          credential.providers["openai-codex"]?.sentinel !== decodedSentinel.success ||
           credential.refreshLease?.nonce !== decodedNonce.success
         )
           return Result.succeed(undefined);

@@ -1,6 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 import type { SessionRecord } from "./contracts";
-import { piAuthJson, sentinelAuthJson, type StoredCredential } from "./egress";
+import { piAuthJson, type StoredCredential } from "./egress";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
@@ -29,7 +29,7 @@ trust_level = "trusted"
 
 const piSettings = (credential: StoredCredential): string =>
   JSON.stringify({
-    defaultProvider: credential.codex.OPENAI_API_KEY ? "openai" : "openai-codex",
+    defaultProvider: credential.providers["openai-codex"] ? "openai-codex" : "openai",
     defaultModel: "gpt-5.6-sol",
     defaultThinkingLevel: "high",
     steeringMode: "one-at-a-time",
@@ -95,6 +95,10 @@ interface ContainerAuthShape {
     id: SessionRecord["id"],
     credential: StoredCredential,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly refreshPiAuth: (
+    id: SessionRecord["id"],
+    credential: StoredCredential,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
 export class ContainerAuth extends Context.Service<ContainerAuth, ContainerAuthShape>()(
@@ -111,7 +115,6 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
     ) {
       const codexHome = `${sessionRoot(id)}/.codex`;
       const piHome = `${sessionRoot(id)}/.pi-agent`;
-      const authPath = `${codexHome}/auth.json`;
       const configPath = `${codexHome}/config.toml`;
       const agentsPath = `${codexHome}/AGENTS.md`;
       const skillsPath = `${codexHome}/skills`;
@@ -125,7 +128,6 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       const promptPath = `${piHome}/initial-prompt`;
       yield* runtime.mkdir(codexHome, { recursive: true });
       yield* runtime.mkdir(piHome, { recursive: true });
-      yield* runtime.writeFile(authPath, sentinelAuthJson(credential));
       yield* runtime.writeFile(configPath, codexConfig(id));
       yield* runtime.writeFile(agentsPath, sandboxAgentsInstructions);
       yield* runtime.writeFile(piAuthPath, piAuthJson(credential));
@@ -137,7 +139,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       if (options?.initialPrompt !== undefined)
         yield* runtime.writeFile(promptPath, options.initialPrompt);
       yield* runtime.execChecked(
-        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(authPath)} ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ln -sfn /opt/scotty/skills ${shellQuote(skillsPath)} && ln -sfn /opt/scotty/skills ${shellQuote(piSkillsPath)}`,
+        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ln -sfn /opt/scotty/skills ${shellQuote(skillsPath)} && ln -sfn /opt/scotty/skills ${shellQuote(piSkillsPath)}`,
       );
       yield* runtime.setEnvVars(agentEnv(id, credential));
       const root = sessionRoot(id);
@@ -152,6 +154,14 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         if (existing.success) return;
         yield* seed(id, credential);
       }),
+      refreshPiAuth: Effect.fnUntraced(function* (id, credential) {
+        const piHome = `${sessionRoot(id)}/.pi-agent`;
+        const authPath = `${piHome}/auth.json`;
+        const settingsPath = `${piHome}/settings.json`;
+        yield* runtime.writeFile(authPath, piAuthJson(credential));
+        yield* runtime.writeFile(settingsPath, piSettings(credential));
+        yield* runtime.execChecked(`chmod 600 ${shellQuote(authPath)} ${shellQuote(settingsPath)}`);
+      }),
     });
   }),
 );
@@ -165,7 +175,6 @@ export function agentEnv(
     PI_CODING_AGENT_DIR: `${sessionRoot(id)}/.pi-agent`,
     SCOTTY_SESSION_ID: id,
     GIT_CONFIG_GLOBAL: `${sessionRoot(id)}/.pi-agent/gitconfig`,
-    OPENAI_API_KEY: credential.codexSentinel,
     GH_TOKEN: credential.githubSentinel,
     GITHUB_SENTINEL: credential.githubSentinel,
     GIT_TERMINAL_PROMPT: "0",

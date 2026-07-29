@@ -4,6 +4,7 @@ import {
   RUNNER_PROTOCOL_VERSION,
   type RunnerOperation,
 } from "../../protocol/runner";
+import { piProviderMetadata } from "../../protocol/pi-auth";
 import {
   type Cause,
   Clock,
@@ -43,8 +44,8 @@ import {
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import {
   ALLOWED_HOSTS,
-  CODEX_SENTINEL_PREFIX,
   GITHUB_SENTINEL_PREFIX,
+  PI_SENTINEL_PREFIX,
   denyOutbound,
   makeOutboundByHost,
   type CredentialPatch,
@@ -518,8 +519,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const vault = yield* CredentialVault;
     const workspace = yield* Workspace;
     const credential = yield* vault.seed({
-      codexAuthJson: this.env.CODEX_AUTH_JSON,
-      codexSentinel: `${CODEX_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
+      piAuthJson: this.env.PI_AUTH_JSON,
+      providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
       githubSentinel: `${GITHUB_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
       picanProxyToken: `${PICAN_PROXY_TOKEN_PREFIX}${record.id}-${randomToken(12)}`,
     });
@@ -998,6 +999,39 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const record = yield* this.requireRecordProgram();
     const now = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(record, new Date(now)), now);
+  });
+
+  private readonly reseedPiAuthProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.requireRecordProgram();
+    if (record.status !== "warm")
+      return yield* wrongState(record.status, "reseed auth", "Only warm sessions can be reseeded");
+    if (record.execution.provider !== "cloudflare")
+      return yield* wrongState(
+        record.status,
+        "reseed auth",
+        "Runner credentials are managed by the runner host",
+      );
+    if (record.operation)
+      return yield* conflict(`Session is already running ${record.operation.kind}`);
+    const vault = yield* CredentialVault;
+    const containerAuth = yield* ContainerAuth;
+    const credential = yield* vault.reseed({
+      piAuthJson: this.env.PI_AUTH_JSON,
+      providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
+    });
+    yield* containerAuth.refreshPiAuth(record.id, credential);
+    return {
+      id: record.id,
+      updatedAt: credential.updatedAt,
+      providers: piProviderMetadata(
+        Object.fromEntries(
+          Object.entries(credential.providers).map(([providerId, provider]) => [
+            providerId,
+            provider.credential,
+          ]),
+        ),
+      ),
+    };
   });
 
   private readonly renameScottySessionProgram = Effect.fnUntraced(function* (
@@ -1885,6 +1919,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async getScottySession(): Promise<SessionView> {
     return this.#run(this.getScottySessionProgram());
+  }
+
+  async reseedPiAuth() {
+    return this.#run(this.reseedPiAuthProgram());
   }
 
   override async fetch(request: Request): Promise<Response> {

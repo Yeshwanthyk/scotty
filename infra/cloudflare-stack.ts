@@ -15,8 +15,8 @@ export const CLOUDFLARE_BACKUP_BUCKET_NAME = "scotty-backups";
 export const CLOUDFLARE_CONTAINER_APPLICATION_NAME =
   "scotty-sandboxcontainer-production-ytkhty6mswuofjo5";
 export const CLOUDFLARE_WORKER_SECRETS = [
-  "CODEX_AUTH_JSON",
   "GH_TOKEN",
+  "PI_AUTH_JSON",
   "SCOTTY_RUNNER_TOKEN",
   "SCOTTY_TOKEN",
 ] as const;
