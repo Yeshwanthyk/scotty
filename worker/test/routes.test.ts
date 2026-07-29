@@ -12,7 +12,7 @@ const sandbox = vi.hoisted(() => ({
   vaporizeScottySession: vi.fn(),
   fetch: vi.fn(),
   fetchPican: vi.fn(),
-  assertTerminalAccess: vi.fn(),
+  prepareTerminalAccess: vi.fn(),
 }));
 
 const proxyTerminal = vi.hoisted(() => vi.fn());
@@ -154,7 +154,7 @@ describe("real Hono boundary", () => {
       branch: "scotty/a0b1c2d3e4f5",
     });
     sandbox.fetchPican.mockResolvedValue(new Response("ok"));
-    sandbox.assertTerminalAccess.mockResolvedValue(undefined);
+    sandbox.prepareTerminalAccess.mockResolvedValue(undefined);
     auth.authenticate.mockResolvedValue({
       ok: true,
       value: {
@@ -1475,7 +1475,7 @@ describe("real Hono boundary", () => {
   });
 
   it("rejects Cloudflare terminal access when an operation is active", async () => {
-    sandbox.assertTerminalAccess.mockRejectedValueOnce(
+    sandbox.prepareTerminalAccess.mockRejectedValueOnce(
       conflict("Session is already running snapshot"),
     );
     const response = await app.request(
@@ -1512,9 +1512,9 @@ describe("real Hono boundary", () => {
     expect(await response.text()).toBe("terminal-proxy");
     expect(proxyTerminal).toHaveBeenCalledOnce();
     expect(proxyTerminal).toHaveBeenCalledWith(sandbox, "a0b1c2d3e4f5", expect.any(Request), {
-      shell: "/usr/local/bin/scotty-pi-shell",
+      shell: "/workspace/a0b1c2d3e4f5/.pi-agent/scotty-shell",
     });
-    expect(sandbox.assertTerminalAccess).toHaveBeenCalledOnce();
+    expect(sandbox.prepareTerminalAccess).toHaveBeenCalledOnce();
   });
 
   it("does not expose the Cloudflare Pi terminal on runner sessions", async () => {

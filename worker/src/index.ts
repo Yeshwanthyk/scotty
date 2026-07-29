@@ -51,6 +51,7 @@ import {
   type RunnerControlStatus,
 } from "./runner-control";
 import { PICAN_SANDBOX_ORIGIN, Sandbox as ScottySandbox } from "./session";
+import { terminalShellPath } from "./container-auth";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottySandbox };
 
@@ -61,7 +62,6 @@ const PUBLIC_AUTH_MUTATIONS = new Set([
   "POST /api/auth/recovery-grants/consume",
 ]);
 const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["booting", "warm", "sleeping", "failed"]);
-const TERMINAL_SHELL = "/usr/local/bin/scotty-pi-shell";
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -458,7 +458,7 @@ app.all("/s/:id/terminal", async (c) => {
   requireSameOrigin(c.req.raw);
   const sandbox = sessionSandbox(c.env, id);
   await assertCloudflareTerminalAccess(sandbox);
-  return proxyTerminal(sandbox, id, c.req.raw, { shell: TERMINAL_SHELL });
+  return proxyTerminal(sandbox, id, c.req.raw, { shell: terminalShellPath(id) });
 });
 
 app.all("/s/:id", async (c) => {
@@ -752,7 +752,7 @@ async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<v
         ? "Resume the session before accessing the terminal"
         : undefined,
     );
-  await sandbox.assertTerminalAccess();
+  await sandbox.prepareTerminalAccess();
 }
 
 async function createTrackedSession(

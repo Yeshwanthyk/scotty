@@ -378,7 +378,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return yield* this.fetchRunnerPicanProgram(record, request);
   });
 
-  private readonly assertTerminalAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
+  private readonly prepareTerminalAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm")
       return yield* wrongState(
@@ -394,6 +394,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict(`Session is already running ${record.operation.kind}`);
     if (record.execution.provider !== "cloudflare")
       return yield* wrongState(record.status, "access", "This session uses the runner terminal");
+    const vault = yield* CredentialVault;
+    const containerAuth = yield* ContainerAuth;
+    const credential = yield* vault.require;
+    yield* containerAuth.ensureTerminal(record.id, credential);
   });
 
   private readonly fetchRunnerPicanProgram = Effect.fnUntraced(function* (
@@ -1877,8 +1881,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return super.fetch(request);
   }
 
-  async assertTerminalAccess(): Promise<void> {
-    return this.#run(this.assertTerminalAccessProgram());
+  async prepareTerminalAccess(): Promise<void> {
+    return this.#run(this.prepareTerminalAccessProgram());
   }
 
   async snapshotScottySession(): Promise<SessionView> {

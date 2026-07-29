@@ -7,6 +7,7 @@ import {
   containerAuthLayer,
   PI_PACKAGES,
   sandboxAgentsInstructions,
+  terminalShellPath,
 } from "../src/container-auth";
 import { piAuthJson, sentinelAuthJson, type StoredCredential } from "../src/egress";
 import {
@@ -67,10 +68,21 @@ type ContainerCall =
 class CapturingSandboxCapabilities implements SandboxRuntimeCapabilities {
   readonly calls: ContainerCall[] = [];
   reject?: ContainerCall["operation"];
+  terminalShellMissing = false;
 
   exec = (command: string, options?: SandboxExecOptions): Promise<ExecResult> => {
     this.calls.push({ operation: "exec", command, options });
     if (this.reject === "exec") return Promise.reject("provider exec secret");
+    if (this.terminalShellMissing && command.startsWith("test -x "))
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        stdout: "",
+        stderr: "",
+        command,
+        duration: 1,
+        timestamp: "2026-07-22T01:02:03.000Z",
+      });
     return Promise.resolve({
       success: true,
       exitCode: 0,
@@ -112,6 +124,17 @@ const seedWith = (
   );
 };
 
+const ensureTerminalWith = (
+  capabilities: SandboxRuntimeCapabilities,
+  storedCredential: StoredCredential = credential,
+) => {
+  const runtimeLayer = sandboxRuntimeLayer(capabilities);
+  const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
+  return Effect.flatMap(ContainerAuth, (auth) => auth.ensureTerminal(ID, storedCredential)).pipe(
+    Effect.provide(layer),
+  );
+};
+
 const failed = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRuntimeFailure => {
   assert.ok(Result.isFailure(result));
   return result.failure;
@@ -120,6 +143,7 @@ const failed = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRunt
 describe("container auth values", () => {
   it("constructs the exact session path and agent environment", () => {
     assert.strictEqual(sessionRoot(ID), `/workspace/${ID}`);
+    assert.strictEqual(terminalShellPath(ID), `/workspace/${ID}/.pi-agent/scotty-shell`);
     assert.deepStrictEqual(agentEnv(ID, credential), {
       CODEX_HOME: `/workspace/${ID}/.codex`,
       PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
@@ -166,6 +190,7 @@ describe("ContainerAuth", () => {
           "writeFile",
           "writeFile",
           "writeFile",
+          "writeFile",
           "exec",
           "setEnvVars",
           "exec",
@@ -186,6 +211,7 @@ describe("ContainerAuth", () => {
           `/workspace/${ID}/.pi-agent/AGENTS.md`,
           `/workspace/${ID}/.pi-agent/web-search.json`,
           `/workspace/${ID}/.pi-agent/gitconfig`,
+          `/workspace/${ID}/.pi-agent/scotty-shell`,
         ],
       );
       assert.strictEqual(writes[0]?.content, expectedAuth);
@@ -205,6 +231,13 @@ describe("ContainerAuth", () => {
         allowBrowserCookies: false,
       });
       assert.ok(writes[7]?.content.includes("password=$GITHUB_SENTINEL"));
+      assert.ok(writes[8]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
+      assert.ok(
+        writes[8]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
+      );
+      assert.ok(writes[8]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
+      for (const secret of [REAL_ACCESS, REAL_REFRESH, REAL_GITHUB, REAL_ACCOUNT, REAL_API_KEY])
+        assert.ok(!writes[8]?.content.includes(secret));
 
       assert.deepStrictEqual(JSON.parse(expectedAuth), {
         auth_mode: "chatgpt",
@@ -239,14 +272,45 @@ describe("ContainerAuth", () => {
     }),
   );
 
+  it.effect("reuses an executable terminal wrapper and repairs a missing one", () =>
+    Effect.gen(function* () {
+      const existing = new CapturingSandboxCapabilities();
+      yield* ensureTerminalWith(existing);
+      assert.deepStrictEqual(
+        existing.calls.map((call) => call.operation),
+        ["exec"],
+      );
+      assert.strictEqual(
+        (existing.calls[0] as Extract<ContainerCall, { operation: "exec" }>).command,
+        `test -x '${terminalShellPath(ID)}'`,
+      );
+
+      const missing = new CapturingSandboxCapabilities();
+      missing.terminalShellMissing = true;
+      yield* ensureTerminalWith(missing);
+      assert.deepStrictEqual(
+        missing.calls.slice(0, 2).map((call) => call.operation),
+        ["exec", "mkdir"],
+      );
+      assert.ok(
+        missing.calls.some(
+          (call) =>
+            call.operation === "writeFile" &&
+            call.path === terminalShellPath(ID) &&
+            call.content.includes(`export SCOTTY_SESSION_ID='${ID}'`),
+        ),
+      );
+    }),
+  );
+
   it.effect("reconstructs the service without retaining runtime capability state", () =>
     Effect.gen(function* () {
       const first = new CapturingSandboxCapabilities();
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 13);
-      assert.strictEqual(second.calls.length, 13);
+      assert.strictEqual(first.calls.length, 14);
+      assert.strictEqual(second.calls.length, 14);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),
