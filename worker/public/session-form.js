@@ -31,6 +31,25 @@ export function mergeRepositorySuggestions(tracked, sessions) {
   return merged;
 }
 
+export function groupSessionsByRepository(sessions) {
+  const groups = [];
+  const groupsByRepository = new Map();
+
+  for (const session of arrayOrEmpty(sessions)) {
+    const repo = repositoryName(session?.repo) || "Unknown repository";
+    const identity = repo.toLocaleLowerCase("en-US");
+    let group = groupsByRepository.get(identity);
+    if (!group) {
+      group = { repo, sessions: [] };
+      groupsByRepository.set(identity, group);
+      groups.push(group);
+    }
+    group.sessions.push(session);
+  }
+
+  return groups;
+}
+
 export function submissionIdentity(previous, payload, createKey) {
   const fingerprint = JSON.stringify([
     payload.repo,
