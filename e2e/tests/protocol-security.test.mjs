@@ -260,6 +260,15 @@ test("critical auth pages externalize scripts and strip fragments before fetch",
   assert.doesNotMatch(devicesHtml, /<script(?![^>]*\bsrc=)[^>]*>/iu);
 });
 
+test("terminal switcher is warm-only and cannot resume sleeping sessions", () => {
+  const script = fs.readFileSync(path.join(ROOT, "worker/public/terminal.js"), "utf8");
+  const html = fs.readFileSync(path.join(ROOT, "worker/public/terminal.html"), "utf8");
+
+  assert.match(script, /sessions\.filter\(\(session\) => session\?\.status === "warm"\)/u);
+  assert.doesNotMatch(script, /\/resume|resumeScottySession|status === "sleeping"/u);
+  assert.match(html, /Sleeping containers only appear on Home\./u);
+});
+
 test("fake protocol matches production cap parsing, floor rounding, and backup handles", async (t) => {
   const service = await new FakeWorkerService().start();
   t.after(() => service.stop());
@@ -371,7 +380,7 @@ test("source-control publishing route is unavailable", async (t) => {
   assert.equal(response.status, 404);
 });
 
-test("Pican stays mounted below the authenticated session path", async (t) => {
+test("Pi terminal page is authenticated and sleeping sessions return to Home", async (t) => {
   const service = await new FakeWorkerService().start();
   t.after(() => service.stop());
   const session = await create(service);
@@ -379,19 +388,18 @@ test("Pican stays mounted below the authenticated session path", async (t) => {
   const headers = { cookie: owner.cookie };
   const shell = await fetch(`${service.url}/s/${session.id}`, { headers });
   assert.equal(shell.status, 200);
-  assert.match(await shell.text(), new RegExp(`/s/${session.id}/assets/app\\.js`, "u"));
+  assert.match(await shell.text(), /<title>Scotty<\/title>/u);
 
-  const asset = await fetch(`${service.url}/s/${session.id}/assets/app.js`, { headers });
-  assert.equal(asset.status, 200);
-  assert.match(await asset.text(), new RegExp(`/s/${session.id}`, "u"));
+  const terminal = await fetch(`${service.url}/s/${session.id}/terminal`, { headers });
+  assert.equal(terminal.status, 426);
 
-  const hostedRuntime = await fetch(`${service.url}/s/${session.id}/api/hosted-runtime`, {
+  await service.forceHardCap(session.id);
+  const sleeping = await fetch(`${service.url}/s/${session.id}`, {
     headers,
+    redirect: "manual",
   });
-  assert.equal(hostedRuntime.status, 200);
-  assert.deepEqual(await hostedRuntime.json(), service.runtimes.get(session.id).pican);
-  assert.equal(service.runtimes.get(session.id).pican.processId, "scotty-pican");
-  assert.match(service.runtimes.get(session.id).processList, /\/usr\/local\/bin\/pican/u);
+  assert.equal(sleeping.status, 302);
+  assert.equal(sleeping.headers.get("location"), "/sessions");
 });
 
 test("sentinels are visible, real credentials are absent, and egress is default-deny", async (t) => {

@@ -108,14 +108,6 @@
       "probe": ["gh", "--version"]
     },
     {
-      "name": "tmux",
-      "category": "git-process",
-      "commands": ["tmux"],
-      "source": "Debian",
-      "versionPolicy": "image",
-      "probe": ["tmux", "-V"]
-    },
-    {
       "name": "shellcheck",
       "category": "git-process",
       "commands": ["shellcheck"],
@@ -184,6 +176,15 @@
       "versionPolicy": "pinned",
       "expectedVersion": "0.144.6",
       "probe": ["codex", "--version"]
+    },
+    {
+      "name": "Pi",
+      "category": "scotty",
+      "commands": ["pi"],
+      "source": "npm",
+      "versionPolicy": "pinned",
+      "expectedVersion": "0.82.1",
+      "probe": ["pi", "--version"]
     }
   ]
 }

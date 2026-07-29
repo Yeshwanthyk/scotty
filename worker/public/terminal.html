@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#050a0f" />
+    <meta name="referrer" content="same-origin" />
+    <title>Scotty</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/brand/scotty-favicon-64.png" />
+    <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
+    <link rel="stylesheet" href="/terminal.css" />
+  </head>
+  <body>
+    <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+    <div class="app-shell">
+      <aside id="workspace-rail" class="workspace-rail" aria-label="Open containers">
+        <div class="rail-brand">
+          <a class="brand" href="/sessions" aria-label="Scotty home">
+            <img src="/brand/scotty-mark-128.png" alt="" width="28" height="28" />
+            <span>SCOTTY</span>
+          </a>
+          <button
+            id="close-drawer"
+            class="icon-button close-drawer"
+            type="button"
+            aria-label="Close container switcher"
+          >
+            ×
+          </button>
+        </div>
+
+        <div class="rail-heading">
+          <div>
+            <p class="eyebrow">Running now</p>
+            <h1>Open containers</h1>
+          </div>
+          <span id="workspace-count" class="count">0</span>
+        </div>
+
+        <nav id="workspace-list" class="workspace-list" aria-label="Warm containers">
+          <p class="rail-message">Loading open containers…</p>
+        </nav>
+
+        <div class="rail-footer">
+          <a class="home-link" href="/sessions">
+            <span aria-hidden="true">⌂</span>
+            <span>Home &amp; sleeping</span>
+          </a>
+          <p>Sleeping containers only appear on Home.</p>
+        </div>
+      </aside>
+
+      <main class="terminal-workspace">
+        <header class="terminal-bar">
+          <button
+            id="open-drawer"
+            class="icon-button menu-button"
+            type="button"
+            aria-label="Open container switcher"
+            aria-controls="workspace-rail"
+            aria-expanded="false"
+          >
+            <span aria-hidden="true">☰</span>
+          </button>
+          <div class="current-context">
+            <p id="current-repo" class="current-repo">Loading workspace…</p>
+            <p id="current-meta" class="current-meta">Connecting to container</p>
+          </div>
+          <div
+            id="connection-state"
+            class="connection-state"
+            data-state="connecting"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="connection-dot" aria-hidden="true"></span>
+            <span id="connection-label">Connecting</span>
+          </div>
+        </header>
+
+        <section class="terminal-stage" aria-label="Pi terminal">
+          <div id="terminal" class="terminal" tabindex="-1"></div>
+          <div id="terminal-error" class="terminal-error" hidden>
+            <p id="terminal-error-message">The terminal connection closed.</p>
+            <button id="reconnect" class="reconnect-button" type="button">Reconnect</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/terminal.js"></script>
+  </body>
+</html>

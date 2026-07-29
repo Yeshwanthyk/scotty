@@ -298,6 +298,7 @@ export const OAuthUpstreamSuccessSchema = Schema.Struct({
   id_token: OptionalNonEmptyStringSchema,
   access_token: Schema.NonEmptyString,
   refresh_token: OptionalNonEmptyStringSchema,
+  expires_in: Schema.optionalKey(Schema.Number),
 });
 export type OAuthUpstreamSuccess = typeof OAuthUpstreamSuccessSchema.Type;
 
@@ -305,6 +306,7 @@ export const OAuthContainerResultSchema = Schema.Struct({
   id_token: Schema.NonEmptyString,
   access_token: Schema.NonEmptyString,
   refresh_token: Schema.NonEmptyString,
+  expires_in: Schema.optionalKey(Schema.Number),
 });
 export type OAuthContainerResult = typeof OAuthContainerResultSchema.Type;
 
@@ -324,6 +326,7 @@ const RawOAuthUpstreamSuccessSchema = Schema.Struct({
   id_token: Schema.optionalKey(Schema.Unknown),
   access_token: Schema.optionalKey(Schema.Unknown),
   refresh_token: Schema.optionalKey(Schema.Unknown),
+  expires_in: Schema.optionalKey(Schema.Unknown),
 });
 
 export const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);

@@ -5,6 +5,13 @@ status: active
 
 # Scotty portable execution — active plan
 
+> **Current Cloudflare runtime override.** Cloudflare sessions now run Pi directly through the
+> Sandbox native terminal proxy and bundled Ghostty Web. They do not run Pican, Sheppard, or tmux.
+> Trusted runner sessions retain the Pican application and protocol described below. Any
+> Cloudflare-specific Pican requirement in this document is historical; the Session DO authority,
+> immutable provider binding, credential isolation, checkpoint, hard-cap, and runner contracts
+> remain binding.
+
 This is the governing plan for portable execution after commit
 `d821a7381124e4ae2ef7f2734426a1b48627282b` on 2026-07-28. It records what is
 implemented, the v1 scope selected after the Cloudflare and Slumbers deployment, and the
@@ -22,7 +29,8 @@ old provider names.
 ## Outcome
 
 One session is one durable task. The user chooses where it starts, then always works through the
-same Scotty URL and the same mounted Pican application:
+same Scotty URL. Cloudflare opens the Pi terminal; a trusted runner opens its mounted Pican
+application:
 
 ```sh
 scotty beam up "PROMPT" --repo owner/repo --provider cloudflare
@@ -31,7 +39,7 @@ scotty beam up "PROMPT" --repo owner/repo --provider runner --runner slumbers
 
 The prompt remains a normal CLI argument and JSON request field. A prompt file is not required.
 
-The session ID, repository, branch, Pican identity, transcript, and lifecycle remain stable while
+The session ID, repository, branch, agent state, transcript, and lifecycle remain stable while
 provider resource IDs and process IDs stay internal. A session never silently falls back to
 another provider and does not migrate between providers in this plan.
 
@@ -40,7 +48,7 @@ another provider and does not migrate between providers in this plan.
 | ID  | Requirement                                                                                                                                                                                                                               | Status    |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
 | R0  | A user can create, open, steer, stop, resume, and destroy the same kind of Scotty session on Cloudflare or a named trusted VPS runner.                                                                                                    | Core goal |
-| R1  | Pican is the only session UI and agent host; Scotty does not rebuild a terminal or a second Codex app-server UI.                                                                                                                          | Must-have |
+| R1  | Cloudflare uses Pi through Ghostty Web and the Sandbox native terminal proxy. Trusted runners retain Pican. Neither path adds tmux or Sheppard.                                                                                           | Must-have |
 | R2  | The session Durable Object remains authoritative for session identity, lifecycle, operation leases, execution binding, credential policy, Cloudflare credentials, and committed checkpoints.                                              | Must-have |
 | R3  | Provider selection is explicit and immutable per session; an unavailable provider fails visibly without automatic fallback.                                                                                                               | Must-have |
 | R4  | Cloudflare keeps sentinel-only workload credentials. A trusted VPS session may read owner Codex and Git credential files, but credentials never enter prompts, URLs, process arguments, logs, KV, R2, API responses, or Cloudflare state. | Must-have |
@@ -51,15 +59,15 @@ another provider and does not migrate between providers in this plan.
 
 ## Locked language
 
-| Term              | Meaning                                                                                          | Do not call it                      |
-| ----------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| Session           | Durable user task with one workspace, lifecycle, Pican identity, and immutable provider binding. | sandbox, box, environment           |
-| Provider          | A compute implementation selected at session creation: `cloudflare` or `runner`.                 | location, execution target, backend |
-| Runner            | The Scotty service running on a user-controlled Linux machine. `slumbers` is a runner name.      | host daemon, machine enrollment     |
-| Connection        | A Pican client’s saved relationship to a remote Pican server.                                    | provider, runner                    |
-| Control plane     | The public Worker plus the authoritative Auth, Session, and Runner Durable Objects.              | host, provider                      |
-| Runtime           | The provider resource containing the workspace, Pican, Codex, and Git processes.                 | control plane                       |
-| Execution binding | The immutable provider-specific identity stored on a session.                                    | location field                      |
+| Term              | Meaning                                                                                       | Do not call it                      |
+| ----------------- | --------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Session           | Durable user task with one workspace, lifecycle, agent state, and immutable provider binding. | sandbox, box, environment           |
+| Provider          | A compute implementation selected at session creation: `cloudflare` or `runner`.              | location, execution target, backend |
+| Runner            | The Scotty service running on a user-controlled Linux machine. `slumbers` is a runner name.   | host daemon, machine enrollment     |
+| Connection        | A client’s authenticated attachment to the selected session runtime.                          | provider, runner                    |
+| Control plane     | The public Worker plus the authoritative Auth, Session, and Runner Durable Objects.           | host, provider                      |
+| Runtime           | The provider resource containing the workspace, agent, model-provider, and Git processes.     | control plane                       |
+| Execution binding | The immutable provider-specific identity stored on a session.                                 | location field                      |
 
 There is no `scotty-host` executable and no Beam Durable Object. The executable is `scotty`; the
 machine command is `scotty runner serve`; the Durable Objects are named for what they own:
@@ -82,29 +90,24 @@ The original product already supplied:
 - create, snapshot, hard-cap sleep, resume, beam down, and vaporize;
 - guarded Alchemy production deployment plus fake and deployed E2E harnesses.
 
-### D1 — Pican-hosted Cloudflare vertical
-
-Commit `bb27c5f33d087093a86f8db724db29e5e57c603c` replaced the legacy
-Sheppard/native-PTY/ghostty-web runtime with Pican.
-
-The embedded Linux binary is pinned to Pican commit
-`e2b185bcdef8eaba9e5dc0ff9c5ad1121dac2979` and verified by
-`worker/container/pican-linux-amd64.lock.json`.
+### D1 — Pi-hosted Cloudflare vertical
 
 The shipped Cloudflare path now:
 
 1. prepares `/workspace/<session-id>`;
-2. launches one private Pican process;
-3. mounts all Pican assets, API calls, and SSE below `/s/<session-id>`;
-4. authenticates the browser at Scotty;
-5. strips browser and spoofed Pican credentials;
-6. injects one session-owned Pican proxy token on the private hop;
-7. creates the Pican/Codex session idempotently with the outer Scotty ID;
-8. persists Pican’s returned native identity;
-9. sends Pican `SIGTERM`, waits, and runs `sync` before checkpoint or stop;
-10. restores the workspace and the same Pican identity on resume.
+2. seeds sentinel-only Pi auth, settings, skills, packages, and initial prompt under `.pi-agent`;
+3. publishes `warm` when the workspace and Pi configuration are ready;
+4. serves bundled Ghostty Web at the authenticated `/s/<session-id>` page;
+5. authenticates and same-origin checks the terminal WebSocket;
+6. launches `/usr/local/bin/scotty-pi-shell` through the Sandbox native terminal proxy;
+7. consumes the initial prompt once, then uses `pi --continue` for later terminal sessions;
+8. terminates the named Pi terminal session and runs `sync` before checkpoint or stop;
+9. restores the same workspace and Pi state on resume;
+10. lists only warm sessions in the terminal switcher and sends non-warm links back to Home.
 
-There is no legacy terminal fallback.
+There is no Cloudflare Pican, Sheppard, or tmux fallback. The embedded Linux Pican binary remains
+pinned for the trusted runner compatibility path and is verified by
+`worker/container/pican-linux-amd64.lock.json`.
 
 ### D2 — Portable runner command protocol
 

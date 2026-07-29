@@ -16,6 +16,22 @@
 
 This is the execution plan for `PLAN.md`. Build one secure vertical slice first, then add lifecycle and shipping behavior behind explicit gates. The critical design choice is that each session's Sandbox Durable Object owns lifecycle state, Cloudflare credentials, and trusted-runner credential policy; KV is only the eventually consistent list projection.
 
+## Current Cloudflare runtime override
+
+Cloudflare sessions run Pi directly in a named Sandbox terminal session. Scotty serves bundled
+Ghostty Web at `/s/<id>`, authenticates the terminal WebSocket, and launches
+`/usr/local/bin/scotty-pi-shell` through the Sandbox native terminal proxy. The first attachment
+consumes the initial prompt; later attachments use `pi --continue`. There is no Pican, Sheppard, or
+tmux process in this path. Trusted runner sessions retain the mounted Pican compatibility path.
+
+Pi receives sentinel-only Codex and GitHub credentials in `/workspace/<id>/.pi-agent`. The session
+DO remains credential and lifecycle authority, and the egress proxy performs Codex OAuth refresh
+without exposing real tokens to the container. Snapshot and shutdown terminate the named terminal
+session before filesystem sync and backup.
+
+The terminal switcher lists warm sessions only. Sleeping sessions remain on Home and require an
+explicit resume before they appear in the switcher.
+
 ## Portable execution delivery DAG
 
 This graph is historical. Use the delivery DAG in `PORTABLE_EXECUTION_PLAN.md`.
@@ -78,9 +94,9 @@ These normalize `PLAN.md` against the current Sandbox SDK contracts before code 
 7. Build the terminal/create path with a fake agent first. The real Codex end-to-end gate depends on credential isolation, reversing the unsafe implication of Phase 1 preceding Phase 1.5.
 
 The numbered corrections above record the original v1 plan. The current forward-only Cloudflare
-slice replaces correction 7's terminal path with Pican's mounted application. Scotty creates the
-hosted session idempotently with the outer session ID and persists Pican's stable native Codex
-identity; it does not discover identity later by scanning rollout files.
+slice replaces correction 7's terminal path with Pi over the Sandbox native terminal proxy.
+Scotty seeds the initial prompt into the Pi home and resumes subsequent attachments from Pi's
+persisted session state.
 
 ## State ownership and invariants
 
@@ -128,7 +144,7 @@ interface SessionRecord {
 - Real credentials never enter container env, files, command arguments, logs, KV, responses, or backups.
 - `sleeping` is published only after a new backup handle is durable. At hard-cap failure, retain the last good handle, record `failed`, and destroy to preserve the spend bound.
 - A new backup becomes `current` only after upload succeeds. Delete `previous` only after the state update commits.
-- Snapshot and shutdown ask Sheppard to pause the authoritative managed-agent process group, `sync`, create the backup, then resume or destroy it.
+- Snapshot and shutdown terminate the named Pi terminal session, `sync`, create the backup, then allow a later attachment to resume Pi or destroy the Sandbox.
 - `vaporize` is terminal: destroy runtime, delete all known backup prefixes and the DO credential bundle, remove the KV projection, then persist a minimal `gone` tombstone.
 
 ## Lifecycle graph
@@ -136,7 +152,7 @@ interface SessionRecord {
 ```mermaid
 stateDiagram-v2
     [*] --> booting: create
-    booting --> warm: worktree + Sheppard + agent ready
+    booting --> warm: worktree + Pi configuration ready
     booting --> failed: setup fails
 
     warm --> warm: snapshot / down
