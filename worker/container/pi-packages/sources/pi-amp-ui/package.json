@@ -1,0 +1,35 @@
+{
+  "name": "pi-amp-ui",
+  "version": "0.1.2",
+  "description": "Amp Neo-inspired shell for Pi",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "amp",
+    "neo",
+    "tui"
+  ],
+  "scripts": {
+    "check": "node --experimental-strip-types --check index.ts && node --experimental-strip-types --check activity.ts && node --experimental-strip-types --check layout.ts && node --experimental-strip-types --check fold.ts",
+    "test": "node --experimental-strip-types --test activity.test.ts layout.test.ts fold.test.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "themes": [
+      "./themes"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.10",
+    "@earendil-works/pi-tui": ">=0.80.10"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@earendil-works/pi-tui": "0.80.10",
+    "typescript": "^5.8.3"
+  }
+}
