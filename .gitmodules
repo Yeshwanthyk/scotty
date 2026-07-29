@@ -4,24 +4,3 @@
 [submodule "vendor/alchemy"]
 	path = vendor/alchemy
 	url = https://github.com/alchemy-run/alchemy.git
-[submodule "worker/container/pi-packages/sources/pi-tasks"]
-	path = worker/container/pi-packages/sources/pi-tasks
-	url = https://github.com/Yeshwanthyk/pi-tasks.git
-[submodule "worker/container/pi-packages/sources/pi-subagents"]
-	path = worker/container/pi-packages/sources/pi-subagents
-	url = https://github.com/Yeshwanthyk/pi-subagents.git
-[submodule "worker/container/pi-packages/sources/pi-workflows"]
-	path = worker/container/pi-packages/sources/pi-workflows
-	url = https://github.com/Yeshwanthyk/pi-workflows.git
-[submodule "worker/container/pi-packages/sources/pi-background-terminals"]
-	path = worker/container/pi-packages/sources/pi-background-terminals
-	url = https://github.com/Yeshwanthyk/pi-background-terminals.git
-[submodule "worker/container/pi-packages/sources/pi-askuser"]
-	path = worker/container/pi-packages/sources/pi-askuser
-	url = https://github.com/Yeshwanthyk/pi-askuser.git
-[submodule "worker/container/pi-packages/sources/pi-web-access"]
-	path = worker/container/pi-packages/sources/pi-web-access
-	url = https://github.com/nicobailon/pi-web-access.git
-[submodule "worker/container/pi-packages/sources/pi-amp-ui"]
-	path = worker/container/pi-packages/sources/pi-amp-ui
-	url = https://github.com/Yeshwanthyk/pi-amp-ui.git

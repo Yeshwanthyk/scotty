@@ -115,6 +115,9 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   const authDurableObject = Cloudflare.DurableObject("AuthRegistry", {
     className: "ScottyAuthRegistry",
   });
+  const runnerRegistryDurableObject = Cloudflare.DurableObject("RunnerRegistry", {
+    className: "ScottyRunnerRegistry",
+  });
   const worker = yield* Cloudflare.Worker("CanaryWorker", {
     name: names.worker,
     main: "spikes/infra/full-stack-canary-worker.ts",
@@ -130,6 +133,7 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
     observability: { enabled: false },
     env: {
       AUTH: authDurableObject,
+      RUNNER_REGISTRY: runnerRegistryDurableObject,
       SANDBOX: durableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,

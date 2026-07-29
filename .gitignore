@@ -6,4 +6,6 @@
 .dev.vars
 *.log
 /.pi/
+/.scotty-build/
+/.scotty-adoption.json
 /vendor/

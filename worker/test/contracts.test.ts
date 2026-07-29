@@ -353,7 +353,6 @@ describe("credential boundary", () => {
     },
     githubToken: "real-github-token",
     githubSentinel: "scotty-github-session-sentinel",
-    picanProxyToken: "scotty-pican-proxy-token",
     updatedAt: "2026-01-01T00:00:00.000Z",
   });
   const assertFixedError = (evaluate: () => unknown, message: string): void => {
@@ -469,7 +468,6 @@ describe("credential boundary", () => {
     const realAccess = "honeypot-real-access";
     const realRefresh = "honeypot-real-refresh";
     const realGithub = "honeypot-real-github";
-    const picanProxyToken = "honeypot-pican-proxy-token";
     const stored = {
       ...storedCredential(),
       providers: {
@@ -495,7 +493,6 @@ describe("credential boundary", () => {
         },
       },
       githubToken: realGithub,
-      picanProxyToken,
     };
     const containerAuth = piAuthJson(stored);
     const provider = stored.providers["openai-codex"];
@@ -504,13 +501,7 @@ describe("credential boundary", () => {
     assert.ok(containerAuth.includes(provider.sentinel));
     assert.ok(refreshResult.includes(provider.sentinel));
     assert.ok(!containerAuth.includes("anthropic"));
-    for (const secret of [
-      realAccess,
-      realRefresh,
-      realGithub,
-      picanProxyToken,
-      "honeypot-account",
-    ]) {
+    for (const secret of [realAccess, realRefresh, realGithub, "honeypot-account"]) {
       assert.ok(!containerAuth.includes(secret));
       assert.ok(!refreshResult.includes(secret));
     }

@@ -12,7 +12,6 @@ const sandbox = vi.hoisted(() => ({
   getSession: vi.fn(),
   vaporizeScottySession: vi.fn(),
   fetch: vi.fn(),
-  fetchPican: vi.fn(),
   prepareTerminalAccess: vi.fn(),
   reseedPiAuth: vi.fn(),
 }));
@@ -43,6 +42,14 @@ const runner = vi.hoisted(() => ({
   controlStatus: vi.fn(),
   fetch: vi.fn(),
   getByName: vi.fn(),
+}));
+
+const runnerRegistry = vi.hoisted(() => ({
+  authenticate: vi.fn(),
+  get: vi.fn(),
+  list: vi.fn(),
+  register: vi.fn(),
+  remove: vi.fn(),
 }));
 
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
@@ -81,6 +88,10 @@ function authNamespace(): import("../src/auth-object").ScottyAuthRegistryNamespa
   return { getByName: () => auth };
 }
 
+function runnerRegistryNamespace(): import("../src/runner-registry-object").ScottyRunnerRegistryNamespace {
+  return { getByName: () => runnerRegistry };
+}
+
 function emptySessionsNamespace(): KVNamespace {
   return {
     list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
@@ -108,13 +119,12 @@ function env(): Bindings {
   };
   return {
     SCOTTY_TOKEN: TOKEN,
-    SCOTTY_RUNNER_NAME: "slumbers",
-    SCOTTY_RUNNER_TOKEN: "runner-test-token",
     PI_AUTH_JSON:
       '{"openai-codex":{"type":"oauth","access":"access","refresh":"refresh","expires":0}}',
     GH_TOKEN: "github-test-sentinel",
     ASSETS: assets,
     AUTH: authNamespace(),
+    RUNNER_REGISTRY: runnerRegistryNamespace(),
     RUNNERS: { getByName: runner.getByName },
     SANDBOX: {} as DurableObjectNamespace<import("../src/session").Sandbox>,
     SESSIONS: emptySessionsNamespace(),
@@ -149,7 +159,7 @@ describe("real Hono boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sandboxTarget.current = sandbox;
-    sandbox.fetch.mockResolvedValue(new Response("<!doctype html><title>Pican</title>"));
+    sandbox.fetch.mockResolvedValue(new Response("unused"));
     sandbox.getScottySession.mockResolvedValue({
       id: "a0b1c2d3e4f5",
       title: "Test session",
@@ -158,7 +168,6 @@ describe("real Hono boundary", () => {
       repo: "owner/repo",
       branch: "scotty/a0b1c2d3e4f5",
     });
-    sandbox.fetchPican.mockResolvedValue(new Response("ok"));
     sandbox.prepareTerminalAccess.mockResolvedValue(undefined);
     sandbox.reseedPiAuth.mockResolvedValue({
       id: "a0b1c2d3e4f5",
@@ -172,6 +181,58 @@ describe("real Hono boundary", () => {
         renewed: false,
       },
     });
+    runnerRegistry.authenticate.mockImplementation(async (name: string, credential: string) =>
+      name !== "test-runner"
+        ? { ok: false, error: { reason: "runner_missing", message: "Runner not found" } }
+        : credential !== "runner-test-token"
+          ? {
+              ok: false,
+              error: { reason: "credential_invalid", message: "Runner authorization failed" },
+            }
+          : {
+              ok: true,
+              value: {
+                name: "test-runner",
+                createdAt: "2026-07-27T11:00:00.000Z",
+                updatedAt: "2026-07-27T11:00:00.000Z",
+              },
+            },
+    );
+    runnerRegistry.get.mockImplementation(async (name: string) =>
+      name === "test-runner"
+        ? {
+            ok: true,
+            value: {
+              name,
+              createdAt: "2026-07-27T11:00:00.000Z",
+              updatedAt: "2026-07-27T11:00:00.000Z",
+            },
+          }
+        : { ok: false, error: { reason: "runner_missing", message: "Runner not found" } },
+    );
+    runnerRegistry.list.mockResolvedValue({
+      ok: true,
+      value: [
+        {
+          name: "test-runner",
+          createdAt: "2026-07-27T11:00:00.000Z",
+          updatedAt: "2026-07-27T11:00:00.000Z",
+        },
+      ],
+    });
+    runnerRegistry.register.mockResolvedValue({
+      ok: true,
+      value: {
+        credential: "scotty_runner_new-credential",
+        replaced: false,
+        runner: {
+          name: "garage",
+          createdAt: "2026-07-29T16:00:00.000Z",
+          updatedAt: "2026-07-29T16:00:00.000Z",
+        },
+      },
+    });
+    runnerRegistry.remove.mockResolvedValue({ ok: true, value: undefined });
     runner.getByName.mockReturnValue({
       control: runner.control,
       controlStatus: runner.controlStatus,
@@ -187,7 +248,7 @@ describe("real Hono boundary", () => {
     proxyTerminal.mockResolvedValue(new Response("terminal-proxy"));
   });
 
-  it("accepts only the configured authenticated runner and strips its credential", async () => {
+  it("accepts only a registered authenticated runner and strips its credential", async () => {
     runner.fetch.mockImplementation(async (request: Request) => {
       expect(request.headers.get("authorization")).toBeNull();
       expect(request.headers.get("cookie")).toBeNull();
@@ -197,7 +258,7 @@ describe("real Hono boundary", () => {
     });
 
     const response = await app.request(
-      "/api/runners/slumbers/connect",
+      "/api/runners/test-runner/connect",
       {
         headers: {
           authorization: "Bearer runner-test-token",
@@ -210,12 +271,13 @@ describe("real Hono boundary", () => {
     );
 
     expect(response.status).toBe(204);
-    expect(runner.getByName).toHaveBeenCalledWith("slumbers");
+    expect(runnerRegistry.authenticate).toHaveBeenCalledWith("test-runner", "runner-test-token");
+    expect(runner.getByName).toHaveBeenCalledWith("test-runner");
     expect(runner.fetch).toHaveBeenCalledTimes(1);
     expect(auth.authenticate).not.toHaveBeenCalled();
   });
 
-  it("rejects unconfigured, unauthenticated, and non-upgrade runner requests before the DO", async () => {
+  it("rejects unregistered, unauthenticated, and non-upgrade runner requests before the DO", async () => {
     const requests = [
       app.request(
         "/api/runners/other/connect",
@@ -227,9 +289,9 @@ describe("real Hono boundary", () => {
         },
         env(),
       ),
-      app.request("/api/runners/slumbers/connect", { headers: { upgrade: "websocket" } }, env()),
+      app.request("/api/runners/test-runner/connect", { headers: { upgrade: "websocket" } }, env()),
       app.request(
-        "/api/runners/slumbers/connect",
+        "/api/runners/test-runner/connect",
         {
           headers: {
             authorization: "Bearer wrong-runner-token",
@@ -239,7 +301,7 @@ describe("real Hono boundary", () => {
         env(),
       ),
       app.request(
-        "/api/runners/slumbers/connect",
+        "/api/runners/test-runner/connect",
         { headers: { authorization: "Bearer runner-test-token" } },
         env(),
       ),
@@ -283,7 +345,7 @@ describe("real Hono boundary", () => {
     expect(runners.status).toBe(200);
     await expect(runners.json()).resolves.toEqual([
       {
-        name: "slumbers",
+        name: "test-runner",
         desired: "accepting",
         connection: "connected",
         lastSeenAt: "2026-07-27T12:00:00.000Z",
@@ -297,7 +359,7 @@ describe("real Hono boundary", () => {
       title: "Runner recovery",
       status: "failed",
       provider: "runner",
-      runner: "slumbers",
+      runner: "test-runner",
       repo: "owner/repo",
       defaultBranch: "main",
       branch: "scotty/b0b1c2d3e4f5",
@@ -326,7 +388,7 @@ describe("real Hono boundary", () => {
       { ...env(), SESSIONS: sessions },
     );
     await expect(assigned.json()).resolves.toEqual([
-      expect.objectContaining({ name: "slumbers", assignedSessions: 1 }),
+      expect.objectContaining({ name: "test-runner", assignedSessions: 1 }),
     ]);
 
     runner.controlStatus.mockResolvedValueOnce({
@@ -343,6 +405,128 @@ describe("real Hono boundary", () => {
       { name: "cloudflare", status: "configured" },
       { name: "runner", status: "unavailable" },
     ]);
+  });
+
+  it("registers and rotates named runners only with the CLI root credential", async () => {
+    const created = await app.request(
+      "/api/runners",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "garage", replace: false }),
+      },
+      env(),
+    );
+    expect(created.status).toBe(200);
+    await expect(created.json()).resolves.toEqual({
+      name: "garage",
+      credential: "scotty_runner_new-credential",
+      replaced: false,
+      createdAt: "2026-07-29T16:00:00.000Z",
+      updatedAt: "2026-07-29T16:00:00.000Z",
+    });
+    expect(runnerRegistry.register).toHaveBeenCalledWith("garage", false);
+    expect(runner.control).not.toHaveBeenCalled();
+
+    runnerRegistry.register.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        credential: "scotty_runner_rotated-credential",
+        replaced: true,
+        runner: {
+          name: "test-runner",
+          createdAt: "2026-07-27T11:00:00.000Z",
+          updatedAt: "2026-07-29T16:00:00.000Z",
+        },
+      },
+    });
+    const replaced = await app.request(
+      "/api/runners",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "test-runner", replace: true }),
+      },
+      env(),
+    );
+    expect(replaced.status).toBe(200);
+    expect(runner.control).toHaveBeenCalledWith("disconnect");
+
+    const ownerBrowser = await app.request(
+      "/api/runners",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "browser-runner" }),
+      },
+      env(),
+    );
+    expect(ownerBrowser.status).toBe(401);
+  });
+
+  it("disables and removes only unassigned registered runners", async () => {
+    const removed = await app.request(
+      "/api/runners/test-runner",
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      env(),
+    );
+    expect(removed.status).toBe(200);
+    await expect(removed.json()).resolves.toEqual({
+      name: "test-runner",
+      status: "removed",
+    });
+    expect(runner.control.mock.calls.map(([action]) => action)).toEqual(["disable", "disconnect"]);
+    expect(runnerRegistry.remove).toHaveBeenCalledWith("test-runner");
+
+    const assignedProjection = {
+      version: 1,
+      id: "b0b1c2d3e4f5",
+      title: "Runner recovery",
+      status: "warm",
+      provider: "runner",
+      runner: "test-runner",
+      repo: "owner/repo",
+      defaultBranch: "main",
+      branch: "scotty/b0b1c2d3e4f5",
+      createdAt: "2026-07-27T11:00:00.000Z",
+      updatedAt: "2026-07-27T12:00:00.000Z",
+      hardCapAt: "2026-07-27T16:00:00.000Z",
+      projectedAt: "2026-07-27T12:00:00.000Z",
+    };
+    const sessions = {
+      list: async () => ({
+        keys: [{ name: `session:${assignedProjection.id}` }],
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      get: async (_name: string) => JSON.stringify(assignedProjection),
+    } as KVNamespace;
+    vi.clearAllMocks();
+    const conflict = await app.request(
+      "/api/runners/test-runner",
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      { ...env(), SESSIONS: sessions },
+    );
+    expect(conflict.status).toBe(409);
+    expect(runner.control).not.toHaveBeenCalled();
+    expect(runnerRegistry.remove).not.toHaveBeenCalled();
   });
 
   it("reports only redacted Pi auth metadata and explicitly reseeds one session", async () => {
@@ -396,7 +580,7 @@ describe("real Hono boundary", () => {
   it("allows only the owner browser to control the configured runner", async () => {
     for (const action of ["enable", "drain", "disable", "disconnect"]) {
       const response = await app.request(
-        `/api/runners/slumbers/${action}`,
+        `/api/runners/test-runner/${action}`,
         {
           method: "POST",
           headers: {
@@ -424,7 +608,7 @@ describe("real Hono boundary", () => {
       },
     });
     const standard = await app.request(
-      "/api/runners/slumbers/drain",
+      "/api/runners/test-runner/drain",
       {
         method: "POST",
         headers: {
@@ -452,7 +636,7 @@ describe("real Hono boundary", () => {
     expect(unknownRunner.status).toBe(404);
 
     const unknownAction = await app.request(
-      "/api/runners/slumbers/restart",
+      "/api/runners/test-runner/restart",
       {
         method: "POST",
         headers: {
@@ -560,8 +744,6 @@ describe("real Hono boundary", () => {
       keyDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
-    expect(harness.events.filter((event) => event === "host:pican:start")).toHaveLength(0);
-    expect(harness.picanRequests).toHaveLength(0);
     expect(
       harness.writtenFiles.filter((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
     ).toHaveLength(1);
@@ -1713,17 +1895,7 @@ describe("real Hono boundary", () => {
     expect(proxyTerminal).not.toHaveBeenCalled();
   });
 
-  it("preserves legacy runner behavior for Pican root", async () => {
-    sandbox.fetch.mockResolvedValueOnce(
-      new Response("<!doctype html><html><head><title>Pican</title></head><body></body></html>", {
-        headers: {
-          "content-encoding": "gzip",
-          "content-length": "72",
-          "content-type": "text/html; charset=utf-8",
-          etag: '"pican-shell"',
-        },
-      }),
-    );
+  it("redirects runner session roots to the session list", async () => {
     sandbox.getScottySession.mockResolvedValueOnce({
       id: "a0b1c2d3e4f5",
       status: "warm",
@@ -1736,145 +1908,23 @@ describe("real Hono boundary", () => {
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).toContain("<title>Pican</title>");
-    expect(html).toContain('id="scotty-sessions-link" href="/sessions"');
-    expect(response.headers.get("content-encoding")).toBeNull();
-    expect(response.headers.get("content-length")).toBeNull();
-    expect(response.headers.get("etag")).toBeNull();
-    expect(sandbox.fetch).toHaveBeenCalledOnce();
-    const upstream = sandbox.fetch.mock.calls[0]?.[0];
-    expect(upstream).toBeInstanceOf(Request);
-    expect(new URL(upstream.url).pathname).toBe("/s/a0b1c2d3e4f5");
-    expect(upstream.headers.has("cookie")).toBe(false);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("http://localhost/sessions");
+    expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
-  it("preserves legacy runner-mounted Pican paths and query while stripping boundary credentials", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
-    sandbox.fetch.mockImplementationOnce(
-      async () =>
-        new Response("missing", {
-          status: 418,
-          headers: { "content-type": "text/plain", "x-pican-result": "preserved" },
-        }),
-    );
+  it("returns not found for session application subpaths", async () => {
     const response = await app.request(
       "/s/a0b1c2d3e4f5/assets/app.js?v=7",
-      {
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          authorization: "Bearer browser-secret",
-          "proxy-authorization": "Basic browser-secret",
-          "x-pican-proxy-token": "spoofed",
-          forwarded: "for=198.51.100.1",
-          "x-forwarded-for": "198.51.100.1",
-          "x-forwarded-host": "attacker.example",
-          "x-forwarded-proto": "https",
-          "x-browser-header": "preserved",
-          connection: "x-remove-me",
-          "x-remove-me": "hop-by-hop",
-        },
-      },
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
 
-    expect(response.status).toBe(418);
-    expect(response.headers.get("x-pican-result")).toBe("preserved");
-    await expect(response.text()).resolves.toBe("missing");
-    const upstream = sandbox.fetch.mock.calls[0]?.[0];
-    const url = new URL(upstream.url);
-    expect(url.pathname).toBe("/s/a0b1c2d3e4f5/assets/app.js");
-    expect(url.search).toBe("?v=7");
-    expect(upstream.headers.get("x-browser-header")).toBe("preserved");
-    for (const header of [
-      "cookie",
-      "authorization",
-      "proxy-authorization",
-      "x-pican-proxy-token",
-      "forwarded",
-      "x-forwarded-for",
-      "x-forwarded-host",
-      "x-forwarded-proto",
-      "connection",
-      "x-remove-me",
-    ]) {
-      expect(upstream.headers.has(header), header).toBe(false);
-    }
-  });
-
-  it("streams legacy Pican request and SSE response bodies without buffering", async () => {
-    sandbox.getScottySession.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not_found", message: "Route not found" },
     });
-    const encoder = new TextEncoder();
-    const sentinel = Uint8Array.from([0, 1, 2, 127, 128, 254, 255]);
-    let closeStream: (() => void) | undefined;
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(encoder.encode("event: ready\n\n"));
-        closeStream = () => controller.close();
-      },
-    });
-    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
-      expect(new Uint8Array(await request.arrayBuffer())).toEqual(sentinel);
-      return new Response(stream, {
-        headers: { "content-type": "text/event-stream", "x-stream": "live" },
-      });
-    });
-
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5/api/sessions?stream=1",
-      {
-        method: "POST",
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          "content-type": "application/octet-stream",
-        },
-        body: sentinel,
-      },
-      env(),
-    );
-    expect(response.headers.get("content-type")).toContain("text/event-stream");
-    expect(response.headers.get("x-stream")).toBe("live");
-    const reader = response.body?.getReader();
-    const first = await reader?.read();
-    expect(new TextDecoder().decode(first?.value)).toBe("event: ready\n\n");
-    closeStream?.();
-    await reader?.cancel();
-  });
-
-  it("rejects legacy Pican WebSocket upgrades before crossing the Sandbox boundary", async () => {
-    sandbox.getScottySession.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5/api/events",
-      {
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          connection: "Upgrade",
-          upgrade: "websocket",
-        },
-      },
-      env(),
-    );
-    expect(response.status).toBe(501);
-    await expect(response.text()).resolves.toBe("Pican WebSocket proxying is not supported");
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 

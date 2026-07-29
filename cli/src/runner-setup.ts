@@ -2,7 +2,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { Effect, FileSystem, Result } from "effect";
 import { CliError, EXIT } from "./core";
 import { secureWrite } from "./dependencies";
-import { CliRuntime, ProcessRunner } from "./services";
+import { CliRuntime, HttpTransport, ProcessRunner } from "./services";
 
 const SERVICE_NAME = "scotty-runner.service";
 
@@ -11,6 +11,7 @@ export interface RunnerSetupInput {
   readonly host: string;
   readonly image: string;
   readonly name: string;
+  readonly provisionRunnerToken: Effect.Effect<string, CliError, HttpTransport>;
   readonly root: string;
   readonly sourceBinary: string;
 }
@@ -95,22 +96,10 @@ const requireCommand = Effect.fnUntraced(function* (
 export const setupRunner = Effect.fnUntraced(function* (input: RunnerSetupInput) {
   const runtime = yield* CliRuntime;
   const fs = yield* FileSystem.FileSystem;
-  const token = runtime.env.SCOTTY_RUNNER_TOKEN?.trim();
-  if (!token) {
-    return yield* setupFailure(
-      "Runner token is not configured",
-      "Set SCOTTY_RUNNER_TOKEN in the setup process environment.",
-    );
-  }
-  if (
-    token.includes("\n") ||
-    token.includes("\r") ||
-    input.host.includes("\n") ||
-    input.host.includes("\r")
-  ) {
+  if (input.host.includes("\n") || input.host.includes("\r")) {
     return yield* setupFailure(
       "Runner setup environment is unsafe",
-      "Use single-line host and runner token values.",
+      "Use a single-line host value.",
     );
   }
 
@@ -157,6 +146,19 @@ export const setupRunner = Effect.fnUntraced(function* (input: RunnerSetupInput)
     return yield* setupFailure(
       "GitHub CLI returned an invalid user",
       "Run gh auth login as the runner user, then retry.",
+    );
+  }
+  const token = (yield* input.provisionRunnerToken).trim();
+  if (!token) {
+    return yield* setupFailure(
+      "Runner token is not configured",
+      "Register the runner through the Scotty control plane before installing it.",
+    );
+  }
+  if (token.includes("\n") || token.includes("\r")) {
+    return yield* setupFailure(
+      "Runner setup environment is unsafe",
+      "Use a single-line runner token value.",
     );
   }
 

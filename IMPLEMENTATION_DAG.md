@@ -1,416 +1,97 @@
 # Scotty implementation DAG
 
-> **Historical planning document.** `EFFECT_V4_MIGRATION.md` supersedes this document's
-> architecture, infrastructure/runtime framework, file layout, and delivery order. The state
-> ownership model, state machine, lifecycle semantics, security and credential constraints, and
-> other invariants recorded here remain authoritative.
->
-> `PORTABLE_EXECUTION_PLAN.md` is the active, current-status plan for Cloudflare and trusted VPS
-> runners such as Slumbers. It supersedes the portable-execution delivery section below,
-> including the Box nodes.
->
-> Cloudflare keeps the credential-isolation rules in this document. An explicitly configured
-> trusted VPS host and its session containers may read owner Codex and Git credential files
-> through session-scoped copies outside the workspace. The files must not enter prompts, URLs,
-> arguments, logs, KV, R2, API responses, or Cloudflare state.
+This file records state ownership, lifecycle invariants, and delivery gates. Public behavior and
+security constraints come from `PLAN.md`; Effect and Alchemy implementation constraints come from
+`EFFECT_V4_MIGRATION.md`.
 
-This is the execution plan for `PLAN.md`. Build one secure vertical slice first, then add lifecycle and shipping behavior behind explicit gates. The critical design choice is that each session's Sandbox Durable Object owns lifecycle state, Cloudflare credentials, and trusted-runner credential policy; KV is only the eventually consistent list projection.
-
-## Current Cloudflare runtime override
-
-Cloudflare sessions run Pi directly in a named Sandbox terminal session. Scotty serves bundled
-Ghostty Web at `/s/<id>`, authenticates the terminal WebSocket, and launches
-`/usr/local/bin/scotty-pi-shell` through the Sandbox native terminal proxy. The first attachment
-consumes the initial prompt; later attachments use `pi --continue`. There is no Pican, Sheppard, or
-tmux process in this path. Trusted runner sessions retain the mounted Pican compatibility path.
-
-Pi receives sentinel-only Codex and GitHub credentials in `/workspace/<id>/.pi-agent`. The session
-DO remains credential and lifecycle authority, and the egress proxy performs Codex OAuth refresh
-without exposing real tokens to the container. Snapshot and shutdown terminate the named terminal
-session before filesystem sync and backup.
-
-The terminal switcher lists warm sessions only. Sleeping sessions remain on Home and require an
-explicit resume before they appear in the switcher.
-
-## Portable execution delivery DAG
-
-This graph is historical. Use the delivery DAG in `PORTABLE_EXECUTION_PLAN.md`.
+## Ownership graph
 
 ```mermaid
 flowchart TD
-    N[Canonical names and Cloudflare stack cleanup] --> C1
-    C1[beam up --provider cloudflare request contract] --> C4
-    C2[Cloudflare deployment through Alchemy] --> C4
-    C3[Pinned Pican executable in Sandbox image] --> C4
-    C4{Gate CF: mounted Pican workspace on Cloudflare Sandbox}
-
-    C4 --> R1[Runner command contract]
-    R1 --> R2[Slumbers runner over Tailscale]
-    R2 --> R3{Gate Runner: create + work + restore on Slumbers}
-
-    R3 --> B1[Box noEnv adapter]
-    B1 --> B2[Template fork + stop/resume]
-    B2 --> B3{Gate Box: credential-negative restored run}
-
-    C4 --> P1[Pican connection identity + pairing]
-    P1 --> P2[Local Pican controls remote Pican]
-
-    B3 --> T1[Six independent tasks across three providers]
-    P2 --> T1
+    CLI["Standalone Scotty CLI"] --> AL["Alchemy installation stack"]
+    CLI --> API["Public Worker API"]
+    API --> AUTH["Auth Durable Object"]
+    API --> SESSION["Sandbox Durable Object per session"]
+    API --> REGISTRY["Runner Registry Durable Object"]
+    REGISTRY --> RUNNER["Runner Durable Object by user-chosen name"]
+    SESSION --> CF["Cloudflare Sandbox and Container"]
+    SESSION --> KV["KV list projection"]
+    SESSION --> R2["R2 immutable backups"]
+    CF --> PI["Pi terminal runtime"]
 ```
 
-Historical status at the time of this graph:
+The Session Durable Object is authoritative. KV and UI rows are projections. R2 backups are
+immutable artifacts referenced by Session authority. Runner registry state is distinct from runner
+connection state and runtime state.
 
-- `N`, `C1`, `C2`, `C3`, Gate CF, and `R1` are complete. The repository-wide local gate and guarded
-  deployed Cloudflare canary proved the forward-only path: create a stable Pican hosted-session
-  identity, use its mounted `/s/<id>` UI, gracefully stop Pican before backup, restore, reconnect
-  to the same hosted session, beam down, and leave no runtime, KV, R2, credential, schedule, or
-  branch orphans.
-- `R1` proves `scotty runner serve` over an authenticated outbound WebSocket. Its strict typed
-  protocol models ensure, inspect, one-shot exec, stop, and remove with process-lifetime receipt
-  deduplication. The local gate writes a marker, drains accepted same-session work before stop,
-  retains the marker across stop and ensure, keeps other sessions concurrent, reads it back, and
-  removes only the session workspace.
-- `R2` is next: add the Cloudflare control-plane endpoint and run this command on Slumbers. Before
-  Gate Runner, add durable started/completed receipts with an explicit unknown outcome after an
-  interrupted exec, and isolate each session with a dedicated container or OS-user boundary; cwd
-  checks and the child environment allowlist are not a sandbox. Box begins only after the Slumbers
-  runner contract passes Gate Runner.
-- Provider is immutable for a session. The Session DO remains lifecycle and credential authority;
-  providers and runners own compute, while Pican owns the live agent/workspace runtime.
+## Session lifecycle
 
-## Implementation corrections
-
-These normalize `PLAN.md` against the current Sandbox SDK contracts before code is written:
-
-1. Use `/workspace/<session-id>` rather than `/work/<session-id>`. `createBackup()` only accepts directories under `/workspace`, `/home`, `/tmp`, `/var/tmp`, or `/app`.
-2. Set `CODEX_HOME=/workspace/<session-id>/.codex`. One backup then contains both the worktree and rollout files; it contains only sentinel auth data.
-3. Override `onActivityExpired()` to quiesce, back up, and stop. `onStop()` runs after shutdown and is cleanup-only.
-4. Use `Container.schedule()` for the hard-cap callback; do not replace the SDK's lifecycle `alarm()` implementation.
-5. Keep `SCOTTY_TOKEN` as the CLI and break-glass recovery credential, never a browser credential.
-   Browser authority lives in the singleton Auth DO as exactly one owner client ID plus standard
-   client digests; do not persist browser credentials or a per-session `webToken` in KV.
-6. The Cloudflare Codex example proves sentinel injection, but not rotated ChatGPT OAuth persistence. Token refresh and DO persistence need a contract test before real credentials are used.
-7. Build the terminal/create path with a fake agent first. The real Codex end-to-end gate depends on credential isolation, reversing the unsafe implication of Phase 1 preceding Phase 1.5.
-
-The numbered corrections above record the original v1 plan. The current forward-only Cloudflare
-slice replaces correction 7's terminal path with Pi over the Sandbox native terminal proxy.
-Scotty seeds the initial prompt into the Pi home and resumes subsequent attachments from Pi's
-persisted session state.
-
-## State ownership and invariants
-
-### Authoritative state
-
-- **Sandbox DO storage:** authoritative `SessionRecord`, active operation lease, real Codex credential bundle, hard-cap schedule metadata.
-- **KV:** list/read projection only. It may lag; it must never authorize a transition.
-- **R2:** immutable backup objects. The DO stores the active and previous backup handles.
-- **Container filesystem:** disposable working state. `/workspace/<id>` is recovered from R2.
-- **Worker secrets:** initial `PI_AUTH_JSON`, `GH_TOKEN`, and `SCOTTY_TOKEN`. An existing DO
-  credential bundle is never overwritten from the seed. Browser ownership state, pairing/
-  transfer/recovery grant digests, client digests, and PTY ticket digests live only in the
-  retained singleton Auth DO. Stored client scopes never encode ownership.
-
-```ts
-type SessionStatus = "booting" | "warm" | "sleeping" | "failed" | "gone";
-
-type SessionOperation = {
-  kind: "create" | "snapshot" | "resume" | "down" | "vaporize";
-  nonce: string;
-  startedAt: string;
-} | null;
-
-interface SessionRecord {
-  version: 1;
-  id: string;
-  status: SessionStatus;
-  operation: SessionOperation;
-  repo: string;
-  defaultBranch: string;
-  branch: string;
-  createdAt: string;
-  updatedAt: string;
-  hardCapAt: string;
-  backup?: { current: DirectoryBackup; previous?: DirectoryBackup };
-  codexThreadId?: string;
-  failure?: { code: string; message: string; recoverable: boolean };
-}
+```text
+absent
+  -> booting
+  -> warm
+  -> sleeping
+  -> warm
+  -> failed
+  -> gone
 ```
 
-### Invariants
+Only one operation lease may mutate a session. Create schedules the hard cap before committing its
+initial authoritative record. Snapshot and managed sleep stop the Pi terminal before sync and
+backup. Resume requires a committed current backup. Vaporize is forward-only and retryable until
+all owned resources are absent.
 
-- Every mutating command executes inside the session's Sandbox DO and acquires the persisted operation lease.
-- Status preconditions are checked against DO storage, never KV.
-- Real credentials never enter container env, files, command arguments, logs, KV, responses, or backups.
-- `sleeping` is published only after a new backup handle is durable. At hard-cap failure, retain the last good handle, record `failed`, and destroy to preserve the spend bound.
-- A new backup becomes `current` only after upload succeeds. Delete `previous` only after the state update commits.
-- Snapshot and shutdown terminate the named Pi terminal session, `sync`, create the backup, then allow a later attachment to resume Pi or destroy the Sandbox.
-- `vaporize` is terminal: destroy runtime, delete all known backup prefixes and the DO credential bundle, remove the KV projection, then persist a minimal `gone` tombstone.
+A failed or interrupted operation must either retain a recoverable lease with a scheduled
+reconciler, or publish a typed terminal failure. It must never report success from ambiguous
+provider state.
 
-## Lifecycle graph
+## Credential path
 
-```mermaid
-stateDiagram-v2
-    [*] --> booting: create
-    booting --> warm: worktree + Pi configuration ready
-    booting --> failed: setup fails
-
-    warm --> warm: snapshot / down
-    warm --> sleeping: idle or hard-cap checkpoint succeeds
-    warm --> failed: hard-cap checkpoint fails; runtime destroyed
-
-    sleeping --> booting: resume
-    failed --> booting: resume from last good backup
-    booting --> warm: restore + codex resume succeeds
-
-    booting --> gone: vaporize
-    warm --> gone: vaporize
-    sleeping --> gone: vaporize
-    failed --> gone: vaporize
-    gone --> [*]
+```text
+local Pi auth -> Cloudflare secret upload -> Session credential authority
+             -> container sentinel -> allowlisted egress substitution -> upstream
 ```
 
-`operation` serializes transient work without expanding the public status vocabulary. A conflicting command returns exit/API code `wrong_state`; retries with the same nonce return the prior result when available.
+Real credentials cannot cross into the container, KV, R2, logs, URLs, process arguments, API
+responses, or Alchemy state. Every storage, egress, backup, OAuth, and container adapter satisfies
+shared contract tests.
 
-## Delivery DAG
+## Installation lifecycle
 
-The remaining delivery DAG and work packages below are historical. Their state-ownership,
-credential-isolation, backup durability, and spend-bound invariants still apply, but their
-Sheppard, native PTY, terminal UI, and rollout-thread-capture implementation details do not.
-
-```mermaid
-flowchart TD
-    A[A: Prove upstream contracts] --> C[C: Domain and API contracts]
-    B[B: Scaffold workspace and CI] --> C
-
-    A --> D[D: Container image and bootstrap]
-    C --> E[E: Worker auth, routing, DO state, KV projection]
-    C --> F[F: Core CLI transport and config]
-    D --> G[G: Fake-agent session create]
-    E --> G
-    F --> G
-
-    G --> H[H: Native PTY and ghostty-web]
-    A --> I[I: Credential vault, egress proxy, OAuth rotation]
-    E --> I
-    D --> I
-    H --> J[J: Cookie handoff and authenticated reconnect]
-    I --> K[K: Live Codex start and thread capture]
-    G --> K
-    J --> V{Gate V: secure live vertical slice}
-    K --> V
-
-    V --> L[L: Quiesced snapshot primitive]
-    L --> M[M: Idle sleep and hard-cap enforcement]
-    L --> N[N: Resume, snapshot, and ls APIs/CLI]
-    M --> W{Gate W: lifecycle recovery}
-    N --> W
-
-    W --> P[P: Beam down]
-    W --> Q[Q: Vaporize]
-    P --> R
-    Q --> R
-    R[R: Agent ergonomics and embedded skill]
-    R --> S[S: Production verification and release]
+```text
+required name + selected Cloudflare profile
+  -> derive namespaced logical and physical resource names
+  -> create or adopt Alchemy stack
+  -> deploy resources
+  -> generate or rotate root secret outside Alchemy state
+  -> write mode-0600 local pointer
+  -> doctor live metadata and authentication
 ```
 
-**Critical path:** `A → C → E/D → G → H/I → J/K → V → L → M/N → W → P/Q → R → S`.
+Moving machines repeats the recovery path with `--existing`; copying local config is optional.
+Repository state contains no account identity or deployed resource identifiers.
 
-Expected effort: **10–15 focused engineering days**, plus Cloudflare deployment/account setup. `A` can materially change the estimate if OAuth refresh cannot be implemented through the current interception contract.
+## Runner lifecycle
 
-## Work packages
+```text
+register name -> issue one-time credential -> install user service
+  -> outbound authenticated link -> accepting or draining
+  -> disable -> disconnect -> remove when assigned session count is zero
+```
 
-### Wave 0 — prove and scaffold
+Runner registration and host setup are shipped. Runner-backed session creation is a closed gate
+until a native Pi terminal transport has lifecycle, reconnect, checkpoint, credential, and deployed
+acceptance proof. No compatibility application or committed executable fills that gap.
 
-#### A. Prove upstream contracts — 1–2 days
+## Delivery gates
 
-- **Depends on:** none.
-- **Deliver:** pinned Sandbox SDK/container pair; executable probes for custom Sandbox DO RPC/storage, `OutboundHandlerContext.containerId`, `onActivityExpired()`, `schedule()`, backup/restore of `/workspace/<id>`, named-session terminal attachment, raw PTY framing, and Codex OAuth refresh.
-- **Files:** `spikes/`, decision notes in this file or `PLAN.md`, pinned versions in package manifests.
-- **Proof:** deployed test Worker demonstrates each contract. No real long-lived credential is enabled until sentinel replacement and rotation persistence pass.
-- **Risk:** the upstream Codex sample injects an access token but does not implement refresh persistence; this is new integration work.
+1. Static gate: format, skill lint, lint, typecheck, secret scan, and clean generated artifacts.
+2. Contract gate: worker, CLI, protocol, Effect, and offline end-to-end suites.
+3. Packaging gate: standalone CLI build plus container image build with all Pi extensions listed.
+4. Git gate: logical commits, clean tree, pushed branch, and reviewable draft PR.
+5. Cloud gate: guarded Alchemy production deployment and settled Container rollout.
+6. Canary gate: create, authenticated Pi terminal, snapshot, resume, beam down, and vaporize with no
+   orphaned runtime, backup, credential, or projection state.
 
-#### B. Scaffold workspace and CI — 0.5 day
-
-- **Depends on:** none.
-- **Deliver:** root workspace, `worker/`, `cli/`, TypeScript strict mode, formatting, unit/integration scripts, Wrangler config, generated binding types.
-- **Files:** `package.json`, `tsconfig.json`, `worker/package.json`, `worker/wrangler.jsonc`, `worker/src/index.ts`, `cli/scotty.ts`.
-- **Proof:** install, typecheck, unit tests, and a no-secret local Worker boot pass.
-
-#### C. Domain and API contracts — 1 day
-
-- **Depends on:** A, B.
-- **Deliver:** parsed request types, `SessionRecord`, transition guards, error codes, stable JSON response shapes, and state projection shape including `ageSeconds` and `capRemainingSeconds`.
-- **Files:** `worker/src/contracts.ts`, `worker/src/session.ts`, `worker/test/session-state.test.ts`.
-- **Proof:** table-driven tests cover every allowed/denied transition, stale KV, duplicate nonce, and malformed boundary input.
-
-### Wave 1 — credential-free vertical infrastructure
-
-#### D. Container image and bootstrap — 1 day
-
-- **Depends on:** A, B.
-- **Deliver:** pinned Ubuntu/Sandbox base, Codex `0.144.x`, pinned Sheppard binary, git/gh, UTF-8/TERM setup, noninteractive Git, `/workspace/<id>` conventions.
-- **Files:** `worker/container/Dockerfile`, `worker/src/workspace.ts`.
-- **Proof:** image smoke test verifies versions, repository cloning from the dynamically resolved default branch, and absence of credentials.
-
-#### E. Worker auth, routing, DO state, and KV projection — 1 day
-
-- **Depends on:** C.
-- **Deliver:** Hono route shell, bearer/cookie auth boundary, typed Sandbox DO methods, operation lease, DO-to-KV projection, redacted structured errors.
-- **Files:** `worker/src/index.ts`, `worker/src/session.ts`, `worker/src/auth.ts`.
-- **Proof:** route tests cover 401/404/405, wrong state, concurrent mutation, stale projection, and secret redaction.
-
-#### F. Core CLI transport and config — 0.5–1 day
-
-- **Depends on:** C.
-- **Deliver:** `init`, `up`, `ls`, `attach`; host/token precedence; stable error decoding; TTY versus piped JSON selection.
-- **Files:** `cli/scotty.ts`, `cli/test/cli.test.ts`.
-- **Proof:** fixture HTTP server verifies config/env/flag precedence, JSON envelopes, stderr, and exit codes 0–5.
-
-#### G. Fake-agent session create — 1 day
-
-- **Depends on:** D, E, F.
-- **Deliver:** `POST /api/sessions`, ID allocation, booting/warm persistence, latest-default-branch worktree, Sheppard-managed agent, hard-cap schedule. Run a harmless fake agent command instead of Codex.
-- **Files/symbols:** `ScottySandbox.createScottySession`, `Workspace.prepare`, `Agent.launch`.
-- **Proof:** `scotty beam up "TASK" --repo owner/project --provider cloudflare --detach` creates a warm session whose managed process and worktree survive HTTP disconnects.
-
-#### H. Native PTY and ghostty-web — 1 day
-
-- **Depends on:** G.
-- **Deliver:** authenticated PTY upgrade routed to a named execution session running an independent Sheppard client; bundled ghostty-web/WASM; tracked wheel/touch input, resize, binary output-before-ready, and reconnect backoff.
-- **Files:** `worker/public/terminal.html`, asset build step, `worker/src/index.ts` PTY route.
-- **Proof:** desktop and phone clients type and scroll independently; resize, disconnect, and reconnect do not replace the agent process or leak one client's geometry into another.
-
-### Wave 2 — credential safety and live Codex
-
-#### I. Credential vault, egress proxy, and OAuth rotation — 2 days
-
-- **Depends on:** A, D, E.
-- **Deliver:** DO-stored credential bundle seeded once; session-bound sentinel; `enableInternet=false`, `interceptHttps=true`, explicit `allowedHosts`; host-specific OpenAI/GitHub injection; deny-all fallback; OAuth refresh adapter that atomically persists rotations.
-- **Files:** `worker/src/egress.ts`, custom `Sandbox` and `ContainerProxy` exports, security integration tests.
-- **Proof:** inside-container `env`, auth file, process list, Git config, snapshots, logs, and API responses contain only sentinels; blocked HTTP/HTTPS/raw TCP fail; forced refresh changes the DO bundle and survives restart.
-- **Risk:** validate redirects so injected headers never cross to a non-allowlisted host.
-
-#### J. Registered-browser ownership, transfer, recovery, and authenticated reconnect
-
-- **Depends on:** H.
-- **Deliver:** a version-2 Auth DO authority with exactly one owner client ID; owner-authenticated
-  pairing/list/revoke commands; target-bound two-party owner transfer; bearer-root recovery that
-  resets all browser authority; independent 30-day Secure HttpOnly SameSite client cookies; and
-  PTY upgrades that consume five-minute tickets bound to the browser and session. Root cookies and
-  root query parameters are rejected.
-- **Files:** `worker/src/auth-registry.ts`, `worker/src/auth-object.ts`, `worker/src/auth.ts`, `worker/src/index.ts`, `worker/public/pair.html`, `worker/public/devices.html`, `worker/public/terminal.html`.
-- **Proof:** v1 migration never guesses an owner; the Auth DO persists digests only; concurrent
-  pairing/transfer/recovery/ticket transitions serialize with exactly one winner; stale epochs,
-  wrong targets, and stale owner credentials fail; browser history and ordinary session URLs
-  contain no root token; revoked clients fail HTTP immediately and active PTYs within the lease
-  bound; unauthenticated page and WebSocket access fail.
-
-#### K. Live Codex start and thread capture — 0.5–1 day
-
-- **Depends on:** G, I.
-- **Deliver:** sentinel auth file, `CODEX_HOME`, interactive Codex managed by Sheppard, safely quoted initial prompt, rollout discovery, stored thread UUID.
-- **Files/symbols:** `seedSentinelAuth`, `startCodex`, `discoverCodexThread`.
-- **Proof:** a real Codex turn completes through the proxy; the container never observes the real credential; refreshing the browser reattaches to the same TUI and thread.
-
-**Gate V — secure live vertical slice:** `scotty beam up "hello" --repo owner/project --provider cloudflare` opens a working terminal from the selected repository's default branch, real credentials remain outside the container, and reconnect preserves the managed Codex process.
-
-### Wave 3 — lifecycle and recovery
-
-#### L. Quiesced snapshot primitive — 1 day
-
-- **Depends on:** Gate V.
-- **Deliver:** pause the Sheppard-managed agent process group, flush the filesystem, `createBackup({dir: sessionRoot})`, atomically rotate backup handles, resume the agent, and garbage-collect superseded R2 prefixes.
-- **Files/symbols:** `ScottySandbox.checkpoint`, `withQuiescedAgent`, `deleteBackupPrefix`.
-- **Proof:** repeated and concurrent snapshots serialize; failure retains the previous good handle and resumes the agent; restored Git and rollout files match the checkpoint.
-
-#### M. Idle sleep and hard-cap enforcement — 1 day
-
-- **Depends on:** L.
-- **Deliver:** `onActivityExpired()` checkpoint-before-stop; `schedule(hardCapAt, 'enforceHardCap')`; bounded hard-cap retries; DO/KV status publication after outcome.
-- **Files/symbols:** `ScottySandbox.onActivityExpired`, `enforceHardCap`.
-- **Proof:** forced idle resumes from the same branch/thread; an open PTY cannot bypass hard cap; hard-cap backup failure destroys runtime while retaining the last known recovery handle and a visible failure state.
-
-#### N. Resume, snapshot, and ls APIs/CLI — 1 day
-
-- **Depends on:** L.
-- **Deliver:** explicit snapshot, restore, Sheppard recreation, `codex resume <uuid>` with `--last` fallback, cap reset, list freshness fields, wrong-state errors.
-- **Files:** `worker/src/index.ts`, `worker/src/session.ts`, `cli/scotty.ts`.
-- **Proof:** sleeping and failed/recoverable sessions restore; warm resume exits 5; missing/expired backup errors are actionable.
-
-**Gate W — lifecycle recovery:** idle and hard-cap paths produce a restorable backup; resume recovers both worktree and Codex thread.
-
-### Wave 4 — shipping, teardown, and release
-
-#### O. Agent-owned source control
-
-- **Contract:** Scotty has no commit, push, repository-creation, or pull-request command or HTTP endpoint.
-- **Boundary:** Codex may use the sentinel GitHub credential inside a session when the user asks it to perform source-control work.
-- **Proof:** removed CLI command and route return usage/not-found errors, and no Sandbox orchestration invokes `git commit`, `git push`, `gh repo create`, or `gh pr create`.
-
-#### P. Beam down — 1 day
-
-- **Depends on:** Gate W.
-- **Deliver:** streamed tar containing metadata and newest rollout, branch fetch, 0600 local rollout write, exact resume command; branch-only fallback when rollout parsing fails.
-- **Files/symbols:** `GET /api/sessions/:id/down`, CLI `down`.
-- **Proof:** local `codex resume <uuid> -C <path>` finds the conversation; malformed/missing rollout still returns branch metadata and a nonfatal warning.
-
-#### Q. Vaporize — 0.5–1 day
-
-- **Depends on:** Gate W.
-- **Deliver:** idempotent destructive transition, runtime destroy, R2 prefix deletion for all known handles, credential deletion, KV removal, gone tombstone; CLI confirmation/`--yes` behavior.
-- **Files/symbols:** `ScottySandbox.vaporize`, `DELETE /api/sessions/:id`, CLI `vaporize`.
-- **Proof:** repeated calls are safe; no runtime, R2 object, credential bundle, or KV projection remains.
-
-#### R. Agent ergonomics and embedded skill — 1 day
-
-- **Depends on:** P, Q.
-- **Deliver:** all operational commands/flags, `--json` and non-TTY JSON, stable exit codes, terse help, and a source `SKILL.md` compiled into the standalone CLI and printed by `scotty skills`.
-- **Files:** `cli/scotty.ts`, `cli/skills/scotty/SKILL.md`, CLI golden tests.
-- **Proof:** a clean agent given only `scotty skills` completes `up → snapshot → vaporize` unattended; every piped command parses as JSON.
-
-#### S. Production verification and release — 1 day
-
-- **Depends on:** R.
-- **Deliver:** deployment runbook, R2 lifecycle rule, secret setup, observability/redaction checks, cost-bound smoke test, compiled Bun CLI artifact, README.
-- **Files:** `README.md`, release scripts/configuration.
-- **Proof:** full deployed acceptance suite passes against `workers.dev`; logs contain session IDs and operation outcomes but no prompts, source, URLs with tokens, or credentials.
-
-## Boundary map
-
-| Boundary        | Caller → owner                        | Contract                                                | Failure behavior                          | Proof point          |
-| --------------- | ------------------------------------- | ------------------------------------------------------- | ----------------------------------------- | -------------------- |
-| HTTP API        | CLI/browser → Worker                  | Parsed requests; bearer/cookie auth; stable JSON errors | Reject before DO access                   | Route tests          |
-| Session command | Worker → Sandbox DO                   | Typed intent + nonce                                    | Transition guard and serialized operation | DO state tests       |
-| Runtime         | Sandbox DO → container                | Explicit cwd/env/session; no shell interpolation        | Record failure; keep prior backup         | Deployed integration |
-| Egress          | container → ContainerProxy → upstream | Host allowlist + sentinel-bound injection               | 403/520 deny; no redirect leakage         | Security suite       |
-| Projection      | Sandbox DO → KV                       | Versioned non-secret session summary                    | Retry; reads may declare staleness        | Projection tests     |
-| Backup          | Sandbox DO → R2                       | Immutable `DirectoryBackup` under session root          | Keep prior current handle                 | Restore tests        |
-| Terminal        | browser → Worker → named PTY          | Authenticated WS; binary + control frames               | Reconnect through independent Sheppard UI | Browser test         |
-| Beam down       | Worker → CLI filesystem               | Tar + metadata; local mode 0600                         | Branch-only fallback                      | Local integration    |
-
-## Verification matrix
-
-| Gate            | Unit/local                           | Deployed Cloudflare              | Destructive/credential check             |
-| --------------- | ------------------------------------ | -------------------------------- | ---------------------------------------- |
-| Contracts       | Type probes and fixtures             | Sandbox/PTY/backup probe         | Disposable credentials only              |
-| Secure vertical | State/routes/CLI tests               | Real Codex turn + reconnect      | Files/env/log/R2 scan; deny egress       |
-| Lifecycle       | Transition and fault-injection tests | Idle, hard cap, restore          | Backup-failure and stale-handle recovery |
-| Down/vaporize   | Tar/path/mode tests                  | Resume locally; inspect R2/KV/DO | Repeated teardown                        |
-| Release         | Golden help/JSON tests               | End-to-end unattended workflow   | Cost cap and log redaction               |
-
-## Rollout
-
-1. Deploy a development Worker with a dedicated R2 bucket, KV namespace, test PAT, and short backup TTL.
-2. Pass Contract Gate A and Security Gate V using a disposable repository and credential bundle.
-3. Pass lifecycle fault injection with 2-minute idle and 5-minute hard cap; then restore production defaults of 60 minutes and 4 hours.
-4. Run one canary session through `up → snapshot → resume → down → vaporize` and inspect all storage/log surfaces.
-5. Publish the compiled CLI and embedded skill only after the canary leaves no secret or orphaned resource.
-
-## Residual risks and open gates
-
-- **OAuth protocol drift:** Codex refresh/rollout formats are pinned-version internals. Gate A must freeze fixtures and fail closed on unknown shapes.
-- **Unexpected host loss:** `onActivityExpired()` covers managed idle, not infrastructure loss. Recovery is only as fresh as the latest successful manual/periodic/hard-cap checkpoint. Decide checkpoint cadence after measuring backup duration and R2 cost; this does not block the vertical slice.
-- **Backup consistency:** pausing the agent reduces write races. Beam-down runs under an operation lease; GitHub operations belong to Codex and aren't Scotty lifecycle transitions.
-- **KV freshness:** `ls` is a projection. Include `projectedAt`; direct commands always consult the DO.
-- **Allowed registries:** every allowed host remains an exfiltration channel for prompts/source, even without credentials. Start with the smallest host set needed by the selected repository and make additions explicit configuration changes.
+A later gate cannot waive an earlier one. A local fake proves contracts, not live provider
+readiness.

@@ -68,6 +68,6 @@ const configureGitCredentialHelper = Effect.fnUntraced(function* (
 ) {
   const helper = "!f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f";
   yield* runtime.execChecked(
-    `git -C ${shellQuote(root)} config credential.helper ${shellQuote(helper)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; grep -qxF '.pican/' "$exclude" 2>/dev/null || printf '.pican/\\n' >> "$exclude"; }`,
+    `git -C ${shellQuote(root)} config credential.helper ${shellQuote(helper)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`,
   );
 });

@@ -19,14 +19,22 @@ import {
   type JsonObject,
   type Writer,
 } from "./core";
-import { clearPendingUp, credentials, pendingUpRequest, secureWrite } from "./dependencies";
+import {
+  clearPendingUp,
+  credentials,
+  pendingUpRequest,
+  readConfig,
+  secureWrite,
+} from "./dependencies";
 import {
   decodeOperationResponse,
   decodePiAuthReseedResponse,
   decodePiAuthStatusResponse,
+  decodeRunnerRegistrationResponse,
+  decodeRunnerRemovalResponse,
+  decodeRunnerStatusesResponse,
   decodeSessionsResponse,
   decodeVaporizeResponse,
-  PROVIDERS,
   STANDARD_TOOLSET,
 } from "./schemas";
 import { readLocalPiAuth, uploadPiAuthSecret } from "./pi-auth";
@@ -47,11 +55,12 @@ import {
   stableUp,
   usage,
 } from "./pure";
-import { BrowserLauncher, CliRuntime, ProcessRunner } from "./services";
+import { BrowserLauncher, CliRuntime, InstallationDeployer, ProcessRunner } from "./services";
 import { runRunnerSupervisor } from "./runner-link";
 import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
 import { requestJson } from "./transport";
+import { parseInstallationName } from "../../infra/installation.ts";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -215,28 +224,116 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     };
   });
 
-  const init = Command.make("init", { trailing: trailingArguments }, ({ trailing }) =>
-    Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
-      const { autoJson, options, runtime } = yield* commandContext();
-      let host = options.host;
-      let token = options.token;
-      if ((!host || !token) && !runtime.stdinIsTTY)
-        return yield* usage("init needs --host and --token when stdin is not a TTY");
-      host ||= runtime.prompt("Scotty Worker host: ")?.trim();
-      token ||= runtime.prompt("Scotty token: ")?.trim();
-      if (!host || !token) return yield* usage("Host and token are required");
-      host = yield* Effect.fromResult(normalizeHost(host));
-      const configPath = join(runtime.home, ".scotty.json");
-      yield* secureWrite(configPath, `${JSON.stringify({ host, token }, null, 2)}\n`);
-      const result = { configPath, host };
-      if (autoJson) outputJson(runtime.stdout, result);
-      else runtime.stdout(`Saved ${configPath} with mode 0600\n`);
-    }),
+  const init = Command.make(
+    "init",
+    {
+      name: Flag.string("name").pipe(
+        Flag.optional,
+        Flag.withDescription("Unique lowercase name for this Scotty installation"),
+      ),
+      profile: Flag.string("profile").pipe(
+        Flag.withDefault("default"),
+        Flag.withDescription("Alchemy Cloudflare authentication profile"),
+      ),
+      existing: Flag.boolean("existing").pipe(
+        Flag.withDescription("Adopt or recover an existing named installation"),
+      ),
+      adoptionManifest: Flag.string("adoption-manifest").pipe(
+        Flag.optional,
+        Flag.withDescription("Private manifest for adopting legacy resource names"),
+      ),
+      trailing: trailingArguments,
+    },
+    ({ name, profile, existing, adoptionManifest, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        const configPath = join(runtime.home, ".scotty.json");
+
+        if (options.host || options.token) {
+          if (!options.host || !options.token)
+            return yield* usage("init needs both --host and --token when connecting directly");
+          if (Option.isSome(name) || Option.isSome(adoptionManifest) || existing)
+            return yield* usage(
+              "--host/--token cannot be mixed with installation deployment flags",
+            );
+          const host = yield* Effect.fromResult(normalizeHost(options.host));
+          yield* secureWrite(
+            configPath,
+            `${JSON.stringify({ version: 1, host, token: options.token }, null, 2)}\n`,
+          );
+          const result = { configPath, host, mode: "connected" };
+          if (autoJson) outputJson(runtime.stdout, result);
+          else runtime.stdout(`Saved ${configPath} with mode 0600\n`);
+          return;
+        }
+
+        let installationName = Option.getOrUndefined(name)?.trim();
+        if (!installationName && runtime.stdinIsTTY)
+          installationName = runtime.prompt("Installation name: ")?.trim();
+        if (!installationName) return yield* usage("init needs --name when stdin is not a TTY");
+        if (Option.isNone(parseInstallationName(installationName)))
+          return yield* usage(
+            "Installation name must be 2-32 lowercase letters, numbers, or hyphens",
+          );
+
+        const token = `${crypto.randomUUID().replaceAll("-", "")}${crypto
+          .randomUUID()
+          .replaceAll("-", "")}`;
+        if (!autoJson) {
+          runtime.stdout(
+            `${existing ? "Recovering" : "Creating"} installation ${installationName} with Cloudflare profile ${profile}...\n`,
+          );
+        }
+        const deployer = yield* InstallationDeployer;
+        const deployed = yield* deployer.deploy({
+          installationName,
+          profile,
+          token,
+          ...(Option.isSome(adoptionManifest)
+            ? { adoptionManifestPath: adoptionManifest.value }
+            : {}),
+        });
+        const host = yield* Effect.fromResult(normalizeHost(deployed.host));
+        const config = {
+          version: 1,
+          installationName: deployed.installationName,
+          profile: deployed.profile,
+          stackName: deployed.stackName,
+          stage: deployed.stage,
+          accountId: deployed.accountId,
+          workerName: deployed.workerName,
+          host,
+          token,
+        } as const;
+        yield* secureWrite(configPath, `${JSON.stringify(config, null, 2)}\n`);
+        const result = {
+          configPath,
+          installationName: deployed.installationName,
+          profile: deployed.profile,
+          accountId: deployed.accountId,
+          workerName: deployed.workerName,
+          host,
+          rootTokenRotated: true,
+        };
+        if (autoJson) outputJson(runtime.stdout, result);
+        else {
+          runtime.stdout(`Saved ${configPath} with mode 0600\n`);
+          runtime.stdout(
+            existing
+              ? "Recovered the installation and rotated its root token.\n"
+              : "Scotty is deployed and ready.\n",
+          );
+        }
+      }),
   ).pipe(
-    Command.withDescription("Save the Worker host and token"),
+    Command.withDescription("Create, adopt, or connect to a Scotty installation"),
     Command.withExamples([
-      { command: "scotty init", description: "Configure Scotty interactively" },
+      { command: "scotty init --name home", description: "Create a named installation" },
+      {
+        command: "scotty init --name home --existing",
+        description: "Recover an installation on a new machine",
+      },
     ]),
   );
 
@@ -246,10 +343,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       prompt: Argument.string("prompt").pipe(Argument.withDescription("Initial agent prompt")),
       title: Flag.string("title").pipe(Flag.withDescription("Short task or outcome title")),
       repo: Flag.string("repo").pipe(Flag.withDescription("GitHub repository as OWNER/NAME")),
-      provider: Flag.choice("provider", PROVIDERS).pipe(Flag.withDescription("Execution provider")),
-      runner: Flag.string("runner").pipe(
-        Flag.optional,
-        Flag.withDescription("Named runner (runner provider only)"),
+      provider: Flag.choice("provider", ["cloudflare"] as const).pipe(
+        Flag.withDescription("Execution provider"),
       ),
       cap: Flag.string("cap").pipe(
         Flag.optional,
@@ -258,7 +353,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       detach: Flag.boolean("detach").pipe(Flag.withDescription("Do not open the session browser")),
       trailing: trailingArguments,
     },
-    ({ cap, detach, prompt, provider, repo, runner, title, trailing }) =>
+    ({ cap, detach, prompt, provider, repo, title, trailing }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
@@ -268,13 +363,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (!normalizedTitle || normalizedTitle.length > 120)
           return yield* usage("--title must be between 1 and 120 characters");
         if (!REPOSITORY_PATTERN.test(repo)) return yield* usage("--repo must be OWNER/NAME");
-        if (provider === "cloudflare" && Option.isSome(runner))
-          return yield* usage("--runner is not valid with --provider cloudflare");
-        if (provider === "runner" && Option.isNone(runner))
-          return yield* usage("--runner is required with --provider runner");
         const auth = yield* credentials(options);
         const body: JsonObject = { title: normalizedTitle, prompt, provider, repo };
-        if (Option.isSome(runner)) body.runner = runner.value;
         if (Option.isSome(cap)) {
           body.cap = cap.value;
           body.hardCapSeconds = yield* Effect.fromResult(durationSeconds(cap.value));
@@ -334,6 +424,34 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         );
     }),
   ).pipe(Command.withDescription("List sessions"));
+
+  const doctor = Command.make("doctor", { trailing: trailingArguments }, ({ trailing }) =>
+    Effect.gen(function* () {
+      yield* rejectTrailingArguments(trailing);
+      const { autoJson, options, runtime } = yield* commandContext();
+      const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+      const auth = yield* credentials(options);
+      const value = yield* requestJson(auth, "/api/sessions");
+      if (Option.isNone(decodeSessionsResponse(value)))
+        return yield* invalidResponse("Server response is not a valid session array");
+      const result = {
+        ok: true,
+        mode: config.installationName ? "managed" : "connected",
+        host: auth.host,
+        ...(config.installationName ? { installationName: config.installationName } : {}),
+        ...(config.profile ? { profile: config.profile } : {}),
+        ...(config.accountId ? { accountId: config.accountId } : {}),
+        ...(config.workerName ? { workerName: config.workerName } : {}),
+      };
+      if (autoJson) outputJson(runtime.stdout, result);
+      else
+        runtime.stdout(
+          config.installationName
+            ? `Scotty installation ${config.installationName} is reachable and authenticated.\n`
+            : "Scotty is reachable and authenticated.\n",
+        );
+    }),
+  ).pipe(Command.withDescription("Check local installation metadata, reachability, and auth"));
 
   const attach = Command.make(
     "attach",
@@ -652,7 +770,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (isolation === "process" && !isLoopbackHost(hostUrl.hostname))
           return yield* usage(
             "--isolation process is only allowed with a loopback Scotty host",
-            "Use --isolation docker for Slumbers and other remote runners.",
+            "Use --isolation docker for remote runners.",
           );
         if (isolation === "process" && imageValue !== undefined)
           return yield* usage("--image is only valid with --isolation docker");
@@ -757,17 +875,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Absolute path to the compiled Scotty executable"),
         Flag.optional,
       ),
+      replace: Flag.boolean("replace").pipe(
+        Flag.withDescription("Rotate an existing registration before reinstalling"),
+      ),
       trailing: trailingArguments,
     },
-    ({ codexAuth, image, name, root, sourceBinary, trailing }) =>
+    ({ codexAuth, image, name, replace, root, sourceBinary, trailing }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
-        if (options.token !== undefined)
-          return yield* usage(
-            "runner setup does not accept --token",
-            "Set SCOTTY_RUNNER_TOKEN in the setup process environment.",
-          );
         if (!RUNNER_NAME_PATTERN.test(name))
           return yield* usage("--name must contain only letters, numbers, underscores, or dashes");
         if (!isAbsolute(root)) return yield* usage("--root must be an absolute path");
@@ -779,20 +895,30 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const sourceBinaryValue = Option.getOrUndefined(sourceBinary) ?? process.execPath;
         if (!isAbsolute(sourceBinaryValue))
           return yield* usage("--source-binary must be an absolute path");
-        const hostValue = options.host;
-        if (!hostValue) return yield* usage("runner setup requires --host");
-        const host = yield* Effect.fromResult(normalizeHost(hostValue));
-        const hostUrl = new URL(host);
+        const auth = yield* credentials(options);
+        const hostUrl = new URL(auth.host);
         if (hostUrl.protocol !== "https:" && !isLoopbackHost(hostUrl.hostname))
           return yield* usage(
             "runner setup requires an HTTPS Scotty host",
             "Use HTTPS, or use HTTP only for a loopback development host.",
           );
+        const provisionRunnerToken = requestJson(auth, "/api/runners", {
+          method: "POST",
+          body: JSON.stringify({ name, replace }),
+        }).pipe(
+          Effect.flatMap((raw) => {
+            const registered = decodeRunnerRegistrationResponse(raw);
+            return Option.isSome(registered)
+              ? Effect.succeed(registered.value.credential)
+              : Effect.fail(invalidResponse("Server returned an invalid runner registration"));
+          }),
+        );
         const result = yield* setupRunner({
           codexAuthSource: codexAuth,
-          host,
+          host: auth.host,
           image,
           name,
+          provisionRunnerToken,
           root,
           sourceBinary: sourceBinaryValue,
         });
@@ -801,9 +927,76 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Install and start a trusted runner user service"));
 
+  const runnerList = Command.make("list", { trailing: trailingArguments }, ({ trailing }) =>
+    Effect.gen(function* () {
+      yield* rejectTrailingArguments(trailing);
+      const { autoJson, options, runtime } = yield* commandContext();
+      const decoded = decodeRunnerStatusesResponse(
+        yield* requestJson(yield* credentials(options), "/api/runners"),
+      );
+      if (Option.isNone(decoded))
+        return yield* invalidResponse("Server returned an invalid runner list");
+      if (autoJson) outputJson(runtime.stdout, decoded.value);
+      else
+        runtime.stdout(
+          decoded.value.length === 0
+            ? "No runners registered.\n"
+            : `${decoded.value
+                .map(
+                  (runner) =>
+                    `${runner.name}: ${runner.desired}, ${runner.connection}, ${runner.assignedSessions} assigned`,
+                )
+                .join("\n")}\n`,
+        );
+    }),
+  ).pipe(Command.withAlias("ls"), Command.withDescription("List registered runners"));
+
+  const runnerRemove = Command.make(
+    "remove",
+    {
+      name: Argument.string("name").pipe(Argument.withDescription("Registered runner name")),
+      yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm runner removal")),
+      trailing: trailingArguments,
+    },
+    ({ name, trailing, yes }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (!RUNNER_NAME_PATTERN.test(name))
+          return yield* usage(
+            "Runner name must contain only letters, numbers, underscores, or dashes",
+          );
+        if (!yes) {
+          if (!runtime.stdoutIsTTY || !runtime.stdinIsTTY)
+            return yield* usage(
+              "runner remove requires --yes in non-interactive use",
+              "Review assigned sessions with scotty runner list, then retry with --yes.",
+            );
+          const answer = runtime.prompt(`Remove runner ${name}? Type ${name} to confirm: `);
+          if (answer !== name)
+            return yield* new CliError(
+              "cancelled",
+              "Runner removal cancelled",
+              "Pass --yes to skip confirmation.",
+              EXIT.USAGE,
+            );
+        }
+        const auth = yield* credentials(options);
+        const decoded = decodeRunnerRemovalResponse(
+          yield* requestJson(auth, `/api/runners/${encodeURIComponent(name)}`, {
+            method: "DELETE",
+          }),
+        );
+        if (Option.isNone(decoded) || decoded.value.name !== name)
+          return yield* invalidResponse("Server returned an invalid runner removal result");
+        if (autoJson) outputJson(runtime.stdout, decoded.value);
+        else runtime.stdout(`Runner ${name} removed.\n`);
+      }),
+  ).pipe(Command.withDescription("Disable, disconnect, and unregister a runner"));
+
   const runner = Command.make("runner").pipe(
-    Command.withDescription("Run a Scotty compute runner"),
-    Command.withSubcommands([runnerServe, runnerSetup]),
+    Command.withDescription("Set up and manage Scotty compute runners"),
+    Command.withSubcommands([runnerServe, runnerSetup, runnerList, runnerRemove]),
   );
 
   const sessionOperation = Effect.fnUntraced(function* (
@@ -913,6 +1106,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       init,
       beam,
       list,
+      doctor,
       attach,
       auth,
       owner,

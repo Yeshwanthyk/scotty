@@ -58,7 +58,6 @@ const HTTP_REQUEST_HEADERS_TO_STRIP = [
   "x-forwarded-host",
   "x-forwarded-port",
   "x-forwarded-proto",
-  "x-pican-proxy-token",
 ] as const;
 const HTTP_RESPONSE_HEADERS_TO_STRIP = [
   "connection",
@@ -680,7 +679,7 @@ export class RunnerTransport {
         },
         {
           highWaterMark: 0,
-          size: (chunk) => chunk.byteLength,
+          size: (chunk) => chunk?.byteLength ?? 0,
         },
       );
       const response = Result.try({

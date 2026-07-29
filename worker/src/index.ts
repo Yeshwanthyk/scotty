@@ -19,7 +19,7 @@ import {
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
-import { constantTimeStringEqual, sha256Hex } from "./digest";
+import { sha256Hex } from "./digest";
 import {
   authRegistry,
   browserLabel,
@@ -54,10 +54,15 @@ import {
   type RunnerControlAction,
   type RunnerControlStatus,
 } from "./runner-control";
-import { PICAN_SANDBOX_ORIGIN, Sandbox as ScottySandbox } from "./session";
+import {
+  ScottyRunnerRegistry,
+  type RunnerRegistryRpcResult,
+  type ScottyRunnerRegistryStub,
+} from "./runner-registry-object";
+import { Sandbox as ScottySandbox } from "./session";
 import { terminalShellPath } from "./container-auth";
 
-export { ContainerProxy, ScottyAuthRegistry, ScottySandbox };
+export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
 
 const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
 const PUBLIC_AUTH_MUTATIONS = new Set([
@@ -66,6 +71,15 @@ const PUBLIC_AUTH_MUTATIONS = new Set([
   "POST /api/auth/recovery-grants/consume",
 ]);
 const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["booting", "warm", "sleeping", "failed"]);
+const RUNNER_REGISTRY_OBJECT_NAME = "account";
+const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
+const RunnerRegistrationInputSchema = Schema.Struct({
+  name: Schema.String,
+  replace: Schema.optionalKey(Schema.Boolean),
+});
+const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
+  onExcessProperty: "error",
+});
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -97,11 +111,7 @@ app.use("*", async (c, next) => {
 
 app.get("/api/runners/:name/connect", async (c) => {
   const name = c.req.param("name");
-  if (
-    !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(name) ||
-    !c.env.SCOTTY_RUNNER_NAME ||
-    name !== c.env.SCOTTY_RUNNER_NAME
-  )
+  if (!RUNNER_NAME_PATTERN.test(name))
     return c.json({ error: { code: "not_found", message: "Runner not found" } }, 404);
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
     return c.json(
@@ -114,12 +124,19 @@ app.get("/api/runners/:name/connect", async (c) => {
       426,
     );
   const authorization = c.req.header("authorization");
-  if (
-    !c.env.SCOTTY_RUNNER_TOKEN ||
-    !authorization?.startsWith("Bearer ") ||
-    !(await constantTimeStringEqual(authorization.slice(7), c.env.SCOTTY_RUNNER_TOKEN))
-  )
+  if (!authorization?.startsWith("Bearer "))
     return c.json({ error: { code: "auth", message: "Runner authorization failed" } }, 401);
+  const authenticated = await runnerRegistry(c.env).authenticate(name, authorization.slice(7));
+  if (!authenticated.ok) {
+    if (authenticated.error.reason === "runner_missing")
+      return c.json({ error: { code: "not_found", message: "Runner not found" } }, 404);
+    if (
+      authenticated.error.reason === "credential_invalid" ||
+      authenticated.error.reason === "invalid_input"
+    )
+      return c.json({ error: { code: "auth", message: "Runner authorization failed" } }, 401);
+    unwrapRunnerRegistryRpc(authenticated);
+  }
 
   const headers = new Headers();
   for (const name of [
@@ -337,9 +354,45 @@ app.get("/api/runners", async (c) => {
   return c.json(await configuredRunnerStatuses(c.env));
 });
 
+app.post("/api/runners", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  requireJsonContentType(c.req.raw);
+  const decoded = decodeRunnerRegistrationInput(await readJsonBody(c.req.raw));
+  if (Option.isNone(decoded) || !RUNNER_NAME_PATTERN.test(decoded.value.name))
+    throw badRequest("Runner registration request is invalid");
+  const issued = unwrapRunnerRegistryRpc(
+    await runnerRegistry(c.env).register(decoded.value.name, decoded.value.replace ?? false),
+  );
+  if (issued.replaced) await c.env.RUNNERS.getByName(issued.runner.name).control("disconnect");
+  return c.json({
+    name: issued.runner.name,
+    credential: issued.credential,
+    replaced: issued.replaced,
+    createdAt: issued.runner.createdAt,
+    updatedAt: issued.runner.updatedAt,
+  });
+});
+
+app.delete("/api/runners/:name", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  const name = await requireRegisteredRunnerName(c.env, c.req.param("name"));
+  const assignedSessions = await assignedRunnerSessionCount(c.env, name);
+  if (assignedSessions > 0)
+    throw new ScottyError("conflict", "Runner still owns active sessions", {
+      httpStatus: 409,
+      exitCode: 5,
+      hint: "Drain and vaporize or move every assigned session before removing this runner.",
+    });
+  const runner = c.env.RUNNERS.getByName(name);
+  await runner.control("disable");
+  await runner.control("disconnect");
+  unwrapRunnerRegistryRpc(await runnerRegistry(c.env).remove(name));
+  return c.json({ name, status: "removed" as const });
+});
+
 app.post("/api/runners/:name/:action", async (c) => {
   requireOwnerPrincipal(c.get("auth"));
-  const name = requireConfiguredRunnerName(c.env, c.req.param("name"));
+  const name = await requireRegisteredRunnerName(c.env, c.req.param("name"));
   const action = parseRunnerControlAction(c.req.param("action"));
   const runner = c.env.RUNNERS.getByName(name);
   await runner.control(action);
@@ -358,13 +411,9 @@ app.post("/api/sessions", async (c) => {
   });
   const input = parseCreateInput(body);
   if (input.provider === "runner") {
-    const name = requireConfiguredRunnerName(c.env, input.runner ?? "");
-    const status = await c.env.RUNNERS.getByName(name).controlStatus();
-    if (status.desired !== "accepting" || status.connection !== "connected")
-      throw new ScottyError("upstream", "Runner is unavailable", {
-        httpStatus: 502,
-        exitCode: 1,
-      });
+    throw badRequest(
+      "Runner-backed sessions require a native Pi transport and cannot be created yet",
+    );
   }
   const { id, session } = await createTrackedSession(c.env, c.req.header("idempotency-key"), input);
   const origin = new URL(c.req.url).origin;
@@ -517,7 +566,7 @@ app.all("/s/:id/*", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return serveScottySessionPicanRequest(c.env, c.req.raw, id);
+  return serveScottySessionSubpath(c.env, c.req.raw, id);
 });
 
 app.get("/sessions", async (c) => {
@@ -620,12 +669,23 @@ function parseRunnerControlAction(value: unknown): RunnerControlAction {
   });
 }
 
-function requireConfiguredRunnerName(env: Bindings, value: string): string {
-  if (env.SCOTTY_RUNNER_NAME && value === env.SCOTTY_RUNNER_NAME) return value;
-  throw new ScottyError("not_found", "Runner not found", {
-    httpStatus: 404,
-    exitCode: 3,
+function requireRootPrincipal(principal: AuthPrincipal): void {
+  if (principal.kind === "root") return;
+  throw new ScottyError("auth", "The CLI root credential is required", {
+    httpStatus: 401,
+    exitCode: 4,
+    hint: "Run this command from a machine configured with scotty init.",
   });
+}
+
+async function requireRegisteredRunnerName(env: Bindings, value: string): Promise<string> {
+  if (!RUNNER_NAME_PATTERN.test(value))
+    throw new ScottyError("not_found", "Runner not found", {
+      httpStatus: 404,
+      exitCode: 3,
+    });
+  const registration = unwrapRunnerRegistryRpc(await runnerRegistry(env).get(value));
+  return registration.name;
 }
 
 function runnerStatus(name: string, status: RunnerControlStatus, assignedSessions: number) {
@@ -655,13 +715,42 @@ async function assignedRunnerSessionCount(env: Bindings, name: string): Promise<
 }
 
 async function configuredRunnerStatuses(env: Bindings) {
-  const name = env.SCOTTY_RUNNER_NAME?.trim();
-  if (!name) return [];
-  const [status, assignedSessions] = await Promise.all([
-    env.RUNNERS.getByName(name).controlStatus(),
-    assignedRunnerSessionCount(env, name),
-  ]);
-  return [runnerStatus(name, status, assignedSessions)];
+  const registrations = unwrapRunnerRegistryRpc(await runnerRegistry(env).list());
+  return Promise.all(
+    registrations.map(async ({ name }) => {
+      const [status, assignedSessions] = await Promise.all([
+        env.RUNNERS.getByName(name).controlStatus(),
+        assignedRunnerSessionCount(env, name),
+      ]);
+      return runnerStatus(name, status, assignedSessions);
+    }),
+  );
+}
+
+function runnerRegistry(env: Bindings): ScottyRunnerRegistryStub {
+  return env.RUNNER_REGISTRY.getByName(RUNNER_REGISTRY_OBJECT_NAME);
+}
+
+function unwrapRunnerRegistryRpc<A>(result: RunnerRegistryRpcResult<A>): A {
+  if (result.ok) return result.value;
+  const { reason, message } = result.error;
+  if (reason === "runner_missing")
+    throw new ScottyError("not_found", message, { httpStatus: 404, exitCode: 3 });
+  if (reason === "runner_exists")
+    throw new ScottyError("conflict", message, {
+      httpStatus: 409,
+      exitCode: 5,
+      hint: "Choose another name or pass --replace to rotate this runner credential.",
+    });
+  if (reason === "invalid_input")
+    throw new ScottyError("bad_request", message, { httpStatus: 400, exitCode: 2 });
+  if (reason === "credential_invalid")
+    throw new ScottyError("auth", message, { httpStatus: 401, exitCode: 4 });
+  console.error("Runner registry RPC failed", { reason });
+  throw new ScottyError("internal", "Runner registry failed", {
+    httpStatus: 500,
+    exitCode: 1,
+  });
 }
 
 async function readJsonBody(request: Request): Promise<unknown> {
@@ -758,19 +847,19 @@ async function serveScottySessionPage(
   sessionId: string,
 ): Promise<Response> {
   const session = await sessionSandbox(env, sessionId).getScottySession();
-  if (session.provider === "runner") return proxyPicanRequest(env, request, sessionId);
   if (session.status !== "warm")
+    return Response.redirect(new URL("/sessions", request.url).toString(), 302);
+  if (session.provider === "runner")
     return Response.redirect(new URL("/sessions", request.url).toString(), 302);
   return secureAsset(env, request, "/terminal.html");
 }
 
-async function serveScottySessionPicanRequest(
+async function serveScottySessionSubpath(
   env: Bindings,
-  request: Request,
+  _request: Request,
   sessionId: string,
 ): Promise<Response> {
-  const session = await sessionSandbox(env, sessionId).getScottySession();
-  if (session.provider === "runner") return proxyPicanRequest(env, request, sessionId);
+  await sessionSandbox(env, sessionId).getScottySession();
   return new Response(
     JSON.stringify({ error: { code: "not_found", message: "Route not found" } }),
     {
@@ -938,81 +1027,4 @@ async function authAsset(env: Bindings, request: Request, pathname: string): Pro
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "DENY");
   return new Response(asset.body, { status: asset.status, headers });
-}
-
-async function proxyPicanRequest(
-  env: Bindings,
-  request: Request,
-  sessionId: string,
-): Promise<Response> {
-  if (request.headers.get("upgrade")?.toLowerCase() === "websocket")
-    return new Response("Pican WebSocket proxying is not supported", { status: 501 });
-
-  const headers = sanitizePicanProxyHeaders(request.headers);
-  const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
-  const source = new URL(request.url);
-  const target = new URL(`${source.pathname}${source.search}`, PICAN_SANDBOX_ORIGIN);
-  const init: RequestInit = {
-    method: request.method,
-    headers,
-    body,
-    redirect: "manual",
-    signal: request.signal,
-  };
-  if (body !== undefined) Reflect.set(init, "duplex", "half");
-  const response = await sessionSandbox(env, sessionId).fetch(new Request(target, init));
-  return addSessionsLink(request, response);
-}
-
-async function addSessionsLink(request: Request, response: Response): Promise<Response> {
-  if (
-    request.method !== "GET" ||
-    !response.headers.get("content-type")?.toLowerCase().startsWith("text/html")
-  )
-    return response;
-
-  const html = await response.clone().text();
-  if (!/<\/body\s*>/i.test(html)) return response;
-
-  const link = `<style id="scotty-sessions-link-style">
-#scotty-sessions-link{position:fixed;z-index:2147483647;left:max(12px,env(safe-area-inset-left));bottom:max(12px,env(safe-area-inset-bottom));display:inline-flex;align-items:center;min-height:36px;padding:8px 11px;border:1px solid #37404b;border-radius:8px;background:#0b1016eb;color:#e9eef4;font:600 13px/1.2 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-decoration:none;box-shadow:0 2px 8px #0006}
-#scotty-sessions-link:hover{background:#17202a;color:#fff}
-#scotty-sessions-link:focus-visible{outline:2px solid #6edcf0;outline-offset:2px}
-</style><a id="scotty-sessions-link" href="/sessions" aria-label="Back to sessions">← Sessions</a>`;
-  const headers = new Headers(response.headers);
-  headers.delete("content-encoding");
-  headers.delete("content-length");
-  headers.delete("etag");
-  return new Response(html.replace(/<\/body\s*>/i, `${link}</body>`), {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-function sanitizePicanProxyHeaders(source: Headers): Headers {
-  const headers = new Headers(source);
-  for (const name of source.get("connection")?.split(",") ?? []) headers.delete(name.trim());
-  headers.delete("host");
-  headers.delete("cookie");
-  headers.delete("authorization");
-  headers.delete("proxy-authorization");
-  headers.delete("proxy-authenticate");
-  headers.delete("x-pican-proxy-token");
-  headers.delete("forwarded");
-  headers.delete("cf-connecting-ip");
-  headers.delete("cf-ipcountry");
-  headers.delete("cf-ray");
-  headers.delete("x-forwarded-for");
-  headers.delete("x-forwarded-host");
-  headers.delete("x-forwarded-proto");
-  headers.delete("x-forwarded-port");
-  headers.delete("via");
-  headers.delete("keep-alive");
-  headers.delete("te");
-  headers.delete("trailer");
-  headers.delete("transfer-encoding");
-  headers.delete("upgrade");
-  headers.delete("connection");
-  return headers;
 }

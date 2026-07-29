@@ -137,7 +137,7 @@ const noOrphans = (value) =>
   value.createIdempotency === false;
 
 test(
-  "deployed canary: up/Pican/snapshot/hard-cap/resume/down/vaporize leaves no orphans",
+  "deployed canary: up/Pi terminal/snapshot/hard-cap/resume/down/vaporize leaves no orphans",
   { skip: skipReason, timeout: 20 * 60_000 },
   async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-deployed-e2e-home-"));
