@@ -1,15 +1,15 @@
 # Scotty
 
-Scotty runs a persistent Pican-hosted Codex workspace in a Cloudflare Sandbox, mounts Pican's UI
+Scotty runs Pi in a persistent Cloudflare Sandbox workspace, presents its TUI through Ghostty Web
 at an authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, beam down, or
-permanently destroy the session.
+permanently destroy the session. Trusted runner sessions retain a Pican compatibility path.
 
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 
 ## Components
 
-- `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, Pican process
-  lifecycle, and mounted Pican UI.
+- `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, Pi lifecycle,
+  Ghostty Web terminal, and trusted-runner Pican compatibility.
 - `cli/` — Effect-native Bun CLI and embedded `scotty skills` guide.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
@@ -34,10 +34,10 @@ epoch. Other browsers are standard clients. Pairing creates standard access, own
 bound to one existing target browser, and root recovery revokes every browser credential before
 creating a fresh owner. Raw client, pairing, transfer, and recovery secrets are never persisted.
 
-The browser never receives Pican's internal proxy credential. The Worker authenticates the
-browser, strips browser credentials before forwarding, and injects one session-bound proxy header
-on the private hop to Pican. Pican keeps that proxy token out of child processes; Codex receives
-only session-bound Codex and GitHub sentinels.
+The browser never receives container credentials. For Cloudflare sessions, the Worker authenticates
+the terminal WebSocket and attaches it to the Sandbox native PTY running Pi. Trusted runner Pican
+traffic stays behind the authenticated Scotty route. Pi, Codex, and runner Pican receive only
+session-bound Codex and GitHub sentinels.
 
 Residual limitation: any allowed package registry is still a potential source/prompt exfiltration channel. Keep `ALLOWED_HOSTS` in `worker/src/egress.ts` minimal for the target repository.
 
@@ -102,9 +102,10 @@ and native Sandbox/Auth classes; the private, URL-disabled `scotty-runner` Worke
 `ScottyRunner`, receives no inherited secrets, and is reached only through the external Worker's
 cross-script `RUNNERS` binding.
 
-The current Cloudflare gate is forward-only: the full local suite must pass with the pinned Pican
-binary, then the guarded deployment and deployed canary must prove `beam up → mounted Pican UI →
-snapshot → resume → vaporize`. No Sheppard or browser-terminal fallback is part of that gate.
+The current Cloudflare gate is forward-only: the full local suite and Colima-backed image build must
+pass with pinned Pi and Ghostty Web versions, then the guarded deployment and deployed canary must
+prove `beam up → Pi terminal → snapshot → resume → vaporize`. No Pican, Sheppard, or tmux process
+is part of the Cloudflare path.
 
 ## CLI
 
@@ -135,8 +136,9 @@ accepts the runner token as a command argument.
 
 Run `scotty owner recover` once on the intended primary browser after a fresh deployment or when
 moving to a replacement laptop. Keep `SCOTTY_TOKEN` in a password manager or another protected
-recovery location. `scotty attach <id>` opens the mounted Pican UI at the clean session URL and
-requires an already paired browser. See
+recovery location. `scotty attach <id>` opens the Pi terminal at the clean session URL and requires
+an already paired browser. Sleeping sessions must be resumed from Home before the terminal opens.
+See
 [`docs/owner-transfer-cutover.md`](docs/owner-transfer-cutover.md) before production migration.
 
 ## E2E

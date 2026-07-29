@@ -63,7 +63,7 @@ Preserve unless explicitly approved otherwise:
 - PTY framing, resize, reconnect, binary output, single-owner browser pairing/transfer/recovery
   cookie handoff, one-use PTY tickets, and streamed beam-down behavior.
 - Persisted `SessionRecord` version `1`, storage keys, statuses, operation lease, and nonce semantics.
-- `/workspace/<id>`, branch `scotty/<id>`, the session-private Sheppard runtime, and per-client `scotty-web-*` execution sessions.
+- `/workspace/<id>`, branch `scotty/<id>`, Pi state under `.pi-agent`, and one named Sandbox terminal session per Cloudflare workspace.
 
 ### State ownership remains unchanged
 
@@ -140,7 +140,7 @@ the SDK host remains a minimal external-class island.
 │                                                             ▼                │
 │                                                   ┌──────────────────────┐   │
 │                                                   │ Container app/image  │   │
-│                                                   │ Codex + Sheppard     │   │
+│                                                   │ Pi + Codex provider  │   │
 │                                                   │ + git                │   │
 │                                                   └──────────────────────┘   │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -613,13 +613,13 @@ Test every injected stage failure and preserve record/projection/schedule/thread
 Use scope finalizers around pause/resume. Preserve sequence:
 
 1. persisted lease;
-2. pause the Sheppard-managed agent process group;
+2. terminate the named Pi terminal session;
 3. filesystem `sync`;
 4. immutable backup upload;
 5. authoritative commit of new current/old current as previous;
 6. projection;
 7. best-effort deletion of formerly previous;
-8. resume for manual snapshot;
+8. let the next terminal attachment run `pi --continue` after a manual snapshot;
 9. lease release according to caller.
 
 #### 9B Lifecycle
