@@ -27,7 +27,7 @@ export function titleText(value: unknown): string | undefined;
 export function sessionTitle(session: { readonly title: unknown }): string;
 export function mergeRepositorySuggestions(
   tracked: unknown,
-  sessions: unknown,
+  suppressed?: unknown,
 ): RepositorySuggestion[];
 export function groupSessionsByRepository<
   T extends {

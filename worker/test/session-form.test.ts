@@ -31,7 +31,7 @@ describe("session form", () => {
     assert.strictEqual(sessionTitle({ title: "Package Pi extensions" }), "Package Pi extensions");
   });
 
-  it("merges tracked repositories with current session repositories", () => {
+  it("uses tracked repository history and suppresses identities case-insensitively", () => {
     assert.deepStrictEqual(
       mergeRepositorySuggestions(
         [
@@ -40,21 +40,13 @@ describe("session form", () => {
             defaultBranch: "main",
             lastUsedAt: "2026-07-23T15:00:00.000Z",
           },
-        ],
-        [
           { repo: "yeshwanthyk/SCOTTY", defaultBranch: "trunk" },
           { repo: "owner/project", defaultBranch: "main" },
           { repo: "invalid" },
         ],
+        ["yeshwanthyk/scotty"],
       ),
-      [
-        {
-          repo: "Yeshwanthyk/scotty",
-          defaultBranch: "main",
-          lastUsedAt: "2026-07-23T15:00:00.000Z",
-        },
-        { repo: "owner/project", defaultBranch: "main", lastUsedAt: undefined },
-      ],
+      [{ repo: "owner/project", defaultBranch: "main", lastUsedAt: undefined }],
     );
   });
 

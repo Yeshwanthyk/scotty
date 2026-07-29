@@ -207,6 +207,10 @@ export const sessionProjectionStorageFake = (
 export const repoProjectionStorageFake = (
   memory = new InMemoryFaultInjectableFake(),
 ): RepoProjectionStorage => ({
+  delete: (key) =>
+    memory.invoke("delete", [key], () => {
+      memory.values.delete(key);
+    }),
   get: (key) => projectionGet(memory, key),
   list: (cursor) => projectionList(memory, cursor),
   put: (key, value) => projectionPut(memory, key, value),

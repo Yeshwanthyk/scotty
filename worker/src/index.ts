@@ -10,6 +10,7 @@ import {
   parseCreateInput,
   parseIdempotencyKey,
   parseRenameSessionInput,
+  parseRepo,
   parseSessionId,
   ScottyError,
   wrongState,
@@ -41,6 +42,7 @@ import {
   sessionProjectionLayer,
 } from "./session-projection";
 import {
+  forgetRepoProjection,
   kvRepoProjectionStorage,
   listRepoProjections,
   repoProjectionLayer,
@@ -375,6 +377,15 @@ app.get("/api/repos", async (c) => {
       onSuccess: (repositories) => repositories,
     }),
   );
+});
+
+app.delete("/api/repos/:owner/:name", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  const repo = parseRepo(`${c.req.param("owner")}/${c.req.param("name")}`);
+  await Effect.runPromise(
+    forgetRepoProjection(repo).pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped),
+  );
+  return c.json({ repo, forgotten: true });
 });
 
 app.get("/api/sessions", async (c) => {

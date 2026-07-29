@@ -20,15 +20,21 @@ export function sessionTitle(session) {
   return titleText(session.title) || "";
 }
 
-export function mergeRepositorySuggestions(tracked, sessions) {
+export function mergeRepositorySuggestions(tracked, suppressed) {
   const merged = [];
   const seen = new Set();
+  const suppressedIdentities = new Set();
 
-  for (const candidate of [...arrayOrEmpty(tracked), ...arrayOrEmpty(sessions)]) {
+  for (const candidate of arrayOrEmpty(suppressed)) {
+    const repo = repositoryName(candidate);
+    if (repo) suppressedIdentities.add(repo.toLocaleLowerCase("en-US"));
+  }
+
+  for (const candidate of arrayOrEmpty(tracked)) {
     const repo = repositoryName(candidate?.repo);
     if (!repo) continue;
     const identity = repo.toLocaleLowerCase("en-US");
-    if (seen.has(identity)) continue;
+    if (seen.has(identity) || suppressedIdentities.has(identity)) continue;
     seen.add(identity);
     merged.push({
       repo,
