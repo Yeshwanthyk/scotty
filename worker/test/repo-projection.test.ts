@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { TestClock } from "effect/testing";
 import {
+  forgetRepoProjection,
   listRepoProjections,
   RepoProjection,
   RepoProjectionFailure,
@@ -42,6 +43,46 @@ describe("RepoProjection", () => {
         defaultBranch: "trunk",
         lastUsedAt: "2026-07-23T12:34:57.000Z",
       });
+    }),
+  );
+
+  it.effect("forgets every case variant and keeps deletion failures typed", () =>
+    Effect.gen(function* () {
+      const storage = new InMemoryFaultInjectableFake();
+      storage.values.set("repo:owner/remove", {
+        version: 1,
+        repo: "owner/remove",
+        defaultBranch: "main",
+        lastUsedAt: "2026-07-23T12:00:00.000Z",
+      });
+      storage.values.set("repo:OWNER/REMOVE", {
+        version: 1,
+        repo: "OWNER/REMOVE",
+        defaultBranch: "main",
+        lastUsedAt: "2026-07-23T11:00:00.000Z",
+      });
+      storage.values.set("repo:owner/keep", {
+        version: 1,
+        repo: "owner/keep",
+        defaultBranch: "main",
+        lastUsedAt: "2026-07-22T12:00:00.000Z",
+      });
+      storage.values.set("session:a0b1c2d3e4f5", { repo: "owner/remove" });
+
+      yield* withProjection(storage, forgetRepoProjection("owner/remove"));
+      yield* withProjection(storage, forgetRepoProjection("owner/remove"));
+
+      assert.isFalse(storage.values.has("repo:owner/remove"));
+      assert.isFalse(storage.values.has("repo:OWNER/REMOVE"));
+      assert.isTrue(storage.values.has("repo:owner/keep"));
+      assert.isTrue(storage.values.has("session:a0b1c2d3e4f5"));
+
+      storage.injectFailure("delete");
+      const result = yield* Effect.result(
+        withProjection(storage, forgetRepoProjection("owner/keep")),
+      );
+      assert.ok(Result.isFailure(result));
+      assert.deepStrictEqual(result.failure, new RepoProjectionFailure({ operation: "delete" }));
     }),
   );
 

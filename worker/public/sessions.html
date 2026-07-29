@@ -498,14 +498,12 @@
 
       .repo-suggestion {
         display: inline-flex;
+        overflow: hidden;
         max-width: 100%;
         min-height: 40px;
         min-width: 0;
         align-items: center;
-        gap: 9px;
         flex: none;
-        padding: 0 10px;
-        border: 0;
         border-radius: 6px;
         background: var(--panel-raised);
         box-shadow: var(--ring);
@@ -513,12 +511,10 @@
         font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
         font-size: 0.7rem;
         line-height: 1.2;
-        cursor: pointer;
         transition:
           background-color 150ms var(--ease-out),
           box-shadow 150ms var(--ease-out),
-          color 150ms var(--ease-out),
-          scale 120ms var(--ease-out);
+          color 150ms var(--ease-out);
       }
 
       .repo-suggestion:hover {
@@ -527,16 +523,58 @@
         color: var(--ink);
       }
 
-      .repo-suggestion:active {
+      .repo-suggestion-select,
+      .repo-suggestion-remove {
+        min-height: 40px;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        transition:
+          background-color 150ms var(--ease-out),
+          color 150ms var(--ease-out),
+          scale 120ms var(--ease-out);
+      }
+
+      .repo-suggestion-select {
+        display: inline-flex;
+        min-width: 0;
+        align-items: center;
+        gap: 9px;
+        padding: 0 8px 0 10px;
+        font: inherit;
+      }
+
+      .repo-suggestion-remove {
+        display: grid;
+        width: 40px;
+        flex: none;
+        place-items: center;
+        padding: 0;
+        border-left: 1px solid var(--line-soft);
+        color: var(--quiet);
+        font-size: 1rem;
+        line-height: 1;
+      }
+
+      .repo-suggestion-remove:hover {
+        background: oklch(24% 0.025 240);
+        color: var(--ink);
+      }
+
+      .repo-suggestion-select:active,
+      .repo-suggestion-remove:active {
         scale: 0.96;
       }
 
-      .repo-suggestion:focus-visible {
+      .repo-suggestion-select:focus-visible,
+      .repo-suggestion-remove:focus-visible {
         outline: 1px solid var(--focus);
-        outline-offset: 2px;
+        outline-offset: -2px;
       }
 
-      .repo-suggestion:disabled {
+      .repo-suggestion-select:disabled,
+      .repo-suggestion-remove:disabled {
         cursor: wait;
         opacity: 0.5;
       }
@@ -1511,8 +1549,12 @@
         }
 
         .repo-suggestion {
-          justify-content: space-between;
           width: 100%;
+        }
+
+        .repo-suggestion-select {
+          flex: 1;
+          justify-content: space-between;
         }
 
         .repo-suggestion:nth-child(n + 4) {
@@ -1552,7 +1594,9 @@
 
         .composer,
         .session,
-        .repo-suggestion {
+        .repo-suggestion,
+        .repo-suggestion-select,
+        .repo-suggestion-remove {
           transition: none;
           transform: none;
         }
@@ -1561,7 +1605,8 @@
           scale: none;
         }
 
-        .repo-suggestion:active {
+        .repo-suggestion-select:active,
+        .repo-suggestion-remove:active {
           scale: none;
         }
 
@@ -1818,11 +1863,17 @@
       const confirmations = new Set();
       const expandedSleepingProjects = new Set();
       const rowErrors = new Map();
+      const suppressedRepositories = new Set();
       let renamingId;
       let renameDraft = "";
 
       function sessionPath(id, suffix = "") {
         return `/api/sessions/${encodeURIComponent(id)}${suffix}`;
+      }
+
+      function repositoryPath(repo) {
+        const [owner, name] = repo.split("/");
+        return `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
       }
 
       function duration(value) {
@@ -1920,27 +1971,82 @@
       }
 
       function renderRepositorySuggestions() {
-        const repositories = mergeRepositorySuggestions(trackedRepositories, sessions);
+        const repositories = mergeRepositorySuggestions(trackedRepositories, [
+          ...suppressedRepositories,
+        ]);
         recentRepos.replaceChildren();
         recentRepositories.hidden = repositories.length === 0;
         for (const repository of repositories.slice(0, 5)) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "repo-suggestion";
-          button.title = repository.defaultBranch
+          const suggestion = document.createElement("div");
+          suggestion.className = "repo-suggestion";
+
+          const selectButton = document.createElement("button");
+          selectButton.type = "button";
+          selectButton.className = "repo-suggestion-select";
+          selectButton.title = repository.defaultBranch
             ? `${repository.repo} · default branch ${repository.defaultBranch}`
             : repository.repo;
-          addText(button, "repo-suggestion-name", repository.repo, "span");
+          addText(selectButton, "repo-suggestion-name", repository.repo, "span");
           if (repository.defaultBranch)
-            addText(button, "repo-suggestion-branch", repository.defaultBranch, "span");
-          button.disabled = creating;
-          button.addEventListener("click", () => {
+            addText(selectButton, "repo-suggestion-branch", repository.defaultBranch, "span");
+          selectButton.disabled = creating;
+          selectButton.addEventListener("click", () => {
             repoInput.value = repository.repo;
             repoInput.setCustomValidity("");
             if (composerFeedback.classList.contains("is-error")) setComposerFeedback();
             promptInput.focus();
           });
-          recentRepos.append(button);
+
+          const removeButton = document.createElement("button");
+          removeButton.type = "button";
+          removeButton.className = "repo-suggestion-remove";
+          removeButton.title = "Remove from recents";
+          removeButton.setAttribute(
+            "aria-label",
+            `Remove ${repository.repo} from recent repositories`,
+          );
+          removeButton.textContent = "×";
+          removeButton.disabled = creating;
+          removeButton.addEventListener("click", () => void forgetRepository(repository));
+
+          suggestion.append(selectButton, removeButton);
+          recentRepos.append(suggestion);
+        }
+      }
+
+      async function forgetRepository(repository) {
+        const identity = repository.repo.toLocaleLowerCase("en-US");
+        if (suppressedRepositories.has(identity)) return;
+        suppressedRepositories.add(identity);
+        renderRepositorySuggestions();
+
+        try {
+          const response = await fetch(repositoryPath(repository.repo), {
+            method: "DELETE",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok)
+            throw new Error(
+              await errorMessage(response, `Could not remove ${repository.repo} from recents.`),
+            );
+          const result = await response.json();
+          if (result?.repo !== repository.repo || result?.forgotten !== true)
+            throw new Error("Scotty returned an unexpected response.");
+          trackedRepositories = trackedRepositories.filter(
+            (candidate) => repositoryName(candidate?.repo)?.toLocaleLowerCase("en-US") !== identity,
+          );
+          setComposerFeedback("", `Removed ${repository.repo} from recent repositories.`);
+        } catch (error) {
+          suppressedRepositories.delete(identity);
+          renderRepositorySuggestions();
+          setComposerFeedback(
+            "error",
+            error instanceof Error
+              ? error.message
+              : `Could not remove ${repository.repo} from recents.`,
+          );
         }
       }
 

@@ -892,6 +892,69 @@ describe("real Hono boundary", () => {
     ]);
   });
 
+  it("forgets only the requested repository projection", async () => {
+    const deleteKey = vi.fn(async (_name: string) => undefined);
+    const sessions = {
+      ...emptySessionsNamespace(),
+      list: async () => ({
+        keys: [{ name: "repo:owner/project" }, { name: "repo:OWNER/PROJECT" }],
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      delete: deleteKey,
+    } as KVNamespace;
+
+    const response = await app.request(
+      "/api/repos/owner/project",
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      { ...env(), SESSIONS: sessions },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      repo: "owner/project",
+      forgotten: true,
+    });
+    expect(deleteKey).toHaveBeenCalledWith("repo:owner/project");
+    expect(deleteKey).toHaveBeenCalledWith("repo:OWNER/PROJECT");
+    expect(sandbox.vaporizeScottySession).not.toHaveBeenCalled();
+  });
+
+  it("returns a generic internal error when repository projection deletion fails", async () => {
+    const sessions = {
+      ...emptySessionsNamespace(),
+      list: async () => ({
+        keys: [{ name: "repo:owner/project" }],
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      delete: async (_name: string) => Promise.reject("delete failed"),
+    } as KVNamespace;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await app.request(
+      "/api/repos/owner/project",
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      { ...env(), SESSIONS: sessions },
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "internal", message: "Internal error" },
+    });
+    expect(logged).toHaveBeenCalledWith("Projection failure", {
+      tag: "RepoProjectionFailure",
+      reason: "delete",
+    });
+    logged.mockRestore();
+  });
+
   it("preserves the generic internal response for provider-level KV list failure", async () => {
     const sessions = {
       list: async () => Promise.reject("list failed"),

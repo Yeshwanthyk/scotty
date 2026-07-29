@@ -8,7 +8,7 @@ import {
 } from "./contracts";
 import { listProjectionValues } from "./projection-list";
 
-type RepoProjectionOperation = "get" | "list" | "put";
+type RepoProjectionOperation = "delete" | "get" | "list" | "put";
 
 export class RepoProjectionFailure extends Data.TaggedError("RepoProjectionFailure")<{
   readonly operation: RepoProjectionOperation;
@@ -20,12 +20,14 @@ export interface RepoProjectionPage {
 }
 
 export interface RepoProjectionStorage {
+  readonly delete: (key: string) => Promise<void>;
   readonly get: (key: string) => Promise<unknown | null>;
   readonly list: (cursor?: string) => Promise<RepoProjectionPage>;
   readonly put: (key: string, value: string) => Promise<void>;
 }
 
 interface RepoProjectionShape {
+  readonly forget: (repo: string) => Effect.Effect<void, RepoProjectionFailure>;
   readonly upsert: (
     repo: string,
     defaultBranch: string,
@@ -38,6 +40,7 @@ export class RepoProjection extends Context.Service<RepoProjection, RepoProjecti
 ) {}
 
 export const kvRepoProjectionStorage = (namespace: KVNamespace): RepoProjectionStorage => ({
+  delete: (key) => namespace.delete(key),
   get: (key) => namespace.get(key, "text"),
   list: (cursor) =>
     namespace.list({ prefix: REPO_KV_PREFIX, cursor }).then((page) => ({
@@ -64,11 +67,45 @@ export const listRepoProjections: Effect.Effect<
   RepoProjection
 > = Effect.flatMap(RepoProjection, (projection) => projection.list);
 
+export const forgetRepoProjection = (
+  repo: string,
+): Effect.Effect<void, RepoProjectionFailure, RepoProjection> =>
+  Effect.flatMap(RepoProjection, (projection) => projection.forget(repo));
+
 const makeRepoProjection = (storage: RepoProjectionStorage): RepoProjectionShape => {
   const failure = (operation: RepoProjectionOperation): RepoProjectionFailure =>
     new RepoProjectionFailure({ operation });
 
   return RepoProjection.of({
+    forget: Effect.fnUntraced(function* (repo) {
+      const identity = repo.toLocaleLowerCase("en-US");
+      const matchingKeys: Array<string> = [];
+      let cursor: string | undefined;
+      do {
+        const page = yield* Effect.tryPromise({
+          try: () => storage.list(cursor),
+          catch: () => failure("list"),
+        });
+        for (const key of page.keys) {
+          if (
+            key.startsWith(REPO_KV_PREFIX) &&
+            key.slice(REPO_KV_PREFIX.length).toLocaleLowerCase("en-US") === identity
+          )
+            matchingKeys.push(key);
+        }
+        cursor = page.cursor;
+      } while (cursor !== undefined);
+
+      yield* Effect.forEach(
+        matchingKeys,
+        (key) =>
+          Effect.tryPromise({
+            try: () => storage.delete(key),
+            catch: () => failure("delete"),
+          }),
+        { concurrency: "unbounded", discard: true },
+      );
+    }),
     upsert: Effect.fnUntraced(function* (repo, defaultBranch) {
       const now = yield* Clock.currentTimeMillis;
       const projection: RepoProjectionRecord = {
