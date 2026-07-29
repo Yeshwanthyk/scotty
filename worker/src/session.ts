@@ -921,6 +921,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const initial: SessionRecord = {
       version: 1,
       id,
+      ...(input.title === undefined ? {} : { title: input.title }),
       status: "booting",
       operation: { kind: "create", nonce, startedAt: nowIso, createPhase: "setup" },
       execution:
@@ -995,6 +996,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly getScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.requireRecordProgram();
+    const now = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(record, new Date(now)), now);
+  });
+
+  private readonly renameScottySessionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    title: string,
+  ) {
+    const store = yield* SessionStore;
+    const record = yield* store.rename(title);
+    yield* this.projectProgram(record);
     const now = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(record, new Date(now)), now);
   });
@@ -1912,6 +1924,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async retryVaporizeSession(payload: VaporizeRetryPayload): Promise<void> {
     return this.#run(this.retryVaporizeSessionProgram(payload));
+  }
+
+  async renameScottySession(title: string): Promise<SessionView> {
+    return this.#run(this.renameScottySessionProgram(title));
   }
 
   async readCredentialForProxy(sentinel: string): Promise<StoredCredential | null> {
