@@ -10,7 +10,7 @@ const skipReason =
     : "deployed route E2E skipped: set SCOTTY_E2E_HOST, SCOTTY_E2E_TOKEN, and a non-mutating SCOTTY_E2E_CLIENT_CREDENTIAL";
 
 test(
-  "deployed edge routes reserve canonical session URLs for authenticated Pican proxies",
+  "deployed edge routes reserve canonical session URLs for authenticated Pi terminals",
   { skip: skipReason },
   async () => {
     const legacy = await fetch(`${host}/terminal`, { redirect: "manual" });
