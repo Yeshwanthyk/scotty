@@ -2035,7 +2035,7 @@ describe("real Hono boundary", () => {
 
   it("forwards Cloudflare terminal sockets to the sandbox PTY with scotty shell", async () => {
     const response = await app.request(
-      "/s/a0b1c2d3e4f5/terminal",
+      "/s/a0b1c2d3e4f5/terminal?cols=142&rows=61",
       {
         headers: {
           cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
@@ -2050,10 +2050,35 @@ describe("real Hono boundary", () => {
     expect(await response.text()).toBe("terminal-proxy");
     expect(proxyTerminal).toHaveBeenCalledOnce();
     expect(proxyTerminal).toHaveBeenCalledWith(sandbox, "a0b1c2d3e4f5", expect.any(Request), {
+      cols: 142,
+      rows: 61,
       shell: "/workspace/a0b1c2d3e4f5/.pi-agent/scotty-shell",
     });
     expect(sandbox.prepareTerminalAccess).toHaveBeenCalledOnce();
   });
+
+  it.each(["cols=0&rows=24", "cols=1001&rows=24", "cols=80", "cols=wide&rows=24"])(
+    "rejects invalid terminal dimensions: %s",
+    async (query) => {
+      const response = await app.request(
+        `/s/a0b1c2d3e4f5/terminal?${query}`,
+        {
+          headers: {
+            cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+            connection: "Upgrade",
+            upgrade: "websocket",
+            origin: "http://localhost",
+          },
+        },
+        env(),
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "bad_request", message: "Terminal dimensions are invalid" },
+      });
+      expect(proxyTerminal).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not expose the Cloudflare Pi terminal on runner sessions", async () => {
     sandbox.getScottySession.mockResolvedValueOnce({

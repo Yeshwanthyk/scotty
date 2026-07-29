@@ -28,6 +28,8 @@ let disposed = false;
 let terminal;
 let fitAddon;
 let workspaceListSignature;
+let touchLastY;
+let touchRemainder = 0;
 
 function setConnection(state, label) {
   connectionState.dataset.state = state;
@@ -168,6 +170,50 @@ function sendResize() {
   socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
 }
 
+function terminalSocketUrl() {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const socketUrl = new URL(
+    `${protocol}//${window.location.host}/s/${encodeURIComponent(sessionId)}/terminal`,
+  );
+  socketUrl.searchParams.set("cols", String(terminal.cols));
+  socketUrl.searchParams.set("rows", String(terminal.rows));
+  return socketUrl;
+}
+
+function writeTerminalOutput(data) {
+  const viewportY = terminal.getViewportY();
+  const scrollbackLength = terminal.getScrollbackLength();
+  terminal.write(data);
+  if (viewportY <= 0) return;
+  const addedLines = Math.max(0, terminal.getScrollbackLength() - scrollbackLength);
+  terminal.scrollToLine(viewportY + addedLines);
+}
+
+function startTouchScroll(event) {
+  if (event.touches.length !== 1) return;
+  touchLastY = event.touches[0].clientY;
+  touchRemainder = 0;
+}
+
+function moveTouchScroll(event) {
+  if (touchLastY === undefined || event.touches.length !== 1 || !terminal) return;
+  const currentY = event.touches[0].clientY;
+  touchRemainder += currentY - touchLastY;
+  touchLastY = currentY;
+  const rowHeight = Math.max(1, terminalElement.clientHeight / terminal.rows);
+  const lines = Math.trunc(touchRemainder / rowHeight);
+  if (lines !== 0) {
+    terminal.scrollLines(-lines);
+    touchRemainder -= lines * rowHeight;
+  }
+  event.preventDefault();
+}
+
+function endTouchScroll() {
+  touchLastY = undefined;
+  touchRemainder = 0;
+}
+
 function handleControlMessage(message) {
   if (!message || typeof message !== "object") return;
   if (message.type === "ready") {
@@ -193,15 +239,11 @@ function connect() {
   if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
   hideError();
   setConnection("connecting", reconnectAttempt ? "Reconnecting" : "Connecting");
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  socket = new WebSocket(
-    `${protocol}//${window.location.host}/s/${encodeURIComponent(sessionId)}/terminal`,
-  );
+  socket = new WebSocket(terminalSocketUrl());
   socket.binaryType = "arraybuffer";
-  socket.addEventListener("open", sendResize);
   socket.addEventListener("message", (event) => {
     if (event.data instanceof ArrayBuffer) {
-      terminal.write(new Uint8Array(event.data));
+      writeTerminalOutput(new Uint8Array(event.data));
       return;
     }
     if (typeof event.data !== "string") return;
@@ -266,10 +308,11 @@ async function startTerminal() {
     if (socket?.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data));
   });
   terminal.onResize(sendResize);
-  const resizeObserver = new ResizeObserver(() => {
-    fitAddon.fit();
-  });
-  resizeObserver.observe(terminalElement);
+  fitAddon.observeResize();
+  terminalElement.addEventListener("touchstart", startTouchScroll, { passive: true });
+  terminalElement.addEventListener("touchmove", moveTouchScroll, { passive: false });
+  terminalElement.addEventListener("touchend", endTouchScroll);
+  terminalElement.addEventListener("touchcancel", endTouchScroll);
   connect();
 }
 
