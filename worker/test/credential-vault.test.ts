@@ -11,38 +11,40 @@ import {
 import { InMemoryFaultInjectableFake, makeCredentialVaultStorageFake } from "./support";
 
 const NOW = Date.parse("2026-04-05T06:07:08.000Z");
-const CODEX_SENTINEL = "scotty-codex-session-sentinel";
+const PI_SENTINEL = "scotty-pi-session-sentinel-0";
 const GITHUB_SENTINEL = "scotty-github-session-sentinel";
 const PICAN_PROXY_TOKEN = "scotty-pican-proxy-token";
-const CODEX_SEED = JSON.stringify({
-  tokens: {
-    id_token: "seed-id-token",
-    access_token: "seed-access-token",
-    refresh_token: "seed-refresh-token",
-    account_id: "seed-account-id",
+const PI_SEED = JSON.stringify({
+  "openai-codex": {
+    type: "oauth",
+    access: "seed-access-token",
+    refresh: "seed-refresh-token",
+    expires: NOW - 1,
+    accountId: "seed-account-id",
   },
 });
 const SEED = {
-  codexAuthJson: CODEX_SEED,
-  codexSentinel: CODEX_SENTINEL,
+  piAuthJson: PI_SEED,
+  providerSentinelSeed: "scotty-pi-session-sentinel",
   githubSentinel: GITHUB_SENTINEL,
   picanProxyToken: PICAN_PROXY_TOKEN,
 };
 
 const credential = (overrides: Partial<StoredCredential> = {}): StoredCredential => ({
-  codex: {
-    OPENAI_API_KEY: null,
-    tokens: {
-      id_token: "stored-id-token",
-      access_token: "stored-access-token",
-      refresh_token: "stored-refresh-token",
-      account_id: "stored-account-id",
+  providers: {
+    "openai-codex": {
+      credential: {
+        type: "oauth",
+        access: "stored-access-token",
+        refresh: "stored-refresh-token",
+        expires: NOW - 1,
+        accountId: "stored-account-id",
+        idToken: "stored-id-token",
+      },
+      sentinel: PI_SENTINEL,
     },
-    account_id: null,
-    last_refresh: "2026-01-02T00:00:00.000Z",
   },
   githubToken: "stored-github-token",
-  codexSentinel: CODEX_SENTINEL,
   githubSentinel: GITHUB_SENTINEL,
   picanProxyToken: PICAN_PROXY_TOKEN,
   updatedAt: "2026-01-02T00:00:00.000Z",
@@ -76,12 +78,20 @@ describe("CredentialVault", () => {
       );
       assert.deepInclude(seeded, {
         githubToken: "seed-github-token",
-        codexSentinel: CODEX_SENTINEL,
         githubSentinel: GITHUB_SENTINEL,
         picanProxyToken: PICAN_PROXY_TOKEN,
         updatedAt: "2026-04-05T06:07:08.000Z",
       });
-      assert.strictEqual(seeded.codex.tokens?.access_token, "seed-access-token");
+      assert.deepInclude(seeded.providers["openai-codex"], {
+        credential: {
+          type: "oauth",
+          access: "seed-access-token",
+          refresh: "seed-refresh-token",
+          expires: NOW - 1,
+          accountId: "seed-account-id",
+        },
+        sentinel: PI_SENTINEL,
+      });
       assert.deepStrictEqual(storage.snapshot(), seeded);
     }),
   );
@@ -98,8 +108,10 @@ describe("CredentialVault", () => {
             vaultEffect((vault) =>
               vault.seed({
                 ...SEED,
-                codexAuthJson: JSON.stringify({ OPENAI_API_KEY: "codex-token-a" }),
-                codexSentinel: `${CODEX_SENTINEL}-a`,
+                piAuthJson: JSON.stringify({
+                  openai: { type: "api_key", key: "openai-token-a" },
+                }),
+                providerSentinelSeed: "scotty-pi-a",
                 githubSentinel: `${GITHUB_SENTINEL}-a`,
                 picanProxyToken: `${PICAN_PROXY_TOKEN}-a`,
               }),
@@ -111,8 +123,10 @@ describe("CredentialVault", () => {
             vaultEffect((vault) =>
               vault.seed({
                 ...SEED,
-                codexAuthJson: JSON.stringify({ OPENAI_API_KEY: "codex-token-b" }),
-                codexSentinel: `${CODEX_SENTINEL}-b`,
+                piAuthJson: JSON.stringify({
+                  openai: { type: "api_key", key: "openai-token-b" },
+                }),
+                providerSentinelSeed: "scotty-pi-b",
                 githubSentinel: `${GITHUB_SENTINEL}-b`,
                 picanProxyToken: `${PICAN_PROXY_TOKEN}-b`,
               }),
@@ -124,16 +138,18 @@ describe("CredentialVault", () => {
       assert.deepStrictEqual(results[0], results[1]);
       assert.deepStrictEqual(storage.snapshot(), results[0]);
       const authorityTuple = [
-        results[0].codex.OPENAI_API_KEY,
+        results[0].providers.openai?.credential.type === "api_key"
+          ? results[0].providers.openai.credential.key
+          : undefined,
         results[0].githubToken,
-        results[0].codexSentinel,
+        results[0].providers.openai?.sentinel,
         results[0].githubSentinel,
         results[0].picanProxyToken,
       ].join("|");
       assert.ok(
         [
-          `codex-token-a|github-token-a|${CODEX_SENTINEL}-a|${GITHUB_SENTINEL}-a|${PICAN_PROXY_TOKEN}-a`,
-          `codex-token-b|github-token-b|${CODEX_SENTINEL}-b|${GITHUB_SENTINEL}-b|${PICAN_PROXY_TOKEN}-b`,
+          `openai-token-a|github-token-a|scotty-pi-a-0|${GITHUB_SENTINEL}-a|${PICAN_PROXY_TOKEN}-a`,
+          `openai-token-b|github-token-b|scotty-pi-b-0|${GITHUB_SENTINEL}-b|${PICAN_PROXY_TOKEN}-b`,
         ].includes(authorityTuple),
       );
     }),
@@ -148,10 +164,55 @@ describe("CredentialVault", () => {
       const result = yield* withVault(
         storage,
         undefined,
-        vaultEffect((vault) => vault.seed({ codexAuthJson: undefined })),
+        vaultEffect((vault) => vault.seed({ piAuthJson: undefined })),
       );
       assert.deepStrictEqual(result, existing);
       assert.deepStrictEqual(storage.snapshot(), existing);
+    }),
+  );
+
+  it.effect("explicitly reseeds the provider map while preserving session sentinels", () =>
+    Effect.gen(function* () {
+      const existing = credential({
+        refreshLease: { nonce: "abandoned", startedAt: "2026-01-02T00:00:01.000Z" },
+      });
+      const storage = makeCredentialVaultStorageFake(existing);
+      yield* TestClock.setTime(NOW);
+      const reseeded = yield* withVault(
+        storage,
+        "ignored",
+        vaultEffect((vault) =>
+          vault.reseed({
+            piAuthJson: JSON.stringify({
+              "openai-codex": {
+                type: "oauth",
+                access: "replacement-access",
+                refresh: "replacement-refresh",
+                expires: 0,
+                accountId: "replacement-account",
+              },
+              anthropic: {
+                type: "oauth",
+                access: "anthropic-access",
+                refresh: "anthropic-refresh",
+                expires: 0,
+              },
+            }),
+            providerSentinelSeed: "scotty-pi-reseed",
+          }),
+        ),
+      );
+      assert.strictEqual(reseeded.providers["openai-codex"]?.sentinel, PI_SENTINEL);
+      assert.strictEqual(reseeded.providers.anthropic?.sentinel, "scotty-pi-reseed-1");
+      assert.deepInclude(reseeded.providers["openai-codex"]?.credential, {
+        type: "oauth",
+        access: "replacement-access",
+        refresh: "replacement-refresh",
+      });
+      assert.strictEqual(reseeded.githubToken, existing.githubToken);
+      assert.strictEqual(reseeded.githubSentinel, existing.githubSentinel);
+      assert.strictEqual(reseeded.refreshLease, undefined);
+      assert.strictEqual(reseeded.updatedAt, "2026-04-05T06:07:08.000Z");
     }),
   );
 
@@ -192,14 +253,14 @@ describe("CredentialVault", () => {
 
   it.effect("fails new sessions closed with fixed safe errors for missing seeds", () =>
     Effect.gen(function* () {
-      const missingCodex = yield* Effect.result(
+      const missingPi = yield* Effect.result(
         withVault(
           makeCredentialVaultStorageFake(),
           "github-seed",
-          vaultEffect((vault) => vault.seed({ ...SEED, codexAuthJson: "" })),
+          vaultEffect((vault) => vault.seed({ ...SEED, piAuthJson: "" })),
         ),
       );
-      assert.deepInclude(failure(missingCodex), {
+      assert.deepInclude(failure(missingPi), {
         reason: "invalid_seed",
         message: "Credential seed is missing or invalid",
       });
@@ -230,11 +291,11 @@ describe("CredentialVault", () => {
     }),
   );
 
-  it.effect("looks up only exact Codex and GitHub sentinels", () =>
+  it.effect("looks up only exact Pi and GitHub sentinels", () =>
     Effect.gen(function* () {
       const stored = credential();
       const storage = makeCredentialVaultStorageFake(stored);
-      for (const sentinel of [CODEX_SENTINEL, GITHUB_SENTINEL]) {
+      for (const sentinel of [PI_SENTINEL, GITHUB_SENTINEL]) {
         assert.deepStrictEqual(
           yield* withVault(
             storage,
@@ -248,7 +309,7 @@ describe("CredentialVault", () => {
         yield* withVault(
           storage,
           "ignored",
-          vaultEffect((vault) => vault.readForProxy(`${CODEX_SENTINEL}-wrong`)),
+          vaultEffect((vault) => vault.readForProxy(`${PI_SENTINEL}-wrong`)),
         ),
         null,
       );
@@ -260,7 +321,12 @@ describe("CredentialVault", () => {
         ),
         null,
       );
-      assert.notStrictEqual(stored.codex.tokens?.access_token, stored.githubToken);
+      assert.notStrictEqual(
+        stored.providers["openai-codex"]?.credential.type === "oauth"
+          ? stored.providers["openai-codex"].credential.access
+          : undefined,
+        stored.githubToken,
+      );
     }),
   );
 
@@ -271,7 +337,7 @@ describe("CredentialVault", () => {
       const first = yield* withVault(
         storage,
         "ignored",
-        vaultEffect((vault) => vault.beginRefresh(CODEX_SENTINEL, "nonce-1")),
+        vaultEffect((vault) => vault.beginRefresh(PI_SENTINEL, "nonce-1")),
       );
       assert.strictEqual(first?.nonce, "nonce-1");
       assert.strictEqual(first?.credential.refreshLease?.startedAt, "2026-04-05T06:07:08.000Z");
@@ -281,7 +347,7 @@ describe("CredentialVault", () => {
         yield* withVault(
           storage,
           "ignored",
-          vaultEffect((vault) => vault.beginRefresh(CODEX_SENTINEL, "nonce-2")),
+          vaultEffect((vault) => vault.beginRefresh(PI_SENTINEL, "nonce-2")),
         ),
         null,
       );
@@ -289,7 +355,7 @@ describe("CredentialVault", () => {
       const expired = yield* withVault(
         storage,
         "ignored",
-        vaultEffect((vault) => vault.beginRefresh(CODEX_SENTINEL, "nonce-3")),
+        vaultEffect((vault) => vault.beginRefresh(PI_SENTINEL, "nonce-3")),
       );
       assert.strictEqual(expired?.nonce, "nonce-3");
     }),
@@ -302,18 +368,14 @@ describe("CredentialVault", () => {
       yield* withVault(
         storage,
         "ignored",
-        vaultEffect((vault) => vault.beginRefresh(CODEX_SENTINEL, "held-nonce")),
+        vaultEffect((vault) => vault.beginRefresh(PI_SENTINEL, "held-nonce")),
       );
       const stale = yield* Effect.result(
         withVault(
           storage,
           "ignored",
           vaultEffect((vault) =>
-            vault.persistRotation(
-              CODEX_SENTINEL,
-              { accessToken: "must-not-persist" },
-              "stale-nonce",
-            ),
+            vault.persistRotation(PI_SENTINEL, { accessToken: "must-not-persist" }, "stale-nonce"),
           ),
         ),
       );
@@ -326,7 +388,7 @@ describe("CredentialVault", () => {
           storage,
           "ignored",
           vaultEffect((vault) =>
-            vault.persistRotation(CODEX_SENTINEL, { accessToken: "must-not-persist" }, ""),
+            vault.persistRotation(PI_SENTINEL, { accessToken: "must-not-persist" }, ""),
           ),
         ),
       );
@@ -341,7 +403,7 @@ describe("CredentialVault", () => {
         "ignored",
         vaultEffect((vault) =>
           vault.persistRotation(
-            CODEX_SENTINEL,
+            PI_SENTINEL,
             { accessToken: "rotated-access-token", ignored: "strip-me" },
             "held-nonce",
           ),
@@ -350,19 +412,28 @@ describe("CredentialVault", () => {
       const read = yield* withVault(
         storage,
         "ignored",
-        vaultEffect((vault) => vault.readForProxy(CODEX_SENTINEL)),
+        vaultEffect((vault) => vault.readForProxy(PI_SENTINEL)),
       );
-      assert.strictEqual(read?.codex.tokens?.access_token, "rotated-access-token");
-      assert.strictEqual(read?.codex.tokens?.id_token, "stored-id-token");
-      assert.strictEqual(read?.codex.tokens?.refresh_token, "stored-refresh-token");
+      const provider = read?.providers["openai-codex"];
+      assert.strictEqual(
+        provider?.credential.type === "oauth" ? provider.credential.access : undefined,
+        "rotated-access-token",
+      );
+      assert.strictEqual(
+        provider?.credential.type === "oauth" ? provider.credential.idToken : undefined,
+        "stored-id-token",
+      );
+      assert.strictEqual(
+        provider?.credential.type === "oauth" ? provider.credential.refresh : undefined,
+        "stored-refresh-token",
+      );
       assert.strictEqual(read?.githubToken, "stored-github-token");
-      assert.strictEqual(read?.codexSentinel, CODEX_SENTINEL);
+      assert.strictEqual(provider?.sentinel, PI_SENTINEL);
       assert.strictEqual(read?.githubSentinel, GITHUB_SENTINEL);
       assert.strictEqual(read?.picanProxyToken, PICAN_PROXY_TOKEN);
       assert.ok(!("ignored" in (read ?? {})));
       assert.strictEqual(read?.refreshLease, undefined);
       assert.strictEqual(read?.updatedAt, "2026-04-05T06:07:09.000Z");
-      assert.strictEqual(read?.codex.last_refresh, "2026-04-05T06:07:09.000Z");
     }),
   );
 
@@ -376,13 +447,13 @@ describe("CredentialVault", () => {
       yield* withVault(
         storage,
         "ignored",
-        vaultEffect((vault) => vault.cancelRefresh(CODEX_SENTINEL, "stale")),
+        vaultEffect((vault) => vault.cancelRefresh(PI_SENTINEL, "stale")),
       );
       assert.strictEqual((storage.snapshot() as StoredCredential).refreshLease?.nonce, "held");
       yield* withVault(
         storage,
         "ignored",
-        vaultEffect((vault) => vault.cancelRefresh(CODEX_SENTINEL, "held")),
+        vaultEffect((vault) => vault.cancelRefresh(PI_SENTINEL, "held")),
       );
       assert.strictEqual((storage.snapshot() as StoredCredential).refreshLease, undefined);
     }),

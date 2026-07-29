@@ -22,11 +22,14 @@ import {
 import { clearPendingUp, credentials, pendingUpRequest, secureWrite } from "./dependencies";
 import {
   decodeOperationResponse,
+  decodePiAuthReseedResponse,
+  decodePiAuthStatusResponse,
   decodeSessionsResponse,
   decodeVaporizeResponse,
   PROVIDERS,
   STANDARD_TOOLSET,
 } from "./schemas";
+import { readLocalPiAuth, uploadPiAuthSecret } from "./pi-auth";
 import {
   browserUrl,
   durationSeconds,
@@ -378,6 +381,133 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const owner = Command.make("owner").pipe(
     Command.withDescription("Manage browser ownership"),
     Command.withSubcommands([ownerRecover]),
+  );
+
+  const readPiAuthStatus = Effect.fnUntraced(function* (auth: {
+    readonly host: string;
+    readonly token: string;
+  }) {
+    const raw = yield* requestJson(auth, "/api/auth/pi");
+    const decoded = decodePiAuthStatusResponse(raw);
+    if (Option.isNone(decoded))
+      return yield* invalidResponse("Server response is not a valid Pi auth status");
+    return decoded.value;
+  });
+
+  const authStatus = Command.make("status", { trailing: trailingArguments }, ({ trailing }) =>
+    Effect.gen(function* () {
+      yield* rejectTrailingArguments(trailing);
+      const { autoJson, options, runtime } = yield* commandContext();
+      const status = yield* readPiAuthStatus(yield* credentials(options));
+      if (autoJson) outputJson(runtime.stdout, status);
+      else
+        runtime.stdout(
+          `${status.providers.map((provider) => `${provider.id} ${provider.type} ${provider.adapter}`).join("\n")}\n`,
+        );
+    }),
+  ).pipe(Command.withDescription("Show redacted Pi credential status"));
+
+  const authSync = Command.make(
+    "sync",
+    {
+      authFile: Flag.string("auth-file").pipe(
+        Flag.optional,
+        Flag.withDescription("Override ~/.pi/agent/auth.json"),
+      ),
+      trailing: trailingArguments,
+    },
+    ({ authFile, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        const local = yield* readLocalPiAuth(Option.getOrUndefined(authFile));
+        const workerAuth = yield* credentials(options);
+        const uploaded = yield* uploadPiAuthSecret(local.json);
+        let remote;
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const status = yield* Effect.result(readPiAuthStatus(workerAuth));
+          if (Result.isSuccess(status) && status.success.sourceDigest === local.sourceDigest) {
+            remote = status.success;
+            break;
+          }
+          if (attempt < 9) yield* Effect.sleep("1 second");
+        }
+        if (remote === undefined)
+          return yield* new CliError(
+            "auth_sync_unconfirmed",
+            "PI_AUTH_JSON was uploaded but the Worker digest did not converge",
+            "Wait for the Worker secret version to become active, then run scotty auth status.",
+            EXIT.GENERIC,
+          );
+        const result = {
+          synchronized: true,
+          sourceDigest: local.sourceDigest,
+          worker: uploaded.workerName,
+          providers: remote.providers,
+        };
+        if (autoJson) outputJson(runtime.stdout, result);
+        else
+          runtime.stdout(
+            `Synchronized ${result.providers.length} Pi provider credentials to ${result.worker}.\n`,
+          );
+      }),
+  ).pipe(Command.withDescription("Validate and upload local Pi credentials"));
+
+  const authReseed = Command.make(
+    "reseed",
+    {
+      id: Argument.string("id").pipe(
+        Argument.withDescription("Warm Cloudflare session ID"),
+        Argument.optional,
+      ),
+      allActive: Flag.boolean("all-active").pipe(
+        Flag.withDescription("Reseed every warm Cloudflare session"),
+      ),
+      trailing: trailingArguments,
+    },
+    ({ allActive, id, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (Option.isSome(id) === allActive)
+          return yield* usage("Pass exactly one session ID or --all-active");
+        const workerAuth = yield* credentials(options);
+        let ids: ReadonlyArray<string>;
+        if (Option.isSome(id)) {
+          ids = [yield* validateSessionId(id.value)];
+        } else {
+          const raw = yield* requestJson(workerAuth, "/api/sessions");
+          const decoded = decodeSessionsResponse(raw);
+          if (Option.isNone(decoded))
+            return yield* invalidResponse("Server response is not a valid session array");
+          ids = decoded.value
+            .filter((session) => session.provider === "cloudflare" && session.status === "warm")
+            .map((session) => session.id);
+        }
+        const results = yield* Effect.forEach(
+          ids,
+          (sessionId) =>
+            requestJson(workerAuth, `/api/sessions/${encodeURIComponent(sessionId)}/auth/reseed`, {
+              method: "POST",
+            }).pipe(
+              Effect.flatMap((raw) => {
+                const decoded = decodePiAuthReseedResponse(raw);
+                return Option.isSome(decoded)
+                  ? Effect.succeed(decoded.value)
+                  : invalidResponse("Server response is not a valid Pi auth reseed result");
+              }),
+            ),
+          { concurrency: 1 },
+        );
+        const result = { reseeded: results };
+        if (autoJson) outputJson(runtime.stdout, result);
+        else runtime.stdout(`Reseeded ${results.length} warm Cloudflare sessions.\n`);
+      }),
+  ).pipe(Command.withDescription("Explicitly replace session Pi credentials"));
+
+  const auth = Command.make("auth").pipe(
+    Command.withDescription("Manage Pi credentials"),
+    Command.withSubcommands([authStatus, authSync, authReseed]),
   );
 
   const skills = Command.make("skills", { trailing: trailingArguments }, ({ trailing }) =>
@@ -784,6 +914,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       beam,
       list,
       attach,
+      auth,
       owner,
       snapshot,
       resume,

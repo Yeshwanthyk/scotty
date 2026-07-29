@@ -13,7 +13,7 @@ export const CHUNK2_SECRET_RESOURCES = [
   {
     logicalId: "CodexAuthSecret",
     resourceType: "Scotty.WriteOnlySecret",
-    bindingName: "CODEX_AUTH_JSON",
+    bindingName: "PI_AUTH_JSON",
     sourceId: "scotty/codex-auth",
   },
   {
@@ -102,7 +102,7 @@ export const CHUNK2_WRANGLER_PARITY = {
 export type Chunk2PlanAction = "create" | "noop" | "update" | "replace" | "delete";
 export type Chunk2TaskAction = "run" | "noop";
 export type Chunk2BindingAction = "create" | "noop" | "update" | "delete";
-export type Chunk2SecretBindingName = "CODEX_AUTH_JSON" | "GH_TOKEN" | "SCOTTY_TOKEN";
+export type Chunk2SecretBindingName = "PI_AUTH_JSON" | "GH_TOKEN" | "SCOTTY_TOKEN";
 
 export interface Chunk2ResolvedIdentity {
   readonly before: string | undefined;

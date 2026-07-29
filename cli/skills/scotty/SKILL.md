@@ -1,71 +1,93 @@
 ---
 name: scotty
-description: Manage Pican-hosted Codex workspaces on Cloudflare. Use before running Scotty to start, inspect, attach, checkpoint, resume, beam down, or vaporize a session.
+description: Operate Scotty sessions. Use when creating, observing, opening, checkpointing, resuming, beaming down, or vaporizing a session; recovering ownership; or checking sandbox tools.
 ---
 
 # Scotty
 
-Scotty beams a Pican-hosted Codex workspace into a Cloudflare Sandbox. Use it to start a hosted
-session, open Pican's mounted UI, checkpoint or resume it, beam its branch and Codex rollout down
-to the current local repository, and permanently remove it. Commit, push, and open pull requests
-directly from Codex when you want them; Scotty doesn't own source-control publishing.
+Operate Scotty as an authoritative state machine. Direct command responses own mutation results;
+`scotty ls --json` is the polling projection.
 
-## Command reference
+## Contract
 
-- `scotty init [--host URL] [--token TOKEN]` writes `~/.scotty.json` with mode 0600. This is the only command that prompts.
-- `scotty beam up "PROMPT" --title "TASK" --repo OWNER/NAME --provider cloudflare [--cap 4h] [--detach] --json` returns `{"id","title","url","branch","provider","status"}`.
-- `scotty ls --json` returns session records including `provider`, `ageSeconds`, and `capRemainingSeconds`. This is the polling primitive.
-- `scotty attach ID --json` opens the mounted Pican UI and returns `{"id","url","opened"}`.
-- `scotty owner recover --json` uses the protected root token to open a five-minute browser
-  recovery flow and returns only `{"opened":true,"expiresAt"}`. It never prints the capability URL.
-- `scotty snapshot ID --json` checkpoints a warm session and returns `{"id","status","backupId"?}`.
-- `scotty resume ID --json` restores a sleeping or recoverable failed session and returns `{"id","url"?,"branch"?,"status"}`.
-- `scotty down ID --json` fetches the session branch, securely installs its rollout when present, and returns `{"branch","sha","rolloutPath","resumeCmd"}`. The last two values are null when no usable rollout exists.
-- `scotty vaporize ID --yes --json` permanently deletes runtime, backups, credentials, and registry state; it returns `{"id","status":"gone"}`.
-- `scotty tools list --json` prints the immutable `standard` sandbox tool manifest. `scotty tools doctor --json` probes the installed commands without Worker credentials.
-- `scotty skills` prints this document.
+- Pass `--json` to every operational command and `--detach` to `beam up`.
+- Use Cloudflare unless the user requests a named trusted runner.
+- Label a Cloudflare URL “the live Pi terminal” and a runner URL “the runner workspace.”
+- Render `warm` as “ready.” Use “working” only when `agentState` is exactly `working`.
+- Use the returned `url`. Keep root tokens confined to flags, environment, or `~/.scotty.json`.
+- Retry exits 2, 4, or 5 only after changing input, credentials, or session state.
 
-Every operational command accepts `--host` and `--token`. Precedence is flags, then `SCOTTY_HOST`/`SCOTTY_TOKEN`, then `~/.scotty.json`. Non-TTY output automatically uses JSON. Errors are `{"error":{"code","message","hint"}}` on stderr.
+## Launch
 
-The root token is CLI and break-glass authority only. Mounted Pican URLs are clean; they never
-contain the root token or Pican's internal proxy credential. Keep the root token in a password
-manager or another protected recovery location. On a replacement laptop, run `scotty init` with
-that token and then `scotty owner recover`. Recovery revokes every existing browser credential but
-leaves sessions, containers, backups, and worktrees intact.
+1. Run the provider command with a specific 1–120 character title:
 
-Exit codes: 0 success, 1 generic or network failure, 2 bad usage/config, 3 session not found, 4 authentication/authorization failure, 5 wrong session state.
+   ```sh
+   scotty beam up "PROMPT" --title "SHORT OUTCOME" --repo OWNER/NAME --provider cloudflare --cap 4h --detach --json
+   ```
 
-## Workflows
+   ```sh
+   scotty beam up "PROMPT" --title "SHORT OUTCOME" --repo OWNER/NAME --provider runner --runner NAME --cap 4h --detach --json
+   ```
 
-### Cloud work
+2. Parse `{"id","title","url","branch","provider","status"}` from stdout.
+3. If status is `booting`, observe that exact ID.
+4. Render the result using the final-response contract.
 
-1. Run `scotty beam up "TASK" --title "SHORT OUTCOME" --repo OWNER/NAME --provider cloudflare --detach --json`.
-2. Poll `scotty ls --json` until the session is `warm`.
-3. Open the returned URL or run `scotty attach ID`; Pican reconnects to the same hosted session.
-4. Ask Codex in Pican to commit, push, or open a pull request when you want that.
-5. Run `scotty vaporize ID --yes --json` after the work is safely stored elsewhere.
+Launch is complete only when the exact ID is `warm`, `sleeping`, or `failed`, or when observation
+reaches its polling limit. Every completion path ends with one final response.
 
-### Sleep and resume
+## Observe an ID
 
-1. Run `scotty snapshot ID --json` before a deliberate pause. Scotty gracefully stops Pican,
-   flushes the workspace, creates the backup, and starts Pican again.
-2. Poll `scotty ls --json`; hard-capped or idle sessions become `sleeping` automatically.
-3. Run `scotty resume ID --json` only when it is sleeping or recoverably failed.
+1. Run `scotty ls --json` every 5 seconds and select the record with the exact `id`.
+2. Stop on `warm`, `sleeping`, or `failed`, or after 36 polls.
+3. After 36 booting records, preserve the status as `booting` and report the three-minute timeout.
 
-### Beam down
+Observation is complete when the final record and its stopping reason are known.
 
-1. Change into the matching local Git repository.
-2. Run `scotty down ID --json`.
-3. Run the returned `resumeCmd` when non-null.
+## Final response
 
-## State machine
+Final response is complete only when it matches one of these shapes:
 
-`booting -> warm -> sleeping -> booting -> warm`. Setup or checkpoint failures may enter `failed`; recoverable failures can resume through `booting`. `vaporize` moves any live state to terminal `gone`.
+- For `warm`, return one sentence:
+  `Session ID is ready on branch BRANCH: [open LABEL](URL).`
+- For `sleeping`, `failed`, or a polling timeout, return at most three short lines: exact status;
+  `failure.code`, `failure.message`, and `failure.recoverable` when present; then one concrete next
+  action.
+- Include command history, polling logs, raw JSON, architecture, and recap only when the user asks.
 
-## Rules of thumb
+## Lifecycle
 
-- Always pass `--json` in agent automation.
-- Poll `ls`; its records are a projection and direct commands enforce authoritative state.
-- A hard cap gracefully stops Pican, checkpoints, and sleeps even while its UI is open.
-- Vaporize completed sessions to stop spend. It never snapshots first.
-- Retry network failures, but don't retry exit 2, 4, or 5 without changing input, credentials, or state.
+- Open a warm session with `scotty attach ID --json`; expect `{"id","url","opened":true}`.
+- Checkpoint a warm session with `scotty snapshot ID --json`; expect
+  `{"id","status","backupId"?}`.
+- Resume a sleeping or recoverably failed session with `scotty resume ID --json`, then observe the
+  exact ID when status is `booting`.
+- From the matching local Git repository, run `scotty down ID --json`; expect
+  `{"branch","sha","rolloutPath","resumeCmd"}`. Run a non-null `resumeCmd` when the user wants local
+  continuation.
+- With explicit user intent and work stored elsewhere, run `scotty vaporize ID --yes --json`.
+  Completion is exactly `{"id","status":"gone"}`. Vaporize deletes immediately; create any required
+  snapshot first.
+
+State flow: `booting -> warm -> sleeping -> booting -> warm`; failures may enter `failed`, and
+vaporize ends at `gone`.
+
+## Setup and diagnostics
+
+- `scotty init [--host URL] [--token TOKEN]` writes mode-0600 `~/.scotty.json`; it is the only
+  prompting command. Credential precedence is flags, environment, then config.
+- `scotty owner recover --json` opens the five-minute recovery flow and returns only
+  `{"opened":true,"expiresAt"}`.
+- `scotty tools list --json` prints the standard tool manifest. `scotty tools doctor --json`
+  reports missing, broken, or version-mismatched tools and exits nonzero when any fail.
+- `scotty auth status --json` reports only provider IDs, credential types, adapter support, and the
+  active `PI_AUTH_JSON` digest.
+- `scotty auth sync --json` locks and decodes `~/.pi/agent/auth.json`, resolves local API-key
+  references, uploads the write-only Worker secret, and waits for the redacted digest to match. It
+  never changes existing sessions.
+- `scotty auth reseed ID --json` replaces one warm Cloudflare session's provider map.
+  `scotty auth reseed --all-active --json` explicitly replaces every warm Cloudflare session.
+- If `scotty beam up --help` lacks `--title`, use a CLI built from current Scotty source before
+  launching.
+
+Exit codes: 0 success, 1 generic/network, 2 usage/config, 3 not found, 4 auth, 5 wrong state.

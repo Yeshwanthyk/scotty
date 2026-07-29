@@ -419,7 +419,7 @@ Provider status is not a socket status:
 Worker secrets remain inherited bindings outside Alchemy state:
 
 - `SCOTTY_TOKEN`;
-- `CODEX_AUTH_JSON`;
+- `PI_AUTH_JSON`;
 - `GH_TOKEN`;
 - current static Slumbers runner credential until runner-token management lands;
 

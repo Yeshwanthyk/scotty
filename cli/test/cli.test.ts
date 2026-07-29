@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EMBEDDED_SKILL, EXIT, main, STANDARD_TOOLSET, type CliDependencies } from "../scotty";
@@ -453,6 +453,152 @@ describe("configuration and transport", () => {
       },
     ]);
     expect(h.stdout.join("")).not.toContain("must-not-leak");
+  });
+});
+
+describe("Pi auth commands", () => {
+  test("sync locks, decodes, resolves, uploads, and confirms the complete Pi provider map", async () => {
+    const home = await temporaryDirectory();
+    const authDirectory = join(home, ".pi", "agent");
+    const authPath = join(authDirectory, "auth.json");
+    await mkdir(authDirectory, { recursive: true });
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        openai: { type: "api_key", key: "$OPENAI_TEST_KEY" },
+        "openai-codex": {
+          type: "oauth",
+          access: "local-access",
+          refresh: "local-refresh",
+          expires: 0,
+          accountId: "local-account",
+        },
+        anthropic: {
+          type: "oauth",
+          access: "anthropic-access",
+          refresh: "anthropic-refresh",
+          expires: 0,
+        },
+      }),
+      { mode: 0o600 },
+    );
+    let uploaded: string | undefined;
+    const requests: Request[] = [];
+    const h = harness({
+      home,
+      env: {
+        SCOTTY_HOST: "https://worker.example",
+        SCOTTY_TOKEN: "worker-token",
+        CLOUDFLARE_API_TOKEN: "cloudflare-token",
+        CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
+        OPENAI_TEST_KEY: "resolved-openai-key",
+      },
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        if (new URL(request.url).hostname === "api.cloudflare.com") {
+          const body = await request.json();
+          uploaded = body.text;
+          return Response.json({ success: true });
+        }
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(uploaded));
+        return Response.json({
+          sourceDigest: Array.from(new Uint8Array(digest), (byte) =>
+            byte.toString(16).padStart(2, "0"),
+          ).join(""),
+          providers: [
+            { id: "anthropic", type: "oauth", adapter: "unsupported" },
+            { id: "openai", type: "api_key", adapter: "supported" },
+            { id: "openai-codex", type: "oauth", adapter: "supported" },
+          ],
+        });
+      },
+    });
+
+    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.OK);
+    expect(requests[0]?.method).toBe("PUT");
+    expect(requests[0]?.headers.get("authorization")).toBe("Bearer cloudflare-token");
+    expect(requests[0]?.url).toBe(
+      `https://api.cloudflare.com/client/v4/accounts/${"a".repeat(32)}/workers/scripts/scotty-worker/secrets`,
+    );
+    const normalized = JSON.parse(uploaded ?? "{}");
+    expect(normalized.openai.key).toBe("resolved-openai-key");
+    expect(normalized["openai-codex"].accountId).toBe("local-account");
+    expect(normalized.anthropic.access).toBe("anthropic-access");
+    expect(h.json()).toMatchObject({
+      synchronized: true,
+      worker: "scotty-worker",
+      providers: [
+        { id: "anthropic", adapter: "unsupported" },
+        { id: "openai", adapter: "supported" },
+        { id: "openai-codex", adapter: "supported" },
+      ],
+    });
+    expect(requests[1]?.headers.get("authorization")).toBe("Bearer worker-token");
+    expect(JSON.stringify(h.json())).not.toContain("local-access");
+    expect(JSON.stringify(h.json())).not.toContain("resolved-openai-key");
+  });
+
+  test("reseed --all-active targets only warm Cloudflare sessions", async () => {
+    const requests: Request[] = [];
+    const h = harness({
+      env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "worker-token" },
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        if (new URL(request.url).pathname === "/api/sessions")
+          return Response.json([
+            {
+              id: "warm-cloud",
+              title: "Warm",
+              status: "warm",
+              provider: "cloudflare",
+              repo: "owner/repo",
+              defaultBranch: "main",
+              branch: "scotty/warm",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              hardCapAt: "2026-01-01T04:00:00.000Z",
+              ageSeconds: 1,
+              capRemainingSeconds: 1,
+            },
+            {
+              id: "sleeping-cloud",
+              title: "Sleeping",
+              status: "sleeping",
+              provider: "cloudflare",
+              repo: "owner/repo",
+              defaultBranch: "main",
+              branch: "scotty/sleeping",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              hardCapAt: "2026-01-01T04:00:00.000Z",
+              ageSeconds: 1,
+              capRemainingSeconds: 1,
+            },
+          ]);
+        return Response.json({
+          id: "warm-cloud",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
+        });
+      },
+    });
+
+    expect(await main(["auth", "reseed", "--all-active"], h.deps)).toBe(EXIT.OK);
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/api/sessions",
+      "/api/sessions/warm-cloud/auth/reseed",
+    ]);
+    expect(h.json()).toEqual({
+      reseeded: [
+        {
+          id: "warm-cloud",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
+        },
+      ],
+    });
   });
 });
 

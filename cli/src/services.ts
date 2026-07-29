@@ -1,7 +1,9 @@
-import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { Context, Effect, Layer } from "effect";
+import lockfile from "proper-lockfile";
 import { CliError, EXIT, type Writer } from "./core";
 
 export interface CliDependencies {
@@ -64,7 +66,9 @@ export class BrowserLauncher extends Context.Service<BrowserLauncher, BrowserLau
 ) {}
 
 interface FileSystemShape {
+  readonly stat: (path: string) => Effect.Effect<Stats, CliError>;
   readonly readText: (path: string) => Effect.Effect<string, NodeJS.ErrnoException>;
+  readonly readLockedText: (path: string) => Effect.Effect<string, CliError>;
   readonly remove: (path: string) => Effect.Effect<void, NodeJS.ErrnoException>;
   readonly writeExclusive: (
     path: string,
@@ -226,7 +230,19 @@ export const cliLayer = (
         }),
     }),
     Layer.succeed(FileSystem)({
+      stat: (path) => hostPromise(() => stat(path)),
       readText: (path) => Effect.tryPromise({ try: () => readFile(path, "utf8"), catch: errno }),
+      readLockedText: (path) =>
+        Effect.acquireUseRelease(
+          hostPromise(() =>
+            lockfile.lock(path, {
+              realpath: false,
+              retries: { retries: 10, factor: 2, minTimeout: 50, maxTimeout: 1_000 },
+            }),
+          ),
+          () => hostPromise(() => readFile(path, "utf8")),
+          (release) => Effect.promise(() => release()),
+        ),
       remove: (path) => Effect.tryPromise({ try: () => unlink(path), catch: errno }),
       writeExclusive: (path, data) =>
         Effect.tryPromise({

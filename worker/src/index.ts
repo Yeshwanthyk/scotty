@@ -1,4 +1,5 @@
 import { ContainerProxy, getSandbox, proxyTerminal } from "@cloudflare/sandbox";
+import { parsePiAuthJsonOption, piProviderMetadata } from "../../protocol/pi-auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
@@ -302,6 +303,20 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
   return c.json({ client: issued.client });
 });
 
+app.get("/api/auth/pi", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const providers = parsePiAuthJsonOption(c.env.PI_AUTH_JSON);
+  if (Option.isNone(providers))
+    throw new ScottyError("internal", "PI_AUTH_JSON is missing or invalid", {
+      httpStatus: 500,
+      exitCode: 1,
+    });
+  return c.json({
+    sourceDigest: await sha256Hex(c.env.PI_AUTH_JSON),
+    providers: piProviderMetadata(providers.value),
+  });
+});
+
 app.get("/api/providers", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const runners = await configuredRunnerStatuses(c.env);
@@ -437,6 +452,13 @@ app.post("/api/sessions/:id/resume", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).resumeScottySession());
+});
+
+app.post("/api/sessions/:id/auth/reseed", async (c) => {
+  const principal = c.get("auth");
+  if (principal.kind !== "root") requireOwnerPrincipal(principal);
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).reseedPiAuth());
 });
 
 app.get("/api/sessions/:id/down", async (c) => {

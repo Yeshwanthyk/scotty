@@ -1,5 +1,6 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Option, Schema } from "effect";
+import { PiCredentialSchema } from "../../protocol/pi-auth";
 
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
 export const MIN_HARD_CAP_SECONDS = 60;
@@ -235,31 +236,20 @@ export type DownArchive = typeof DownArchiveSchema.Type;
 
 const OptionalNonEmptyStringSchema = Schema.optional(Schema.NonEmptyString);
 
-export const CodexTokenSetSchema = Schema.Struct({
-  id_token: OptionalNonEmptyStringSchema,
-  access_token: OptionalNonEmptyStringSchema,
-  refresh_token: OptionalNonEmptyStringSchema,
-  account_id: Schema.NullOr(Schema.NonEmptyString),
-});
-export type CodexTokenSet = typeof CodexTokenSetSchema.Type;
-
-export const CodexCredentialBundleSchema = Schema.Struct({
-  OPENAI_API_KEY: Schema.NullOr(Schema.NonEmptyString),
-  tokens: Schema.optional(CodexTokenSetSchema),
-  account_id: Schema.NullOr(Schema.NonEmptyString),
-  last_refresh: Schema.NullOr(Schema.NonEmptyString),
-});
-export type CodexCredentialBundle = typeof CodexCredentialBundleSchema.Type;
-
 export const CredentialRefreshLeaseValueSchema = Schema.Struct({
   nonce: Schema.NonEmptyString,
   startedAt: Schema.NonEmptyString,
 });
 
+export const StoredProviderCredentialSchema = Schema.Struct({
+  credential: PiCredentialSchema,
+  sentinel: Schema.NonEmptyString,
+});
+export type StoredProviderCredential = typeof StoredProviderCredentialSchema.Type;
+
 export const StoredCredentialSchema = Schema.Struct({
-  codex: CodexCredentialBundleSchema,
+  providers: Schema.Record(Schema.NonEmptyString, StoredProviderCredentialSchema),
   githubToken: Schema.NonEmptyString,
-  codexSentinel: Schema.NonEmptyString,
   githubSentinel: Schema.NonEmptyString,
   picanProxyToken: Schema.NonEmptyString,
   updatedAt: Schema.NonEmptyString,
@@ -268,12 +258,18 @@ export const StoredCredentialSchema = Schema.Struct({
 export type StoredCredential = typeof StoredCredentialSchema.Type;
 
 export const CredentialSeedSchema = Schema.Struct({
-  codexAuthJson: Schema.NonEmptyString,
-  codexSentinel: Schema.NonEmptyString,
+  piAuthJson: Schema.NonEmptyString,
+  providerSentinelSeed: Schema.NonEmptyString,
   githubSentinel: Schema.NonEmptyString,
   picanProxyToken: Schema.NonEmptyString,
 });
 export type CredentialSeed = typeof CredentialSeedSchema.Type;
+
+export const CredentialReseedSchema = Schema.Struct({
+  piAuthJson: Schema.NonEmptyString,
+  providerSentinelSeed: Schema.NonEmptyString,
+});
+export type CredentialReseed = typeof CredentialReseedSchema.Type;
 
 export const CredentialRefreshLeaseSchema = Schema.Struct({
   credential: StoredCredentialSchema,
@@ -313,18 +309,6 @@ export const OAuthContainerResultSchema = Schema.Struct({
 });
 export type OAuthContainerResult = typeof OAuthContainerResultSchema.Type;
 
-const RawCodexCredentialSchema = Schema.Struct({
-  OPENAI_API_KEY: Schema.optionalKey(Schema.Unknown),
-  tokens: Schema.optionalKey(Schema.Unknown),
-  account_id: Schema.optionalKey(Schema.Unknown),
-  last_refresh: Schema.optionalKey(Schema.Unknown),
-});
-const RawCodexTokenSetSchema = Schema.Struct({
-  id_token: Schema.optionalKey(Schema.Unknown),
-  access_token: Schema.optionalKey(Schema.Unknown),
-  refresh_token: Schema.optionalKey(Schema.Unknown),
-  account_id: Schema.optionalKey(Schema.Unknown),
-});
 const RawOAuthUpstreamSuccessSchema = Schema.Struct({
   id_token: Schema.optionalKey(Schema.Unknown),
   access_token: Schema.optionalKey(Schema.Unknown),
@@ -333,13 +317,14 @@ const RawOAuthUpstreamSuccessSchema = Schema.Struct({
 });
 
 export const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
-export const decodeRawCodexCredential = Schema.decodeUnknownOption(RawCodexCredentialSchema);
-export const decodeRawCodexTokenSet = Schema.decodeUnknownOption(RawCodexTokenSetSchema);
 export const decodeStoredCredentialOption = Schema.decodeUnknownOption(StoredCredentialSchema);
 export const decodeStoredCredentialResult = Schema.decodeUnknownResult(StoredCredentialSchema, {
   onExcessProperty: "error",
 });
 export const decodeCredentialSeedResult = Schema.decodeUnknownResult(CredentialSeedSchema, {
+  onExcessProperty: "error",
+});
+export const decodeCredentialReseedResult = Schema.decodeUnknownResult(CredentialReseedSchema, {
   onExcessProperty: "error",
 });
 export const decodeNonEmptyStringResult = Schema.decodeUnknownResult(Schema.NonEmptyString);

@@ -76,7 +76,7 @@ const bindings = () => [
   { type: "assets", name: "ASSETS" },
   { type: "plain_text", name: "SANDBOX_TRANSPORT", value: "rpc" },
   { type: "plain_text", name: "BACKUP_BUCKET_NAME", value: "scotty-backups" },
-  { type: "secret_text", name: "CODEX_AUTH_JSON" },
+  { type: "secret_text", name: "PI_AUTH_JSON" },
   { type: "secret_text", name: "GH_TOKEN" },
   { type: "secret_text", name: "SCOTTY_TOKEN" },
 ];
@@ -127,7 +127,7 @@ const inventory = (): Chunk2LiveInventory => ({
 
 const secretEvidence = (): readonly (Chunk2SecretProps & { readonly physicalId: string })[] => [
   {
-    bindingName: "CODEX_AUTH_JSON",
+    bindingName: "PI_AUTH_JSON",
     sourceId: "scotty/codex-auth",
     physicalId: "secret-1",
     accountId: "account-01",

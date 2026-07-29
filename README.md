@@ -25,7 +25,7 @@ permanently destroy the session. Trusted runner sessions retain a Pican compatib
 
 ## Security model
 
-Repository code is untrusted. Real Codex and GitHub credentials stay in Worker secrets or per-session Durable Object storage. The container receives session-bound sentinels only. `ContainerProxy` replaces sentinels on allowlisted egress, sanitizes OAuth refresh responses before they return to the container, and denies all other outbound traffic.
+Repository code is untrusted. Real Pi provider and GitHub credentials stay in Worker secrets or per-session Durable Object storage. The container receives session-bound sentinels only. `ContainerProxy` replaces sentinels on allowlisted egress, sanitizes OAuth refresh responses before they return to the container, and denies all other outbound traffic.
 
 Browser authority is separate from the root credential. `SCOTTY_TOKEN` is accepted only as a CLI
 bearer and break-glass recovery credential; it is never accepted from a cookie, browser URL, or

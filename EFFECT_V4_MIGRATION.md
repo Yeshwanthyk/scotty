@@ -427,7 +427,7 @@ health, unauthorized, authenticated-list, and secret-preservation checks passed.
 Cloudflare Account Secrets Store is not used for production credentials: its
 1 KiB value limit cannot hold the real 4.6 KiB Codex OAuth file, and its Worker
 bindings are asynchronous rather than strings. Matching Crabfleet's proven
-boundary, real `CODEX_AUTH_JSON`, `GH_TOKEN`, and `SCOTTY_TOKEN` values are
+boundary, real `PI_AUTH_JSON`, `GH_TOKEN`, and `SCOTTY_TOKEN` values are
 installed as ordinary Worker secrets through stdin after greenfield creation.
 Alchemy declares name-only `inherit` bindings so later Worker uploads preserve
 those values without putting plaintext in props, state, plans, or logs. The

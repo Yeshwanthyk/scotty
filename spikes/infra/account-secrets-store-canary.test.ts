@@ -62,7 +62,7 @@ describe("M01B Account Secrets Store canary scaffold", () => {
       { ...valid, mutationApproval: "mutate:wrong:synthetic" },
       { ...valid, cleanupApproval: undefined },
       { ...valid, telemetryDisabled: false },
-      { ...valid, sourceId: "CODEX_AUTH_JSON" },
+      { ...valid, sourceId: "PI_AUTH_JSON" },
       { ...valid, keyedDigest: "not-a-keyed-digest" },
       { ...valid, secretName: "production-secret" },
     ])

@@ -302,19 +302,20 @@ class HarnessStorage {
 export const makeStoredCredential = (
   overrides: Partial<StoredCredential> = {},
 ): StoredCredential => ({
-  codex: {
-    OPENAI_API_KEY: null,
-    tokens: {
-      id_token: "stored-id-token",
-      access_token: "stored-access-token",
-      refresh_token: "stored-refresh-token",
-      account_id: "stored-account-id",
+  providers: {
+    "openai-codex": {
+      credential: {
+        type: "oauth",
+        access: "stored-access-token",
+        refresh: "stored-refresh-token",
+        expires: 0,
+        accountId: "stored-account-id",
+        idToken: "stored-id-token",
+      },
+      sentinel: `scotty-pi-${SESSION_ID}-sentinel-0`,
     },
-    account_id: null,
-    last_refresh: "2026-01-01T00:00:00.000Z",
   },
   githubToken: "stored-github-token",
-  codexSentinel: `scotty-codex-${SESSION_ID}-sentinel`,
   githubSentinel: `scotty-github-${SESSION_ID}-sentinel`,
   picanProxyToken: `scotty-pican-${SESSION_ID}-proxy`,
   updatedAt: "2026-01-01T00:00:00.000Z",
@@ -547,12 +548,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     SCOTTY_TOKEN: "test-token",
     SCOTTY_RUNNER_NAME: "slumbers",
     SCOTTY_RUNNER_TOKEN: "runner-test-token",
-    CODEX_AUTH_JSON: JSON.stringify({
-      tokens: {
-        id_token: "seed-id-token",
-        access_token: "seed-access-token",
-        refresh_token: "seed-refresh-token",
-        account_id: "seed-account-id",
+    PI_AUTH_JSON: JSON.stringify({
+      "openai-codex": {
+        type: "oauth",
+        access: "seed-access-token",
+        refresh: "seed-refresh-token",
+        expires: 0,
+        accountId: "seed-account-id",
       },
     }),
     GH_TOKEN: "seed-github-token",

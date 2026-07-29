@@ -12,7 +12,7 @@ export interface Bindings {
   SCOTTY_TOKEN: string;
   SCOTTY_RUNNER_NAME: string;
   SCOTTY_RUNNER_TOKEN: string;
-  CODEX_AUTH_JSON: string;
+  PI_AUTH_JSON: string;
   GH_TOKEN: string;
   SCOTTY_LOCAL_BACKUP?: string;
   R2_ACCESS_KEY_ID?: string;
