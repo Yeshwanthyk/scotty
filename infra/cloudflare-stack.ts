@@ -1,114 +1,107 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
-import ScottyRunnerWorkerLive, {
-  SCOTTY_RUNNER_WORKER_NAME,
-  ScottyRunnerWorker,
-} from "../worker/src/runner-worker.ts";
+import { makeScottyRunnerWorker, ScottyRunnerWorker } from "../worker/src/runner-worker.ts";
 import { bindExternalSandboxContainer } from "./external-sandbox-container-binding.ts";
+import {
+  CLOUDFLARE_STAGE,
+  type InstallationTopology,
+  makeInstallationTopology,
+} from "./installation.ts";
 
-export const CLOUDFLARE_STAGE = "production";
-export const CLOUDFLARE_WORKER_NAME = "scotty-worker";
-export const CLOUDFLARE_RUNNER_WORKER_NAME = SCOTTY_RUNNER_WORKER_NAME;
-export const CLOUDFLARE_KV_TITLE = "scotty-sessions";
-export const CLOUDFLARE_BACKUP_BUCKET_NAME = "scotty-backups";
-export const CLOUDFLARE_CONTAINER_APPLICATION_NAME =
-  "scotty-sandboxcontainer-production-ytkhty6mswuofjo5";
-export const CLOUDFLARE_WORKER_SECRETS = [
-  "GH_TOKEN",
-  "PI_AUTH_JSON",
-  "SCOTTY_RUNNER_TOKEN",
-  "SCOTTY_TOKEN",
-] as const;
+export { CLOUDFLARE_STAGE };
 
-const EXISTING_ALCHEMY_LOGICAL_IDS = {
-  // Alchemy state is keyed by logical ID. Changing this value would create a
-  // second Worker resource instead of updating the deployed Scotty Worker.
-  worker: "MonolithWorker",
-} as const;
+export const CLOUDFLARE_WORKER_SECRETS = ["GH_TOKEN", "PI_AUTH_JSON", "SCOTTY_TOKEN"] as const;
 
-export const CLOUDFLARE_STACK = {
-  worker: {
-    logicalId: EXISTING_ALCHEMY_LOGICAL_IDS.worker,
-    name: CLOUDFLARE_WORKER_NAME,
-    main: "worker/src/index.ts",
-    url: true,
-    compatibilityDate: "2026-07-20",
-    compatibilityFlags: ["nodejs_compat"],
-    observability: true,
-  },
-  assets: {
-    directory: "worker/public",
-    binding: "ASSETS",
-    runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/providers", "/devices", "/pair", "/health"],
-    htmlHandling: "none",
-    notFoundHandling: "404-page",
-  },
-  durableObject: {
-    logicalId: "Sandbox",
-    bindingName: "SANDBOX",
-    className: "ScottySandbox",
-  },
-  authDurableObject: {
-    logicalId: "AuthRegistry",
-    bindingName: "AUTH",
-    className: "ScottyAuthRegistry",
-  },
-  runnerDurableObject: {
-    logicalId: "Runner",
-    bindingName: "RUNNERS",
-    className: "ScottyRunner",
-    workerName: CLOUDFLARE_RUNNER_WORKER_NAME,
-  },
-  container: {
-    logicalId: "SandboxContainer",
-    name: CLOUDFLARE_CONTAINER_APPLICATION_NAME,
-    context: ".alchemy/scotty-container-context",
-    dockerfile: ".alchemy/scotty-container-context/worker/container/Dockerfile",
-    instanceType: "standard-2",
-    maxInstances: 10,
-  },
-  kv: {
-    logicalId: "SessionsProjection",
-    bindingName: "SESSIONS",
-    title: CLOUDFLARE_KV_TITLE,
-  },
-  r2: {
-    logicalId: "BackupBucket",
-    bindingName: "BACKUP_BUCKET",
-    name: CLOUDFLARE_BACKUP_BUCKET_NAME,
-  },
-  vars: {
-    SANDBOX_TRANSPORT: "rpc",
-    BACKUP_BUCKET_NAME: CLOUDFLARE_BACKUP_BUCKET_NAME,
-    SCOTTY_RUNNER_NAME: "slumbers",
-  },
-  outputKeys: ["url"],
-  removalPolicy: "retain",
-} as const;
+export const makeCloudflareStackTopology = (installation: InstallationTopology) =>
+  ({
+    worker: {
+      logicalId: installation.workerLogicalId,
+      name: installation.workerName,
+      main: "worker/src/index.ts",
+      url: true,
+      compatibilityDate: "2026-07-20",
+      compatibilityFlags: ["nodejs_compat"],
+      observability: true,
+    },
+    assets: {
+      directory: "worker/public",
+      binding: "ASSETS",
+      runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/providers", "/devices", "/pair", "/health"],
+      htmlHandling: "none",
+      notFoundHandling: "404-page",
+    },
+    durableObject: {
+      logicalId: "Sandbox",
+      bindingName: "SANDBOX",
+      className: "ScottySandbox",
+    },
+    authDurableObject: {
+      logicalId: "AuthRegistry",
+      bindingName: "AUTH",
+      className: "ScottyAuthRegistry",
+    },
+    runnerRegistryDurableObject: {
+      logicalId: "RunnerRegistry",
+      bindingName: "RUNNER_REGISTRY",
+      className: "ScottyRunnerRegistry",
+    },
+    runnerDurableObject: {
+      logicalId: "Runner",
+      bindingName: "RUNNERS",
+      className: "ScottyRunner",
+      workerName: installation.runnerWorkerName,
+    },
+    container: {
+      logicalId: "SandboxContainer",
+      name: installation.containerName,
+      context: ".alchemy/scotty-container-context",
+      dockerfile: ".alchemy/scotty-container-context/worker/container/Dockerfile",
+      instanceType: "standard-2",
+      maxInstances: 10,
+    },
+    kv: {
+      logicalId: "SessionsProjection",
+      bindingName: "SESSIONS",
+      title: installation.kvTitle,
+    },
+    r2: {
+      logicalId: "BackupBucket",
+      bindingName: "BACKUP_BUCKET",
+      name: installation.backupBucketName,
+    },
+    vars: {
+      SANDBOX_TRANSPORT: "rpc",
+      BACKUP_BUCKET_NAME: installation.backupBucketName,
+    },
+    outputKeys: ["url", "accountId", "workerName"],
+    removalPolicy: "retain",
+  }) as const;
 
 export interface CloudflareStackConfig {
   readonly stage: string;
   readonly telemetryDisabled: boolean;
-  readonly accountId: string;
+  readonly installation: InstallationTopology;
   readonly resourceConfirmation: string | undefined;
   readonly approval: string | undefined;
 }
 
-export const expectedCloudflareResourceConfirmation = (accountId: string): string =>
+export const expectedCloudflareResourceConfirmation = (
+  installation: InstallationTopology,
+): string =>
   [
     "confirmed",
-    accountId,
-    `worker=${CLOUDFLARE_STACK.worker.name}`,
-    `runnerWorker=${CLOUDFLARE_STACK.runnerDurableObject.workerName}`,
-    `durableObjects=${CLOUDFLARE_STACK.durableObject.className},${CLOUDFLARE_STACK.authDurableObject.className},${CLOUDFLARE_STACK.runnerDurableObject.className}`,
-    `container=${CLOUDFLARE_STACK.container.name}`,
-    `kv=${CLOUDFLARE_STACK.kv.title}`,
-    `r2=${CLOUDFLARE_STACK.r2.name}`,
+    installation.installationName,
+    `worker=${installation.workerName}`,
+    `runnerWorker=${installation.runnerWorkerName}`,
+    "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner",
+    `container=${installation.containerName}`,
+    `kv=${installation.kvTitle}`,
+    `r2=${installation.backupBucketName}`,
   ].join(":");
 
-export const expectedCloudflareStackApproval = (accountId: string): string =>
-  `deploy:${accountId}:${CLOUDFLARE_WORKER_NAME}`;
+export const expectedCloudflareStackApproval = (installation: InstallationTopology): string =>
+  `deploy:${installation.installationName}:${installation.workerName}`;
 
 export function assertCloudflareStackConfig(config: CloudflareStackConfig): void {
   if (config.stage !== CLOUDFLARE_STAGE) {
@@ -119,89 +112,93 @@ export function assertCloudflareStackConfig(config: CloudflareStackConfig): void
     // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: synchronous deployment preflight rejects invalid host configuration before resource evaluation
     throw new Error("Cloudflare deployment requires telemetry to be disabled.");
   }
-  if (!/^[0-9a-f]{32}$/u.test(config.accountId)) {
+  if (config.resourceConfirmation !== expectedCloudflareResourceConfirmation(config.installation)) {
     // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: synchronous deployment preflight rejects invalid host configuration before resource evaluation
-    throw new Error("Cloudflare deployment requires a 32-lowercase-hex accountId.");
+    throw new Error(
+      "Cloudflare deployment requires exact installation-scoped resource confirmation.",
+    );
   }
-  if (config.resourceConfirmation !== expectedCloudflareResourceConfirmation(config.accountId)) {
+  if (config.approval !== expectedCloudflareStackApproval(config.installation)) {
     // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: synchronous deployment preflight rejects invalid host configuration before resource evaluation
-    throw new Error("Cloudflare deployment requires exact account-scoped resource confirmation.");
-  }
-  if (config.approval !== expectedCloudflareStackApproval(config.accountId)) {
-    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: synchronous deployment preflight rejects invalid host configuration before resource evaluation
-    throw new Error("Cloudflare deployment requires exact account-scoped approval.");
+    throw new Error("Cloudflare deployment requires exact installation-scoped approval.");
   }
 }
 
 export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareStackConfig) {
-  // This synchronous guard intentionally precedes every Resource Effect.
   assertCloudflareStackConfig(config);
 
+  const topology = makeCloudflareStackTopology(config.installation);
+  const environment = yield* Cloudflare.CloudflareEnvironment;
+  const { accountId } = yield* environment;
   const removalPolicy = RemovalPolicy.retain();
-  const sessions = yield* Cloudflare.KV.Namespace(CLOUDFLARE_STACK.kv.logicalId, {
-    title: CLOUDFLARE_STACK.kv.title,
+  const sessions = yield* Cloudflare.KV.Namespace(topology.kv.logicalId, {
+    title: topology.kv.title,
   }).pipe(removalPolicy);
-  const backups = yield* Cloudflare.R2.Bucket(CLOUDFLARE_STACK.r2.logicalId, {
-    name: CLOUDFLARE_STACK.r2.name,
+  const backups = yield* Cloudflare.R2.Bucket(topology.r2.logicalId, {
+    name: topology.r2.name,
   }).pipe(removalPolicy);
-  const durableObject = Cloudflare.DurableObject(CLOUDFLARE_STACK.durableObject.logicalId, {
-    className: CLOUDFLARE_STACK.durableObject.className,
+  const durableObject = Cloudflare.DurableObject(topology.durableObject.logicalId, {
+    className: topology.durableObject.className,
   });
-  const authDurableObject = Cloudflare.DurableObject(CLOUDFLARE_STACK.authDurableObject.logicalId, {
-    className: CLOUDFLARE_STACK.authDurableObject.className,
+  const authDurableObject = Cloudflare.DurableObject(topology.authDurableObject.logicalId, {
+    className: topology.authDurableObject.className,
   });
+  const runnerRegistryDurableObject = Cloudflare.DurableObject(
+    topology.runnerRegistryDurableObject.logicalId,
+    {
+      className: topology.runnerRegistryDurableObject.className,
+    },
+  );
   const runnerWorker = yield* ScottyRunnerWorker.pipe(
-    Effect.provide(ScottyRunnerWorkerLive),
+    Effect.provide(makeScottyRunnerWorker(topology.runnerDurableObject.workerName)),
     removalPolicy,
   );
-  const runnerDurableObject = Cloudflare.DurableObject(
-    CLOUDFLARE_STACK.runnerDurableObject.logicalId,
-    {
-      className: CLOUDFLARE_STACK.runnerDurableObject.className,
-      scriptName: runnerWorker.workerName,
-    },
-  );
+  const runnerDurableObject = Cloudflare.DurableObject(topology.runnerDurableObject.logicalId, {
+    className: topology.runnerDurableObject.className,
+    scriptName: runnerWorker.workerName,
+  });
   const assetConfig = {
-    directory: CLOUDFLARE_STACK.assets.directory,
-    binding: CLOUDFLARE_STACK.assets.binding,
-    runWorkerFirst: [...CLOUDFLARE_STACK.assets.runWorkerFirst],
-    htmlHandling: CLOUDFLARE_STACK.assets.htmlHandling,
-    notFoundHandling: CLOUDFLARE_STACK.assets.notFoundHandling,
+    directory: topology.assets.directory,
+    binding: topology.assets.binding,
+    runWorkerFirst: [...topology.assets.runWorkerFirst],
+    htmlHandling: topology.assets.htmlHandling,
+    notFoundHandling: topology.assets.notFoundHandling,
   };
-  const worker = yield* Cloudflare.Worker(CLOUDFLARE_STACK.worker.logicalId, {
-    name: CLOUDFLARE_STACK.worker.name,
-    main: CLOUDFLARE_STACK.worker.main,
-    url: CLOUDFLARE_STACK.worker.url,
+  const worker = yield* Cloudflare.Worker(topology.worker.logicalId, {
+    name: topology.worker.name,
+    main: topology.worker.main,
+    url: topology.worker.url,
     assets: assetConfig,
     compatibility: {
-      date: CLOUDFLARE_STACK.worker.compatibilityDate,
-      flags: [...CLOUDFLARE_STACK.worker.compatibilityFlags],
+      date: topology.worker.compatibilityDate,
+      flags: [...topology.worker.compatibilityFlags],
     },
-    observability: { enabled: CLOUDFLARE_STACK.worker.observability },
+    observability: { enabled: topology.worker.observability },
     env: {
       AUTH: authDurableObject,
+      RUNNER_REGISTRY: runnerRegistryDurableObject,
       RUNNERS: runnerDurableObject,
       SANDBOX: durableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,
-      ...CLOUDFLARE_STACK.vars,
+      ...topology.vars,
     },
   }).pipe(removalPolicy);
   yield* worker.bind("InheritedWorkerSecrets", {
     bindings: CLOUDFLARE_WORKER_SECRETS.map((name) => ({ type: "inherit", name })),
   });
-  const container = yield* Cloudflare.Containers.ContainerPlatform(
-    CLOUDFLARE_STACK.container.logicalId,
-    {
-      name: CLOUDFLARE_STACK.container.name,
-      context: CLOUDFLARE_STACK.container.context,
-      dockerfile: CLOUDFLARE_STACK.container.dockerfile,
-      instanceType: CLOUDFLARE_STACK.container.instanceType,
-      maxInstances: CLOUDFLARE_STACK.container.maxInstances,
-    },
-  ).pipe(removalPolicy);
+  const container = yield* Cloudflare.Containers.ContainerPlatform(topology.container.logicalId, {
+    name: topology.container.name,
+    context: topology.container.context,
+    dockerfile: topology.container.dockerfile,
+    instanceType: topology.container.instanceType,
+    maxInstances: topology.container.maxInstances,
+  }).pipe(removalPolicy);
 
   yield* bindExternalSandboxContainer({ worker, container, durableObject });
 
-  return { url: worker.url };
+  return { url: worker.url, accountId, workerName: topology.worker.name };
 });
+
+export const defaultCloudflareStackTopology = (installationName: string) =>
+  makeCloudflareStackTopology(makeInstallationTopology(installationName));

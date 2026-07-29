@@ -29,11 +29,14 @@
     "test:ops": "node --test scripts/*.test.mjs",
     "test:all": "npm run test:contracts && npm run test:worker && npm run test:cli && npm run test:e2e:offline && npm run test:ops",
     "audit:containers": "node scripts/reconcile-containers.mjs",
+    "build:cli": "bun scripts/build-cli.mjs",
     "deploy:production": "node scripts/deploy-production.mjs",
     "probe:dry-run": "wrangler deploy --dry-run --config spikes/wrangler.jsonc",
     "worker:dev": "npm run dev --workspace @scotty/worker"
   },
   "dependencies": {
+    "@distilled.cloud/cloudflare": "0.29.1",
+    "@effect/platform-bun": "4.0.0-beta.99",
     "@effect/platform-node": "4.0.0-beta.99",
     "alchemy": "2.0.0-beta.63",
     "effect": "4.0.0-beta.99",

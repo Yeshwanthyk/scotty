@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  PRODUCTION_CONTAINER_APPLICATION_ID,
-  PRODUCTION_CONTAINER_APPLICATION_NAME,
-  reconcileContainerInventory,
-} from "./reconcile-containers.mjs";
+import { reconcileContainerInventory } from "./reconcile-containers.mjs";
 
 const NOW = Date.parse("2026-07-23T04:00:00.000Z");
+const APPLICATION_NAME = "scotty-test-sandbox";
 
 const application = (overrides = {}) => ({
-  id: PRODUCTION_CONTAINER_APPLICATION_ID,
-  name: PRODUCTION_CONTAINER_APPLICATION_NAME,
+  id: "application-id",
+  name: APPLICATION_NAME,
   state: "active",
   instances: 7,
   ...overrides,
@@ -36,6 +33,7 @@ const session = (overrides = {}) => ({
 describe("Container reconciliation", () => {
   it("accepts one active session, one running instance, and inactive history", () => {
     const report = reconcileContainerInventory({
+      applicationName: APPLICATION_NAME,
       applications: [application()],
       instances: [instance(), instance({ name: "old-session", state: "inactive" })],
       sessions: [session()],
@@ -43,7 +41,7 @@ describe("Container reconciliation", () => {
     });
     assert.equal(report.ok, true);
     assert.deepEqual(report.counts, {
-      scottyApplications: 1,
+      managedApplications: 1,
       activeInstances: 1,
       inactiveIdentityRows: 1,
       projectedSessions: 1,
@@ -53,6 +51,7 @@ describe("Container reconciliation", () => {
 
   it("accepts a ready application with no active sessions or instances", () => {
     const report = reconcileContainerInventory({
+      applicationName: APPLICATION_NAME,
       applications: [application({ state: "ready" })],
       instances: [instance({ name: "old-session", state: "inactive" })],
       sessions: [session({ status: "sleeping" })],
@@ -61,7 +60,7 @@ describe("Container reconciliation", () => {
     assert.equal(report.ok, true);
     assert.equal(report.application.state, "ready");
     assert.deepEqual(report.counts, {
-      scottyApplications: 1,
+      managedApplications: 1,
       activeInstances: 0,
       inactiveIdentityRows: 1,
       projectedSessions: 1,
@@ -71,6 +70,7 @@ describe("Container reconciliation", () => {
   it("rejects provisioning or degraded applications", () => {
     for (const state of ["provisioning", "degraded"]) {
       const report = reconcileContainerInventory({
+        applicationName: APPLICATION_NAME,
         applications: [application({ state })],
         instances: [],
         sessions: [],
@@ -79,27 +79,27 @@ describe("Container reconciliation", () => {
       assert.equal(report.ok, false);
       assert.deepEqual(
         report.issues.map((issue) => issue.code),
-        ["production_application_inactive"],
+        ["managed_application_inactive"],
       );
     }
   });
 
-  it("rejects a production application with the wrong Cloudflare ID", () => {
+  it("discovers application identity by its installation-scoped name", () => {
     const report = reconcileContainerInventory({
+      applicationName: APPLICATION_NAME,
       applications: [application({ id: "replacement" })],
       instances: [],
       sessions: [],
       now: NOW,
     });
-    assert.deepEqual(
-      report.issues.map((issue) => issue.code),
-      ["production_application_identity"],
-    );
+    assert.equal(report.ok, true);
+    assert.equal(report.application.id, "replacement");
   });
 
-  it("rejects duplicate applications and active instances without sessions", () => {
+  it("rejects duplicate exact-name applications and active instances without sessions", () => {
     const report = reconcileContainerInventory({
-      applications: [application(), application({ id: "duplicate", name: "scotty-duplicate" })],
+      applicationName: APPLICATION_NAME,
+      applications: [application(), application({ id: "duplicate" })],
       instances: [instance({ name: "aaaaaaaaaaaa" })],
       sessions: [],
       now: NOW,
@@ -107,12 +107,13 @@ describe("Container reconciliation", () => {
     assert.equal(report.ok, false);
     assert.deepEqual(
       report.issues.map((issue) => issue.code),
-      ["scotty_application_count", "active_instance_without_session"],
+      ["managed_application_count", "active_instance_without_session"],
     );
   });
 
   it("rejects terminal or expired sessions with running compute", () => {
     const report = reconcileContainerInventory({
+      applicationName: APPLICATION_NAME,
       applications: [application()],
       instances: [instance()],
       sessions: [
@@ -132,6 +133,7 @@ describe("Container reconciliation", () => {
 
   it("rejects warm projections without an active instance", () => {
     const report = reconcileContainerInventory({
+      applicationName: APPLICATION_NAME,
       applications: [application()],
       instances: [],
       sessions: [session()],
@@ -146,6 +148,7 @@ describe("Container reconciliation", () => {
 
   it("accepts a warm runner projection with only a stopped Cloudflare identity", () => {
     const report = reconcileContainerInventory({
+      applicationName: APPLICATION_NAME,
       applications: [application()],
       instances: [instance({ state: "stopped" })],
       sessions: [session({ provider: "runner" })],

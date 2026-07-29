@@ -10,6 +10,7 @@ import app from "../../worker/src/index";
 import { SESSION_SCHEDULE_CALLBACKS } from "../../worker/src/session-lifecycle";
 import { Sandbox } from "../../worker/src/session";
 import { ScottyAuthRegistry } from "../../worker/src/auth-object";
+import { ScottyRunnerRegistry } from "../../worker/src/runner-registry-object";
 
 const RECORD_KEY = "scotty:session";
 const CREDENTIAL_KEY = "scotty:credential";
@@ -131,7 +132,7 @@ export class ScottySandbox extends Sandbox {
 ScottySandbox.outboundByHost = makeOutboundByHost(fetch);
 ScottySandbox.outbound = denyOutbound;
 
-export { ContainerProxy, ScottyAuthRegistry };
+export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry };
 
 export default {
   async fetch(request: Request, env: CanaryBindings, ctx: ExecutionContext): Promise<Response> {

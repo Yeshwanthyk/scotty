@@ -52,7 +52,20 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
     );
   const host = Option.getOrUndefined(decodeString(raw.value.host));
   const token = Option.getOrUndefined(decodeString(raw.value.token));
+  const installationName = Option.getOrUndefined(decodeString(raw.value.installationName));
+  const profile = Option.getOrUndefined(decodeString(raw.value.profile));
+  const stackName = Option.getOrUndefined(decodeString(raw.value.stackName));
+  const stage = Option.getOrUndefined(decodeString(raw.value.stage));
+  const accountId = Option.getOrUndefined(decodeString(raw.value.accountId));
+  const workerName = Option.getOrUndefined(decodeString(raw.value.workerName));
   return {
+    ...(raw.value.version === 1 ? { version: 1 as const } : {}),
+    ...(installationName === undefined ? {} : { installationName }),
+    ...(profile === undefined ? {} : { profile }),
+    ...(stackName === undefined ? {} : { stackName }),
+    ...(stage === undefined ? {} : { stage }),
+    ...(accountId === undefined ? {} : { accountId }),
+    ...(workerName === undefined ? {} : { workerName }),
     ...(host === undefined ? {} : { host }),
     ...(token === undefined ? {} : { token }),
   } satisfies Config;

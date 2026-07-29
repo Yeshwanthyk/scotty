@@ -1,0 +1,55 @@
+{
+  "name": "pi-tasks",
+  "version": "0.5.1",
+  "description": "A pi extension that brings Claude Code-style task tracking and coordination to pi.",
+  "author": "Yeshwanth YK <yeshwanth.yk@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yeshwanthyk/pi-tasks.git"
+  },
+  "homepage": "https://github.com/Yeshwanthyk/pi-tasks#readme",
+  "bugs": {
+    "url": "https://github.com/Yeshwanthyk/pi-tasks/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "task",
+    "tasks",
+    "todo",
+    "coordination"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.7",
+    "@earendil-works/pi-tui": "^0.80.7",
+    "@effect/platform-node": "4.0.0-beta.98",
+    "effect": "4.0.0-beta.98",
+    "typebox": "^1.1.34"
+  },
+  "scripts": {
+    "build": "npm run effect:prepare && tsc",
+    "effect:prepare": "node scripts/prepare-effect-tsgo.mjs",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "test": "vitest run --no-file-parallelism",
+    "test:watch": "vitest",
+    "typecheck": "npm run effect:prepare && tsc --noEmit",
+    "lint": "biome check src/ test/",
+    "lint:fix": "biome check --fix src/ test/"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.22.0",
+    "@types/node": "^25.0.0",
+    "typescript": "7.0.2",
+    "@biomejs/biome": "^2.4.13",
+    "vitest": "^4.1.5"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "video": "https://github.com/Yeshwanthyk/pi-tasks/raw/master/media/demo.mp4",
+    "image": "https://github.com/Yeshwanthyk/pi-tasks/raw/master/media/screenshot.png"
+  }
+}

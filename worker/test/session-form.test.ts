@@ -13,7 +13,7 @@ import {
 
 describe("session form", () => {
   it("accepts a manual owner/repo value without changing its case", () => {
-    assert.strictEqual(repositoryName("  Yeshwanthyk/scotty  "), "Yeshwanthyk/scotty");
+    assert.strictEqual(repositoryName("  ExampleUser/scotty  "), "ExampleUser/scotty");
     assert.isUndefined(repositoryName("scotty"));
     assert.isUndefined(repositoryName("owner/repo/extra"));
     assert.isUndefined(repositoryName("owner /repo"));
@@ -36,15 +36,15 @@ describe("session form", () => {
       mergeRepositorySuggestions(
         [
           {
-            repo: "Yeshwanthyk/scotty",
+            repo: "ExampleUser/scotty",
             defaultBranch: "main",
             lastUsedAt: "2026-07-23T15:00:00.000Z",
           },
-          { repo: "yeshwanthyk/SCOTTY", defaultBranch: "trunk" },
+          { repo: "exampleuser/SCOTTY", defaultBranch: "trunk" },
           { repo: "owner/project", defaultBranch: "main" },
           { repo: "invalid" },
         ],
-        ["yeshwanthyk/scotty"],
+        ["exampleuser/scotty"],
       ),
       [{ repo: "owner/project", defaultBranch: "main", lastUsedAt: undefined }],
     );
@@ -53,19 +53,19 @@ describe("session form", () => {
   it("groups workspaces by repository without creating duplicate case variants", () => {
     const first = {
       id: "one",
-      repo: "Yeshwanthyk/scotty",
+      repo: "ExampleUser/scotty",
       status: "warm",
       createdAt: "2026-01-02T00:00:00.000Z",
     };
     const second = {
       id: "two",
-      repo: "yeshwanthyk/SCOTTY",
+      repo: "exampleuser/SCOTTY",
       status: "warm",
       createdAt: "2026-01-01T00:00:00.000Z",
     };
     const third = {
       id: "three",
-      repo: "owner/pican",
+      repo: "owner/agent",
       status: "sleeping",
       createdAt: "2025-12-01T00:00:00.000Z",
     };
@@ -77,9 +77,9 @@ describe("session form", () => {
     };
 
     assert.deepStrictEqual(groupSessionsByRepository([first, second, third, unknown]), [
-      { repo: "Yeshwanthyk/scotty", sessions: [second, first] },
+      { repo: "ExampleUser/scotty", sessions: [second, first] },
       { repo: "Unknown repository", sessions: [unknown] },
-      { repo: "owner/pican", sessions: [third] },
+      { repo: "owner/agent", sessions: [third] },
     ]);
   });
 
@@ -131,7 +131,7 @@ describe("session form", () => {
     const createKey = () => `key-${++keys}`;
     const payload = {
       title: "Fix build",
-      repo: "Yeshwanthyk/scotty",
+      repo: "ExampleUser/scotty",
       prompt: "Fix it",
       hardCapSeconds: 14_400,
     };

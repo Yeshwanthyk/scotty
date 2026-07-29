@@ -62,8 +62,6 @@ describe("Sandbox resume orchestration", () => {
       harness.schedules.map((schedule) => schedule.callback),
       ["enforceHardCap"],
     );
-    assert.strictEqual(harness.picanStarts.length, 0);
-    assert.deepStrictEqual(harness.picanRequests, []);
     assert.deepStrictEqual(harness.aborts, []);
   });
 

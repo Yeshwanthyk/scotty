@@ -1,17 +1,11 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
-import {
-  PRODUCTION_CONTAINER_APPLICATION_ID,
-  PRODUCTION_CONTAINER_APPLICATION_NAME,
-} from "./reconcile-containers.mjs";
-
-export const PRODUCTION_CLOUDFLARE_ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
-export const PRODUCTION_SCOTTY_HOST = "https://scotty-worker.example.workers.dev";
 export const PRODUCTION_DEPLOY_STEPS = [
   {
     name: "Check repository",
@@ -43,12 +37,9 @@ export const PRODUCTION_DEPLOY_STEPS = [
   },
 ];
 
-const PRODUCTION_WORKER_NAME = "scotty-worker";
-const PRODUCTION_RUNNER_WORKER_NAME = "scotty-runner";
-const PRODUCTION_KV_TITLE = "scotty-sessions";
-const PRODUCTION_BACKUP_BUCKET_NAME = "scotty-backups";
 const PRODUCTION_SANDBOX_CLASS_NAME = "ScottySandbox";
 const PRODUCTION_AUTH_CLASS_NAME = "ScottyAuthRegistry";
+const PRODUCTION_RUNNER_REGISTRY_CLASS_NAME = "ScottyRunnerRegistry";
 const PRODUCTION_RUNNER_CLASS_NAME = "ScottyRunner";
 const DEPLOY_LOCK_PATH = join(tmpdir(), "scotty-production-deploy.lock");
 const DEFAULT_COMMAND_TIMEOUT_MS = 15 * 60 * 1_000;
@@ -336,9 +327,28 @@ export function runCommand(
 }
 
 async function readProductionContainerControlPlane(env, { allowAfterSignal = false } = {}) {
+  const applicationsOutput = await runCommand(
+    "npx",
+    ["--no-install", "wrangler", "containers", "list", "--json"],
+    { env, capture: true, allowAfterSignal, timeoutMs: 60_000 },
+  );
+  const applications = JSON.parse(applicationsOutput);
+  const application = Array.isArray(applications)
+    ? applications.find(
+        (candidate) =>
+          candidate &&
+          typeof candidate === "object" &&
+          candidate.name === env.SCOTTY_CONTAINER_APPLICATION_NAME,
+      )
+    : undefined;
+  if (!application?.id) {
+    throw new Error(
+      `Container application ${env.SCOTTY_CONTAINER_APPLICATION_NAME ?? "(unset)"} was not found.`,
+    );
+  }
   const output = await runCommand(
     process.execPath,
-    ["scripts/container-control-plane.mjs", PRODUCTION_CONTAINER_APPLICATION_ID],
+    ["scripts/container-control-plane.mjs", String(application.id)],
     {
       env,
       capture: true,
@@ -508,8 +518,8 @@ async function acquireDeployLock() {
   }
 }
 
-function sanitizedLocalEnvironment() {
-  const localEnvironment = { ...process.env };
+function sanitizedLocalEnvironment(environment = process.env) {
+  const localEnvironment = { ...environment };
   for (const key of Object.keys(localEnvironment)) {
     if (
       key.startsWith("CLOUDFLARE_") ||
@@ -529,26 +539,50 @@ function sanitizedLocalEnvironment() {
   return localEnvironment;
 }
 
-function productionEnvironment() {
-  const accountId = PRODUCTION_CLOUDFLARE_ACCOUNT_ID;
+export function resolveProductionTopology(environment = process.env) {
+  const installationName = environment.SCOTTY_INSTALLATION_NAME?.trim();
+  if (!installationName || !/^[a-z][a-z0-9-]{0,30}[a-z0-9]$/u.test(installationName)) {
+    throw new Error(
+      "Set SCOTTY_INSTALLATION_NAME to a 2-32 character lowercase installation name.",
+    );
+  }
+  const prefix = `scotty-${installationName}`;
+  const adoptionPath = environment.SCOTTY_ADOPTION_MANIFEST?.trim();
+  const adoption = adoptionPath ? JSON.parse(readFileSync(adoptionPath, "utf8")) : undefined;
+  if (adoption && adoption.installationName !== installationName) {
+    throw new Error("SCOTTY_ADOPTION_MANIFEST names a different installation.");
+  }
+  return {
+    installationName,
+    adoptionPath,
+    workerName: adoption?.resources?.workerName ?? `${prefix}-worker`,
+    runnerWorkerName: adoption?.resources?.runnerWorkerName ?? `${prefix}-runner`,
+    containerName: adoption?.resources?.containerName ?? `${prefix}-sandbox`,
+    kvTitle: adoption?.resources?.kvTitle ?? `${prefix}-sessions`,
+    backupBucketName: adoption?.resources?.backupBucketName ?? `${prefix}-backups`,
+  };
+}
+
+function productionEnvironment(environment = process.env) {
+  const topology = resolveProductionTopology(environment);
   const resourceConfirmation = [
     "confirmed",
-    accountId,
-    `worker=${PRODUCTION_WORKER_NAME}`,
-    `runnerWorker=${PRODUCTION_RUNNER_WORKER_NAME}`,
-    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME},${PRODUCTION_RUNNER_CLASS_NAME}`,
-    `container=${PRODUCTION_CONTAINER_APPLICATION_NAME}`,
-    `kv=${PRODUCTION_KV_TITLE}`,
-    `r2=${PRODUCTION_BACKUP_BUCKET_NAME}`,
+    topology.installationName,
+    `worker=${topology.workerName}`,
+    `runnerWorker=${topology.runnerWorkerName}`,
+    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME},${PRODUCTION_RUNNER_REGISTRY_CLASS_NAME},${PRODUCTION_RUNNER_CLASS_NAME}`,
+    `container=${topology.containerName}`,
+    `kv=${topology.kvTitle}`,
+    `r2=${topology.backupBucketName}`,
   ].join(":");
   return {
-    ...sanitizedLocalEnvironment(),
+    ...sanitizedLocalEnvironment(environment),
     ALCHEMY_TELEMETRY_DISABLED: "1",
-    CLOUDFLARE_ACCOUNT_ID: accountId,
-    SCOTTY_CLOUDFLARE_ACCOUNT_ID: accountId,
+    SCOTTY_INSTALLATION_NAME: topology.installationName,
+    ...(topology.adoptionPath ? { SCOTTY_ADOPTION_MANIFEST: topology.adoptionPath } : {}),
+    SCOTTY_CONTAINER_APPLICATION_NAME: topology.containerName,
     SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED: resourceConfirmation,
-    SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL: `deploy:${accountId}:${PRODUCTION_WORKER_NAME}`,
-    SCOTTY_HOST: PRODUCTION_SCOTTY_HOST,
+    SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL: `deploy:${topology.installationName}:${topology.workerName}`,
   };
 }
 
@@ -569,10 +603,11 @@ export async function executeProductionDeploySteps(
   {
     readControlPlane = readProductionContainerControlPlane,
     waitForRollout = waitForProductionContainerRollout,
+    environment = process.env,
   } = {},
 ) {
-  const verificationEnv = sanitizedLocalEnvironment();
-  const productionEnv = productionEnvironment();
+  const verificationEnv = sanitizedLocalEnvironment(environment);
+  const productionEnv = productionEnvironment(environment);
   await execute(PRODUCTION_DEPLOY_STEPS[0], verificationEnv);
   await execute(PRODUCTION_DEPLOY_STEPS[1], productionEnv);
   await execute(PRODUCTION_DEPLOY_STEPS[2], verificationEnv);

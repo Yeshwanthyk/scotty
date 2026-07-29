@@ -172,13 +172,9 @@ describe("Sandbox vaporize orchestration", () => {
     assert.deepStrictEqual(result, { id: SESSION_ID, status: "gone" });
     assert.deepStrictEqual(harness.deletedSchedules, [
       "retryVaporizeSession",
-      "observeAgentActivity",
-      "sleepAfterAgentCompletion",
       "enforceHardCap",
       "finalizeManagedStop",
       "retryHardCapDestroy",
-      "observeAgentActivity",
-      "sleepAfterAgentCompletion",
       "enforceHardCap",
       "finalizeManagedStop",
       "retryHardCapDestroy",
@@ -250,10 +246,10 @@ describe("Sandbox vaporize orchestration", () => {
       status: "gone",
       operation: null,
       provider: "runner",
-      runner: "slumbers",
+      runner: "example-runner",
       execution: {
         provider: "runner",
-        runner: "slumbers",
+        runner: "example-runner",
         runtimeId: `runner-v1:${SESSION_ID}`,
       },
       backup: undefined,

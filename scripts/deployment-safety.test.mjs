@@ -11,23 +11,21 @@ import {
   assertSettledContainerBaseline,
   CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
   executeProductionDeploySteps,
-  PRODUCTION_CLOUDFLARE_ACCOUNT_ID,
   PRODUCTION_DEPLOY_STEPS,
-  PRODUCTION_SCOTTY_HOST,
   readAlchemyContainerAction,
+  resolveProductionTopology,
   runCommand,
   waitForProductionContainerRollout,
 } from "./deploy-production.mjs";
-import {
-  PRODUCTION_CONTAINER_APPLICATION_ID,
-  PRODUCTION_CONTAINER_APPLICATION_NAME,
-} from "./reconcile-containers.mjs";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+const INSTALLATION_ENVIRONMENT = { SCOTTY_INSTALLATION_NAME: "test" };
+const CONTAINER_APPLICATION_ID = "application-id";
+const CONTAINER_APPLICATION_NAME = "scotty-test-sandbox";
 
 const application = (overrides = {}) => ({
-  id: PRODUCTION_CONTAINER_APPLICATION_ID,
-  name: PRODUCTION_CONTAINER_APPLICATION_NAME,
+  id: CONTAINER_APPLICATION_ID,
+  name: CONTAINER_APPLICATION_NAME,
   version: 5,
   updatedAt: "2026-07-23T01:18:50.795Z",
   activeRolloutId: null,
@@ -91,7 +89,15 @@ describe("production deployment ownership", () => {
   });
 
   it("checks, audits, deploys through Alchemy, and audits again", () => {
-    assert.equal(PRODUCTION_CLOUDFLARE_ACCOUNT_ID, "0123456789abcdef0123456789abcdef");
+    assert.deepEqual(resolveProductionTopology(INSTALLATION_ENVIRONMENT), {
+      installationName: "test",
+      adoptionPath: undefined,
+      workerName: "scotty-test-worker",
+      runnerWorkerName: "scotty-test-runner",
+      containerName: "scotty-test-sandbox",
+      kvTitle: "scotty-test-sessions",
+      backupBucketName: "scotty-test-backups",
+    });
     assert.deepEqual(
       PRODUCTION_DEPLOY_STEPS.map(({ name }) => name),
       [
@@ -140,6 +146,7 @@ describe("production deployment ownership", () => {
           executed.push("Revalidate release state");
         },
         {
+          environment: INSTALLATION_ENVIRONMENT,
           readControlPlane: async (env) => {
             executed.push("Read Container baseline");
             environments.set("Read Container baseline", { env });
@@ -176,8 +183,10 @@ describe("production deployment ownership", () => {
       "Audit deployed runtime inventory",
     ]) {
       const { env } = environments.get(name);
-      assert.equal(env.CLOUDFLARE_ACCOUNT_ID, PRODUCTION_CLOUDFLARE_ACCOUNT_ID);
-      assert.equal(env.SCOTTY_HOST, PRODUCTION_SCOTTY_HOST);
+      assert.equal(env.CLOUDFLARE_ACCOUNT_ID, undefined);
+      assert.equal(env.SCOTTY_HOST, undefined);
+      assert.equal(env.SCOTTY_INSTALLATION_NAME, "test");
+      assert.equal(env.SCOTTY_CONTAINER_APPLICATION_NAME, CONTAINER_APPLICATION_NAME);
       assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
       assert.equal(env.SCOTTY_RUNNER_TOKEN, undefined);
       assert.equal(env.SCOTTY_TOKEN, undefined);
@@ -185,19 +194,16 @@ describe("production deployment ownership", () => {
         env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
         [
           "confirmed",
-          PRODUCTION_CLOUDFLARE_ACCOUNT_ID,
-          "worker=scotty-worker",
-          "runnerWorker=scotty-runner",
-          "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunner",
-          `container=${PRODUCTION_CONTAINER_APPLICATION_NAME}`,
-          "kv=scotty-sessions",
-          "r2=scotty-backups",
+          "test",
+          "worker=scotty-test-worker",
+          "runnerWorker=scotty-test-runner",
+          "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner",
+          `container=${CONTAINER_APPLICATION_NAME}`,
+          "kv=scotty-test-sessions",
+          "r2=scotty-test-backups",
         ].join(":"),
       );
-      assert.equal(
-        env.SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL,
-        `deploy:${PRODUCTION_CLOUDFLARE_ACCOUNT_ID}:scotty-worker`,
-      );
+      assert.equal(env.SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL, "deploy:test:scotty-test-worker");
     }
     assert.deepEqual(environments.get("Audit deployed runtime inventory").options, {
       allowAfterSignal: true,
@@ -525,11 +531,14 @@ describe("production deployment ownership", () => {
     assert.match(runner, /finally \{[\s\S]*?rm\(DEPLOY_LOCK_PATH/u);
   });
 
-  it("pins the live Container application identity in infrastructure and audit code", () => {
+  it("derives Container identity without committing an account-specific ID", () => {
     const infrastructure = read("infra/cloudflare-stack.ts");
-    assert.match(infrastructure, new RegExp(PRODUCTION_CONTAINER_APPLICATION_NAME, "u"));
-    assert.match(infrastructure, /name: CLOUDFLARE_STACK\.container\.name/u);
-    assert.match(read("scripts/deploy-production.mjs"), /PRODUCTION_CONTAINER_APPLICATION_ID/u);
+    assert.doesNotMatch(infrastructure, /workers\.dev|[0-9a-f]{32}/u);
+    assert.match(infrastructure, /name: topology\.container\.name/u);
+    assert.doesNotMatch(
+      read("scripts/deploy-production.mjs"),
+      /PRODUCTION_CONTAINER_APPLICATION_ID/u,
+    );
   });
 
   it("tracks every scheduled session callback in the cancellation inventory", () => {

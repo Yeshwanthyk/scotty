@@ -115,10 +115,7 @@ COPY worker/container/skills/THIRD_PARTY_NOTICES.md /opt/scotty/THIRD_PARTY_NOTI
 COPY worker/container/skills/skills.lock.json /opt/scotty/skills.lock.json
 COPY worker/container/pi-packages /opt/scotty/pi-packages
 COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
-COPY worker/container/pican-linux-amd64.lock.json /opt/scotty/pican-linux-amd64.lock.json
-COPY worker/container/pican-linux-amd64 /usr/local/bin/pican
 COPY worker/container/scotty-runner-bootstrap /usr/local/bin/scotty-runner-bootstrap
-COPY worker/container/scotty-runner-pican /usr/local/bin/scotty-runner-pican
 COPY worker/container/scotty-pi-shell /usr/local/bin/scotty-pi-shell
 RUN set -eu; \
   npm ci \
@@ -142,7 +139,6 @@ RUN set -eu; \
         --no-fund \
         --legacy-peer-deps; \
   done \
-  && find /opt/scotty/pi-packages/sources -mindepth 2 -maxdepth 2 -name .git -delete \
   && test -z "$(find /opt/scotty/pi-packages/sources -mindepth 2 -maxdepth 2 -name .git -print -quit)" \
   && npm cache clean --force \
   && rm -rf /root/.cache
@@ -169,21 +165,17 @@ RUN mkdir -p /tmp/scotty-pi-agent \
     done \
   && rm -rf /tmp/scotty-pi-agent /tmp/scotty-pi-help /tmp/scotty-pi-packages.list \
   && chmod 0755 \
-    /usr/local/bin/pican \
     /usr/local/bin/scotty-runner-bootstrap \
-    /usr/local/bin/scotty-runner-pican \
     /usr/local/bin/scotty-pi-shell \
     /usr/local/bin/scotty \
   && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/skills \
-  && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-runner-pican /usr/local/bin/scotty-pi-shell \
-  && echo "$(jq --raw-output .binarySha256 /opt/scotty/pican-linux-amd64.lock.json)  /usr/local/bin/pican" | sha256sum --check --strict \
-  && test "$(pican --version)" = "$(jq --raw-output .sourceCommit /opt/scotty/pican-linux-amd64.lock.json)" \
+  && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-pi-shell \
   && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
   && test "$(pi --version)" = "${PI_VERSION}" \
   && scotty tools list --json >/dev/null \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck \
-    node npm bun corepack cc pkg-config codex pi pican scotty-pi-shell scotty-runner-bootstrap scotty-runner-pican; do \
+    node npm bun corepack cc pkg-config codex pi scotty-pi-shell scotty-runner-bootstrap; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done
 

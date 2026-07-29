@@ -51,6 +51,7 @@ describe("Effect command tree", () => {
         const rootHelp = root.stdout.join("");
         assert.include(rootHelp, "scotty <subcommand> [flags]");
         assert.include(rootHelp, "beam");
+        assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
         assert.include(rootHelp, "runner");
         assert.include(rootHelp, "--version, -V");
@@ -70,6 +71,8 @@ describe("Effect command tree", () => {
         assert.include(runner.stdout.join(""), "scotty runner <subcommand> [flags]");
         assert.include(runner.stdout.join(""), "serve");
         assert.include(runner.stdout.join(""), "setup");
+        assert.include(runner.stdout.join(""), "list");
+        assert.include(runner.stdout.join(""), "remove");
         assert.strictEqual(runner.stderr.join(""), "");
 
         const auth = run(["auth", "--help"]);
@@ -79,6 +82,69 @@ describe("Effect command tree", () => {
         assert.include(auth.stdout.join(""), "reseed");
         assert.strictEqual(auth.stderr.join(""), "");
       }),
+  );
+
+  it.effect("lists and removes runners through authenticated control-plane routes", () =>
+    Effect.gen(function* () {
+      const requests: Request[] = [];
+      const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        if (request.method === "DELETE")
+          return Response.json({ name: "garage", status: "removed" });
+        return Response.json([
+          {
+            name: "garage",
+            desired: "draining",
+            connection: "disconnected",
+            lastSeenAt: null,
+            assignedSessions: 0,
+          },
+        ]);
+      };
+      const shared = {
+        env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root-secret" },
+        fetch,
+      };
+
+      const listed = run(["--json", "runner", "list"], shared);
+      assert.strictEqual(yield* listed.effect, EXIT.OK);
+      assert.deepStrictEqual(JSON.parse(listed.stdout.join("")), [
+        {
+          name: "garage",
+          desired: "draining",
+          connection: "disconnected",
+          lastSeenAt: null,
+          assignedSessions: 0,
+        },
+      ]);
+
+      const removed = run(["--json", "runner", "remove", "garage", "--yes"], shared);
+      assert.strictEqual(yield* removed.effect, EXIT.OK);
+      assert.deepStrictEqual(JSON.parse(removed.stdout.join("")), {
+        name: "garage",
+        status: "removed",
+      });
+      assert.deepStrictEqual(
+        requests.map((request) => ({
+          authorization: request.headers.get("authorization"),
+          method: request.method,
+          pathname: new URL(request.url).pathname,
+        })),
+        [
+          {
+            authorization: "Bearer root-secret",
+            method: "GET",
+            pathname: "/api/runners",
+          },
+          {
+            authorization: "Bearer root-secret",
+            method: "DELETE",
+            pathname: "/api/runners/garage",
+          },
+        ],
+      );
+    }),
   );
 
   it.effect("requires exactly one auth reseed target", () =>
@@ -106,7 +172,7 @@ describe("Effect command tree", () => {
         "runner",
         "serve",
         "--name",
-        "slumbers",
+        "example-runner",
         "--root",
         "/srv/scotty",
         "--isolation",
@@ -131,7 +197,7 @@ describe("Effect command tree", () => {
           "runner",
           "serve",
           "--name",
-          "slumbers",
+          "example-runner",
           "--root",
           "/srv/scotty",
           "--isolation",
@@ -157,7 +223,7 @@ describe("Effect command tree", () => {
         "runner",
         "serve",
         "--name",
-        "slumbers",
+        "example-runner",
         "--root",
         "/srv/scotty",
       ];
