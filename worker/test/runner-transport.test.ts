@@ -42,7 +42,7 @@ class FakeSocket implements RunnerSocket {
   }
 }
 
-const hello = (runner = "slumbers"): string =>
+const hello = (runner = "example-runner"): string =>
   JSON.stringify({ _tag: "RunnerHello", version: 2, runner });
 
 const response = (sessionId: string, operationId: string): string =>
@@ -102,7 +102,7 @@ const decodeDataSent = Schema.decodeUnknownEffect(Schema.fromJsonString(HttpData
 describe("runner transport", () => {
   it.effect("requires the configured hello before accepting work", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       assert.equal(yield* transport.status(), "disconnected");
       transport.accept(socket);
@@ -122,12 +122,12 @@ describe("runner transport", () => {
 
   it.effect("reports only a ready active attachment as connected", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       assert.equal(yield* acknowledgeStatus(transport, socket), "connected");
 
-      const rehydrated = new RunnerTransport("slumbers", [socket]);
+      const rehydrated = new RunnerTransport("example-runner", [socket]);
       assert.equal(yield* acknowledgeStatus(rehydrated, socket), "connected");
       yield* rehydrated.close(socket);
       assert.equal(yield* rehydrated.status(), "disconnected");
@@ -136,7 +136,7 @@ describe("runner transport", () => {
 
   it.effect("acknowledges a runner-owned liveness probe", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
 
@@ -159,7 +159,7 @@ describe("runner transport", () => {
 
   it.effect("disconnects a stale ready attachment when its liveness probe times out", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
 
@@ -175,7 +175,7 @@ describe("runner transport", () => {
 
   it.effect("correlates the same operation ID independently across sessions", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
 
@@ -197,11 +197,11 @@ describe("runner transport", () => {
 
   it.effect("rehydrates the ready link from its hibernatable attachment", () =>
     Effect.gen(function* () {
-      const initial = new RunnerTransport("slumbers");
+      const initial = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(initial, socket);
 
-      const rehydrated = new RunnerTransport("slumbers", [socket]);
+      const rehydrated = new RunnerTransport("example-runner", [socket]);
       const pending = yield* rehydrated
         .dispatch(ensure("session-a", "ensure"), 1_000)
         .pipe(Effect.forkChild);
@@ -213,7 +213,7 @@ describe("runner transport", () => {
 
   it.effect("lets a late receipt complete a same-identity retry after timeout", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
 
@@ -243,7 +243,7 @@ describe("runner transport", () => {
 
   it.effect("fails and removes pending work when sending defects", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       socket.failSend = true;
@@ -274,7 +274,7 @@ describe("runner transport", () => {
 
   it.effect("fails pending work when a link closes or is replaced", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const firstSocket = new FakeSocket();
       yield* connect(transport, firstSocket);
       const pending = yield* transport
@@ -310,7 +310,7 @@ describe("runner transport", () => {
 
   it.effect("operator disconnect fails concurrent probes and dispatches", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
 
@@ -341,7 +341,7 @@ describe("runner transport", () => {
 
   it.effect("operator disconnect also closes a connection still in its handshake", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       transport.accept(socket);
 
@@ -355,7 +355,7 @@ describe("runner transport", () => {
 
   it.effect("streams a mounted GET response and replenishes response credit as chunks drain", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
 
@@ -476,7 +476,7 @@ describe("runner transport", () => {
 
   it.effect("accepts HTTP response frames from rewrapped WebSocket event handles", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       const eventSocket: RunnerSocket = {
@@ -543,7 +543,7 @@ describe("runner transport", () => {
 
   it.effect("settles a blocked response read on cancellation and reuses stream capacity", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       const pending = yield* transport
@@ -611,7 +611,7 @@ describe("runner transport", () => {
 
   it.effect("strips forbidden runner response metadata at the Worker boundary", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       const pending = yield* transport
@@ -656,7 +656,7 @@ describe("runner transport", () => {
 
   it.effect("maps a pre-response request failure to 502 without closing the link", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       const pending = yield* transport
@@ -716,7 +716,7 @@ describe("runner transport", () => {
 
   it.effect("streams a sanitized bounded POST body only after request credit", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       const pending = yield* transport
@@ -727,7 +727,6 @@ describe("runner transport", () => {
               authorization: "Bearer browser-secret",
               "content-type": "text/plain",
               cookie: "session=secret",
-              "x-pican-proxy-token": "spoofed",
             },
             body: "hello",
           }),
@@ -778,7 +777,7 @@ describe("runner transport", () => {
 
   it.effect("propagates consumer cancellation and times out an unopened response", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       const pending = yield* transport
@@ -830,7 +829,7 @@ describe("runner transport", () => {
 
   it.effect("closes malformed stream sequences and enforces per-session concurrency", () =>
     Effect.gen(function* () {
-      const transport = new RunnerTransport("slumbers");
+      const transport = new RunnerTransport("example-runner");
       const socket = new FakeSocket();
       yield* connect(transport, socket);
       const active: Array<Fiber.Fiber<Response>> = [];

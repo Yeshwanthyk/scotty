@@ -239,7 +239,7 @@ describe("SandboxRuntime", () => {
         const memory = new InMemoryFaultInjectableFake();
         const calls: Array<readonly [string, ...ReadonlyArray<unknown>]> = [];
         const sdkProcess = {
-          id: "scotty-pican",
+          id: "scotty-agent",
           status: "running" as const,
           kill: (signal?: string) => {
             calls.push(["kill", signal]);
@@ -267,29 +267,29 @@ describe("SandboxRuntime", () => {
         };
         const options = {
           cwd: "/workspace/a0b1c2d3e4f5",
-          env: { PICAN_PROXY_TOKEN: "private" },
-          processId: "scotty-pican",
+          env: { PRIVATE_AGENT_TOKEN: "private" },
+          processId: "scotty-agent",
           autoCleanup: true,
         } as const;
 
         const process = yield* withRuntime(
           capabilities,
-          startProcess("/usr/local/bin/pican -host 127.0.0.1", options),
+          startProcess("/usr/local/bin/pi -host 127.0.0.1", options),
         );
         yield* process.waitForPort(31_415, { mode: "tcp" });
         assert.strictEqual(yield* process.waitForExit(10_000), 0);
         yield* process.kill("SIGTERM");
-        const observed = yield* withRuntime(capabilities, getProcess("scotty-pican"));
+        const observed = yield* withRuntime(capabilities, getProcess("scotty-agent"));
 
         assert.ok(observed);
-        assert.strictEqual(observed.id, "scotty-pican");
+        assert.strictEqual(observed.id, "scotty-agent");
         assert.strictEqual(observed.status, "running");
         assert.deepStrictEqual(calls, [
-          ["startProcess", "/usr/local/bin/pican -host 127.0.0.1", options],
+          ["startProcess", "/usr/local/bin/pi -host 127.0.0.1", options],
           ["waitForPort", 31_415, { mode: "tcp" }],
           ["waitForExit", 10_000],
           ["kill", "SIGTERM"],
-          ["getProcess", "scotty-pican"],
+          ["getProcess", "scotty-agent"],
         ]);
       }),
   );
@@ -298,15 +298,16 @@ describe("SandboxRuntime", () => {
     Effect.gen(function* () {
       const capabilities: SandboxRuntimeCapabilities = {
         ...sandboxRuntimeCapabilitiesFake(),
-        startProcess: () => Promise.reject(new Error("provider leaked PICAN_PROXY_TOKEN=private")),
-        getProcess: () => Promise.reject(new Error("provider leaked PICAN_PROXY_TOKEN=private")),
+        startProcess: () =>
+          Promise.reject(new Error("provider leaked PRIVATE_AGENT_TOKEN=private")),
+        getProcess: () => Promise.reject(new Error("provider leaked PRIVATE_AGENT_TOKEN=private")),
       };
 
       const startResult = yield* Effect.result(
-        withRuntime(capabilities, startProcess("pican private")),
+        withRuntime(capabilities, startProcess("pi private")),
       );
       const lookupResult = yield* Effect.result(
-        withRuntime(capabilities, getProcess("scotty-pican")),
+        withRuntime(capabilities, getProcess("scotty-agent")),
       );
 
       assert.deepStrictEqual(

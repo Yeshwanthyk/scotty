@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -6,8 +6,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 const OUTPUT_LIMIT = 64 * 1024;
 const DEFAULT_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_PIDS_LIMIT = 512;
-const PICAN_PROXY_HEADER = "x-pican-proxy-token";
-const PICAN_PORT = 31_415;
 const CHILD_ENVIRONMENT_KEYS = ["LANG", "LC_ALL", "SHELL", "TERM", "TZ", "USER"] as const;
 
 export const RunnerComputeFailureCodeSchema = Schema.Literals([
@@ -182,18 +180,6 @@ const childEnvironmentArguments = (
     "TMPDIR=/tmp",
     "--env",
     `PATH=${safePath}`,
-    "--env",
-    "PICAN_MODE=hosted",
-    "--env",
-    `PICAN_BASE_PATH=/s/${sessionId}`,
-    "--env",
-    `PICAN_WORKSPACE_ROOT=/workspace/${sessionId}`,
-    "--env",
-    `PICAN_STATE_ROOT=/workspace/${sessionId}/.pican`,
-    "--env",
-    "PICAN_AUTH_MODE=proxy",
-    "--env",
-    "PICAN_PROXY_HEADER=X-Pican-Proxy-Token",
   ];
   for (const key of CHILD_ENVIRONMENT_KEYS) {
     const value = environment[key];
@@ -244,7 +230,6 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
       codexHome,
       codexAuth: path.join(codexHome, "auth.json"),
       githubConfig: path.join(credentials, "github"),
-      picanProxyToken: path.join(credentials, "pican-proxy-token"),
     };
   };
 
@@ -293,16 +278,8 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
   });
 
   const ensure = Effect.fnUntraced(function* (sessionId: string) {
-    const {
-      codexAuth,
-      codexHome,
-      container,
-      credentials,
-      githubConfig,
-      picanProxyToken,
-      sessionRoot,
-      workspace,
-    } = coordinates(sessionId);
+    const { codexAuth, codexHome, container, credentials, githubConfig, sessionRoot, workspace } =
+      coordinates(sessionId);
     const [codexSourceInfo, githubSourceInfo] = yield* Effect.all([
       fs.stat(config.codexAuthSource),
       fs.stat(config.githubConfigSource),
@@ -341,13 +318,6 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
         .pipe(fixedFailure("filesystem_failed"));
       yield* fs.chmod(githubHosts, 0o600).pipe(fixedFailure("filesystem_failed"));
     }
-    if (!(yield* fs.exists(picanProxyToken).pipe(fixedFailure("filesystem_failed")))) {
-      const proxyToken = randomBytes(32).toString("base64url");
-      yield* fs
-        .writeFileString(picanProxyToken, proxyToken, { mode: 0o600 })
-        .pipe(fixedFailure("filesystem_failed"));
-    }
-    yield* fs.chmod(picanProxyToken, 0o600).pipe(fixedFailure("filesystem_failed"));
     const observed = yield* phase(container);
     if (observed === "absent") {
       const environmentArguments = childEnvironmentArguments(
@@ -439,41 +409,27 @@ export const makeDockerRunnerCompute = Effect.fnUntraced(function* (
   const mountedHttp = Effect.fnUntraced(function* (
     identity: { readonly runtimeId: string; readonly sessionId: string },
     request: Request,
-    hostFetch: (request: Request) => Promise<Response>,
+    _hostFetch: (request: Request) => Promise<Response>,
   ) {
-    const { container, picanProxyToken, resourceId } = coordinates(identity.sessionId);
+    const { container, resourceId } = coordinates(identity.sessionId);
     if (identity.runtimeId !== resourceId) {
       return yield* new RunnerComputeFailure({ code: "runtime_not_running" });
     }
     if ((yield* phase(container)) !== "running") {
       return yield* new RunnerComputeFailure({ code: "runtime_not_running" });
     }
-    const inspected = yield* runRequired([
-      "container",
-      "inspect",
-      "--format={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-      container,
-    ]);
-    const address = inspected.stdout.trim();
-    if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(address)) {
-      return yield* new RunnerComputeFailure({ code: "process_failed" });
-    }
-    const source = new URL(request.url);
-    const target = `http://${address}:${PICAN_PORT}${source.pathname}${source.search}`;
-    const proxyTokenEntry = yield* fs
-      .readFileString(picanProxyToken)
-      .pipe(fixedFailure("filesystem_failed"));
-    if (!/^[A-Za-z0-9_-]{43}$/u.test(proxyTokenEntry)) {
-      return yield* new RunnerComputeFailure({ code: "filesystem_failed" });
-    }
-    const proxyToken = proxyTokenEntry;
-    const forwarded = new Request(target, request);
-    forwarded.headers.delete(PICAN_PROXY_HEADER);
-    forwarded.headers.set(PICAN_PROXY_HEADER, proxyToken);
-    return yield* Effect.tryPromise({
-      try: () => hostFetch(forwarded),
-      catch: () => new RunnerComputeFailure({ code: "process_failed" }),
-    });
+    return new Response(
+      JSON.stringify({
+        error: {
+          code: "not_found",
+          message: `No mounted runner application handles ${new URL(request.url).pathname}`,
+        },
+      }),
+      {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      },
+    );
   });
 
   return {

@@ -26,7 +26,6 @@ const REAL_REFRESH = "honeypot-real-codex-refresh";
 const REAL_GITHUB = "honeypot-real-github-token";
 const REAL_ACCOUNT = "honeypot-real-account";
 const REAL_API_KEY = "honeypot-real-api-key";
-const PICAN_PROXY_TOKEN = "honeypot-pican-proxy-token";
 
 const credential: StoredCredential = {
   providers: {
@@ -44,7 +43,6 @@ const credential: StoredCredential = {
   },
   githubToken: REAL_GITHUB,
   githubSentinel: GITHUB_SENTINEL,
-  picanProxyToken: PICAN_PROXY_TOKEN,
   updatedAt: "2026-07-22T01:02:03.000Z",
 };
 
@@ -329,7 +327,6 @@ describe("ContainerAuth", () => {
         REAL_REFRESH,
         REAL_GITHUB,
         REAL_ACCOUNT,
-        PICAN_PROXY_TOKEN,
         "honeypot-real-id-token",
       ]) {
         assert.ok(!surfaces.includes(secret));

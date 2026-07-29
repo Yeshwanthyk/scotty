@@ -35,7 +35,6 @@ import {
   decodeRunnerStatusesResponse,
   decodeSessionsResponse,
   decodeVaporizeResponse,
-  PROVIDERS,
   STANDARD_TOOLSET,
 } from "./schemas";
 import { readLocalPiAuth, uploadPiAuthSecret } from "./pi-auth";
@@ -344,10 +343,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       prompt: Argument.string("prompt").pipe(Argument.withDescription("Initial agent prompt")),
       title: Flag.string("title").pipe(Flag.withDescription("Short task or outcome title")),
       repo: Flag.string("repo").pipe(Flag.withDescription("GitHub repository as OWNER/NAME")),
-      provider: Flag.choice("provider", PROVIDERS).pipe(Flag.withDescription("Execution provider")),
-      runner: Flag.string("runner").pipe(
-        Flag.optional,
-        Flag.withDescription("Named runner (runner provider only)"),
+      provider: Flag.choice("provider", ["cloudflare"] as const).pipe(
+        Flag.withDescription("Execution provider"),
       ),
       cap: Flag.string("cap").pipe(
         Flag.optional,
@@ -356,7 +353,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       detach: Flag.boolean("detach").pipe(Flag.withDescription("Do not open the session browser")),
       trailing: trailingArguments,
     },
-    ({ cap, detach, prompt, provider, repo, runner, title, trailing }) =>
+    ({ cap, detach, prompt, provider, repo, title, trailing }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
@@ -366,13 +363,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (!normalizedTitle || normalizedTitle.length > 120)
           return yield* usage("--title must be between 1 and 120 characters");
         if (!REPOSITORY_PATTERN.test(repo)) return yield* usage("--repo must be OWNER/NAME");
-        if (provider === "cloudflare" && Option.isSome(runner))
-          return yield* usage("--runner is not valid with --provider cloudflare");
-        if (provider === "runner" && Option.isNone(runner))
-          return yield* usage("--runner is required with --provider runner");
         const auth = yield* credentials(options);
         const body: JsonObject = { title: normalizedTitle, prompt, provider, repo };
-        if (Option.isSome(runner)) body.runner = runner.value;
         if (Option.isSome(cap)) {
           body.cap = cap.value;
           body.hardCapSeconds = yield* Effect.fromResult(durationSeconds(cap.value));

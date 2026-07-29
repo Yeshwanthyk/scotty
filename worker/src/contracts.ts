@@ -52,7 +52,7 @@ export const SessionOperationSchema = Schema.Struct({
   kind: OperationKindSchema,
   nonce: Schema.String,
   startedAt: Schema.String,
-  createPhase: Schema.optionalKey(Schema.Literals(["setup", "pican"])),
+  createPhase: Schema.optionalKey(Schema.Literals(["setup", "runtime"])),
   checkpointedBackupId: Schema.optionalKey(Schema.String),
   stopRequestedAt: Schema.optionalKey(Schema.String),
   stopRollbackAt: Schema.optionalKey(Schema.String),
@@ -251,7 +251,6 @@ export const StoredCredentialSchema = Schema.Struct({
   providers: Schema.Record(Schema.NonEmptyString, StoredProviderCredentialSchema),
   githubToken: Schema.NonEmptyString,
   githubSentinel: Schema.NonEmptyString,
-  picanProxyToken: Schema.NonEmptyString,
   updatedAt: Schema.NonEmptyString,
   refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
 });
@@ -261,7 +260,6 @@ export const CredentialSeedSchema = Schema.Struct({
   piAuthJson: Schema.NonEmptyString,
   providerSentinelSeed: Schema.NonEmptyString,
   githubSentinel: Schema.NonEmptyString,
-  picanProxyToken: Schema.NonEmptyString,
 });
 export type CredentialSeed = typeof CredentialSeedSchema.Type;
 

@@ -74,7 +74,7 @@ const repoViewCommand = (repo: string): string =>
 const resetCommand = `rm -rf ${shellQuote(ROOT)} && mkdir -p '/workspace'`;
 
 const helperCommand = (root = ROOT): string =>
-  `git -C ${shellQuote(root)} config credential.helper ${shellQuote(HELPER)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; grep -qxF '.pican/' "$exclude" 2>/dev/null || printf '.pican/\\n' >> "$exclude"; }`;
+  `git -C ${shellQuote(root)} config credential.helper ${shellQuote(HELPER)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`;
 
 describe("Workspace", () => {
   it.effect("clones a self-contained repository so backup restore retains Git metadata", () =>

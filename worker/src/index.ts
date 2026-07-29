@@ -59,7 +59,7 @@ import {
   type RunnerRegistryRpcResult,
   type ScottyRunnerRegistryStub,
 } from "./runner-registry-object";
-import { PICAN_SANDBOX_ORIGIN, Sandbox as ScottySandbox } from "./session";
+import { Sandbox as ScottySandbox } from "./session";
 import { terminalShellPath } from "./container-auth";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
@@ -411,13 +411,9 @@ app.post("/api/sessions", async (c) => {
   });
   const input = parseCreateInput(body);
   if (input.provider === "runner") {
-    const name = await requireRegisteredRunnerName(c.env, input.runner ?? "");
-    const status = await c.env.RUNNERS.getByName(name).controlStatus();
-    if (status.desired !== "accepting" || status.connection !== "connected")
-      throw new ScottyError("upstream", "Runner is unavailable", {
-        httpStatus: 502,
-        exitCode: 1,
-      });
+    throw badRequest(
+      "Runner-backed sessions require a native Pi transport and cannot be created yet",
+    );
   }
   const { id, session } = await createTrackedSession(c.env, c.req.header("idempotency-key"), input);
   const origin = new URL(c.req.url).origin;
@@ -570,7 +566,7 @@ app.all("/s/:id/*", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return serveScottySessionPicanRequest(c.env, c.req.raw, id);
+  return serveScottySessionSubpath(c.env, c.req.raw, id);
 });
 
 app.get("/sessions", async (c) => {
@@ -851,19 +847,19 @@ async function serveScottySessionPage(
   sessionId: string,
 ): Promise<Response> {
   const session = await sessionSandbox(env, sessionId).getScottySession();
-  if (session.provider === "runner") return proxyPicanRequest(env, request, sessionId);
   if (session.status !== "warm")
+    return Response.redirect(new URL("/sessions", request.url).toString(), 302);
+  if (session.provider === "runner")
     return Response.redirect(new URL("/sessions", request.url).toString(), 302);
   return secureAsset(env, request, "/terminal.html");
 }
 
-async function serveScottySessionPicanRequest(
+async function serveScottySessionSubpath(
   env: Bindings,
-  request: Request,
+  _request: Request,
   sessionId: string,
 ): Promise<Response> {
-  const session = await sessionSandbox(env, sessionId).getScottySession();
-  if (session.provider === "runner") return proxyPicanRequest(env, request, sessionId);
+  await sessionSandbox(env, sessionId).getScottySession();
   return new Response(
     JSON.stringify({ error: { code: "not_found", message: "Route not found" } }),
     {
@@ -1031,81 +1027,4 @@ async function authAsset(env: Bindings, request: Request, pathname: string): Pro
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "DENY");
   return new Response(asset.body, { status: asset.status, headers });
-}
-
-async function proxyPicanRequest(
-  env: Bindings,
-  request: Request,
-  sessionId: string,
-): Promise<Response> {
-  if (request.headers.get("upgrade")?.toLowerCase() === "websocket")
-    return new Response("Pican WebSocket proxying is not supported", { status: 501 });
-
-  const headers = sanitizePicanProxyHeaders(request.headers);
-  const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
-  const source = new URL(request.url);
-  const target = new URL(`${source.pathname}${source.search}`, PICAN_SANDBOX_ORIGIN);
-  const init: RequestInit = {
-    method: request.method,
-    headers,
-    body,
-    redirect: "manual",
-    signal: request.signal,
-  };
-  if (body !== undefined) Reflect.set(init, "duplex", "half");
-  const response = await sessionSandbox(env, sessionId).fetch(new Request(target, init));
-  return addSessionsLink(request, response);
-}
-
-async function addSessionsLink(request: Request, response: Response): Promise<Response> {
-  if (
-    request.method !== "GET" ||
-    !response.headers.get("content-type")?.toLowerCase().startsWith("text/html")
-  )
-    return response;
-
-  const html = await response.clone().text();
-  if (!/<\/body\s*>/i.test(html)) return response;
-
-  const link = `<style id="scotty-sessions-link-style">
-#scotty-sessions-link{position:fixed;z-index:2147483647;left:max(12px,env(safe-area-inset-left));bottom:max(12px,env(safe-area-inset-bottom));display:inline-flex;align-items:center;min-height:36px;padding:8px 11px;border:1px solid #37404b;border-radius:8px;background:#0b1016eb;color:#e9eef4;font:600 13px/1.2 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-decoration:none;box-shadow:0 2px 8px #0006}
-#scotty-sessions-link:hover{background:#17202a;color:#fff}
-#scotty-sessions-link:focus-visible{outline:2px solid #6edcf0;outline-offset:2px}
-</style><a id="scotty-sessions-link" href="/sessions" aria-label="Back to sessions">← Sessions</a>`;
-  const headers = new Headers(response.headers);
-  headers.delete("content-encoding");
-  headers.delete("content-length");
-  headers.delete("etag");
-  return new Response(html.replace(/<\/body\s*>/i, `${link}</body>`), {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-function sanitizePicanProxyHeaders(source: Headers): Headers {
-  const headers = new Headers(source);
-  for (const name of source.get("connection")?.split(",") ?? []) headers.delete(name.trim());
-  headers.delete("host");
-  headers.delete("cookie");
-  headers.delete("authorization");
-  headers.delete("proxy-authorization");
-  headers.delete("proxy-authenticate");
-  headers.delete("x-pican-proxy-token");
-  headers.delete("forwarded");
-  headers.delete("cf-connecting-ip");
-  headers.delete("cf-ipcountry");
-  headers.delete("cf-ray");
-  headers.delete("x-forwarded-for");
-  headers.delete("x-forwarded-host");
-  headers.delete("x-forwarded-proto");
-  headers.delete("x-forwarded-port");
-  headers.delete("via");
-  headers.delete("keep-alive");
-  headers.delete("te");
-  headers.delete("trailer");
-  headers.delete("transfer-encoding");
-  headers.delete("upgrade");
-  headers.delete("connection");
-  return headers;
 }
