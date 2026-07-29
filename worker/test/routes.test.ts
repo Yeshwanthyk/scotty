@@ -749,10 +749,10 @@ describe("real Hono boundary", () => {
     ).toHaveLength(1);
   });
 
-  it("tracks the returned repository without making KV authoritative for create", async () => {
+  it("tracks the returned repository without making the recents projection authoritative", async () => {
     const trackedHarness = await createSessionHarness();
     useRealSandbox(trackedHarness);
-    const put = vi.fn(async () => undefined);
+    const put = vi.fn(async (_key: string, _value: string) => undefined);
     const tracked = await app.request(
       "/api/sessions",
       {
@@ -773,7 +773,9 @@ describe("real Hono boundary", () => {
       expect.stringContaining('"repo":"owner/repo","defaultBranch":"main","lastUsedAt":'),
     );
 
-    put.mockRejectedValueOnce("KV unavailable");
+    put.mockImplementation(async (key: string) => {
+      if (key === "repo:owner/repo") throw new Error("KV unavailable");
+    });
     const unavailableHarness = await createSessionHarness();
     useRealSandbox(unavailableHarness);
     const unavailable = await app.request(
@@ -791,6 +793,107 @@ describe("real Hono boundary", () => {
       { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
     );
     expect(unavailable.status).toBe(200);
+  });
+
+  it("requires the creation marker write before reporting create success", async () => {
+    const harness = await createSessionHarness();
+    useRealSandbox(harness);
+    let releaseMarker = (): void => undefined;
+    const markerRelease = new Promise<void>((resolve) => {
+      releaseMarker = resolve;
+    });
+    let markerStarted = (): void => undefined;
+    const markerStart = new Promise<void>((resolve) => {
+      markerStarted = resolve;
+    });
+    const put = vi.fn(async (key: string) => {
+      if (!key.startsWith("stats:workspace-created:")) return;
+      markerStarted();
+      await markerRelease;
+    });
+    let settled = false;
+    const responsePromise = Promise.resolve(
+      app.request(
+        "/api/sessions",
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            title: "Track workspace",
+            prompt: "ship it",
+            provider: "cloudflare",
+            repo: "owner/repo",
+          }),
+        },
+        { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
+      ),
+    ).then((response) => {
+      settled = true;
+      return response;
+    });
+
+    await markerStart;
+    expect(harness.readRecord()?.status).toBe("warm");
+    expect(settled).toBe(false);
+    releaseMarker();
+    expect((await responsePromise).status).toBe(200);
+  });
+
+  it("converges the same idempotent create after a marker write failure", async () => {
+    const harness = await createSessionHarness();
+    useRealSandbox(harness);
+    const values = new Map<string, string>();
+    let rejectMarker = true;
+    const sessions = {
+      ...emptySessionsNamespace(),
+      put: async (key: string, value: string) => {
+        if (key.startsWith("stats:workspace-created:") && rejectMarker) {
+          rejectMarker = false;
+          throw new Error("marker unavailable");
+        }
+        values.set(key, value);
+      },
+    } as KVNamespace;
+    const request = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        "idempotency-key": "stats-marker-retry-0001",
+      },
+      body: JSON.stringify({
+        title: "Track workspace",
+        prompt: "ship it",
+        provider: "cloudflare",
+        repo: "owner/repo",
+      }),
+    };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const first = await app.request("/api/sessions", request, { ...env(), SESSIONS: sessions });
+    expect(first.status).toBe(500);
+    expect(harness.readRecord()?.status).toBe("warm");
+
+    const second = await app.request("/api/sessions", request, { ...env(), SESSIONS: sessions });
+    expect(second.status).toBe(200);
+    const response = await second.json();
+    if (!response || typeof response !== "object" || !("id" in response))
+      throw new TypeError("Expected create response with id");
+    const markerValue = values.get(`stats:workspace-created:${response.id}`);
+    expect(markerValue).toBeDefined();
+    expect(JSON.parse(markerValue ?? "null")).toEqual({
+      sessionId: response.id,
+      repository: "owner/repo",
+      provider: "cloudflare",
+      createdAt: harness.readRecord()?.createdAt,
+    });
+    expect(markerValue).not.toContain("Track workspace");
+    expect(markerValue).not.toContain("ship it");
+    expect(logged).toHaveBeenCalledWith("Projection failure", {
+      tag: "StatsProjectionFailure",
+      reason: "put",
+    });
+    logged.mockRestore();
   });
 
   it("rejects malformed create idempotency keys before touching a Sandbox", async () => {
@@ -1009,6 +1112,14 @@ describe("real Hono boundary", () => {
         }),
         [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
+      initialProjections: {
+        [`stats:workspace-created:${SESSION_ID}`]: {
+          sessionId: SESSION_ID,
+          repository: "owner/project",
+          provider: "cloudflare",
+          createdAt: "2026-07-29T10:00:00.000Z",
+        },
+      },
     });
     useRealSandbox(harness);
 
@@ -1036,6 +1147,7 @@ describe("real Hono boundary", () => {
         `projection:delete:session:${SESSION_ID}`,
       ]),
     );
+    expect(harness.events).not.toContain(`projection:delete:stats:workspace-created:${SESSION_ID}`);
   });
 
   it("lists only fully decoded KV projections and preserves valid optional fields", async () => {
@@ -1067,6 +1179,68 @@ describe("real Hono boundary", () => {
       failure: projection.failure,
     });
     expect(body[0]).not.toHaveProperty("secret");
+  });
+
+  it("serves authenticated creation stats joined to current session statuses", async () => {
+    const values = new Map<string, unknown>([
+      [
+        "stats:workspace-created:a0b1c2d3e4f5",
+        {
+          sessionId: "a0b1c2d3e4f5",
+          repository: "owner/project",
+          provider: "cloudflare",
+          createdAt: "2026-07-28T10:00:00.000Z",
+        },
+      ],
+      [
+        "stats:workspace-created:b0b1c2d3e4f5",
+        {
+          sessionId: "b0b1c2d3e4f5",
+          repository: "owner/project",
+          provider: "cloudflare",
+          createdAt: "2026-07-29T10:00:00.000Z",
+        },
+      ],
+      ["session:a0b1c2d3e4f5", { ...projection, id: "a0b1c2d3e4f5", status: "warm" }],
+      ["session:b0b1c2d3e4f5", { ...projection, id: "b0b1c2d3e4f5", status: "sleeping" }],
+    ]);
+    const sessions = {
+      ...emptySessionsNamespace(),
+      list: async (options?: { readonly prefix?: string }) => ({
+        keys: [...values.keys()]
+          .filter((name) => name.startsWith(options?.prefix ?? ""))
+          .map((name) => ({ name })),
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      get: async (name: string) => values.get(name) ?? null,
+    } as KVNamespace;
+
+    const unauthorized = await app.request("/api/stats", undefined, {
+      ...env(),
+      SESSIONS: sessions,
+    });
+    expect(unauthorized.status).toBe(401);
+
+    const response = await app.request(
+      "/api/stats",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: sessions },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      trackingSince: "2026-07-28T10:00:00.000Z",
+      overall: { workspacesCreated: 2, projects: 1, warmNow: 1, sleepingNow: 1 },
+      projects: [
+        {
+          repository: "owner/project",
+          workspacesCreated: 2,
+          warmNow: 1,
+          sleepingNow: 1,
+          lastCreated: "2026-07-29T10:00:00.000Z",
+        },
+      ],
+    });
   });
 
   it("lists tracked repositories most-recent first without storage-only fields", async () => {
@@ -1134,7 +1308,11 @@ describe("real Hono boundary", () => {
     const sessions = {
       ...emptySessionsNamespace(),
       list: async () => ({
-        keys: [{ name: "repo:owner/project" }, { name: "repo:OWNER/PROJECT" }],
+        keys: [
+          { name: "repo:owner/project" },
+          { name: "repo:OWNER/PROJECT" },
+          { name: "stats:workspace-created:a0b1c2d3e4f5" },
+        ],
         list_complete: true,
         cacheStatus: null,
       }),
@@ -1157,6 +1335,7 @@ describe("real Hono boundary", () => {
     });
     expect(deleteKey).toHaveBeenCalledWith("repo:owner/project");
     expect(deleteKey).toHaveBeenCalledWith("repo:OWNER/PROJECT");
+    expect(deleteKey).not.toHaveBeenCalledWith("stats:workspace-created:a0b1c2d3e4f5");
     expect(sandbox.vaporizeScottySession).not.toHaveBeenCalled();
   });
 
@@ -1701,6 +1880,14 @@ describe("real Hono boundary", () => {
     expect(sessions.status).toBe(200);
     expect(sessions.headers.get("cache-control")).toBe("no-store");
     expect(sessions.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+    const stats = await app.request(
+      "/stats",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(stats.status).toBe(200);
+    expect(stats.headers.get("cache-control")).toBe("no-store");
 
     const rootBearer = await app.request(
       "/sessions",

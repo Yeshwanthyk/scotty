@@ -8,6 +8,8 @@ import {
   decodePublicError,
   decodeSessionProjection,
   decodeSessionRecord,
+  decodeStatsResponse,
+  decodeWorkspaceCreationMarker,
   hasCommittedManagedStop,
   notFound,
   parseCreateInput,
@@ -185,6 +187,64 @@ const persistedRecord = {
     current: { id: "backup-1", dir: "/workspace/a0b1c2d3e4f5", localBucket: true },
   },
 } as const;
+
+describe("stats schemas", () => {
+  it("accepts only non-secret creation markers and bounded stats counts", () => {
+    const marker = decodeWorkspaceCreationMarker({
+      sessionId: "a0b1c2d3e4f5",
+      repository: "owner/project",
+      provider: "cloudflare",
+      createdAt: "2026-07-29T10:00:00.000Z",
+      prompt: "must not survive",
+    });
+    assert.ok(Option.isSome(marker));
+    assert.deepStrictEqual(marker.value, {
+      sessionId: "a0b1c2d3e4f5",
+      repository: "owner/project",
+      provider: "cloudflare",
+      createdAt: "2026-07-29T10:00:00.000Z",
+    });
+    assert.ok(
+      Option.isNone(
+        decodeWorkspaceCreationMarker({
+          ...marker.value,
+          repository: "not-a-repository",
+        }),
+      ),
+    );
+    assert.ok(
+      Option.isNone(
+        decodeWorkspaceCreationMarker({
+          ...marker.value,
+          provider: "unknown",
+        }),
+      ),
+    );
+
+    const stats = decodeStatsResponse({
+      trackingSince: marker.value.createdAt,
+      overall: { workspacesCreated: 1, projects: 1, warmNow: 1, sleepingNow: 0 },
+      projects: [
+        {
+          repository: marker.value.repository,
+          workspacesCreated: 1,
+          warmNow: 1,
+          sleepingNow: 0,
+          lastCreated: marker.value.createdAt,
+        },
+      ],
+    });
+    assert.ok(Option.isSome(stats));
+    assert.ok(
+      Option.isNone(
+        decodeStatsResponse({
+          ...stats.value,
+          overall: { ...stats.value.overall, workspacesCreated: -1 },
+        }),
+      ),
+    );
+  });
+});
 
 describe("persisted session schemas", () => {
   it.effect("decodes an exact authoritative version 1 record", () =>
