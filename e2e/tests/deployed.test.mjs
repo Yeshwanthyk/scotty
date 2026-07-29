@@ -216,18 +216,17 @@ test(
     });
     browserCookie = await recoverOwnerCookie();
 
-    const picanShell = await fetch(`${host}/s/${id}`, {
+    const terminalShell = await fetch(`${host}/s/${id}`, {
       headers: { cookie: browserCookie },
     });
-    assert.equal(picanShell.status, 200);
-    assert.match(picanShell.headers.get("content-type") ?? "", /text\/html/iu);
-    assert.match(await picanShell.text(), new RegExp(`pican-base-path[^>]+/s/${id}`, "iu"));
+    assert.equal(terminalShell.status, 200);
+    assert.match(terminalShell.headers.get("content-type") ?? "", /text\/html/iu);
+    assert.match(await terminalShell.text(), /<title>Scotty<\/title>/iu);
 
-    const picanSessions = await fetch(`${host}/s/${id}/api/sessions?limit=100&view=all`, {
+    const terminalWithoutUpgrade = await fetch(`${host}/s/${id}/terminal`, {
       headers: { cookie: browserCookie },
     });
-    assert.equal(picanSessions.status, 200);
-    assert.ok(Array.isArray((await picanSessions.json()).sessions));
+    assert.equal(terminalWithoutUpgrade.status, 426);
 
     await poll(
       () => git(["ls-remote", "origin", `refs/heads/${remoteBranch}`], cwd),

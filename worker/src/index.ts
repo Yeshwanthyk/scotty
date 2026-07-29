@@ -1,4 +1,4 @@
-import { ContainerProxy, getSandbox } from "@cloudflare/sandbox";
+import { ContainerProxy, getSandbox, proxyTerminal } from "@cloudflare/sandbox";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
@@ -11,6 +11,7 @@ import {
   parseIdempotencyKey,
   parseSessionId,
   ScottyError,
+  wrongState,
   type CreateSessionInput,
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
@@ -60,6 +61,7 @@ const PUBLIC_AUTH_MUTATIONS = new Set([
   "POST /api/auth/recovery-grants/consume",
 ]);
 const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["booting", "warm", "sleeping", "failed"]);
+const TERMINAL_SHELL = "/usr/local/bin/scotty-pi-shell";
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -438,12 +440,33 @@ app.delete("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).vaporizeScottySession());
 });
 
+app.all("/s/:id/terminal", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
+    return c.json(
+      {
+        error: {
+          code: "upgrade_required",
+          message: "Terminal connection requires a WebSocket upgrade",
+        },
+      },
+      426,
+    );
+  requireSameOrigin(c.req.raw);
+  const sandbox = sessionSandbox(c.env, id);
+  await assertCloudflareTerminalAccess(sandbox);
+  return proxyTerminal(sandbox, id, c.req.raw, { shell: TERMINAL_SHELL });
+});
+
 app.all("/s/:id", async (c) => {
   const id = parseSessionId(c.req.param("id"));
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return proxyPicanRequest(c.env, c.req.raw, id);
+  return serveScottySessionPage(c.env, c.req.raw, id);
 });
 
 app.all("/s/:id/*", async (c) => {
@@ -451,7 +474,7 @@ app.all("/s/:id/*", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
-  return proxyPicanRequest(c.env, c.req.raw, id);
+  return serveScottySessionPicanRequest(c.env, c.req.raw, id);
 });
 
 app.get("/sessions", async (c) => {
@@ -686,6 +709,52 @@ function sessionSandbox(env: Bindings, id: string): ScottySandbox {
   });
 }
 
+async function serveScottySessionPage(
+  env: Bindings,
+  request: Request,
+  sessionId: string,
+): Promise<Response> {
+  const session = await sessionSandbox(env, sessionId).getScottySession();
+  if (session.provider === "runner") return proxyPicanRequest(env, request, sessionId);
+  if (session.status !== "warm")
+    return Response.redirect(new URL("/sessions", request.url).toString(), 302);
+  return secureAsset(env, request, "/terminal.html");
+}
+
+async function serveScottySessionPicanRequest(
+  env: Bindings,
+  request: Request,
+  sessionId: string,
+): Promise<Response> {
+  const session = await sessionSandbox(env, sessionId).getScottySession();
+  if (session.provider === "runner") return proxyPicanRequest(env, request, sessionId);
+  return new Response(
+    JSON.stringify({ error: { code: "not_found", message: "Route not found" } }),
+    {
+      status: 404,
+      headers: { "content-type": "application/json" },
+    },
+  );
+}
+
+async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<void> {
+  const session = await sandbox.getScottySession();
+  if (session.provider === "runner")
+    throw new ScottyError("not_found", "Terminal route not found", {
+      httpStatus: 404,
+      exitCode: 3,
+    });
+  if (session.status !== "warm")
+    throw wrongState(
+      session.status,
+      "access",
+      session.status === "sleeping"
+        ? "Resume the session before accessing the terminal"
+        : undefined,
+    );
+  await sandbox.assertTerminalAccess();
+}
+
 async function createTrackedSession(
   env: Bindings,
   idempotencyKey: string | undefined,
@@ -796,7 +865,7 @@ async function secureAsset(env: Bindings, request: Request, pathname: string): P
   headers.set("cache-control", "no-store");
   headers.set(
     "content-security-policy",
-    "default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    "default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' data: ws: wss:; font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   );
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");

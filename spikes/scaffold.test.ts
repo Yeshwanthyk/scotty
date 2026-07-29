@@ -28,6 +28,7 @@ describe("pinned Task 4 contracts", () => {
       "@cloudflare/containers": "0.3.5",
       "@cloudflare/sandbox": "0.12.3",
       effect: "4.0.0-beta.99",
+      "ghostty-web": "0.4.0",
       hono: "4.12.31",
       "qrcode-generator": "1.4.4",
     });

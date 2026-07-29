@@ -12,7 +12,10 @@ const sandbox = vi.hoisted(() => ({
   vaporizeScottySession: vi.fn(),
   fetch: vi.fn(),
   fetchPican: vi.fn(),
+  assertTerminalAccess: vi.fn(),
 }));
+
+const proxyTerminal = vi.hoisted(() => vi.fn());
 
 const sandboxTarget = vi.hoisted((): { current: unknown } => ({
   current: sandbox,
@@ -43,10 +46,12 @@ const runner = vi.hoisted(() => ({
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@cloudflare/sandbox")>()),
   getSandbox: vi.fn(() => sandboxTarget.current),
+  proxyTerminal,
 }));
 
 import app from "../src/index";
 import type { Bindings } from "../src/bindings";
+import { conflict } from "../src/contracts";
 import {
   createSessionHarness,
   makeResumeBackup,
@@ -141,6 +146,15 @@ describe("real Hono boundary", () => {
     vi.clearAllMocks();
     sandboxTarget.current = sandbox;
     sandbox.fetch.mockResolvedValue(new Response("<!doctype html><title>Pican</title>"));
+    sandbox.getScottySession.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      status: "warm",
+      provider: "cloudflare",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
+    sandbox.fetchPican.mockResolvedValue(new Response("ok"));
+    sandbox.assertTerminalAccess.mockResolvedValue(undefined);
     auth.authenticate.mockResolvedValue({
       ok: true,
       value: {
@@ -160,6 +174,7 @@ describe("real Hono boundary", () => {
       lastSeenAt: "2026-07-27T12:00:00.000Z",
     });
     runner.fetch.mockResolvedValue(new Response(null, { status: 204 }));
+    proxyTerminal.mockResolvedValue(new Response("terminal-proxy"));
   });
 
   it("accepts only the configured authenticated runner and strips its credential", async () => {
@@ -437,9 +452,8 @@ describe("real Hono boundary", () => {
         "projection:booting",
         "schedule:enforceHardCap",
         "host:exec:workspace",
-        "host:pican:start",
-        "host:pican:ready",
-        "host:pican:fetch:31415",
+        "host:writeFile",
+        "host:setEnvVars",
         "record:warm",
         "projection:warm",
       ]),
@@ -483,8 +497,11 @@ describe("real Hono boundary", () => {
       keyDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
-    expect(harness.events.filter((event) => event === "host:pican:start")).toHaveLength(1);
-    expect(harness.picanRequests).toHaveLength(1);
+    expect(harness.events.filter((event) => event === "host:pican:start")).toHaveLength(0);
+    expect(harness.picanRequests).toHaveLength(0);
+    expect(
+      harness.writtenFiles.filter((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
+    ).toHaveLength(1);
   });
 
   it("tracks the returned repository without making KV authoritative for create", async () => {
@@ -687,8 +704,8 @@ describe("real Hono boundary", () => {
         "schedule:enforceHardCap",
         "host:restoreBackup",
         "host:mkdir",
-        "host:pican:start",
-        "host:pican:ready",
+        "host:writeFile",
+        "host:setEnvVars",
         "record:warm",
         "projection:warm",
       ]),
@@ -1312,34 +1329,18 @@ describe("real Hono boundary", () => {
     expect(apiRootCookie.status).toBe(401);
   });
 
-  it("proxies the Pican root only for registered-client cookies", async () => {
-    sandbox.fetch.mockResolvedValueOnce(
-      new Response("<!doctype html><html><head><title>Pican</title></head><body></body></html>", {
-        headers: {
-          "content-encoding": "gzip",
-          "content-length": "72",
-          "content-type": "text/html; charset=utf-8",
-          etag: '"pican-shell"',
-        },
-      }),
-    );
+  it("serves the terminal shell for Cloudflare sessions with registered-client cookies", async () => {
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).toContain("<title>Pican</title>");
-    expect(html).toContain('id="scotty-sessions-link" href="/sessions"');
+    expect(await response.text()).toContain("<title>Scotty</title>");
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(response.headers.get("content-length")).toBeNull();
     expect(response.headers.get("etag")).toBeNull();
-    expect(sandbox.fetch).toHaveBeenCalledOnce();
-    const upstream = sandbox.fetch.mock.calls[0]?.[0];
-    expect(upstream).toBeInstanceOf(Request);
-    expect(new URL(upstream.url).pathname).toBe("/s/a0b1c2d3e4f5");
-    expect(upstream.headers.has("cookie")).toBe(false);
+    expect(sandbox.fetch).not.toHaveBeenCalled();
 
     const sessions = await app.request(
       "/sessions",
@@ -1363,10 +1364,231 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(sessionRootBearer.status).toBe(401);
-    expect(sandbox.fetch).toHaveBeenCalledOnce();
   });
 
-  it("preserves mounted Pican paths and query while stripping boundary credentials", async () => {
+  it("returns non-warm Cloudflare session pages to Home for explicit resume", async () => {
+    sandbox.getScottySession.mockResolvedValueOnce({
+      id: "a0b1c2d3e4f5",
+      status: "sleeping",
+      provider: "cloudflare",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5",
+      {
+        headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` },
+        redirect: "manual",
+      },
+      env(),
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("http://localhost/sessions");
+    expect(sandbox.fetch).not.toHaveBeenCalled();
+  });
+
+  it("serves a JSON not-found response for Cloudflare sub-asset routes", async () => {
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/assets/app.js?v=7",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not_found", message: "Route not found" },
+    });
+  });
+
+  it("requires a WebSocket upgrade for Cloudflare terminal connections", async () => {
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/terminal",
+      {
+        headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` },
+      },
+      env(),
+    );
+    expect(response.status).toBe(426);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "upgrade_required",
+        message: "Terminal connection requires a WebSocket upgrade",
+      },
+    });
+  });
+
+  it("requires same-origin for Cloudflare terminal connections", async () => {
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/terminal",
+      {
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          upgrade: "websocket",
+          origin: "https://example.com",
+        },
+      },
+      env(),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "Request must come from this Scotty origin" },
+    });
+  });
+
+  it("requires a registered-client cookie for Cloudflare terminal connections", async () => {
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/terminal",
+      {
+        headers: { upgrade: "websocket" },
+      },
+      env(),
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects Cloudflare terminal access when the session is sleeping", async () => {
+    sandbox.getScottySession.mockResolvedValueOnce({
+      id: "a0b1c2d3e4f5",
+      status: "sleeping",
+      provider: "cloudflare",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/terminal",
+      {
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          upgrade: "websocket",
+          origin: "http://localhost",
+        },
+      },
+      env(),
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "wrong_state",
+        message: "Cannot access a session in sleeping state",
+        hint: "Resume the session before accessing the terminal",
+      },
+    });
+  });
+
+  it("rejects Cloudflare terminal access when an operation is active", async () => {
+    sandbox.assertTerminalAccess.mockRejectedValueOnce(
+      conflict("Session is already running snapshot"),
+    );
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/terminal",
+      {
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          upgrade: "websocket",
+          origin: "http://localhost",
+        },
+      },
+      env(),
+    );
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "conflict", message: "Session is already running snapshot" },
+    });
+  });
+
+  it("forwards Cloudflare terminal sockets to the sandbox PTY with scotty shell", async () => {
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/terminal",
+      {
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          connection: "Upgrade",
+          upgrade: "websocket",
+          origin: "http://localhost",
+        },
+      },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("terminal-proxy");
+    expect(proxyTerminal).toHaveBeenCalledOnce();
+    expect(proxyTerminal).toHaveBeenCalledWith(sandbox, "a0b1c2d3e4f5", expect.any(Request), {
+      shell: "/usr/local/bin/scotty-pi-shell",
+    });
+    expect(sandbox.assertTerminalAccess).toHaveBeenCalledOnce();
+  });
+
+  it("does not expose the Cloudflare Pi terminal on runner sessions", async () => {
+    sandbox.getScottySession.mockResolvedValueOnce({
+      id: "a0b1c2d3e4f5",
+      status: "warm",
+      provider: "runner",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/terminal",
+      {
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          connection: "Upgrade",
+          upgrade: "websocket",
+          origin: "http://localhost",
+        },
+      },
+      env(),
+    );
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not_found", message: "Terminal route not found" },
+    });
+    expect(proxyTerminal).not.toHaveBeenCalled();
+  });
+
+  it("preserves legacy runner behavior for Pican root", async () => {
+    sandbox.fetch.mockResolvedValueOnce(
+      new Response("<!doctype html><html><head><title>Pican</title></head><body></body></html>", {
+        headers: {
+          "content-encoding": "gzip",
+          "content-length": "72",
+          "content-type": "text/html; charset=utf-8",
+          etag: '"pican-shell"',
+        },
+      }),
+    );
+    sandbox.getScottySession.mockResolvedValueOnce({
+      id: "a0b1c2d3e4f5",
+      status: "warm",
+      provider: "runner",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("<title>Pican</title>");
+    expect(html).toContain('id="scotty-sessions-link" href="/sessions"');
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(response.headers.get("etag")).toBeNull();
+    expect(sandbox.fetch).toHaveBeenCalledOnce();
+    const upstream = sandbox.fetch.mock.calls[0]?.[0];
+    expect(upstream).toBeInstanceOf(Request);
+    expect(new URL(upstream.url).pathname).toBe("/s/a0b1c2d3e4f5");
+    expect(upstream.headers.has("cookie")).toBe(false);
+  });
+
+  it("preserves legacy runner-mounted Pican paths and query while stripping boundary credentials", async () => {
+    sandbox.getScottySession.mockResolvedValueOnce({
+      id: "a0b1c2d3e4f5",
+      status: "warm",
+      provider: "runner",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
     sandbox.fetch.mockImplementationOnce(
       async () =>
         new Response("missing", {
@@ -1413,11 +1635,19 @@ describe("real Hono boundary", () => {
       "x-forwarded-proto",
       "connection",
       "x-remove-me",
-    ])
+    ]) {
       expect(upstream.headers.has(header), header).toBe(false);
+    }
   });
 
-  it("streams Pican request and SSE response bodies without buffering", async () => {
+  it("streams legacy Pican request and SSE response bodies without buffering", async () => {
+    sandbox.getScottySession.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      status: "warm",
+      provider: "runner",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
     const encoder = new TextEncoder();
     const sentinel = Uint8Array.from([0, 1, 2, 127, 128, 254, 255]);
     let closeStream: (() => void) | undefined;
@@ -1455,7 +1685,14 @@ describe("real Hono boundary", () => {
     await reader?.cancel();
   });
 
-  it("rejects Pican WebSocket upgrades before crossing the Sandbox boundary", async () => {
+  it("rejects legacy Pican WebSocket upgrades before crossing the Sandbox boundary", async () => {
+    sandbox.getScottySession.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      status: "warm",
+      provider: "runner",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
     const response = await app.request(
       "/s/a0b1c2d3e4f5/api/events",
       {
