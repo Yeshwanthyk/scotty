@@ -425,6 +425,32 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 
   const env: Bindings = {
     AUTH: undefined as never,
+    RUNNER_REGISTRY: {
+      getByName: () => ({
+        authenticate: async () => ({
+          ok: true,
+          value: {
+            name: "test-runner",
+            createdAt: "2026-07-29T12:00:00.000Z",
+            updatedAt: "2026-07-29T12:00:00.000Z",
+          },
+        }),
+        get: async (name) => ({
+          ok: true,
+          value: {
+            name,
+            createdAt: "2026-07-29T12:00:00.000Z",
+            updatedAt: "2026-07-29T12:00:00.000Z",
+          },
+        }),
+        list: async () => ({ ok: true, value: [] }),
+        register: async () => ({
+          ok: false,
+          error: { reason: "invalid_input", message: "Unavailable in the session harness" },
+        }),
+        remove: async () => ({ ok: true, value: undefined }),
+      }),
+    },
     RUNNERS: {
       getByName: () => ({
         dispatch:
@@ -546,8 +572,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     } as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
-    SCOTTY_RUNNER_NAME: "slumbers",
-    SCOTTY_RUNNER_TOKEN: "runner-test-token",
     PI_AUTH_JSON: JSON.stringify({
       "openai-codex": {
         type: "oauth",

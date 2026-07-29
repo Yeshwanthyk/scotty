@@ -1,10 +1,6 @@
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-export const PRODUCTION_CONTAINER_APPLICATION_NAME =
-  "scotty-sandboxcontainer-production-ytkhty6mswuofjo5";
-export const PRODUCTION_CONTAINER_APPLICATION_ID = "a030af24-612c-4eb0-81cd-873740807d1d";
-
 const HARD_CAP_GRACE_MS = 30_000;
 const SESSION_ID = /^[0-9a-f]{12}$/u;
 const ACTIVE_SESSION_STATUSES = new Set(["booting", "warm"]);
@@ -18,42 +14,28 @@ export const isHealthyContainerApplicationState = (state) =>
   HEALTHY_APPLICATION_STATES.has(String(state));
 
 export function reconcileContainerInventory({
+  applicationName,
   applications,
   instances,
   sessions,
   now = Date.now(),
 }) {
   const issues = [];
-  const scottyApplications = applications.filter(
-    (application) => isObject(application) && String(application.name).startsWith("scotty-"),
+  const managedApplications = applications.filter(
+    (application) => isObject(application) && application.name === applicationName,
   );
-  const productionApplications = scottyApplications.filter(
-    (application) => application.name === PRODUCTION_CONTAINER_APPLICATION_NAME,
-  );
-  if (productionApplications.length !== 1) {
+  if (managedApplications.length !== 1) {
     issues.push({
-      code: "production_application_count",
-      message: `Expected one pinned production Container application; found ${productionApplications.length}.`,
-    });
-  }
-  if (scottyApplications.length !== 1) {
-    issues.push({
-      code: "scotty_application_count",
-      message: `Expected no duplicate Scotty Container applications; found ${scottyApplications.length}.`,
+      code: "managed_application_count",
+      message: `Expected one Container application named ${applicationName}; found ${managedApplications.length}.`,
     });
   }
 
-  const application = productionApplications[0];
-  if (application && application.id !== PRODUCTION_CONTAINER_APPLICATION_ID) {
-    issues.push({
-      code: "production_application_identity",
-      message: `Production Container application ID is ${String(application.id)} instead of ${PRODUCTION_CONTAINER_APPLICATION_ID}.`,
-    });
-  }
+  const application = managedApplications[0];
   if (application && !isHealthyContainerApplicationState(application.state)) {
     issues.push({
-      code: "production_application_inactive",
-      message: `Production Container application is ${String(application.state)}.`,
+      code: "managed_application_inactive",
+      message: `Container application ${applicationName} is ${String(application.state)}.`,
     });
   }
 
@@ -135,7 +117,7 @@ export function reconcileContainerInventory({
         }
       : null,
     counts: {
-      scottyApplications: scottyApplications.length,
+      managedApplications: managedApplications.length,
       activeInstances: activeInstances.length,
       inactiveIdentityRows: inactiveInstances.length,
       projectedSessions: sessions.length,
@@ -199,6 +181,10 @@ async function readSessions() {
 }
 
 async function main() {
+  const applicationName = process.env.SCOTTY_CONTAINER_APPLICATION_NAME?.trim();
+  if (!applicationName) {
+    throw new Error("SCOTTY_CONTAINER_APPLICATION_NAME is required.");
+  }
   const applications = await execJson("npx", [
     "--no-install",
     "wrangler",
@@ -210,7 +196,7 @@ async function main() {
     throw new Error("Wrangler Container application inventory was not an array.");
   }
   const application = applications.find(
-    (candidate) => isObject(candidate) && candidate.name === PRODUCTION_CONTAINER_APPLICATION_NAME,
+    (candidate) => isObject(candidate) && candidate.name === applicationName,
   );
   const [instances, sessions] = await Promise.all([
     application
@@ -228,7 +214,12 @@ async function main() {
   if (!Array.isArray(instances) || !Array.isArray(sessions)) {
     throw new Error("Container instance or Scotty session inventory was not an array.");
   }
-  const report = reconcileContainerInventory({ applications, instances, sessions });
+  const report = reconcileContainerInventory({
+    applicationName,
+    applications,
+    instances,
+    sessions,
+  });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (!report.ok) process.exitCode = 1;
 }

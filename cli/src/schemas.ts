@@ -5,6 +5,13 @@ export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
 
 export const ConfigSchema = Schema.Struct({
+  version: Schema.optionalKey(Schema.Literal(1)),
+  installationName: Schema.optionalKey(Schema.String),
+  profile: Schema.optionalKey(Schema.String),
+  stackName: Schema.optionalKey(Schema.String),
+  stage: Schema.optionalKey(Schema.String),
+  accountId: Schema.optionalKey(Schema.String),
+  workerName: Schema.optionalKey(Schema.String),
   host: Schema.optionalKey(Schema.String),
   token: Schema.optionalKey(Schema.String),
 });
@@ -47,6 +54,13 @@ export const STANDARD_TOOLSET: StandardToolset =
   Schema.decodeUnknownSync(StandardToolsetSchema)(rawStandardToolset);
 
 export const RawConfigSchema = Schema.Struct({
+  version: Schema.optionalKey(Schema.Unknown),
+  installationName: Schema.optionalKey(Schema.Unknown),
+  profile: Schema.optionalKey(Schema.Unknown),
+  stackName: Schema.optionalKey(Schema.Unknown),
+  stage: Schema.optionalKey(Schema.Unknown),
+  accountId: Schema.optionalKey(Schema.Unknown),
+  workerName: Schema.optionalKey(Schema.Unknown),
   host: Schema.optionalKey(Schema.Unknown),
   token: Schema.optionalKey(Schema.Unknown),
 });
@@ -131,6 +145,25 @@ export const PiAuthReseedResponseSchema = Schema.Struct({
 export const CloudflareApiEnvelopeSchema = Schema.Struct({
   success: Schema.Boolean,
 });
+export const RunnerRegistrationResponseSchema = Schema.Struct({
+  name: Schema.NonEmptyString,
+  credential: Schema.NonEmptyString,
+  replaced: Schema.Boolean,
+  createdAt: Schema.NonEmptyString,
+  updatedAt: Schema.NonEmptyString,
+});
+export const RunnerStatusSchema = Schema.Struct({
+  name: Schema.NonEmptyString,
+  desired: Schema.Literals(["accepting", "draining", "disabled"]),
+  connection: Schema.Literals(["connected", "disconnected"]),
+  lastSeenAt: Schema.NullOr(Schema.NonEmptyString),
+  assignedSessions: Schema.Finite,
+});
+export const RunnerStatusesResponseSchema = Schema.Array(RunnerStatusSchema);
+export const RunnerRemovalResponseSchema = Schema.Struct({
+  name: Schema.NonEmptyString,
+  status: Schema.Literal("removed"),
+});
 
 export type SessionResponse = typeof SessionResponseSchema.Type;
 
@@ -149,5 +182,12 @@ export const decodeVaporizeResponse = Schema.decodeUnknownOption(VaporizeRespons
 export const decodePiAuthStatusResponse = Schema.decodeUnknownOption(PiAuthStatusResponseSchema);
 export const decodePiAuthReseedResponse = Schema.decodeUnknownOption(PiAuthReseedResponseSchema);
 export const decodeCloudflareApiEnvelope = Schema.decodeUnknownOption(CloudflareApiEnvelopeSchema);
+export const decodeRunnerRegistrationResponse = Schema.decodeUnknownOption(
+  RunnerRegistrationResponseSchema,
+);
+export const decodeRunnerStatusesResponse = Schema.decodeUnknownOption(
+  RunnerStatusesResponseSchema,
+);
+export const decodeRunnerRemovalResponse = Schema.decodeUnknownOption(RunnerRemovalResponseSchema);
 export const decodeString = Schema.decodeUnknownOption(Schema.String);
 export const decodeNonEmptyString = Schema.decodeUnknownOption(Schema.NonEmptyString);

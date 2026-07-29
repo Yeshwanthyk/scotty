@@ -45,6 +45,14 @@ const runner = vi.hoisted(() => ({
   getByName: vi.fn(),
 }));
 
+const runnerRegistry = vi.hoisted(() => ({
+  authenticate: vi.fn(),
+  get: vi.fn(),
+  list: vi.fn(),
+  register: vi.fn(),
+  remove: vi.fn(),
+}));
+
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@cloudflare/sandbox")>()),
   getSandbox: vi.fn(() => sandboxTarget.current),
@@ -81,6 +89,10 @@ function authNamespace(): import("../src/auth-object").ScottyAuthRegistryNamespa
   return { getByName: () => auth };
 }
 
+function runnerRegistryNamespace(): import("../src/runner-registry-object").ScottyRunnerRegistryNamespace {
+  return { getByName: () => runnerRegistry };
+}
+
 function emptySessionsNamespace(): KVNamespace {
   return {
     list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
@@ -108,13 +120,12 @@ function env(): Bindings {
   };
   return {
     SCOTTY_TOKEN: TOKEN,
-    SCOTTY_RUNNER_NAME: "slumbers",
-    SCOTTY_RUNNER_TOKEN: "runner-test-token",
     PI_AUTH_JSON:
       '{"openai-codex":{"type":"oauth","access":"access","refresh":"refresh","expires":0}}',
     GH_TOKEN: "github-test-sentinel",
     ASSETS: assets,
     AUTH: authNamespace(),
+    RUNNER_REGISTRY: runnerRegistryNamespace(),
     RUNNERS: { getByName: runner.getByName },
     SANDBOX: {} as DurableObjectNamespace<import("../src/session").Sandbox>,
     SESSIONS: emptySessionsNamespace(),
@@ -172,6 +183,58 @@ describe("real Hono boundary", () => {
         renewed: false,
       },
     });
+    runnerRegistry.authenticate.mockImplementation(async (name: string, credential: string) =>
+      name !== "test-runner"
+        ? { ok: false, error: { reason: "runner_missing", message: "Runner not found" } }
+        : credential !== "runner-test-token"
+          ? {
+              ok: false,
+              error: { reason: "credential_invalid", message: "Runner authorization failed" },
+            }
+          : {
+              ok: true,
+              value: {
+                name: "test-runner",
+                createdAt: "2026-07-27T11:00:00.000Z",
+                updatedAt: "2026-07-27T11:00:00.000Z",
+              },
+            },
+    );
+    runnerRegistry.get.mockImplementation(async (name: string) =>
+      name === "test-runner"
+        ? {
+            ok: true,
+            value: {
+              name,
+              createdAt: "2026-07-27T11:00:00.000Z",
+              updatedAt: "2026-07-27T11:00:00.000Z",
+            },
+          }
+        : { ok: false, error: { reason: "runner_missing", message: "Runner not found" } },
+    );
+    runnerRegistry.list.mockResolvedValue({
+      ok: true,
+      value: [
+        {
+          name: "test-runner",
+          createdAt: "2026-07-27T11:00:00.000Z",
+          updatedAt: "2026-07-27T11:00:00.000Z",
+        },
+      ],
+    });
+    runnerRegistry.register.mockResolvedValue({
+      ok: true,
+      value: {
+        credential: "scotty_runner_new-credential",
+        replaced: false,
+        runner: {
+          name: "garage",
+          createdAt: "2026-07-29T16:00:00.000Z",
+          updatedAt: "2026-07-29T16:00:00.000Z",
+        },
+      },
+    });
+    runnerRegistry.remove.mockResolvedValue({ ok: true, value: undefined });
     runner.getByName.mockReturnValue({
       control: runner.control,
       controlStatus: runner.controlStatus,
@@ -187,7 +250,7 @@ describe("real Hono boundary", () => {
     proxyTerminal.mockResolvedValue(new Response("terminal-proxy"));
   });
 
-  it("accepts only the configured authenticated runner and strips its credential", async () => {
+  it("accepts only a registered authenticated runner and strips its credential", async () => {
     runner.fetch.mockImplementation(async (request: Request) => {
       expect(request.headers.get("authorization")).toBeNull();
       expect(request.headers.get("cookie")).toBeNull();
@@ -197,7 +260,7 @@ describe("real Hono boundary", () => {
     });
 
     const response = await app.request(
-      "/api/runners/slumbers/connect",
+      "/api/runners/test-runner/connect",
       {
         headers: {
           authorization: "Bearer runner-test-token",
@@ -210,12 +273,13 @@ describe("real Hono boundary", () => {
     );
 
     expect(response.status).toBe(204);
-    expect(runner.getByName).toHaveBeenCalledWith("slumbers");
+    expect(runnerRegistry.authenticate).toHaveBeenCalledWith("test-runner", "runner-test-token");
+    expect(runner.getByName).toHaveBeenCalledWith("test-runner");
     expect(runner.fetch).toHaveBeenCalledTimes(1);
     expect(auth.authenticate).not.toHaveBeenCalled();
   });
 
-  it("rejects unconfigured, unauthenticated, and non-upgrade runner requests before the DO", async () => {
+  it("rejects unregistered, unauthenticated, and non-upgrade runner requests before the DO", async () => {
     const requests = [
       app.request(
         "/api/runners/other/connect",
@@ -227,9 +291,9 @@ describe("real Hono boundary", () => {
         },
         env(),
       ),
-      app.request("/api/runners/slumbers/connect", { headers: { upgrade: "websocket" } }, env()),
+      app.request("/api/runners/test-runner/connect", { headers: { upgrade: "websocket" } }, env()),
       app.request(
-        "/api/runners/slumbers/connect",
+        "/api/runners/test-runner/connect",
         {
           headers: {
             authorization: "Bearer wrong-runner-token",
@@ -239,7 +303,7 @@ describe("real Hono boundary", () => {
         env(),
       ),
       app.request(
-        "/api/runners/slumbers/connect",
+        "/api/runners/test-runner/connect",
         { headers: { authorization: "Bearer runner-test-token" } },
         env(),
       ),
@@ -283,7 +347,7 @@ describe("real Hono boundary", () => {
     expect(runners.status).toBe(200);
     await expect(runners.json()).resolves.toEqual([
       {
-        name: "slumbers",
+        name: "test-runner",
         desired: "accepting",
         connection: "connected",
         lastSeenAt: "2026-07-27T12:00:00.000Z",
@@ -297,7 +361,7 @@ describe("real Hono boundary", () => {
       title: "Runner recovery",
       status: "failed",
       provider: "runner",
-      runner: "slumbers",
+      runner: "test-runner",
       repo: "owner/repo",
       defaultBranch: "main",
       branch: "scotty/b0b1c2d3e4f5",
@@ -326,7 +390,7 @@ describe("real Hono boundary", () => {
       { ...env(), SESSIONS: sessions },
     );
     await expect(assigned.json()).resolves.toEqual([
-      expect.objectContaining({ name: "slumbers", assignedSessions: 1 }),
+      expect.objectContaining({ name: "test-runner", assignedSessions: 1 }),
     ]);
 
     runner.controlStatus.mockResolvedValueOnce({
@@ -343,6 +407,128 @@ describe("real Hono boundary", () => {
       { name: "cloudflare", status: "configured" },
       { name: "runner", status: "unavailable" },
     ]);
+  });
+
+  it("registers and rotates named runners only with the CLI root credential", async () => {
+    const created = await app.request(
+      "/api/runners",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "garage", replace: false }),
+      },
+      env(),
+    );
+    expect(created.status).toBe(200);
+    await expect(created.json()).resolves.toEqual({
+      name: "garage",
+      credential: "scotty_runner_new-credential",
+      replaced: false,
+      createdAt: "2026-07-29T16:00:00.000Z",
+      updatedAt: "2026-07-29T16:00:00.000Z",
+    });
+    expect(runnerRegistry.register).toHaveBeenCalledWith("garage", false);
+    expect(runner.control).not.toHaveBeenCalled();
+
+    runnerRegistry.register.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        credential: "scotty_runner_rotated-credential",
+        replaced: true,
+        runner: {
+          name: "test-runner",
+          createdAt: "2026-07-27T11:00:00.000Z",
+          updatedAt: "2026-07-29T16:00:00.000Z",
+        },
+      },
+    });
+    const replaced = await app.request(
+      "/api/runners",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "test-runner", replace: true }),
+      },
+      env(),
+    );
+    expect(replaced.status).toBe(200);
+    expect(runner.control).toHaveBeenCalledWith("disconnect");
+
+    const ownerBrowser = await app.request(
+      "/api/runners",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "browser-runner" }),
+      },
+      env(),
+    );
+    expect(ownerBrowser.status).toBe(401);
+  });
+
+  it("disables and removes only unassigned registered runners", async () => {
+    const removed = await app.request(
+      "/api/runners/test-runner",
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      env(),
+    );
+    expect(removed.status).toBe(200);
+    await expect(removed.json()).resolves.toEqual({
+      name: "test-runner",
+      status: "removed",
+    });
+    expect(runner.control.mock.calls.map(([action]) => action)).toEqual(["disable", "disconnect"]);
+    expect(runnerRegistry.remove).toHaveBeenCalledWith("test-runner");
+
+    const assignedProjection = {
+      version: 1,
+      id: "b0b1c2d3e4f5",
+      title: "Runner recovery",
+      status: "warm",
+      provider: "runner",
+      runner: "test-runner",
+      repo: "owner/repo",
+      defaultBranch: "main",
+      branch: "scotty/b0b1c2d3e4f5",
+      createdAt: "2026-07-27T11:00:00.000Z",
+      updatedAt: "2026-07-27T12:00:00.000Z",
+      hardCapAt: "2026-07-27T16:00:00.000Z",
+      projectedAt: "2026-07-27T12:00:00.000Z",
+    };
+    const sessions = {
+      list: async () => ({
+        keys: [{ name: `session:${assignedProjection.id}` }],
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      get: async (_name: string) => JSON.stringify(assignedProjection),
+    } as KVNamespace;
+    vi.clearAllMocks();
+    const conflict = await app.request(
+      "/api/runners/test-runner",
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      { ...env(), SESSIONS: sessions },
+    );
+    expect(conflict.status).toBe(409);
+    expect(runner.control).not.toHaveBeenCalled();
+    expect(runnerRegistry.remove).not.toHaveBeenCalled();
   });
 
   it("reports only redacted Pi auth metadata and explicitly reseeds one session", async () => {
@@ -396,7 +582,7 @@ describe("real Hono boundary", () => {
   it("allows only the owner browser to control the configured runner", async () => {
     for (const action of ["enable", "drain", "disable", "disconnect"]) {
       const response = await app.request(
-        `/api/runners/slumbers/${action}`,
+        `/api/runners/test-runner/${action}`,
         {
           method: "POST",
           headers: {
@@ -424,7 +610,7 @@ describe("real Hono boundary", () => {
       },
     });
     const standard = await app.request(
-      "/api/runners/slumbers/drain",
+      "/api/runners/test-runner/drain",
       {
         method: "POST",
         headers: {
@@ -452,7 +638,7 @@ describe("real Hono boundary", () => {
     expect(unknownRunner.status).toBe(404);
 
     const unknownAction = await app.request(
-      "/api/runners/slumbers/restart",
+      "/api/runners/test-runner/restart",
       {
         method: "POST",
         headers: {

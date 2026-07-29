@@ -316,11 +316,140 @@ describe("configuration and transport", () => {
     expect(code).toBe(EXIT.OK);
     expect((await stat(configPath)).mode & 0o777).toBe(0o600);
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
+      version: 1,
       host: "https://worker.example",
       token: "top-secret",
     });
     expect(h.stdout.join("")).not.toContain("top-secret");
     expect(h.prompts()).toBe(0);
+  });
+
+  test("init deploys a required named installation and stores a portable pointer", async () => {
+    const home = await temporaryDirectory();
+    let request: Parameters<NonNullable<CliDependencies["deployInstallation"]>>[0] | undefined;
+    const h = harness({
+      home,
+      deployInstallation: async (input) => {
+        request = input;
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          host: "https://scotty-home-worker.example.workers.dev/",
+        };
+      },
+    });
+
+    expect(await main(["init", "--name", "home", "--profile", "personal"], h.deps)).toBe(EXIT.OK);
+    expect(request).toMatchObject({
+      installationName: "home",
+      profile: "personal",
+    });
+    expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
+    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect(config).toEqual({
+      version: 1,
+      installationName: "home",
+      profile: "personal",
+      stackName: "Scotty-home",
+      stage: "production",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "scotty-home-worker",
+      host: "https://scotty-home-worker.example.workers.dev",
+      token: request?.token,
+    });
+    expect(h.stdout.join("")).not.toContain(request?.token ?? "impossible");
+    expect(h.json()).toEqual({
+      configPath: join(home, ".scotty.json"),
+      installationName: "home",
+      profile: "personal",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "scotty-home-worker",
+      host: "https://scotty-home-worker.example.workers.dev",
+      rootTokenRotated: true,
+    });
+  });
+
+  test("init existing uses the same deployer and accepts a private adoption manifest", async () => {
+    const home = await temporaryDirectory();
+    const requests: unknown[] = [];
+    const h = harness({
+      home,
+      deployInstallation: async (input) => {
+        requests.push(input);
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Legacy",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "legacy-worker",
+          host: "https://legacy-worker.example.workers.dev",
+        };
+      },
+    });
+    expect(
+      await main(
+        ["init", "--name", "home", "--existing", "--adoption-manifest", "/private/adoption.json"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      installationName: "home",
+      profile: "default",
+      adoptionManifestPath: "/private/adoption.json",
+    });
+  });
+
+  test("init never infers an installation name in a non-interactive shell", async () => {
+    const h = harness();
+    expect(await main(["init"], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("init needs --name when stdin is not a TTY");
+
+    const invalid = harness();
+    expect(await main(["init", "--name", "Yesh Home"], invalid.deps)).toBe(EXIT.USAGE);
+    expect(invalid.error().error.message).toContain("Installation name must be");
+  });
+
+  test("doctor validates managed installation metadata and root authentication", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "0123456789abcdef0123456789abcdef",
+        workerName: "scotty-home-worker",
+        host: "https://worker.example",
+        token: "root-secret",
+      }),
+    );
+    let authorization: string | null = null;
+    const h = harness({
+      home,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        authorization = request.headers.get("authorization");
+        return Response.json([]);
+      },
+    });
+    expect(await main(["doctor"], h.deps)).toBe(EXIT.OK);
+    expect(authorization).toBe("Bearer root-secret");
+    expect(h.json()).toEqual({
+      ok: true,
+      mode: "managed",
+      host: "https://worker.example",
+      installationName: "home",
+      profile: "personal",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "scotty-home-worker",
+    });
+    expect(h.stdout.join("")).not.toContain("root-secret");
   });
 
   test("network and malformed responses fail without leaking implementation errors", async () => {

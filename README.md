@@ -51,7 +51,7 @@ npm install
 npm run typecheck
 npm run test:all
 node e2e/scripts/scan.mjs
-bun build cli/scotty.ts --compile --outfile dist/scotty
+npm run build:cli
 ```
 
 The default suites do not use Cloudflare, OpenAI, or GitHub credentials.
@@ -73,34 +73,28 @@ Wrangler is not a production infrastructure or deployment path.
 
 ## Cloudflare deployment
 
-Production infrastructure has one owner: the guarded local command `npm run deploy:production`.
-Configure the local Alchemy OAuth profile once with `npx alchemy login --configure`. The command
-refuses CI, takes an exclusive local lock, requires a clean `main` exactly matching `origin/main`,
-runs the full check suite, audits the pinned production account and Worker, revalidates the exact
-commit immediately before mutation, deploys through Alchemy, waits for any asynchronous Container
-rollout resource to report `completed` with its target version and healthy capacity (or requires
-Alchemy to report a terminal no-op). An update without a rollout must remain unchanged for the
-bounded control-plane observation window. The command audits the result even if deployment fails.
-Do not bypass it with a raw production Wrangler or Alchemy command.
+The standalone CLI owns installation. Run `scotty init --name NAME`; it asks Alchemy to authenticate
+the selected Cloudflare profile, deploys all namespaced resources, generates and uploads the root
+Worker secret without putting it in Alchemy state, and stores the local pointer in mode-0600
+`~/.scotty.json`. The installation name is required and is never inferred from a username, machine,
+repository, or Cloudflare account.
 
-`alchemy.run.ts` accepts only the exact `production` stage. Its guarded Cloudflare stack
-requires `CLOUDFLARE_ACCOUNT_ID` and matching `SCOTTY_CLOUDFLARE_ACCOUNT_ID`, telemetry disabled
-with `ALCHEMY_TELEMETRY_DISABLED=1`, and account-scoped confirmations:
-`SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED=confirmed:<account-id>:worker=scotty-worker:runnerWorker=scotty-runner:durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunner:container=<container-name>:kv=scotty-sessions:r2=scotty-backups`
-and
-`SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL=deploy:<account-id>:scotty-worker`. The production wrapper
-derives and supplies these values after auditing the pinned account; operators should not export
-them to bypass its checks.
+On a replacement machine, run `scotty init --name NAME --existing`. Cloudflare profile ownership is
+the recovery authority; the CLI reconnects to the same Alchemy stack and rotates the root token.
+Copying `~/.scotty.json` is optional, not required. A pre-existing deployment whose physical or
+Alchemy logical names differ from the generic convention can be preserved with a private
+`--adoption-manifest PATH`; `.scotty-adoption.json` is ignored by Git.
 
 Alchemy declares the Worker, Durable Objects, Container application, KV namespace, R2 bucket,
-assets, bindings, migrations, and retained-resource policy. Existing inherited Worker secrets
-remain managed outside Alchemy state. Use a fine-grained GitHub PAT restricted to managed
-repositories. `SCOTTY_RUNNER_TOKEN` is a separate inherited Worker secret used only by the
-configured `slumbers` runner; set it before deploying and provide the same value only to that
-runner's protected service environment. The external `scotty-worker` keeps the public Hono routes
-and native Sandbox/Auth classes; the private, URL-disabled `scotty-runner` Worker alone hosts
-`ScottyRunner`, receives no inherited secrets, and is reached only through the external Worker's
-cross-script `RUNNERS` binding.
+assets, bindings, migrations, and retained-resource policy. Defaults are derived from the
+installation name: `scotty-NAME-worker`, `scotty-NAME-runner`, `scotty-NAME-sandbox`,
+`scotty-NAME-sessions`, and `scotty-NAME-backups`. No Cloudflare account ID, workers.dev hostname,
+Container UUID, or runner instance name is committed.
+
+Repository maintainers can retain the guarded release wrapper with
+`SCOTTY_INSTALLATION_NAME=NAME npm run deploy:production`. It refuses CI and unsafe Git state,
+runs the full checks, deploys through Alchemy, and audits Container rollout settlement. Legacy
+resource names require `SCOTTY_ADOPTION_MANIFEST=/private/path.json`.
 
 The current Cloudflare gate is forward-only: the full local suite and Colima-backed image build must
 pass with pinned Pi and Ghostty Web versions, then the guarded deployment and deployed canary must
@@ -110,8 +104,10 @@ is part of the Cloudflare path.
 ## CLI
 
 ```sh
-bun build cli/scotty.ts --compile --outfile dist/scotty
-./dist/scotty init --host https://scotty-worker.<account>.workers.dev --token "$SCOTTY_TOKEN"
+npm run build:cli
+./dist/scotty init --name home
+./dist/scotty init --name home --existing
+./dist/scotty doctor --json
 ./dist/scotty owner recover
 ./dist/scotty beam up "fix the failing tests" --repo owner/project --provider cloudflare --json
 ./dist/scotty skills
@@ -121,18 +117,21 @@ For a trusted Linux VPS, first build or pull the pinned runtime image and sign i
 Then run the repeatable user-service setup:
 
 ```sh
-SCOTTY_RUNNER_TOKEN="$SCOTTY_RUNNER_TOKEN" ./dist/scotty runner setup \
-  --host https://scotty-worker.<account>.workers.dev \
-  --name slumbers \
+./dist/scotty runner setup \
+  --name "$RUNNER_NAME" \
   --root /home/runner/.local/state/scotty-runner \
   --image sha256:<64-lowercase-hex> \
   --codex-auth /home/runner/.codex/auth.json \
   --source-binary /absolute/path/to/dist/scotty
 ```
 
-The command imports the current GitHub CLI login, installs runner-only credential files, writes
-and restarts the hardened systemd user service, and fails if the service is not active. It never
-accepts the runner token as a command argument.
+The command uses the installation in `~/.scotty.json`, registers the required name with the
+control plane, receives a one-time runner credential, imports the current GitHub CLI login,
+installs runner-only credential files, writes and restarts the hardened systemd user service, and
+fails if the service is not active. Pass `--replace` only when moving or reinstalling an existing
+runner; that rotates its credential and disconnects the old machine. Use `scotty runner list` to
+inspect registrations and `scotty runner remove NAME --yes` after all assigned sessions are gone.
+The runner credential is never accepted as a command argument or stored in Worker configuration.
 
 Run `scotty owner recover` once on the intended primary browser after a fresh deployment or when
 moving to a replacement laptop. Keep `SCOTTY_TOKEN` in a password manager or another protected

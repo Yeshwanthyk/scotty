@@ -680,7 +680,7 @@ export class RunnerTransport {
         },
         {
           highWaterMark: 0,
-          size: (chunk) => chunk.byteLength,
+          size: (chunk) => chunk?.byteLength ?? 0,
         },
       );
       const response = Result.try({
