@@ -77,9 +77,29 @@ const RunnerRegistrationInputSchema = Schema.Struct({
   name: Schema.String,
   replace: Schema.optionalKey(Schema.Boolean),
 });
+const TerminalDimensionSchema = Schema.FiniteFromString.check(
+  Schema.isInt(),
+  Schema.isBetween({ minimum: 1, maximum: 1_000 }),
+);
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
   onExcessProperty: "error",
 });
+const decodeTerminalDimension = Schema.decodeUnknownOption(TerminalDimensionSchema);
+
+function parseTerminalDimensions(request: Request): {
+  readonly cols?: number;
+  readonly rows?: number;
+} {
+  const search = new URL(request.url).searchParams;
+  const rawCols = search.get("cols");
+  const rawRows = search.get("rows");
+  if (rawCols === null && rawRows === null) return {};
+  const cols = decodeTerminalDimension(rawCols);
+  const rows = decodeTerminalDimension(rawRows);
+  if (Option.isNone(cols) || Option.isNone(rows))
+    throw badRequest("Terminal dimensions are invalid");
+  return { cols: cols.value, rows: rows.value };
+}
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -550,7 +570,10 @@ app.all("/s/:id/terminal", async (c) => {
   requireSameOrigin(c.req.raw);
   const sandbox = sessionSandbox(c.env, id);
   await assertCloudflareTerminalAccess(sandbox);
-  return proxyTerminal(sandbox, id, c.req.raw, { shell: terminalShellPath(id) });
+  return proxyTerminal(sandbox, id, c.req.raw, {
+    ...parseTerminalDimensions(c.req.raw),
+    shell: terminalShellPath(id),
+  });
 });
 
 app.all("/s/:id", async (c) => {
