@@ -27,7 +27,7 @@ const invoke = (args: ReadonlyArray<string>, overrides: Partial<CliDependencies>
           stderr: (text) => stderr.push(text),
           fetch: async () =>
             Response.json({
-              name: "slumbers",
+              name: "example-runner",
               credential: "runner-secret",
               replaced: false,
               createdAt: "2026-07-29T16:00:00.000Z",
@@ -52,7 +52,7 @@ const setupArguments = (
   "--host",
   "https://worker.example",
   "--name",
-  "slumbers",
+  "example-runner",
   "--root",
   root,
   "--image",
@@ -86,7 +86,7 @@ describe("runner setup", () => {
         if (command[0] === "gh" && command[1] === "auth")
           return Promise.resolve({ exitCode: 0, stdout: "github-secret\n", stderr: "" });
         if (command[0] === "gh")
-          return Promise.resolve({ exitCode: 0, stdout: "Yeshwanthyk\n", stderr: "" });
+          return Promise.resolve({ exitCode: 0, stdout: "ExampleUser\n", stderr: "" });
         if (command.includes("is-active"))
           return Promise.resolve({ exitCode: 0, stdout: "active\n", stderr: "" });
         return Promise.resolve({ exitCode: 0, stdout: "ok\n", stderr: "" });
@@ -99,7 +99,7 @@ describe("runner setup", () => {
             body: await request.text(),
           });
           return Response.json({
-            name: "slumbers",
+            name: "example-runner",
             credential: "runner-secret",
             replaced: registrations.length > 1,
             createdAt: "2026-07-29T16:00:00.000Z",
@@ -121,7 +121,7 @@ describe("runner setup", () => {
           githubConfig: `${home}/.local/share/scotty/runner/credentials/github-hosts.yml`,
         },
         environmentFile: `${home}/.config/scotty/runner/runner.env`,
-        runner: "slumbers",
+        runner: "example-runner",
         service: `${home}/.config/systemd/user/scotty-runner.service`,
         status: "active",
       });
@@ -140,7 +140,7 @@ describe("runner setup", () => {
       assert.deepStrictEqual(registrations, [
         {
           authorization: "Bearer root-secret",
-          body: '{"name":"slumbers","replace":false}',
+          body: '{"name":"example-runner","replace":false}',
         },
       ]);
 
@@ -154,7 +154,7 @@ describe("runner setup", () => {
         '{"access_token":"codex-secret"}',
       );
       assert.include(yield* fs.readFileString(installedGitHub), "github-secret");
-      assert.include(yield* fs.readFileString(installedGitHub), 'user: "Yeshwanthyk"');
+      assert.include(yield* fs.readFileString(installedGitHub), 'user: "ExampleUser"');
       assert.strictEqual(
         yield* fs.readFileString(environmentFile),
         'SCOTTY_RUNNER_TOKEN="runner-secret"\n',
@@ -187,7 +187,7 @@ describe("runner setup", () => {
             body: await request.text(),
           });
           return Response.json({
-            name: "slumbers",
+            name: "example-runner",
             credential: "runner-secret",
             replaced: true,
             createdAt: "2026-07-29T16:00:00.000Z",
@@ -207,7 +207,7 @@ describe("runner setup", () => {
       ]);
       assert.deepStrictEqual(registrations.at(-1), {
         authorization: "Bearer root-secret",
-        body: '{"name":"slumbers","replace":true}',
+        body: '{"name":"example-runner","replace":true}',
       });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

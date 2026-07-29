@@ -137,7 +137,7 @@ describe("runner serve", () => {
         "runner",
         "serve",
         "--name",
-        "slumbers",
+        "example-runner",
         "--root",
         root,
         "--isolation",
@@ -155,7 +155,7 @@ describe("runner serve", () => {
 
     try {
       await completed.promise;
-      expect(pathname).toBe("/api/runners/slumbers/connect");
+      expect(pathname).toBe("/api/runners/example-runner/connect");
       expect(authorization).toBe("Bearer runner-secret");
       expect(responses.map((response) => response.operationId)).toEqual([
         "ensure-initial",
@@ -176,7 +176,7 @@ describe("runner serve", () => {
       server.stop(true);
     }
     expect(await new Response(child.stdout).text()).toBe(
-      '{"runner":"slumbers","status":"connected"}\n',
+      '{"runner":"example-runner","status":"connected"}\n',
     );
     expect(await new Response(child.stderr).text()).toBe("");
   }, 10_000);

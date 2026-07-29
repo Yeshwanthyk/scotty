@@ -1,323 +1,119 @@
-# Scotty — Implementation Plan
+# Scotty v1 plan
 
-> **Historical planning document.** `EFFECT_V4_MIGRATION.md` supersedes this document's
-> architecture, infrastructure/runtime framework, file layout, and delivery order. The v1 public
-> behavior, security constraints, state machine, lifecycle semantics, credential isolation, and
-> other invariants recorded here remain authoritative.
+This file defines Scotty's public behavior and security constraints. `EFFECT_V4_MIGRATION.md`
+governs the implementation framework and infrastructure model.
 
-Cloud coding agents on Cloudflare (Amp-orbs style). Beam a Codex agent into a cloud sandbox, work with it live in the browser, let it sleep, resume later, or beam the session back down to your laptop. Source-control publishing stays in Codex itself.
+## Outcome
 
-This plan is written for AI agents to implement. Follow phases in order; each phase has acceptance criteria. Do not add features beyond this document.
+A user installs the standalone `scotty` CLI, chooses a Cloudflare profile and required installation
+name, and gets an isolated deployment with no repository-owned account identifiers. The same CLI
+creates durable Pi sessions, opens their authenticated browser terminal, checkpoints them, restores
+them, downloads their work, and destroys them.
 
-See `IMPLEMENTATION_DAG.md` for dependency order, work packages, proof gates, and current Sandbox SDK corrections. Where an SDK contract makes an older detail here impossible, the correction in that DAG governs.
+A machine-local config is a convenience pointer, not deployment authority. A replacement machine
+can reconnect with:
 
----
-
-## Active portable v1 override
-
-`PORTABLE_EXECUTION_PLAN.md` remains the active provider scope for Cloudflare plus explicitly
-configured trusted VPS runners. Its Pican-specific Cloudflare runtime is superseded by the current
-runtime below. Cloudflare sessions use Pi and Ghostty Web; trusted runner sessions retain their
-existing Pican compatibility path. Box, Daytona, and other managed providers are deferred.
-
-Cloudflare sessions keep the sentinel and egress-proxy credential boundary below. A trusted VPS
-host and its per-session containers are inside the owner trust boundary. They may read configured
-owner Codex and Git credential files through session-scoped copies outside the workspace. Those
-credentials must still stay out of prompts, URLs, process arguments, logs, KV, R2, API responses,
-and Cloudflare or Alchemy state. This is the only v1 override to the historical credential rule.
-
-## Current forward-only runtime
-
-The Cloudflare vertical runs Pi directly in a named Cloudflare Sandbox terminal session. The
-authenticated `/s/<id>` page embeds bundled `ghostty-web`; its WebSocket connects through Scotty to
-the Sandbox native terminal proxy and launches `/usr/local/bin/scotty-pi-shell`. The shell consumes
-the initial prompt once, then subsequent attachments use `pi --continue`. Pi owns the agent
-conversation and workspace state. There is no tmux, Sheppard, or Pican process in this Cloudflare
-path.
-
-Each workspace receives a Pi home at `/workspace/<id>/.pi-agent` containing sentinel-only
-`auth.json`, settings, skills, extension configuration, and the selected Pi packages. Real Codex
-and GitHub credentials remain in Worker secrets and the session Durable Object. The egress proxy
-accepts Pi's Codex OAuth refresh shape, persists rotations in the credential vault, and returns
-only replacement sentinels to the container.
-
-The terminal page has a persistent switcher containing only warm sessions. Selecting another warm
-session opens it directly. Sleeping sessions never appear in this switcher; they remain on Home
-and must be explicitly resumed there before they become selectable.
-
-Before snapshot, idle sleep, or hard-cap shutdown, Scotty terminates the named Pi terminal session,
-runs `sync`, and creates the immutable workspace backup. A later terminal attachment recreates the
-transport and resumes Pi from the restored `.pi-agent` state. Trusted runner sessions retain the
-mounted Pican compatibility path. The detailed architecture and phases below record the original
-v1 plan; their security, state-authority, backup-durability, and spend-bound invariants remain
-binding, but their runtime details are superseded.
-
-## Historical v1 architecture (superseded)
-
-```
-scotty CLI ──► Worker (Hono, single route file)
-                 │
-                 ├─ Sandbox DO per session (@cloudflare/sandbox, RPC API — NOT the
-                 │    deprecated HTTP/WS transports)
-                 │    • image: Codex CLI (pinned), Sheppard, git, gh
-                 │    • Sheppard-managed Codex TUI with independent client views
-                 │    • sleepAfter: "60m" (idle) + scheduled hard cap (default 4h)
-                 │    • createBackup() → R2 before any sleep; restoreBackup() on resume
-                 │
-                 ├─ KV: non-secret list projection  id → {status, repo, branch,
-                 │                              backupId, codexThreadId, createdAt}
-                 │
-                 └─ Web UI: one static page, ghostty-web (coder/ghostty-web) attached to
-                    the Sandbox native PTY over websocket → https://<host>/s/<id>
+```sh
+scotty init --name NAME --existing
 ```
 
-Primitives used: Workers, Durable Objects, Sandbox SDK, R2, KV. Nothing else (no D1, no Queues, no Workflows).
+Cloudflare authentication proves account access. Recovery rotates the root token and writes a fresh
+mode-0600 `~/.scotty.json`.
 
-## Repo layout
+## Public CLI contract
 
-```
-scotty/
-├── worker/
-│   ├── src/index.ts          # Hono routes + Sandbox binding + session DO
-│   ├── src/session.ts        # session lifecycle (create/snapshot/resume/vaporize, alarm)
-│   ├── container/Dockerfile  # base image (see below)
-│   ├── public/terminal.html  # ghostty-web page
-│   └── wrangler.jsonc
-├── cli/
-│   └── scotty.ts             # single-file Bun/TS CLI, compiled with `bun build --compile`
-├── PLAN.md
-└── README.md
-```
+The primary flow is:
 
-## Key decisions (do not relitigate)
-
-- **Repo**: required `owner/name` input. Resolve the repository's default branch dynamically via `gh repo view --json defaultBranchRef` and cache it in the session record.
-- **Pi provider auth**: real credentials NEVER enter the container. Seed the provider-indexed `PI_AUTH_JSON` secret into the **session DO storage** (authoritative copy); the container gets a sentinel-only Pi auth.json for supported egress adapters. The egress proxy (see Credential safety) injects/refreshes real credentials. Refreshed bundles are persisted to DO storage, so snapshots contain only sentinels — nothing sensitive.
-- **Codex version**: pin in Dockerfile to the same minor as the user's local (`codex-cli 0.144.x`) so beam-down rollout files stay compatible.
-- **Sheppard is the terminal backbone**: Codex runs in a Sheppard-managed PTY. Every browser attachment runs an independent Sheppard client, so scroll position, viewport size, and disconnect cleanup are per device while Codex survives client disconnects. Set `GIT_TERMINAL_PROMPT=0` and `TERM=xterm-256color`.
-- **Terminal**: use the Sandbox SDK **native PTY/terminal API** (shipped Feb 2026) — do NOT run ttyd. Browser side uses `ghostty-web` (npm, xterm.js-compatible API) wired to the terminal websocket. If the SDK's xterm addon assumes xterm.js exactly, wiring raw WS ↔ ghostty-web write/onData is acceptable.
-- **Snapshots**: Sandbox `createBackup()` / `restoreBackup()` (SquashFS → R2). Use `/workspace/<id>` (an SDK-supported backup root) and set `CODEX_HOME=/workspace/<id>/.codex`, so one snapshot includes the worktree and rollouts. auth.json in the snapshot is only the sentinel — real tokens live in DO storage (see Credential safety).
-- **Instance type**: `standard-2` default; make it a config constant.
-- **Auth for web/API v1**: single-user. The deploy-time `SCOTTY_TOKEN` remains the CLI and
-  break-glass recovery credential and is never a browser session. A singleton Auth Durable Object
-  owns exactly one owner client ID, standard browser registrations, one-use pairing/transfer/
-  recovery grants, revocation, and short-lived one-use PTY tickets. Owner authority is derived
-  only from the stored owner client ID and is rechecked inside every authority-changing
-  transaction. Browser credentials are opaque, stored only as SHA-256 digests in the Auth DO, and
-  carried in a Secure HttpOnly SameSite cookie. No Cloudflare Access, passkeys, or external
-  identity provider in v1.
-- **Domain**: start on `*.workers.dev` (native terminal WS goes through the Worker, no wildcard subdomain needed). `exposePort` previews are out of scope for v1.
-
-## Credential safety (crabfleet/Cloudflare-example grade — REQUIRED, not optional)
-
-Threat model: codex executes arbitrary repo code (`--yolo`-class trust) inside the container. Assume anything on the container's disk, env, or reachable network can be read and exfiltrated by that code. Therefore:
-
-**1. Egress proxy — real creds never enter the container.**
-Adopt the pattern from Cloudflare's `sandbox-sdk/examples/codex` (it ships working code — reuse it, don't reinvent):
-
-- Container env/`auth.json` contain **sentinel values only** (e.g. `scotty-sentinel-<sessionId>`).
-- All container egress goes through the proxy. For allowlisted hosts, the proxy strips the sentinel and injects the real credential:
-  - `api.openai.com`, `chatgpt.com` → real Codex tokens (from session DO storage)
-  - `github.com`, `api.github.com` → real `GH_TOKEN` (from Worker secret)
-- Any other Authorization-bearing request passes through unmodified with its useless sentinel.
-- Token refresh: extend the CF example's sentinel-injection pattern with Worker-side ChatGPT OAuth refresh and **persist the rotated bundle to session DO storage**. The example itself does not persist rotations, so this must pass the contract/security gate in `IMPLEMENTATION_DAG.md`. This replaces the old "auth.json in snapshot" design — snapshots are now credential-free, and beam-down never ships tokens.
-
-**2. Egress allowlist.**
-Default-deny outbound except: `github.com`, `api.github.com`, `codeload.github.com`, `api.openai.com`, `chatgpt.com`, plus package registries needed for builds (`registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, crates.io as needed — config constant). Exfil via arbitrary hosts is blocked even if repo code goes rogue. Use the Sandbox SDK's egress controls (as in the Claude Code example); if a hole is unavoidable, log it as a known risk in README.
-
-**3. GitHub token scope.**
-`GH_TOKEN` is a **fine-grained PAT** limited to the repos Codex works in (contents: rw and pull requests: rw when Codex should push or open pull requests). Grant administration only when Codex itself should create repositories. Never use a classic all-repo PAT. GitHub App installation tokens remain the v2 upgrade path.
-
-**4. Scotty's own tokens.**
-
-- `SCOTTY_TOKEN` grants full control of sessions (and thus code execution) and can issue a
-  five-minute destructive browser recovery grant — treat it like a password. CLI stores it 0600
-  in `~/.scotty.json` and must keep a protected copy outside the owner laptop. Root cookies,
-  root-token query parameters, and root-token browser bootstrap links are rejected.
-- `/devices` is owner-only and creates five-minute one-use `/pair#token=…` links for standard
-  clients. It can start a five-minute target-bound `/owner-transfer#token=…` grant. The exact
-  target accepts it with its existing cookie, rotates its credential, becomes the sole owner, and
-  revokes the old owner. `scotty owner recover` uses bearer root authority to open
-  `/recover#token=…`; consuming it revokes every browser and creates a fresh owner.
-- PTY websocket upgrades use five-minute one-use tickets bound to both the registered browser and session. Revoking a browser removes outstanding tickets; existing sockets lose their heartbeat and are cleaned up by the existing lease bound.
-
-**5. Hygiene rules for implementers.**
-
-- No secret in: Dockerfile, image layers, KV, R2 snapshots, logs, JSON output, error messages, git remotes (no `https://token@github.com` URLs — use a credential helper fed by env at exec time).
-- Secrets live in exactly two places: Worker secrets (seed values) and session DO storage (rotated codex bundle).
-- `vaporize` must also delete the DO-stored credential bundle.
-- Rollout JSONLs can contain prompts/source — treat beam-down output as sensitive; write locally with 0600.
-
-## Container image (worker/container/Dockerfile)
-
-- Base: `ubuntu:24.04` or the Sandbox SDK base image if required by the SDK.
-- Install: git, gh, curl, ca-certificates, codex CLI (pinned), a pinned static Sheppard binary, and locales (UTF-8).
-- Clone the selected repository when the session starts. The image contains no repository-specific cache.
-- Entrypoint per Sandbox SDK requirements.
-
-## Session lifecycle (worker/src/session.ts)
-
-**create** (`POST /api/sessions {prompt, repo, provider}`):
-
-1. Generate id (short, url-safe). Write KV record `status=booting`.
-2. `getSandbox(env.SANDBOX, id)` — boots container.
-3. In container: resolve the selected repository's default branch, clone it into `/workspace/<id>`, and create `scotty/<id>`.
-4. Set `CODEX_HOME=/workspace/<id>/.codex`. Write **sentinel** auth.json (`scotty-sentinel-<id>`) there; store the real bundle in DO storage.
-5. Start a Sheppard daemon on the session-private socket and spawn a managed `codex "<prompt>"` tab in `/workspace/<id>`. Capture the Codex thread id later from `$CODEX_HOME/sessions` (newest rollout file's UUID) and store it in KV.
-6. Schedule `enforceHardCap` for `now + HARD_CAP_MS` (default 4h, override via `?cap=`).
-7. KV → `status=warm`, respond with the clean URL `{id, url: https://<host>/s/<id>}`.
-
-**idle sleep**: `sleepAfter: "60m"` on the Sandbox. Override `onActivityExpired()` to pause the Sheppard-managed agent, `createBackup({dir: "/workspace/<id>"})`, durably store the handle, publish `status=sleeping`, then stop. `onStop()` is cleanup-only because it runs after shutdown.
-
-**hard cap**: use the Container's `schedule()` API rather than overriding its lifecycle `alarm()`. The scheduled callback quiesces, backs up, and destroys regardless of activity. This guarantees no session outlives its cap even with an open browser tab or a busy process.
-
-**resume** (`POST /api/sessions/:id/resume`):
-
-1. Fresh sandbox with same id → `restoreBackup(backupId)`.
-2. Start a fresh Sheppard-managed tab in `/workspace/<id>` → `codex resume <threadId>` (fall back to `codex resume --last`).
-3. New alarm (+4h). KV `status=warm`. Same web URL works.
-
-**snapshot** (`POST /api/sessions/:id/snapshot`): `createBackup()` on demand, update backupId. Container stays up.
-
-**source control**: Scotty exposes no commit, push, repository-creation, or pull-request command or HTTP endpoint. Codex runs those operations directly inside the session when requested, using the same sentinel-only `GH_TOKEN` boundary as other GitHub access.
-
-**down (beam down)** (`GET /api/sessions/:id/down`):
-
-1. Worker reads from sandbox: newest rollout JSONL under `$CODEX_HOME/sessions/**`, plus branch name + head SHA.
-2. Respond with a tar stream (rollout file + metadata JSON).
-3. CLI: `git fetch origin scotty/<id>` in local repo, writes rollout into local `~/.codex/sessions/YYYY/MM/DD/` (preserve filename/UUID), prints: `codex resume <uuid> -C <local-worktree-path>`.
-
-**vaporize** (`DELETE /api/sessions/:id`): destroy sandbox, delete backups from R2, delete KV record. No snapshot. Gone.
-
-**ls** (`GET /api/sessions`): list KV records.
-
-## CLI (cli/scotty.ts)
-
-```
-scotty beam up "PROMPT" --repo owner/project --provider cloudflare [--cap 4h] [--detach]   # create; prints web URL; opens browser unless --detach
-scotty ls [--json]
-scotty attach <id>            # opens web URL (browser)
-scotty snapshot <id>
-scotty resume <id>
-scotty down <id>              # beam down: branch + rollout → local; prints resume cmd
-scotty vaporize <id>          # destroy everything, no snapshot
+```sh
+scotty init --name NAME
+scotty doctor
+scotty beam up "PROMPT" --title "TITLE" --repo OWNER/REPO --provider cloudflare
+scotty ls
+scotty attach SESSION
+scotty snapshot SESSION
+scotty resume SESSION
+scotty beam down SESSION
+scotty vaporize SESSION
 ```
 
-Config: `~/.scotty.json` `{host, token}`. `scotty init` writes it (prompts for host + token). All commands are thin wrappers over the API above. `--json` on everything for scripting.
+The installation name is always explicit. CLI JSON shapes and exit codes are stable contracts.
+Human output may improve without changing JSON behavior.
 
-## Agent ergonomics (CLI is agent-first)
+Runner administration is also CLI-owned:
 
-AI agents (Claude Code, Codex, pi) are the primary CLI users. Requirements:
+```sh
+scotty runner setup --name NAME ...
+scotty runner list
+scotty runner remove NAME --yes
+```
 
-**Machine-readable by default when piped**
+Runner names are created and managed by the control plane. No runner instance name is committed or
+stored as Worker configuration. Runner-backed session creation is disabled until the runner link
+has a native Pi terminal transport.
 
-- Every command supports `--json`; additionally, auto-detect non-TTY stdout and emit JSON (same as `--json`). Human tables only on a TTY.
-- JSON shapes are stable and minimal: `beam up` → `{id, url, branch, status}`; `ls` → array of session records; `down` → `{branch, sha, rolloutPath, resumeCmd}`. Errors → `{error: {code, message, hint}}` on stderr, non-zero exit.
-- Exit codes: 0 ok, 1 generic, 2 bad usage, 3 not found, 4 auth, 5 session in wrong state (e.g. resume on a warm session). Never exit 0 on failure.
-- No interactive prompts anywhere except `scotty init`. Every command must run unattended. `vaporize` takes `--yes` to skip its confirm; confirm is skipped automatically when non-TTY.
+## Installation ownership
 
-**Self-describing help**
+Alchemy owns ordinary Cloudflare resources: Worker, assets, bindings, KV, R2, Durable Object
+migrations, Container application, stages, state, and deployment. Resource names are derived from
+the installation name.
 
-- `scotty --help` and `scotty <cmd> --help`: one usage line, flags, and 1-2 real examples each (crabfleet-style). Terse — no prose walls.
-- `scotty skills` is the long-form agent doc.
+The repository must not contain a Cloudflare account ID, workers.dev hostname, Container name,
+Container UUID, root token, runner credential, or a user-specific installation name. Adoption of an
+older deployment uses a private ignored manifest.
 
-**`scotty skills` command**
+Production deployment uses the guarded release command:
 
-- `scotty skills` prints a complete SKILL.md to stdout: what scotty is, the full command reference with JSON output shapes, the canonical workflows (beam up → work in Codex; beam up → snapshot → resume; down → local resume), state machine (booting → warm → sleeping → gone), and rules of thumb (always `--json`, poll `ls` for status transitions, vaporize when done to stop spend, hard cap means sessions self-sleep).
-- `cli/skills/scotty/SKILL.md` is the source of truth. Bun's text loader compiles it into the standalone CLI, so the installed executable serves the guide without copying skill files into agent or project directories.
+```sh
+SCOTTY_INSTALLATION_NAME=NAME npm run deploy:production
+```
 
-**Statelessness for agents**
+It refuses CI and unsafe Git state, runs verification, deploys through Alchemy, and audits rollout
+settlement.
 
-- Any command accepts `--host`/`--token` flags and `SCOTTY_HOST`/`SCOTTY_TOKEN` env vars overriding `~/.scotty.json`, so agents can run without a config file.
-- `scotty ls --json` is the single polling primitive; include `ageSeconds` and `capRemainingSeconds` per session so agents can reason about lifetime without date math.
+## Session behavior
 
-## Web page (worker/public/terminal.html)
+Each session has one authoritative Sandbox Durable Object. It owns:
 
-- Single HTML file served by the Worker at `/s/:id`.
-- Loads ghostty-web (bundle it into the Worker assets; no CDN).
-- Requests a one-use PTY ticket with the browser cookie, then connects to `wss://<host>/api/sessions/:id/pty?ticket=<short-lived-ticket>`; Worker atomically consumes the ticket and bridges to a Sandbox PTY running an independent Sheppard client.
-- Translates desktop wheels and touch swipes into SGR mouse events while Sheppard owns the alternate screen, preserving per-client server-side scrollback. Touch taps are translated too, so mobile rail actions remain usable.
-- Reconnect on drop with backoff. Show session id + status (warm/sleeping) in a slim header; if sleeping, show a "Resume" button that calls the resume endpoint then reconnects.
+- session identity and immutable provider binding;
+- lifecycle state and one operation lease;
+- credential authority;
+- workspace and checkpoint metadata;
+- hard-cap scheduling and destructive cleanup.
 
-## Phases
+KV contains only a non-secret list projection. R2 contains immutable backup generations. Provider
+runtime memory is never authoritative.
 
-**Phase 1 — credential-free vertical infrastructure (beam up → web terminal)**
-Worker + Dockerfile + `scotty beam up` + `/s/:id` page with working PTY. Use a harmless fake agent until Phase 1.5 passes. Acceptance: `scotty beam up "hello" --repo owner/project --provider cloudflare` prints a URL; opening it shows the Sheppard-managed session on a fresh checkout of the selected repository's default branch; refreshing the page reattaches without killing the process.
+Cloudflare sessions prepare `/workspace/<id>`, seed Pi settings and session-bound credentials, and
+publish `warm` only after setup succeeds. The authenticated browser page connects Ghostty Web to a
+Sandbox native PTY running `scotty-pi-shell`. Snapshot stops the terminal, syncs the filesystem,
+writes a new immutable backup, and rotates current/previous handles. Resume restores the current
+backup and reseeds container-only configuration. Vaporize removes runtime, credentials, backups,
+projection, and authority.
 
-**Phase 1.5 — credential safety + live Codex (before any real-token use)**
-Egress proxy with sentinel injection + allowlist, DO-stored codex bundle with proxy-side refresh, cookie-based web auth, then Codex startup. Acceptance: `env`, `cat ~/.codex/auth.json`, and `git config --list` inside the container show only sentinels; a curl from inside the container to a non-allowlisted host fails; codex completes a turn (proxy injection works); after a forced token refresh the DO bundle is updated and a resumed session still authenticates.
+## Credential isolation
 
-**Phase 2 — lifecycle (sleep/snapshot/resume/hard cap)**
-`onActivityExpired()` checkpoint, scheduled hard cap, and `scotty resume/snapshot/ls`. Acceptance: force-sleep a session, resume it, codex continues the same thread with the same worktree; a session with an open browser tab still snapshots+sleeps at the hard cap.
+Real Pi provider and GitHub credentials remain in Worker secrets or per-session Durable Object
+storage. They must never enter container files as real values, process arguments, logs, KV, R2,
+Alchemy outputs/state, or API responses.
 
-**Phase 3 — agent-owned source control**
-Keep GitHub credentials available through the sentinel boundary, but expose no Scotty publishing command or route. Acceptance: Codex can perform explicitly requested Git operations while Scotty never commits, pushes, creates repositories, or opens pull requests itself.
+The container receives session-bound sentinels. Default-deny egress replaces a valid sentinel only
+for an allowlisted upstream and sanitizes responses before returning them. Repository code is
+untrusted.
 
-**Phase 4 — beam down + vaporize**
-`scotty down`, `scotty vaporize`. Acceptance: after beam down, `codex resume <uuid>` locally replays the cloud conversation and the branch is fetchable; vaporize leaves no KV record, no R2 objects, no sandbox (and no DO credential bundle).
+Browser credentials are separate from the root CLI credential. The root credential is accepted only
+as a bearer credential and break-glass recovery authority, never from cookies or URLs. Pairing,
+ownership transfer, recovery, and revocation remain Auth Durable Object operations.
 
-**Phase 5 — agent ergonomics**
-`--json` on operational commands + non-TTY auto-JSON, stable exit codes, and `scotty skills` as raw Markdown. Acceptance: an agent given only `scotty skills` output can run beam up → snapshot → vaporize unattended with no prompts; piping an operational command produces valid JSON; wrong-state operations exit 5 with a hint.
+## Container contents
 
-## Risks / gotchas (implementers: read)
+The image includes pinned Pi, Ghostty Web assets, the standalone Scotty CLI, standard tools, bundled
+skills, and the eight configured Pi extensions. Source-based extensions are ordinary vendored
+container source with upstream repository and commit metadata in
+`worker/container/pi-packages/manifest.json`; consumers do not initialize those repositories.
 
-1. Cloudflare does not guarantee uninterrupted container lifetime — hosts can restart. Recovery is only as fresh as the latest successful checkpoint; `onStop()` cannot snapshot an already-stopped container. Don't fight it.
-2. Sandbox SDK HTTP/WS transports are deprecated (June 2026) — use the RPC API only. Check the current `@cloudflare/sandbox` README before coding against examples older than mid-2026.
-3. Pi OAuth refresh tokens rotate; the **DO-stored provider map** is the single source of truth after first refresh (proxy persists rotations). Never automatically re-seed from the `PI_AUTH_JSON` secret once a DO copy exists — a stale seed can invalidate the rotated refresh token. Reseeding is an explicit owner operation.
-4. Rollout beam-down is not an official Codex contract. Pin codex versions; treat failures as non-fatal (branch fetch alone is still a useful beam-down).
-5. Codex and Sheppard both use alternate-screen terminal modes. Keep browser wheel/touch translation and deployed phone/desktop interaction in the release gate; local emulator scrollback alone is not proof.
-6. `standard-2` idle-warm ≈ $0.057/hr; sleeping ≈ free. The hard cap bounds worst-case spend.
+## Release acceptance
 
-## Out of scope for v1 (do not build)
-
-Warm pools, multi-user auth, D1 event replay, SSH gateway, VNC, exposePort previews, GitHub App tokens (PAT via `GH_TOKEN` secret is fine), multiple concurrent repos per session, Cloudflare Access.
-
-## References (read before implementing your phase)
-
-**Cloudflare Sandbox SDK / Containers**
-
-- Sandbox SDK repo + examples: https://github.com/cloudflare/sandbox-sdk
-- **Codex example (egress proxy + sentinel — the original credential-safety blueprint)**: https://github.com/cloudflare/sandbox-sdk/tree/main/examples/codex
-- Codex app-server example (browser ↔ Worker ↔ codex, session naming): https://github.com/cloudflare/sandbox-sdk/tree/main/examples/codex-app-server
-- Claude Code example (egress allowlist pattern): https://github.com/cloudflare/sandbox-sdk/tree/main/examples/claude-code
-- Sandbox terminal/PTY concepts: https://developers.cloudflare.com/sandbox/concepts/terminal/
-- Terminal API (PTY, xterm addon): https://developers.cloudflare.com/sandbox/api/terminal/
-- Native PTY announcement (Feb 2026): https://developers.cloudflare.com/changelog/post/2026-02-09-pty-terminal-support/
-- Backup/restore API (`createBackup`/`restoreBackup`, Feb 2026): https://developers.cloudflare.com/changelog/post/2026-02-23-sandbox-backup-restore-api/
-- **Transport deprecation — RPC only (June 2026)**: https://developers.cloudflare.com/changelog/post/2026-06-09-deprecating-sandbox-sdk-features/
-- Preview URLs (not needed v1, context only): https://developers.cloudflare.com/sandbox/concepts/preview-urls/
-- Production deployment (wildcard domain, if previews added later): https://developers.cloudflare.com/sandbox/guides/production-deployment/
-- Containers pricing: https://developers.cloudflare.com/containers/pricing/
-- Container rollouts (image updates vs live sessions): https://developers.cloudflare.com/containers/platform-details/rollouts/
-- Durable Objects alarms (hard cap): https://developers.cloudflare.com/durable-objects/api/alarms/
-
-**Codex CLI**
-
-- Auth docs: https://developers.openai.com/codex/auth
-- CI/CD auth (seeding auth into runners): https://developers.openai.com/codex/auth/ci-cd-auth
-- Non-interactive mode (`codex exec`, `CODEX_API_KEY`): https://developers.openai.com/codex/non-interactive-mode
-- CLI reference (`exec`, `resume`, sandbox/approval flags): https://developers.openai.com/codex/cli/reference
-- Source (pin-compatible reading): https://github.com/openai/codex
-  - auth.json shape: `codex-rs/login/src/auth/storage.rs` · token refresh: `codex-rs/login/src/auth/manager.rs` · rollout layout: `codex-rs/rollout/src/list.rs`
-- TUI scrollback issue under xterm.js: https://github.com/openai/codex/issues/27644
-
-**Terminal (browser)**
-
-- ghostty-web (WASM ghostty, xterm.js-compatible API): https://github.com/coder/ghostty-web
-
-**Git / GitHub**
-
-- git worktree: https://git-scm.com/docs/git-worktree
-- gh env vars (`GH_TOKEN` precedence): https://cli.github.com/manual/gh_help_environment
-- Fine-grained PATs: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
-
-**Prior art (UX reference, not dependencies)**
-
-- Amp orbs manual: https://ampcode.com/manual/orbs
-- Amp "Putting an Agent in an Orb" (setup/resume hooks, snapshots): https://ampcode.com/notes/putting-an-agent-in-an-orb
-- crabfleet (CLI verb shape, Ghostty-WASM attach, same CF architecture): https://github.com/openclaw/crabfleet · https://docs.crabfleet.ai/architecture/
-
-**Worker framework**
-
-- Hono on Cloudflare Workers: https://hono.dev/docs/getting-started/cloudflare-workers
-- Wrangler configuration: https://developers.cloudflare.com/workers/wrangler/configuration/
+A releasable revision passes formatting, skill lint, lint, typecheck, all local tests, secret scan,
+standalone CLI build, container build, guarded production deployment, and the stage-isolated
+deployed canary. Host reachability alone is not readiness; the acceptance probe must exercise the
+actual session and terminal contract.

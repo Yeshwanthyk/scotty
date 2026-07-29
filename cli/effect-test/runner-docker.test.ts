@@ -105,7 +105,7 @@ describe("Docker runner compute", () => {
             {
               root,
               image:
-                "registry.example/scotty-pican@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "registry.example/scotty-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               uid: 1000,
               gid: 1001,
               safePath: "/usr/local/bin:/usr/bin:/bin",
@@ -146,12 +146,6 @@ describe("Docker runner compute", () => {
             "CODEX_HOME=/run/scotty/credentials/codex",
             "GH_CONFIG_DIR=/run/scotty/credentials/github",
             "GIT_CONFIG_GLOBAL=/run/scotty/credentials/gitconfig",
-            "PICAN_MODE=hosted",
-            "PICAN_BASE_PATH=/s/session-a",
-            "PICAN_WORKSPACE_ROOT=/workspace/session-a",
-            "PICAN_STATE_ROOT=/workspace/session-a/.pican",
-            "PICAN_AUTH_MODE=proxy",
-            "PICAN_PROXY_HEADER=X-Pican-Proxy-Token",
             "--entrypoint",
             "/bin/sleep",
             "infinity",
@@ -171,108 +165,81 @@ describe("Docker runner compute", () => {
             yield* fs.readFileString(`${sessionRoot}/credentials/github/hosts.yml`),
             "gh-secret",
           );
-          const proxyTokenEntry = yield* fs.readFileString(
-            `${sessionRoot}/credentials/pican-proxy-token`,
-          );
-          assert.match(proxyTokenEntry, /^[A-Za-z0-9_-]{43}$/);
-          assert.notInclude(fake.commands.flat().join("\n"), proxyTokenEntry);
           assert.strictEqual((yield* fs.stat(workspace)).mode & 0o777, 0o700);
           assert.strictEqual(
             (yield* fs.stat(`${sessionRoot}/credentials/codex/auth.json`)).mode & 0o777,
-            0o600,
-          );
-          assert.strictEqual(
-            (yield* fs.stat(`${sessionRoot}/credentials/pican-proxy-token`)).mode & 0o777,
             0o600,
           );
         }),
       ),
   );
 
-  it.effect(
-    "forwards mounted HTTP only to the running session container's fixed bridge target",
-    () =>
-      withNode(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const root = yield* fs.makeTempDirectoryScoped({ prefix: "scotty-docker-http-" });
-          const sources = yield* credentialSources(root);
-          const fake = fakeDocker();
-          const compute = yield* makeDockerRunnerCompute(
-            {
-              root,
-              image: `python@sha256:${"f".repeat(64)}`,
-              uid: 1000,
-              gid: 1000,
-              safePath: "/usr/local/bin:/usr/bin:/bin",
-              childEnvironment: {},
-              ...sources,
-            },
-            fake.process,
-          );
-          const absent = yield* Effect.result(
-            compute.mountedHttp(
-              { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
-              new Request("http://127.0.0.1:31415/s/session-a/health"),
-              () => Promise.resolve(new Response()),
-            ),
-          );
-          assert.strictEqual(computeFailure(absent).code, "runtime_not_running");
-
-          yield* compute.ensure("session-a");
-          const commandsBeforeMismatch = fake.commands.length;
-          const mismatch = yield* Effect.result(
-            compute.mountedHttp(
-              { sessionId: "session-a", runtimeId: "runner-v1:wrong" },
-              new Request("http://ignored/s/session-a/health"),
-              () => Promise.resolve(new Response()),
-            ),
-          );
-          assert.strictEqual(computeFailure(mismatch).code, "runtime_not_running");
-          assert.strictEqual(fake.commands.length, commandsBeforeMismatch);
-
-          let forwarded: Request | undefined;
-          const controller = new AbortController();
-          const response = yield* compute.mountedHttp(
+  it.effect("rejects mounted HTTP when no native runner application transport is installed", () =>
+    withNode(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "scotty-docker-http-" });
+        const sources = yield* credentialSources(root);
+        const fake = fakeDocker();
+        const compute = yield* makeDockerRunnerCompute(
+          {
+            root,
+            image: `python@sha256:${"f".repeat(64)}`,
+            uid: 1000,
+            gid: 1000,
+            safePath: "/usr/local/bin:/usr/bin:/bin",
+            childEnvironment: {},
+            ...sources,
+          },
+          fake.process,
+        );
+        const absent = yield* Effect.result(
+          compute.mountedHttp(
             { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
-            new Request("http://127.0.0.1:31415/s/session-a/echo?proof=yes", {
-              method: "POST",
-              body: "portable",
-              headers: { "x-pican-proxy-token": "spoofed" },
-              signal: controller.signal,
-            }),
-            (request) => {
-              forwarded = request;
-              return Promise.resolve(Response.json({ ok: true }));
-            },
-          );
-          assert.strictEqual(response.status, 200);
-          assert.strictEqual(forwarded?.url, "http://172.17.0.2:31415/s/session-a/echo?proof=yes");
-          assert.strictEqual(forwarded?.method, "POST");
-          const tokenEntry = yield* fs.readFileString(
-            `${root}/sessions/session-${hash("session-a")}/credentials/pican-proxy-token`,
-          );
-          assert.strictEqual(forwarded?.headers.get("x-pican-proxy-token"), tokenEntry);
-          controller.abort();
-          assert.isTrue(forwarded?.signal.aborted);
-          assert.deepStrictEqual(fake.commands.at(-1), [
-            "container",
-            "inspect",
-            "--format={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-            `scotty-runner-v1-${hash("session-a")}`,
-          ]);
+            new Request("http://127.0.0.1:31415/s/session-a/health"),
+            () => Promise.resolve(new Response()),
+          ),
+        );
+        assert.strictEqual(computeFailure(absent).code, "runtime_not_running");
 
-          yield* compute.stop("session-a");
-          const stopped = yield* Effect.result(
-            compute.mountedHttp(
-              { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
-              new Request("http://ignored/s/session-a/health"),
-              () => Promise.resolve(new Response()),
-            ),
-          );
-          assert.strictEqual(computeFailure(stopped).code, "runtime_not_running");
-        }),
-      ),
+        yield* compute.ensure("session-a");
+        const commandsBeforeMismatch = fake.commands.length;
+        const mismatch = yield* Effect.result(
+          compute.mountedHttp(
+            { sessionId: "session-a", runtimeId: "runner-v1:wrong" },
+            new Request("http://ignored/s/session-a/health"),
+            () => Promise.resolve(new Response()),
+          ),
+        );
+        assert.strictEqual(computeFailure(mismatch).code, "runtime_not_running");
+        assert.strictEqual(fake.commands.length, commandsBeforeMismatch);
+
+        let forwarded = false;
+        const response = yield* compute.mountedHttp(
+          { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
+          new Request("http://127.0.0.1:31415/s/session-a/echo?proof=yes", {
+            method: "POST",
+            body: "portable",
+          }),
+          () => {
+            forwarded = true;
+            return Promise.resolve(Response.json({ ok: true }));
+          },
+        );
+        assert.strictEqual(response.status, 404);
+        assert.isFalse(forwarded);
+
+        yield* compute.stop("session-a");
+        const stopped = yield* Effect.result(
+          compute.mountedHttp(
+            { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
+            new Request("http://ignored/s/session-a/health"),
+            () => Promise.resolve(new Response()),
+          ),
+        );
+        assert.strictEqual(computeFailure(stopped).code, "runtime_not_running");
+      }),
+    ),
   );
 
   it.effect("stops and restores the same container while retaining its session state", () =>
@@ -286,7 +253,7 @@ describe("Docker runner compute", () => {
           {
             root,
             image:
-              "registry.example/scotty-pican@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "registry.example/scotty-runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             uid: 1000,
             gid: 1000,
             safePath: "/usr/local/bin:/usr/bin:/bin",
@@ -334,7 +301,7 @@ describe("Docker runner compute", () => {
           {
             root,
             image:
-              "registry.example/scotty-pican@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "registry.example/scotty-runtime@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             uid: 1000,
             gid: 1000,
             safePath: "/usr/local/bin:/usr/bin:/bin",
@@ -370,7 +337,7 @@ describe("Docker runner compute", () => {
           "process.stdout.write('ok')",
         ]);
         yield* compute.exec("session-a", {
-          argv: ["/usr/local/bin/pican", "-host", "0.0.0.0"],
+          argv: ["/usr/bin/printf", "ready"],
           detach: true,
         });
         assert.deepStrictEqual(fake.commands.at(-1), [
@@ -380,9 +347,8 @@ describe("Docker runner compute", () => {
           "--workdir",
           "/workspace/session-a",
           `scotty-runner-v1-${hash("session-a")}`,
-          "/usr/local/bin/pican",
-          "-host",
-          "0.0.0.0",
+          "/usr/bin/printf",
+          "ready",
         ]);
 
         for (const relativeCwd of ["/outside", "../outside", "repo/../../outside"]) {
@@ -402,7 +368,7 @@ describe("Docker runner compute", () => {
           {
             root,
             image:
-              "registry.example/scotty-pican@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "registry.example/scotty-runtime@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             uid: 1000,
             gid: 1000,
             safePath: "/usr/local/bin:/usr/bin:/bin",
@@ -427,7 +393,7 @@ describe("Docker runner compute", () => {
           {
             root,
             image:
-              "registry.example/scotty-pican@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "registry.example/scotty-runtime@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             uid: 1000,
             gid: 1000,
             safePath: "/usr/local/bin:/usr/bin:/bin",

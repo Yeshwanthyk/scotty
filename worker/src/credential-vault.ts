@@ -174,7 +174,6 @@ const makeCredentialVault = (
           providers: storedProviders(providers.success, decodedSeed.success.providerSentinelSeed),
           githubToken: github.success,
           githubSentinel: decodedSeed.success.githubSentinel,
-          picanProxyToken: decodedSeed.success.picanProxyToken,
           updatedAt: now,
         };
         await transaction.put(credential);

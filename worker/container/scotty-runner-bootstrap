@@ -54,7 +54,7 @@ else
   fi
 fi
 
-mkdir -p "${codex_home}" "${root}/.home" "${root}/.pican"
+mkdir -p "${codex_home}" "${root}/.home"
 ln -sfn /opt/scotty/skills "${codex_home}/skills"
 
 cat >"${codex_home}/config.toml" <<EOF
@@ -80,12 +80,11 @@ cat >"${codex_home}/AGENTS.md" <<'EOF'
 - Use matching skills under `$CODEX_HOME/skills`; read the selected `SKILL.md` before acting.
 EOF
 
-chmod 700 "${codex_home}" "${root}/.home" "${root}/.pican"
+chmod 700 "${codex_home}" "${root}/.home"
 chmod 600 "${codex_home}/auth.json" "${codex_home}/config.toml" "${codex_home}/AGENTS.md"
 
 exclude="$(git -C "${root}" rev-parse --absolute-git-dir)/info/exclude"
 grep -qxF ".codex/" "${exclude}" 2>/dev/null || printf ".codex/\n" >>"${exclude}"
-grep -qxF ".pican/" "${exclude}" 2>/dev/null || printf ".pican/\n" >>"${exclude}"
 
 github_identity="$(gh api user)"
 git_name="$(jq -r '.name // .login' <<<"${github_identity}")"

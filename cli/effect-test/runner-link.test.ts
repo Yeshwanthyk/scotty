@@ -626,7 +626,6 @@ describe("RunnerLink", () => {
                       ["authorization", "Bearer browser-secret"],
                       ["content-type", "text/plain"],
                       ["cookie", "browser=secret"],
-                      ["x-pican-proxy-token", "spoofed"],
                     ],
                     target: "/s/session-a/events?after=1",
                   }),
@@ -671,7 +670,6 @@ describe("RunnerLink", () => {
       assert.strictEqual(capturedRequest?.headers.get("content-type"), "text/plain");
       assert.strictEqual(capturedRequest?.headers.get("authorization"), null);
       assert.strictEqual(capturedRequest?.headers.get("cookie"), null);
-      assert.strictEqual(capturedRequest?.headers.get("x-pican-proxy-token"), null);
       assert.strictEqual(
         new TextDecoder().decode(concatenate(received)),
         "data: first\n\ndata: second\n\n",

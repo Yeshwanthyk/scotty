@@ -3,7 +3,6 @@ import type {
   DirectoryBackup,
   ExecOptions,
   ExecResult,
-  ProcessOptions,
   RestoreBackupResult,
 } from "@cloudflare/sandbox";
 import { Data, Match } from "effect";
@@ -50,8 +49,6 @@ export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
 export type HarnessFailureStage =
   | "backupDelete"
   | "backupList"
-  | "checkpointFailureStatePersist"
-  | "checkpointFailureStateRead"
   | "checkpointDefect"
   | "checkpointSync"
   | "containerAuthSeed"
@@ -60,12 +57,9 @@ export type HarnessFailureStage =
   | "downTar"
   | "downWriteManifest"
   | "hardCapSchedule"
-  | "picanCreate"
-  | "picanLaunch"
-  | "picanStop"
   | "projectionDelete"
   | "restoreBackup"
-  | "rollbackResume"
+  | "terminalStop"
   | "vaporizeDestroy"
   | "vaporizeRetrySchedule"
   | "workspacePrepare";
@@ -77,7 +71,6 @@ export interface HarnessOptions {
   readonly destroyBehavior?: "pending" | "reject" | "success";
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
-  readonly initialPicanRunning?: boolean;
   readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
     ? Stub extends { dispatch: infer Dispatch }
       ? Dispatch
@@ -90,8 +83,6 @@ export interface HarnessOptions {
     count: number,
     memory: InMemoryFaultInjectableFake,
   ) => void | Promise<void>;
-  readonly picanCreateResponse?: () => Response;
-  readonly picanWorkerStatus?: () => Response;
   readonly r2Objects?: ReadonlyArray<string>;
   readonly stopCallsOnStop?: boolean;
   readonly transactionFailureCountdown?: number;
@@ -103,18 +94,6 @@ export interface RecordedSchedule {
   readonly payload: unknown;
 }
 
-export interface RecordedPicanRequest {
-  readonly body: unknown;
-  readonly headers: Headers;
-  readonly method: string;
-  readonly url: string;
-}
-
-export interface RecordedPicanStart {
-  readonly command: string;
-  readonly options: ProcessOptions | undefined;
-}
-
 export interface SessionHarness {
   readonly sandbox: Sandbox;
   readonly events: string[];
@@ -122,9 +101,6 @@ export interface SessionHarness {
   readonly deletedSchedules: string[];
   readonly aborts: string[];
   readonly commands: string[];
-  readonly picanRequests: RecordedPicanRequest[];
-  readonly picanSignals: string[];
-  readonly picanStarts: RecordedPicanStart[];
   readonly runnerOperations: ReadonlyArray<RunnerOperation>;
   readonly runnerRequests: ReadonlyArray<Request>;
   readonly writtenFiles: ReadonlyArray<{
@@ -317,7 +293,6 @@ export const makeStoredCredential = (
   },
   githubToken: "stored-github-token",
   githubSentinel: `scotty-github-${SESSION_ID}-sentinel`,
-  picanProxyToken: `scotty-pican-${SESSION_ID}-proxy`,
   updatedAt: "2026-01-01T00:00:00.000Z",
   ...overrides,
 });
@@ -342,9 +317,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const deletedSchedules: string[] = [];
   const aborts: string[] = [];
   const commands: string[] = [];
-  const picanRequests: RecordedPicanRequest[] = [];
-  const picanSignals: string[] = [];
-  const picanStarts: RecordedPicanStart[] = [];
   const runnerOperations: RunnerOperation[] = [];
   const runnerRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
@@ -527,15 +499,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
             runnerRequests.push(copy);
             const path = new URL(request.url).pathname;
             events.push(`runner:fetch:${path}`);
-            if (path.endsWith("/api/settings")) return Response.json({ ready: true });
-            if (path.endsWith("/api/new-session"))
-              return Response.json({
-                id: "pican-session-1",
-                nativeId: "019d0f55-8d43-7b8c-b63f-f3875b66d03b",
-                runtime: "codex",
-                createState: "created",
-                promptDispatchState: "accepted",
-              });
             return new Response("runner fixture");
           }),
         status: async () => "connected",
@@ -596,38 +559,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     duration: 1,
     timestamp: "2026-01-01T00:00:00.000Z",
   });
-  let picanProcess:
-    | {
-        readonly id: string;
-        readonly status: "running";
-        readonly kill: (signal?: string) => Promise<void>;
-        readonly waitForExit: (timeout?: number) => Promise<{ readonly exitCode: number }>;
-        readonly waitForPort: (port: number) => Promise<void>;
-      }
-    | undefined;
-
-  const makePicanProcess = () => ({
-    id: "scotty-pican",
-    status: "running" as const,
-    kill: async (signal = "SIGTERM"): Promise<void> => {
-      events.push(`host:pican:kill:${signal}`);
-      picanSignals.push(signal);
-      picanProcess = undefined;
-      if (failures.has("picanStop"))
-        throw injectedHarnessFailure("injected Pican stop failure after termination");
-    },
-    waitForExit: async (): Promise<{ readonly exitCode: number }> => {
-      events.push("host:pican:waitForExit");
-      return { exitCode: 0 };
-    },
-    waitForPort: async (port: number): Promise<void> => {
-      events.push(`host:pican:waitForPort:${port}`);
-      if (failures.has("picanLaunch"))
-        throw injectedHarnessFailure("injected Pican launch failure");
-    },
-  });
-  if (options.initialPicanRunning === true) picanProcess = makePicanProcess();
-
   Object.defineProperties(sandbox, {
     exec: {
       value: async (command: string, _execOptions?: ExecOptions): Promise<ExecResult> => {
@@ -701,66 +632,16 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         events.push("host:setEnvVars");
       },
     },
-    startProcess: {
-      value: async (command: string, processOptions?: ProcessOptions) => {
-        events.push("host:pican:start");
-        picanStarts.push({ command, options: processOptions });
-        if (failures.has("picanLaunch") || failures.has("rollbackResume")) {
-          if (failures.has("checkpointFailureStateRead")) storage.injectNextGetFailure();
-          if (failures.has("checkpointFailureStatePersist")) storage.injectNextTransactionFailure();
-          throw injectedHarnessFailure("injected Pican launch failure");
-        }
-        picanProcess = makePicanProcess();
-        return picanProcess;
-      },
-    },
-    getProcess: {
-      value: async (processId: string) =>
-        processId === "scotty-pican" ? (picanProcess ?? null) : null,
-    },
     deleteSession: {
       value: async (sessionId: string) => {
         events.push(`host:pi:delete:${sessionId}`);
-        if (failures.has("picanStop"))
+        if (failures.has("terminalStop"))
           throw injectedHarnessFailure("injected Pi terminal stop failure");
         return {
           success: true,
           sessionId,
           timestamp: lifecycleWallClock.nowIso(),
         };
-      },
-    },
-    containerFetch: {
-      configurable: true,
-      value: async (request: Request, port: number): Promise<Response> => {
-        if (new URL(request.url).pathname.endsWith("/api/settings")) {
-          events.push("host:pican:ready");
-          return Response.json({ ready: true });
-        }
-        if (new URL(request.url).pathname.endsWith("/api/worker-status")) {
-          events.push("host:pican:worker-status");
-          return options.picanWorkerStatus?.() ?? Response.json({ state: "idle" });
-        }
-        const clone = request.clone();
-        const body: unknown =
-          request.method === "GET" || request.method === "HEAD" ? undefined : await clone.json();
-        picanRequests.push({
-          body,
-          headers: new Headers(request.headers),
-          method: request.method,
-          url: request.url,
-        });
-        events.push(`host:pican:fetch:${port}`);
-        if (failures.has("picanCreate"))
-          throw injectedHarnessFailure("injected Pican create failure");
-        if (options.picanCreateResponse !== undefined) return options.picanCreateResponse();
-        return Response.json({
-          id: "pican-session-1",
-          nativeId: "019d0f55-8d43-7b8c-b63f-f3875b66d03b",
-          runtime: "codex",
-          createState: "created",
-          promptDispatchState: "accepted",
-        });
       },
     },
     stop: {
@@ -809,9 +690,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     deletedSchedules,
     aborts,
     commands,
-    picanRequests,
-    picanSignals,
-    picanStarts,
     runnerOperations,
     runnerRequests,
     writtenFiles,

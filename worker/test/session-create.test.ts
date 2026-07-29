@@ -1,7 +1,4 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Predicate } from "effect";
-import { vi } from "vitest";
-import type { ExecRuntime, RunnerOperation } from "../../protocol/runner";
 import { ScottyError } from "../src/contracts";
 import { InitialSessionStorageFailure } from "../src/session-store";
 import {
@@ -29,215 +26,21 @@ const assertUpstreamFailure = async (operation: Promise<unknown>): Promise<void>
   assert.strictEqual(error.code, "upstream");
 };
 
-const isExecRuntime = (operation: RunnerOperation): operation is ExecRuntime =>
-  Predicate.isTagged("ExecRuntime")(operation);
-
 describe("Sandbox create orchestration", () => {
-  it("boots runner Pican and persists its native session before marking warm", async () => {
+  it("rejects runner-backed session creation until native Pi transport is available", async () => {
     const harness = await createSessionHarness();
-    const created = await harness.sandbox.createScottySession(
-      { ...CREATE_INPUT, provider: "runner", runner: "slumbers" },
-      SESSION_ID,
-      CREATE_IDEMPOTENCY,
-    );
-
-    assert.strictEqual(created.status, "warm");
-    assert.deepStrictEqual(harness.readRecord()?.execution, {
-      provider: "runner",
-      runner: "slumbers",
-      runtimeId: `runner-v1:${SESSION_ID}`,
-    });
-    const recordIndex = harness.events.indexOf("record:booting");
-    const ensureIndex = harness.events.findIndex((event) =>
-      event.startsWith("runner:dispatch:EnsureRuntime:create-"),
-    );
-    const bootstrapIndex = harness.events.findIndex((event) =>
-      event.startsWith("runner:dispatch:ExecRuntime:create-bootstrap-"),
-    );
-    const launchIndex = harness.events.findIndex((event) =>
-      event.startsWith("runner:dispatch:ExecRuntime:create-pican-"),
-    );
-    const readyIndex = harness.events.findIndex((event) => event.endsWith("/api/settings"));
-    const nativeCreateIndex = harness.events.findIndex((event) =>
-      event.endsWith("/api/new-session"),
-    );
-    const warmIndex = harness.events.lastIndexOf("record:warm");
-    assert.ok(recordIndex >= 0 && ensureIndex > recordIndex);
-    assert.ok(ensureIndex < bootstrapIndex);
-    assert.ok(bootstrapIndex < launchIndex);
-    assert.ok(launchIndex < readyIndex);
-    assert.ok(readyIndex < nativeCreateIndex);
-    assert.ok(nativeCreateIndex < warmIndex);
-    const execs = harness.runnerOperations.filter(isExecRuntime);
-    const bootstrap = execs.find((operation) => operation.operationId.includes("bootstrap"));
-    assert.ok(bootstrap);
-    assert.deepStrictEqual(bootstrap.argv, [
-      "/usr/local/bin/scotty-runner-bootstrap",
-      SESSION_ID,
-      "owner/project",
-      `scotty/${SESSION_ID}`,
-    ]);
-    assert.match(bootstrap.operationId, /^create-bootstrap-/u);
-    const launch = execs.find((operation) => operation.operationId.includes("pican"));
-    assert.ok(launch);
-    assert.deepStrictEqual(launch.argv, [
-      "/usr/local/bin/scotty-runner-pican",
-      "-host",
-      "0.0.0.0",
-      "-p",
-      "31415",
-      "-runtime",
-      "codex",
-      "-codex-command",
-      "/usr/local/bin/codex",
-    ]);
-    assert.strictEqual(launch.detach, true);
-    assert.match(launch.operationId, /^create-pican-/u);
-    assert.strictEqual(harness.runnerRequests.length, 2);
-    assert.strictEqual(
-      harness.runnerRequests[0]?.url,
-      `https://runner.internal/_scotty/runner-http/${SESSION_ID}/${encodeURIComponent(
-        `runner-v1:${SESSION_ID}`,
-      )}/s/${SESSION_ID}/api/settings`,
-    );
-    assert.strictEqual(harness.runnerRequests[1]?.headers.get("idempotency-key"), SESSION_ID);
-    assert.deepStrictEqual(JSON.parse((await harness.runnerRequests[1]?.text()) ?? ""), {
-      path: `/workspace/${SESSION_ID}`,
-      runtime: "codex",
-      initialPrompt: CREATE_INPUT.prompt,
-    });
-    assert.strictEqual(harness.readRecord()?.codexThreadId, "019d0f55-8d43-7b8c-b63f-f3875b66d03b");
-    assert.isFalse(harness.events.some((event) => event.startsWith("host:pican")));
-    assert.isFalse(harness.events.some((event) => event.startsWith("credential:")));
-    assert.isFalse(harness.events.some((event) => event.startsWith("host:exec")));
-
-    const dispatchCount = harness.runnerOperations.length;
-    const replay = await harness.sandbox.createScottySession(
-      { ...CREATE_INPUT, provider: "runner", runner: "slumbers" },
-      SESSION_ID,
-      CREATE_IDEMPOTENCY,
-    );
-    assert.strictEqual(replay.status, "warm");
-    assert.strictEqual(harness.runnerOperations.length, dispatchCount);
-  });
-
-  it("replays a booting runner create with the same deterministic operation IDs", async () => {
-    const nonce = "persisted-runner-create";
-    const harness = await createSessionHarness({
-      initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
-          status: "booting",
-          operation: {
-            kind: "create",
-            nonce,
-            startedAt: "2026-01-01T00:00:00.000Z",
-            createPhase: "setup",
-          },
-          provider: "runner",
-          runner: "slumbers",
-          execution: {
-            provider: "runner",
-            runner: "slumbers",
-            runtimeId: `runner-v1:${SESSION_ID}`,
-          },
-        }),
-        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
-      },
-    });
-
-    const replay = await harness.sandbox.createScottySession(
-      { ...CREATE_INPUT, provider: "runner", runner: "slumbers" },
-      SESSION_ID,
-      CREATE_IDEMPOTENCY,
-    );
-
-    assert.strictEqual(replay.status, "warm");
-    assert.deepStrictEqual(
-      harness.runnerOperations.map((operation) => operation.operationId),
-      [`create-${nonce}`, `create-bootstrap-${nonce}`, `create-pican-${nonce}`],
-    );
-    assert.strictEqual(harness.readRecord()?.codexThreadId, "019d0f55-8d43-7b8c-b63f-f3875b66d03b");
-  });
-
-  it("retries runner Pican readiness through the mounted HTTP tunnel", async () => {
-    vi.useFakeTimers();
-    try {
-      let readinessAttempts = 0;
-      const harness = await createSessionHarness({
-        runnerFetch: async (request) => {
-          const path = new URL(request.url).pathname;
-          if (path.endsWith("/api/settings")) {
-            readinessAttempts += 1;
-            return readinessAttempts === 1
-              ? new Response("starting", { status: 503 })
-              : Response.json({ ready: true });
-          }
-          return Response.json({
-            id: "pican-session-1",
-            nativeId: "codex-thread-1",
-            runtime: "codex",
-            createState: "created",
-            promptDispatchState: "accepted",
-          });
-        },
-      });
-
-      const creating = harness.sandbox.createScottySession(
-        { ...CREATE_INPUT, provider: "runner", runner: "slumbers" },
+    const error = await rejection(
+      harness.sandbox.createScottySession(
+        { ...CREATE_INPUT, provider: "runner", runner: "example-runner" },
         SESSION_ID,
         CREATE_IDEMPOTENCY,
-      );
-      await vi.advanceTimersByTimeAsync(0);
-      assert.strictEqual(readinessAttempts, 1);
-      await vi.advanceTimersByTimeAsync(500);
+      ),
+    );
 
-      assert.strictEqual((await creating).status, "warm");
-      assert.strictEqual(readinessAttempts, 2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retries transient runner HTTP responses without deleting the runtime", async () => {
-    vi.useFakeTimers();
-    try {
-      let createAttempts = 0;
-      const harness = await createSessionHarness({
-        runnerFetch: async (request) => {
-          const path = new URL(request.url).pathname;
-          if (path.endsWith("/api/settings")) return Response.json({ ready: true });
-          createAttempts += 1;
-          return createAttempts === 1
-            ? new Response("Runner HTTP upstream failed", { status: 502 })
-            : Response.json({
-                id: "pican-session-1",
-                nativeId: "codex-thread-1",
-                runtime: "codex",
-                createState: "created",
-                promptDispatchState: "accepted",
-              });
-        },
-      });
-
-      const creating = harness.sandbox.createScottySession(
-        { ...CREATE_INPUT, provider: "runner", runner: "slumbers" },
-        SESSION_ID,
-        CREATE_IDEMPOTENCY,
-      );
-      await vi.advanceTimersByTimeAsync(0);
-      assert.strictEqual(createAttempts, 1);
-      await vi.advanceTimersByTimeAsync(250);
-
-      assert.strictEqual((await creating).status, "warm");
-      assert.strictEqual(createAttempts, 2);
-      assert.isFalse(
-        harness.runnerOperations.some((operation) =>
-          Predicate.isTagged("RemoveRuntime")(operation),
-        ),
-      );
-    } finally {
-      vi.useRealTimers();
-    }
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "bad_request");
+    assert.strictEqual(harness.readRecord(), undefined);
+    assert.deepStrictEqual(harness.runnerOperations, []);
   });
 
   it("arms the hard cap before committing authority, then projects and reaches warm", async () => {
@@ -276,8 +79,6 @@ describe("Sandbox create orchestration", () => {
       harness.schedules.map((schedule) => schedule.callback),
       ["enforceHardCap"],
     );
-    assert.strictEqual(harness.picanStarts.length, 0);
-    assert.strictEqual(harness.picanRequests.length, 0);
     assert.deepStrictEqual(
       harness.writtenFiles.find((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
       {
@@ -378,7 +179,7 @@ describe("Sandbox create orchestration", () => {
         kind: "create",
         nonce,
         startedAt: "2026-07-24T12:00:00.000Z",
-        createPhase: "pican",
+        createPhase: "runtime",
       },
       branch: `scotty/${SESSION_ID}`,
       repoExistsAtCreate: true,
@@ -391,7 +192,6 @@ describe("Sandbox create orchestration", () => {
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
         [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
-      initialPicanRunning: true,
     });
 
     const replayed = await harness.sandbox.createScottySession(
@@ -404,8 +204,6 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(replayed.defaultBranch, "main");
     assert.strictEqual(replayed.codexThreadId, `pi-${SESSION_ID}`);
     assert.strictEqual(harness.readRecord()?.operation, null);
-    assert.strictEqual(harness.picanStarts.length, 0);
-    assert.strictEqual(harness.picanRequests.length, 0);
     assert.deepStrictEqual(harness.schedules, []);
     assert.deepStrictEqual(
       harness.writtenFiles.find((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
@@ -448,8 +246,6 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(replayed.status, "warm");
     assert.ok(harness.events.includes("credential:put"));
     assert.ok(harness.events.includes("host:exec:workspace"));
-    assert.strictEqual(harness.picanStarts.length, 0);
-    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(
       harness.events.lastIndexOf("record:booting") < harness.events.lastIndexOf("record:warm"),
     );
@@ -485,13 +281,11 @@ describe("Sandbox create orchestration", () => {
       harness.commands.filter((command) => command.startsWith("gh repo view")).length,
       1,
     );
-    assert.strictEqual(harness.picanStarts.length, 0);
-    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
   it("singleflights concurrent matching Pi-phase replays", async () => {
-    const nonce = "concurrent-create-pican";
+    const nonce = "concurrent-create-runtime";
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
@@ -501,7 +295,7 @@ describe("Sandbox create orchestration", () => {
             kind: "create",
             nonce,
             startedAt: "2026-07-24T12:00:00.000Z",
-            createPhase: "pican",
+            createPhase: "runtime",
           },
           branch: `scotty/${SESSION_ID}`,
           codexThreadId: undefined,
@@ -517,8 +311,6 @@ describe("Sandbox create orchestration", () => {
     ]);
 
     assert.deepStrictEqual(first, second);
-    assert.strictEqual(harness.picanStarts.length, 0);
-    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
     assert.ok(!harness.events.includes("host:destroy"));
   });
@@ -594,8 +386,6 @@ describe("Sandbox create orchestration", () => {
       harness.commands.filter((command) => command.startsWith("gh repo view")).length,
       1,
     );
-    assert.strictEqual(harness.picanStarts.length, 0);
-    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
@@ -612,7 +402,7 @@ describe("Sandbox create orchestration", () => {
               kind: "create",
               nonce,
               startedAt: "2026-07-24T12:00:00.000Z",
-              createPhase: "pican",
+              createPhase: "runtime",
             },
             branch: `scotty/${SESSION_ID}`,
             codexThreadId: undefined,
@@ -632,7 +422,7 @@ describe("Sandbox create orchestration", () => {
       assert.deepInclude(harness.readRecord()?.operation, {
         kind: "create",
         nonce,
-        createPhase: "pican",
+        createPhase: "runtime",
       });
       assert.deepStrictEqual(harness.readRecord()?.failure, {
         code: "create_ambiguous",
@@ -654,7 +444,7 @@ describe("Sandbox create orchestration", () => {
             kind: "create",
             nonce,
             startedAt: "2026-07-24T12:00:00.000Z",
-            createPhase: "pican",
+            createPhase: "runtime",
           },
           branch: `scotty/${SESSION_ID}`,
           codexThreadId: undefined,
@@ -671,51 +461,18 @@ describe("Sandbox create orchestration", () => {
 
     assert.ok(error instanceof ScottyError);
     assert.strictEqual(error.message, "Pi session creation is ambiguous");
-    assert.strictEqual(harness.picanRequests.length, 0);
     assert.strictEqual(harness.readRecord()?.status, "booting");
     assert.deepInclude(harness.readRecord()?.operation, {
       kind: "create",
       nonce,
-      createPhase: "pican",
+      createPhase: "runtime",
     });
     assert.strictEqual(harness.readRecord()?.codexThreadId, undefined);
     assert.ok(!harness.events.includes("record:failed"));
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
-  it("does not call the legacy Pican create endpoint", async () => {
-    const nonce = "explicit-pican-rejection";
-    const harness = await createSessionHarness({
-      initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({
-          id: SESSION_ID,
-          status: "booting",
-          operation: {
-            kind: "create",
-            nonce,
-            startedAt: "2026-07-24T12:00:00.000Z",
-            createPhase: "pican",
-          },
-          branch: `scotty/${SESSION_ID}`,
-          codexThreadId: undefined,
-        }),
-        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
-      },
-      initialPicanRunning: true,
-      picanCreateResponse: () => new Response(null, { status: 409 }),
-    });
-
-    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
-
-    assert.strictEqual(harness.readRecord()?.status, "warm");
-    assert.strictEqual(harness.readRecord()?.operation, null);
-    assert.strictEqual(harness.readRecord()?.failure, undefined);
-    assert.strictEqual(harness.picanRequests.length, 0);
-    assert.ok(!harness.events.includes("host:destroy"));
-  });
-
-  it("reconciles a matching booting create without consulting Pican state", async () => {
+  it("reconciles a matching booting create from its durable runtime phase", async () => {
     const nonce = "create-before-unknown-replay";
     const harness = await createSessionHarness({
       initialEntries: {
@@ -726,7 +483,7 @@ describe("Sandbox create orchestration", () => {
             kind: "create",
             nonce,
             startedAt: "2026-07-24T12:00:00.000Z",
-            createPhase: "pican",
+            createPhase: "runtime",
           },
           branch: `scotty/${SESSION_ID}`,
           defaultBranch: "main",
@@ -735,25 +492,12 @@ describe("Sandbox create orchestration", () => {
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
         [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
-      initialPicanRunning: true,
-      picanCreateResponse: () =>
-        Response.json(
-          {
-            id: "pican-session-1",
-            nativeId: "019d0f55-8d43-7b8c-b63f-f3875b66d03b",
-            runtime: "codex",
-            createState: "unknown",
-            promptDispatchState: "unknown",
-          },
-          { status: 503 },
-        ),
     });
 
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
 
     assert.strictEqual(harness.readRecord()?.status, "warm");
     assert.strictEqual(harness.readRecord()?.failure, undefined);
-    assert.strictEqual(harness.picanRequests.length, 0);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
@@ -773,17 +517,6 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(error.code, "conflict");
     assert.deepStrictEqual(harness.readRecord(), existing);
     assert.deepStrictEqual(harness.events, []);
-  });
-
-  it("does not exercise Pican retries during Pi create", async () => {
-    const harness = await createSessionHarness({ failureStage: "picanCreate" });
-
-    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
-
-    assert.strictEqual(harness.readRecord()?.status, "warm");
-    assert.strictEqual(harness.readRecord()?.failure, undefined);
-    assert.strictEqual(harness.picanRequests.length, 0);
-    assert.ok(!harness.events.includes("host:destroy"));
   });
 
   const failureCases = [

@@ -145,7 +145,7 @@ natural explicit signal to make the repository recent again.
 
 Current KV keys preserve submitted casing, while the UI treats repository names
 case-insensitively. It is therefore possible for legacy keys such as
-`repo:Yeshwanthyk/scotty` and `repo:yeshwanthyk/SCOTTY` to coexist even though
+`repo:ExampleUser/scotty` and `repo:exampleuser/SCOTTY` to coexist even though
 the UI renders one suggestion
 ([`worker/src/repo-projection.ts`, upsert key](../../worker/src/repo-projection.ts#L71-L83);
 [`worker/public/session-form.js`, case-insensitive identity](../../worker/public/session-form.js#L31-L43)).
@@ -172,11 +172,11 @@ history must not discard a draft session.
 Use a small remove icon paired with the repository chip:
 
 ```text
-Accessible label: Forget Yeshwanthyk/ziggy from recent repositories
+Accessible label: Forget ExampleUser/ziggy from recent repositories
 Tooltip: Remove from recents
-Success: Removed Yeshwanthyk/ziggy from recent repositories.
+Success: Removed ExampleUser/ziggy from recent repositories.
 Detail: Existing workspaces and GitHub content were not changed.
-Failure: Could not remove Yeshwanthyk/ziggy from recent repositories. Try again.
+Failure: Could not remove ExampleUser/ziggy from recent repositories. Try again.
 ```
 
 Do not show a destructive confirmation dialog. The operation removes

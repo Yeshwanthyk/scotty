@@ -1,30 +1,32 @@
 # Scotty
 
-Scotty runs durable coding-agent sessions while keeping execution infrastructure replaceable and
-session authority stable.
+Scotty runs durable coding-agent sessions while keeping installation identity, execution
+infrastructure, and user credentials explicit.
 
 ## Language
 
+**Installation**:
+A user-chosen Scotty deployment name within a Cloudflare account. It owns a namespaced Alchemy
+stack and resource set. It is never inferred from a username, machine name, repository, or account.
+
 **Session**:
-A durable unit of agent work with one workspace, lifecycle, and immutable execution provider.
-_Avoid_: Sandbox, box, environment
+A durable unit of agent work with one workspace, lifecycle, repository branch, and immutable
+execution provider.
 
 **Provider**:
-A named implementation that supplies compute for a session.
-_Avoid_: Location, execution target, backend
+A named implementation that supplies compute for a session. Cloudflare is the production session
+provider. Runner-backed session creation remains gated on a native Pi terminal transport.
 
 **Runner**:
-A Scotty-managed service on a user-controlled machine that can host sessions.
-_Avoid_: Machine enrollment, host daemon
-
-**Connection**:
-A saved relationship from one Pican client to another Pican server.
-_Avoid_: Peer, machine, profile
+A user-named Scotty service on a user-controlled Linux machine. Runner registration, desired state,
+connection state, and session assignment are owned by the control plane.
 
 **Control plane**:
-The authority for session identity, lifecycle, credentials, policy, and provider selection.
-_Avoid_: Host, coordinator
+The public Worker plus the Auth, Session, and Runner Durable Objects. It owns identity, lifecycle,
+credentials, policy, installation metadata, and provider selection.
 
 **Runtime**:
-The Pican, agent, workspace, and Git processes executing inside a provider's compute.
-_Avoid_: Control plane, provider
+The Pi agent, workspace, terminal, and Git processes executing inside provider compute.
+
+**Projection**:
+A non-secret, rebuildable view of authoritative Durable Object state stored in KV for listing.

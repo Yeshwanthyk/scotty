@@ -13,7 +13,6 @@ import { InMemoryFaultInjectableFake, makeCredentialVaultStorageFake } from "./s
 const NOW = Date.parse("2026-04-05T06:07:08.000Z");
 const PI_SENTINEL = "scotty-pi-session-sentinel-0";
 const GITHUB_SENTINEL = "scotty-github-session-sentinel";
-const PICAN_PROXY_TOKEN = "scotty-pican-proxy-token";
 const PI_SEED = JSON.stringify({
   "openai-codex": {
     type: "oauth",
@@ -27,7 +26,6 @@ const SEED = {
   piAuthJson: PI_SEED,
   providerSentinelSeed: "scotty-pi-session-sentinel",
   githubSentinel: GITHUB_SENTINEL,
-  picanProxyToken: PICAN_PROXY_TOKEN,
 };
 
 const credential = (overrides: Partial<StoredCredential> = {}): StoredCredential => ({
@@ -46,7 +44,6 @@ const credential = (overrides: Partial<StoredCredential> = {}): StoredCredential
   },
   githubToken: "stored-github-token",
   githubSentinel: GITHUB_SENTINEL,
-  picanProxyToken: PICAN_PROXY_TOKEN,
   updatedAt: "2026-01-02T00:00:00.000Z",
   ...overrides,
 });
@@ -79,7 +76,6 @@ describe("CredentialVault", () => {
       assert.deepInclude(seeded, {
         githubToken: "seed-github-token",
         githubSentinel: GITHUB_SENTINEL,
-        picanProxyToken: PICAN_PROXY_TOKEN,
         updatedAt: "2026-04-05T06:07:08.000Z",
       });
       assert.deepInclude(seeded.providers["openai-codex"], {
@@ -113,7 +109,6 @@ describe("CredentialVault", () => {
                 }),
                 providerSentinelSeed: "scotty-pi-a",
                 githubSentinel: `${GITHUB_SENTINEL}-a`,
-                picanProxyToken: `${PICAN_PROXY_TOKEN}-a`,
               }),
             ),
           ),
@@ -128,7 +123,6 @@ describe("CredentialVault", () => {
                 }),
                 providerSentinelSeed: "scotty-pi-b",
                 githubSentinel: `${GITHUB_SENTINEL}-b`,
-                picanProxyToken: `${PICAN_PROXY_TOKEN}-b`,
               }),
             ),
           ),
@@ -144,12 +138,11 @@ describe("CredentialVault", () => {
         results[0].githubToken,
         results[0].providers.openai?.sentinel,
         results[0].githubSentinel,
-        results[0].picanProxyToken,
       ].join("|");
       assert.ok(
         [
-          `openai-token-a|github-token-a|scotty-pi-a-0|${GITHUB_SENTINEL}-a|${PICAN_PROXY_TOKEN}-a`,
-          `openai-token-b|github-token-b|scotty-pi-b-0|${GITHUB_SENTINEL}-b|${PICAN_PROXY_TOKEN}-b`,
+          `openai-token-a|github-token-a|scotty-pi-a-0|${GITHUB_SENTINEL}-a`,
+          `openai-token-b|github-token-b|scotty-pi-b-0|${GITHUB_SENTINEL}-b`,
         ].includes(authorityTuple),
       );
     }),
@@ -220,11 +213,9 @@ describe("CredentialVault", () => {
     Effect.gen(function* () {
       const honeypot = "honeypot-malformed-github-secret";
       const { githubToken: _githubToken, ...missingGithubToken } = credential();
-      const { picanProxyToken: _picanProxyToken, ...missingPicanProxyToken } = credential();
       for (const malformed of [
         { ...credential(), githubToken: "" },
         missingGithubToken,
-        missingPicanProxyToken,
         { ...credential(), unexpected: honeypot },
         { ...credential(), updatedAt: "not-a-timestamp" },
         {
@@ -276,18 +267,6 @@ describe("CredentialVault", () => {
         reason: "invalid_seed",
         message: "GH_TOKEN is missing or invalid",
       });
-
-      const missingPicanProxyToken = yield* Effect.result(
-        withVault(
-          makeCredentialVaultStorageFake(),
-          "github-seed",
-          vaultEffect((vault) => vault.seed({ ...SEED, picanProxyToken: "" })),
-        ),
-      );
-      assert.deepInclude(failure(missingPicanProxyToken), {
-        reason: "invalid_seed",
-        message: "Credential seed is missing or invalid",
-      });
     }),
   );
 
@@ -317,7 +296,7 @@ describe("CredentialVault", () => {
         yield* withVault(
           storage,
           "ignored",
-          vaultEffect((vault) => vault.readForProxy(PICAN_PROXY_TOKEN)),
+          vaultEffect((vault) => vault.readForProxy("unknown-sentinel")),
         ),
         null,
       );
@@ -430,7 +409,6 @@ describe("CredentialVault", () => {
       assert.strictEqual(read?.githubToken, "stored-github-token");
       assert.strictEqual(provider?.sentinel, PI_SENTINEL);
       assert.strictEqual(read?.githubSentinel, GITHUB_SENTINEL);
-      assert.strictEqual(read?.picanProxyToken, PICAN_PROXY_TOKEN);
       assert.ok(!("ignored" in (read ?? {})));
       assert.strictEqual(read?.refreshLease, undefined);
       assert.strictEqual(read?.updatedAt, "2026-04-05T06:07:09.000Z");

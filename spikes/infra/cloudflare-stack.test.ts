@@ -133,7 +133,7 @@ describe("Cloudflare stack source contract", () => {
   it("has no committed account, hostname, container UUID, or runner instance name", () => {
     const combined = `${source}\n${entrypointSource}`;
     assert.notMatch(combined, /workers\.dev|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f-]{27}/u);
-    assert.notMatch(combined, /slumbers|yeshwanth|MonolithWorker/u);
+    assert.notMatch(combined, /example-runner|yeshwanth|MonolithWorker/u);
     assert.match(entrypointSource, /required\("SCOTTY_INSTALLATION_NAME"\)/u);
     assert.match(entrypointSource, /SCOTTY_ADOPTION_MANIFEST/u);
   });

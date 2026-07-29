@@ -12,7 +12,6 @@ const sandbox = vi.hoisted(() => ({
   getSession: vi.fn(),
   vaporizeScottySession: vi.fn(),
   fetch: vi.fn(),
-  fetchPican: vi.fn(),
   prepareTerminalAccess: vi.fn(),
   reseedPiAuth: vi.fn(),
 }));
@@ -160,7 +159,7 @@ describe("real Hono boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sandboxTarget.current = sandbox;
-    sandbox.fetch.mockResolvedValue(new Response("<!doctype html><title>Pican</title>"));
+    sandbox.fetch.mockResolvedValue(new Response("unused"));
     sandbox.getScottySession.mockResolvedValue({
       id: "a0b1c2d3e4f5",
       title: "Test session",
@@ -169,7 +168,6 @@ describe("real Hono boundary", () => {
       repo: "owner/repo",
       branch: "scotty/a0b1c2d3e4f5",
     });
-    sandbox.fetchPican.mockResolvedValue(new Response("ok"));
     sandbox.prepareTerminalAccess.mockResolvedValue(undefined);
     sandbox.reseedPiAuth.mockResolvedValue({
       id: "a0b1c2d3e4f5",
@@ -746,8 +744,6 @@ describe("real Hono boundary", () => {
       keyDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
-    expect(harness.events.filter((event) => event === "host:pican:start")).toHaveLength(0);
-    expect(harness.picanRequests).toHaveLength(0);
     expect(
       harness.writtenFiles.filter((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
     ).toHaveLength(1);
@@ -1899,17 +1895,7 @@ describe("real Hono boundary", () => {
     expect(proxyTerminal).not.toHaveBeenCalled();
   });
 
-  it("preserves legacy runner behavior for Pican root", async () => {
-    sandbox.fetch.mockResolvedValueOnce(
-      new Response("<!doctype html><html><head><title>Pican</title></head><body></body></html>", {
-        headers: {
-          "content-encoding": "gzip",
-          "content-length": "72",
-          "content-type": "text/html; charset=utf-8",
-          etag: '"pican-shell"',
-        },
-      }),
-    );
+  it("redirects runner session roots to the session list", async () => {
     sandbox.getScottySession.mockResolvedValueOnce({
       id: "a0b1c2d3e4f5",
       status: "warm",
@@ -1922,145 +1908,23 @@ describe("real Hono boundary", () => {
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
-    expect(response.status).toBe(200);
-    const html = await response.text();
-    expect(html).toContain("<title>Pican</title>");
-    expect(html).toContain('id="scotty-sessions-link" href="/sessions"');
-    expect(response.headers.get("content-encoding")).toBeNull();
-    expect(response.headers.get("content-length")).toBeNull();
-    expect(response.headers.get("etag")).toBeNull();
-    expect(sandbox.fetch).toHaveBeenCalledOnce();
-    const upstream = sandbox.fetch.mock.calls[0]?.[0];
-    expect(upstream).toBeInstanceOf(Request);
-    expect(new URL(upstream.url).pathname).toBe("/s/a0b1c2d3e4f5");
-    expect(upstream.headers.has("cookie")).toBe(false);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("http://localhost/sessions");
+    expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
-  it("preserves legacy runner-mounted Pican paths and query while stripping boundary credentials", async () => {
-    sandbox.getScottySession.mockResolvedValueOnce({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
-    sandbox.fetch.mockImplementationOnce(
-      async () =>
-        new Response("missing", {
-          status: 418,
-          headers: { "content-type": "text/plain", "x-pican-result": "preserved" },
-        }),
-    );
+  it("returns not found for session application subpaths", async () => {
     const response = await app.request(
       "/s/a0b1c2d3e4f5/assets/app.js?v=7",
-      {
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          authorization: "Bearer browser-secret",
-          "proxy-authorization": "Basic browser-secret",
-          "x-pican-proxy-token": "spoofed",
-          forwarded: "for=198.51.100.1",
-          "x-forwarded-for": "198.51.100.1",
-          "x-forwarded-host": "attacker.example",
-          "x-forwarded-proto": "https",
-          "x-browser-header": "preserved",
-          connection: "x-remove-me",
-          "x-remove-me": "hop-by-hop",
-        },
-      },
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
 
-    expect(response.status).toBe(418);
-    expect(response.headers.get("x-pican-result")).toBe("preserved");
-    await expect(response.text()).resolves.toBe("missing");
-    const upstream = sandbox.fetch.mock.calls[0]?.[0];
-    const url = new URL(upstream.url);
-    expect(url.pathname).toBe("/s/a0b1c2d3e4f5/assets/app.js");
-    expect(url.search).toBe("?v=7");
-    expect(upstream.headers.get("x-browser-header")).toBe("preserved");
-    for (const header of [
-      "cookie",
-      "authorization",
-      "proxy-authorization",
-      "x-pican-proxy-token",
-      "forwarded",
-      "x-forwarded-for",
-      "x-forwarded-host",
-      "x-forwarded-proto",
-      "connection",
-      "x-remove-me",
-    ]) {
-      expect(upstream.headers.has(header), header).toBe(false);
-    }
-  });
-
-  it("streams legacy Pican request and SSE response bodies without buffering", async () => {
-    sandbox.getScottySession.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "not_found", message: "Route not found" },
     });
-    const encoder = new TextEncoder();
-    const sentinel = Uint8Array.from([0, 1, 2, 127, 128, 254, 255]);
-    let closeStream: (() => void) | undefined;
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(encoder.encode("event: ready\n\n"));
-        closeStream = () => controller.close();
-      },
-    });
-    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
-      expect(new Uint8Array(await request.arrayBuffer())).toEqual(sentinel);
-      return new Response(stream, {
-        headers: { "content-type": "text/event-stream", "x-stream": "live" },
-      });
-    });
-
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5/api/sessions?stream=1",
-      {
-        method: "POST",
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          "content-type": "application/octet-stream",
-        },
-        body: sentinel,
-      },
-      env(),
-    );
-    expect(response.headers.get("content-type")).toContain("text/event-stream");
-    expect(response.headers.get("x-stream")).toBe("live");
-    const reader = response.body?.getReader();
-    const first = await reader?.read();
-    expect(new TextDecoder().decode(first?.value)).toBe("event: ready\n\n");
-    closeStream?.();
-    await reader?.cancel();
-  });
-
-  it("rejects legacy Pican WebSocket upgrades before crossing the Sandbox boundary", async () => {
-    sandbox.getScottySession.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      status: "warm",
-      provider: "runner",
-      repo: "owner/repo",
-      branch: "scotty/a0b1c2d3e4f5",
-    });
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5/api/events",
-      {
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          connection: "Upgrade",
-          upgrade: "websocket",
-        },
-      },
-      env(),
-    );
-    expect(response.status).toBe(501);
-    await expect(response.text()).resolves.toBe("Pican WebSocket proxying is not supported");
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 

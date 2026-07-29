@@ -144,7 +144,7 @@ describe("runner protocol", () => {
           version: 2,
           operationId: "detached",
           sessionId: "session-a",
-          argv: ["/usr/local/bin/pican"],
+          argv: ["/usr/bin/printf", "ready"],
           detach: true,
         }),
       );
@@ -244,11 +244,11 @@ describe("RunnerRuntime", () => {
           version: 2,
           operationId: "compute-detached",
           sessionId,
-          argv: ["/usr/local/bin/pican"],
+          argv: ["/usr/bin/printf", "ready"],
           detach: true,
         });
         assert.deepStrictEqual(executions.at(-1), {
-          argv: ["/usr/local/bin/pican"],
+          argv: ["/usr/bin/printf", "ready"],
           detach: true,
         });
 
