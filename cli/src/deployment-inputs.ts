@@ -18,7 +18,9 @@ export const CONTAINER_INPUTS = [
   "cli/scotty.ts",
   "cli/src",
   "cli/skills",
+  "infra",
   "protocol",
   "worker/package.json",
+  "worker/src",
   "worker/container",
 ] as const;

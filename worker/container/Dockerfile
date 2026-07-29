@@ -10,7 +10,9 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY cli/scotty.ts cli/scotty.ts
 COPY cli/src cli/src
 COPY cli/skills cli/skills
+COPY infra infra
 COPY protocol protocol
+COPY worker/src worker/src
 COPY worker/container/toolsets/standard.json worker/container/toolsets/standard.json
 RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
   && /out/scotty --version
