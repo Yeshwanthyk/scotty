@@ -4,6 +4,11 @@ export interface RepositorySuggestion {
   readonly lastUsedAt?: string;
 }
 
+export interface RepositorySessionGroup<T> {
+  readonly repo: string;
+  readonly sessions: T[];
+}
+
 export interface SessionSubmissionPayload {
   readonly repo: string;
   readonly prompt: string;
@@ -21,6 +26,9 @@ export function mergeRepositorySuggestions(
   tracked: unknown,
   sessions: unknown,
 ): RepositorySuggestion[];
+export function groupSessionsByRepository<T extends { readonly repo?: unknown }>(
+  sessions: readonly T[],
+): RepositorySessionGroup<T>[];
 export function submissionIdentity(
   previous: SubmissionIdentity | undefined,
   payload: SessionSubmissionPayload,
