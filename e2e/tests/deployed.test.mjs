@@ -190,6 +190,8 @@ test(
           "Create scotty-e2e-agent.txt containing SCOTTY_E2E_PUSHED.",
           "Commit it, push the current branch with git push -u origin HEAD, then finish.",
         ].join(" "),
+        "--title",
+        "Deployed E2E canary",
         "--repo",
         process.env.SCOTTY_E2E_REPO,
         "--provider",

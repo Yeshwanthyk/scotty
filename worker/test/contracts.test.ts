@@ -46,33 +46,43 @@ describe("request contracts", () => {
         hardCapSeconds: 14_400,
       },
     );
-    assert.deepStrictEqual(
-      parseCreateInput({
-        prompt: "ship it",
-        provider: "cloudflare",
-        repo: "owner/project",
-        cap: "90m",
-      }),
-      {
-        prompt: "ship it",
-        provider: "cloudflare",
-        repo: "owner/project",
-        hardCapSeconds: 14_400,
-      },
-    );
-    assert.throws(() => parseCreateInput({}), /prompt must be a non-empty string/u);
-    assert.throws(() => parseCreateInput({ prompt: "ship it" }), /provider must be cloudflare/u);
     assert.throws(
-      () => parseCreateInput({ prompt: "ship it", provider: "box", repo: "owner/project" }),
+      () =>
+        parseCreateInput({
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+        }),
+      /title must be a non-empty string/u,
+    );
+    assert.throws(() => parseCreateInput({}), /title must be a non-empty string/u);
+    assert.throws(
+      () => parseCreateInput({ title: "Ship dashboard", prompt: "ship it" }),
       /provider must be cloudflare/u,
     );
     assert.throws(
-      () => parseCreateInput({ prompt: "ship it", provider: "cloudflare" }),
+      () =>
+        parseCreateInput({
+          title: "Ship dashboard",
+          prompt: "ship it",
+          provider: "box",
+          repo: "owner/project",
+        }),
+      /provider must be cloudflare/u,
+    );
+    assert.throws(
+      () =>
+        parseCreateInput({
+          title: "Ship dashboard",
+          prompt: "ship it",
+          provider: "cloudflare",
+        }),
       /repo must be a non-empty string/u,
     );
     assert.throws(
       () =>
         parseCreateInput({
+          title: "Ship dashboard",
           prompt: "",
           provider: "cloudflare",
           repo: "bad",
@@ -82,6 +92,7 @@ describe("request contracts", () => {
     assert.throws(
       () =>
         parseCreateInput({
+          title: "Ship dashboard",
           prompt: "x",
           provider: "cloudflare",
           repo: "owner/project",
@@ -135,6 +146,7 @@ describe("request contracts", () => {
     const projection = {
       version: 1 as const,
       id: "a0b1c2d3e4f5",
+      title: "Package Pi extensions",
       status: "warm" as const,
       provider: "cloudflare" as const,
       repo: "owner/project",
@@ -155,6 +167,7 @@ describe("request contracts", () => {
 const persistedRecord = {
   version: 1,
   id: "a0b1c2d3e4f5",
+  title: "Package Pi extensions",
   status: "sleeping",
   operation: null,
   execution: { provider: "cloudflare" },
@@ -195,6 +208,7 @@ describe("persisted session schemas", () => {
   it.effect("fails closed for missing, malformed, and excess authoritative state", () =>
     Effect.gen(function* () {
       for (const malformed of [
+        { ...persistedRecord, title: undefined },
         { ...persistedRecord, status: "unknown" },
         { ...persistedRecord, operation: undefined },
         {
@@ -239,6 +253,7 @@ describe("persisted session schemas", () => {
     const projection = {
       version: 1,
       id: persistedRecord.id,
+      title: persistedRecord.title,
       status: persistedRecord.status,
       provider: persistedRecord.provider,
       repo: persistedRecord.repo,

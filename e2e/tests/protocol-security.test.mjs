@@ -13,7 +13,12 @@ async function create(service, prompt = "protocol fixture") {
   const response = await fetch(`${service.url}/api/sessions`, {
     method: "POST",
     headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ prompt, provider: "cloudflare", repo: "owner/project" }),
+    body: JSON.stringify({
+      title: "Protocol fixture",
+      prompt,
+      provider: "cloudflare",
+      repo: "owner/project",
+    }),
   });
   assert.equal(response.status, 200);
   return response.json();
@@ -23,7 +28,12 @@ async function createForRepo(service, repo) {
   const response = await fetch(`${service.url}/api/sessions`, {
     method: "POST",
     headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ prompt: `work on ${repo}`, provider: "cloudflare", repo }),
+    body: JSON.stringify({
+      title: `Work on ${repo}`,
+      prompt: `work on ${repo}`,
+      provider: "cloudflare",
+      repo,
+    }),
   });
   assert.equal(response.status, 200);
   return response.json();
@@ -276,6 +286,7 @@ test("fake protocol matches production cap parsing, floor rounding, and backup h
     method: "POST",
     headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
     body: JSON.stringify({
+      title: "Contract fixture",
       prompt: "contract fixture",
       provider: "cloudflare",
       repo: "owner/project",

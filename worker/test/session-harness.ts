@@ -36,6 +36,7 @@ const isStatusProjection = (value: unknown): value is StatusProjection =>
 
 export const SESSION_ID = "a0b1c2d3e4f5";
 export const CREATE_INPUT: CreateSessionInput = {
+  title: "Investigate failing build",
   prompt: "Investigate the failing build",
   provider: "cloudflare",
   repo: "owner/project",

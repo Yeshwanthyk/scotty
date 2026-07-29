@@ -17,4 +17,5 @@ export const makeSessionRecord = (overrides: Partial<SessionRecord> = {}): Sessi
   hardCapDurationSeconds: 14_400,
   ownedBackupIds: [],
   ...overrides,
+  title: overrides.title ?? "Test session",
 });

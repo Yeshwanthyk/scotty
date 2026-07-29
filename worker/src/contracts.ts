@@ -99,7 +99,7 @@ export type DirectoryBackupSdkCompatibility = Assert<
 export const SessionRecordSchema = Schema.Struct({
   version: Schema.Literal(1),
   id: Schema.String,
-  title: Schema.optionalKey(Schema.String),
+  title: Schema.String,
   status: SessionStatusSchema,
   operation: Schema.NullOr(SessionOperationSchema),
   execution: ExecutionBindingSchema,
@@ -160,7 +160,7 @@ export const decodeSessionRecordResult = (value: unknown) =>
 export const SessionProjectionSchema = Schema.Struct({
   version: Schema.Literal(1),
   id: Schema.String,
-  title: Schema.optionalKey(Schema.String),
+  title: Schema.String,
   status: SessionStatusSchema,
   provider: ProviderSchema,
   runner: Schema.optionalKey(Schema.String),
@@ -206,7 +206,7 @@ export const RepoViewSchema = Schema.Struct({
 export type RepoView = typeof RepoViewSchema.Type;
 
 export const CreateSessionInputSchema = Schema.Struct({
-  title: Schema.optionalKey(Schema.String),
+  title: Schema.String,
   prompt: Schema.String,
   provider: ProviderSchema,
   runner: Schema.optionalKey(Schema.String),
@@ -497,8 +497,7 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
   const decoded = decodeRawCreateSessionInput(value);
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
   if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
-  const title =
-    decoded.value.title === undefined ? undefined : parseSessionTitle(decoded.value.title);
+  const title = parseSessionTitle(decoded.value.title);
   const prompt = readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
   const provider = parseProvider(decoded.value.provider);
   const runner =
@@ -522,7 +521,7 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
           MAX_HARD_CAP_SECONDS,
         );
   return {
-    ...(title === undefined ? {} : { title }),
+    title,
     prompt,
     provider,
     ...(runner === undefined ? {} : { runner }),

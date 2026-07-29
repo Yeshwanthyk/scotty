@@ -13,7 +13,7 @@ directly from Codex when you want them; Scotty doesn't own source-control publis
 ## Command reference
 
 - `scotty init [--host URL] [--token TOKEN]` writes `~/.scotty.json` with mode 0600. This is the only command that prompts.
-- `scotty beam up "PROMPT" --repo OWNER/NAME --provider cloudflare [--cap 4h] [--detach] --json` returns `{"id","url","branch","provider","status"}`.
+- `scotty beam up "PROMPT" --title "TASK" --repo OWNER/NAME --provider cloudflare [--cap 4h] [--detach] --json` returns `{"id","title","url","branch","provider","status"}`.
 - `scotty ls --json` returns session records including `provider`, `ageSeconds`, and `capRemainingSeconds`. This is the polling primitive.
 - `scotty attach ID --json` opens the mounted Pican UI and returns `{"id","url","opened"}`.
 - `scotty owner recover --json` uses the protected root token to open a five-minute browser
@@ -39,7 +39,7 @@ Exit codes: 0 success, 1 generic or network failure, 2 bad usage/config, 3 sessi
 
 ### Cloud work
 
-1. Run `scotty beam up "TASK" --repo OWNER/NAME --provider cloudflare --detach --json`.
+1. Run `scotty beam up "TASK" --title "SHORT OUTCOME" --repo OWNER/NAME --provider cloudflare --detach --json`.
 2. Poll `scotty ls --json` until the session is `warm`.
 3. Open the returned URL or run `scotty attach ID`; Pican reconnects to the same hosted session.
 4. Ask Codex in Pican to commit, push, or open a pull request when you want that.

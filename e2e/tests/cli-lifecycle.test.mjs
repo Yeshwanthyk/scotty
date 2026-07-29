@@ -21,6 +21,8 @@ test("real CLI completes beam up/ls/snapshot/resume/down/vaporize against the fa
       "beam",
       "up",
       "exercise the complete E2E lifecycle",
+      "--title",
+      "Exercise lifecycle",
       "--repo",
       "owner/project",
       "--provider",
@@ -33,7 +35,15 @@ test("real CLI completes beam up/ls/snapshot/resume/down/vaporize against the fa
     { env },
   );
   assert.equal(up.code, 0, up.stderr);
-  assert.deepEqual(Object.keys(up.json).sort(), ["branch", "id", "provider", "status", "url"]);
+  assert.deepEqual(Object.keys(up.json).sort(), [
+    "branch",
+    "id",
+    "provider",
+    "status",
+    "title",
+    "url",
+  ]);
+  assert.equal(up.json.title, "Exercise lifecycle");
   assert.equal(up.json.status, "warm");
   assert.equal(up.json.provider, "cloudflare");
   assert.match(up.json.branch, /^scotty\/e2e-/);
@@ -44,6 +54,7 @@ test("real CLI completes beam up/ls/snapshot/resume/down/vaporize against the fa
   assert.equal(ls.code, 0, ls.stderr);
   assert.equal(ls.json.length, 1);
   assert.equal(ls.json[0].id, id);
+  assert.equal(ls.json[0].title, "Exercise lifecycle");
   assert.equal(ls.json[0].status, "warm");
   assert.equal(ls.json[0].provider, "cloudflare");
   assert.equal(typeof ls.json[0].ageSeconds, "number");
@@ -166,6 +177,8 @@ test("beam-down rejects traversal entries without writing outside CODEX_HOME", a
       "beam",
       "up",
       "unsafe tar regression",
+      "--title",
+      "Unsafe archive regression",
       "--repo",
       "owner/project",
       "--provider",

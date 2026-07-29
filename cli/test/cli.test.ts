@@ -67,6 +67,7 @@ describe("configuration and transport", () => {
         request = new Request(input, init);
         return Response.json({
           id: "s1",
+          title: "Fix build",
           url: "https://flag.example/s/s1?t=server-secret",
           branch: "scotty/s1",
           provider: "cloudflare",
@@ -80,6 +81,8 @@ describe("configuration and transport", () => {
         "beam",
         "up",
         "fix it",
+        "--title",
+        "Fix build",
         "--repo",
         "owner/project",
         "--provider",
@@ -97,12 +100,14 @@ describe("configuration and transport", () => {
     expect(request?.url).toBe("https://flag.example/api/sessions");
     expect(request?.headers.get("authorization")).toBe("Bearer flag-token");
     expect(await request?.json()).toEqual({
+      title: "Fix build",
       prompt: "fix it",
       provider: "cloudflare",
       repo: "owner/project",
     });
     expect(h.json()).toEqual({
       id: "s1",
+      title: "Fix build",
       url: "https://flag.example/s/s1",
       branch: "scotty/s1",
       provider: "cloudflare",
@@ -118,6 +123,7 @@ describe("configuration and transport", () => {
         body = JSON.parse(String(init?.body));
         return Response.json({
           id: "s1",
+          title: "Fix build",
           url: "https://worker.example/s/s1",
           branch: "scotty/s1",
           provider: "cloudflare",
@@ -131,6 +137,8 @@ describe("configuration and transport", () => {
           "beam",
           "up",
           "fix it",
+          "--title",
+          "Fix build",
           "--repo",
           "owner/project",
           "--provider",
@@ -147,6 +155,7 @@ describe("configuration and transport", () => {
       ),
     ).toBe(EXIT.OK);
     expect(body).toEqual({
+      title: "Fix build",
       prompt: "fix it",
       provider: "cloudflare",
       repo: "owner/project",
@@ -161,6 +170,8 @@ describe("configuration and transport", () => {
           "beam",
           "up",
           "fix it",
+          "--title",
+          "Fix build",
           "--repo",
           "owner/project",
           "--provider",
@@ -190,6 +201,7 @@ describe("configuration and transport", () => {
       if (requests === 1) throw new Error("connection dropped after create");
       return Response.json({
         id: "s1",
+        title: "Fix build",
         url: "https://worker.example/s/s1",
         branch: "scotty/s1",
         provider: "cloudflare",
@@ -200,6 +212,8 @@ describe("configuration and transport", () => {
       "beam",
       "up",
       "fix it",
+      "--title",
+      "Fix build",
       "--repo",
       "owner/project",
       "--provider",
@@ -353,6 +367,7 @@ describe("configuration and transport", () => {
   test("ls exposes only the stable public projection", async () => {
     const session = {
       id: "s1",
+      title: "Fix build",
       status: "warm",
       provider: "cloudflare",
       repo: "owner/project",
@@ -377,6 +392,7 @@ describe("configuration and transport", () => {
     expect(h.json()).toEqual([
       {
         id: "s1",
+        title: "Fix build",
         status: "warm",
         provider: "cloudflare",
         repo: "owner/project",
@@ -398,6 +414,7 @@ describe("configuration and transport", () => {
   test("ls omits invalid optionals and applies failure defaults field by field", async () => {
     const session = {
       id: "s1",
+      title: "Fix build",
       status: "failed",
       provider: "cloudflare",
       repo: "owner/project",
@@ -421,6 +438,7 @@ describe("configuration and transport", () => {
     expect(h.json()).toEqual([
       {
         id: "s1",
+        title: "Fix build",
         status: "failed",
         provider: "cloudflare",
         repo: "owner/project",
@@ -586,7 +604,7 @@ describe("commands and schemas", () => {
     }
   });
 
-  test("beam up hard-cuts the old command and requires repository and provider", async () => {
+  test("beam up hard-cuts the old command and requires title, repository, and provider", async () => {
     const removed = harness();
     expect(
       await main(
@@ -608,10 +626,43 @@ describe("commands and schemas", () => {
     ).toBe(EXIT.USAGE);
     expect(removed.error().error.message).toBe("Unknown command: up");
 
+    const missingTitle = harness();
+    expect(
+      await main(
+        [
+          "beam",
+          "up",
+          "fix",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
+          "--detach",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "secret",
+        ],
+        missingTitle.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(missingTitle.error().error.message).toContain("--title");
+
     const h = harness();
     expect(
       await main(
-        ["beam", "up", "fix", "--detach", "--host", "https://worker.example", "--token", "secret"],
+        [
+          "beam",
+          "up",
+          "fix",
+          "--title",
+          "Fix build",
+          "--detach",
+          "--host",
+          "https://worker.example",
+          "--token",
+          "secret",
+        ],
         h.deps,
       ),
     ).toBe(EXIT.USAGE);
@@ -627,6 +678,8 @@ describe("commands and schemas", () => {
           "beam",
           "up",
           "fix",
+          "--title",
+          "Fix build",
           "--repo",
           "owner/project",
           "--detach",
@@ -647,6 +700,8 @@ describe("commands and schemas", () => {
           "beam",
           "up",
           "fix",
+          "--title",
+          "Fix build",
           "--repo",
           "owner/project",
           "--provider",
@@ -668,6 +723,7 @@ describe("commands and schemas", () => {
       fetch: async () =>
         Response.json({
           id: "s1",
+          title: "Fix build",
           url: "https://worker.example/s/s1?t=server-secret#fragment",
           branch: "scotty/s1",
           provider: "cloudflare",
@@ -681,6 +737,8 @@ describe("commands and schemas", () => {
           "beam",
           "up",
           "fix",
+          "--title",
+          "Fix build",
           "--repo",
           "owner/project",
           "--provider",
@@ -696,6 +754,7 @@ describe("commands and schemas", () => {
     ).toBe(EXIT.OK);
     expect(tokenized.json()).toEqual({
       id: "s1",
+      title: "Fix build",
       url: "https://worker.example/s/s1",
       branch: "scotty/s1",
       provider: "cloudflare",
@@ -706,6 +765,7 @@ describe("commands and schemas", () => {
       fetch: async () =>
         Response.json({
           id: "s1",
+          title: "Fix build",
           url: "https://attacker.example/s/s1?t=secret",
           branch: "scotty/s1",
           provider: "cloudflare",
@@ -718,6 +778,8 @@ describe("commands and schemas", () => {
           "beam",
           "up",
           "fix",
+          "--title",
+          "Fix build",
           "--repo",
           "owner/project",
           "--provider",
@@ -738,6 +800,7 @@ describe("commands and schemas", () => {
       fetch: async () =>
         Response.json({
           id: "s1",
+          title: "Fix build",
           url: "https://url-secret@worker.example/s/s1",
           branch: "scotty/s1",
           provider: "cloudflare",
@@ -750,6 +813,8 @@ describe("commands and schemas", () => {
           "beam",
           "up",
           "fix",
+          "--title",
+          "Fix build",
           "--repo",
           "owner/project",
           "--provider",
@@ -825,6 +890,7 @@ describe("commands and schemas", () => {
       fetch: async () =>
         Response.json({
           id: "s1",
+          title: "Fix build",
           url: "https://worker.example/s/s1?t=legacy-root#fragment",
           branch: "scotty/s1",
           provider: "cloudflare",
@@ -840,6 +906,8 @@ describe("commands and schemas", () => {
           "beam",
           "up",
           "fix it",
+          "--title",
+          "Fix build",
           "--repo",
           "owner/project",
           "--provider",

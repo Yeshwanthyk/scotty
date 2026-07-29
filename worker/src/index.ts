@@ -353,7 +353,7 @@ app.post("/api/sessions", async (c) => {
   const origin = new URL(c.req.url).origin;
   return c.json({
     id,
-    ...(session.title === undefined ? {} : { title: session.title }),
+    title: session.title,
     url: `${origin}/s/${id}`,
     branch: session.branch,
     provider: session.provider,
