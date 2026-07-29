@@ -87,6 +87,7 @@ interface SessionStoreShape {
     expectedLastEventAt: string | undefined,
     state: AgentActivityState,
   ) => Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
+  readonly rename: (title: string) => Effect.Effect<SessionRecord, ScottyError>;
   readonly releaseOperation: (nonce: string) => Effect.Effect<SessionRecord, ScottyError>;
   readonly releaseOperationIfHeld: (
     nonce: string,
@@ -330,6 +331,25 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
         };
         await transaction.put(next);
         return Result.succeed(Option.some(next));
+      });
+    }),
+    rename: Effect.fnUntraced(function* (title) {
+      const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+      return yield* transact(async (transaction) => {
+        const stored = await transaction.get();
+        if (stored === undefined) return Result.fail(notFound("unknown"));
+        const decoded = decode(stored);
+        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
+        const record = decoded.success;
+        if (record.status === "gone") return Result.fail(notFound(record.id));
+        if (record.title === title) return Result.succeed(record);
+        const next: SessionRecord = {
+          ...record,
+          title,
+          updatedAt,
+        };
+        await transaction.put(next);
+        return Result.succeed(next);
       });
     }),
     releaseOperation,

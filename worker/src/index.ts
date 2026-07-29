@@ -9,6 +9,7 @@ import {
   parseAuthClientId,
   parseCreateInput,
   parseIdempotencyKey,
+  parseRenameSessionInput,
   parseSessionId,
   ScottyError,
   wrongState,
@@ -352,6 +353,7 @@ app.post("/api/sessions", async (c) => {
   const origin = new URL(c.req.url).origin;
   return c.json({
     id,
+    ...(session.title === undefined ? {} : { title: session.title }),
     url: `${origin}/s/${id}`,
     branch: session.branch,
     provider: session.provider,
@@ -398,6 +400,14 @@ app.get("/api/sessions/:id", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).getScottySession());
+});
+
+app.patch("/api/sessions/:id", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  requireJsonContentType(c.req.raw);
+  const id = parseSessionId(c.req.param("id"));
+  const title = parseRenameSessionInput(await readJsonBody(c.req.raw));
+  return c.json(await sessionSandbox(c.env, id).renameScottySession(title));
 });
 
 app.post("/api/sessions/:id/snapshot", async (c) => {
@@ -799,8 +809,15 @@ async function createSessionIdempotency(
     sha256Hex(
       JSON.stringify(
         input.provider === "runner"
-          ? [input.prompt, input.provider, input.runner, input.repo, input.hardCapSeconds]
-          : [input.prompt, input.provider, input.repo, input.hardCapSeconds],
+          ? [
+              input.title,
+              input.prompt,
+              input.provider,
+              input.runner,
+              input.repo,
+              input.hardCapSeconds,
+            ]
+          : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds],
       ),
     ),
   ]);

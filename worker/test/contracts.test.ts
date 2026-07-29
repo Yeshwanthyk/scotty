@@ -10,6 +10,7 @@ import {
   hasCommittedManagedStop,
   notFound,
   parseCreateInput,
+  parseRenameSessionInput,
   parseSessionId,
   ScottyError,
   toProjection,
@@ -32,11 +33,13 @@ describe("request contracts", () => {
   it("parses and bounds create input", () => {
     assert.deepStrictEqual(
       parseCreateInput({
+        title: "  Ship dashboard  ",
         prompt: "ship it",
         provider: "cloudflare",
         repo: "owner/project",
       }),
       {
+        title: "Ship dashboard",
         prompt: "ship it",
         provider: "cloudflare",
         repo: "owner/project",
@@ -86,6 +89,12 @@ describe("request contracts", () => {
         }),
       /hardCapSeconds/u,
     );
+    assert.strictEqual(
+      parseRenameSessionInput({ title: "  Rename this workspace  " }),
+      "Rename this workspace",
+    );
+    assert.throws(() => parseRenameSessionInput({ title: " " }), /title/u);
+    assert.throws(() => parseRenameSessionInput({ title: "x".repeat(121) }), /120/u);
   });
 
   it("accepts only normalized session ids", () => {
@@ -98,6 +107,7 @@ describe("request contracts", () => {
     const record: SessionRecord = {
       version: 1,
       id: "a0b1c2d3e4f5",
+      title: "Package Pi extensions",
       status: "warm",
       operation: { kind: "snapshot", nonce: "private", startedAt: "2026-01-01T00:00:01.000Z" },
       execution: { provider: "cloudflare" },
@@ -115,6 +125,7 @@ describe("request contracts", () => {
     const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));
     assert.ok(!("operation" in projection));
     assert.deepInclude(toSessionView(projection, Date.parse("2026-01-01T01:00:00.000Z")), {
+      title: "Package Pi extensions",
       ageSeconds: 3_600,
       capRemainingSeconds: 10_800,
     });

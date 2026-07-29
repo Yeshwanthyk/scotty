@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   getScottySession: vi.fn(),
+  renameScottySession: vi.fn(),
   snapshotScottySession: vi.fn(),
   sleepScottySession: vi.fn(),
   resumeScottySession: vi.fn(),
@@ -417,6 +418,7 @@ describe("real Hono boundary", () => {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
+          title: "  Ship dashboard  ",
           prompt: " ship it ",
           provider: "cloudflare",
           repo: "owner/project",
@@ -431,6 +433,7 @@ describe("real Hono boundary", () => {
       throw new TypeError("Expected create response object");
     expect(body).toEqual({
       id: expect.stringMatching(/^[0-9a-f]{12}$/u),
+      title: "Ship dashboard",
       url: expect.stringMatching(/^http:\/\/localhost\/s\/[0-9a-f]{12}$/u),
       branch: `scotty/${body.id}`,
       provider: "cloudflare",
@@ -438,6 +441,7 @@ describe("real Hono boundary", () => {
     });
     expect(harness.readRecord()).toMatchObject({
       id: body.id,
+      title: "Ship dashboard",
       branch: `scotty/${body.id}`,
       provider: "cloudflare",
       repo: "owner/project",
@@ -667,6 +671,42 @@ describe("real Hono boundary", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual(entry.output);
     }
+  });
+
+  it("renames a session through the authenticated JSON boundary", async () => {
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          title: "Old title",
+        }),
+      },
+    });
+    useRealSandbox(harness);
+    const response = await app.request(
+      `/api/sessions/${SESSION_ID}`,
+      {
+        method: "PATCH",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ title: "  Package Pi extensions  " }),
+      },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: SESSION_ID,
+      title: "Package Pi extensions",
+      status: "warm",
+    });
+    expect(harness.readRecord()).toMatchObject({
+      id: SESSION_ID,
+      title: "Package Pi extensions",
+      status: "warm",
+    });
+    expect(harness.events).toContain("projection:warm");
   });
 
   it("resumes through real restore, credential, runtime, and state orchestration", async () => {

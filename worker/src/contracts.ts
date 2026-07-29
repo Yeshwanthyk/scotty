@@ -99,6 +99,7 @@ export type DirectoryBackupSdkCompatibility = Assert<
 export const SessionRecordSchema = Schema.Struct({
   version: Schema.Literal(1),
   id: Schema.String,
+  title: Schema.optionalKey(Schema.String),
   status: SessionStatusSchema,
   operation: Schema.NullOr(SessionOperationSchema),
   execution: ExecutionBindingSchema,
@@ -159,6 +160,7 @@ export const decodeSessionRecordResult = (value: unknown) =>
 export const SessionProjectionSchema = Schema.Struct({
   version: Schema.Literal(1),
   id: Schema.String,
+  title: Schema.optionalKey(Schema.String),
   status: SessionStatusSchema,
   provider: ProviderSchema,
   runner: Schema.optionalKey(Schema.String),
@@ -204,6 +206,7 @@ export const RepoViewSchema = Schema.Struct({
 export type RepoView = typeof RepoViewSchema.Type;
 
 export const CreateSessionInputSchema = Schema.Struct({
+  title: Schema.optionalKey(Schema.String),
   prompt: Schema.String,
   provider: ProviderSchema,
   runner: Schema.optionalKey(Schema.String),
@@ -481,6 +484,7 @@ export function conflict(message: string): ScottyError {
 }
 
 const RawCreateSessionInputSchema = Schema.Struct({
+  title: Schema.optionalKey(Schema.Unknown),
   prompt: Schema.optionalKey(Schema.Unknown),
   provider: Schema.optionalKey(Schema.Unknown),
   runner: Schema.optionalKey(Schema.Unknown),
@@ -493,6 +497,8 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
   const decoded = decodeRawCreateSessionInput(value);
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
   if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
+  const title =
+    decoded.value.title === undefined ? undefined : parseSessionTitle(decoded.value.title);
   const prompt = readNonEmptyString(decoded.value.prompt, "prompt", 64_000);
   const provider = parseProvider(decoded.value.provider);
   const runner =
@@ -515,7 +521,30 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
           MIN_HARD_CAP_SECONDS,
           MAX_HARD_CAP_SECONDS,
         );
-  return { prompt, provider, ...(runner === undefined ? {} : { runner }), repo, hardCapSeconds };
+  return {
+    ...(title === undefined ? {} : { title }),
+    prompt,
+    provider,
+    ...(runner === undefined ? {} : { runner }),
+    repo,
+    hardCapSeconds,
+  };
+}
+
+const RawRenameSessionInputSchema = Schema.Struct({
+  title: Schema.optionalKey(Schema.Unknown),
+});
+const decodeRawRenameSessionInput = Schema.decodeUnknownOption(RawRenameSessionInputSchema);
+
+export function parseRenameSessionInput(value: unknown): string {
+  const decoded = decodeRawRenameSessionInput(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Request body must be a JSON object");
+  return parseSessionTitle(decoded.value.title);
+}
+
+export function parseSessionTitle(value: unknown): string {
+  return readNonEmptyString(value, "title", 120);
 }
 
 export function parseSessionId(value: string): string {
@@ -559,6 +588,7 @@ export function toProjection(record: SessionRecord, now: Date): SessionProjectio
   return {
     version: 1,
     id: record.id,
+    title: record.title,
     status: record.status,
     provider: record.provider,
     runner: record.runner,

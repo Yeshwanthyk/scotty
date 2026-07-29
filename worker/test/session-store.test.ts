@@ -104,6 +104,31 @@ runContractSuite<SessionRecordStorageFactory>(
       }),
     );
 
+    it.effect("renames a session without disturbing its lifecycle state", () =>
+      Effect.gen(function* () {
+        const existing = record({
+          title: "Old title",
+          operation: {
+            kind: "snapshot",
+            nonce: "held",
+            startedAt: "2026-01-01T00:00:02.000Z",
+          },
+        });
+        const storage = make(existing).storage;
+        yield* TestClock.setTime(NOW);
+        const renamed = yield* withStore(
+          storage,
+          Effect.flatMap(SessionStore, (store) => store.rename("New title")),
+        );
+        assert.deepInclude(renamed, {
+          title: "New title",
+          operation: existing.operation,
+          status: existing.status,
+          updatedAt: "2026-04-05T06:07:08.000Z",
+        });
+      }),
+    );
+
     it.effect("acquires a persisted lease with Clock-owned timestamps", () =>
       Effect.gen(function* () {
         const storage = make(record()).storage;
