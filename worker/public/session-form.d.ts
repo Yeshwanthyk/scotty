@@ -24,7 +24,11 @@ export interface SubmissionIdentity {
 export function repositoryName(value: unknown): string | undefined;
 export function promptText(value: unknown): string | undefined;
 export function titleText(value: unknown): string | undefined;
-export function sessionTitle(session: { readonly id?: unknown; readonly title?: unknown }): string;
+export function sessionTitle(session: {
+  readonly id?: unknown;
+  readonly title?: unknown;
+  readonly repo?: unknown;
+}): string;
 export function mergeRepositorySuggestions(
   tracked: unknown,
   sessions: unknown,
