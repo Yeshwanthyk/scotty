@@ -15,9 +15,10 @@ See `IMPLEMENTATION_DAG.md` for dependency order, work packages, proof gates, an
 
 ## Active portable v1 override
 
-`PORTABLE_EXECUTION_PLAN.md` is the active scope for Cloudflare plus explicitly configured trusted
-VPS runners. Pican remains the only session UI. Box, Daytona, and other managed providers are
-deferred.
+`PORTABLE_EXECUTION_PLAN.md` remains the active provider scope for Cloudflare plus explicitly
+configured trusted VPS runners. Its Pican-specific Cloudflare runtime is superseded by the current
+runtime below. Cloudflare sessions use Pi and Ghostty Web; trusted runner sessions retain their
+existing Pican compatibility path. Box, Daytona, and other managed providers are deferred.
 
 Cloudflare sessions keep the sentinel and egress-proxy credential boundary below. A trusted VPS
 host and its per-session containers are inside the owner trust boundary. They may read configured
@@ -27,26 +28,29 @@ and Cloudflare or Alchemy state. This is the only v1 override to the historical 
 
 ## Current forward-only runtime
 
-The Cloudflare vertical runs one private Pican process per Sandbox workspace. Scotty authenticates
-the public `/s/<id>` route, preserves that mount prefix while proxying to Pican, strips browser
-credentials, and injects one DO-owned internal proxy header. Pican launches Codex with
-container-visible Codex and GitHub sentinels; real credentials remain in Worker secrets and the
-session Durable Object.
+The Cloudflare vertical runs Pi directly in a named Cloudflare Sandbox terminal session. The
+authenticated `/s/<id>` page embeds bundled `ghostty-web`; its WebSocket connects through Scotty to
+the Sandbox native terminal proxy and launches `/usr/local/bin/scotty-pi-shell`. The shell consumes
+the initial prompt once, then subsequent attachments use `pi --continue`. Pi owns the agent
+conversation and workspace state. There is no tmux, Sheppard, or Pican process in this Cloudflare
+path.
 
-`beam up` creates the Pican hosted session idempotently with the outer Scotty session ID. Pican's
-returned native Codex identity is the stable session mapping; Scotty does not scan rollout files
-later to discover it. Resume restores `/workspace/<id>`, launches Pican, and reconnects through the
-same mounted URL.
+Each workspace receives a Pi home at `/workspace/<id>/.pi-agent` containing sentinel-only
+`auth.json`, settings, skills, extension configuration, and the selected Pi packages. Real Codex
+and GitHub credentials remain in Worker secrets and the session Durable Object. The egress proxy
+accepts Pi's Codex OAuth refresh shape, persists rotations in the credential vault, and returns
+only replacement sentinels to the container.
 
-Before snapshot, idle sleep, or hard-cap shutdown, Scotty sends Pican `SIGTERM` and waits for a
-graceful exit so accepted work and Pican's SQLite state can drain. Scotty then runs `sync`, creates
-the immutable backup, and either relaunches Pican for an on-demand snapshot or stops the Sandbox.
-A bounded `SIGKILL` fallback preserves the hard spend cap.
+The terminal page has a persistent switcher containing only warm sessions. Selecting another warm
+session opens it directly. Sleeping sessions never appear in this switcher; they remain on Home
+and must be explicitly resumed there before they become selectable.
 
-There is no legacy Sheppard, native PTY, ghostty-web, or delayed thread-capture fallback. The
-detailed architecture and phases below record the original v1 plan; their security, state
-authority, backup durability, and spend-bound invariants remain binding, but those runtime details
-are superseded.
+Before snapshot, idle sleep, or hard-cap shutdown, Scotty terminates the named Pi terminal session,
+runs `sync`, and creates the immutable workspace backup. A later terminal attachment recreates the
+transport and resumes Pi from the restored `.pi-agent` state. Trusted runner sessions retain the
+mounted Pican compatibility path. The detailed architecture and phases below record the original
+v1 plan; their security, state-authority, backup-durability, and spend-bound invariants remain
+binding, but their runtime details are superseded.
 
 ## Historical v1 architecture (superseded)
 

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${SCOTTY_SESSION_ID:?SCOTTY_SESSION_ID is required}"
+: "${PI_CODING_AGENT_DIR:?PI_CODING_AGENT_DIR is required}"
+
+root="/workspace/${SCOTTY_SESSION_ID}"
+prompt_file="${PI_CODING_AGENT_DIR}/initial-prompt"
+consumed_prompt="${prompt_file}.consumed"
+
+cd "${root}"
+
+if [[ -s "${prompt_file}" ]]; then
+  mv "${prompt_file}" "${consumed_prompt}"
+  exec pi "$(cat "${consumed_prompt}")"
+fi
+
+exec pi --continue

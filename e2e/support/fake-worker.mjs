@@ -649,24 +649,28 @@ export class FakeWorkerService {
     const authResult = await this.#routeAuth(request, url);
     if (authResult) return authResult;
 
-    const picanMatch = /^\/s\/([^/]+)(\/.*)?$/u.exec(url.pathname);
-    if (picanMatch) {
+    const sessionMatch = /^\/s\/([^/]+)(\/.*)?$/u.exec(url.pathname);
+    if (sessionMatch) {
       if (!this.#clientFromRequest(request)) return this.#authError();
-      const record = this.sessions.get(picanMatch[1]);
-      const runtime = this.runtimes.get(picanMatch[1]);
+      const record = this.sessions.get(sessionMatch[1]);
+      const runtime = this.runtimes.get(sessionMatch[1]);
       if (!record) return error(404, "not_found", "Session not found", "Run scotty ls --json");
-      if (record.status !== "warm" || !runtime) return this.#wrongState(record, "open", "warm");
-      const suffix = picanMatch[2] ?? "";
-      if (suffix === "/assets/app.js") {
+      if (record.status !== "warm" || !runtime) {
         return {
-          status: 200,
-          headers: { "content-type": "text/javascript", "cache-control": "no-store" },
-          body: Buffer.from(`globalThis.__PICAN_BASE_PATH__ = "/s/${record.id}";`),
+          status: 302,
+          headers: { location: "/sessions", "cache-control": "no-store" },
+          body: Buffer.alloc(0),
         };
       }
-      if (suffix === "/api/hosted-runtime") return json(runtime.pican);
-      if (suffix !== "")
-        return error(404, "not_found", "Pican route not found", "Check the mounted Pican path");
+      const suffix = sessionMatch[2] ?? "";
+      if (suffix === "/terminal")
+        return error(
+          426,
+          "upgrade_required",
+          "Terminal connection requires a WebSocket upgrade",
+          "Open the session page",
+        );
+      if (suffix !== "") return error(404, "not_found", "Route not found", "Open the session page");
       return {
         status: 200,
         headers: {
@@ -675,7 +679,7 @@ export class FakeWorkerService {
           "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
         },
         body: Buffer.from(
-          `<!doctype html><title>Pican</title><script src="/s/${record.id}/assets/app.js"></script>`,
+          '<!doctype html><title>Scotty</title><script type="module" src="/terminal.js"></script>',
         ),
       };
     }
@@ -760,20 +764,29 @@ export class FakeWorkerService {
       this.runtimes.set(id, {
         generation: 1,
         worktree: "fixture worktree\n",
-        env: { CODEX_HOME: `/workspace/${id}/.codex`, GH_TOKEN: sentinel, SCOTTY_AUTH: sentinel },
-        authJson: JSON.stringify({ tokens: { access_token: sentinel, refresh_token: sentinel } }),
-        gitConfig: `credential.helper=!scotty-sentinel-helper\nremote.origin.url=https://github.com/${record.repo}.git`,
-        pican: {
-          processId: "scotty-pican",
-          mode: "hosted",
-          runtime: "codex",
-          basePath: `/s/${id}`,
-          workspaceRoot: `/workspace/${id}`,
-          stateRoot: `/workspace/${id}/.pican`,
-          createState: "created",
-          promptDispatchState: "accepted",
+        env: {
+          CODEX_HOME: `/workspace/${id}/.codex`,
+          PI_CODING_AGENT_DIR: `/workspace/${id}/.pi-agent`,
+          OPENAI_API_KEY: sentinel,
+          GH_TOKEN: sentinel,
         },
-        processList: `/usr/local/bin/pican -host 0.0.0.0 -p 31415 -runtime codex -codex-command /usr/local/bin/codex`,
+        authJson: JSON.stringify({
+          "openai-codex": {
+            type: "oauth",
+            access: `${sentinel}.scotty-payload.scotty-pi`,
+            refresh: sentinel,
+            expires: 0,
+            accountId: "scotty-sentinel",
+          },
+        }),
+        gitConfig: `credential.helper=!scotty-sentinel-helper\nremote.origin.url=https://github.com/${record.repo}.git`,
+        pi: {
+          command: "pi --continue",
+          shell: "/usr/local/bin/scotty-pi-shell",
+          workspaceRoot: `/workspace/${id}`,
+          stateRoot: `/workspace/${id}/.pi-agent`,
+        },
+        processList: "",
       });
       this.#project(record);
       this.#trackRepo(record);
@@ -881,6 +894,7 @@ export class FakeWorkerService {
       files: {
         [`/workspace/${record.id}/worktree.txt`]: runtime.worktree,
         [`/workspace/${record.id}/.codex/auth.json`]: runtime.authJson,
+        [`/workspace/${record.id}/.pi-agent/auth.json`]: runtime.authJson,
         [`/workspace/${record.id}/.codex/sessions/2026/07/20/rollout.jsonl`]: FIXTURE_ROLLOUT,
       },
     };
