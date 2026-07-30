@@ -1209,8 +1209,20 @@ async function loadWorkspaces() {
   });
   if (!response.ok) throw new Error(`Could not load open containers (${response.status})`);
   const body = await response.json();
-  const nextSessions = Array.isArray(body) ? body : body?.sessions;
+  let nextSessions = Array.isArray(body) ? body : body?.sessions;
   if (!Array.isArray(nextSessions)) throw new Error("Scotty returned an invalid session list");
+  if (!nextSessions.some((session) => session?.id === currentSessionId)) {
+    const currentResponse = await fetch(`/api/sessions/${encodeURIComponent(currentSessionId)}`, {
+      headers: { accept: "application/json" },
+      cache: "no-store",
+    });
+    if (currentResponse.ok) {
+      const current = await currentResponse.json();
+      if (current?.id === currentSessionId && current.status === "warm") {
+        nextSessions = [current, ...nextSessions];
+      }
+    }
+  }
   sessions = nextSessions;
   renderWorkspaceList();
 }
