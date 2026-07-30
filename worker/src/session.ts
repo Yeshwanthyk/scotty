@@ -686,11 +686,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict(`Session is already running ${record.operation.kind}`);
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
+    const currentCredential = yield* vault.require;
+    yield* containerAuth.quiescePiSession(record.id, currentCredential);
     const credential = yield* vault.reseed({
       piAuthJson: this.env.PI_AUTH_JSON,
       providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
     });
     yield* containerAuth.refreshPiAuth(record.id, credential);
+    yield* containerAuth.stopPiSession();
+    yield* containerAuth.ensurePiSession(record.id, credential);
     return {
       id: record.id,
       updatedAt: credential.updatedAt,
