@@ -14,7 +14,6 @@ const sandbox = vi.hoisted(() => ({
   fetch: vi.fn(),
   containerFetch: vi.fn(),
   preparePiSessionAccess: vi.fn(),
-  proxyPiSessionRequest: vi.fn(),
   reseedPiAuth: vi.fn(),
 }));
 
@@ -171,7 +170,6 @@ describe("real Hono boundary", () => {
       branch: "scotty/a0b1c2d3e4f5",
     });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
-    sandbox.proxyPiSessionRequest.mockResolvedValue(Response.json({}));
     sandbox.reseedPiAuth.mockResolvedValue({
       id: "a0b1c2d3e4f5",
       updatedAt: "2026-07-29T12:00:00.000Z",
@@ -2060,8 +2058,8 @@ describe("real Hono boundary", () => {
   });
 
   it("proxies an authenticated worklog snapshot without browser credentials", async () => {
-    sandbox.proxyPiSessionRequest.mockImplementationOnce(async (request: Request) => {
-      expect(new URL(request.url).pathname).toBe("/snapshot");
+    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/_scotty/pi-session/snapshot");
       expect(request.headers.get("cookie")).toBeNull();
       expect(request.headers.get("authorization")).toBeNull();
       return Response.json({ epoch: "epoch-1", sequence: 7, messages: [] });
@@ -2077,12 +2075,12 @@ describe("real Hono boundary", () => {
       sequence: 7,
       messages: [],
     });
-    expect(sandbox.proxyPiSessionRequest).toHaveBeenCalledOnce();
+    expect(sandbox.fetch).toHaveBeenCalledOnce();
   });
 
   it("proxies worklog commands with same-origin mutation protection", async () => {
-    sandbox.proxyPiSessionRequest.mockImplementationOnce(async (request: Request) => {
-      expect(new URL(request.url).pathname).toBe("/command");
+    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/_scotty/pi-session/command");
       expect(request.headers.get("cookie")).toBeNull();
       expect(request.headers.get("content-type")).toBe("application/json");
       expect(await request.json()).toEqual({
@@ -2109,7 +2107,7 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(response.status).toBe(202);
-    expect(sandbox.proxyPiSessionRequest).toHaveBeenCalledOnce();
+    expect(sandbox.fetch).toHaveBeenCalledOnce();
   });
 
   it("rejects cross-origin worklog commands before reaching the sandbox", async () => {
@@ -2130,7 +2128,7 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(response.status).toBe(400);
-    expect(sandbox.proxyPiSessionRequest).not.toHaveBeenCalled();
+    expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
   it("does not expose the Cloudflare Pi terminal on runner sessions", async () => {
