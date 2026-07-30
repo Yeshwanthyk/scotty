@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import * as Effect from "effect/Effect";
 import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
 import {
   assessContainerSettlement,
@@ -17,7 +18,7 @@ import {
   runCommand,
   waitForProductionContainerRollout,
 } from "./deploy-production.mjs";
-import { dedupeBindings, diffBindings } from "../node_modules/alchemy/lib/Diff.js";
+import { dedupeBindings, diffBindings, stripEffects } from "../node_modules/alchemy/lib/Diff.js";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const INSTALLATION_ENVIRONMENT = { SCOTTY_INSTALLATION_NAME: "test" };
@@ -75,6 +76,9 @@ describe("production deployment ownership", () => {
     const rootPackage = JSON.parse(read("package.json"));
     const patch = read("patches/alchemy+2.0.0-beta.63.patch");
     const installedApply = read("node_modules/alchemy/lib/Apply.js");
+    const installedWorkerProvider = read(
+      "node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js",
+    );
 
     assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.63");
     assert.equal(rootPackage.scripts.postinstall, "node scripts/apply-dependency-patches.mjs");
@@ -82,6 +86,11 @@ describe("production deployment ownership", () => {
     assert.match(patch, /bindings: stripUnresolved\(newBindings\)/u);
     assert.match(installedApply, /bindings: bindingOutputs/u);
     assert.match(installedApply, /bindings: stripUnresolved\(newBindings\)/u);
+    assert.match(installedWorkerProvider, /const news = stripEffects\(desired\)/u);
+    assert.deepEqual(stripEffects({ stable: 1, effect: Effect.succeed(2) }), {
+      stable: 1,
+      effect: undefined,
+    });
 
     const bindings = [
       { sid: "zeta", data: { value: 1 } },
