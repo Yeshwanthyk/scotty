@@ -607,18 +607,276 @@ body.scotty-ui {
   }
 }
 
+@media (max-width: 560px) {
+  .sessions-page .masthead-inner {
+    min-height: calc(56px + env(safe-area-inset-top));
+    gap: 10px;
+  }
+
+  .sessions-page .masthead-actions {
+    gap: 6px;
+  }
+
+  .sessions-page .identity {
+    min-height: 44px;
+  }
+
+  .sessions-page .masthead-actions > .button-primary {
+    min-height: 44px;
+    padding-inline: 12px;
+  }
+
+  .sessions-page main {
+    padding-top: 14px;
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-bottom: max(28px, env(safe-area-inset-bottom));
+    padding-left: max(12px, env(safe-area-inset-left));
+  }
+
+  .sessions-page .page-heading {
+    margin-bottom: 14px;
+  }
+
+  .sessions-page h1 {
+    font-size: 1.25rem;
+    line-height: 1.15;
+  }
+
+  .sessions-page .subtitle {
+    display: block;
+    margin-top: 4px;
+    font-size: 0.75rem;
+    line-height: 1.35;
+  }
+
+  .sessions-page .composer-region.is-open {
+    margin-bottom: 12px;
+  }
+
+  .sessions-page .composer {
+    padding: 14px;
+    border-radius: 8px;
+    box-shadow: inset 0 1px 0 rgb(238 231 211 / 0.03);
+  }
+
+  .sessions-page .composer::before {
+    right: 14px;
+    left: 14px;
+  }
+
+  .sessions-page .composer-heading {
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+  }
+
+  .sessions-page .composer-heading h2 {
+    font-size: 1rem;
+  }
+
+  .sessions-page .composer-heading p {
+    margin-top: 5px;
+    font-size: 0.8rem;
+    line-height: 1.45;
+  }
+
+  .sessions-page .composer-grid {
+    gap: 14px;
+  }
+
+  .sessions-page .field {
+    gap: 6px;
+  }
+
+  .sessions-page .field-prompt {
+    margin-top: 14px;
+  }
+
+  .sessions-page .repo-suggestion,
+  .sessions-page .repo-suggestion-select,
+  .sessions-page .repo-suggestion-remove {
+    min-height: 44px;
+  }
+
+  .sessions-page .repo-suggestion-remove {
+    width: 44px;
+  }
+
+  .sessions-page .field label,
+  .sessions-page .field-hint,
+  .sessions-page .recent-label {
+    font-size: 0.75rem;
+  }
+
+  .sessions-page textarea.control {
+    min-height: 120px;
+  }
+
+  .sessions-page .composer-footer {
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  .sessions-page .composer-actions .button-primary {
+    flex: 1;
+  }
+
+  .sessions-page .state {
+    padding: 24px 16px;
+    border-radius: 8px;
+  }
+
+  .sessions-page .state::before {
+    width: 56px;
+    height: 56px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+  }
+
+  .sessions-page .state strong {
+    margin-bottom: 6px;
+    font-size: 1rem;
+  }
+
+  .sessions-page .state-copy {
+    font-size: 0.84rem;
+    line-height: 1.5;
+  }
+
+  .sessions-page .state .button {
+    margin-top: 16px;
+  }
+
+  .sessions-page .project-groups {
+    gap: 20px;
+  }
+
+  .sessions-page .project-header {
+    align-items: baseline;
+    flex-direction: row;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .sessions-page .project-heading {
+    flex: 1;
+  }
+
+  .sessions-page .project-name {
+    font-size: 0.9rem;
+  }
+
+  .sessions-page .project-summary {
+    max-width: 48%;
+    overflow: hidden;
+    font-size: 0.65rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sessions-page .session-list {
+    gap: 6px;
+  }
+
+  .sessions-page .session {
+    grid-template-areas:
+      "identity identity"
+      "state timing"
+      "actions actions";
+    grid-template-columns: minmax(0, 0.8fr) minmax(132px, 1.2fr);
+    gap: 10px;
+    padding: 12px;
+    border-radius: 6px;
+  }
+
+  .sessions-page .session-title {
+    font-size: 0.9rem;
+  }
+
+  .sessions-page .rename-button {
+    width: 44px;
+    height: 44px;
+  }
+
+  .sessions-page .rename-action {
+    min-height: 44px;
+  }
+
+  .sessions-page .identity-meta {
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  .sessions-page .branch,
+  .sessions-page .session-id,
+  .sessions-page .placement,
+  .sessions-page .session-timing dd,
+  .sessions-page .status-line {
+    font-size: 0.7rem;
+  }
+
+  .sessions-page .session-state {
+    gap: 6px;
+  }
+
+  .sessions-page .status-line {
+    padding-inline: 7px;
+  }
+
+  .sessions-page .session-timing {
+    gap: 10px;
+  }
+
+  .sessions-page .session-timing dt {
+    margin-bottom: 2px;
+    font-size: 0.58rem;
+    letter-spacing: 0.06em;
+  }
+
+  .sessions-page .actions {
+    gap: 6px;
+  }
+
+  .sessions-page .actions .button-primary {
+    flex: 1;
+  }
+
+  .sessions-page .confirmation {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .sessions-page .confirmation .button-danger-confirm {
+    flex: 1;
+  }
+
+  .sessions-page .sleeping-group {
+    margin-top: 6px;
+  }
+
+  .sessions-page .sleeping-group summary {
+    min-height: 44px;
+    padding-inline: 10px;
+  }
+
+  .sessions-page .sleeping-group summary:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+}
+
 @media (max-width: 420px) {
   .brand-mark {
     width: 28px;
     height: 28px;
   }
 
-  .sessions-page .state::before {
-    width: 68px;
-    height: 68px;
-  }
-
   .devices-page .page-symbol {
+    display: none;
+  }
+}
+
+@media (max-width: 350px) {
+  .sessions-page .wordmark {
     display: none;
   }
 }
