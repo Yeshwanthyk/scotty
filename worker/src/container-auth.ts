@@ -1,7 +1,8 @@
 import { Context, Effect, Layer } from "effect";
 import type { SessionRecord } from "./contracts";
+import { sha256Hex } from "./digest";
 import { piAuthJson, type StoredCredential } from "./egress";
-import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
+import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
 export const PI_PACKAGES = [
@@ -14,6 +15,31 @@ export const PI_PACKAGES = [
   "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
   "/opt/scotty/pi-packages/sources/pi-amp-ui",
 ] as const;
+
+export const PI_SESSION_PORT = 43_117;
+export const PI_SESSION_PROCESS_ID = "scotty-pi-session";
+export const PI_SESSION_TOKEN_HEADER = "x-scotty-pi-session";
+
+const piSessionTokenPath = (id: SessionRecord["id"]): string =>
+  `${sessionRoot(id)}/.pi-agent/scotty-pi-session.token`;
+
+export const piSessionTransportToken = (
+  id: SessionRecord["id"],
+  credential: StoredCredential,
+): Promise<string> => sha256Hex(`scotty-pi-session-v1\0${id}\0${credential.githubToken}`);
+
+const derivePiSessionTransportToken = (
+  id: SessionRecord["id"],
+  credential: StoredCredential,
+): Effect.Effect<string, SandboxRuntimeFailure> =>
+  Effect.tryPromise({
+    try: () => piSessionTransportToken(id, credential),
+    catch: () =>
+      new SandboxRuntimeFailure({
+        reason: "transport",
+        message: "Pi session capability derivation failed",
+      }),
+  });
 
 const codexConfig = (id: SessionRecord["id"]): string => `model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
@@ -95,6 +121,15 @@ interface ContainerAuthShape {
     id: SessionRecord["id"],
     credential: StoredCredential,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly ensurePiSession: (
+    id: SessionRecord["id"],
+    credential: StoredCredential,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly quiescePiSession: (
+    id: SessionRecord["id"],
+    credential: StoredCredential,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly stopPiSession: () => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly refreshPiAuth: (
     id: SessionRecord["id"],
     credential: StoredCredential,
@@ -153,6 +188,70 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         const existing = yield* runtime.exec(`test -x ${shellQuote(terminalShellPath(id))}`);
         if (existing.success) return;
         yield* seed(id, credential);
+      }),
+      ensurePiSession: Effect.fnUntraced(function* (id, credential) {
+        const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+        if (existing?.status === "starting" || existing?.status === "running") {
+          yield* existing.waitForPort(PI_SESSION_PORT, {
+            path: "/health",
+            status: 200,
+            timeout: 30_000,
+          });
+          return;
+        }
+        const transportToken = yield* derivePiSessionTransportToken(id, credential);
+        const tokenPath = piSessionTokenPath(id);
+        yield* runtime.writeFile(tokenPath, transportToken);
+        yield* runtime.execChecked(`chmod 600 ${shellQuote(tokenPath)}`);
+        const process = yield* runtime.startProcess("/usr/local/bin/scotty-pi-session", {
+          autoCleanup: true,
+          cwd: sessionRoot(id),
+          env: {
+            ...agentEnv(id, credential),
+            SCOTTY_PI_SESSION_PORT: String(PI_SESSION_PORT),
+            SCOTTY_PI_SESSION_TOKEN_FILE: tokenPath,
+            SCOTTY_WORKSPACE: sessionRoot(id),
+          },
+          processId: PI_SESSION_PROCESS_ID,
+        });
+        yield* process.waitForPort(PI_SESSION_PORT, {
+          path: "/health",
+          status: 200,
+          timeout: 30_000,
+        });
+      }),
+      quiescePiSession: Effect.fnUntraced(function* (id, credential) {
+        const process = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+        if (
+          process === null ||
+          process.status === "completed" ||
+          process.status === "failed" ||
+          process.status === "killed" ||
+          process.status === "error"
+        )
+          return;
+        const transportToken = yield* derivePiSessionTransportToken(id, credential);
+        const status = yield* runtime.fetchPortStatus("/quiesce", PI_SESSION_PORT, "POST", {
+          [PI_SESSION_TOKEN_HEADER]: transportToken,
+        });
+        if (status !== 200)
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Pi session quiesce failed",
+          });
+      }),
+      stopPiSession: Effect.fnUntraced(function* () {
+        const process = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+        if (
+          process === null ||
+          process.status === "completed" ||
+          process.status === "failed" ||
+          process.status === "killed" ||
+          process.status === "error"
+        )
+          return;
+        yield* process.kill("SIGTERM");
+        yield* process.waitForExit(10_000);
       }),
       refreshPiAuth: Effect.fnUntraced(function* (id, credential) {
         const piHome = `${sessionRoot(id)}/.pi-agent`;

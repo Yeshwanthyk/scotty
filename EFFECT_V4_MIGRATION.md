@@ -1,5 +1,11 @@
 # Scotty: Alchemy v2 + Effect v4 implementation packet
 
+> **Pi UI cutover (2026-07-30):** the approved browser contract is now one loopback-only
+> `pi --mode rpc` supervisor per Cloudflare session, proxied through authenticated Worker HTTP/SSE
+> routes. This supersedes this packet's PTY/Ghostty presentation, named-terminal, framing, and
+> reconnect requirements. Durable Object authority, lifecycle, credential, filesystem, backup,
+> stream-scope, and host-boundary invariants remain binding.
+
 This is the handoff for a fresh implementation session. It records the settled target architecture, what setup already exists, the gaps Scotty must fill itself, ordered migration slices, and the proof required before replacing the current Wrangler/Hono implementation.
 
 ## Orientation
@@ -60,10 +66,11 @@ Preserve unless explicitly approved otherwise:
 - HTTP methods and routes currently registered in `worker/src/index.ts`.
 - Error envelope `{ "error": { "code", "message", "hint" } }` and HTTP statuses.
 - CLI JSON keys, TTY behavior, stdout/stderr placement, and exit codes `0`–`5`.
-- PTY framing, resize, reconnect, binary output, single-owner browser pairing/transfer/recovery
-  cookie handoff, one-use PTY tickets, and streamed beam-down behavior.
+- Pi RPC snapshot/replay, SSE reconnect, command receipts, single-owner browser
+  pairing/transfer/recovery cookie handoff, and streamed beam-down behavior.
 - Persisted `SessionRecord` version `1`, storage keys, statuses, operation lease, and nonce semantics.
-- `/workspace/<id>`, branch `scotty/<id>`, Pi state under `.pi-agent`, and one named Sandbox terminal session per Cloudflare workspace.
+- `/workspace/<id>`, branch `scotty/<id>`, Pi state under `.pi-agent`, and one named Pi RPC
+  supervisor process per Cloudflare workspace.
 
 ### State ownership remains unchanged
 
@@ -613,18 +620,21 @@ Test every injected stage failure and preserve record/projection/schedule/thread
 Use scope finalizers around pause/resume. Preserve sequence:
 
 1. persisted lease;
-2. terminate the named Pi terminal session;
+2. quiesce extension UI and streaming work, then terminate the named Pi RPC supervisor;
 3. filesystem `sync`;
 4. immutable backup upload;
 5. authoritative commit of new current/old current as previous;
 6. projection;
 7. best-effort deletion of formerly previous;
-8. let the next terminal attachment run `pi --continue` after a manual snapshot;
+8. relaunch `pi --mode rpc --continue` after a manual snapshot;
 9. lease release according to caller.
 
 #### 9B Lifecycle
 
-Migrate idle expiry, hard cap, stop, destroy retry, and thread capture. Preserve stale-payload rejection, 30-second operation grace, checkpoint-before-stop, `sleeping` only after successful stop, failed+destroy on hard-cap error, attached PTY not extending cap, cleanup-only `onStop`, and 12-attempt thread capture.
+Migrate idle expiry, hard cap, stop, destroy retry, and thread capture. Preserve stale-payload
+rejection, 30-second operation grace, checkpoint-before-stop, `sleeping` only after successful stop,
+failed+destroy on hard-cap error, browser attachments not extending cap, cleanup-only `onStop`, and
+12-attempt thread capture.
 
 Use `TestClock`, fault injection, official callback canaries, and a shortened deployed cap.
 

@@ -12,7 +12,7 @@ Operate Scotty as an authoritative state machine. Direct command responses own m
 
 - Pass `--json` to every operational command and `--detach` to `beam up`.
 - Use Cloudflare unless the user requests a named trusted runner.
-- Label a Cloudflare URL “the live Pi terminal” and a runner URL “the runner workspace.”
+- Label a Cloudflare URL “the live Pi worklog” and a runner URL “the runner workspace.”
 - Render `warm` as “ready.” Use “working” only when `agentState` is exactly `working`.
 - Use the returned `url`. Keep root tokens confined to flags, environment, or `~/.scotty.json`.
 - Retry exits 2, 4, or 5 only after changing input, credentials, or session state.

@@ -15,7 +15,14 @@ import {
 } from "effect";
 import { BackupStore, backupStoreLayer } from "./backup-store";
 import type { Bindings } from "./bindings";
-import { ContainerAuth, containerAuthLayer } from "./container-auth";
+import {
+  ContainerAuth,
+  containerAuthLayer,
+  PI_SESSION_PORT,
+  PI_SESSION_PROCESS_ID,
+  PI_SESSION_TOKEN_HEADER,
+  piSessionTransportToken,
+} from "./container-auth";
 import {
   CredentialVault,
   credentialVaultLayer,
@@ -137,7 +144,7 @@ class SessionCreateUncertain extends Data.TaggedError("SessionCreateUncertain")<
   readonly cause: unknown;
 }> {}
 
-class PiTerminalStopFailure extends Data.TaggedError("PiTerminalStopFailure")<{
+class PiRuntimeStopFailure extends Data.TaggedError("PiRuntimeStopFailure")<{
   readonly cause: unknown;
 }> {}
 
@@ -238,6 +245,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         setEnvVars: (envVars) => this.setEnvVars(envVars),
         startProcess: (command, processOptions) => this.startProcess(command, processOptions),
         getProcess: (processId) => this.getProcess(processId),
+        fetchPort: (path, port, method, headers) =>
+          this.containerFetch(
+            new Request(`http://127.0.0.1:${port}${path}`, { method, headers }),
+            port,
+          ),
       },
       runtimeAccess,
     );
@@ -289,14 +301,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return record;
   });
 
-  private readonly prepareTerminalAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
+  private readonly preparePiSessionAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm")
       return yield* wrongState(
         record.status,
         "access",
         record.status === "sleeping"
-          ? "Resume the session from Home before accessing the terminal"
+          ? "Resume the session from Home before opening the worklog"
           : undefined,
       );
     if (!sessionAllowsRuntimeAccess(record))
@@ -304,11 +316,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (record.operation)
       return yield* conflict(`Session is already running ${record.operation.kind}`);
     if (record.execution.provider !== "cloudflare")
-      return yield* wrongState(record.status, "access", "This session uses the runner terminal");
+      return yield* wrongState(record.status, "access", "This session uses the runner runtime");
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
     const credential = yield* vault.require;
-    yield* containerAuth.ensureTerminal(record.id, credential);
+    yield* containerAuth.ensurePiSession(record.id, credential);
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
@@ -416,13 +428,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const piPhase = Effect.gen({ self: this }, function* () {
       const credential = yield* vault.require;
       yield* containerAuth.seed(record.id, credential, { initialPrompt: prompt });
+      yield* containerAuth.ensurePiSession(record.id, credential);
       const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
       return yield* this.updateForOperationProgram(nonce, (current) => ({
         ...current,
         status: "warm",
         operation: null,
         codexThreadId: `pi-${record.id}`,
-        agentState: "waiting",
+        agentState: "working",
         lastAgentEventAt: readyAt,
         failure: undefined,
         updatedAt: readyAt,
@@ -834,6 +847,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* backups.restore(backup);
         const credential = yield* vault.require;
         yield* containerAuth.seed(record.id, credential);
+        yield* containerAuth.ensurePiSession(record.id, credential);
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
           ...current,
@@ -1362,7 +1376,26 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   async prepareTerminalAccess(): Promise<void> {
-    return this.#run(this.prepareTerminalAccessProgram());
+    return this.preparePiSessionAccess();
+  }
+
+  async preparePiSessionAccess(): Promise<void> {
+    return this.#run(this.preparePiSessionAccessProgram());
+  }
+
+  async proxyPiSessionRequest(request: Request): Promise<Response> {
+    await this.preparePiSessionAccess();
+    const { id, credential } = await this.#run(
+      Effect.gen(function* () {
+        const record = yield* SessionStore.pipe(Effect.flatMap((store) => store.requireRecord));
+        const credential = yield* CredentialVault.pipe(Effect.flatMap((vault) => vault.require));
+        return { id: record.id, credential };
+      }),
+    );
+    const transportToken = await piSessionTransportToken(id, credential);
+    const headers = new Headers(request.headers);
+    headers.set(PI_SESSION_TOKEN_HEADER, transportToken);
+    return this.containerFetch(new Request(request, { headers }), PI_SESSION_PORT);
   }
 
   async snapshotScottySession(): Promise<SessionView> {
@@ -1450,15 +1483,33 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const record = yield* this.requireRecordProgram();
     const runtime = yield* SandboxRuntime;
     const backups = yield* BackupStore;
+    const vault = yield* CredentialVault;
+    const containerAuth = yield* ContainerAuth;
     const root = sessionRoot(record.id);
-    let terminalStopAttempted = false;
+    let runtimeStopAttempted = false;
 
     const checkpoint = withCheckpointRuntimeRestore(
       Effect.gen({ self: this }, function* () {
-        terminalStopAttempted = true;
+        runtimeStopAttempted = true;
+        const piProcess = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+        if (
+          piProcess !== null &&
+          piProcess.status !== "completed" &&
+          piProcess.status !== "failed" &&
+          piProcess.status !== "killed" &&
+          piProcess.status !== "error"
+        ) {
+          const credential = yield* vault.require;
+          yield* containerAuth
+            .quiescePiSession(record.id, credential)
+            .pipe(Effect.mapError((cause) => new PiRuntimeStopFailure({ cause })));
+        }
+        yield* containerAuth
+          .stopPiSession()
+          .pipe(Effect.mapError((cause) => new PiRuntimeStopFailure({ cause })));
         yield* Effect.tryPromise({
           try: () => this.deleteSession(record.id),
-          catch: (cause) => new PiTerminalStopFailure({ cause }),
+          catch: (cause) => new PiRuntimeStopFailure({ cause }),
         });
         yield* runtime.execChecked("sync", { timeout: 30_000 });
         const now = yield* Clock.currentTimeMillis;
@@ -1490,9 +1541,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return updated;
       }),
       {
-        restore: Effect.void,
+        restore: Effect.gen(function* () {
+          const credential = yield* vault.require;
+          yield* containerAuth.ensurePiSession(record.id, credential);
+        }),
         resumeRuntime,
-        stopAttempted: () => terminalStopAttempted,
+        stopAttempted: () => runtimeStopAttempted,
       },
     );
     const outcome = yield* Effect.result(checkpoint);
@@ -1507,7 +1561,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* this.failOperationProgram(
           nonce,
           "checkpoint_runtime_unavailable",
-          "Pi terminal failed to recover after checkpoint",
+          "Pi session failed to recover after checkpoint",
           Boolean(current.backup?.current),
         );
       }).pipe(Effect.ignore);

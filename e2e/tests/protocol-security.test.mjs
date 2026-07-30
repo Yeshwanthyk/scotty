@@ -276,7 +276,7 @@ test("terminal switcher is warm-only and cannot resume sleeping sessions", () =>
 
   assert.match(script, /sessions\.filter\(\(session\) => session\?\.status === "warm"\)/u);
   assert.doesNotMatch(script, /\/resume|resumeScottySession|status === "sleeping"/u);
-  assert.match(html, /class="home-link" href="\/sessions">Home<\/a>/u);
+  assert.match(html, /class="home-link" href="\/sessions">Sessions Home<\/a>/u);
   assert.doesNotMatch(html, /Sleeping containers only appear on Home\./u);
 });
 

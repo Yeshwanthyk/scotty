@@ -1,15 +1,15 @@
 # Scotty
 
-Scotty runs Pi in a persistent Cloudflare Sandbox workspace, presents its TUI through Ghostty Web
-at an authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, beam down, or
+Scotty runs Pi in a persistent Cloudflare Sandbox workspace, presents its live worklog at an
+authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, beam down, or
 permanently destroy the session.
 
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 
 ## Components
 
-- `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, Pi lifecycle,
-  Ghostty Web terminal, and trusted-runner control plane.
+- `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, direct Pi RPC
+  lifecycle and worklog, and trusted-runner control plane.
 - `cli/` — Effect-native Bun CLI and embedded `scotty skills` guide.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
@@ -96,8 +96,8 @@ runs the full checks, deploys through Alchemy, and audits Container rollout sett
 resource names require `SCOTTY_ADOPTION_MANIFEST=/private/path.json`.
 
 The current Cloudflare gate is forward-only: the full local suite and Colima-backed image build must
-pass with pinned Pi and Ghostty Web versions, then the guarded deployment and deployed canary must
-prove `beam up → Pi terminal → snapshot → resume → vaporize`.
+pass with the pinned Pi version, then the guarded deployment and deployed canary must prove
+`beam up → Pi worklog → snapshot → resume → vaporize`.
 
 ## CLI
 
@@ -130,13 +130,13 @@ fails if the service is not active. Pass `--replace` only when moving or reinsta
 runner; that rotates its credential and disconnects the old machine. Use `scotty runner list` to
 inspect registrations and `scotty runner remove NAME --yes` after all assigned sessions are gone.
 The runner credential is never accepted as a command argument or stored in Worker configuration.
-Runner-backed session creation remains disabled until the runner link has a native Pi terminal
+Runner-backed session creation remains disabled until the runner link has a native Pi RPC worklog
 transport; registration and lifecycle control are intentionally available first.
 
 Run `scotty owner recover` once on the intended primary browser after a fresh deployment or when
 moving to a replacement laptop. Keep `SCOTTY_TOKEN` in a password manager or another protected
-recovery location. `scotty attach <id>` opens the Pi terminal at the clean session URL and requires
-an already paired browser. Sleeping sessions must be resumed from Home before the terminal opens.
+recovery location. `scotty attach <id>` opens the Pi worklog at the clean session URL and requires
+an already paired browser. Sleeping sessions must be resumed from Home before the worklog opens.
 See
 [`docs/owner-transfer-cutover.md`](docs/owner-transfer-cutover.md) before production migration.
 

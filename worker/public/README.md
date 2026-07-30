@@ -5,7 +5,10 @@ device manager, and pairing flow. The UI uses the small app mark for persistent
 identity and role glyphs only at meaningful empty, loading, security, and completion states.
 The deployable files in `brand/` mirror or derive from selected source artwork in `assets/brand/`.
 
-Pi runs inside the session container and is attached through Scotty's authenticated terminal route at `/s/:id`. Root credentials are never accepted from cookies or query parameters.
+Pi runs inside the session container through one loopback-only RPC supervisor. The authenticated
+worklog at `/s/:id` receives snapshots and live events through same-origin Worker routes; container
+ports and browser credentials are never forwarded. Root credentials are never accepted from
+cookies or query parameters.
 
 `devices.html` is the primary-device-only browser manager. It creates five-minute one-use pairing
 links, starts target-bound ownership transfers, distinguishes the server-derived `Primary` role

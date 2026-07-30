@@ -39,6 +39,12 @@ export interface SandboxRuntimeCapabilities {
     options?: SandboxProcessOptions,
   ) => Promise<SandboxProcessCapabilities>;
   readonly getProcess?: (processId: string) => Promise<SandboxProcessCapabilities | null>;
+  readonly fetchPort?: (
+    path: string,
+    port: number,
+    method: "GET" | "POST",
+    headers?: Readonly<Record<string, string>>,
+  ) => Promise<Response>;
 }
 
 export interface SandboxProcess {
@@ -76,6 +82,12 @@ interface SandboxRuntimeShape {
   readonly getProcess: (
     processId: string,
   ) => Effect.Effect<SandboxProcess | null, SandboxRuntimeFailure>;
+  readonly fetchPortStatus: (
+    path: string,
+    port: number,
+    method: "GET" | "POST",
+    headers?: Readonly<Record<string, string>>,
+  ) => Effect.Effect<number, SandboxRuntimeFailure>;
 }
 
 export class SandboxRuntime extends Context.Service<SandboxRuntime, SandboxRuntimeShape>()(
@@ -146,6 +158,20 @@ const makeSandboxRuntime = <E>(
         Effect.map((process) =>
           process === null ? null : makeSandboxProcess(process, beforeOperation),
         ),
+      );
+    },
+    fetchPortStatus: (path, port, method, headers) => {
+      const fetchPort = capabilities.fetchPort;
+      if (fetchPort === undefined)
+        return Effect.fail(transportFailure("Sandbox port transport is unavailable"));
+      return guardOperation(beforeOperation, "Sandbox port transport failed").pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: () => fetchPort(path, port, method, headers),
+            catch: () => transportFailure("Sandbox port transport failed"),
+          }),
+        ),
+        Effect.map((response) => response.status),
       );
     },
   });

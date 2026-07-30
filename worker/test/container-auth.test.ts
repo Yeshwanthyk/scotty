@@ -6,6 +6,8 @@ import {
   ContainerAuth,
   containerAuthLayer,
   PI_PACKAGES,
+  PI_SESSION_PORT,
+  PI_SESSION_PROCESS_ID,
   sandboxAgentsInstructions,
   terminalShellPath,
 } from "../src/container-auth";
@@ -14,6 +16,8 @@ import {
   SandboxRuntimeFailure,
   sandboxRuntimeLayer,
   type SandboxExecOptions,
+  type SandboxProcessCapabilities,
+  type SandboxProcessOptions,
   type SandboxRuntimeCapabilities,
 } from "../src/sandbox-runtime";
 import { sessionRoot } from "../src/workspace";
@@ -63,6 +67,21 @@ type ContainerCall =
   | {
       readonly operation: "setEnvVars";
       readonly envVars: Record<string, string | undefined>;
+    }
+  | {
+      readonly operation: "startProcess";
+      readonly command: string;
+      readonly options?: SandboxProcessOptions;
+    }
+  | { readonly operation: "getProcess"; readonly processId: string }
+  | { readonly operation: "killProcess"; readonly signal?: string }
+  | { readonly operation: "waitForPort"; readonly port: number }
+  | {
+      readonly operation: "fetchPort";
+      readonly path: string;
+      readonly port: number;
+      readonly method: "GET" | "POST";
+      readonly headers?: Readonly<Record<string, string>>;
     };
 
 class CapturingSandboxCapabilities implements SandboxRuntimeCapabilities {
@@ -113,6 +132,51 @@ class CapturingSandboxCapabilities implements SandboxRuntimeCapabilities {
   };
 }
 
+class ProcessSandboxCapabilities extends CapturingSandboxCapabilities {
+  process: SandboxProcessCapabilities | null = null;
+
+  private makeProcess(): SandboxProcessCapabilities {
+    return {
+      id: PI_SESSION_PROCESS_ID,
+      status: "running",
+      kill: (signal?: string) => {
+        this.calls.push({ operation: "killProcess", signal });
+        this.process = null;
+        return Promise.resolve();
+      },
+      waitForExit: () => Promise.resolve({ exitCode: 0 }),
+      waitForPort: (readyPort: number) => {
+        this.calls.push({ operation: "waitForPort", port: readyPort });
+        return Promise.resolve();
+      },
+    };
+  }
+
+  startProcess = (
+    command: string,
+    options?: SandboxProcessOptions,
+  ): Promise<SandboxProcessCapabilities> => {
+    this.calls.push({ operation: "startProcess", command, options });
+    this.process = this.makeProcess();
+    return Promise.resolve(this.process);
+  };
+
+  getProcess = (processId: string): Promise<SandboxProcessCapabilities | null> => {
+    this.calls.push({ operation: "getProcess", processId });
+    return Promise.resolve(this.process);
+  };
+
+  fetchPort = (
+    path: string,
+    requestPort: number,
+    method: "GET" | "POST",
+    headers?: Readonly<Record<string, string>>,
+  ) => {
+    this.calls.push({ operation: "fetchPort", path, port: requestPort, method, headers });
+    return Promise.resolve(Response.json({ status: "quiesced" }));
+  };
+}
+
 const seedWith = (
   capabilities: SandboxRuntimeCapabilities,
   storedCredential: StoredCredential = credential,
@@ -133,6 +197,19 @@ const ensureTerminalWith = (
   return Effect.flatMap(ContainerAuth, (auth) => auth.ensureTerminal(ID, storedCredential)).pipe(
     Effect.provide(layer),
   );
+};
+
+const piSessionWith = (
+  capabilities: SandboxRuntimeCapabilities,
+  operation: "ensure" | "quiesce" | "stop",
+) => {
+  const runtimeLayer = sandboxRuntimeLayer(capabilities);
+  const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
+  return Effect.flatMap(ContainerAuth, (auth) => {
+    if (operation === "ensure") return auth.ensurePiSession(ID, credential);
+    if (operation === "quiesce") return auth.quiescePiSession(ID, credential);
+    return auth.stopPiSession();
+  }).pipe(Effect.provide(layer));
 };
 
 const failed = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRuntimeFailure => {
@@ -300,6 +377,61 @@ describe("ContainerAuth", () => {
             call.content.includes(`export SCOTTY_SESSION_ID='${ID}'`),
         ),
       );
+    }),
+  );
+
+  it.effect("starts one ready Pi RPC session, reuses it, and stops it cleanly", () =>
+    Effect.gen(function* () {
+      const capabilities = new ProcessSandboxCapabilities();
+      yield* piSessionWith(capabilities, "ensure");
+      const start = capabilities.calls.find(
+        (call): call is Extract<ContainerCall, { operation: "startProcess" }> =>
+          call.operation === "startProcess",
+      );
+      assert.strictEqual(start?.command, "/usr/local/bin/scotty-pi-session");
+      assert.deepInclude(start?.options, {
+        autoCleanup: true,
+        cwd: `/workspace/${ID}`,
+        processId: PI_SESSION_PROCESS_ID,
+      });
+      assert.strictEqual(start?.options?.env?.SCOTTY_PI_SESSION_PORT, String(PI_SESSION_PORT));
+      assert.ok(start?.options?.env?.SCOTTY_PI_SESSION_TOKEN_FILE?.endsWith(".token"));
+      assert.strictEqual(start?.options?.env?.GH_TOKEN, GITHUB_SENTINEL);
+      assert.ok(!JSON.stringify(start).includes(REAL_GITHUB));
+      assert.ok(
+        capabilities.calls.some(
+          (call) => call.operation === "waitForPort" && call.port === PI_SESSION_PORT,
+        ),
+      );
+
+      const startCount = capabilities.calls.filter(
+        (call) => call.operation === "startProcess",
+      ).length;
+      yield* piSessionWith(capabilities, "ensure");
+      assert.strictEqual(
+        capabilities.calls.filter((call) => call.operation === "startProcess").length,
+        startCount,
+      );
+
+      yield* piSessionWith(capabilities, "quiesce");
+      assert.ok(
+        capabilities.calls.some(
+          (call) =>
+            call.operation === "fetchPort" &&
+            call.path === "/quiesce" &&
+            call.port === PI_SESSION_PORT &&
+            call.method === "POST" &&
+            typeof call.headers?.["x-scotty-pi-session"] === "string",
+        ),
+      );
+
+      yield* piSessionWith(capabilities, "stop");
+      assert.ok(
+        capabilities.calls.some(
+          (call) => call.operation === "killProcess" && call.signal === "SIGTERM",
+        ),
+      );
+      assert.strictEqual(capabilities.process, null);
     }),
   );
 
