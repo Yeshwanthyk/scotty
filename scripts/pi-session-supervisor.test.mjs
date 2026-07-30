@@ -56,6 +56,10 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   else if (command.type === "get_messages")
     output({ id: command.id, type: "response", command: command.type, success: true, data: { messages } });
   else if (command.type === "prompt") {
+    if (command.message === "Race-safe follow-up" && command.streamingBehavior !== "followUp") {
+      output({ id: command.id, type: "response", command: command.type, success: false, error: "Agent is already processing a prompt" });
+      return;
+    }
     messages.push({ role: "user", content: command.message });
     output({ id: command.id, type: "response", command: command.type, success: true });
     output({ type: "extension_ui_request", id: "ask-1", method: "select", title: "Choose", options: ["A", "B"] });
@@ -125,6 +129,20 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   });
   assert.equal(replay.status, 200);
   assert.deepEqual(await replay.json(), receipt);
+
+  const followUp = await fetch(`${url}/command`, {
+    method: "POST",
+    headers: { ...transportHeaders, "content-type": "application/json" },
+    body: JSON.stringify({
+      commandId: "follow-up-1",
+      command: {
+        type: "prompt",
+        message: "Race-safe follow-up",
+        streamingBehavior: "followUp",
+      },
+    }),
+  });
+  assert.equal(followUp.status, 202);
 
   const answer = await fetch(`${url}/command`, {
     method: "POST",
