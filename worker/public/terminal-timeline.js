@@ -2,6 +2,16 @@ function firstString(...values) {
   return values.find((value) => typeof value === "string" && value.length > 0);
 }
 
+function firstObject(...values) {
+  return values.find(
+    (value) => value !== null && typeof value === "object" && !Array.isArray(value),
+  ) ?? {};
+}
+
+function numberValue(...values) {
+  return values.find((value) => Number.isFinite(value));
+}
+
 function contentParts(message) {
   if (Array.isArray(message?.content)) return message.content;
   if (typeof message?.content === "string") return [{ type: "text", text: message.content }];
@@ -14,6 +24,42 @@ function toolId(tool) {
 
 function messageId(message) {
   return firstString(message?.id, message?.messageId, message?.message_id);
+}
+
+export function replaceTimelineMessage(messages, message) {
+  const id = messageId(message);
+  const index = id ? messages.findIndex((candidate) => messageId(candidate) === id) : -1;
+  if (index >= 0) {
+    messages[index] = message;
+    return;
+  }
+  const last = messages.at(-1);
+  if (!id && last?.role === message.role && message.role === "assistant") {
+    messages[messages.length - 1] = message;
+  } else {
+    messages.push(message);
+  }
+}
+
+export function appendAssistantMessageDelta(messages, event) {
+  let message = messages.at(-1);
+  if (!message || message.role !== "assistant") {
+    message = { role: "assistant", content: [] };
+    messages.push(message);
+  }
+  if (!Array.isArray(message.content)) message.content = [];
+  const deltaEvent = firstObject(event.assistantMessageEvent, event.delta, event.update, event);
+  const type = firstString(deltaEvent.type, event.updateType);
+  const index = numberValue(deltaEvent.contentIndex, deltaEvent.content_index) ?? 0;
+  const delta = firstString(deltaEvent.delta, deltaEvent.text, deltaEvent.content) ?? "";
+  const contentType = type?.includes("thinking") ? "thinking" : "text";
+  while (message.content.length <= index) message.content.push({ type: contentType, text: "" });
+  const part = firstObject(message.content[index], { type: contentType });
+  message.content[index] = {
+    ...part,
+    type: firstString(part.type, contentType),
+    text: `${firstString(part.text, part.thinking, "") ?? ""}${delta}`,
+  };
 }
 
 function messageRole(message) {
