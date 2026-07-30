@@ -246,18 +246,14 @@ test.provider("public binding topology converges through the synthetic provider 
     cloud.calls.length = 0;
     const repeatPlan = yield* stack.plan(program("namespace-a"));
     expect(repeatPlan.resources.SandboxHost?.action).toBe("noop");
-    expect(repeatPlan.resources.SandboxContainer?.action).toBe("update");
+    expect(repeatPlan.resources.SandboxContainer?.action).toBe("noop");
+    expect(cloud.calls).toEqual([]);
 
-    const replacementsBeforeRepeat = cloud.calls.filter((call) =>
-      call.startsWith("container:replace-association:"),
-    ).length;
     const repeated = yield* stack.deploy(program("namespace-a"));
     expect(repeated.container.durableObjects).toEqual({
       namespaceId: "namespace-a",
     });
-    expect(
-      cloud.calls.filter((call) => call.startsWith("container:replace-association:")),
-    ).toHaveLength(replacementsBeforeRepeat);
+    expect(cloud.calls).toEqual([]);
 
     cloud.calls.length = 0;
     const normalizedPlan = yield* stack.plan(program("namespace-a"));
