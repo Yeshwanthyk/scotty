@@ -1,5 +1,5 @@
 import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
-import { composerText } from "/terminal-input.js";
+import { composerText, hasAvailableRuntime } from "/terminal-input.js";
 import { conversationItems } from "/terminal-timeline.js";
 
 const CACHE_LIMIT = 6;
@@ -986,8 +986,7 @@ function renderRuntimeControls() {
     currentProjection?.state?.thinkingLevel,
     currentProjection?.state?.thinking_level,
   );
-  const visible =
-    models.length > 0 || thinkingLevels.length > 0 || Object.keys(currentModel).length > 0;
+  const visible = hasAvailableRuntime(currentProjection);
   runtimeControlsButton.hidden = !visible;
   runtimeControlsButton.disabled = commandPending || !currentProjection?.loaded;
   modelSelect.disabled = commandPending || models.length === 0;
@@ -1043,11 +1042,13 @@ function renderRuntimeControls() {
 
 function updateComposer() {
   const active = Boolean(currentProjection?.active);
+  const runtimeAvailable = hasAvailableRuntime(currentProjection);
   deliveryModeButton.hidden = !active;
   stopRunButton.hidden = !active;
   if (!active) setDeliveryMenu(false);
   const text = composerText(composerInput.value);
-  composerSend.disabled = commandPending || !text || !currentProjection?.loaded;
+  composerSend.disabled =
+    commandPending || !text || !currentProjection?.loaded || !runtimeAvailable;
   composerSend.textContent = active ? (deliveryMode === "steer" ? "Steer" : "Queue") : "Send";
   deliveryModeLabel.textContent = deliveryMode === "steer" ? "Steer" : "Queue";
   composerStatus.textContent = commandPending
@@ -1055,7 +1056,9 @@ function updateComposer() {
     : active
       ? "Pi is active"
       : currentProjection?.loaded
-        ? "Pi is ready"
+        ? runtimeAvailable
+          ? "Pi is ready"
+          : "Pi model unavailable"
         : "Loading session state…";
   for (const option of deliveryMenu.querySelectorAll("[data-delivery-mode]")) {
     option.setAttribute("aria-checked", String(option.dataset.deliveryMode === deliveryMode));

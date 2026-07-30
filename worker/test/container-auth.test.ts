@@ -385,6 +385,25 @@ describe("ContainerAuth", () => {
     Effect.gen(function* () {
       const capabilities = new ProcessSandboxCapabilities();
       yield* piSessionWith(capabilities, "ensure");
+      const authWriteIndex = capabilities.calls.findIndex(
+        (call) =>
+          call.operation === "writeFile" && call.path === `/workspace/${ID}/.pi-agent/auth.json`,
+      );
+      const settingsWriteIndex = capabilities.calls.findIndex(
+        (call) =>
+          call.operation === "writeFile" &&
+          call.path === `/workspace/${ID}/.pi-agent/settings.json`,
+      );
+      const authModeIndex = capabilities.calls.findIndex(
+        (call) =>
+          call.operation === "exec" &&
+          call.command.includes(`chmod 600 '/workspace/${ID}/.pi-agent/auth.json'`),
+      );
+      const startIndex = capabilities.calls.findIndex((call) => call.operation === "startProcess");
+      assert.ok(authWriteIndex >= 0);
+      assert.ok(settingsWriteIndex > authWriteIndex);
+      assert.ok(authModeIndex > settingsWriteIndex);
+      assert.ok(startIndex > authModeIndex);
       const start = capabilities.calls.find(
         (call): call is Extract<ContainerCall, { operation: "startProcess" }> =>
           call.operation === "startProcess",

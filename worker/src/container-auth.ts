@@ -144,6 +144,18 @@ export class ContainerAuth extends Context.Service<ContainerAuth, ContainerAuthS
 export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntime> = Layer.effect(
   ContainerAuth,
   Effect.map(SandboxRuntime, (runtime) => {
+    const refreshPiAuth = Effect.fnUntraced(function* (
+      id: SessionRecord["id"],
+      credential: StoredCredential,
+    ) {
+      const piHome = `${sessionRoot(id)}/.pi-agent`;
+      const authPath = `${piHome}/auth.json`;
+      const settingsPath = `${piHome}/settings.json`;
+      yield* runtime.mkdir(piHome, { recursive: true });
+      yield* runtime.writeFile(authPath, piAuthJson(credential));
+      yield* runtime.writeFile(settingsPath, piSettings(credential));
+      yield* runtime.execChecked(`chmod 600 ${shellQuote(authPath)} ${shellQuote(settingsPath)}`);
+    });
     const seed = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
       credential: StoredCredential,
@@ -200,6 +212,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           });
           return;
         }
+        yield* refreshPiAuth(id, credential);
         const transportToken = yield* derivePiSessionTransportToken(id, credential);
         const tokenPath = piSessionTokenPath(id);
         yield* runtime.writeFile(tokenPath, transportToken);
@@ -260,14 +273,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
         yield* process.kill("SIGTERM");
         yield* process.waitForExit(10_000);
       }),
-      refreshPiAuth: Effect.fnUntraced(function* (id, credential) {
-        const piHome = `${sessionRoot(id)}/.pi-agent`;
-        const authPath = `${piHome}/auth.json`;
-        const settingsPath = `${piHome}/settings.json`;
-        yield* runtime.writeFile(authPath, piAuthJson(credential));
-        yield* runtime.writeFile(settingsPath, piSettings(credential));
-        yield* runtime.execChecked(`chmod 600 ${shellQuote(authPath)} ${shellQuote(settingsPath)}`);
-      }),
+      refreshPiAuth,
     });
   }),
 );
