@@ -7,14 +7,14 @@ status: active
 
 ## Current position
 
-Cloudflare is the production session provider. It runs Pi through the Sandbox native terminal and
-bundled Ghostty Web. The control plane also supports user-named trusted runners: registration,
-credential rotation, outbound connection health, desired state, Docker compute operations, and
-removal are implemented.
+Cloudflare is the production session provider. It runs one direct Pi RPC session and projects its
+worklog through the authenticated browser UI. The control plane also supports user-named trusted
+runners: registration, credential rotation, outbound connection health, desired state, Docker
+compute operations, and removal are implemented.
 
 Runner-backed session creation is deliberately disabled. The next runner milestone is a native Pi
-terminal transport with the same user-visible session contract as Cloudflare. Registration must not
-be mistaken for execution readiness.
+RPC transport with the same user-visible worklog contract as Cloudflare. Registration must not be
+mistaken for execution readiness.
 
 ## Requirements
 

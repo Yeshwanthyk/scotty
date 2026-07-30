@@ -183,7 +183,7 @@
       "commands": ["pi"],
       "source": "npm",
       "versionPolicy": "pinned",
-      "expectedVersion": "0.82.1",
+      "expectedVersion": "0.83.0",
       "probe": ["pi", "--version"]
     }
   ]

@@ -17,7 +17,7 @@ flowchart TD
     SESSION --> CF["Cloudflare Sandbox and Container"]
     SESSION --> KV["KV list projection"]
     SESSION --> R2["R2 immutable backups"]
-    CF --> PI["Pi terminal runtime"]
+    CF --> PI["Pi RPC supervisor and session"]
 ```
 
 The Session Durable Object is authoritative. KV and UI rows are projections. R2 backups are
@@ -37,12 +37,12 @@ absent
 ```
 
 Only one operation lease may mutate a session. Create schedules the hard cap before committing its
-initial authoritative record. Snapshot and managed sleep stop the Pi terminal before sync and
+initial authoritative record. Snapshot and managed sleep quiesce and stop the Pi session before sync and
 backup. Resume requires a committed current backup. Vaporize is forward-only and retryable until
 all owned resources are absent.
 
 A failed or interrupted operation must either retain a recoverable lease with a scheduled
-reconciler, or publish a typed terminal failure. It must never report success from ambiguous
+reconciler, or publish a typed runtime failure. It must never report success from ambiguous
 provider state.
 
 ## Credential path
@@ -80,7 +80,7 @@ register name -> issue one-time credential -> install user service
 ```
 
 Runner registration and host setup are shipped. Runner-backed session creation is a closed gate
-until a native Pi terminal transport has lifecycle, reconnect, checkpoint, credential, and deployed
+until a native Pi RPC transport has lifecycle, reconnect, checkpoint, credential, and deployed
 acceptance proof. No compatibility application or committed executable fills that gap.
 
 ## Delivery gates
@@ -90,7 +90,7 @@ acceptance proof. No compatibility application or committed executable fills tha
 3. Packaging gate: standalone CLI build plus container image build with all Pi extensions listed.
 4. Git gate: logical commits, clean tree, pushed branch, and reviewable draft PR.
 5. Cloud gate: guarded Alchemy production deployment and settled Container rollout.
-6. Canary gate: create, authenticated Pi terminal, snapshot, resume, beam down, and vaporize with no
+6. Canary gate: create, authenticated Pi worklog, snapshot, resume, beam down, and vaporize with no
    orphaned runtime, backup, credential, or projection state.
 
 A later gate cannot waive an earlier one. A local fake proves contracts, not live provider

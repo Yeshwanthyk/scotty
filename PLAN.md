@@ -7,7 +7,7 @@ governs the implementation framework and infrastructure model.
 
 A user installs the standalone `scotty` CLI, chooses a Cloudflare profile and required installation
 name, and gets an isolated deployment with no repository-owned account identifiers. The same CLI
-creates durable Pi sessions, opens their authenticated browser terminal, checkpoints them, restores
+creates durable Pi sessions, opens their authenticated browser worklog, checkpoints them, restores
 them, downloads their work, and destroys them.
 
 A machine-local config is a convenience pointer, not deployment authority. A replacement machine
@@ -49,7 +49,7 @@ scotty runner remove NAME --yes
 
 Runner names are created and managed by the control plane. No runner instance name is committed or
 stored as Worker configuration. Runner-backed session creation is disabled until the runner link
-has a native Pi terminal transport.
+has a native Pi RPC transport.
 
 ## Installation ownership
 
@@ -83,12 +83,14 @@ Each session has one authoritative Sandbox Durable Object. It owns:
 KV contains only a non-secret list projection. R2 contains immutable backup generations. Provider
 runtime memory is never authoritative.
 
-Cloudflare sessions prepare `/workspace/<id>`, seed Pi settings and session-bound credentials, and
-publish `warm` only after setup succeeds. The authenticated browser page connects Ghostty Web to a
-Sandbox native PTY running `scotty-pi-shell`. Snapshot stops the terminal, syncs the filesystem,
-writes a new immutable backup, and rotates current/previous handles. Resume restores the current
-backup and reseeds container-only configuration. Vaporize removes runtime, credentials, backups,
-projection, and authority.
+Cloudflare sessions prepare `/workspace/<id>`, seed Pi settings and session-bound credentials, start
+one loopback-only `pi --mode rpc` supervisor, and publish `warm` only after its health check and
+initial prompt acceptance succeed. The authenticated browser page projects Pi messages, thinking,
+tools, extension UI, and queue state through Worker-authenticated HTTP and SSE routes. Snapshot
+quiesces and stops Pi, syncs the filesystem, writes a new immutable backup, rotates current/previous
+handles, then resumes the same Pi session. Resume restores the current backup, reseeds
+container-only configuration, and starts `pi --continue`. Vaporize removes runtime, credentials,
+backups, projection, and authority.
 
 ## Credential isolation
 
@@ -106,7 +108,7 @@ ownership transfer, recovery, and revocation remain Auth Durable Object operatio
 
 ## Container contents
 
-The image includes pinned Pi, Ghostty Web assets, the standalone Scotty CLI, standard tools, bundled
+The image includes pinned Pi, the lightweight Pi RPC supervisor, the standalone Scotty CLI, standard tools, bundled
 skills, and the eight configured Pi extensions. Source-based extensions are ordinary vendored
 container source with upstream repository and commit metadata in
 `worker/container/pi-packages/manifest.json`; consumers do not initialize those repositories.
@@ -116,4 +118,4 @@ container source with upstream repository and commit metadata in
 A releasable revision passes formatting, skill lint, lint, typecheck, all local tests, secret scan,
 standalone CLI build, container build, guarded production deployment, and the stage-isolated
 deployed canary. Host reachability alone is not readiness; the acceptance probe must exercise the
-actual session and terminal contract.
+actual session and worklog contract.

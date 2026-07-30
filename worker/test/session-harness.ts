@@ -321,6 +321,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const runnerRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
+  let piSessionRunning = false;
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
   const storage = new HarnessStorage(
@@ -630,6 +631,47 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     setEnvVars: {
       value: async (_envVars: Record<string, string | undefined>): Promise<void> => {
         events.push("host:setEnvVars");
+      },
+    },
+    startProcess: {
+      value: async (_command: string, options?: { readonly processId?: string }) => {
+        piSessionRunning = true;
+        events.push(`host:pi:start:${options?.processId ?? "generated"}`);
+        return {
+          id: options?.processId ?? "generated",
+          status: "running" as const,
+          kill: async () => {
+            piSessionRunning = false;
+            events.push("host:pi:kill");
+          },
+          waitForExit: async () => ({ exitCode: 0 }),
+          waitForPort: async () => {
+            events.push("host:pi:ready");
+          },
+        };
+      },
+    },
+    getProcess: {
+      value: async (processId: string) =>
+        piSessionRunning
+          ? {
+              id: processId,
+              status: "running" as const,
+              kill: async () => {
+                piSessionRunning = false;
+                events.push("host:pi:kill");
+              },
+              waitForExit: async () => ({ exitCode: 0 }),
+              waitForPort: async () => {
+                events.push("host:pi:ready");
+              },
+            }
+          : null,
+    },
+    containerFetch: {
+      value: async (request: Request, port: number) => {
+        events.push(`host:pi:fetch:${port}:${new URL(request.url).pathname}`);
+        return Response.json({ status: "quiesced" });
       },
     },
     deleteSession: {

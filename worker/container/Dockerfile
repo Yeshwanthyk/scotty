@@ -26,7 +26,7 @@ ARG FD_VERSION=10.4.2
 ARG FD_SHA256=0e44eb5fca93f09bc6f5430b90acdf44c8e069d0a903700aeb4820629337b67b
 ARG GO_VERSION=1.26.1
 ARG GO_SHA256=031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a
-ARG PI_VERSION=0.82.1
+ARG PI_VERSION=0.83.0
 ARG QSV_VERSION=21.1.0
 ARG QSV_SHA256=6e1e322c2ac0d2e862e961f0bb5b30c8ceccb12ace37067bc8d911c77cf101f3
 ARG RIPGREP_VERSION=15.2.0
@@ -119,6 +119,7 @@ COPY worker/container/pi-packages /opt/scotty/pi-packages
 COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
 COPY worker/container/scotty-runner-bootstrap /usr/local/bin/scotty-runner-bootstrap
 COPY worker/container/scotty-pi-shell /usr/local/bin/scotty-pi-shell
+COPY worker/container/scotty-pi-session.mjs /usr/local/bin/scotty-pi-session
 RUN set -eu; \
   npm ci \
       --prefix /opt/scotty/pi-packages/npm \
@@ -169,6 +170,7 @@ RUN mkdir -p /tmp/scotty-pi-agent \
   && chmod 0755 \
     /usr/local/bin/scotty-runner-bootstrap \
     /usr/local/bin/scotty-pi-shell \
+    /usr/local/bin/scotty-pi-session \
     /usr/local/bin/scotty \
   && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/skills \
   && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-pi-shell \
@@ -177,7 +179,7 @@ RUN mkdir -p /tmp/scotty-pi-agent \
   && scotty tools list --json >/dev/null \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck \
-    node npm bun corepack cc pkg-config codex pi scotty-pi-shell scotty-runner-bootstrap; do \
+    node npm bun corepack cc pkg-config codex pi scotty-pi-session scotty-pi-shell scotty-runner-bootstrap; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done
 

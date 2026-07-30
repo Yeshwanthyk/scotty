@@ -15,7 +15,7 @@ execution provider.
 
 **Provider**:
 A named implementation that supplies compute for a session. Cloudflare is the production session
-provider. Runner-backed session creation remains gated on a native Pi terminal transport.
+provider. Runner-backed session creation remains gated on a native Pi RPC worklog transport.
 
 **Runner**:
 A user-named Scotty service on a user-controlled Linux machine. Runner registration, desired state,
@@ -26,7 +26,7 @@ The public Worker plus the Auth, Session, and Runner Durable Objects. It owns id
 credentials, policy, installation metadata, and provider selection.
 
 **Runtime**:
-The Pi agent, workspace, terminal, and Git processes executing inside provider compute.
+The Pi agent, workspace, RPC supervisor, and Git processes executing inside provider compute.
 
 **Projection**:
 A non-secret, rebuildable view of authoritative Durable Object state stored in KV for listing.

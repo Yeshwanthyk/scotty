@@ -38,10 +38,6 @@ const terminalStyles = await readFile(
   new URL("../worker/public/terminal.css", import.meta.url),
   "utf8",
 );
-const ghosttyWeb = await readFile(
-  new URL("../worker/public/vendor/ghostty-web.js", import.meta.url),
-  "utf8",
-);
 const sessionForm = await readFile(
   new URL("../worker/public/session-form.js", import.meta.url),
   "utf8",
@@ -166,14 +162,14 @@ describe("sessions shell", () => {
   it("ships project-grouped desktop and mobile warm-session navigation", () => {
     assert.match(terminalHtml, /class="workspace-rail"/);
     assert.match(terminalHtml, /class="workspace-picker"/);
-    assert.match(terminalHtml, /class="home-link" href="\/sessions">Home<\/a>/);
+    assert.match(terminalHtml, /class="home-link" href="\/sessions">Sessions Home<\/a>/);
     assert.doesNotMatch(terminalHtml, /Sleeping containers only appear on Home\./);
     assert.match(terminalScript, /sessions\.filter\(\(session\) => session\?\.status === "warm"\)/);
     assert.match(terminalScript, /groupSessionsByRepository\(warm\)/);
     assert.match(terminalScript, /function visibleWorkspaceSignature\(groups\)/);
     assert.match(
       terminalScript,
-      /if \(signature !== workspaceListSignature\) \{[\s\S]*?workspaceList\.replaceChildren\(\)/,
+      /if \(signature === workspaceListSignature\)[\s\S]*?workspaceList\.replaceChildren\(\)/,
     );
     assert.doesNotMatch(terminalScript, /\/resume|resumeScottySession|status === "sleeping"/);
     assert.match(
@@ -182,60 +178,27 @@ describe("sessions shell", () => {
     );
   });
 
-  it("keeps terminal geometry and scrollback usable across viewport changes", () => {
-    assert.match(
-      terminalScript,
-      /socketUrl\.searchParams\.set\("cols", String\(terminal\.cols\)\)/,
-    );
-    assert.match(
-      terminalScript,
-      /socketUrl\.searchParams\.set\("rows", String\(terminal\.rows\)\)/,
-    );
-    assert.match(terminalScript, /addEventListener\("touchstart"/);
-    assert.match(terminalScript, /addEventListener\("touchmove"/);
-    assert.match(terminalScript, /fitAddon\.observeResize\(\)/);
-    assert.match(
-      terminalScript,
-      /terminal\.getViewportY\(\)[\s\S]*?terminal\.getScrollbackLength\(\)/,
-    );
-    assert.match(terminalStyles, /\.terminal\s*\{[\s\S]*?touch-action:\s*none;/);
-  });
-
-  it("ships responsive mobile input with immediate visible composition", () => {
-    assert.match(ghosttyWeb, /addEventListener\("beforeinput", this\.beforeInputListener\)/);
-    assert.match(ghosttyWeb, /this\.awaitingEcho = !0/);
-    assert.match(terminalHtml, /id="mobile-composer"[\s\S]*?id="mobile-composer-input"/);
-    assert.match(terminalHtml, /enterkeyhint="send"/);
-    assert.match(terminalHtml, /data-terminal-key="ctrl-c"/);
-    assert.match(terminalHtml, /data-terminal-key="arrow-up"/);
-    assert.match(terminalScript, /submitComposer\(terminal, mobileComposerInput\.value\)/);
-    assert.match(terminalScript, /mobileComposerInput\.addEventListener\("beforeinput"/);
+  it("ships the native Pi worklog, live RPC projection, and one responsive composer", () => {
+    assert.match(terminalHtml, /id="worklog"[\s\S]*?id="worklog-feed"/);
+    assert.match(terminalHtml, /id="activity-drawer"/);
+    assert.match(terminalHtml, /id="composer"[\s\S]*?id="composer-input"/);
+    assert.match(terminalScript, /rpcUrl\(sessionId, "snapshot"\)/);
+    assert.match(terminalScript, /rpcUrl\(sessionId, "events"\)/);
+    assert.match(terminalScript, /rpcUrl\(currentSessionId, "command"\)/);
+    assert.match(terminalScript, /new EventSource\(url\)/);
+    assert.match(terminalScript, /window\.history\.pushState/);
+    assert.match(terminalScript, /window\.addEventListener\("popstate"/);
+    assert.match(terminalScript, /const sessionCache = new Map\(\)/);
+    assert.doesNotMatch(terminalScript, /ghostty|new WebSocket|\/terminal["'`]/u);
     assert.match(
       terminalStyles,
-      /@media \(max-width: 780px\)[\s\S]*?\.mobile-composer\s*\{[\s\S]*?display: grid;/,
-    );
-    assert.match(
-      terminalStyles,
-      /\.mobile-composer-input\s*\{[\s\S]*?font-size:\s*16px;/,
+      /@media \(max-width: 780px\)[\s\S]*?\.composer-shell textarea\s*\{[\s\S]*?font-size:\s*16px;/,
       "mobile composer text must not trigger iOS focus zoom",
     );
     assert.match(
       terminalStyles,
-      /\.mobile-terminal-key[\s\S]*?min-height:\s*44px;/,
-      "mobile terminal keys need touch-sized targets",
-    );
-  });
-
-  it("keeps the Ghostty canvas backing size scaled for high-density displays", () => {
-    assert.match(
-      ghosttyWeb,
-      /this\.canvas\.width = g \* this\.devicePixelRatio/,
-      "the renderer must allocate DPR-scaled backing pixels",
-    );
-    assert.equal(
-      ghosttyWeb.match(/this\.canvas\.width\s*=/gu)?.length,
-      1,
-      "terminal resize must not overwrite the renderer's DPR-scaled canvas width",
+      /@media \(max-width: 780px\)[\s\S]*?\.quiet-button,[\s\S]*?\.send-button\s*\{[\s\S]*?min-height:\s*44px;/,
+      "mobile composer controls need touch-sized targets",
     );
   });
 });

@@ -1,4 +1,4 @@
-import { ContainerProxy, getSandbox, proxyTerminal } from "@cloudflare/sandbox";
+import { ContainerProxy, getSandbox } from "@cloudflare/sandbox";
 import { parsePiAuthJsonOption, piProviderMetadata } from "../../protocol/pi-auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
@@ -66,7 +66,7 @@ import {
   type ScottyRunnerRegistryStub,
 } from "./runner-registry-object";
 import { Sandbox as ScottySandbox } from "./session";
-import { terminalShellPath } from "./container-auth";
+import { PI_SESSION_PORT } from "./container-auth";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
 
@@ -83,29 +83,9 @@ const RunnerRegistrationInputSchema = Schema.Struct({
   name: Schema.String,
   replace: Schema.optionalKey(Schema.Boolean),
 });
-const TerminalDimensionSchema = Schema.FiniteFromString.check(
-  Schema.isInt(),
-  Schema.isBetween({ minimum: 1, maximum: 1_000 }),
-);
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
   onExcessProperty: "error",
 });
-const decodeTerminalDimension = Schema.decodeUnknownOption(TerminalDimensionSchema);
-
-function parseTerminalDimensions(request: Request): {
-  readonly cols?: number;
-  readonly rows?: number;
-} {
-  const search = new URL(request.url).searchParams;
-  const rawCols = search.get("cols");
-  const rawRows = search.get("rows");
-  if (rawCols === null && rawRows === null) return {};
-  const cols = decodeTerminalDimension(rawCols);
-  const rows = decodeTerminalDimension(rawRows);
-  if (Option.isNone(cols) || Option.isNone(rows))
-    throw badRequest("Terminal dimensions are invalid");
-  return { cols: cols.value, rows: rows.value };
-}
 
 app.onError((error, c) => {
   const normalized = normalizeError(error);
@@ -590,11 +570,54 @@ app.all("/s/:id/terminal", async (c) => {
     );
   requireSameOrigin(c.req.raw);
   const sandbox = sessionSandbox(c.env, id);
-  await assertCloudflareTerminalAccess(sandbox);
-  return proxyTerminal(sandbox, id, c.req.raw, {
-    ...parseTerminalDimensions(c.req.raw),
-    shell: terminalShellPath(id),
-  });
+  await assertCloudflarePiAccess(sandbox);
+  return c.json(
+    {
+      error: {
+        code: "terminal_retired",
+        message: "This session uses the Pi worklog instead of a terminal",
+      },
+    },
+    410,
+  );
+});
+
+app.all("/s/:id/rpc/:action", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const action = c.req.param("action");
+  const expectedMethod =
+    action === "snapshot" || action === "events"
+      ? "GET"
+      : action === "command"
+        ? "POST"
+        : undefined;
+  if (expectedMethod === undefined || c.req.method !== expectedMethod)
+    return c.json({ error: { code: "not_found", message: "Route not found" } }, 404);
+  if (c.req.method === "POST") {
+    requireCookieMutationSecurity(c.req.raw);
+    requireJsonContentType(c.req.raw);
+  }
+
+  const sandbox = sessionSandbox(c.env, id);
+  const incomingUrl = new URL(c.req.url);
+  const targetUrl = new URL(`http://127.0.0.1:${PI_SESSION_PORT}/${action}`);
+  targetUrl.search = incomingUrl.search;
+  const headers = new Headers();
+  for (const name of ["accept", "content-type", "last-event-id"]) {
+    const value = c.req.header(name);
+    if (value) headers.set(name, value);
+  }
+  const body = c.req.method === "POST" ? await c.req.arrayBuffer() : undefined;
+  return sandbox.proxyPiSessionRequest(
+    new Request(targetUrl, {
+      method: c.req.method,
+      headers,
+      body,
+    }),
+  );
 });
 
 app.all("/s/:id", async (c) => {
@@ -920,10 +943,10 @@ async function serveScottySessionSubpath(
   );
 }
 
-async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<void> {
+async function assertCloudflarePiAccess(sandbox: ScottySandbox): Promise<void> {
   const session = await sandbox.getScottySession();
   if (session.provider === "runner")
-    throw new ScottyError("not_found", "Terminal route not found", {
+    throw new ScottyError("not_found", "Pi session route not found", {
       httpStatus: 404,
       exitCode: 3,
     });
@@ -932,10 +955,10 @@ async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<v
       session.status,
       "access",
       session.status === "sleeping"
-        ? "Resume the session before accessing the terminal"
+        ? "Resume the session from Home before opening the worklog"
         : undefined,
     );
-  await sandbox.prepareTerminalAccess();
+  await sandbox.preparePiSessionAccess();
 }
 
 async function createTrackedSession(

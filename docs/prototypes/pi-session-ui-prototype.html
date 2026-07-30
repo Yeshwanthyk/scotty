@@ -1,0 +1,2645 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway design exploration, not production code.
+  Question: What should Scotty's single-session Pi web UI look like on phone and desktop?
+  Run: python3 -m http.server 4173
+  Open: http://localhost:4173/docs/prototypes/pi-session-ui-prototype.html
+  Selected direction: focused worklog (?variant=B)
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Scotty · Pi session UI prototype</title>
+    <style>
+      :root {
+        --space: #01060c;
+        --shell: #030e14;
+        --panel: #07131a;
+        --panel-raised: #0b1a21;
+        --control: #020b10;
+        --ink: #eee7d3;
+        --ink-strong: #fffaf0;
+        --muted: #b5ad95;
+        --quiet: #817b6d;
+        --line: #29363b;
+        --line-soft: rgb(238 231 211 / 0.1);
+        --beam: #d8cfb2;
+        --accent: #cf633f;
+        --accent-strong: #e07954;
+        --cyan: #7eb7c2;
+        --green: #75b894;
+        --yellow: #d1b77b;
+        --danger: #ff8278;
+        --focus: #f08a64;
+        --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+        --sans:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+        --z-sticky: 10;
+        --z-sheet: 30;
+        --z-switcher: 50;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-width: 300px;
+        min-height: 100%;
+        margin: 0;
+        background: var(--space);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-synthesis: none;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      body {
+        overflow-x: hidden;
+      }
+
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        color: inherit;
+        touch-action: manipulation;
+      }
+
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
+      }
+
+      ::selection {
+        background: rgb(207 99 63 / 0.42);
+        color: var(--ink-strong);
+      }
+
+      .prototype-note {
+        position: fixed;
+        z-index: var(--z-switcher);
+        top: 12px;
+        right: 12px;
+        padding: 6px 9px;
+        border: 1px solid rgb(255 255 255 / 0.16);
+        border-radius: 999px;
+        background: rgb(1 6 12 / 0.88);
+        color: #d9dce0;
+        font: 600 10px/1 var(--mono);
+        letter-spacing: 0.04em;
+        pointer-events: none;
+      }
+
+      .variant {
+        display: none;
+        min-height: 100dvh;
+      }
+
+      body[data-variant="A"] .variant-a,
+      body[data-variant="B"] .variant-b,
+      body[data-variant="C"] .variant-c {
+        display: block;
+      }
+
+      .session-topbar {
+        position: sticky;
+        z-index: var(--z-sticky);
+        top: 0;
+        display: flex;
+        min-height: calc(58px + env(safe-area-inset-top));
+        align-items: center;
+        gap: 14px;
+        padding: env(safe-area-inset-top) max(18px, env(safe-area-inset-right)) 0
+          max(18px, env(safe-area-inset-left));
+        border-bottom: 1px solid var(--line-soft);
+        background: rgb(3 14 20 / 0.94);
+        backdrop-filter: blur(18px);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        flex: none;
+        font: 760 11px/1 var(--mono);
+        letter-spacing: 0.1em;
+      }
+
+      .brand img {
+        width: 29px;
+        height: 29px;
+        border-radius: 8px;
+        box-shadow: 0 0 0 1px rgb(238 231 211 / 0.14);
+      }
+
+      .task-heading {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .task-heading strong,
+      .task-heading span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .task-heading strong {
+        color: var(--ink-strong);
+        font-size: 13px;
+        line-height: 1.25;
+      }
+
+      .task-heading span {
+        margin-top: 2px;
+        color: var(--quiet);
+        font: 500 10px/1.2 var(--mono);
+      }
+
+      .session-state {
+        display: inline-flex;
+        min-height: 30px;
+        align-items: center;
+        gap: 7px;
+        padding: 0 10px;
+        border-radius: 999px;
+        background: rgb(117 184 148 / 0.09);
+        color: #a6d2b9;
+        font-size: 11px;
+        font-weight: 680;
+      }
+
+      .session-state.waiting {
+        background: rgb(209 183 123 / 0.09);
+        color: #dfc98f;
+      }
+
+      .state-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 3px rgb(117 184 148 / 0.12);
+      }
+
+      .state-dot.waiting {
+        background: var(--yellow);
+        box-shadow: 0 0 0 3px rgb(209 183 123 / 0.12);
+      }
+
+      .icon-button,
+      .quiet-button,
+      .small-button,
+      .send-button,
+      .action-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        cursor: pointer;
+      }
+
+      .icon-button {
+        width: 32px;
+        height: 32px;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+      }
+
+      .icon-button:hover,
+      .quiet-button:hover {
+        background: rgb(238 231 211 / 0.06);
+        color: var(--ink);
+      }
+
+      .session-options-trigger {
+        position: relative;
+      }
+
+      .session-options-trigger::after {
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        width: 5px;
+        height: 5px;
+        border: 1px solid var(--shell);
+        border-radius: 50%;
+        background: var(--yellow);
+        content: "";
+      }
+
+      .icon {
+        width: 16px;
+        height: 16px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.75;
+      }
+
+      .message-copy {
+        opacity: 0;
+        transition: opacity 160ms var(--ease-out);
+      }
+
+      .assistant-turn:hover .message-copy,
+      .answer-block:hover .message-copy {
+        opacity: 1;
+      }
+
+      .user-prompt {
+        color: var(--ink-strong);
+        font-size: 14px;
+        font-weight: 620;
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+
+      .assistant-copy {
+        max-width: 70ch;
+        color: #ddd9ca;
+        font-size: 14px;
+        line-height: 1.68;
+        text-wrap: pretty;
+      }
+
+      .assistant-copy p {
+        margin: 0 0 12px;
+      }
+
+      .assistant-copy p:last-child {
+        margin-bottom: 0;
+      }
+
+      .inline-code {
+        padding: 0.1em 0.35em;
+        border-radius: 4px;
+        background: rgb(126 183 194 / 0.1);
+        color: #b9d8dd;
+        font: 0.88em/1.4 var(--mono);
+      }
+
+      .thinking {
+        margin: 10px 0;
+        color: var(--quiet);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .thinking summary {
+        width: fit-content;
+        cursor: pointer;
+        color: #999382;
+        font-weight: 600;
+      }
+
+      .thinking p {
+        max-width: 68ch;
+        margin: 8px 0 0;
+      }
+
+      .tool-stack {
+        display: grid;
+        gap: 5px;
+        margin: 12px 0;
+      }
+
+      .tool-row {
+        width: 100%;
+        overflow: hidden;
+        border: 1px solid var(--line-soft);
+        border-radius: 8px;
+        background: rgb(7 19 26 / 0.7);
+      }
+
+      .tool-row summary {
+        display: grid;
+        min-height: 38px;
+        grid-template-columns: auto auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 9px;
+        padding: 0 10px;
+        cursor: pointer;
+        list-style: none;
+      }
+
+      .tool-row summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .tool-row:hover {
+        border-color: rgb(238 231 211 / 0.18);
+        background: rgb(11 26 33 / 0.86);
+      }
+
+      .tool-status {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+
+      .tool-status.running {
+        background: var(--yellow);
+        box-shadow: 0 0 0 3px rgb(209 183 123 / 0.12);
+        animation: breathe 1.8s ease-in-out infinite;
+      }
+
+      .tool-status.error {
+        background: var(--danger);
+        box-shadow: 0 0 0 3px rgb(255 130 120 / 0.1);
+      }
+
+      .tool-name {
+        color: #d8d2bf;
+        font: 650 11px/1 var(--mono);
+      }
+
+      .tool-summary {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--muted);
+        font: 500 11px/1.2 var(--mono);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tool-result {
+        color: var(--quiet);
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      .tool-result.running {
+        color: var(--yellow);
+      }
+
+      .tool-result.error {
+        color: var(--danger);
+      }
+
+      .tool-result .added {
+        color: var(--green);
+      }
+
+      .tool-result .removed {
+        color: var(--danger);
+      }
+
+      .tool-body {
+        padding: 10px 12px 12px 37px;
+        border-top: 1px solid var(--line-soft);
+        color: #a9b1af;
+        font: 11px/1.6 var(--mono);
+        white-space: pre-wrap;
+      }
+
+      .diff-line {
+        display: block;
+        margin-inline: -4px;
+        padding-inline: 4px;
+      }
+
+      .diff-line.add {
+        background: rgb(117 184 148 / 0.09);
+        color: #acd1ba;
+      }
+
+      .diff-line.remove {
+        background: rgb(255 130 120 / 0.08);
+        color: #e2aaa5;
+      }
+
+      .edit-tool-body {
+        padding: 0;
+        overflow: hidden;
+        white-space: normal;
+      }
+
+      .diff-toolbar {
+        display: flex;
+        min-height: 36px;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--line-soft);
+        background: #08151c;
+      }
+
+      .diff-toolbar strong {
+        min-width: 0;
+        overflow: hidden;
+        color: #cbd0ca;
+        font: 600 10px/1 var(--mono);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .diff-stats {
+        margin-left: auto;
+        font: 650 10px/1 var(--mono);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .diff-stats .added {
+        color: var(--green);
+      }
+
+      .diff-stats .removed {
+        margin-left: 6px;
+        color: var(--danger);
+      }
+
+      .diff-code {
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        font: 10px/1.55 var(--mono);
+      }
+
+      .diff-hunk,
+      .diff-row {
+        min-width: 610px;
+      }
+
+      .diff-hunk {
+        padding: 5px 10px 5px 78px;
+        background: rgb(126 183 194 / 0.055);
+        color: #83aeb6;
+      }
+
+      .diff-row {
+        display: grid;
+        grid-template-columns: 34px 34px minmax(max-content, 1fr);
+      }
+
+      .diff-row.remove {
+        background: rgb(255 130 120 / 0.075);
+        color: #e3b0ab;
+      }
+
+      .diff-row.add {
+        background: rgb(117 184 148 / 0.08);
+        color: #b6d7c2;
+      }
+
+      .diff-line-number {
+        padding-right: 8px;
+        border-right: 1px solid rgb(238 231 211 / 0.055);
+        color: #627177;
+        text-align: right;
+        user-select: none;
+      }
+
+      .diff-code-line {
+        padding: 0 12px;
+        white-space: pre;
+      }
+
+      .diff-code-line .token-emphasis {
+        color: var(--ink-strong);
+      }
+
+      .diff-footer {
+        display: flex;
+        min-height: 34px;
+        align-items: center;
+        gap: 8px;
+        padding: 0 10px;
+        border-top: 1px solid var(--line-soft);
+        color: var(--quiet);
+        font-size: 10px;
+      }
+
+      .diff-footer .small-button {
+        min-height: 26px;
+        margin-left: auto;
+      }
+
+      .ask-user-card {
+        margin: 14px 0;
+        border: 1px solid rgb(209 183 123 / 0.28);
+        border-radius: 10px;
+        overflow: hidden;
+        background: #0a1418;
+      }
+
+      .ask-user-header {
+        display: flex;
+        min-height: 39px;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        border-bottom: 1px solid rgb(209 183 123 / 0.16);
+        background: rgb(209 183 123 / 0.055);
+        color: #e2d3ad;
+        font: 700 10px/1 var(--mono);
+        letter-spacing: 0.025em;
+      }
+
+      .ask-user-header .icon {
+        width: 14px;
+        height: 14px;
+      }
+
+      .ask-user-header .ask-progress {
+        margin-left: auto;
+        color: var(--quiet);
+        font-weight: 550;
+      }
+
+      .ask-user-header .ask-state {
+        color: var(--yellow);
+      }
+
+      .ask-user-body {
+        padding: 12px;
+      }
+
+      .ask-user-context {
+        margin: 0 0 10px;
+        color: var(--quiet);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .ask-user-question {
+        margin: 0 0 10px;
+        color: #c8c0aa;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .ask-user-question strong {
+        color: var(--ink-strong);
+        font-weight: 680;
+      }
+
+      .ask-user-question span {
+        margin-left: 5px;
+        color: var(--quiet);
+        font: 550 9px/1 var(--mono);
+      }
+
+      .ask-options {
+        display: grid;
+        gap: 6px;
+      }
+
+      .ask-option {
+        display: grid;
+        min-height: 44px;
+        grid-template-columns: 24px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        padding: 7px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: #d5d0c1;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .ask-option:hover,
+      .ask-option.selected {
+        border-color: rgb(209 183 123 / 0.48);
+        background: rgb(209 183 123 / 0.075);
+      }
+
+      .ask-option.selected {
+        color: var(--ink-strong);
+      }
+
+      .ask-option:disabled {
+        cursor: default;
+        opacity: 0.72;
+      }
+
+      .ask-option-marker {
+        display: grid;
+        width: 21px;
+        height: 21px;
+        place-items: center;
+        border: 1px solid #435158;
+        border-radius: 6px;
+        color: var(--quiet);
+        font: 650 9px/1 var(--mono);
+      }
+
+      .ask-option.selected .ask-option-marker {
+        border-color: var(--yellow);
+        background: var(--yellow);
+        color: #081015;
+      }
+
+      .ask-option-copy strong,
+      .ask-option-copy small {
+        display: block;
+      }
+
+      .ask-option-copy strong {
+        font-size: 11px;
+        font-weight: 680;
+      }
+
+      .ask-option-copy small {
+        margin-top: 3px;
+        color: var(--quiet);
+        font-size: 10px;
+        line-height: 1.35;
+      }
+
+      .ask-user-actions {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 9px;
+      }
+
+      .ask-user-actions .ask-waiting {
+        margin-left: auto;
+        color: var(--quiet);
+        font: 520 9px/1 var(--mono);
+      }
+
+      .ask-custom-row {
+        display: none;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 7px;
+        margin-top: 8px;
+      }
+
+      .ask-custom-row.visible {
+        display: grid;
+      }
+
+      .ask-custom-row input {
+        min-width: 0;
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        outline: 0;
+        background: var(--control);
+        color: var(--ink);
+        font-size: 11px;
+      }
+
+      .ask-user-answer {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-top: 1px solid var(--line-soft);
+        color: #bcd9c7;
+        font-size: 11px;
+      }
+
+      .ask-user-card.answered .ask-user-answer,
+      .ask-user-card.dismissed .ask-user-answer {
+        display: flex;
+      }
+
+      .ask-user-card.answered .ask-user-body,
+      .ask-user-card.dismissed .ask-user-body {
+        display: none;
+      }
+
+      .ask-user-card.answered .ask-state {
+        color: var(--green);
+      }
+
+      .ask-user-card.dismissed .ask-state,
+      .ask-user-card.dismissed .ask-user-answer {
+        color: var(--quiet);
+      }
+
+      .small-button {
+        min-height: 30px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--panel-raised);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .small-button:hover,
+      .small-button.selected {
+        border-color: rgb(216 207 178 / 0.42);
+        background: var(--beam);
+        color: #091117;
+      }
+
+      .small-button,
+      .quiet-button,
+      .action-button,
+      .send-button,
+      .icon-button {
+        transition:
+          scale 120ms ease-out,
+          background-color 120ms ease-out,
+          color 120ms ease-out,
+          box-shadow 120ms ease-out;
+      }
+
+      .small-button:active,
+      .quiet-button:active,
+      .action-button:active,
+      .send-button:active,
+      .icon-button:active {
+        scale: 0.96;
+      }
+
+      .composer-shell {
+        position: sticky;
+        z-index: var(--z-sticky);
+        bottom: 0;
+        padding: 12px 18px max(18px, env(safe-area-inset-bottom));
+        background: linear-gradient(to bottom, rgb(1 6 12 / 0), var(--space) 28%);
+      }
+
+      .composer {
+        max-width: 820px;
+        margin: 0 auto;
+        overflow: hidden;
+        border-radius: 12px;
+        background: #071118;
+        box-shadow:
+          0 0 0 1px rgb(255 255 255 / 0.17),
+          0 8px 24px rgb(0 0 0 / 0.34);
+        transition:
+          box-shadow 140ms ease-out,
+          translate 140ms var(--ease-out);
+      }
+
+      .composer:focus-within {
+        box-shadow:
+          0 0 0 1px var(--focus),
+          0 0 0 4px rgb(207 99 63 / 0.12),
+          0 10px 28px rgb(0 0 0 / 0.38);
+        translate: 0 -1px;
+      }
+
+      .composer textarea {
+        display: block;
+        width: 100%;
+        min-height: 58px;
+        max-height: min(180px, 32dvh);
+        resize: none;
+        overflow-y: auto;
+        padding: 13px 14px 7px;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--ink-strong);
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .composer textarea::placeholder {
+        color: #8f8979;
+        opacity: 1;
+      }
+
+      .delivery-menu {
+        display: grid;
+        grid-template-rows: 0fr;
+        opacity: 0;
+        transition:
+          grid-template-rows 160ms var(--ease-out),
+          opacity 120ms ease-out;
+      }
+
+      .delivery-menu.open {
+        grid-template-rows: 1fr;
+        opacity: 1;
+      }
+
+      .delivery-menu-inner {
+        overflow: hidden;
+      }
+
+      .delivery-options {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        padding: 7px 8px 8px;
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .delivery-option {
+        display: grid;
+        min-height: 48px;
+        grid-template-columns: 25px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        padding: 6px 9px;
+        border: 0;
+        border-radius: 8px;
+        background: #09171e;
+        box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+        color: #d4d0c3;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .delivery-option:hover,
+      .delivery-option.selected {
+        background: #0d1d25;
+        box-shadow: 0 0 0 1px rgb(209 183 123 / 0.34);
+      }
+
+      .delivery-option-icon {
+        display: grid;
+        width: 24px;
+        height: 24px;
+        place-items: center;
+        border-radius: 7px;
+        background: rgb(209 183 123 / 0.09);
+        color: var(--yellow);
+        font: 720 11px/1 var(--mono);
+      }
+
+      .delivery-option[data-mode="steer"] .delivery-option-icon {
+        background: rgb(207 99 63 / 0.1);
+        color: var(--accent-strong);
+      }
+
+      .delivery-option strong,
+      .delivery-option small {
+        display: block;
+      }
+
+      .delivery-option strong {
+        font-size: 11px;
+      }
+
+      .delivery-option small {
+        margin-top: 3px;
+        color: var(--quiet);
+        font-size: 9px;
+        line-height: 1.3;
+      }
+
+      .attachment-strip {
+        display: none;
+        padding: 9px 10px 0;
+      }
+
+      .attachment-strip.visible {
+        display: flex;
+      }
+
+      .attachment-chip {
+        display: inline-flex;
+        min-width: 0;
+        min-height: 34px;
+        align-items: center;
+        gap: 7px;
+        padding: 0 5px 0 9px;
+        border-radius: 8px;
+        background: rgb(126 183 194 / 0.08);
+        box-shadow: 0 0 0 1px rgb(126 183 194 / 0.2);
+        color: #b9ced1;
+        font-size: 10px;
+      }
+
+      .attachment-chip span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .attachment-chip small {
+        color: var(--quiet);
+      }
+
+      .attachment-chip .icon-button {
+        width: 28px;
+        height: 28px;
+      }
+
+      .composer-footer {
+        display: flex;
+        min-height: 40px;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 7px 7px;
+      }
+
+      .quiet-button,
+      .action-button {
+        min-height: 30px;
+        padding: 0 9px;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .delivery-mode-button {
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.07);
+      }
+
+      .delivery-caret {
+        margin-left: 5px;
+        color: var(--quiet);
+        font-size: 9px;
+        transition: rotate 150ms var(--ease-out);
+      }
+
+      .delivery-mode-button[aria-expanded="true"] .delivery-caret {
+        rotate: 180deg;
+      }
+
+      .quiet-button {
+        min-width: 32px;
+      }
+
+      .mobile-label {
+        display: none;
+      }
+
+      .queue-mode {
+        display: inline-flex;
+        min-width: 0;
+        align-items: center;
+        gap: 6px;
+        color: var(--quiet);
+        font: 550 10px/1 var(--mono);
+      }
+
+      .composer-spacer {
+        flex: 1;
+      }
+
+      .stop-button {
+        color: var(--danger);
+      }
+
+      .send-button {
+        min-width: 58px;
+        min-height: 32px;
+        padding: 0 12px;
+        border-radius: 7px;
+        background: var(--beam);
+        color: #091117;
+        font-size: 11px;
+        font-weight: 760;
+      }
+
+      .send-button:hover {
+        background: #ece3c8;
+      }
+
+      .queued-chip,
+      .steer-chip {
+        display: none;
+        max-width: 820px;
+        min-height: 34px;
+        align-items: center;
+        gap: 8px;
+        margin: 0 auto 7px;
+        padding: 0 10px;
+        border: 1px solid rgb(126 183 194 / 0.2);
+        border-radius: 8px;
+        background: rgb(126 183 194 / 0.07);
+        color: #abc8cc;
+        font-size: 11px;
+      }
+
+      .queued-chip.visible,
+      .steer-chip.visible {
+        display: flex;
+      }
+
+      .queued-chip,
+      .steer-chip {
+        animation: queued-in 160ms var(--ease-out);
+      }
+
+      .queued-chip strong,
+      .steer-chip strong {
+        color: #d3e3e5;
+      }
+
+      .queued-chip button,
+      .steer-chip button {
+        margin-left: auto;
+      }
+
+      .steer-chip {
+        border-color: rgb(207 99 63 / 0.22);
+        background: rgb(207 99 63 / 0.075);
+        color: #d9b0a2;
+      }
+
+      @keyframes queued-in {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* Variant A — centered causal timeline. */
+      .variant-a {
+        background: #01070c;
+      }
+
+      .a-main {
+        width: min(100%, 830px);
+        margin: 0 auto;
+        padding: 34px 24px 128px;
+      }
+
+      .run-intro {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 0 25px 36px;
+        color: var(--quiet);
+        font: 550 10px/1.3 var(--mono);
+      }
+
+      .run-intro strong {
+        color: var(--cyan);
+      }
+
+      .beam-turn {
+        position: relative;
+        padding: 0 0 32px 36px;
+      }
+
+      .beam-turn::before {
+        position: absolute;
+        top: 8px;
+        bottom: -8px;
+        left: 8px;
+        width: 1px;
+        background: linear-gradient(to bottom, var(--accent), rgb(126 183 194 / 0.3));
+        content: "";
+      }
+
+      .beam-node {
+        position: absolute;
+        top: 5px;
+        left: 4px;
+        width: 9px;
+        height: 9px;
+        border: 2px solid var(--space);
+        border-radius: 50%;
+        background: var(--accent-strong);
+        box-shadow: 0 0 0 1px var(--accent);
+      }
+
+      .beam-node.agent {
+        background: var(--cyan);
+        box-shadow: 0 0 0 1px var(--cyan);
+      }
+
+      .turn-label {
+        margin-bottom: 7px;
+        color: var(--quiet);
+        font: 600 10px/1 var(--mono);
+      }
+
+      .assistant-turn {
+        position: relative;
+      }
+
+      .assistant-actions {
+        position: absolute;
+        top: -5px;
+        right: 0;
+      }
+
+      /* Variant B — focused transcript with secondary work behind the overflow menu. */
+      .variant-b {
+        background: #02080d;
+      }
+
+      .b-shell {
+        min-height: calc(100dvh - 58px);
+      }
+
+      .b-conversation {
+        min-width: 0;
+      }
+
+      .b-feed {
+        width: min(100%, 860px);
+        margin: 0 auto;
+        padding: 28px 30px 130px;
+      }
+
+      .b-turn {
+        display: grid;
+        grid-template-columns: 72px minmax(0, 1fr);
+        gap: 14px;
+        padding: 18px 0 26px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .b-turn:last-child {
+        border-bottom: 0;
+      }
+
+      .speaker-label {
+        color: var(--quiet);
+        font: 650 10px/1.3 var(--mono);
+      }
+
+      .speaker-label.pi {
+        color: var(--cyan);
+      }
+
+      .dock-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 0 3px 13px;
+      }
+
+      .dock-heading h2 {
+        margin: 0;
+        color: #d6d2c4;
+        font-size: 12px;
+      }
+
+      .dock-heading span {
+        color: var(--quiet);
+        font: 550 9px/1 var(--mono);
+      }
+
+      .activity-list {
+        display: grid;
+        gap: 7px;
+      }
+
+      .activity-item {
+        display: grid;
+        width: 100%;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 9px;
+        padding: 11px 9px;
+        border: 0;
+        border-bottom: 1px solid var(--line-soft);
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .activity-item:hover {
+        background: rgb(238 231 211 / 0.035);
+      }
+
+      .activity-icon {
+        display: grid;
+        width: 25px;
+        height: 25px;
+        place-items: center;
+        border-radius: 7px;
+        background: rgb(126 183 194 / 0.09);
+        color: var(--cyan);
+        font: 700 10px/1 var(--mono);
+      }
+
+      .activity-copy {
+        min-width: 0;
+      }
+
+      .activity-copy strong,
+      .activity-copy span {
+        display: block;
+      }
+
+      .activity-copy strong {
+        overflow: hidden;
+        color: #d8d4c7;
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .activity-copy span {
+        margin-top: 3px;
+        color: var(--quiet);
+        font: 500 9px/1.35 var(--mono);
+      }
+
+      .activity-time {
+        color: var(--quiet);
+        font: 500 9px/1 var(--mono);
+      }
+
+      .activity-progress {
+        height: 2px;
+        margin: 7px 0 0;
+        overflow: hidden;
+        border-radius: 2px;
+        background: rgb(238 231 211 / 0.08);
+      }
+
+      .activity-progress span {
+        display: block;
+        width: 66%;
+        height: 100%;
+        background: var(--yellow);
+      }
+
+      .b-composer {
+        position: fixed;
+        right: 0;
+        bottom: 0;
+        left: 0;
+      }
+
+      /* Variant C — mobile-first run canvas. */
+      .variant-c {
+        background: #02090f;
+      }
+
+      .c-status-band {
+        display: flex;
+        min-height: 48px;
+        align-items: center;
+        gap: 10px;
+        padding: 0 max(18px, calc((100% - 960px) / 2));
+        border-bottom: 1px solid rgb(209 183 123 / 0.16);
+        background: rgb(209 183 123 / 0.045);
+        color: #c9c0aa;
+        font-size: 11px;
+      }
+
+      .c-status-band strong {
+        color: #e4d9be;
+      }
+
+      .c-status-band .status-spacer {
+        flex: 1;
+      }
+
+      .c-status-band button {
+        background: rgb(255 130 120 / 0.07);
+      }
+
+      .c-main {
+        width: min(100%, 960px);
+        margin: 0 auto;
+        padding: 26px 22px 132px;
+      }
+
+      .prompt-block {
+        display: grid;
+        grid-template-columns: 26px minmax(0, 1fr);
+        gap: 13px;
+        max-width: 760px;
+        margin-bottom: 28px;
+      }
+
+      .prompt-mark {
+        padding-top: 1px;
+        color: var(--accent-strong);
+        font: 750 18px/1 var(--mono);
+      }
+
+      .answer-block {
+        position: relative;
+        max-width: 760px;
+        margin-bottom: 18px;
+        padding-left: 39px;
+      }
+
+      .answer-block::before {
+        position: absolute;
+        top: 1px;
+        left: 0;
+        color: var(--cyan);
+        font: 750 12px/1 var(--mono);
+        content: "PI";
+      }
+
+      .work-receipt {
+        max-width: 900px;
+        margin: 21px 0 26px 39px;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .receipt-heading {
+        display: flex;
+        min-height: 38px;
+        align-items: center;
+        gap: 9px;
+        color: #c7c1b0;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .receipt-heading span {
+        color: var(--quiet);
+        font: 500 10px/1 var(--mono);
+      }
+
+      .receipt-items {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1px;
+        background: var(--line-soft);
+      }
+
+      .receipt-item {
+        min-width: 0;
+        padding: 12px;
+        border: 0;
+        background: #061018;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .receipt-item:hover {
+        background: #0a1820;
+      }
+
+      .receipt-item strong,
+      .receipt-item span {
+        display: block;
+      }
+
+      .receipt-item strong {
+        overflow: hidden;
+        color: #d9d5c8;
+        font: 650 10px/1.2 var(--mono);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .receipt-item span {
+        margin-top: 7px;
+        color: var(--quiet);
+        font-size: 10px;
+        line-height: 1.35;
+      }
+
+      .c-composer .composer {
+        max-width: 930px;
+      }
+
+      /* Session activity and subagent sheets. */
+      .sheet-backdrop {
+        position: fixed;
+        z-index: calc(var(--z-sheet) - 1);
+        inset: 0;
+        display: none;
+        background: rgb(0 0 0 / 0.58);
+      }
+
+      .sheet-backdrop.open {
+        display: block;
+      }
+
+      .subagent-sheet,
+      .activity-sheet {
+        position: fixed;
+        z-index: var(--z-sheet);
+        top: 72px;
+        right: 16px;
+        bottom: 16px;
+        display: grid;
+        width: min(460px, calc(100vw - 32px));
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        overflow: hidden;
+        border: 1px solid #3a474b;
+        border-radius: 12px;
+        background: #07131a;
+        box-shadow: 0 12px 28px rgb(0 0 0 / 0.4);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(18px);
+        transition:
+          transform 180ms var(--ease-out),
+          opacity 150ms ease;
+      }
+
+      .activity-sheet {
+        width: min(390px, calc(100vw - 32px));
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+
+      .subagent-sheet.open,
+      .activity-sheet.open {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateX(0);
+      }
+
+      .activity-sheet-body {
+        overflow: auto;
+        padding: 12px;
+      }
+
+      .activity-group + .activity-group {
+        margin-top: 18px;
+      }
+
+      .activity-group-heading {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 5px 5px;
+        color: #d6d2c4;
+        font-size: 11px;
+      }
+
+      .activity-group-heading span {
+        margin-left: auto;
+        color: var(--quiet);
+        font: 520 9px/1 var(--mono);
+      }
+
+      .sheet-header {
+        display: flex;
+        min-height: 60px;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .sheet-header-copy {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .sheet-header-copy strong,
+      .sheet-header-copy span {
+        display: block;
+      }
+
+      .sheet-header-copy strong {
+        color: var(--ink-strong);
+        font-size: 12px;
+      }
+
+      .sheet-header-copy span {
+        margin-top: 3px;
+        color: var(--quiet);
+        font: 500 9px/1.2 var(--mono);
+      }
+
+      .sheet-transcript {
+        overflow: auto;
+        padding: 17px;
+      }
+
+      .child-turn {
+        margin-bottom: 16px;
+      }
+
+      .child-turn label {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--quiet);
+        font: 650 9px/1 var(--mono);
+      }
+
+      .child-turn.agent label {
+        color: var(--cyan);
+      }
+
+      .child-turn p {
+        margin: 0;
+        color: #cdc9bc;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .child-tool {
+        margin: 8px 0;
+        padding: 8px 9px;
+        border: 1px solid var(--line-soft);
+        border-radius: 7px;
+        color: #a8b3b2;
+        font: 10px/1.45 var(--mono);
+      }
+
+      .sheet-footer {
+        display: flex;
+        gap: 7px;
+        padding: 10px 12px max(10px, env(safe-area-inset-bottom));
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .sheet-footer .small-button:first-child {
+        flex: 1;
+      }
+
+      /* Prototype switcher. */
+      .variant-switcher {
+        position: fixed;
+        z-index: var(--z-switcher);
+        right: 50%;
+        bottom: calc(max(12px, env(safe-area-inset-bottom)) + 112px);
+        display: flex;
+        min-height: 40px;
+        align-items: center;
+        gap: 4px;
+        padding: 4px;
+        border: 1px solid rgb(255 255 255 / 0.2);
+        border-radius: 999px;
+        background: #f1eee5;
+        box-shadow: 0 5px 12px rgb(0 0 0 / 0.35);
+        color: #0b1115;
+        transform: translateX(50%);
+      }
+
+      .variant-switcher button {
+        width: 32px;
+        height: 32px;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        color: #283238;
+        cursor: pointer;
+      }
+
+      .variant-switcher button:hover {
+        background: #ddd9cf;
+      }
+
+      .variant-label {
+        min-width: 148px;
+        padding: 0 8px;
+        text-align: center;
+        font-size: 11px;
+        font-weight: 720;
+      }
+
+      @keyframes breathe {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+
+      @media (max-width: 800px) {
+        .prototype-note {
+          display: none;
+        }
+
+        .session-topbar {
+          gap: 10px;
+          padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right));
+        }
+
+        .brand span,
+        .session-state span {
+          display: none;
+        }
+
+        .session-state {
+          width: 30px;
+          padding: 0;
+          justify-content: center;
+        }
+
+        .a-main {
+          padding: 24px 14px 128px;
+        }
+
+        .run-intro {
+          margin-left: 30px;
+        }
+
+        .beam-turn {
+          padding-left: 30px;
+        }
+
+        .beam-turn::before {
+          left: 5px;
+        }
+
+        .beam-node {
+          left: 1px;
+        }
+
+        .message-copy {
+          opacity: 1;
+        }
+
+        .tool-row summary {
+          grid-template-columns: auto auto minmax(0, 1fr);
+        }
+
+        .tool-result {
+          display: none;
+        }
+
+        .tool-body {
+          padding-left: 12px;
+          overflow-x: auto;
+        }
+
+        .edit-tool-body {
+          padding-left: 0;
+        }
+
+        .diff-hunk,
+        .diff-row {
+          min-width: 520px;
+        }
+
+        .diff-row {
+          grid-template-columns: 28px 28px minmax(max-content, 1fr);
+        }
+
+        .diff-hunk {
+          padding-left: 66px;
+        }
+
+        .composer-shell {
+          padding: 8px 8px max(8px, env(safe-area-inset-bottom));
+        }
+
+        .composer {
+          border-radius: 11px;
+        }
+
+        .composer textarea {
+          min-height: 52px;
+          padding: 12px 12px 5px;
+          font-size: 16px;
+        }
+
+        .attachment-strip {
+          padding: 8px 8px 0;
+        }
+
+        .attachment-chip {
+          width: 100%;
+          min-height: 40px;
+        }
+
+        .attachment-chip .icon-button {
+          width: 40px;
+          height: 40px;
+          margin-left: auto;
+        }
+
+        .composer-footer {
+          min-height: 48px;
+          gap: 4px;
+          padding: 2px 5px 5px;
+        }
+
+        .delivery-options {
+          grid-template-columns: 1fr;
+          padding: 6px;
+        }
+
+        .quiet-button,
+        .action-button,
+        .send-button {
+          min-height: 44px;
+        }
+
+        .quiet-button {
+          min-width: 44px;
+          padding: 0;
+        }
+
+        .send-button {
+          min-width: 58px;
+        }
+
+        .queue-mode {
+          display: none;
+        }
+
+        .desktop-label {
+          display: none;
+        }
+
+        .mobile-label {
+          display: inline;
+        }
+
+        .queued-chip,
+        .steer-chip {
+          min-height: 40px;
+          padding-left: 9px;
+        }
+
+        .queued-chip span,
+        .steer-chip span {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .b-shell {
+          display: block;
+        }
+
+        .b-conversation {
+          border-right: 0;
+        }
+
+        .b-feed {
+          padding: 15px 14px 132px;
+        }
+
+        .b-turn {
+          display: block;
+          padding-block: 18px;
+        }
+
+        .speaker-label {
+          margin-bottom: 8px;
+        }
+
+        .b-composer {
+          right: 0;
+        }
+
+        .c-status-band {
+          padding-inline: 14px;
+        }
+
+        .c-status-band .status-meta {
+          display: none;
+        }
+
+        .c-main {
+          padding: 22px 14px 132px;
+        }
+
+        .prompt-block {
+          grid-template-columns: 20px minmax(0, 1fr);
+          gap: 8px;
+        }
+
+        .answer-block {
+          padding-left: 29px;
+        }
+
+        .work-receipt {
+          margin-left: 29px;
+        }
+
+        .receipt-items {
+          grid-template-columns: 1fr;
+        }
+
+        .subagent-sheet,
+        .activity-sheet {
+          top: auto;
+          right: 0;
+          bottom: 0;
+          left: 0;
+          width: 100%;
+          height: min(76dvh, 680px);
+          border-right: 0;
+          border-bottom: 0;
+          border-left: 0;
+          border-radius: 14px 14px 0 0;
+          transform: translateY(20px);
+        }
+
+        .subagent-sheet.open,
+        .activity-sheet.open {
+          transform: translateY(0);
+        }
+
+        .ask-user-body {
+          padding: 10px;
+        }
+
+        .ask-option {
+          min-height: 48px;
+        }
+
+        .variant-switcher {
+          bottom: calc(max(6px, env(safe-area-inset-bottom)) + 112px);
+          min-height: 36px;
+        }
+
+        .variant-switcher button {
+          width: 28px;
+          height: 28px;
+        }
+
+        .variant-label {
+          min-width: 128px;
+          font-size: 10px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="prototype-note">DIRECTION B · SAMPLE DATA</div>
+
+    <template id="topbar-template">
+      <header class="session-topbar">
+        <div class="brand">
+          <img src="../../worker/public/brand/scotty-mark-128.png" alt="" />
+          <span>SCOTTY</span>
+        </div>
+        <div class="task-heading">
+          <strong>Replace Ghostty with a native Pi session UI</strong>
+          <span>Yeshwanthyk/scotty · main · gpt-5.6-sol high</span>
+        </div>
+        <div class="session-state waiting">
+          <i class="state-dot waiting"></i>
+          <span>Waiting for you</span>
+        </div>
+        <button
+          class="icon-button session-options-trigger"
+          aria-label="Open tasks, subagents, and workflows"
+          aria-expanded="false"
+        >
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="5" cy="12" r="1"></circle>
+            <circle cx="12" cy="12" r="1"></circle>
+            <circle cx="19" cy="12" r="1"></circle>
+          </svg>
+        </button>
+      </header>
+    </template>
+
+    <template id="tool-stack-template">
+      <div class="tool-stack">
+        <details class="tool-row">
+          <summary>
+            <i class="tool-status"></i>
+            <span class="tool-name">read</span>
+            <span class="tool-summary">worker/container/scotty-pi-shell</span>
+            <span class="tool-result">done</span>
+          </summary>
+          <div class="tool-body">
+            Read 18 lines · Pi currently starts through an interactive PTY.
+          </div>
+        </details>
+        <details class="tool-row" open>
+          <summary>
+            <i class="tool-status"></i>
+            <span class="tool-name">edit</span>
+            <span class="tool-summary">worker/src/container-auth.ts</span>
+            <span class="tool-result"
+              ><span class="added">+1</span> <span class="removed">−1</span></span
+            >
+          </summary>
+          <div class="tool-body edit-tool-body">
+            <div class="diff-toolbar">
+              <strong>worker/src/container-auth.ts</strong>
+              <span class="diff-stats"
+                ><span class="added">+1</span><span class="removed">−1</span></span
+              >
+            </div>
+            <div class="diff-code" aria-label="Edit diff">
+              <div class="diff-hunk">@@ -148,3 +148,3 @@ startPiSession</div>
+              <div class="diff-row">
+                <span class="diff-line-number">148</span>
+                <span class="diff-line-number">148</span>
+                <span class="diff-code-line">if (!sessionId) return;</span>
+              </div>
+              <div class="diff-row remove">
+                <span class="diff-line-number">149</span>
+                <span class="diff-line-number"></span>
+                <span class="diff-code-line"
+                  >- exec <span class="token-emphasis">/usr/local/bin/scotty-pi-shell</span></span
+                >
+              </div>
+              <div class="diff-row add">
+                <span class="diff-line-number"></span>
+                <span class="diff-line-number">149</span>
+                <span class="diff-code-line"
+                  >+ exec <span class="token-emphasis">/usr/local/bin/scotty-pi-web</span></span
+                >
+              </div>
+              <div class="diff-row">
+                <span class="diff-line-number">150</span>
+                <span class="diff-line-number">150</span>
+                <span class="diff-code-line">await waitForReady(sessionId);</span>
+              </div>
+            </div>
+            <div class="diff-footer">
+              Unified diff · horizontally scrolls on narrow screens
+              <button class="small-button copy-diff" type="button">Copy diff</button>
+            </div>
+          </div>
+        </details>
+        <details class="tool-row subagent-trigger">
+          <summary>
+            <i class="tool-status running"></i>
+            <span class="tool-name">subagent</span>
+            <span class="tool-summary">Checking Pi RPC lifecycle and replay</span>
+            <span class="tool-result running">working · 1m 42s</span>
+          </summary>
+          <div class="tool-body">
+            Scout is tracing create → stream → sleep → resume. Select to inspect its transcript.
+          </div>
+        </details>
+        <details class="tool-row">
+          <summary>
+            <i class="tool-status error"></i>
+            <span class="tool-name">bash</span>
+            <span class="tool-summary">npm test -- container-auth</span>
+            <span class="tool-result error">failed · exit 1</span>
+          </summary>
+          <div class="tool-body">
+            container-auth.test.ts:184 · expected scotty-pi-web, received scotty-pi-shell
+          </div>
+        </details>
+      </div>
+    </template>
+
+    <template id="question-template">
+      <section class="ask-user-card" aria-live="polite">
+        <header class="ask-user-header">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9.1 9a3 3 0 1 1 5.8 1c0 2-2.9 2-2.9 4"></path>
+            <path d="M12 18h.01"></path>
+            <circle cx="12" cy="12" r="9"></circle>
+          </svg>
+          ASK_USER
+          <span class="ask-progress">1 question</span>
+          <span class="ask-state">Pi paused</span>
+        </header>
+        <div class="ask-user-body">
+          <p class="ask-user-context">
+            A message arrived while Pi was using tools. Choose how it joins the current session.
+          </p>
+          <p class="ask-user-question">
+            <strong>Where should this message go?</strong><span>Required · choose one</span>
+          </p>
+          <div class="ask-options">
+            <button class="ask-option" data-answer="Steer after this step">
+              <span class="ask-option-marker">1</span>
+              <span class="ask-option-copy">
+                <strong>Steer after this step</strong>
+                <small>Pi sees it after the current tool finishes.</small>
+              </span>
+            </button>
+            <button class="ask-option" data-answer="Queue after the turn">
+              <span class="ask-option-marker">2</span>
+              <span class="ask-option-copy">
+                <strong>Queue after the turn</strong>
+                <small>Keep the current run intact, then deliver it next.</small>
+              </span>
+            </button>
+            <button class="ask-option" data-answer="Interrupt now">
+              <span class="ask-option-marker">3</span>
+              <span class="ask-option-copy">
+                <strong>Interrupt now</strong>
+                <small>Stop the active run before sending the message.</small>
+              </span>
+            </button>
+          </div>
+          <div class="ask-user-actions">
+            <button class="small-button ask-custom-trigger">Write my own answer…</button>
+            <button class="small-button ask-dismiss">Dismiss</button>
+            <span class="ask-waiting">Pi resumes after your response</span>
+          </div>
+          <form class="ask-custom-row">
+            <input aria-label="Custom answer" placeholder="Type your answer" />
+            <button class="small-button" type="submit">Send answer</button>
+          </form>
+        </div>
+        <div class="ask-user-answer">
+          <i class="tool-status"></i>
+          <span class="ask-user-result">Answered · Queue after the turn</span>
+        </div>
+      </section>
+    </template>
+
+    <template id="composer-template">
+      <div class="composer-shell">
+        <div class="queued-chip">
+          <strong>Queued</strong>
+          <span class="delivery-receipt-message">Also test this on a narrow iPhone viewport.</span>
+          <button class="icon-button clear-delivery" aria-label="Remove queued message">×</button>
+        </div>
+        <div class="steer-chip">
+          <strong>Steering next</strong>
+          <span class="delivery-receipt-message">Keep the composer above the mobile keyboard.</span>
+          <button class="icon-button clear-delivery" aria-label="Remove steering message">×</button>
+        </div>
+        <form class="composer" data-delivery-mode="queue">
+          <div class="attachment-strip">
+            <div class="attachment-chip">
+              <span>mobile-diff.png</span>
+              <small>284 KB</small>
+              <button class="icon-button clear-attachment" type="button" aria-label="Remove image">
+                ×
+              </button>
+            </div>
+          </div>
+          <textarea rows="2" placeholder="Message Pi…" aria-label="Message Pi"></textarea>
+          <div class="delivery-menu">
+            <div class="delivery-menu-inner">
+              <div class="delivery-options" role="menu" aria-label="Message delivery">
+                <button class="delivery-option" data-mode="steer" type="button" role="menuitem">
+                  <span class="delivery-option-icon">↳</span>
+                  <span>
+                    <strong>Steer after this step</strong>
+                    <small>Pi reads it when the current tool finishes.</small>
+                  </span>
+                </button>
+                <button
+                  class="delivery-option selected"
+                  data-mode="queue"
+                  type="button"
+                  role="menuitem"
+                >
+                  <span class="delivery-option-icon">↓</span>
+                  <span>
+                    <strong>Queue after this turn</strong>
+                    <small>Pi finishes the current response, then starts yours.</small>
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="composer-footer">
+            <button type="button" class="quiet-button attach-button" aria-label="Attach image">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 1 1-2.8-2.8l8.9-8.9"
+                ></path>
+              </svg>
+            </button>
+            <button type="button" class="action-button delivery-mode-button" aria-expanded="false">
+              <span class="desktop-label delivery-mode-label">Queue after turn</span>
+              <span class="mobile-label delivery-mode-label">Queue</span>
+              <span class="delivery-caret">⌃</span>
+            </button>
+            <span class="queue-mode">Pi is active</span>
+            <span class="composer-spacer"></span>
+            <button type="button" class="action-button stop-button">Stop</button>
+            <button type="submit" class="send-button">Queue</button>
+          </div>
+        </form>
+      </div>
+    </template>
+
+    <section class="variant variant-a" aria-label="Variant A">
+      <div data-slot="topbar"></div>
+      <main class="a-main">
+        <div class="run-intro">
+          <span>Today · 10:42 AM</span>
+          <span><strong>3 tools</strong> · 8.2k tokens</span>
+        </div>
+        <article class="beam-turn">
+          <i class="beam-node"></i>
+          <div class="turn-label">YOU</div>
+          <div class="user-prompt">
+            Build the lightest possible Pi web UI. Keep one sandbox, one session, and make it
+            excellent on mobile.
+          </div>
+        </article>
+        <article class="beam-turn assistant-turn">
+          <i class="beam-node agent"></i>
+          <div class="turn-label">PI · WORKING</div>
+          <button class="icon-button message-copy assistant-actions" aria-label="Copy response">
+            <svg class="icon" viewBox="0 0 24 24">
+              <rect x="8" y="8" width="11" height="11" rx="2"></rect>
+              <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"></path>
+            </svg>
+          </button>
+          <div class="assistant-copy">
+            <p>
+              I’ll keep Pi as the runtime and replace only its presentation boundary. The browser
+              will receive structured events from <span class="inline-code">pi --mode rpc</span>, so
+              messages and tools render natively instead of as terminal cells.
+            </p>
+          </div>
+          <details class="thinking">
+            <summary>Reasoning · 18s</summary>
+            <p>
+              The smallest robust bridge is a loopback supervisor using Node’s built-in HTTP and
+              child-process modules. No Pican server or duplicate database is required.
+            </p>
+          </details>
+          <div data-slot="tools"></div>
+          <div class="assistant-copy">
+            <p>
+              The first cut keeps Pi’s existing session file authoritative and uses a bounded live
+              replay window only for reconnects.
+            </p>
+          </div>
+          <div data-slot="question"></div>
+        </article>
+      </main>
+      <div data-slot="composer"></div>
+    </section>
+
+    <section class="variant variant-b" aria-label="Variant B">
+      <div data-slot="topbar"></div>
+      <div class="b-shell">
+        <main class="b-conversation">
+          <div class="b-feed">
+            <article class="b-turn">
+              <div class="speaker-label">YOU</div>
+              <div class="user-prompt">
+                Build the lightest possible Pi web UI. Keep one sandbox, one session, and make it
+                excellent on mobile.
+              </div>
+            </article>
+            <article class="b-turn">
+              <div class="speaker-label pi">PI</div>
+              <div>
+                <div class="assistant-copy">
+                  <p>
+                    I’ll keep Pi as the runtime and replace only its presentation boundary. The
+                    browser will render its structured messages and tool lifecycle directly.
+                  </p>
+                </div>
+                <details class="thinking">
+                  <summary>Show reasoning · 18s</summary>
+                  <p>
+                    Pican’s strongest pattern is the dense transcript. Tasks, subagents, and
+                    workflows stay available from the session menu without shrinking the work log.
+                  </p>
+                </details>
+                <div data-slot="tools"></div>
+                <div data-slot="question"></div>
+              </div>
+            </article>
+          </div>
+        </main>
+      </div>
+      <div class="b-composer" data-slot="composer"></div>
+    </section>
+
+    <section class="variant variant-c" aria-label="Variant C">
+      <div data-slot="topbar"></div>
+      <div class="c-status-band">
+        <i class="tool-status running"></i>
+        <span><strong>Pi is editing</strong> container-auth.ts</span>
+        <span class="status-meta">· 3 tools · 1 queued</span>
+        <span class="status-spacer"></span>
+        <button class="action-button stop-button">Stop</button>
+      </div>
+      <main class="c-main">
+        <article class="prompt-block">
+          <span class="prompt-mark">›</span>
+          <div class="user-prompt">
+            Build the lightest possible Pi web UI. Keep one sandbox, one session, and make it
+            excellent on mobile.
+          </div>
+        </article>
+        <article class="answer-block">
+          <button class="icon-button message-copy assistant-actions" aria-label="Copy response">
+            <svg class="icon" viewBox="0 0 24 24">
+              <rect x="8" y="8" width="11" height="11" rx="2"></rect>
+              <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"></path>
+            </svg>
+          </button>
+          <div class="assistant-copy">
+            <p>
+              I’ll keep Pi as the runtime and replace only its presentation boundary. Messages,
+              thinking, tools, subagents, workflows, and queued instructions become a native web
+              work log.
+            </p>
+          </div>
+        </article>
+        <section class="work-receipt">
+          <div class="receipt-heading">Work in progress <span>3 activities</span></div>
+          <div class="receipt-items">
+            <button class="receipt-item">
+              <strong>read · scotty-pi-shell</strong>
+              <span>18 lines inspected · complete</span>
+            </button>
+            <button class="receipt-item">
+              <strong>edit · container-auth.ts</strong>
+              <span>1 insertion, 1 deletion · complete</span>
+            </button>
+            <button class="receipt-item subagent-trigger">
+              <strong>subagent · lifecycle scout</strong>
+              <span>Checking replay and resume · running</span>
+            </button>
+          </div>
+        </section>
+        <article class="answer-block">
+          <div class="assistant-copy">
+            <p>
+              Pi’s session file stays authoritative. The web layer remains small enough to
+              understand in one sitting and cheap enough to disappear into the sandbox.
+            </p>
+          </div>
+          <div data-slot="question"></div>
+        </article>
+      </main>
+      <div class="c-composer" data-slot="composer"></div>
+    </section>
+
+    <div class="sheet-backdrop"></div>
+    <aside
+      class="activity-sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Tasks, subagents, and workflows"
+    >
+      <header class="sheet-header">
+        <span class="activity-icon">···</span>
+        <div class="sheet-header-copy">
+          <strong>Session activity</strong>
+          <span>secondary work · this Pi session</span>
+        </div>
+        <button class="icon-button close-activity-sheet" aria-label="Close session activity">
+          ×
+        </button>
+      </header>
+      <div class="activity-sheet-body">
+        <section class="activity-group">
+          <h2 class="activity-group-heading">Tasks <span>1 active</span></h2>
+          <div class="activity-list">
+            <button class="activity-item">
+              <span class="activity-icon">T</span>
+              <span class="activity-copy">
+                <strong>RPC bridge</strong>
+                <span>Task 2 of 4 · running</span>
+                <span class="activity-progress"><span></span></span>
+              </span>
+              <time class="activity-time">42s</time>
+            </button>
+          </div>
+        </section>
+        <section class="activity-group">
+          <h2 class="activity-group-heading">Subagents <span>1 running</span></h2>
+          <div class="activity-list">
+            <button class="activity-item subagent-trigger">
+              <span class="activity-icon">S</span>
+              <span class="activity-copy">
+                <strong>Lifecycle scout</strong>
+                <span>Inspecting resume and replay</span>
+              </span>
+              <time class="activity-time">1m</time>
+            </button>
+          </div>
+        </section>
+        <section class="activity-group">
+          <h2 class="activity-group-heading">Workflows <span>1 running</span></h2>
+          <div class="activity-list">
+            <button class="activity-item">
+              <span class="activity-icon">W</span>
+              <span class="activity-copy">
+                <strong>Mobile acceptance</strong>
+                <span>Phase 2 of 3 · narrow viewport</span>
+              </span>
+              <time class="activity-time">3m</time>
+            </button>
+          </div>
+        </section>
+      </div>
+    </aside>
+    <aside class="subagent-sheet" role="dialog" aria-modal="true" aria-label="Subagent transcript">
+      <header class="sheet-header">
+        <span class="activity-icon">S</span>
+        <div class="sheet-header-copy">
+          <strong>Lifecycle scout</strong>
+          <span>running · pi · gpt-5.6-terra medium · 1m 42s</span>
+        </div>
+        <button class="icon-button close-sheet" aria-label="Close subagent transcript">×</button>
+      </header>
+      <div class="sheet-transcript">
+        <article class="child-turn">
+          <label>PARENT</label>
+          <p>
+            Trace how the single RPC process should stop before snapshot and resume the same Pi
+            session afterward.
+          </p>
+        </article>
+        <article class="child-turn agent">
+          <label>SUBAGENT</label>
+          <p>
+            I’m following the current checkpoint path and the Sandbox process API before proposing a
+            lifecycle seam.
+          </p>
+          <div class="child-tool">read · worker/src/session.ts:1451</div>
+          <div class="child-tool">read · @cloudflare/sandbox Process</div>
+          <p>
+            The supervisor needs a stable process ID. Snapshot should terminate it, verify the Pi
+            child and detached descendants have exited, then run sync and backup. Resume restarts
+            the supervisor with <span class="inline-code">--continue</span>.
+          </p>
+        </article>
+        <article class="child-turn">
+          <label>PARENT · QUEUED</label>
+          <p>Also check what happens if the browser disconnects while snapshot begins.</p>
+        </article>
+      </div>
+      <footer class="sheet-footer">
+        <button class="small-button">Steer subagent</button>
+        <button class="small-button stop-button">Stop</button>
+      </footer>
+    </aside>
+
+    <script>
+      const variants = [{ key: "B", name: "Focused worklog" }];
+
+      function cloneInto(slot, templateId) {
+        const template = document.querySelector(templateId);
+        slot.append(template.content.cloneNode(true));
+      }
+
+      for (const slot of document.querySelectorAll('[data-slot="topbar"]')) {
+        cloneInto(slot, "#topbar-template");
+      }
+      for (const slot of document.querySelectorAll('[data-slot="tools"]')) {
+        cloneInto(slot, "#tool-stack-template");
+      }
+      for (const slot of document.querySelectorAll('[data-slot="question"]')) {
+        cloneInto(slot, "#question-template");
+      }
+      for (const slot of document.querySelectorAll('[data-slot="composer"]')) {
+        cloneInto(slot, "#composer-template");
+      }
+
+      const params = new URLSearchParams(location.search);
+      const requestedVariant = (params.get("variant") || "B").toUpperCase();
+      let activeIndex = Math.max(
+        0,
+        variants.findIndex((variant) => variant.key === requestedVariant),
+      );
+
+      function setVariant(index, replace = true) {
+        activeIndex = (index + variants.length) % variants.length;
+        const variant = variants[activeIndex];
+        document.body.dataset.variant = variant.key;
+        const variantLabel = document.querySelector(".variant-label");
+        if (variantLabel) variantLabel.textContent = `${variant.key} — ${variant.name}`;
+        document.title = `${variant.name} · Scotty prototype`;
+        params.set("variant", variant.key);
+        const nextUrl = `${location.pathname}?${params.toString()}`;
+        if (replace) history.replaceState(null, "", nextUrl);
+      }
+
+      document.querySelector(".previous-variant")?.addEventListener("click", () => {
+        setVariant(activeIndex - 1);
+      });
+      document.querySelector(".next-variant")?.addEventListener("click", () => {
+        setVariant(activeIndex + 1);
+      });
+
+      document.addEventListener("keydown", (event) => {
+        const target = event.target;
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target?.isContentEditable
+        ) {
+          return;
+        }
+        if (event.key === "Escape") closeSheets();
+      });
+
+      const subagentSheet = document.querySelector(".subagent-sheet");
+      const activitySheet = document.querySelector(".activity-sheet");
+      const backdrop = document.querySelector(".sheet-backdrop");
+
+      function setOptionsExpanded(expanded) {
+        for (const trigger of document.querySelectorAll(".session-options-trigger")) {
+          trigger.setAttribute("aria-expanded", String(expanded));
+        }
+      }
+
+      function openSubagentSheet() {
+        activitySheet.classList.remove("open");
+        subagentSheet.classList.add("open");
+        backdrop.classList.add("open");
+        setOptionsExpanded(false);
+        document.querySelector(".close-sheet").focus();
+      }
+
+      function openActivitySheet() {
+        subagentSheet.classList.remove("open");
+        activitySheet.classList.add("open");
+        backdrop.classList.add("open");
+        setOptionsExpanded(true);
+        document.querySelector(".close-activity-sheet").focus();
+      }
+
+      function closeSheets() {
+        subagentSheet.classList.remove("open");
+        activitySheet.classList.remove("open");
+        backdrop.classList.remove("open");
+        setOptionsExpanded(false);
+      }
+
+      function finishAskUser(card, answer, dismissed = false) {
+        card.classList.add(dismissed ? "dismissed" : "answered");
+        card.querySelector(".ask-state").textContent = dismissed ? "Dismissed" : "Sent";
+        card.querySelector(".ask-progress").textContent = "Resolved";
+        card.querySelector(".ask-user-result").textContent = dismissed
+          ? "Dismissed · Pi retains no inferred answer"
+          : `Answered · ${answer}`;
+        const sessionState = card.closest(".variant").querySelector(".session-state");
+        sessionState.classList.remove("waiting");
+        sessionState.querySelector(".state-dot").classList.remove("waiting");
+        sessionState.querySelector("span").textContent = "Pi working";
+      }
+
+      document.addEventListener("click", (event) => {
+        if (event.target.closest(".session-options-trigger")) openActivitySheet();
+        if (event.target.closest(".subagent-trigger")) openSubagentSheet();
+        if (
+          event.target.closest(".close-sheet") ||
+          event.target.closest(".close-activity-sheet") ||
+          event.target === backdrop
+        ) {
+          closeSheets();
+        }
+
+        const choice = event.target.closest(".ask-option");
+        if (choice) {
+          const card = choice.closest(".ask-user-card");
+          for (const button of card.querySelectorAll(".ask-option")) {
+            button.classList.toggle("selected", button === choice);
+            button.disabled = true;
+          }
+          finishAskUser(card, choice.dataset.answer);
+        }
+
+        const customTrigger = event.target.closest(".ask-custom-trigger");
+        if (customTrigger) {
+          const row = customTrigger.closest(".ask-user-body").querySelector(".ask-custom-row");
+          row.classList.toggle("visible");
+          if (row.classList.contains("visible")) row.querySelector("input").focus();
+        }
+
+        const dismiss = event.target.closest(".ask-dismiss");
+        if (dismiss) {
+          finishAskUser(dismiss.closest(".ask-user-card"), "", true);
+        }
+
+        const deliveryModeButton = event.target.closest(".delivery-mode-button");
+        if (deliveryModeButton) {
+          const form = deliveryModeButton.closest(".composer");
+          const menu = form.querySelector(".delivery-menu");
+          const open = !menu.classList.contains("open");
+          menu.classList.toggle("open", open);
+          deliveryModeButton.setAttribute("aria-expanded", String(open));
+        }
+
+        const deliveryOption = event.target.closest(".delivery-option");
+        if (deliveryOption) {
+          const form = deliveryOption.closest(".composer");
+          const mode = deliveryOption.dataset.mode;
+          form.dataset.deliveryMode = mode;
+          for (const option of form.querySelectorAll(".delivery-option")) {
+            option.classList.toggle("selected", option === deliveryOption);
+          }
+          form.querySelector(".desktop-label.delivery-mode-label").textContent =
+            mode === "steer" ? "Steer after step" : "Queue after turn";
+          form.querySelector(".mobile-label.delivery-mode-label").textContent =
+            mode === "steer" ? "Steer" : "Queue";
+          form.querySelector(".send-button").textContent = mode === "steer" ? "Steer" : "Queue";
+          form.querySelector(".delivery-menu").classList.remove("open");
+          form.querySelector(".delivery-mode-button").setAttribute("aria-expanded", "false");
+        }
+
+        if (!event.target.closest(".delivery-menu") && !deliveryModeButton) {
+          for (const menu of document.querySelectorAll(".delivery-menu.open")) {
+            menu.classList.remove("open");
+            menu
+              .closest(".composer")
+              .querySelector(".delivery-mode-button")
+              .setAttribute("aria-expanded", "false");
+          }
+        }
+
+        const clearDelivery = event.target.closest(".clear-delivery");
+        if (clearDelivery) {
+          clearDelivery.closest(".queued-chip, .steer-chip").classList.remove("visible");
+        }
+
+        const attachButton = event.target.closest(".attach-button");
+        if (attachButton) {
+          const strip = attachButton.closest(".composer").querySelector(".attachment-strip");
+          strip.classList.add("visible");
+        }
+
+        const clearAttachment = event.target.closest(".clear-attachment");
+        if (clearAttachment) {
+          clearAttachment.closest(".attachment-strip").classList.remove("visible");
+        }
+
+        const copyDiff = event.target.closest(".copy-diff");
+        if (copyDiff) {
+          const diff = [...copyDiff.closest(".edit-tool-body").querySelectorAll(".diff-code-line")]
+            .map((line) => line.textContent)
+            .join("\n");
+          if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(diff).then(
+              () => {
+                copyDiff.textContent = "Copied";
+                window.setTimeout(() => (copyDiff.textContent = "Copy diff"), 1000);
+              },
+              () => (copyDiff.textContent = "Copy unavailable"),
+            );
+          } else {
+            copyDiff.textContent = "Copy unavailable";
+          }
+        }
+      });
+
+      for (const form of document.querySelectorAll(".ask-custom-row")) {
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const input = form.querySelector("input");
+          const answer = input.value.trim();
+          if (!answer) {
+            input.focus();
+            return;
+          }
+          finishAskUser(form.closest(".ask-user-card"), answer);
+        });
+      }
+
+      for (const form of document.querySelectorAll(".composer")) {
+        const textarea = form.querySelector("textarea");
+        const desktopKeyboard = window.matchMedia("(hover: hover) and (pointer: fine)");
+
+        function resizeComposer() {
+          textarea.style.height = "0";
+          textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
+        }
+
+        textarea.addEventListener("input", resizeComposer);
+        textarea.addEventListener("keydown", (event) => {
+          if (
+            event.key === "Enter" &&
+            !event.shiftKey &&
+            !event.isComposing &&
+            desktopKeyboard.matches
+          ) {
+            event.preventDefault();
+            form.requestSubmit();
+          }
+        });
+
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          if (!textarea.value.trim()) {
+            textarea.placeholder = "Type a message first";
+            textarea.focus();
+            return;
+          }
+          const button = form.querySelector(".send-button");
+          const mode = form.dataset.deliveryMode;
+          const shell = form.closest(".composer-shell");
+          const receipt = shell.querySelector(mode === "steer" ? ".steer-chip" : ".queued-chip");
+          receipt.querySelector(".delivery-receipt-message").textContent = textarea.value.trim();
+          receipt.classList.add("visible");
+          button.textContent = mode === "steer" ? "Steering" : "Queued";
+          textarea.value = "";
+          resizeComposer();
+          window.setTimeout(
+            () => (button.textContent = mode === "steer" ? "Steer" : "Queue"),
+            1000,
+          );
+        });
+      }
+
+      setVariant(activeIndex, false);
+    </script>
+  </body>
+</html>

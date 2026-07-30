@@ -2,7 +2,7 @@
 
 The default suite uses a real Scotty CLI process and an in-memory fake Worker/session service. It
 needs Node 22+, Bun, Git, and no Cloudflare or GitHub credentials. The fake models authoritative
-sessions, KV projections, backups, runtimes, the Pi terminal, a credential vault, hard-cap behavior,
+sessions, KV projections, backups, runtimes, the Pi worklog, a credential vault, hard-cap behavior,
 egress policy, V1 auth migration, owner recovery and transfer, and per-browser cookies.
 
 ## Run locally
@@ -77,7 +77,7 @@ node e2e/scripts/run.mjs --deployed
 ```
 
 The test performs the real sequence
-`up → root recovery on the disposable stage → Pi terminal page/PTY boundary → snapshot → scheduled
+`up → root recovery on the disposable stage → Pi worklog/RPC boundary → snapshot → scheduled
 hard-cap sleep → resume → down → vaporize`.
 Its canary-only authenticated probe verifies DO reconstruction, credential persistence,
 sentinel-only container state, non-secret KV, default-deny egress, restored backups,
@@ -103,6 +103,6 @@ recovers, logs out, or revokes that client.
 
 Each assertion is placed at a contract boundary. A CLI failure prints the exact command stderr;
 lifecycle tests inspect the first divergent fake resource; security tests identify the leaking
-surface; Pi-terminal tests identify auth, PTY, or asset failures; and teardown names the
+surface; Pi-worklog tests identify auth, RPC, or asset failures; and teardown names the
 orphan class. Keep the fake deterministic—product behavior belongs in `cli/**` and `worker/**`, not
 in this harness.
