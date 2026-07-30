@@ -183,6 +183,31 @@ describe("sessions shell", () => {
     assert.match(terminalStyles, /\.terminal\s*\{[\s\S]*?touch-action:\s*none;/);
   });
 
+  it("ships responsive mobile input with immediate visible composition", () => {
+    assert.match(ghosttyWeb, /addEventListener\("beforeinput", this\.beforeInputListener\)/);
+    assert.match(ghosttyWeb, /this\.awaitingEcho = !0/);
+    assert.match(terminalHtml, /id="mobile-composer"[\s\S]*?id="mobile-composer-input"/);
+    assert.match(terminalHtml, /enterkeyhint="send"/);
+    assert.match(terminalHtml, /data-terminal-key="ctrl-c"/);
+    assert.match(terminalHtml, /data-terminal-key="arrow-up"/);
+    assert.match(terminalScript, /submitComposer\(terminal, mobileComposerInput\.value\)/);
+    assert.match(terminalScript, /mobileComposerInput\.addEventListener\("beforeinput"/);
+    assert.match(
+      terminalStyles,
+      /@media \(max-width: 780px\)[\s\S]*?\.mobile-composer\s*\{[\s\S]*?display: grid;/,
+    );
+    assert.match(
+      terminalStyles,
+      /\.mobile-composer-input\s*\{[\s\S]*?font-size:\s*16px;/,
+      "mobile composer text must not trigger iOS focus zoom",
+    );
+    assert.match(
+      terminalStyles,
+      /\.mobile-terminal-key[\s\S]*?min-height:\s*44px;/,
+      "mobile terminal keys need touch-sized targets",
+    );
+  });
+
   it("keeps the Ghostty canvas backing size scaled for high-density displays", () => {
     assert.match(
       ghosttyWeb,

@@ -80,6 +80,74 @@
             <button id="reconnect" class="reconnect-button" type="button">Reconnect</button>
           </div>
         </section>
+
+        <form id="mobile-composer" class="mobile-composer" aria-label="Send a prompt to Pi">
+          <div class="mobile-composer-entry">
+            <label class="visually-hidden" for="mobile-composer-input">Message Pi</label>
+            <textarea
+              id="mobile-composer-input"
+              class="mobile-composer-input"
+              rows="1"
+              enterkeyhint="send"
+              autocomplete="off"
+              autocapitalize="sentences"
+              aria-describedby="mobile-composer-status"
+              placeholder="Type a prompt…"
+            ></textarea>
+            <button id="mobile-composer-send" class="mobile-composer-send" type="submit" disabled>
+              Send
+            </button>
+          </div>
+          <div class="mobile-composer-tools">
+            <div class="mobile-terminal-keys" role="toolbar" aria-label="Terminal keys">
+              <button class="mobile-terminal-key" type="button" data-terminal-key="escape">
+                Esc
+              </button>
+              <button class="mobile-terminal-key" type="button" data-terminal-key="tab">Tab</button>
+              <button class="mobile-terminal-key" type="button" data-terminal-key="ctrl-c">
+                Ctrl-C
+              </button>
+              <button
+                class="mobile-terminal-key mobile-terminal-arrow"
+                type="button"
+                data-terminal-key="arrow-left"
+                aria-label="Left arrow"
+              >
+                ←
+              </button>
+              <button
+                class="mobile-terminal-key mobile-terminal-arrow"
+                type="button"
+                data-terminal-key="arrow-up"
+                aria-label="Up arrow"
+              >
+                ↑
+              </button>
+              <button
+                class="mobile-terminal-key mobile-terminal-arrow"
+                type="button"
+                data-terminal-key="arrow-down"
+                aria-label="Down arrow"
+              >
+                ↓
+              </button>
+              <button
+                class="mobile-terminal-key mobile-terminal-arrow"
+                type="button"
+                data-terminal-key="arrow-right"
+                aria-label="Right arrow"
+              >
+                →
+              </button>
+            </div>
+            <button id="mobile-keyboard-done" class="mobile-keyboard-done" type="button">
+              Done
+            </button>
+          </div>
+          <p id="mobile-composer-status" class="mobile-composer-status" aria-live="polite">
+            Type here to see your draft instantly.
+          </p>
+        </form>
       </main>
     </div>
 
