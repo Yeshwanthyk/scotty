@@ -38,6 +38,10 @@ const terminalTimeline = await readFile(
   new URL("../worker/public/terminal-timeline.js", import.meta.url),
   "utf8",
 );
+const terminalMarkdown = await readFile(
+  new URL("../worker/public/terminal-markdown.js", import.meta.url),
+  "utf8",
+);
 const terminalStyles = await readFile(
   new URL("../worker/public/terminal.css", import.meta.url),
   "utf8",
@@ -206,8 +210,35 @@ describe("sessions shell", () => {
     assert.match(terminalScript, /window\.history\.pushState/);
     assert.match(terminalScript, /window\.addEventListener\("popstate"/);
     assert.match(terminalScript, /const sessionCache = new Map\(\)/);
-    assert.match(terminalScript, /import \{ conversationItems \} from "\/terminal-timeline\.js"/);
+    assert.match(
+      terminalScript,
+      /import \{[\s\S]*?conversationItems,[\s\S]*?\} from "\/terminal-timeline\.js"/,
+    );
+    assert.match(
+      terminalScript,
+      /import \{ assistantMarkdownFragment \} from "\/terminal-markdown\.js"/,
+    );
+    assert.match(terminalScript, /body\.append\(renderAssistantCopy\(text\)\)/);
+    assert.match(
+      terminalScript,
+      /function renderUserMessage\([\s\S]*?textElement\("div", "message-copy", text\)/,
+    );
+    assert.match(
+      terminalScript,
+      /function renderSystemMessage\([\s\S]*?textElement\("div", "message-copy", text\)/,
+    );
     assert.match(terminalTimeline, /export function conversationItems\(messages\)/);
+    assert.match(terminalMarkdown, /export function assistantMarkdownFragment\(/);
+    assert.match(terminalMarkdown, /document\.createTextNode\(descriptor\)/);
+    assert.doesNotMatch(terminalMarkdown, /innerHTML|insertAdjacentHTML|outerHTML/);
+    assert.match(
+      terminalStyles,
+      /\.message-copy\.markdown\s*\{[\s\S]*?white-space:\s*normal;/,
+    );
+    assert.match(
+      terminalStyles,
+      /\.markdown-table-wrap\s*\{[\s\S]*?max-width:\s*100%;[\s\S]*?overflow-x:\s*auto;/,
+    );
     assert.match(
       terminalScript,
       /function renderActivityFold\(reasoningParts, tools, active, conversationKey\)/,
