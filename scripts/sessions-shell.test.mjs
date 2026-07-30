@@ -34,6 +34,10 @@ const terminalScript = await readFile(
   new URL("../worker/public/terminal.js", import.meta.url),
   "utf8",
 );
+const terminalTimeline = await readFile(
+  new URL("../worker/public/terminal-timeline.js", import.meta.url),
+  "utf8",
+);
 const terminalStyles = await readFile(
   new URL("../worker/public/terminal.css", import.meta.url),
   "utf8",
@@ -188,6 +192,11 @@ describe("sessions shell", () => {
     assert.match(terminalHtml, /id="activity-drawer"/);
     assert.match(
       terminalHtml,
+      /id="runtime-menu"[\s\S]*?id="model-select"[\s\S]*?id="thinking-select"/,
+    );
+    assert.match(terminalHtml, /id="runtime-controls"[\s\S]*?id="runtime-model-label"/);
+    assert.match(
+      terminalHtml,
       /class="composer-shell"[\s\S]*?id="delivery-receipts"[\s\S]*?<form id="composer" class="composer"[\s\S]*?id="composer-input"[\s\S]*?rows="2"/,
     );
     assert.match(terminalScript, /rpcUrl\(sessionId, "snapshot"\)/);
@@ -197,6 +206,22 @@ describe("sessions shell", () => {
     assert.match(terminalScript, /window\.history\.pushState/);
     assert.match(terminalScript, /window\.addEventListener\("popstate"/);
     assert.match(terminalScript, /const sessionCache = new Map\(\)/);
+    assert.match(terminalScript, /import \{ conversationItems \} from "\/terminal-timeline\.js"/);
+    assert.match(terminalTimeline, /export function conversationItems\(messages\)/);
+    assert.match(
+      terminalScript,
+      /function renderActivityFold\(reasoningParts, tools, active, conversationKey\)/,
+    );
+    assert.match(
+      terminalScript,
+      /function applyDisclosureState\(details, key, defaultOpen = false\)/,
+    );
+    assert.doesNotMatch(terminalScript, /function renderStandaloneTool/);
+    assert.match(
+      terminalScript,
+      /type: "set_model"[\s\S]*?provider: selected\.provider[\s\S]*?modelId:/,
+    );
+    assert.match(terminalScript, /sendCommand\(\{ type: "set_thinking_level", level \}\)/);
     assert.match(
       terminalScript,
       /const streamingBehavior = deliveryMode === "steer" \? "steer" : "followUp";[\s\S]*?sendCommand\(\{ type: "prompt", message: text, streamingBehavior \}\)/,
@@ -218,6 +243,22 @@ describe("sessions shell", () => {
       terminalStyles,
       /@media \(max-width: 780px\)[\s\S]*?\.quiet-button,[\s\S]*?\.send-button\s*\{[\s\S]*?min-height:\s*44px;/,
       "mobile composer controls need touch-sized targets",
+    );
+    assert.match(
+      terminalStyles,
+      /\.worklog-turn\.user \.turn-body\s*\{[\s\S]*?max-width:\s*min\(80%, 720px\);[\s\S]*?border-radius:\s*14px 14px 4px;/,
+      "user messages should read as compact right-aligned turns",
+    );
+    assert.match(terminalStyles, /\.turn-activity > summary\s*\{/);
+    assert.match(
+      terminalStyles,
+      /@media \(max-width: 780px\)[\s\S]*?\.runtime-menu-inner\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
+      "runtime controls should remain usable in the mobile composer",
+    );
+    assert.doesNotMatch(
+      terminalStyles,
+      /\.workspace-link\[aria-current="page"\]\s*\{[^}]*box-shadow:/,
+      "the current session should use a quiet fill instead of an accent rail",
     );
   });
 });

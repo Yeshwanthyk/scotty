@@ -116,6 +116,25 @@
               placeholder="Message Pi…"
               aria-describedby="composer-status"
             ></textarea>
+            <div
+              id="runtime-menu"
+              class="runtime-menu"
+              role="dialog"
+              aria-label="Pi model and thinking"
+              aria-hidden="true"
+              inert
+            >
+              <div class="runtime-menu-inner">
+                <label class="runtime-field" for="model-select">
+                  <span>Model</span>
+                  <select id="model-select" aria-label="Pi model"></select>
+                </label>
+                <label class="runtime-field" for="thinking-select">
+                  <span>Thinking</span>
+                  <select id="thinking-select" aria-label="Pi thinking level"></select>
+                </label>
+              </div>
+            </div>
             <div id="delivery-menu" class="delivery-menu" aria-hidden="true" inert>
               <div class="delivery-menu-inner">
                 <div class="delivery-options" role="menu" aria-label="Delivery mode">
@@ -158,6 +177,20 @@
               >
                 <span id="delivery-mode-label">Queue</span>
                 <span class="delivery-caret" aria-hidden="true">⌃</span>
+              </button>
+              <button
+                id="runtime-controls"
+                class="quiet-button runtime-controls-button"
+                type="button"
+                aria-haspopup="dialog"
+                aria-expanded="false"
+                aria-controls="runtime-menu"
+                hidden
+              >
+                <span id="runtime-model-label" class="runtime-model-label">Model</span>
+                <span class="runtime-separator" aria-hidden="true">·</span>
+                <span id="runtime-thinking-label">Thinking</span>
+                <span class="runtime-caret" aria-hidden="true">⌃</span>
               </button>
               <span id="composer-status" class="composer-status">Loading session state…</span>
               <span class="composer-spacer"></span>

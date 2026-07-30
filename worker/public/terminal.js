@@ -1,5 +1,6 @@
 import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
 import { composerText } from "/terminal-input.js";
+import { conversationItems } from "/terminal-timeline.js";
 
 const CACHE_LIMIT = 6;
 const compactViewport = window.matchMedia("(max-width: 780px)");
@@ -26,6 +27,12 @@ const composerStatus = document.querySelector("#composer-status");
 const deliveryModeButton = document.querySelector("#delivery-mode");
 const deliveryModeLabel = document.querySelector("#delivery-mode-label");
 const deliveryMenu = document.querySelector("#delivery-menu");
+const runtimeControlsButton = document.querySelector("#runtime-controls");
+const runtimeMenu = document.querySelector("#runtime-menu");
+const runtimeModelLabel = document.querySelector("#runtime-model-label");
+const runtimeThinkingLabel = document.querySelector("#runtime-thinking-label");
+const modelSelect = document.querySelector("#model-select");
+const thinkingSelect = document.querySelector("#thinking-select");
 const stopRunButton = document.querySelector("#stop-run");
 const deliveryReceipts = document.querySelector("#delivery-receipts");
 const openActivityButton = document.querySelector("#open-activity");
@@ -47,8 +54,10 @@ let deliveryMode = "follow_up";
 let commandPending = false;
 let composing = false;
 let renderScheduled = false;
+let runtimeOptionsSignature;
 const sessionCache = new Map();
 const prefetching = new Map();
+const disclosureState = new Map();
 
 function sessionIdFromLocation() {
   const match = window.location.pathname.match(/^\/s\/([^/]+)$/u);
@@ -65,6 +74,7 @@ function blankProjection() {
     queue: { steer: [], followUp: [] },
     active: false,
     state: {},
+    capabilities: { models: [], thinkingLevels: [] },
     activity: { tasks: [], subagents: [], workflows: [] },
     loaded: false,
   };
@@ -175,6 +185,15 @@ function projectionFromSnapshot(body) {
     outer.active,
   );
   projection.state = state;
+  const capabilities = firstObject(snapshot.capabilities, state.capabilities, outer.capabilities);
+  projection.capabilities = {
+    models: firstArray(capabilities.models).filter(isObject),
+    thinkingLevels: firstArray(
+      capabilities.thinkingLevels,
+      capabilities.thinking_levels,
+      capabilities.levels,
+    ).filter((level) => typeof level === "string"),
+  };
   projection.queue = normalizeQueue(
     firstObject(snapshot.queue, state.queue, snapshot.queues, state.queues),
   );
@@ -442,15 +461,26 @@ function renderProjection({ restoreScroll = false } = {}) {
   if (!currentProjection) return;
   const nearBottom = worklog.scrollHeight - worklog.scrollTop - worklog.clientHeight < 100;
   const fragment = document.createDocumentFragment();
-  const renderedToolIds = new Set();
-
-  for (const message of currentProjection.messages) {
-    const turn = renderMessage(message, renderedToolIds);
-    if (turn) fragment.append(turn);
-  }
+  const { items, claimedToolIds } = conversationItems(currentProjection.messages);
+  let lastConversation = items.findLast((item) => item.kind === "conversation");
   for (const tool of currentProjection.tools.values()) {
-    if (renderedToolIds.has(tool.id) || secondaryActivityTool(tool)) continue;
-    fragment.append(renderStandaloneTool(tool));
+    if (claimedToolIds.has(tool.id) || secondaryActivityTool(tool)) continue;
+    if (!lastConversation) {
+      lastConversation = newConversation(undefined, "activity-only");
+      items.push(lastConversation);
+    }
+    addConversationTool(lastConversation, tool.id);
+  }
+  const lastConversationIndex = items.findLastIndex((item) => item.kind === "conversation");
+  for (const [index, item] of items.entries()) {
+    if (item.kind === "system") {
+      const turn = renderSystemMessage(item.message);
+      if (turn) fragment.append(turn);
+      continue;
+    }
+    if (item.user) fragment.append(renderUserMessage(item.user));
+    const assistantTurn = renderAssistantTurn(item, index === lastConversationIndex);
+    if (assistantTurn) fragment.append(assistantTurn);
   }
   for (const request of currentProjection.pendingUi.values()) {
     fragment.append(renderUiRequest(request));
@@ -481,102 +511,155 @@ function scheduleRender() {
   requestAnimationFrame(() => renderProjection());
 }
 
-function renderMessage(message, renderedToolIds) {
-  const role = firstString(message.role, message.type, "system");
-  if (role === "toolResult" || role === "tool_result" || role === "tool") {
-    const id = toolId(message);
-    if (id && renderedToolIds.has(id)) return undefined;
-    const tool = currentProjection.tools.get(id) ?? {
-      ...message,
-      id: id ?? `result-${currentProjection.messages.indexOf(message)}`,
-      name: firstString(message.toolName, message.name, "tool"),
-      result: message.content ?? message.result,
-      status: message.isError ? "error" : "done",
-    };
-    renderedToolIds.add(tool.id);
-    return secondaryActivityTool(tool) ? undefined : renderStandaloneTool(tool);
-  }
+function newConversation(user, key) {
+  return {
+    kind: "conversation",
+    key,
+    user,
+    assistants: [],
+    toolIds: [],
+    inlineTools: [],
+  };
+}
 
-  const normalizedRole = role === "assistant" ? "assistant" : role === "user" ? "user" : "system";
+function addConversationTool(conversation, id) {
+  if (id && !conversation.toolIds.includes(id)) conversation.toolIds.push(id);
+}
+
+function renderUserMessage(message) {
   const turn = document.createElement("article");
-  turn.className = `worklog-turn ${normalizedRole}`;
-  const label = textElement(
-    "div",
-    `speaker-label ${normalizedRole === "assistant" ? "pi" : normalizedRole}`,
-    normalizedRole === "assistant" ? "PI" : normalizedRole === "user" ? "YOU" : "SYSTEM",
-  );
+  turn.className = "worklog-turn user";
   const body = document.createElement("div");
   body.className = "turn-body";
-
-  const parts = contentParts(message);
-  if (parts.length === 0) {
-    const text = messageText(message.text ?? message.message);
-    if (text) body.append(textElement("div", "message-copy", text));
-  }
-  const toolStack = document.createElement("div");
-  toolStack.className = "tool-stack";
-  for (const part of parts) {
-    if (typeof part === "string") {
-      body.append(textElement("div", "message-copy", part));
-      continue;
-    }
-    const type = firstString(part?.type, "text");
-    if (type === "text") {
-      const text = messageText(part);
-      if (text) body.append(textElement("div", "message-copy", text));
-    } else if (type === "thinking" || type === "reasoning") {
-      body.append(renderThinking(part));
-    } else if (type === "toolCall" || type === "tool_call" || type === "tool-call") {
-      const id = toolId(part);
-      const tool = currentProjection.tools.get(id) ?? {
-        ...part,
-        id,
-        name: firstString(part.name, part.toolName, "tool"),
-        arguments: part.arguments ?? part.args,
-        status: "running",
-      };
-      if (tool.id) renderedToolIds.add(tool.id);
-      if (!secondaryActivityTool(tool)) toolStack.append(renderTool(tool));
-    }
-  }
-  if (toolStack.childNodes.length > 0) body.append(toolStack);
+  const text = messageText(message.content ?? message.text ?? message.message);
+  if (text) body.append(textElement("div", "message-copy", text));
   const delivery = firstString(message.deliveryMode, message.delivery_mode, message.source);
   if (delivery === "steer" || delivery === "follow_up" || delivery === "queue") {
     body.append(
       textElement("div", "message-meta", delivery === "steer" ? "Steered" : "From queue"),
     );
   }
-  if (body.childNodes.length === 0) return undefined;
-  turn.append(label, body);
+  turn.append(body);
   return turn;
 }
 
-function renderThinking(part) {
-  const details = document.createElement("details");
-  details.className = "thinking";
-  details.append(textElement("summary", "", "Show reasoning"));
-  details.append(textElement("div", "thinking-copy", messageText(part)));
-  return details;
-}
+function renderAssistantTurn(conversation, isLatest) {
+  const textParts = [];
+  const reasoningParts = [];
+  for (const message of conversation.assistants) {
+    const parts = contentParts(message);
+    if (parts.length === 0) {
+      const text = messageText(message.text ?? message.message);
+      if (text) textParts.push(text);
+      continue;
+    }
+    for (const part of parts) {
+      if (typeof part === "string") {
+        if (part) textParts.push(part);
+        continue;
+      }
+      const type = firstString(part?.type, "text");
+      if (type === "text") {
+        const text = messageText(part);
+        if (text) textParts.push(text);
+      } else if (type === "thinking" || type === "reasoning") {
+        const text = messageText(part);
+        if (text) reasoningParts.push(text);
+      }
+    }
+  }
 
-function renderStandaloneTool(tool) {
+  const tools = [
+    ...conversation.toolIds
+      .map((id) => currentProjection.tools.get(id))
+      .filter((tool) => tool && !secondaryActivityTool(tool)),
+    ...conversation.inlineTools.filter((tool) => !secondaryActivityTool(tool)),
+  ];
+  if (textParts.length === 0 && reasoningParts.length === 0 && tools.length === 0) return undefined;
+
   const turn = document.createElement("article");
   turn.className = "worklog-turn assistant";
   turn.append(textElement("div", "speaker-label pi", "PI"));
   const body = document.createElement("div");
   body.className = "turn-body";
-  const stack = document.createElement("div");
-  stack.className = "tool-stack";
-  stack.append(renderTool(tool));
-  body.append(stack);
+  for (const text of textParts) body.append(textElement("div", "message-copy", text));
+  if (reasoningParts.length > 0 || tools.length > 0) {
+    body.append(
+      renderActivityFold(
+        reasoningParts,
+        tools,
+        Boolean(currentProjection.active && isLatest),
+        conversation.key,
+      ),
+    );
+  }
   turn.append(body);
   return turn;
 }
 
-function renderTool(tool) {
+function applyDisclosureState(details, key, defaultOpen = false) {
+  const stateKey = `${currentSessionId}:${key}`;
+  details.open = disclosureState.has(stateKey) ? disclosureState.get(stateKey) : defaultOpen;
+  details.addEventListener("toggle", () => {
+    disclosureState.set(stateKey, details.open);
+  });
+}
+
+function renderActivityFold(reasoningParts, tools, active, conversationKey) {
+  const details = document.createElement("details");
+  details.className = "turn-activity";
+  applyDisclosureState(
+    details,
+    `activity:${conversationKey}`,
+    active && tools.some((tool) => tool.status === "running"),
+  );
+  const stepCount = tools.length + (reasoningParts.length > 0 ? 1 : 0);
+  const summary = document.createElement("summary");
+  summary.append(
+    textElement("span", "activity-caret", "›"),
+    textElement("span", "activity-label", active ? "Working" : "Worked"),
+    textElement("span", "activity-count", `${stepCount} ${stepCount === 1 ? "step" : "steps"}`),
+  );
+  const body = document.createElement("div");
+  body.className = "turn-activity-body";
+  if (reasoningParts.length > 0) {
+    const reasoning = document.createElement("details");
+    reasoning.className = "thinking";
+    applyDisclosureState(reasoning, `reasoning:${conversationKey}`);
+    reasoning.append(textElement("summary", "", "Reasoning"));
+    reasoning.append(textElement("div", "thinking-copy", reasoningParts.join("\n\n")));
+    body.append(reasoning);
+  }
+  if (tools.length > 0) {
+    const stack = document.createElement("div");
+    stack.className = "tool-stack";
+    for (const [index, tool] of tools.entries()) {
+      stack.append(renderTool(tool, `${conversationKey}:${tool.id ?? index}`));
+    }
+    body.append(stack);
+  }
+  details.append(summary, body);
+  return details;
+}
+
+function renderSystemMessage(message) {
+  const text = messageText(message.content ?? message.text ?? message.message);
+  if (!text) return undefined;
+  const turn = document.createElement("article");
+  turn.className = "worklog-turn system";
+  turn.append(textElement("div", "speaker-label system", "SYSTEM"));
+  const body = document.createElement("div");
+  body.className = "turn-body";
+  body.append(textElement("div", "message-copy", text));
+  turn.append(body);
+  return turn;
+}
+
+function renderTool(tool, disclosureKey) {
   const details = document.createElement("details");
   details.className = "tool-row";
   const status = tool.error || tool.status === "error" ? "error" : (tool.status ?? "done");
+  applyDisclosureState(details, `tool:${disclosureKey}`, status === "error");
   const summary = document.createElement("summary");
   summary.append(
     textElement(
@@ -885,6 +968,79 @@ function renderActivity() {
   activityContent.replaceChildren(fragment);
 }
 
+function modelIdentity(model) {
+  const provider = firstString(model?.provider);
+  const id = firstString(model?.id, model?.modelId, model?.model_id);
+  return provider && id ? JSON.stringify([provider, id]) : "";
+}
+
+function modelLabel(model) {
+  return firstString(model?.name, model?.label, model?.id, model?.modelId, "Model");
+}
+
+function renderRuntimeControls() {
+  const models = currentProjection?.capabilities?.models ?? [];
+  const thinkingLevels = currentProjection?.capabilities?.thinkingLevels ?? [];
+  const currentModel = firstObject(currentProjection?.state?.model);
+  const thinkingLevel = firstString(
+    currentProjection?.state?.thinkingLevel,
+    currentProjection?.state?.thinking_level,
+  );
+  const visible =
+    models.length > 0 || thinkingLevels.length > 0 || Object.keys(currentModel).length > 0;
+  runtimeControlsButton.hidden = !visible;
+  runtimeControlsButton.disabled = commandPending || !currentProjection?.loaded;
+  modelSelect.disabled = commandPending || models.length === 0;
+  thinkingSelect.disabled = commandPending || thinkingLevels.length === 0;
+  modelSelect.closest(".runtime-field").hidden = models.length === 0;
+  thinkingSelect.closest(".runtime-field").hidden = thinkingLevels.length === 0;
+  runtimeModelLabel.textContent = modelLabel(currentModel);
+  runtimeThinkingLabel.textContent = thinkingLevel ?? "Thinking";
+
+  const signature = JSON.stringify([
+    models.map((model) => [model.provider, model.id, model.name]),
+    thinkingLevels,
+  ]);
+  if (signature !== runtimeOptionsSignature) {
+    modelSelect.replaceChildren();
+    const providerGroups = new Map();
+    for (const model of models) {
+      const provider = firstString(model.provider, "Other");
+      let group = providerGroups.get(provider);
+      if (!group) {
+        group = document.createElement("optgroup");
+        group.label = provider;
+        providerGroups.set(provider, group);
+        modelSelect.append(group);
+      }
+      const option = document.createElement("option");
+      option.value = modelIdentity(model);
+      option.textContent = modelLabel(model);
+      group.append(option);
+    }
+    thinkingSelect.replaceChildren();
+    for (const level of thinkingLevels) {
+      const option = document.createElement("option");
+      option.value = level;
+      option.textContent = level;
+      thinkingSelect.append(option);
+    }
+    runtimeOptionsSignature = signature;
+  }
+
+  const currentIdentity = modelIdentity(currentModel);
+  if (
+    currentIdentity &&
+    [...modelSelect.options].some((option) => option.value === currentIdentity)
+  ) {
+    modelSelect.value = currentIdentity;
+  }
+  if (thinkingLevel && thinkingLevels.includes(thinkingLevel)) {
+    thinkingSelect.value = thinkingLevel;
+  }
+  if (!visible) setRuntimeMenu(false);
+}
+
 function updateComposer() {
   const active = Boolean(currentProjection?.active);
   deliveryModeButton.hidden = !active;
@@ -904,13 +1060,23 @@ function updateComposer() {
   for (const option of deliveryMenu.querySelectorAll("[data-delivery-mode]")) {
     option.setAttribute("aria-checked", String(option.dataset.deliveryMode === deliveryMode));
   }
+  renderRuntimeControls();
 }
 
 function setDeliveryMenu(open) {
+  if (open) setRuntimeMenu(false);
   deliveryMenu.classList.toggle("open", open);
   deliveryMenu.setAttribute("aria-hidden", String(!open));
   deliveryMenu.inert = !open;
   deliveryModeButton.setAttribute("aria-expanded", String(open));
+}
+
+function setRuntimeMenu(open) {
+  if (open) setDeliveryMenu(false);
+  runtimeMenu.classList.toggle("open", open);
+  runtimeMenu.setAttribute("aria-hidden", String(!open));
+  runtimeMenu.inert = !open;
+  runtimeControlsButton.setAttribute("aria-expanded", String(open));
 }
 
 function autosizeComposer() {
@@ -1058,6 +1224,48 @@ async function submitComposer() {
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Pi did not accept that message.");
     composerInput.focus({ preventScroll: true });
+  }
+}
+
+async function selectModel() {
+  const selected = currentProjection.capabilities.models.find(
+    (model) => modelIdentity(model) === modelSelect.value,
+  );
+  if (!selected) return;
+  try {
+    await sendCommand({
+      type: "set_model",
+      provider: selected.provider,
+      modelId: firstString(selected.id, selected.modelId, selected.model_id),
+    });
+    currentProjection.state = { ...currentProjection.state, model: selected };
+    setRuntimeMenu(false);
+    updateComposer();
+    runtimeControlsButton.focus({ preventScroll: true });
+    loadSnapshot(currentSessionId).catch(() => {
+      showToast("The model changed, but its updated thinking options could not be refreshed.");
+    });
+  } catch (error) {
+    renderRuntimeControls();
+    showToast(error instanceof Error ? error.message : "Pi could not change models.");
+  }
+}
+
+async function selectThinkingLevel() {
+  const level = thinkingSelect.value;
+  if (!level) return;
+  try {
+    await sendCommand({ type: "set_thinking_level", level });
+    currentProjection.state = {
+      ...currentProjection.state,
+      thinkingLevel: level,
+    };
+    setRuntimeMenu(false);
+    updateComposer();
+    runtimeControlsButton.focus({ preventScroll: true });
+  } catch (error) {
+    renderRuntimeControls();
+    showToast(error instanceof Error ? error.message : "Pi could not change thinking level.");
   }
 }
 
@@ -1388,6 +1596,16 @@ deliveryModeButton.addEventListener("click", () => {
   setDeliveryMenu(open);
   if (open) deliveryMenu.querySelector('[aria-checked="true"]')?.focus();
 });
+runtimeControlsButton.addEventListener("click", () => {
+  const open = !runtimeMenu.classList.contains("open");
+  setRuntimeMenu(open);
+  if (open) {
+    if (modelSelect.disabled) thinkingSelect.focus();
+    else modelSelect.focus();
+  }
+});
+modelSelect.addEventListener("change", selectModel);
+thinkingSelect.addEventListener("change", selectThinkingLevel);
 deliveryMenu.addEventListener("click", (event) => {
   const option = event.target.closest?.("[data-delivery-mode]");
   if (!option) return;
@@ -1441,6 +1659,13 @@ document.addEventListener("click", (event) => {
   ) {
     setDeliveryMenu(false);
   }
+  if (
+    runtimeMenu.classList.contains("open") &&
+    !event.target.closest?.("#runtime-menu") &&
+    !event.target.closest?.("#runtime-controls")
+  ) {
+    setRuntimeMenu(false);
+  }
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
@@ -1449,6 +1674,9 @@ document.addEventListener("keydown", (event) => {
     else if (deliveryMenu.classList.contains("open")) {
       setDeliveryMenu(false);
       deliveryModeButton.focus();
+    } else if (runtimeMenu.classList.contains("open")) {
+      setRuntimeMenu(false);
+      runtimeControlsButton.focus();
     }
   }
   if (event.key === "Tab" && activityDrawer.classList.contains("open")) {

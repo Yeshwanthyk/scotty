@@ -45,16 +45,34 @@ test("Pi session supervisor hydrates, replays commands, and owns extension UI", 
     `#!/usr/bin/env node
 import { createInterface } from "node:readline";
 const messages = [];
+let model = { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" };
+let thinkingLevel = "high";
 const output = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line) => {
   const command = JSON.parse(line);
   if (command.type === "get_state")
     output({ id: command.id, type: "response", command: command.type, success: true, data: {
       sessionId: "pi-session-1", isStreaming: false, steeringMode: "one-at-a-time",
-      followUpMode: "one-at-a-time", messageCount: messages.length, pendingMessageCount: 0
+      followUpMode: "one-at-a-time", messageCount: messages.length, pendingMessageCount: 0,
+      model, thinkingLevel
     }});
   else if (command.type === "get_messages")
     output({ id: command.id, type: "response", command: command.type, success: true, data: { messages } });
+  else if (command.type === "get_available_models")
+    output({ id: command.id, type: "response", command: command.type, success: true, data: {
+      models: [model, { provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4" }]
+    }});
+  else if (command.type === "get_available_thinking_levels")
+    output({ id: command.id, type: "response", command: command.type, success: true, data: {
+      levels: ["off", "low", "high"]
+    }});
+  else if (command.type === "set_model") {
+    model = { provider: command.provider, id: command.modelId, name: command.modelId };
+    output({ id: command.id, type: "response", command: command.type, success: true, data: model });
+  } else if (command.type === "set_thinking_level") {
+    thinkingLevel = command.level;
+    output({ id: command.id, type: "response", command: command.type, success: true });
+  }
   else if (command.type === "prompt") {
     if (command.message === "Race-safe follow-up" && command.streamingBehavior !== "followUp") {
       output({ id: command.id, type: "response", command: command.type, success: false, error: "Agent is already processing a prompt" });
@@ -109,7 +127,38 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   const snapshot = await (await fetch(`${url}/snapshot`, { headers: transportHeaders })).json();
   assert.equal(snapshot.state.sessionId, "pi-session-1");
   assert.deepEqual(snapshot.messages, [{ role: "user", content: "Start the task" }]);
+  assert.deepEqual(
+    snapshot.capabilities.models.map((availableModel) => availableModel.id),
+    ["gpt-5.4", "claude-sonnet-4"],
+  );
+  assert.deepEqual(snapshot.capabilities.thinkingLevels, ["off", "low", "high"]);
   assert.equal(snapshot.pendingUi[0].id, "ask-1");
+
+  const setModel = await fetch(`${url}/command`, {
+    method: "POST",
+    headers: { ...transportHeaders, "content-type": "application/json" },
+    body: JSON.stringify({
+      commandId: "model-1",
+      command: { type: "set_model", provider: "anthropic", modelId: "claude-sonnet-4" },
+    }),
+  });
+  assert.equal(setModel.status, 202);
+  assert.equal((await setModel.json()).response.data.id, "claude-sonnet-4");
+
+  const setThinking = await fetch(`${url}/command`, {
+    method: "POST",
+    headers: { ...transportHeaders, "content-type": "application/json" },
+    body: JSON.stringify({
+      commandId: "thinking-1",
+      command: { type: "set_thinking_level", level: "low" },
+    }),
+  });
+  assert.equal(setThinking.status, 202);
+  const changedSnapshot = await (
+    await fetch(`${url}/snapshot`, { headers: transportHeaders })
+  ).json();
+  assert.equal(changedSnapshot.state.model.id, "claude-sonnet-4");
+  assert.equal(changedSnapshot.state.thinkingLevel, "low");
 
   const steer = {
     commandId: "steer-1",

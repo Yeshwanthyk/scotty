@@ -18,7 +18,15 @@ const maxReceipts = 200;
 const maxBodyBytes = 64 * 1024;
 const requestTimeoutMs = 30_000;
 const blockingUiMethods = new Set(["select", "confirm", "input", "editor"]);
-const commandTypes = new Set(["prompt", "steer", "follow_up", "abort", "extension_ui_response"]);
+const commandTypes = new Set([
+  "prompt",
+  "steer",
+  "follow_up",
+  "abort",
+  "extension_ui_response",
+  "set_model",
+  "set_thinking_level",
+]);
 
 if (!Number.isInteger(port) || port < 1024 || port > 65_535)
   throw new Error("SCOTTY_PI_SESSION_PORT must be a valid unprivileged port");
@@ -192,10 +200,13 @@ const hasTransportCapability = (request) => {
 
 const snapshot = async () => {
   const baseSequence = sequence;
-  const [stateResponse, messagesResponse] = await Promise.all([
-    sendRpc({ type: "get_state" }),
-    sendRpc({ type: "get_messages" }),
-  ]);
+  const [stateResponse, messagesResponse, modelsResponse, thinkingLevelsResponse] =
+    await Promise.all([
+      sendRpc({ type: "get_state" }),
+      sendRpc({ type: "get_messages" }),
+      sendRpc({ type: "get_available_models" }).catch(() => undefined),
+      sendRpc({ type: "get_available_thinking_levels" }).catch(() => undefined),
+    ]);
   if (stateResponse.success === false || messagesResponse.success === false)
     throw new Error("Pi RPC snapshot failed");
   const endSequence = sequence;
@@ -204,6 +215,16 @@ const snapshot = async () => {
     sequence: endSequence,
     state: stateResponse.data ?? stateResponse.state ?? stateResponse,
     messages: messagesResponse.data?.messages ?? messagesResponse.messages ?? [],
+    capabilities: {
+      models:
+        modelsResponse?.success === false
+          ? []
+          : (modelsResponse?.data?.models ?? modelsResponse?.models ?? []),
+      thinkingLevels:
+        thinkingLevelsResponse?.success === false
+          ? []
+          : (thinkingLevelsResponse?.data?.levels ?? thinkingLevelsResponse?.levels ?? []),
+    },
     events: events.filter(
       (envelope) => envelope.sequence > baseSequence && envelope.sequence <= endSequence,
     ),
