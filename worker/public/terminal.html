@@ -102,72 +102,72 @@
           </div>
         </section>
 
-        <div id="delivery-receipts" class="delivery-receipts" aria-live="polite"></div>
+        <div class="composer-shell">
+          <div id="delivery-receipts" class="delivery-receipts" aria-live="polite"></div>
 
-        <form id="composer" class="composer-shell" aria-label="Message Pi">
-          <div
-            id="delivery-menu"
-            class="delivery-menu"
-            role="menu"
-            aria-label="Delivery mode"
-            hidden
-          >
-            <button
-              class="delivery-option"
-              type="button"
-              role="menuitemradio"
-              data-delivery-mode="steer"
-            >
-              <span class="delivery-option-icon" aria-hidden="true">↳</span>
-              <span>
-                <strong>Steer after this step</strong>
-                <small>Pi reads this when the current tool finishes.</small>
-              </span>
-            </button>
-            <button
-              class="delivery-option"
-              type="button"
-              role="menuitemradio"
-              data-delivery-mode="follow_up"
-            >
-              <span class="delivery-option-icon" aria-hidden="true">↓</span>
-              <span>
-                <strong>Queue after this turn</strong>
-                <small>Pi finishes this response, then starts yours.</small>
-              </span>
-            </button>
-          </div>
-          <label class="visually-hidden" for="composer-input">Message Pi</label>
-          <textarea
-            id="composer-input"
-            rows="1"
-            enterkeyhint="enter"
-            autocomplete="off"
-            autocapitalize="sentences"
-            placeholder="Message Pi…"
-            aria-describedby="composer-status"
-          ></textarea>
-          <div class="composer-footer">
-            <button
-              id="delivery-mode"
-              class="quiet-button delivery-mode-button"
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded="false"
-              aria-controls="delivery-menu"
-              hidden
-            >
-              <span id="delivery-mode-label">Queue</span>
-              <span class="delivery-caret" aria-hidden="true">⌃</span>
-            </button>
-            <span id="composer-status" class="composer-status">Loading session state…</span>
-            <span class="composer-spacer"></span>
-            <button id="stop-run" class="quiet-button stop-button" type="button" hidden>
-              Stop
-            </button>
-            <button id="composer-send" class="send-button" type="submit" disabled>Send</button>
-          </div>
-        </form>
+          <form id="composer" class="composer" aria-label="Message Pi">
+            <label class="visually-hidden" for="composer-input">Message Pi</label>
+            <textarea
+              id="composer-input"
+              rows="2"
+              enterkeyhint="enter"
+              autocomplete="off"
+              autocapitalize="sentences"
+              placeholder="Message Pi…"
+              aria-describedby="composer-status"
+            ></textarea>
+            <div id="delivery-menu" class="delivery-menu" aria-hidden="true" inert>
+              <div class="delivery-menu-inner">
+                <div class="delivery-options" role="menu" aria-label="Delivery mode">
+                  <button
+                    class="delivery-option"
+                    type="button"
+                    role="menuitemradio"
+                    data-delivery-mode="steer"
+                  >
+                    <span class="delivery-option-icon" aria-hidden="true">↳</span>
+                    <span>
+                      <strong>Steer after this step</strong>
+                      <small>Pi reads this when the current tool finishes.</small>
+                    </span>
+                  </button>
+                  <button
+                    class="delivery-option"
+                    type="button"
+                    role="menuitemradio"
+                    data-delivery-mode="follow_up"
+                  >
+                    <span class="delivery-option-icon" aria-hidden="true">↓</span>
+                    <span>
+                      <strong>Queue after this turn</strong>
+                      <small>Pi finishes this response, then starts yours.</small>
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="composer-footer">
+              <button
+                id="delivery-mode"
+                class="quiet-button delivery-mode-button"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="delivery-menu"
+                hidden
+              >
+                <span id="delivery-mode-label">Queue</span>
+                <span class="delivery-caret" aria-hidden="true">⌃</span>
+              </button>
+              <span id="composer-status" class="composer-status">Loading session state…</span>
+              <span class="composer-spacer"></span>
+              <button id="stop-run" class="quiet-button stop-button" type="button" hidden>
+                Stop
+              </button>
+              <button id="composer-send" class="send-button" type="submit" disabled>Send</button>
+            </div>
+          </form>
+        </div>
       </main>
     </div>
 

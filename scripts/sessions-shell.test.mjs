@@ -181,7 +181,10 @@ describe("sessions shell", () => {
   it("ships the native Pi worklog, live RPC projection, and one responsive composer", () => {
     assert.match(terminalHtml, /id="worklog"[\s\S]*?id="worklog-feed"/);
     assert.match(terminalHtml, /id="activity-drawer"/);
-    assert.match(terminalHtml, /id="composer"[\s\S]*?id="composer-input"/);
+    assert.match(
+      terminalHtml,
+      /class="composer-shell"[\s\S]*?id="delivery-receipts"[\s\S]*?<form id="composer" class="composer"[\s\S]*?id="composer-input"[\s\S]*?rows="2"/,
+    );
     assert.match(terminalScript, /rpcUrl\(sessionId, "snapshot"\)/);
     assert.match(terminalScript, /rpcUrl\(sessionId, "events"\)/);
     assert.match(terminalScript, /rpcUrl\(currentSessionId, "command"\)/);
@@ -189,10 +192,21 @@ describe("sessions shell", () => {
     assert.match(terminalScript, /window\.history\.pushState/);
     assert.match(terminalScript, /window\.addEventListener\("popstate"/);
     assert.match(terminalScript, /const sessionCache = new Map\(\)/);
+    assert.match(
+      terminalScript,
+      /const streamingBehavior = deliveryMode === "steer" \? "steer" : "followUp";[\s\S]*?sendCommand\(\{ type: "prompt", message: text, streamingBehavior \}\)/,
+      "prompt delivery must let Pi atomically start or queue instead of racing a stale snapshot",
+    );
+    assert.doesNotMatch(terminalScript, /active \? deliveryMode : "prompt"/);
     assert.doesNotMatch(terminalScript, /ghostty|new WebSocket|\/terminal["'`]/u);
     assert.match(
       terminalStyles,
-      /@media \(max-width: 780px\)[\s\S]*?\.composer-shell textarea\s*\{[\s\S]*?font-size:\s*16px;/,
+      /\.composer-shell\s*\{[\s\S]*?linear-gradient[\s\S]*?\.composer\s*\{[\s\S]*?max-width:\s*820px;/,
+      "composer must preserve the approved outer fade and inner card structure",
+    );
+    assert.match(
+      terminalStyles,
+      /@media \(max-width: 780px\)[\s\S]*?\.composer textarea\s*\{[\s\S]*?font-size:\s*16px;/,
       "mobile composer text must not trigger iOS focus zoom",
     );
     assert.match(

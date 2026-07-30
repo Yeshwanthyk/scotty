@@ -889,7 +889,7 @@ function updateComposer() {
   const active = Boolean(currentProjection?.active);
   deliveryModeButton.hidden = !active;
   stopRunButton.hidden = !active;
-  if (!active) deliveryMenu.hidden = true;
+  if (!active) setDeliveryMenu(false);
   const text = composerText(composerInput.value);
   composerSend.disabled = commandPending || !text || !currentProjection?.loaded;
   composerSend.textContent = active ? (deliveryMode === "steer" ? "Steer" : "Queue") : "Send";
@@ -904,6 +904,13 @@ function updateComposer() {
   for (const option of deliveryMenu.querySelectorAll("[data-delivery-mode]")) {
     option.setAttribute("aria-checked", String(option.dataset.deliveryMode === deliveryMode));
   }
+}
+
+function setDeliveryMenu(open) {
+  deliveryMenu.classList.toggle("open", open);
+  deliveryMenu.setAttribute("aria-hidden", String(!open));
+  deliveryMenu.inert = !open;
+  deliveryModeButton.setAttribute("aria-expanded", String(open));
 }
 
 function autosizeComposer() {
@@ -1024,6 +1031,8 @@ async function sendCommand(command) {
           body.message,
           body.error?.message,
           typeof body.error === "string" ? body.error : undefined,
+          body.response?.error?.message,
+          typeof body.response?.error === "string" ? body.response.error : undefined,
           `Command failed (${response.status})`,
         ),
       );
@@ -1038,10 +1047,9 @@ async function sendCommand(command) {
 async function submitComposer() {
   const text = composerText(composerInput.value);
   if (!text || !currentProjection?.loaded) return;
-  const active = currentProjection.active;
-  const type = active ? deliveryMode : "prompt";
+  const streamingBehavior = deliveryMode === "steer" ? "steer" : "followUp";
   try {
-    await sendCommand({ type, message: text });
+    await sendCommand({ type: "prompt", message: text, streamingBehavior });
     composerInput.value = "";
     cacheEntry(currentSessionId).draft = "";
     autosizeComposer();
@@ -1364,17 +1372,15 @@ composerInput.addEventListener("keydown", (event) => {
   }
 });
 deliveryModeButton.addEventListener("click", () => {
-  const open = deliveryMenu.hidden;
-  deliveryMenu.hidden = !open;
-  deliveryModeButton.setAttribute("aria-expanded", String(open));
+  const open = !deliveryMenu.classList.contains("open");
+  setDeliveryMenu(open);
   if (open) deliveryMenu.querySelector('[aria-checked="true"]')?.focus();
 });
 deliveryMenu.addEventListener("click", (event) => {
   const option = event.target.closest?.("[data-delivery-mode]");
   if (!option) return;
   deliveryMode = option.dataset.deliveryMode;
-  deliveryMenu.hidden = true;
-  deliveryModeButton.setAttribute("aria-expanded", "false");
+  setDeliveryMenu(false);
   updateComposer();
   composerInput.focus({ preventScroll: true });
 });
@@ -1417,21 +1423,19 @@ worklogFeed.addEventListener("submit", (event) => {
 
 document.addEventListener("click", (event) => {
   if (
-    !deliveryMenu.hidden &&
+    deliveryMenu.classList.contains("open") &&
     !event.target.closest?.("#delivery-menu") &&
     !event.target.closest?.("#delivery-mode")
   ) {
-    deliveryMenu.hidden = true;
-    deliveryModeButton.setAttribute("aria-expanded", "false");
+    setDeliveryMenu(false);
   }
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (activityDrawer.classList.contains("open")) setActivityDrawer(false);
     else if (document.body.classList.contains("drawer-open")) setWorkspaceDrawer(false);
-    else if (!deliveryMenu.hidden) {
-      deliveryMenu.hidden = true;
-      deliveryModeButton.setAttribute("aria-expanded", "false");
+    else if (deliveryMenu.classList.contains("open")) {
+      setDeliveryMenu(false);
       deliveryModeButton.focus();
     }
   }
