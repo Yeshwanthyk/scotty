@@ -134,6 +134,7 @@ class CapturingSandboxCapabilities implements SandboxRuntimeCapabilities {
 
 class ProcessSandboxCapabilities extends CapturingSandboxCapabilities {
   process: SandboxProcessCapabilities | null = null;
+  fetchPortResponseStatus = 200;
 
   private makeProcess(): SandboxProcessCapabilities {
     return {
@@ -173,7 +174,7 @@ class ProcessSandboxCapabilities extends CapturingSandboxCapabilities {
     headers?: Readonly<Record<string, string>>,
   ) => {
     this.calls.push({ operation: "fetchPort", path, port: requestPort, method, headers });
-    return Promise.resolve(Response.json({ status: "quiesced" }));
+    return Promise.resolve(new Response(null, { status: this.fetchPortResponseStatus }));
   };
 }
 
@@ -403,6 +404,15 @@ describe("ContainerAuth", () => {
           (call) => call.operation === "waitForPort" && call.port === PI_SESSION_PORT,
         ),
       );
+      assert.ok(
+        capabilities.calls.some(
+          (call) =>
+            call.operation === "fetchPort" &&
+            call.path === "/health" &&
+            call.port === PI_SESSION_PORT &&
+            call.method === "GET",
+        ),
+      );
 
       const startCount = capabilities.calls.filter(
         (call) => call.operation === "startProcess",
@@ -432,6 +442,31 @@ describe("ContainerAuth", () => {
         ),
       );
       assert.strictEqual(capabilities.process, null);
+    }),
+  );
+
+  it.effect("rejects a Pi session whose mapped port is unreachable", () =>
+    Effect.gen(function* () {
+      const capabilities = new ProcessSandboxCapabilities();
+      capabilities.fetchPortResponseStatus = 503;
+
+      const error = failed(yield* Effect.result(piSessionWith(capabilities, "ensure")));
+
+      assert.deepStrictEqual(
+        error,
+        new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Pi session mapped port health check failed",
+        }),
+      );
+      assert.ok(
+        capabilities.calls.some(
+          (call) =>
+            call.operation === "fetchPort" &&
+            call.path === "/health" &&
+            call.port === PI_SESSION_PORT,
+        ),
+      );
     }),
   );
 

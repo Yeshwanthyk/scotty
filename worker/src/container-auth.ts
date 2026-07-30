@@ -220,6 +220,12 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           status: 200,
           timeout: 30_000,
         });
+        const healthStatus = yield* runtime.fetchPortStatus("/health", PI_SESSION_PORT, "GET");
+        if (healthStatus !== 200)
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Pi session mapped port health check failed",
+          });
       }),
       quiescePiSession: Effect.fnUntraced(function* (id, credential) {
         const process = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);

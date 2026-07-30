@@ -363,7 +363,7 @@ const close = (signal) => {
 process.on("SIGTERM", () => close("SIGTERM"));
 process.on("SIGINT", () => close("SIGINT"));
 
-server.listen(port, "127.0.0.1", async () => {
+server.listen(port, "0.0.0.0", async () => {
   try {
     const stateResponse = await sendRpc({ type: "get_state" });
     if (stateResponse.success === false) throw new Error("Pi RPC state initialization failed");
