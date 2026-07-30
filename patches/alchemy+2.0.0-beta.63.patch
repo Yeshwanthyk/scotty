@@ -1,0 +1,273 @@
+diff --git a/node_modules/alchemy/lib/Apply.js b/node_modules/alchemy/lib/Apply.js
+index a01c0fa..c4a6fcf 100644
+--- a/node_modules/alchemy/lib/Apply.js
++++ b/node_modules/alchemy/lib/Apply.js
+@@ -136,6 +136,7 @@ const executeNode = (fqn, node, tracker, ready, readyStable, terminalStatuses, s
+         value: {
+             ...value,
+             props: stripUnresolved(value.props),
++            bindings: stripUnresolved(value.bindings),
+             namespace,
+         },
+     });
+@@ -354,7 +355,7 @@ const executeNode = (fqn, node, tracker, ready, readyStable, terminalStatuses, s
+                 resourceType: node.resource.Type,
+                 props: news,
+                 attr,
+-                bindings: excludeDeletedBindings(node.bindings),
++                bindings: bindingOutputs,
+                 providerVersion: node.provider.version ?? 0,
+                 downstream: node.downstream,
+                 removalPolicy: node.resource.RemovalPolicy,
+@@ -461,7 +462,7 @@ const executeNode = (fqn, node, tracker, ready, readyStable, terminalStatuses, s
+                     resourceType: node.resource.Type,
+                     props: news,
+                     attr,
+-                    bindings: excludeDeletedBindings(node.bindings),
++                    bindings: bindingOutputs,
+                     providerVersion: node.provider.version ?? 0,
+                     downstream: node.downstream,
+                     removalPolicy: node.resource.RemovalPolicy,
+@@ -639,7 +640,7 @@ const executeNode = (fqn, node, tracker, ready, readyStable, terminalStatuses, s
+                     props: news,
+                     attr,
+                     providerVersion: node.provider.version ?? 0,
+-                    bindings: excludeDeletedBindings(node.bindings),
++                    bindings: bindingOutputs,
+                     downstream: node.downstream,
+                     removalPolicy: node.resource.RemovalPolicy,
+                 });
+@@ -656,7 +657,7 @@ const executeNode = (fqn, node, tracker, ready, readyStable, terminalStatuses, s
+                     props: news,
+                     attr,
+                     providerVersion: node.provider.version ?? 0,
+-                    bindings: excludeDeletedBindings(node.bindings),
++                    bindings: bindingOutputs,
+                     downstream: node.downstream,
+                     // Preserve the remaining backlog exactly as-is. GC is responsible for
+                     // popping one generation at a time until the chain is exhausted.
+@@ -901,10 +902,10 @@ const converge = Effect.fn(function* (plan, tracker, terminalStatuses, session,
+                     logicalId,
+                     instanceId,
+                     resourceType: node.resource.Type,
+-                    props: newProps,
++                    props: stripUnresolved(newProps),
+                     attr,
+                     providerVersion: node.provider.version ?? 0,
+-                    bindings: excludeDeletedBindings(node.bindings),
++                    bindings: stripUnresolved(newBindings),
+                     downstream: node.downstream,
+                     namespace,
+                     removalPolicy: node.resource.RemovalPolicy,
+@@ -1052,6 +1053,7 @@ const collectGarbage = Effect.fn(function* (plan, session) {
+                 value: {
+                     ...value,
+                     props: stripUnresolved(value.props),
++                    bindings: stripUnresolved(value.bindings),
+                     namespace,
+                 },
+             });
+diff --git a/node_modules/alchemy/lib/Diff.js b/node_modules/alchemy/lib/Diff.js
+index 4dbe465..6acfe9a 100644
+--- a/node_modules/alchemy/lib/Diff.js
++++ b/node_modules/alchemy/lib/Diff.js
+@@ -114,21 +114,17 @@ const canonicalize = (value, stripNullish) => {
+     }
+     return value;
+ };
++const bySid = (a, b) => a.sid < b.sid ? -1 : a.sid > b.sid ? 1 : 0;
++export const sortBindings = (bindings) => [...bindings].sort(bySid);
+ /**
+- * Collapse bindings that share the same `sid`, keeping the last occurrence.
+- *
+- * The same binding can be recorded more than once on a target resource — e.g.
+- * a KV namespace bound to both a Worker and a Workflow ends up pushed twice to
+- * `stack.bindings[fqn]`. `diffBindings` already collapses these implicitly via
+- * its `Map` keyed by `sid`, so the `reconcile` path never observes duplicates.
+- * Use this helper to give a provider's `diff` handler the same de-duplicated
+- * binding set, keeping plan-time hashing consistent with deploy-time.
++ * Collapse bindings that share the same `sid`, keeping the last occurrence,
++ * and return them in deterministic (sid-sorted) order.
+  */
+-export const dedupeBindings = (bindings) => Array.from(new Map(bindings.map((b) => [b.sid, b])).values());
++export const dedupeBindings = (bindings) => sortBindings(Array.from(new Map(bindings.map((b) => [b.sid, b])).values()));
+ export const diffBindings = (oldBindings, newBindings) => {
+     const oldMap = new Map(oldBindings.map((b) => [b.sid, b]));
+     const newMap = new Map(newBindings.map((b) => [b.sid, b]));
+-    return [
++    return sortBindings([
+         ...Array.from(oldMap)
+             .filter(([sid]) => !newMap.has(sid))
+             .map(([sid, old]) => ({
+@@ -148,5 +144,5 @@ export const diffBindings = (oldBindings, newBindings) => {
+                 data: binding.data,
+             };
+         }),
+-    ];
++    ]);
+ };
+diff --git a/node_modules/alchemy/lib/Plan.js b/node_modules/alchemy/lib/Plan.js
+index 81d309a..023007d 100644
+--- a/node_modules/alchemy/lib/Plan.js
++++ b/node_modules/alchemy/lib/Plan.js
+@@ -85,9 +85,7 @@ Effect.gen(function* () {
+                 const oldProps = oldState.status === "updating"
+                     ? oldState.old.props
+                     : oldState.props;
+-                const oldBindings = oldState.bindings ?? [];
+-                // Collapse duplicate bindings by sid so the binding set handed to
+-                // `diff` matches what `reconcile` receives (see `dedupeBindings`).
++                const oldBindings = dedupeBindings(oldState.bindings ?? []);
+                 const newBindings = dedupeBindings(stack.bindings[resource.FQN] ?? []);
+                 const diff = yield* provider.diff
+                     ? provider
+@@ -501,7 +499,7 @@ Effect.gen(function* () {
+                 forceUpdateAfterAdoption = true;
+             }
+         }
+-        const oldBindings = oldState?.bindings ?? [];
++        const oldBindings = dedupeBindings(oldState?.bindings ?? []);
+         const bindingDiffs = diffBindings(oldBindings, newBindings);
+         const Node = (node) => ({
+             ...node,
+diff --git a/node_modules/alchemy/src/Apply.ts b/node_modules/alchemy/src/Apply.ts
+index a025189..ca1c7ba 100644
+--- a/node_modules/alchemy/src/Apply.ts
++++ b/node_modules/alchemy/src/Apply.ts
+@@ -414,6 +414,7 @@ const executeNode = (
+         value: {
+           ...value,
+           props: stripUnresolved(value.props),
++          bindings: stripUnresolved(value.bindings),
+           namespace,
+         } as S,
+       });
+@@ -680,7 +681,7 @@ const executeNode = (
+           resourceType: node.resource.Type,
+           props: news,
+           attr,
+-          bindings: excludeDeletedBindings(node.bindings),
++          bindings: bindingOutputs,
+           providerVersion: node.provider.version ?? 0,
+           downstream: node.downstream,
+           removalPolicy: node.resource.RemovalPolicy,
+@@ -812,7 +813,7 @@ const executeNode = (
+             resourceType: node.resource.Type,
+             props: news,
+             attr,
+-            bindings: excludeDeletedBindings(node.bindings),
++            bindings: bindingOutputs,
+             providerVersion: node.provider.version ?? 0,
+             downstream: node.downstream,
+             removalPolicy: node.resource.RemovalPolicy,
+@@ -1039,7 +1040,7 @@ const executeNode = (
+             props: news,
+             attr,
+             providerVersion: node.provider.version ?? 0,
+-            bindings: excludeDeletedBindings(node.bindings),
++            bindings: bindingOutputs,
+             downstream: node.downstream,
+             removalPolicy: node.resource.RemovalPolicy,
+           });
+@@ -1055,7 +1056,7 @@ const executeNode = (
+             props: news,
+             attr,
+             providerVersion: node.provider.version ?? 0,
+-            bindings: excludeDeletedBindings(node.bindings),
++            bindings: bindingOutputs,
+             downstream: node.downstream,
+             // Preserve the remaining backlog exactly as-is. GC is responsible for
+             // popping one generation at a time until the chain is exhausted.
+@@ -1419,10 +1420,10 @@ const converge = Effect.fn(function* (
+           logicalId,
+           instanceId,
+           resourceType: node.resource.Type,
+-          props: newProps,
++          props: stripUnresolved(newProps),
+           attr,
+           providerVersion: node.provider.version ?? 0,
+-          bindings: excludeDeletedBindings(node.bindings),
++          bindings: stripUnresolved(newBindings),
+           downstream: node.downstream,
+           namespace,
+           removalPolicy: node.resource.RemovalPolicy,
+@@ -1614,6 +1615,7 @@ const collectGarbage = Effect.fn(function* (
+             value: {
+               ...value,
+               props: stripUnresolved(value.props),
++              bindings: stripUnresolved(value.bindings),
+               namespace,
+             } as S,
+           });
+diff --git a/node_modules/alchemy/src/Diff.ts b/node_modules/alchemy/src/Diff.ts
+index ecf2bbd..35d7e89 100644
+--- a/node_modules/alchemy/src/Diff.ts
++++ b/node_modules/alchemy/src/Diff.ts
+@@ -173,18 +173,18 @@ const canonicalize = (value: unknown, stripNullish: boolean): unknown => {
+   return value;
+ };
+ 
++const bySid = (a: { sid: string }, b: { sid: string }): number =>
++  a.sid < b.sid ? -1 : a.sid > b.sid ? 1 : 0;
++
++export const sortBindings = <B extends { sid: string }>(bindings: B[]): B[] =>
++  [...bindings].sort(bySid);
++
+ /**
+- * Collapse bindings that share the same `sid`, keeping the last occurrence.
+- *
+- * The same binding can be recorded more than once on a target resource — e.g.
+- * a KV namespace bound to both a Worker and a Workflow ends up pushed twice to
+- * `stack.bindings[fqn]`. `diffBindings` already collapses these implicitly via
+- * its `Map` keyed by `sid`, so the `reconcile` path never observes duplicates.
+- * Use this helper to give a provider's `diff` handler the same de-duplicated
+- * binding set, keeping plan-time hashing consistent with deploy-time.
++ * Collapse bindings that share the same `sid`, keeping the last occurrence,
++ * and return them in deterministic (sid-sorted) order.
+  */
+ export const dedupeBindings = <B extends ResourceBinding>(bindings: B[]): B[] =>
+-  Array.from(new Map(bindings.map((b) => [b.sid, b])).values());
++  sortBindings(Array.from(new Map(bindings.map((b) => [b.sid, b])).values()));
+ 
+ export const diffBindings = (
+   oldBindings: ResourceBinding[],
+@@ -192,7 +192,7 @@ export const diffBindings = (
+ ): BindingNode[] => {
+   const oldMap = new Map(oldBindings.map((b) => [b.sid, b]));
+   const newMap = new Map(newBindings.map((b) => [b.sid, b]));
+-  return [
++  return sortBindings([
+     ...Array.from(oldMap)
+       .filter(([sid]) => !newMap.has(sid))
+       .map(([sid, old]) => ({
+@@ -212,5 +212,5 @@ export const diffBindings = (
+         data: binding.data,
+       };
+     }),
+-  ];
++  ]);
+ };
+diff --git a/node_modules/alchemy/src/Plan.ts b/node_modules/alchemy/src/Plan.ts
+index 58e8e61..14e4706 100644
+--- a/node_modules/alchemy/src/Plan.ts
++++ b/node_modules/alchemy/src/Plan.ts
+@@ -313,9 +313,7 @@ export const make = <A>(
+                   ? oldState.old.props
+                   : oldState.props;
+ 
+-              const oldBindings = oldState.bindings ?? [];
+-              // Collapse duplicate bindings by sid so the binding set handed to
+-              // `diff` matches what `reconcile` receives (see `dedupeBindings`).
++              const oldBindings = dedupeBindings(oldState.bindings ?? []);
+               const newBindings = dedupeBindings(
+                 stack.bindings[resource.FQN] ?? [],
+               );
+@@ -802,7 +800,7 @@ export const make = <A>(
+               }
+             }
+ 
+-            const oldBindings = oldState?.bindings ?? [];
++            const oldBindings = dedupeBindings(oldState?.bindings ?? []);
+             const bindingDiffs = diffBindings(oldBindings, newBindings);
+ 
+             const Node = <T extends Apply>(

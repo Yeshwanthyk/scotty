@@ -17,6 +17,7 @@ import {
   runCommand,
   waitForProductionContainerRollout,
 } from "./deploy-production.mjs";
+import { dedupeBindings, diffBindings } from "../node_modules/alchemy/lib/Diff.js";
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const INSTALLATION_ENVIRONMENT = { SCOTTY_INSTALLATION_NAME: "test" };
@@ -70,6 +71,36 @@ const snapshot = ({ application: applicationOverrides = {}, rollouts = [] } = {}
 });
 
 describe("production deployment ownership", () => {
+  it("keeps the pinned Alchemy binding-state backport installed and deterministic", () => {
+    const rootPackage = JSON.parse(read("package.json"));
+    const patch = read("patches/alchemy+2.0.0-beta.63.patch");
+    const installedApply = read("node_modules/alchemy/lib/Apply.js");
+
+    assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.63");
+    assert.equal(rootPackage.scripts.postinstall, "node scripts/apply-dependency-patches.mjs");
+    assert.match(patch, /bindings: bindingOutputs/u);
+    assert.match(patch, /bindings: stripUnresolved\(newBindings\)/u);
+    assert.match(installedApply, /bindings: bindingOutputs/u);
+    assert.match(installedApply, /bindings: stripUnresolved\(newBindings\)/u);
+
+    const bindings = [
+      { sid: "zeta", data: { value: 1 } },
+      { sid: "alpha", data: { value: 2 } },
+      { sid: "zeta", data: { value: 3 } },
+    ];
+    assert.deepEqual(
+      dedupeBindings(bindings).map(({ sid, data }) => [sid, data.value]),
+      [
+        ["alpha", 2],
+        ["zeta", 3],
+      ],
+    );
+    assert.deepEqual(
+      diffBindings([], bindings).map(({ sid }) => sid),
+      ["alpha", "zeta"],
+    );
+  });
+
   it("has one guarded local Alchemy production command", () => {
     const rootPackage = JSON.parse(read("package.json"));
     const workerPackage = JSON.parse(read("worker/package.json"));
