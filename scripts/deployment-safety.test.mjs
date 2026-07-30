@@ -87,6 +87,12 @@ describe("production deployment ownership", () => {
     assert.match(installedApply, /bindings: bindingOutputs/u);
     assert.match(installedApply, /bindings: stripUnresolved\(newBindings\)/u);
     assert.match(installedWorkerProvider, /const news = stripEffects\(desired\)/u);
+    assert.match(installedWorkerProvider, /const oldDoBindings = oldBindings\.flatMap/u);
+    assert.match(
+      installedWorkerProvider,
+      /getExpectedDurableObjectClassNames\(\s*oldDoBindings,\s*oldWorkerName/u,
+    );
+    assert.doesNotMatch(installedWorkerProvider, /scriptName: old\.scriptName/u);
     assert.deepEqual(stripEffects({ stable: 1, effect: Effect.succeed(2) }), {
       stable: 1,
       effect: undefined,
