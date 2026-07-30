@@ -254,6 +254,44 @@ describe("production deployment ownership", () => {
     );
   });
 
+  it("counts active instances as healthy when Cloudflare separates the health buckets", () => {
+    const before = snapshot({
+      application: {
+        health: { ...application().health, active: 1, healthy: 6 },
+      },
+    });
+    const current = snapshot({
+      application: {
+        version: 6,
+        updatedAt: "2026-07-30T00:39:11.323Z",
+        configurationDigest: "configuration-v6",
+        health: { ...application().health, active: 1, healthy: 6 },
+      },
+      rollouts: [
+        rollout({
+          status: "completed",
+          health: {
+            healthy: 6,
+            failed: 0,
+            scheduling: 0,
+            starting: 0,
+          },
+          progress: {
+            totalSteps: 1,
+            currentStep: 1,
+            updatedInstances: 7,
+            totalInstances: 7,
+          },
+        }),
+      ],
+    });
+    assert.deepEqual(assessContainerSettlement(before, current, "updated"), {
+      status: "settled",
+      outcome: "rollout",
+      message: "Container rollout rollout-v6 completed at version 6.",
+    });
+  });
+
   it("polls the rollout resource through progressing to completed", async () => {
     const before = snapshot();
     const observations = [

@@ -123,6 +123,10 @@ export function assessContainerSettlement(before, current, containerAction, { qu
     }
     const health = current.application.health;
     const rolloutHealth = rollout.health;
+    // Cloudflare reports running session instances as application `active`, outside both
+    // `healthy` buckets. They are converged only when the rollout also updated every instance.
+    const applicationReadyInstances = health.active + health.healthy;
+    const rolloutReadyInstances = health.active + rolloutHealth.healthy;
     const rolloutComplete =
       rollout.currentVersion === before.application.version &&
       rollout.targetVersion > rollout.currentVersion &&
@@ -130,11 +134,11 @@ export function assessContainerSettlement(before, current, containerAction, { qu
       current.application.activeRolloutId === null &&
       rollout.progress.totalInstances > 0 &&
       rollout.progress.updatedInstances === rollout.progress.totalInstances &&
-      rolloutHealth.healthy === rollout.progress.totalInstances &&
+      rolloutReadyInstances === rollout.progress.totalInstances &&
       rolloutHealth.failed === 0 &&
       rolloutHealth.scheduling === 0 &&
       rolloutHealth.starting === 0 &&
-      health.healthy === rollout.progress.totalInstances &&
+      applicationReadyInstances === rollout.progress.totalInstances &&
       health.assigned === 0 &&
       health.stopped === 0 &&
       health.failed === 0 &&
