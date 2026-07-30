@@ -96,6 +96,61 @@ describe("sessions shell", () => {
     assert.doesNotMatch(devicesStyles, /\.masthead-inner/);
   });
 
+  it("ships a compact, overflow-safe narrow home without changing desktop structure", () => {
+    const mobileStart = sharedStyles.indexOf("@media (max-width: 560px)");
+    const mobileEnd = sharedStyles.indexOf("@media (max-width: 420px)", mobileStart);
+    assert.ok(mobileStart >= 0 && mobileEnd > mobileStart);
+    const mobileHomeStyles = sharedStyles.slice(mobileStart, mobileEnd);
+
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page \.masthead-inner\s*\{[\s\S]*?min-height:\s*calc\(56px \+ env\(safe-area-inset-top\)\);/,
+    );
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page main\s*\{[\s\S]*?padding-right:\s*max\(12px, env\(safe-area-inset-right\)\);[\s\S]*?padding-left:\s*max\(12px, env\(safe-area-inset-left\)\);/,
+    );
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page \.composer\s*\{[\s\S]*?padding:\s*14px;[\s\S]*?border-radius:\s*8px;/,
+    );
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page \.session\s*\{[\s\S]*?"identity identity"[\s\S]*?"state timing"[\s\S]*?"actions actions"[\s\S]*?grid-template-columns:\s*minmax\(0, 0\.8fr\) minmax\(132px, 1\.2fr\);[\s\S]*?padding:\s*12px;/,
+    );
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page \.masthead-actions > \.button-primary\s*\{[\s\S]*?min-height:\s*44px;/,
+    );
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page \.rename-button\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px;/,
+    );
+    assert.match(mobileHomeStyles, /\.sessions-page \.identity\s*\{[\s\S]*?min-height:\s*44px;/);
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page \.repo-suggestion,[\s\S]*?\.repo-suggestion-remove\s*\{[\s\S]*?min-height:\s*44px;/,
+    );
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page \.project-summary\s*\{[\s\S]*?max-width:\s*48%;[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/,
+    );
+    assert.match(
+      mobileHomeStyles,
+      /\.sessions-page \.sleeping-group summary:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus\);/,
+    );
+    assert.match(
+      sharedStyles,
+      /@media \(max-width: 350px\)\s*\{[\s\S]*?\.sessions-page \.wordmark\s*\{[\s\S]*?display:\s*none;/,
+    );
+
+    assert.match(sharedStyles, /\.sessions-page main\s*\{[\s\S]*?width:\s*min\(100%, 980px\);/);
+    assert.match(
+      sessionsHtml,
+      /grid-template-areas:\s*"identity state timing actions";[\s\S]*?grid-template-columns:\s*minmax\(230px, 1\.2fr\)/,
+    );
+  });
+
   it("ships sessions-only keyboard navigation for visible, openable rows", () => {
     assert.match(sessionsHtml, /document\.addEventListener\("keydown"/);
     assert.match(
