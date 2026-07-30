@@ -1,3 +1,4 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskStore } from "../src/task-store.js";
 import { TaskWidget, type Theme, type UICtx } from "../src/ui/task-widget.js";
@@ -34,11 +35,14 @@ function mockUICtx() {
 }
 
 /** Render the widget and return its lines. */
-function renderWidget(state: ReturnType<typeof mockUICtx>["state"]): string[] {
+function renderWidget(
+  state: ReturnType<typeof mockUICtx>["state"],
+  columns = 200,
+): string[] {
   const entry = state.widgets.get("tasks");
   if (!entry?.content) return [];
   const theme = mockTheme();
-  const tui = { terminal: { columns: 200 }, requestRender() {} };
+  const tui = { terminal: { columns }, requestRender() {} };
   const result = entry.content(tui, theme);
   return result.render();
 }
@@ -109,6 +113,24 @@ describe("TaskWidget", () => {
     expect(lines[1]).toContain("Processing data…");
     // Should NOT show ◼ for active task
     expect(lines[1]).not.toContain("◼");
+  });
+
+  it("keeps narrow-terminal lines out of the terminal's wrap column", () => {
+    const columns = 32;
+    store.create(
+      "A deliberately long task subject for a phone",
+      "Desc",
+      "Implementing a deliberately long active form for a phone",
+    );
+    store.update("1", { status: "in_progress" });
+    widget.setActiveTask("1", true);
+
+    const lines = renderWidget(ui.state, columns);
+
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(visibleWidth(line)).toBeLessThan(columns);
+    }
   });
 
   it("clears active runtime state when switching stores", () => {

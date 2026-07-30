@@ -6,7 +6,7 @@
       "order": 0,
       "repository": "https://github.com/Yeshwanthyk/pi-tasks.git",
       "commit": "e7c515bb48326ff2aee831d6cf6214445e1c5c8c",
-      "sourceSha256": "54468af4dcafc309c767f7b1155e55a02a5bc9c95a80813bc229f39877fa731f",
+      "sourceSha256": "6ea3cdab187a35270f6cde60d0d8e52942a45c96385e6cba78fbbf9d071de646",
       "sourcePath": "worker/container/pi-packages/sources/pi-tasks",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-tasks"
     },
