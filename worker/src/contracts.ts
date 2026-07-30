@@ -314,10 +314,13 @@ export const CredentialRefreshLeaseSchema = Schema.Struct({
 });
 export type CredentialRefreshLease = typeof CredentialRefreshLeaseSchema.Type;
 
+const OAuthExpiresInSecondsSchema = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0));
+
 export const CredentialPatchSchema = Schema.Struct({
   idToken: OptionalNonEmptyStringSchema,
   accessToken: OptionalNonEmptyStringSchema,
   refreshToken: OptionalNonEmptyStringSchema,
+  expiresInSeconds: Schema.optionalKey(OAuthExpiresInSecondsSchema),
 });
 export type CredentialPatch = typeof CredentialPatchSchema.Type;
 
@@ -334,7 +337,7 @@ export const OAuthUpstreamSuccessSchema = Schema.Struct({
   id_token: OptionalNonEmptyStringSchema,
   access_token: Schema.NonEmptyString,
   refresh_token: OptionalNonEmptyStringSchema,
-  expires_in: Schema.optionalKey(Schema.Number),
+  expires_in: Schema.optionalKey(OAuthExpiresInSecondsSchema),
 });
 export type OAuthUpstreamSuccess = typeof OAuthUpstreamSuccessSchema.Type;
 

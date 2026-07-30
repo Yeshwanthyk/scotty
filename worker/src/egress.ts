@@ -154,6 +154,9 @@ export function parseOAuthUpstreamSuccess(value: unknown): CredentialPatch | nul
       ...(decoded.value.refresh_token === undefined
         ? {}
         : { refreshToken: decoded.value.refresh_token }),
+      ...(decoded.value.expires_in === undefined
+        ? {}
+        : { expiresInSeconds: decoded.value.expires_in }),
     }),
   );
 }
@@ -195,7 +198,7 @@ export function piAuthJson(credential: StoredCredential): string {
             type: "oauth",
             access: piAccessSentinel(provider.sentinel),
             refresh: provider.sentinel,
-            expires: 0,
+            expires: provider.credential.expires,
             ...(providerId === "openai-codex" ? { accountId: "scotty-sentinel" } : {}),
           };
   }

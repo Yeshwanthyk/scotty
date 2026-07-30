@@ -383,7 +383,11 @@ describe("CredentialVault", () => {
         vaultEffect((vault) =>
           vault.persistRotation(
             PI_SENTINEL,
-            { accessToken: "rotated-access-token", ignored: "strip-me" },
+            {
+              accessToken: "rotated-access-token",
+              expiresInSeconds: 3600,
+              ignored: "strip-me",
+            },
             "held-nonce",
           ),
         ),
@@ -405,6 +409,10 @@ describe("CredentialVault", () => {
       assert.strictEqual(
         provider?.credential.type === "oauth" ? provider.credential.refresh : undefined,
         "stored-refresh-token",
+      );
+      assert.strictEqual(
+        provider?.credential.type === "oauth" ? provider.credential.expires : undefined,
+        NOW + 3_601_000,
       );
       assert.strictEqual(read?.githubToken, "stored-github-token");
       assert.strictEqual(provider?.sentinel, PI_SENTINEL);

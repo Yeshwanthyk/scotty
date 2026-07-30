@@ -253,7 +253,8 @@ const makeCredentialVault = (
       });
     }),
     persistRotation: Effect.fnUntraced(function* (sentinel, patch, nonce) {
-      const now = new Date(yield* Clock.currentTimeMillis).toISOString();
+      const nowMillis = yield* Clock.currentTimeMillis;
+      const now = new Date(nowMillis).toISOString();
       const decodedSentinel = decodeSentinel(sentinel, failure);
       if (Result.isFailure(decodedSentinel)) return yield* decodedSentinel.failure;
       const decodedNonce = decodeNonce(nonce, failure);
@@ -284,6 +285,10 @@ const makeCredentialVault = (
                 ...provider.credential,
                 access: decodedPatch.success.accessToken ?? provider.credential.access,
                 refresh: decodedPatch.success.refreshToken ?? provider.credential.refresh,
+                expires:
+                  decodedPatch.success.expiresInSeconds === undefined
+                    ? provider.credential.expires
+                    : nowMillis + decodedPatch.success.expiresInSeconds * 1_000,
                 ...(decodedPatch.success.idToken === undefined
                   ? {}
                   : { idToken: decodedPatch.success.idToken }),
