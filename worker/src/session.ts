@@ -20,6 +20,7 @@ import {
   containerAuthLayer,
   PI_SESSION_PORT,
   PI_SESSION_PROCESS_ID,
+  PI_SESSION_PROXY_PREFIX,
   PI_SESSION_TOKEN_HEADER,
   piSessionTransportToken,
 } from "./container-auth";
@@ -1383,7 +1384,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.preparePiSessionAccessProgram());
   }
 
-  async proxyPiSessionRequest(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
+    const incomingUrl = new URL(request.url);
+    if (!incomingUrl.pathname.startsWith(`${PI_SESSION_PROXY_PREFIX}/`))
+      return super.fetch(request);
+
+    const action = incomingUrl.pathname.slice(PI_SESSION_PROXY_PREFIX.length + 1);
+    const expectedMethod =
+      action === "snapshot" || action === "events"
+        ? "GET"
+        : action === "command"
+          ? "POST"
+          : undefined;
+    if (expectedMethod === undefined) return Response.json({ error: "not_found" }, { status: 404 });
+    if (request.method !== expectedMethod)
+      return Response.json({ error: "method_not_allowed" }, { status: 405 });
+
     await this.preparePiSessionAccess();
     const { id, credential } = await this.#run(
       Effect.gen(function* () {
@@ -1393,9 +1409,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }),
     );
     const transportToken = await piSessionTransportToken(id, credential);
-    const headers = new Headers(request.headers);
+    const headers = new Headers();
+    for (const name of ["accept", "content-type", "last-event-id"]) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
     headers.set(PI_SESSION_TOKEN_HEADER, transportToken);
-    return this.containerFetch(new Request(request, { headers }), PI_SESSION_PORT);
+    const targetUrl = new URL(`http://127.0.0.1:${PI_SESSION_PORT}/${action}`);
+    targetUrl.search = incomingUrl.search;
+    return await this.containerFetch(
+      new Request(targetUrl, {
+        method: request.method,
+        headers,
+        body: request.method === "POST" ? request.body : undefined,
+      }),
+      PI_SESSION_PORT,
+    );
   }
 
   async snapshotScottySession(): Promise<SessionView> {

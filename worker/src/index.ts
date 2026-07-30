@@ -66,7 +66,7 @@ import {
   type ScottyRunnerRegistryStub,
 } from "./runner-registry-object";
 import { Sandbox as ScottySandbox } from "./session";
-import { PI_SESSION_PORT } from "./container-auth";
+import { PI_SESSION_PROXY_PREFIX } from "./container-auth";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
 
@@ -603,7 +603,7 @@ app.all("/s/:id/rpc/:action", async (c) => {
 
   const sandbox = sessionSandbox(c.env, id);
   const incomingUrl = new URL(c.req.url);
-  const targetUrl = new URL(`http://127.0.0.1:${PI_SESSION_PORT}/${action}`);
+  const targetUrl = new URL(`http://scotty.internal${PI_SESSION_PROXY_PREFIX}/${action}`);
   targetUrl.search = incomingUrl.search;
   const headers = new Headers();
   for (const name of ["accept", "content-type", "last-event-id"]) {
@@ -611,7 +611,7 @@ app.all("/s/:id/rpc/:action", async (c) => {
     if (value) headers.set(name, value);
   }
   const body = c.req.method === "POST" ? await c.req.arrayBuffer() : undefined;
-  return sandbox.proxyPiSessionRequest(
+  return sandbox.fetch(
     new Request(targetUrl, {
       method: c.req.method,
       headers,

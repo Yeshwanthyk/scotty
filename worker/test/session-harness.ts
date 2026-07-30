@@ -103,6 +103,7 @@ export interface SessionHarness {
   readonly commands: string[];
   readonly runnerOperations: ReadonlyArray<RunnerOperation>;
   readonly runnerRequests: ReadonlyArray<Request>;
+  readonly piRequests: ReadonlyArray<Request>;
   readonly writtenFiles: ReadonlyArray<{
     readonly path: string;
     readonly content: string;
@@ -319,6 +320,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const commands: string[] = [];
   const runnerOperations: RunnerOperation[] = [];
   const runnerRequests: Request[] = [];
+  const piRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
   let piSessionRunning = false;
@@ -670,6 +672,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     },
     containerFetch: {
       value: async (request: Request, port: number) => {
+        piRequests.push(request.clone());
         events.push(`host:pi:fetch:${port}:${new URL(request.url).pathname}`);
         return Response.json({ status: "quiesced" });
       },
@@ -734,6 +737,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     commands,
     runnerOperations,
     runnerRequests,
+    piRequests,
     writtenFiles,
     r2DeletedKeys,
     memory: storage.memory,
