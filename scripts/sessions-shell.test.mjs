@@ -38,6 +38,10 @@ const terminalStyles = await readFile(
   new URL("../worker/public/terminal.css", import.meta.url),
   "utf8",
 );
+const ghosttyWeb = await readFile(
+  new URL("../worker/public/vendor/ghostty-web.js", import.meta.url),
+  "utf8",
+);
 const sessionForm = await readFile(
   new URL("../worker/public/session-form.js", import.meta.url),
   "utf8",
@@ -177,5 +181,18 @@ describe("sessions shell", () => {
       /terminal\.getViewportY\(\)[\s\S]*?terminal\.getScrollbackLength\(\)/,
     );
     assert.match(terminalStyles, /\.terminal\s*\{[\s\S]*?touch-action:\s*none;/);
+  });
+
+  it("keeps the Ghostty canvas backing size scaled for high-density displays", () => {
+    assert.match(
+      ghosttyWeb,
+      /this\.canvas\.width = g \* this\.devicePixelRatio/,
+      "the renderer must allocate DPR-scaled backing pixels",
+    );
+    assert.equal(
+      ghosttyWeb.match(/this\.canvas\.width\s*=/gu)?.length,
+      1,
+      "terminal resize must not overwrite the renderer's DPR-scaled canvas width",
+    );
   });
 });
