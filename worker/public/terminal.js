@@ -1,5 +1,6 @@
 import { FitAddon, init, Terminal } from "/vendor/ghostty-web.js";
 import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
+import { composerText, sendTerminalKey, submitComposer } from "/terminal-input.js";
 
 const sessionMatch = window.location.pathname.match(/^\/s\/([^/]+)$/u);
 const sessionId = sessionMatch ? decodeURIComponent(sessionMatch[1]) : "";
@@ -19,6 +20,12 @@ const closeDrawerButton = document.querySelector("#close-drawer");
 const drawerBackdrop = document.querySelector("#drawer-backdrop");
 const terminalWorkspace = document.querySelector(".terminal-workspace");
 const workspaceRail = document.querySelector("#workspace-rail");
+const mobileComposer = document.querySelector("#mobile-composer");
+const mobileComposerInput = document.querySelector("#mobile-composer-input");
+const mobileComposerSend = document.querySelector("#mobile-composer-send");
+const mobileComposerStatus = document.querySelector("#mobile-composer-status");
+const mobileKeyboardDone = document.querySelector("#mobile-keyboard-done");
+const mobileTerminalKeyButtons = [...document.querySelectorAll("[data-terminal-key]")];
 const compactViewport = window.matchMedia("(max-width: 780px)");
 
 let socket;
@@ -34,6 +41,37 @@ let touchRemainder = 0;
 function setConnection(state, label) {
   connectionState.dataset.state = state;
   connectionLabel.textContent = label;
+  updateMobileComposerState();
+}
+
+function setMobileComposerStatus(message) {
+  mobileComposerStatus.textContent = message;
+}
+
+function mobileTerminalConnected() {
+  return connectionState.dataset.state === "connected" && socket?.readyState === WebSocket.OPEN;
+}
+
+function updateMobileComposerState() {
+  const connected = mobileTerminalConnected();
+  mobileComposer.dataset.connectionState = connected ? "connected" : "disconnected";
+  mobileComposerSend.disabled = !connected || !composerText(mobileComposerInput.value);
+  for (const button of mobileTerminalKeyButtons) button.disabled = !connected;
+}
+
+function sendMobileComposer() {
+  if (!mobileTerminalConnected() || !terminal) {
+    setMobileComposerStatus("Your draft is still here. Waiting for Pi to reconnect.");
+    return;
+  }
+  if (!submitComposer(terminal, mobileComposerInput.value)) {
+    setMobileComposerStatus("Type a message first.");
+    return;
+  }
+  mobileComposerInput.value = "";
+  updateMobileComposerState();
+  setMobileComposerStatus("Sent to Pi.");
+  mobileComposerInput.focus({ preventScroll: true });
 }
 
 function showError(message) {
@@ -221,7 +259,7 @@ function handleControlMessage(message) {
     hideError();
     setConnection("connected", "Connected");
     sendResize();
-    terminal.focus();
+    if (!mobileComposer.contains(document.activeElement)) terminal.focus();
     return;
   }
   if (message.type === "error") {
@@ -325,6 +363,46 @@ reconnectButton.addEventListener("click", () => {
   reconnectTimer = undefined;
   connect();
 });
+mobileComposer.addEventListener("submit", (event) => {
+  event.preventDefault();
+  sendMobileComposer();
+});
+mobileComposerInput.addEventListener("input", () => {
+  updateMobileComposerState();
+  setMobileComposerStatus(
+    mobileTerminalConnected()
+      ? "Draft stays visible here until you send it."
+      : "Draft stays here while Pi reconnects.",
+  );
+});
+mobileComposerInput.addEventListener("beforeinput", (event) => {
+  if (
+    !event.isComposing &&
+    (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph")
+  ) {
+    event.preventDefault();
+    sendMobileComposer();
+  }
+});
+mobileComposerInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    sendMobileComposer();
+  }
+});
+mobileComposer.addEventListener("click", (event) => {
+  const button = event.target.closest?.("[data-terminal-key]");
+  const action = button?.dataset.terminalKey;
+  if (!action || button.disabled || !terminal || !mobileTerminalConnected()) return;
+  if (sendTerminalKey(terminal, action)) {
+    setMobileComposerStatus(`${button.textContent.trim()} sent to Pi.`);
+    mobileComposerInput.focus({ preventScroll: true });
+  }
+});
+mobileKeyboardDone.addEventListener("click", () => {
+  mobileComposerInput.blur();
+  setMobileComposerStatus("Keyboard hidden. Tap the prompt field to type.");
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && document.body.classList.contains("drawer-open")) setDrawer(false);
   if (event.key === "Tab" && document.body.classList.contains("drawer-open")) {
@@ -359,6 +437,8 @@ Promise.all([loadWorkspaces(), startTerminal()]).catch((error) => {
   showError(message);
   setConnection("disconnected", "Unavailable");
 });
+
+updateMobileComposerState();
 
 window.setInterval(() => {
   loadWorkspaces().catch(() => {});
