@@ -171,6 +171,11 @@ describe("sessions shell", () => {
       terminalScript,
       /if \(signature === workspaceListSignature\)[\s\S]*?workspaceList\.replaceChildren\(\)/,
     );
+    assert.match(
+      terminalScript,
+      /if \(!nextSessions\.some\(\(session\) => session\?\.id === currentSessionId\)\)[\s\S]*?`\/api\/sessions\/\$\{encodeURIComponent\(currentSessionId\)\}`[\s\S]*?nextSessions = \[current, \.\.\.nextSessions\]/,
+      "a just-created current session must appear before its list projection converges",
+    );
     assert.doesNotMatch(terminalScript, /\/resume|resumeScottySession|status === "sleeping"/);
     assert.match(
       terminalStyles,
