@@ -513,9 +513,10 @@ describe("credential boundary", () => {
         access_token: "next-access",
         id_token: "",
         refresh_token: 1,
+        expires_in: 3600,
         ignored: "strip-me",
       }),
-      { accessToken: "next-access" },
+      { accessToken: "next-access", expiresInSeconds: 3600 },
     );
     assert.strictEqual(parseOAuthUpstreamSuccess({ refresh_token: "next-refresh" }), null);
     assert.strictEqual(parseOAuthUpstreamSuccess({ access_token: "" }), null);
@@ -528,6 +529,7 @@ describe("credential boundary", () => {
     const realAccess = "honeypot-real-access";
     const realRefresh = "honeypot-real-refresh";
     const realGithub = "honeypot-real-github";
+    const realExpires = 1_800_000_000_000;
     const stored = {
       ...storedCredential(),
       providers: {
@@ -537,7 +539,7 @@ describe("credential boundary", () => {
             type: "oauth" as const,
             access: realAccess,
             refresh: realRefresh,
-            expires: 0,
+            expires: realExpires,
             accountId: "honeypot-account",
           },
           sentinel: "scotty-pi-session-sentinel",
@@ -558,6 +560,11 @@ describe("credential boundary", () => {
     const provider = stored.providers["openai-codex"];
     assert.ok(provider);
     const refreshResult = JSON.stringify(oauthContainerResult(provider));
+    const projected = Option.getOrThrow(parsePiAuthJsonOption(containerAuth));
+    assert.strictEqual(
+      projected["openai-codex"]?.type === "oauth" ? projected["openai-codex"].expires : undefined,
+      realExpires,
+    );
     assert.ok(containerAuth.includes(provider.sentinel));
     assert.ok(refreshResult.includes(provider.sentinel));
     assert.ok(!containerAuth.includes("anthropic"));
