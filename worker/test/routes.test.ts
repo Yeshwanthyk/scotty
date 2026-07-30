@@ -2085,7 +2085,11 @@ describe("real Hono boundary", () => {
       expect(request.headers.get("content-type")).toBe("application/json");
       expect(await request.json()).toEqual({
         commandId: "command-1",
-        command: { type: "steer", message: "Focus on tests" },
+        command: {
+          type: "prompt",
+          message: "Focus on tests",
+          streamingBehavior: "steer",
+        },
       });
       return Response.json({ status: "accepted", commandId: "command-1" }, { status: 202 });
     });
@@ -2101,7 +2105,11 @@ describe("real Hono boundary", () => {
         },
         body: JSON.stringify({
           commandId: "command-1",
-          command: { type: "steer", message: "Focus on tests" },
+          command: {
+            type: "prompt",
+            message: "Focus on tests",
+            streamingBehavior: "steer",
+          },
         }),
       },
       env(),
