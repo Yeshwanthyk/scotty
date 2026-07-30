@@ -108,6 +108,26 @@ export function sessionDisplayStatus(value, pendingAction) {
   return pendingAction === "sleep" && status === "warm" ? "stopping" : status;
 }
 
+export function sessionKeyboardAction(key, focusedIndex, sessionCount) {
+  if (!Number.isInteger(sessionCount) || sessionCount < 1) return undefined;
+
+  const digit = typeof key === "string" ? /^[1-9]$/u.exec(key) : undefined;
+  if (digit) {
+    const index = Number(digit[0]) - 1;
+    return index < sessionCount ? { type: "open", index } : undefined;
+  }
+
+  if (key !== "ArrowUp" && key !== "ArrowDown") return undefined;
+  const hasFocusedSession =
+    Number.isInteger(focusedIndex) && focusedIndex >= 0 && focusedIndex < sessionCount;
+  if (!hasFocusedSession) {
+    return { type: "focus", index: key === "ArrowDown" ? 0 : sessionCount - 1 };
+  }
+
+  const index = focusedIndex + (key === "ArrowDown" ? 1 : -1);
+  return index >= 0 && index < sessionCount ? { type: "focus", index } : undefined;
+}
+
 function arrayOrEmpty(value) {
   return Array.isArray(value) ? value : [];
 }

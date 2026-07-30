@@ -6,6 +6,7 @@ import {
   repositoryName,
   safeSessionPath,
   sessionDisplayStatus,
+  sessionKeyboardAction,
   sessionTitle,
   submissionIdentity,
   titleText,
@@ -163,5 +164,45 @@ describe("session form", () => {
     assert.strictEqual(sessionDisplayStatus("warm", "delete"), "warm");
     assert.strictEqual(sessionDisplayStatus("sleeping", "sleep"), "sleeping");
     assert.strictEqual(sessionDisplayStatus(undefined, undefined), "unknown");
+  });
+
+  it("opens digit-selected sessions in visible order", () => {
+    assert.deepStrictEqual(sessionKeyboardAction("1", -1, 9), { type: "open", index: 0 });
+    assert.deepStrictEqual(sessionKeyboardAction("9", 4, 9), { type: "open", index: 8 });
+    assert.isUndefined(sessionKeyboardAction("3", -1, 2));
+  });
+
+  it("moves focus between sessions without wrapping at boundaries", () => {
+    assert.deepStrictEqual(sessionKeyboardAction("ArrowDown", 0, 3), {
+      type: "focus",
+      index: 1,
+    });
+    assert.deepStrictEqual(sessionKeyboardAction("ArrowUp", 2, 3), {
+      type: "focus",
+      index: 1,
+    });
+    assert.isUndefined(sessionKeyboardAction("ArrowUp", 0, 3));
+    assert.isUndefined(sessionKeyboardAction("ArrowDown", 2, 3));
+  });
+
+  it("focuses the first or last session when no session link is focused", () => {
+    assert.deepStrictEqual(sessionKeyboardAction("ArrowDown", -1, 3), {
+      type: "focus",
+      index: 0,
+    });
+    assert.deepStrictEqual(sessionKeyboardAction("ArrowUp", -1, 3), {
+      type: "focus",
+      index: 2,
+    });
+  });
+
+  it("ignores invalid keyboard actions and session counts", () => {
+    for (const key of ["0", "10", "a", "ArrowLeft", undefined]) {
+      assert.isUndefined(sessionKeyboardAction(key, -1, 3));
+    }
+    for (const count of [0, -1, 1.5, undefined]) {
+      assert.isUndefined(sessionKeyboardAction("1", -1, count));
+      assert.isUndefined(sessionKeyboardAction("ArrowDown", -1, count));
+    }
   });
 });

@@ -96,6 +96,24 @@ describe("sessions shell", () => {
     assert.doesNotMatch(devicesStyles, /\.masthead-inner/);
   });
 
+  it("ships sessions-only keyboard navigation for visible, openable rows", () => {
+    assert.match(sessionsHtml, /document\.addEventListener\("keydown"/);
+    assert.match(
+      sessionsHtml,
+      /event\.defaultPrevented[\s\S]*?event\.isComposing[\s\S]*?!event\.metaKey[\s\S]*?event\.ctrlKey[\s\S]*?event\.altKey[\s\S]*?event\.shiftKey/,
+    );
+    assert.match(sessionsHtml, /target\.matches\("input, textarea, select"\)/);
+    assert.match(sessionsHtml, /target\.isContentEditable/);
+    assert.match(
+      sessionsHtml,
+      /querySelectorAll\("\.session-row-link"\)[\s\S]*?getClientRects\(\)\.length > 0/,
+    );
+    assert.match(sessionsHtml, /sessionKeyboardAction\([\s\S]*?event\.key/);
+    assert.match(sessionsHtml, /action\.type === "open"[\s\S]*?sessionLink\.click\(\)/);
+    assert.match(sessionsHtml, /else sessionLink\.focus\(\)/);
+    assert.doesNotMatch(terminalHtml + terminalScript, /sessionKeyboardAction/);
+  });
+
   it("ships the approved project ledger and Home-only lifecycle controls", () => {
     assert.match(
       sessionsHtml,
