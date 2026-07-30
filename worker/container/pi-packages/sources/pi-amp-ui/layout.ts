@@ -7,6 +7,13 @@ export interface GitDiffStats {
   deletions: number;
 }
 
+export function terminalSafeFrameWidth(terminalWidth: number): number {
+  // Keep the final terminal column empty. Some terminal emulators leave the
+  // cursor in pending-wrap after painting it, so Pi's next differential render
+  // starts one physical row lower and leaks the previous frame into scrollback.
+  return Math.max(1, terminalWidth - 1);
+}
+
 export function contextRailWidth(percent: number | undefined, availableWidth: number): number {
   if (percent == null || availableWidth <= 0) return 0;
   const ratio = Math.min(100, Math.max(0, percent)) / 100;

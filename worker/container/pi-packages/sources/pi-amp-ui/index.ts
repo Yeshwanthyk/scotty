@@ -15,6 +15,7 @@ import {
   contextRailWidth,
   fitFrameBorder,
   parseGitDiffNumstat,
+  terminalSafeFrameWidth,
   type GitDiffStats,
 } from "./layout.ts";
 
@@ -86,7 +87,7 @@ class AmpEditor extends CustomEditor {
   }
 
   override render(width: number): string[] {
-    const frameWidth = Math.max(1, width);
+    const frameWidth = terminalSafeFrameWidth(width);
     const innerWidth = Math.max(1, frameWidth - 2);
     const lines = super.render(innerWidth);
     const bottomIndex = lines.findIndex((line, index) => index > 0 && isHorizontalBorder(line));

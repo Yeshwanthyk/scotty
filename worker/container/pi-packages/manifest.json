@@ -60,8 +60,8 @@
       "name": "pi-amp-ui",
       "order": 7,
       "repository": "https://github.com/Yeshwanthyk/pi-amp-ui.git",
-      "commit": "9f5a8dec14cc8be2c6692401ff34f54e79008edb",
-      "sourceSha256": "d633400e1c8e8c40603dfef5755d6f934df2f923607c5ac590ec0ced9a74dbab",
+      "commit": "80cc09f5ab031e42c53278c0395f7fb2751b074a",
+      "sourceSha256": "e159f922e362eb50ab8aea1d547f35663a5d62d844c2099dbe40bba9a92593f4",
       "sourcePath": "worker/container/pi-packages/sources/pi-amp-ui",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-amp-ui"
     }

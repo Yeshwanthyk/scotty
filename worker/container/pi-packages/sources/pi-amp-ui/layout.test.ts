@@ -6,10 +6,17 @@ import {
   fitFrameBorder,
   joinResponsive,
   parseGitDiffNumstat,
+  terminalSafeFrameWidth,
 } from "./layout.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 const ansi = (text: string) => `\x1b[36m${text}\x1b[39m`;
+
+test("terminalSafeFrameWidth leaves the final terminal column empty", () => {
+  assert.equal(terminalSafeFrameWidth(80), 79);
+  assert.equal(terminalSafeFrameWidth(2), 1);
+  assert.equal(terminalSafeFrameWidth(1), 1);
+});
 
 test("fitFrameBorder preserves the requested width with ANSI labels", () => {
   const line = fitFrameBorder(ansi(" MODE "), ansi(" ctx 42% "), 40, ansi, ["╭", "╮"]);
