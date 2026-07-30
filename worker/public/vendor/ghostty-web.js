@@ -2254,9 +2254,7 @@ class IA {
   handleFontChange() {
     if (!this.renderer || !this.wasmTerm || !this.canvas)
       return;
-    this.selectionManager && this.selectionManager.clearSelection(), this.renderer.resize(this.cols, this.rows);
-    const A = this.renderer.getMetrics();
-    this.canvas.width = A.width * this.cols, this.canvas.height = A.height * this.rows, this.canvas.style.width = `${A.width * this.cols}px`, this.canvas.style.height = `${A.height * this.rows}px`, this.renderer.render(this.wasmTerm, !0, this.viewportY, this);
+    this.selectionManager && this.selectionManager.clearSelection(), this.renderer.resize(this.cols, this.rows), this.renderer.render(this.wasmTerm, !0, this.viewportY, this);
   }
   /**
    * Parse a CSS color string to 0xRRGGBB format.
@@ -2422,9 +2420,7 @@ class IA {
   resize(A, B) {
     if (this.assertOpen(), A === this.cols && B === this.rows)
       return;
-    this.cols = A, this.rows = B, this.wasmTerm.resize(A, B), this.renderer.resize(A, B);
-    const g = this.renderer.getMetrics();
-    this.canvas.width = g.width * A, this.canvas.height = g.height * B, this.canvas.style.width = `${g.width * A}px`, this.canvas.style.height = `${g.height * B}px`, this.resizeEmitter.fire({ cols: A, rows: B }), this.renderer.render(this.wasmTerm, !0, this.viewportY, this);
+    this.cols = A, this.rows = B, this.wasmTerm.resize(A, B), this.renderer.resize(A, B), this.resizeEmitter.fire({ cols: A, rows: B }), this.renderer.render(this.wasmTerm, !0, this.viewportY, this);
   }
   /**
    * Clear terminal screen
