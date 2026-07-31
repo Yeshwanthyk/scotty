@@ -78,8 +78,11 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
       output({ id: command.id, type: "response", command: command.type, success: false, error: "Agent is already processing a prompt" });
       return;
     }
-    messages.push({ role: "user", content: command.message });
+    const message = { role: "user", content: command.message, timestamp: Date.now() };
+    messages.push(message);
     output({ id: command.id, type: "response", command: command.type, success: true });
+    output({ type: "message_start", message });
+    output({ type: "message_end", message });
     output({ type: "extension_ui_request", id: "ask-1", method: "select", title: "Choose", options: ["A", "B"] });
   } else if (command.type === "steer")
     output({ id: command.id, type: "response", command: command.type, success: true });
@@ -126,7 +129,9 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   const transportHeaders = { "x-scotty-pi-session": transportToken };
   const snapshot = await (await fetch(`${url}/snapshot`, { headers: transportHeaders })).json();
   assert.equal(snapshot.state.sessionId, "pi-session-1");
-  assert.deepEqual(snapshot.messages, [{ role: "user", content: "Start the task" }]);
+  assert.equal(snapshot.messages.length, 1);
+  assert.equal(snapshot.messages[0].role, "user");
+  assert.equal(snapshot.messages[0].content, "Start the task");
   assert.deepEqual(
     snapshot.capabilities.models.map((availableModel) => availableModel.id),
     ["gpt-5.4", "claude-sonnet-4"],
@@ -162,7 +167,11 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
 
   const steer = {
     commandId: "steer-1",
-    command: { type: "steer", message: "Focus on tests" },
+    command: {
+      type: "prompt",
+      message: "Focus on tests",
+      streamingBehavior: "steer",
+    },
   };
   const first = await fetch(`${url}/command`, {
     method: "POST",
@@ -178,6 +187,15 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   });
   assert.equal(replay.status, 200);
   assert.deepEqual(await replay.json(), receipt);
+  const replayedSnapshot = await (
+    await fetch(`${url}/snapshot`, { headers: transportHeaders })
+  ).json();
+  assert.equal(
+    replayedSnapshot.messages.filter(
+      (message) => message.role === "user" && message.content === "Focus on tests",
+    ).length,
+    1,
+  );
 
   const followUp = await fetch(`${url}/command`, {
     method: "POST",
