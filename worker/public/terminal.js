@@ -1,11 +1,12 @@
 import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
+import { assistantMarkdownFragment } from "/terminal-markdown.js";
 import {
   createMessageProjectionState,
   finishMessageSnapshot,
   projectMessageEvent,
 } from "/terminal-message-projection.js";
-import { conversationItems } from "/terminal-timeline.js";
+import { conversationItems, appendAssistantMessageDelta } from "/terminal-timeline.js";
 
 const CACHE_LIMIT = 6;
 const compactViewport = window.matchMedia("(max-width: 780px)");
@@ -400,24 +401,7 @@ function applyEvent(projection, payload) {
 }
 
 function applyMessageDelta(projection, event) {
-  let message = projection.messages.at(-1);
-  if (!message || message.role !== "assistant") {
-    message = { role: "assistant", content: [] };
-    projection.messages.push(message);
-  }
-  if (!Array.isArray(message.content)) message.content = [];
-  const deltaEvent = firstObject(event.assistantMessageEvent, event.delta, event.update, event);
-  const type = firstString(deltaEvent.type, event.updateType);
-  const index = numberValue(deltaEvent.contentIndex, deltaEvent.content_index) ?? 0;
-  const delta = firstString(deltaEvent.delta, deltaEvent.text, deltaEvent.content) ?? "";
-  const contentType = type?.includes("thinking") ? "thinking" : "text";
-  while (message.content.length <= index) message.content.push({ type: contentType, text: "" });
-  const part = isObject(message.content[index]) ? message.content[index] : { type: contentType };
-  message.content[index] = {
-    ...part,
-    type: firstString(part.type, contentType),
-    text: `${firstString(part.text, part.thinking, "") ?? ""}${delta}`,
-  };
+  appendAssistantMessageDelta(projection.messages, event);
 }
 
 function messageText(value) {
@@ -445,6 +429,17 @@ function textElement(tag, className, text) {
   const element = document.createElement(tag);
   if (className) element.className = className;
   element.textContent = text;
+  return element;
+}
+
+function renderAssistantCopy(text) {
+  const element = document.createElement("div");
+  element.className = "message-copy markdown";
+  element.append(
+    assistantMarkdownFragment(document, text, {
+      baseUrl: window.location.href,
+    }),
+  );
   return element;
 }
 
@@ -574,7 +569,7 @@ function renderAssistantTurn(conversation, isLatest) {
   turn.append(textElement("div", "speaker-label pi", "PI"));
   const body = document.createElement("div");
   body.className = "turn-body";
-  for (const text of textParts) body.append(textElement("div", "message-copy", text));
+  for (const text of textParts) body.append(renderAssistantCopy(text));
   if (reasoningParts.length > 0 || tools.length > 0) {
     body.append(
       renderActivityFold(
