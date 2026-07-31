@@ -253,6 +253,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ),
       },
       runtimeAccess,
+      { fetchPortReadiness: env.SCOTTY_LOCAL_E2E === "1" },
     );
     const vault = credentialVaultLayer(
       // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning CredentialVault adapter
