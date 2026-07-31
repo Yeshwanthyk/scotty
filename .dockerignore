@@ -3,6 +3,8 @@
 !package-lock.json
 !cli/
 !cli/scotty.ts
+!infra/
+!infra/**
 !protocol/
 !protocol/**
 !worker/

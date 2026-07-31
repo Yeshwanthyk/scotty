@@ -148,6 +148,8 @@ RUN set -eu; \
 
 FROM scotty-package-image
 
+EXPOSE 43117
+
 RUN mkdir -p /tmp/scotty-pi-agent \
   && cp /opt/scotty/pi-packages/settings.json /tmp/scotty-pi-agent/settings.json \
   && PI_CODING_AGENT_DIR=/tmp/scotty-pi-agent PI_OFFLINE=1 pi list >/tmp/scotty-pi-packages.list \
