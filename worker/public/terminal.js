@@ -1,5 +1,10 @@
 import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
+import {
+  createMessageProjectionState,
+  finishMessageSnapshot,
+  projectMessageEvent,
+} from "/terminal-message-projection.js";
 import { conversationItems } from "/terminal-timeline.js";
 
 const CACHE_LIMIT = 6;
@@ -69,6 +74,7 @@ function blankProjection() {
     epoch: undefined,
     sequence: 0,
     messages: [],
+    messageProjection: createMessageProjectionState(),
     tools: new Map(),
     pendingUi: new Map(),
     queue: { steer: [], followUp: [] },
@@ -176,6 +182,7 @@ function projectionFromSnapshot(body) {
     state.messages,
     outer.messages,
   ).filter(isObject);
+  projection.messageProjection = createMessageProjectionState(projection.messages, true);
   projection.active = Boolean(
     state.active ??
     state.isActive ??
@@ -220,6 +227,7 @@ function projectionFromSnapshot(body) {
     projection.sequence = Math.max(0, (snapshotEvents[0]?.sequence ?? 1) - 1);
     for (const event of snapshotEvents) applyEvent(projection, event);
   }
+  finishMessageSnapshot(projection.messageProjection);
   projection.sequence = Math.max(projection.sequence, snapshotSequence);
   projection.loaded = true;
   return projection;
@@ -355,10 +363,12 @@ function applyEvent(projection, payload) {
 
   if (type === "message_start" || type === "message_end") {
     const message = firstObject(event.message, event.data);
-    if (Object.keys(message).length > 0) replaceMessage(projection, message);
+    if (Object.keys(message).length > 0)
+      projectMessageEvent(projection.messages, projection.messageProjection, type, message);
   } else if (type === "message_update") {
     const message = firstObject(event.message);
-    if (Object.keys(message).length > 0) replaceMessage(projection, message);
+    if (Object.keys(message).length > 0)
+      projectMessageEvent(projection.messages, projection.messageProjection, type, message);
     else applyMessageDelta(projection, event);
   } else if (type === "tool_execution_start") {
     upsertTool(projection, event, "running");
@@ -387,24 +397,6 @@ function applyEvent(projection, payload) {
     projection.state = { ...projection.state, processExited: true };
   }
   return "applied";
-}
-
-function messageId(message) {
-  return firstString(message?.id, message?.messageId, message?.message_id);
-}
-
-function replaceMessage(projection, message) {
-  const id = messageId(message);
-  const index = id ? projection.messages.findIndex((candidate) => messageId(candidate) === id) : -1;
-  if (index >= 0) projection.messages[index] = message;
-  else {
-    const last = projection.messages.at(-1);
-    if (!id && last?.role === message.role && message.role === "assistant") {
-      projection.messages[projection.messages.length - 1] = message;
-    } else {
-      projection.messages.push(message);
-    }
-  }
 }
 
 function applyMessageDelta(projection, event) {
