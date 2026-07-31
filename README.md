@@ -6,6 +6,72 @@ permanently destroy the session.
 
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 
+## Architecture
+
+```text
+ Browser                                                CLI
+ owner/client cookie                              root bearer token
+    |                                                       |
+    +-------------------------+-----------------------------+
+                              v
+                 +---------------------------+
+                 | Cloudflare Worker         |
+                 | Hono API + static assets  |
+                 | browser/CLI auth boundary |
+                 +-----+-----------+---------+
+                       |           |
+             +---------+           +----------------------+
+             v                                            v
+ +------------------------+                    +-----------------------+
+ | Auth Durable Object    |                    | Runner control plane  |
+ | one owner + epoch      |                    | registry + runner DOs |
+ | paired browser clients |                    +-----------+-----------+
+ +------------------------+                                |
+                                                           v
+                                                 trusted Linux runner
+                                                 (registration/control)
+
+                 one Durable Object per Cloudflare session
+                              |
+                              v
+                 +---------------------------+
+                 | Sandbox Durable Object    |
+                 | AUTHORITATIVE             |
+                 | session state             |
+                 | credentials + lifecycle   |
+                 +-----+----------+----------+
+                       |          |
+              projects |          | immutable checkpoints
+                       v          v
+                +-----------+  +-----------+
+                | KV        |  | R2        |
+                | non-secret|  | backups   |
+                | projection|  +-----------+
+                +-----------+
+                       |
+                       v
+          +------------------------------------+
+          | Cloudflare Sandbox + Container    |
+          | persistent workspace              |
+          | scotty-pi-shell + Pi RPC worklog  |
+          | session-bound sentinels only      |
+          +------------------+-----------------+
+                             |
+                             v
+          +------------------------------------+
+          | ContainerProxy allowlisted egress |
+          | sentinel -> credential substitution |
+          +------------------+-----------------+
+                             |
+                         GitHub + Pi providers
+```
+
+The Sandbox Durable Object is the source of truth. KV is only a non-secret list, repository, and
+stats projection; R2 stores immutable backups. The Container application runs the workspace and Pi
+process but does not own session state or real credentials. The trusted-runner lane currently
+supports registration and lifecycle control; runner-backed session creation remains disabled until
+it has the native Pi RPC worklog transport.
+
 ## Components
 
 - `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, direct Pi RPC
@@ -40,20 +106,76 @@ only session-bound provider and GitHub sentinels.
 
 Residual limitation: any allowed package registry is still a potential source/prompt exfiltration channel. Keep `ALLOWED_HOSTS` in `worker/src/egress.ts` minimal for the target repository.
 
-## Local checks
+## Agent setup and test loops
 
-Requirements: Node 22+, npm, Bun, Docker, and Cloudflare authentication only for deployed probes
-or production deployment.
+Read [`AGENTS.md`](AGENTS.md) before changing Scotty. It defines the public-contract, state,
+credential, Effect v4, Alchemy, formatting, and verification invariants. When changing a
+non-trivial Effect or Alchemy pattern, follow its source-first instructions before editing.
+
+Requirements are the Node version pinned in [`.nvmrc`](.nvmrc), npm, Bun, and Git. Docker is
+required only for the real local Sandbox loop, the Wrangler rollback probe, and production
+deployment. Cloudflare authentication is required only for disposable deployed probes or
+production deployment.
+
+For a normal local checkout:
 
 ```sh
-npm install
-npm run typecheck
-npm run test:all
-node e2e/scripts/scan.mjs
-npm run build:cli
+git submodule update --init vendor/effect vendor/alchemy
+npm ci --no-audit --no-fund
+npm run check
 ```
 
-The default suites do not use Cloudflare, OpenAI, or GitHub credentials.
+For a fresh Linux agent environment, [`.agents/setup`](.agents/setup) installs the pinned Node
+version, initializes the reference-source submodules, and runs `npm ci`. A resumed agent can use
+[`.agents/resume`](.agents/resume) to fail fast when its cached environment is incomplete:
+
+```sh
+./.agents/setup
+./.agents/resume
+```
+
+### Fast feedback loop
+
+Start with the smallest test that owns the contract. Keep it running while editing, format the
+touched files, then run the full gate once before handoff.
+
+1. Run the focused test once before editing to establish the baseline.
+2. Start its watch mode and make the smallest contract-preserving change.
+3. Format only the touched files while iterating.
+4. Rerun the focused test plus its nearest package suite.
+5. Run `npm run check` before handing off, committing, or opening a PR.
+
+```sh
+# Worker or Durable Object: one pass, then watch mode
+npx vitest run worker/test/sandbox-runtime.test.ts
+npx vitest worker/test/sandbox-runtime.test.ts
+
+# Effect CLI, Bun CLI, Node E2E, or operations
+npx vitest run cli/effect-test/command-tree.test.ts
+bun test cli/test/cli.test.ts
+node --test e2e/tests/local-live-script.test.mjs
+node --test scripts/sessions-shell.test.mjs
+
+# Format touched files and finish with the complete repository gate
+npx oxfmt --disable-nested-config --write README.md worker/src/sandbox-runtime.ts
+npm run check
+```
+
+Replace these paths with the files under change. `npm run check` verifies pinned Effect and Pi
+packages, formatting, lint, every typecheck and test suite, and the repository secret scan. The
+default suites do not use Cloudflare, Pi provider, or GitHub credentials.
+
+When a change crosses the real Worker/Sandbox/Pi boundary, also run the local-live loop. It uses
+temporary Wrangler state and Docker containers and does not touch deployed Scotty resources:
+
+```sh
+DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
+  npm run test:e2e:local-live -- --no-open --no-hold
+```
+
+This requires a healthy Docker daemon, authenticated `gh`, and mode-0600
+`~/.pi/agent/auth.json`. It proves both fresh-start auth hydration and warm-session reseeding. Add
+`--require-response` only when the local network permits model traffic from the container.
 
 A Wrangler dry run remains as a local rollback probe. It builds the Sandbox image and therefore
 requires a healthy Docker daemon:
@@ -90,10 +212,53 @@ installation name: `scotty-NAME-worker`, `scotty-NAME-runner`, `scotty-NAME-sand
 `scotty-NAME-sessions`, and `scotty-NAME-backups`. No Cloudflare account ID, workers.dev hostname,
 Container UUID, or runner instance name is committed.
 
-Repository maintainers can retain the guarded release wrapper with
-`SCOTTY_INSTALLATION_NAME=NAME npm run deploy:production`. It refuses CI and unsafe Git state,
-runs the full checks, deploys through Alchemy, and audits Container rollout settlement. Legacy
-resource names require `SCOTTY_ADOPTION_MANIFEST=/private/path.json`.
+### Production runbook
+
+Production deploys are local-only and forward-only. The guarded wrapper refuses CI, any branch
+other than `main`, a dirty worktree, or a local `main` that differs from `origin/main`.
+
+1. Fast-forward a clean local `main` to the reviewed GitHub state.
+
+   ```sh
+   git switch main
+   git fetch origin main
+   git merge --ff-only origin/main
+   git status --short --branch
+   ```
+
+2. Ensure Docker and Cloudflare authentication are available. On macOS with Colima:
+
+   ```sh
+   colima start default
+   DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" docker info
+   ```
+
+3. Run the guarded deployment for the installation. Omit `SCOTTY_ADOPTION_MANIFEST` when the
+   installation uses Scotty's default resource names.
+
+   ```sh
+   DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
+   SCOTTY_INSTALLATION_NAME=home \
+   SCOTTY_ADOPTION_MANIFEST="${HOME}/.config/scotty/production-adoption.json" \
+     npm run deploy:production
+   ```
+
+4. Require the command to finish successfully. It runs `npm run check`, audits the current
+   Container inventory, builds an isolated image context, deploys through Alchemy, waits for the
+   exact Container rollout and health counters to converge, and audits the deployed inventory
+   again.
+
+5. Verify the connected installation from the freshly built CLI:
+
+   ```sh
+   npm run build:cli
+   ./dist/scotty doctor --json
+   ```
+
+Do not substitute a direct Wrangler production upload for this runbook. A Worker upload alone does
+not prove that the Container rollout converged or that runtime inventory remained healthy. If the
+guard fails, fix the reported Git, test, audit, or rollout condition and rerun the same command; do
+not bypass it with a direct Alchemy or Wrangler deployment.
 
 The current Cloudflare gate is forward-only: the full local suite and Colima-backed image build must
 pass with the pinned Pi version, then the guarded deployment and deployed canary must prove
