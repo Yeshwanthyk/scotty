@@ -6,7 +6,7 @@ import type {
   ProcessStatus,
   WaitForPortOptions,
 } from "@cloudflare/sandbox";
-import { Context, Data, Effect, Layer, Predicate } from "effect";
+import { Context, Data, Effect, Layer, Predicate, Schedule } from "effect";
 
 export type SandboxExecOptions = Pick<ExecOptions, "cwd" | "env" | "timeout">;
 export type SandboxProcessOptions = Pick<
@@ -45,6 +45,10 @@ export interface SandboxRuntimeCapabilities {
     method: "GET" | "POST",
     headers?: Readonly<Record<string, string>>,
   ) => Promise<Response>;
+}
+
+export interface SandboxRuntimeLayerOptions {
+  readonly fetchPortReadiness?: boolean;
 }
 
 export interface SandboxProcess {
@@ -97,12 +101,16 @@ export class SandboxRuntime extends Context.Service<SandboxRuntime, SandboxRunti
 export const sandboxRuntimeLayer = <E = never>(
   capabilities: SandboxRuntimeCapabilities,
   beforeOperation?: Effect.Effect<void, E>,
+  options: SandboxRuntimeLayerOptions = {},
 ): Layer.Layer<SandboxRuntime> =>
-  Layer.succeed(SandboxRuntime)(makeSandboxRuntime(capabilities, beforeOperation ?? Effect.void));
+  Layer.succeed(SandboxRuntime)(
+    makeSandboxRuntime(capabilities, beforeOperation ?? Effect.void, options),
+  );
 
 const makeSandboxRuntime = <E>(
   capabilities: SandboxRuntimeCapabilities,
   beforeOperation: Effect.Effect<void, E>,
+  layerOptions: SandboxRuntimeLayerOptions,
 ): SandboxRuntimeShape =>
   SandboxRuntime.of({
     exec: (command, options) => exec(capabilities, beforeOperation, command, options),
@@ -141,7 +149,14 @@ const makeSandboxRuntime = <E>(
             catch: () => transportFailure("Sandbox process start transport failed"),
           }),
         ),
-        Effect.map((process) => makeSandboxProcess(process, beforeOperation)),
+        Effect.map((process) =>
+          makeSandboxProcess(
+            process,
+            beforeOperation,
+            capabilities.fetchPort,
+            layerOptions.fetchPortReadiness === true,
+          ),
+        ),
       );
     },
     getProcess: (processId) => {
@@ -156,7 +171,14 @@ const makeSandboxRuntime = <E>(
           }),
         ),
         Effect.map((process) =>
-          process === null ? null : makeSandboxProcess(process, beforeOperation),
+          process === null
+            ? null
+            : makeSandboxProcess(
+                process,
+                beforeOperation,
+                capabilities.fetchPort,
+                layerOptions.fetchPortReadiness === true,
+              ),
         ),
       );
     },
@@ -179,6 +201,8 @@ const makeSandboxRuntime = <E>(
 const makeSandboxProcess = <E>(
   process: SandboxProcessCapabilities,
   beforeOperation: Effect.Effect<void, E>,
+  fetchPort: SandboxRuntimeCapabilities["fetchPort"],
+  fetchPortReadiness: boolean,
 ): SandboxProcess => ({
   id: process.id,
   status: process.status,
@@ -197,10 +221,41 @@ const makeSandboxProcess = <E>(
       Effect.map((result) => result.exitCode),
     ),
   waitForPort: (port, options) =>
-    transportVoid(beforeOperation, "Sandbox process readiness transport failed", () =>
-      process.waitForPort(port, options),
-    ),
+    fetchPortReadiness && fetchPort !== undefined && options?.mode !== "tcp"
+      ? waitForPortViaFetch(beforeOperation, fetchPort, port, options)
+      : transportVoid(beforeOperation, "Sandbox process readiness transport failed", () =>
+          process.waitForPort(port, options),
+        ),
 });
+
+const waitForPortViaFetch = <E>(
+  beforeOperation: Effect.Effect<void, E>,
+  fetchPort: NonNullable<SandboxRuntimeCapabilities["fetchPort"]>,
+  port: number,
+  options?: SandboxWaitForPortOptions,
+): Effect.Effect<void, SandboxRuntimeFailure> => {
+  const timeout = options?.timeout ?? 30_000;
+  const attempts = Math.max(1, Math.ceil(timeout / 250));
+  const expected = options?.status ?? { min: 200, max: 399 };
+  return guardOperation(beforeOperation, "Sandbox process readiness transport failed").pipe(
+    Effect.andThen(
+      Effect.tryPromise({
+        try: () => fetchPort(options?.path ?? "/", port, "GET"),
+        catch: () => transportFailure("Sandbox process readiness transport failed"),
+      }),
+    ),
+    Effect.filterOrFail(
+      (response) =>
+        typeof expected === "number"
+          ? response.status === expected
+          : response.status >= expected.min && response.status <= expected.max,
+      () => transportFailure("Sandbox process readiness transport failed"),
+    ),
+    Effect.asVoid,
+    Effect.retry({ times: attempts - 1, schedule: Schedule.spaced("250 millis") }),
+    Effect.mapError(() => transportFailure("Sandbox process readiness transport failed")),
+  );
+};
 
 const exec = <E>(
   capabilities: SandboxRuntimeCapabilities,

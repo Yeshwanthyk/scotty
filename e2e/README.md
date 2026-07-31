@@ -27,6 +27,36 @@ scripts; tracked-repo creation and retention; exit codes; backup restoration; au
 path/auth/streaming; root-query/root-cookie rejection; sentinel and credential scans; denied egress;
 tar traversal rejection; rollout mode 0600; and resource cleanup.
 
+## Run the real local Worker, Sandbox, and Pi
+
+The local-live harness tests both Pi credential paths changed by auth hydration:
+
+1. a fresh session writes current Pi auth before its first Pi process starts;
+2. a warm session quiesces, reseeds, restarts Pi, and executes another provider request.
+
+It requires a healthy Docker daemon, `gh auth`, and a mode-0600
+`~/.pi/agent/auth.json`. It uses temporary Wrangler state and a temporary secret file, opens a
+one-time browser pairing page after both checks pass, and keeps Wrangler alive until `Ctrl-C`.
+It does not read or change any deployed Scotty resources. The local SDK host uses its documented
+HTTP control transport; deployed Scotty remains on RPC.
+
+```sh
+npm run test:e2e:local-live
+```
+
+The first Docker build can take about 10 minutes. Later runs are normally faster. To run only the
+automated checks without opening a browser or holding Wrangler open:
+
+```sh
+npm run test:e2e:local-live -- --no-open --no-hold
+```
+
+Use `--repo OWNER/NAME` to test a repository other than the current GitHub origin, or `--port PORT`
+if `8791` is occupied. The auth proof distinguishes a credential rejection from an unrelated
+upstream failure, such as OpenAI blocking Docker's egress IP. Add `--require-response` when the
+local network supports container model traffic and you want both prompts to return their exact
+response markers.
+
 ## Run against a disposable deployment
 
 The deployed canary uses `spikes/infra/full-stack-canary.run.ts`, which creates a complete
