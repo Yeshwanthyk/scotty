@@ -294,6 +294,49 @@ describe("SandboxRuntime", () => {
       }),
   );
 
+  it.effect("uses fetch-port readiness only for the explicit local host adapter", () =>
+    Effect.gen(function* () {
+      let nativeWaitCalls = 0;
+      const fetchCalls: Array<readonly [string, number, string]> = [];
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        startProcess: () =>
+          Promise.resolve({
+            id: "scotty-pi-session",
+            status: "running",
+            kill: () => Promise.resolve(),
+            waitForExit: () => Promise.resolve({ exitCode: 0 }),
+            waitForPort: () => {
+              nativeWaitCalls += 1;
+              return Promise.resolve();
+            },
+          }),
+        fetchPort: (path, port, method) => {
+          fetchCalls.push([path, port, method]);
+          return Promise.resolve(new Response(null, { status: 200 }));
+        },
+      };
+      const program = Effect.gen(function* () {
+        const runtime = yield* SandboxRuntime;
+        const process = yield* runtime.startProcess("/usr/local/bin/scotty-pi-session");
+        yield* process.waitForPort(43_117, {
+          mode: "http",
+          path: "/health",
+          status: 200,
+          timeout: 10_000,
+        });
+      });
+
+      yield* Effect.provide(
+        program,
+        sandboxRuntimeLayer(capabilities, undefined, { fetchPortReadiness: true }),
+      );
+
+      assert.deepStrictEqual(fetchCalls, [["/health", 43_117, "GET"]]);
+      assert.strictEqual(nativeWaitCalls, 0);
+    }),
+  );
+
   it.effect("maps every process Promise rejection to an operation-specific redacted failure", () =>
     Effect.gen(function* () {
       const capabilities: SandboxRuntimeCapabilities = {
