@@ -4,6 +4,7 @@ import {
   type PiConsoleRemoteIntentV1,
 } from "../../protocol/pi-console.ts";
 import { safeErrorMessage } from "./errors.ts";
+import { redactRemoteString } from "./redaction.ts";
 import { decodeSnapshot, decodeUnavailable } from "./schemas.ts";
 import { FleetConsoleState, SETTLED_TURNS_FOLD_ID } from "./state.ts";
 import type { ConsoleTransport } from "./transport.ts";
@@ -165,14 +166,28 @@ export class FleetConsoleController {
   async submitDraft(forceFollowUp = false): Promise<void> {
     const sessionId = this.state.selectedSessionId;
     if (sessionId === undefined) return;
+    await this.submitText(this.state.cache(sessionId).draft, forceFollowUp);
+  }
+
+  async submitText(text: string, forceFollowUp = false): Promise<void> {
+    const sessionId = this.state.selectedSessionId;
+    if (sessionId === undefined) return;
     const cache = this.state.cache(sessionId);
+    const submittedText = redactRemoteString(text);
     const route = routeComposerSubmission(
-      cache.draft,
+      submittedText,
       cache.live?.isStreaming ?? false,
       forceFollowUp,
     );
     if (route.type === "empty") return;
+    if (cache.draft === submittedText) this.state.setDraft(sessionId, "");
+    const clearedGeneration = cache.draftGeneration;
+    const restoreDraft = (): void => {
+      if (cache.draftGeneration === clearedGeneration && cache.draft === "")
+        this.state.setDraft(sessionId, submittedText);
+    };
     if (route.type === "local_error") {
+      restoreDraft();
       cache.commandStatus = route.message;
       this.#onChange();
       return;
@@ -182,18 +197,21 @@ export class FleetConsoleController {
       cache.commandStatus = cache.folded.has(SETTLED_TURNS_FOLD_ID)
         ? "Settled turns folded locally"
         : "Settled turns expanded locally";
-      cache.draft = "";
       this.#onChange();
       return;
     }
-    await this.sendIntent(route.intent, true);
+    const submission = await this.sendIntent(route.intent);
+    if (submission.outcome !== "accepted") {
+      restoreDraft();
+      this.#onChange();
+    }
   }
 
   async abortActive(): Promise<void> {
     const sessionId = this.state.selectedSessionId;
     if (sessionId === undefined) return;
     const cache = this.state.cache(sessionId);
-    if (cache.live?.isStreaming) await this.sendIntent({ type: "abort" }, false);
+    if (cache.live?.isStreaming) await this.sendIntent({ type: "abort" });
   }
 
   async answerExtensionUi(
@@ -212,10 +230,11 @@ export class FleetConsoleController {
     if (cache.uiAnswers.has(identity)) return;
     cache.uiAnswers.set(identity, "in_flight");
     this.#onChange();
-    const submission = await this.sendIntent(
-      { type: "extension_ui_response", id: requestId, ...answer },
-      false,
-    );
+    const submission = await this.sendIntent({
+      type: "extension_ui_response",
+      id: requestId,
+      ...answer,
+    });
     if (submission.outcome === "accepted" || submission.outcome === "delivered") {
       cache.uiAnswers.set(identity, "delivered_unconfirmed");
       while (cache.uiAnswers.size > MAX_UI_ANSWER_STATES) {
@@ -231,10 +250,7 @@ export class FleetConsoleController {
     this.#onChange();
   }
 
-  async sendIntent(
-    intent: PiConsoleRemoteIntentV1,
-    clearDraft: boolean,
-  ): Promise<IntentSubmission> {
+  async sendIntent(intent: PiConsoleRemoteIntentV1): Promise<IntentSubmission> {
     const sessionId = this.state.selectedSessionId;
     if (sessionId === undefined) return { commandId: "none", outcome: "not_accepted" };
     const cache = this.state.cache(sessionId);
@@ -282,7 +298,6 @@ export class FleetConsoleController {
           : result.status === "delivered"
             ? "Delivered to Pi; awaiting continuation (outcome unconfirmed)"
             : "Command rejected by supervisor";
-      if (clearDraft && result.status === "accepted") cache.draft = "";
       this.#onChange();
       return {
         commandId: command.commandId,

@@ -68,6 +68,7 @@ export type UiAnswerStatus = "in_flight" | "delivered_unconfirmed" | "outcome_un
 
 export interface SessionViewCache {
   draft: string;
+  draftGeneration: number;
   scroll: number;
   readonly folded: Set<string>;
   metadata?: SelectedSession;
@@ -486,6 +487,7 @@ export class FleetConsoleState {
     if (existing !== undefined) return existing;
     const created: SessionViewCache = {
       draft: "",
+      draftGeneration: 0,
       scroll: 0,
       folded: new Set(),
       uiAnswers: new Map(),
@@ -556,7 +558,10 @@ export class FleetConsoleState {
   applyEvent(sessionId: string, envelope: PiConsoleEventEnvelopeV1): EventReduction {
     const cache = this.cache(sessionId);
     const ui = decodeExtensionUiEvent(envelope.event);
-    if (ui?.method === "set_editor_text") cache.draft = redactRemoteString(ui.text);
+    if (ui?.method === "set_editor_text") {
+      cache.draft = redactRemoteString(ui.text);
+      cache.draftGeneration += 1;
+    }
     if (cache.live === undefined) return "resnapshot";
     const reduced = reduceEvent(cache.live, envelope);
     cache.live = reduced.state;
@@ -565,7 +570,9 @@ export class FleetConsoleState {
   }
 
   setDraft(sessionId: string, draft: string): void {
-    this.cache(sessionId).draft = redactRemoteString(draft);
+    const cache = this.cache(sessionId);
+    cache.draft = redactRemoteString(draft);
+    cache.draftGeneration += 1;
   }
 
   scroll(sessionId: string, delta: number): void {

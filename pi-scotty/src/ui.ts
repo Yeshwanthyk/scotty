@@ -162,7 +162,7 @@ export class FleetConsoleComponent implements Component {
         cache.dialogDrafts.set(dialog.id, text);
       else this.#controller.state.setDraft(selected, text);
     };
-    this.#editor.onSubmit = () => void this.#submitEditor();
+    this.#editor.onSubmit = (text) => void this.#submitEditor(text);
   }
 
   invalidate(): void {
@@ -485,18 +485,17 @@ export class FleetConsoleComponent implements Component {
     this.#tui.terminal.setTitle(title);
   }
 
-  async #submitEditor(): Promise<void> {
+  async #submitEditor(text: string): Promise<void> {
     const selected = this.#controller.state.selectedSessionId;
     if (selected === undefined) return;
     const cache = this.#controller.state.cache(selected);
     const dialog = cache.live?.pendingUi.find((request) => isBlockingMethod(request.method));
     if (dialog?.method === "input" || dialog?.method === "editor") {
-      await this.#controller.answerExtensionUi(dialog.id, {
-        value: cache.dialogDrafts.get(dialog.id) ?? "",
-      });
+      cache.dialogDrafts.set(dialog.id, text);
+      await this.#controller.answerExtensionUi(dialog.id, { value: text });
       return;
     }
-    await this.#controller.submitDraft(false);
+    await this.#controller.submitText(text, false);
   }
 
   #syncEditor(): void {
