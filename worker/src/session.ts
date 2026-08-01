@@ -1,4 +1,16 @@
 import { Sandbox as BaseSandbox, streamFile } from "@cloudflare/sandbox";
+import {
+  decodePiConsoleCommandV1Promise,
+  decodePiConsoleRelaySnapshotV1,
+  PI_CONSOLE_MAX_COMMAND_BYTES,
+  PI_CONSOLE_MAX_RESPONSE_BYTES,
+  PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
+  PI_CONSOLE_PROTOCOL_VERSION,
+  PI_CONSOLE_PROXY_PREFIX,
+  type PiConsoleCommandV1,
+  type PiConsoleStaleCommandV1,
+  type PiConsoleUnavailableV1,
+} from "../../protocol/pi-console";
 import { RUNNER_PROTOCOL_VERSION, type RunnerOperation } from "../../protocol/runner";
 import { piProviderMetadata } from "../../protocol/pi-auth";
 import {
@@ -31,6 +43,7 @@ import {
 } from "./credential-vault";
 import {
   conflict,
+  decodeJsonValue,
   notFound,
   ScottyError,
   toProjection,
@@ -57,8 +70,11 @@ import {
 } from "./egress";
 import {
   durableObjectSessionRecordStorage,
+  makeSessionControlGate,
   SessionStore,
   sessionStoreLayer,
+  type SessionControlAuthority,
+  type SessionControlGate,
 } from "./session-store";
 import {
   SESSION_SCHEDULE_CALLBACKS,
@@ -82,6 +98,48 @@ const ABANDONED_OPERATION_MS = 5 * 60_000;
 const MANAGED_STOP_RETRY_SECONDS = 2;
 const DESTROY_DEADLINE_MS = 30_000;
 const DESTROY_RETRY_SECONDS = 35;
+const PASSIVE_PI_CONSOLE_MAX_HEADER_BYTES = 8 * 1024;
+const PASSIVE_PI_CONSOLE_REQUEST_HEADERS = ["accept", "content-type", "last-event-id"] as const;
+
+const copyBoundedPassivePiConsoleHeaders = (source: Headers): Headers => {
+  const headers = new Headers();
+  const encoder = new TextEncoder();
+  for (const name of PASSIVE_PI_CONSOLE_REQUEST_HEADERS) {
+    const value = source.get(name);
+    if (value !== null && encoder.encode(value).byteLength <= PASSIVE_PI_CONSOLE_MAX_HEADER_BYTES)
+      headers.set(name, value);
+  }
+  return headers;
+};
+
+const readBoundedUtf8Body = async (
+  message: Request | Response,
+  maxBytes: number,
+): Promise<string | undefined> => {
+  const declaredLength = Number(message.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return undefined;
+  if (message.body === null) return "";
+  const reader = message.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    length += next.value.byteLength;
+    if (length > maxBytes) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(next.value);
+  }
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+};
 
 export const decodeSandboxFileStream = (
   source: ReadableStream<Uint8Array>,
@@ -131,8 +189,16 @@ interface VaporizeRetryPayload {
   nonce: string;
 }
 
+export interface PassivePiConsoleRelay {
+  readonly fetch: (input: {
+    readonly sessionId: SessionRecord["id"];
+    readonly request: Request;
+  }) => Promise<Response>;
+}
+
 export interface SandboxEffectOptions {
   readonly clock?: Clock.Clock;
+  readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
 }
 
 class ManagedStopArmedError extends Data.TaggedError("ManagedStopArmedError")<{
@@ -224,6 +290,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
   allowedHosts = [...ALLOWED_HOSTS];
   private readonly layer: Layer.Layer<SandboxServices>;
   private readonly clock: Clock.Clock | undefined;
+  private readonly passivePiConsoleRelay: PassivePiConsoleRelay;
+  private readonly rawContainer: DurableObjectState["container"];
+  private readonly sessionControlGate: SessionControlGate;
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
   private createInFlight: InFlightCreate | undefined;
@@ -231,9 +300,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
   constructor(ctx: DurableObjectState<{}>, env: Bindings, options: SandboxEffectOptions = {}) {
     super(ctx, env);
     this.clock = options.clock;
+    this.rawContainer = ctx.container;
+    this.passivePiConsoleRelay = options.passivePiConsoleRelay ?? {
+      fetch: (input) => this.fetchNativePassivePiConsole(input),
+    };
+    this.sessionControlGate = makeSessionControlGate();
 
-    // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning SessionStore adapter
-    const store = sessionStoreLayer(durableObjectSessionRecordStorage(ctx.storage));
+    const store = sessionStoreLayer(
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning SessionStore adapter
+      durableObjectSessionRecordStorage(ctx.storage, this.sessionControlGate),
+    );
     const runtimeAccess = this.assertRuntimeAccessProgram().pipe(
       Effect.asVoid,
       Effect.provide(store),
@@ -1389,8 +1465,184 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.preparePiSessionAccessProgram());
   }
 
+  private readonly passiveConsoleUnavailable = (
+    reason: PiConsoleUnavailableV1["reason"],
+    status: 409 | 503,
+  ): Response =>
+    Response.json(
+      {
+        version: PI_CONSOLE_PROTOCOL_VERSION,
+        status: "unavailable",
+        reason,
+        retryable: false,
+      } satisfies PiConsoleUnavailableV1,
+      { status, headers: { "cache-control": "no-store" } },
+    );
+
+  private readonly readPassiveConsoleAuthority = async (): Promise<
+    SessionControlAuthority | Response
+  > => {
+    const read = await this.#run(
+      Effect.result(SessionStore.pipe(Effect.flatMap((store) => store.readControlAuthority))),
+    );
+    if (Result.isFailure(read))
+      return this.passiveConsoleUnavailable("session_authority_unavailable", 503);
+    return read.success;
+  };
+
+  private readonly validatePassiveConsoleAuthority = (
+    authority: SessionControlAuthority,
+  ): Response | undefined => {
+    const { record } = authority;
+    if (record.status !== "warm") return this.passiveConsoleUnavailable("session_not_warm", 409);
+    if (record.operation) return this.passiveConsoleUnavailable("session_operation_active", 409);
+    if (record.execution.provider !== "cloudflare")
+      return this.passiveConsoleUnavailable("provider_unsupported", 409);
+    return undefined;
+  };
+
+  private readonly stalePassiveConsoleCommand = (
+    command: PiConsoleCommandV1,
+    sessionRevision: number,
+  ): Response =>
+    Response.json(
+      {
+        version: PI_CONSOLE_PROTOCOL_VERSION,
+        status: "stale",
+        expectedSessionRevision: command.expectedSessionRevision,
+        sessionRevision,
+        retryable: false,
+      } satisfies PiConsoleStaleCommandV1,
+      { status: 409, headers: { "cache-control": "no-store" } },
+    );
+
+  private async fetchNativePassivePiConsole(input: {
+    readonly sessionId: SessionRecord["id"];
+    readonly request: Request;
+  }): Promise<Response> {
+    const container = this.rawContainer;
+    if (container === undefined || !container.running)
+      return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
+
+    const credential = await this.#run(
+      Effect.result(CredentialVault.pipe(Effect.flatMap((vault) => vault.require))),
+    );
+    if (Result.isFailure(credential))
+      return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
+    const transportToken = await piSessionTransportToken(input.sessionId, credential.success).then(
+      (value) => Result.succeed(value),
+      () => Result.fail(undefined),
+    );
+    if (Result.isFailure(transportToken))
+      return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
+
+    const incomingUrl = new URL(input.request.url);
+    const action = incomingUrl.pathname.slice(PI_CONSOLE_PROXY_PREFIX.length + 1);
+    const targetUrl = new URL(`http://127.0.0.1:${PI_SESSION_PORT}/${action}`);
+    targetUrl.search = incomingUrl.search;
+    const headers = copyBoundedPassivePiConsoleHeaders(input.request.headers);
+    headers.set(PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER, "1");
+    headers.set(PI_SESSION_TOKEN_HEADER, transportToken.success);
+    const body = input.request.method === "POST" ? await input.request.arrayBuffer() : undefined;
+    const relayRequest = new Request(targetUrl, {
+      method: input.request.method,
+      headers,
+      body,
+      signal: input.request.signal,
+    });
+
+    return Promise.resolve()
+      .then(() => container.getTcpPort(PI_SESSION_PORT).fetch(relayRequest))
+      .then(
+        (response) => {
+          const responseHeaders = new Headers(response.headers);
+          responseHeaders.delete(PI_SESSION_TOKEN_HEADER);
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: responseHeaders,
+          });
+        },
+        () => this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503),
+      );
+  }
+
+  private async fetchPassivePiConsole(request: Request, action: string): Promise<Response> {
+    let command: PiConsoleCommandV1 | undefined;
+    if (action === "command") {
+      const text = await readBoundedUtf8Body(request, PI_CONSOLE_MAX_COMMAND_BYTES);
+      if (text === undefined) return Response.json({ error: "command_too_large" }, { status: 413 });
+      const json = decodeJsonValue(text);
+      if (Option.isNone(json)) return Response.json({ error: "invalid_command" }, { status: 400 });
+      const decoded = await decodePiConsoleCommandV1Promise(json.value).then(
+        (value) => Result.succeed(value),
+        () => Result.fail(undefined),
+      );
+      if (Result.isFailure(decoded))
+        return Response.json({ error: "invalid_command" }, { status: 400 });
+      command = decoded.success;
+    }
+
+    const relayWithCurrentAuthority = async (): Promise<Response> => {
+      const authority = await this.readPassiveConsoleAuthority();
+      if (authority instanceof Response) return authority;
+      if (command && command.expectedSessionRevision !== authority.revision)
+        return this.stalePassiveConsoleCommand(command, authority.revision);
+      const unavailable = this.validatePassiveConsoleAuthority(authority);
+      if (unavailable) return unavailable;
+      const relay = this.passivePiConsoleRelay;
+      const relayHeaders = copyBoundedPassivePiConsoleHeaders(request.headers);
+      if (command) relayHeaders.set("content-type", "application/json");
+      const relayRequest = new Request(request.url, {
+        method: request.method,
+        headers: relayHeaders,
+        body: command ? JSON.stringify(command) : undefined,
+        signal: request.signal,
+      });
+      const response = await relay.fetch({
+        sessionId: authority.record.id,
+        request: relayRequest,
+      });
+      if (action !== "snapshot" || response.status !== 200) return response;
+
+      const text = await readBoundedUtf8Body(response, PI_CONSOLE_MAX_RESPONSE_BYTES);
+      if (text === undefined)
+        return Response.json({ error: "response_too_large" }, { status: 502 });
+      const json = decodeJsonValue(text);
+      if (Option.isNone(json)) return Response.json({ error: "invalid_snapshot" }, { status: 502 });
+      const decoded = await decodePiConsoleRelaySnapshotV1(json.value).then(
+        (value) => Result.succeed(value),
+        () => Result.fail(undefined),
+      );
+      if (Result.isFailure(decoded))
+        return Response.json({ error: "invalid_snapshot" }, { status: 502 });
+      return Response.json(
+        { ...decoded.success, sessionRevision: authority.revision },
+        { headers: { "cache-control": "no-store" } },
+      );
+    };
+
+    return command === undefined
+      ? relayWithCurrentAuthority()
+      : this.sessionControlGate.run(relayWithCurrentAuthority);
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const incomingUrl = new URL(request.url);
+    if (incomingUrl.pathname.startsWith(`${PI_CONSOLE_PROXY_PREFIX}/`)) {
+      const action = incomingUrl.pathname.slice(PI_CONSOLE_PROXY_PREFIX.length + 1);
+      const expectedMethod =
+        action === "snapshot" || action === "events"
+          ? "GET"
+          : action === "command"
+            ? "POST"
+            : undefined;
+      if (expectedMethod === undefined)
+        return Response.json({ error: "not_found" }, { status: 404 });
+      if (request.method !== expectedMethod)
+        return Response.json({ error: "method_not_allowed" }, { status: 405 });
+      return this.fetchPassivePiConsole(request, action);
+    }
     if (!incomingUrl.pathname.startsWith(`${PI_SESSION_PROXY_PREFIX}/`))
       return super.fetch(request);
 

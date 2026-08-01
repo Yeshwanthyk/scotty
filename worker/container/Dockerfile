@@ -120,6 +120,8 @@ COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json
 COPY worker/container/scotty-runner-bootstrap /usr/local/bin/scotty-runner-bootstrap
 COPY worker/container/scotty-pi-shell /usr/local/bin/scotty-pi-shell
 COPY worker/container/scotty-pi-session.mjs /usr/local/bin/scotty-pi-session
+COPY worker/container/scotty-pi-protocol.mjs /usr/local/bin/scotty-pi-protocol.mjs
+COPY protocol/pi-console-shared.mjs /usr/protocol/pi-console-shared.mjs
 RUN set -eu; \
   npm ci \
       --prefix /opt/scotty/pi-packages/npm \

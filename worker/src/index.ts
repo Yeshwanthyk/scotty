@@ -1,4 +1,10 @@
 import { ContainerProxy, getSandbox } from "@cloudflare/sandbox";
+import {
+  decodePiConsoleCommandV1Promise,
+  PI_CONSOLE_MAX_COMMAND_BYTES,
+  PI_CONSOLE_PUBLIC_PATH_SEGMENT,
+  PI_CONSOLE_PROXY_PREFIX,
+} from "../../protocol/pi-console";
 import { parsePiAuthJsonOption, piProviderMetadata } from "../../protocol/pi-auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
@@ -620,6 +626,55 @@ app.all("/s/:id/rpc/:action", async (c) => {
   );
 });
 
+app.all(`/s/:id/${PI_CONSOLE_PUBLIC_PATH_SEGMENT}/:action`, async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const action = c.req.param("action");
+  const expectedMethod =
+    action === "snapshot" || action === "events"
+      ? "GET"
+      : action === "command"
+        ? "POST"
+        : undefined;
+  if (expectedMethod === undefined || c.req.method !== expectedMethod)
+    return c.json({ error: { code: "not_found", message: "Route not found" } }, 404);
+  if (c.req.method === "POST") {
+    requireCookieMutationSecurity(c.req.raw);
+    requireJsonContentType(c.req.raw);
+  }
+
+  const incomingUrl = new URL(c.req.url);
+  const targetUrl = new URL(`http://scotty.internal${PI_CONSOLE_PROXY_PREFIX}/${action}`);
+  targetUrl.search = incomingUrl.search;
+  const headers = new Headers();
+  for (const name of ["accept", "content-type", "last-event-id"]) {
+    const value = c.req.header(name);
+    if (value) headers.set(name, value);
+  }
+  let body: string | undefined;
+  if (c.req.method === "POST") {
+    const text = await readBoundedUtf8Body(c.req.raw, PI_CONSOLE_MAX_COMMAND_BYTES);
+    if (text === undefined) throw badRequest("Console command body is too large");
+    const json = decodeJsonValue(text);
+    if (Option.isNone(json)) throw badRequest("Console command body must be valid JSON");
+    const decoded = await decodePiConsoleCommandV1Promise(json.value).then(
+      (value) => Result.succeed(value),
+      () => Result.fail(undefined),
+    );
+    if (Result.isFailure(decoded)) throw badRequest("Invalid console command");
+    body = JSON.stringify(decoded.success);
+  }
+  return sessionSandbox(c.env, id).fetch(
+    new Request(targetUrl, {
+      method: c.req.method,
+      headers,
+      body,
+    }),
+  );
+});
+
 app.all("/s/:id", async (c) => {
   const id = parseSessionId(c.req.param("id"));
   rejectRootQuery(c.req.raw);
@@ -825,6 +880,35 @@ function unwrapRunnerRegistryRpc<A>(result: RunnerRegistryRpcResult<A>): A {
     httpStatus: 500,
     exitCode: 1,
   });
+}
+
+async function readBoundedUtf8Body(
+  request: Request,
+  maxBytes: number,
+): Promise<string | undefined> {
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return undefined;
+  if (request.body === null) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    length += next.value.byteLength;
+    if (length > maxBytes) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(next.value);
+  }
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
 }
 
 async function readJsonBody(request: Request): Promise<unknown> {

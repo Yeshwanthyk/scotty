@@ -2078,6 +2078,92 @@ describe("real Hono boundary", () => {
     expect(sandbox.fetch).toHaveBeenCalledOnce();
   });
 
+  it("routes the versioned console only through the passive sandbox boundary", async () => {
+    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/_scotty/pi-console/v1/snapshot");
+      expect(request.headers.get("cookie")).toBeNull();
+      expect(request.headers.get("authorization")).toBeNull();
+      return Response.json(
+        {
+          version: 1,
+          status: "unavailable",
+          reason: "provider_passive_relay_unavailable",
+          retryable: false,
+        },
+        { status: 503 },
+      );
+    });
+
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/console/v1/snapshot",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(503);
+    expect(sandbox.fetch).toHaveBeenCalledOnce();
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("decodes revision-bound console mutations before the sandbox", async () => {
+    const command = {
+      version: 1,
+      epoch: "epoch-1",
+      commandId: "123e4567-e89b-42d3-a456-426614174000",
+      expectedSessionRevision: 7,
+      intent: { type: "abort" },
+    };
+    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/_scotty/pi-console/v1/command");
+      expect(await request.json()).toEqual(command);
+      return Response.json({ status: "accepted" }, { status: 202 });
+    });
+
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/console/v1/command",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(command),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(202);
+    expect(sandbox.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("rejects console mutations without a selected-session revision", async () => {
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/console/v1/command",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          version: 1,
+          epoch: "epoch-1",
+          commandId: "123e4567-e89b-42d3-a456-426614174000",
+          intent: { type: "abort" },
+        }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(400);
+    expect(sandbox.fetch).not.toHaveBeenCalled();
+  });
+
   it("proxies worklog commands with same-origin mutation protection", async () => {
     sandbox.fetch.mockImplementationOnce(async (request: Request) => {
       expect(new URL(request.url).pathname).toBe("/_scotty/pi-session/command");

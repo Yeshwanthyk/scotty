@@ -10,7 +10,7 @@ import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
-import { Sandbox, type SandboxEffectOptions } from "../src/session";
+import { Sandbox, type PassivePiConsoleRelay, type SandboxEffectOptions } from "../src/session";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
@@ -78,6 +78,10 @@ export interface HarnessOptions {
     : never;
   readonly runnerFetch?: (request: Request) => Promise<Response>;
   readonly initialProjections?: Readonly<Record<string, unknown>>;
+  readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
+  readonly rawPiContainerRunning?: boolean;
+  readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
+  readonly rawPiGetTcpPortError?: unknown;
   readonly onStorageGet?: (
     key: string,
     count: number,
@@ -104,6 +108,7 @@ export interface SessionHarness {
   readonly runnerOperations: ReadonlyArray<RunnerOperation>;
   readonly runnerRequests: ReadonlyArray<Request>;
   readonly piRequests: ReadonlyArray<Request>;
+  readonly rawPiRequests: ReadonlyArray<Request>;
   readonly writtenFiles: ReadonlyArray<{
     readonly path: string;
     readonly content: string;
@@ -321,9 +326,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const runnerOperations: RunnerOperation[] = [];
   const runnerRequests: Request[] = [];
   const piRequests: Request[] = [];
+  const rawPiRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
   let piSessionRunning = false;
+  let rawPiContainerRunning = false;
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
   const storage = new HarnessStorage(
@@ -343,8 +350,22 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     } as never,
     storage: storage as never,
     container: {
-      running: false,
+      get running() {
+        return rawPiContainerRunning;
+      },
       monitor: () => Promise.resolve(),
+      getTcpPort: (port: number) => {
+        if (options.rawPiGetTcpPortError !== undefined) throw options.rawPiGetTcpPortError;
+        return {
+          fetch: async (request: Request) => {
+            const copy = request.clone();
+            rawPiRequests.push(copy);
+            events.push(`host:pi:raw-fetch:${port}:${new URL(request.url).pathname}`);
+            if (options.rawPiFetch !== undefined) return options.rawPiFetch(request, port);
+            throw injectedHarnessFailure("Pi supervisor is not listening");
+          },
+        };
+      },
     } as never,
     blockConcurrencyWhile: <A>(operation: () => Promise<A>): Promise<A> => {
       const work = operation();
@@ -550,8 +571,12 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     GH_TOKEN: "seed-github-token",
   };
 
-  const sandbox = new Sandbox(ctx, env, { clock: options.clock });
+  const sandbox = new Sandbox(ctx, env, {
+    clock: options.clock,
+    passivePiConsoleRelay: options.passivePiConsoleRelay,
+  });
   await Promise.all(constructorWork);
+  rawPiContainerRunning = options.rawPiContainerRunning ?? false;
 
   const successfulExec = (command: string, stdout = ""): ExecResult => ({
     success: true,
@@ -563,6 +588,27 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     timestamp: "2026-01-01T00:00:00.000Z",
   });
   Object.defineProperties(sandbox, {
+    start: {
+      value: async (): Promise<void> => {
+        events.push("host:container:start");
+      },
+    },
+    startAndWaitForPorts: {
+      value: async (): Promise<void> => {
+        events.push("host:container:startAndWaitForPorts");
+      },
+    },
+    waitForPort: {
+      value: async (): Promise<number> => {
+        events.push("host:container:waitForPort");
+        return 0;
+      },
+    },
+    renewActivityTimeout: {
+      value: (): void => {
+        events.push("host:container:renewActivityTimeout");
+      },
+    },
     exec: {
       value: async (command: string, _execOptions?: ExecOptions): Promise<ExecResult> => {
         commands.push(command);
@@ -738,6 +784,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     runnerOperations,
     runnerRequests,
     piRequests,
+    rawPiRequests,
     writtenFiles,
     r2DeletedKeys,
     memory: storage.memory,

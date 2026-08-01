@@ -20,11 +20,45 @@ import {
 import { hardCapObservationIsCurrent } from "./session-lifecycle";
 
 const RECORD_KEY = "scotty:session";
+export const SESSION_CONTROL_REVISION_KEY = "scotty:session-control-revision";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
 const INVALID_RECORD = new ScottyError("internal", "Authoritative session record is invalid", {
   httpStatus: 500,
   exitCode: 1,
 });
+
+class SessionControlRevisionFailure extends Data.TaggedError("SessionControlRevisionFailure")<{
+  readonly reason: "invalid" | "exhausted";
+}> {}
+
+export interface SessionControlAuthority {
+  readonly record: SessionRecord;
+  readonly revision: number;
+}
+
+export interface SessionControlGate {
+  readonly run: <A>(operation: () => Promise<A>) => Promise<A>;
+}
+
+export const makeSessionControlGate = (): SessionControlGate => {
+  let tail: Promise<void> = Promise.resolve();
+  return {
+    run: async <A>(operation: () => Promise<A>): Promise<A> => {
+      const preceding = tail;
+      let release = (): void => undefined;
+      tail = new Promise((resolve) => {
+        release = resolve;
+      });
+      await preceding;
+      // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: the Promise mutex must release on both fulfillment and rejection
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    },
+  };
+};
 
 export interface SessionRecordTransaction {
   readonly get: () => Promise<unknown | undefined>;
@@ -49,6 +83,9 @@ export interface SessionRecordStorage {
   readonly initialSessionTransaction?: <A>(
     operation: (transaction: InitialSessionTransaction) => Promise<A>,
   ) => Promise<A>;
+  readonly readControlAuthority?: () => Promise<
+    Result.Result<SessionControlAuthority | undefined, ScottyError>
+  >;
   readonly getInitialRecord?: () => Promise<unknown | undefined>;
   readonly getCreateIdempotency?: () => Promise<unknown | undefined>;
 }
@@ -63,6 +100,7 @@ export class InitialSessionStorageFailure extends Data.TaggedError("InitialSessi
 interface SessionStoreShape {
   readonly read: Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly requireRecord: Effect.Effect<SessionRecord, ScottyError>;
+  readonly readControlAuthority: Effect.Effect<SessionControlAuthority, ScottyError>;
   readonly put: (record: SessionRecord) => Effect.Effect<void, ScottyError>;
   readonly clearCreateIdempotency: Effect.Effect<void, ScottyError>;
   readonly inspectInitial: (
@@ -110,31 +148,90 @@ export class SessionStore extends Context.Service<SessionStore, SessionStoreShap
   "scotty/SessionStore",
 ) {}
 
+const decodeControlRevision = (
+  revision: unknown,
+): Result.Result<number, SessionControlRevisionFailure> => {
+  if (revision === undefined) return Result.succeed(0);
+  if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0)
+    return Result.fail(new SessionControlRevisionFailure({ reason: "invalid" }));
+  return Result.succeed(revision);
+};
+
+const readControlRevision = async (transaction: DurableObjectTransaction): Promise<number> => {
+  const decoded = decodeControlRevision(
+    await transaction.get<unknown>(SESSION_CONTROL_REVISION_KEY),
+  );
+  if (Result.isFailure(decoded)) {
+    // oxlint-disable-next-line scotty/no-promise-reject -- boundary: the native Durable Object transaction must abort without committing a malformed authority revision
+    return Promise.reject(decoded.failure);
+  }
+  return decoded.success;
+};
+
+const readDurableObjectSessionControlAuthority = (
+  storage: DurableObjectStorage,
+): Promise<Result.Result<SessionControlAuthority | undefined, ScottyError>> =>
+  storage.transaction(async (transaction) => {
+    const [stored, storedRevision] = await Promise.all([
+      transaction.get<unknown>(RECORD_KEY),
+      transaction.get<unknown>(SESSION_CONTROL_REVISION_KEY),
+    ]);
+    if (stored === undefined) return Result.succeed(undefined);
+    const decoded = decodeSessionRecordResult(stored);
+    const revision = decodeControlRevision(storedRevision);
+    if (Result.isFailure(decoded) || Result.isFailure(revision)) return Result.fail(INVALID_RECORD);
+    return Result.succeed({ record: decoded.success, revision: revision.success });
+  });
+
+const writeRecordWithNextControlRevision = async (
+  transaction: DurableObjectTransaction,
+  record: SessionRecord,
+): Promise<void> => {
+  const revision = await readControlRevision(transaction);
+  if (revision === Number.MAX_SAFE_INTEGER) {
+    // oxlint-disable-next-line scotty/no-promise-reject -- boundary: the native Durable Object transaction must abort rather than wrap an exhausted revision
+    return Promise.reject(new SessionControlRevisionFailure({ reason: "exhausted" }));
+  }
+  await Promise.all([
+    transaction.put(RECORD_KEY, record),
+    transaction.put(SESSION_CONTROL_REVISION_KEY, revision + 1),
+  ]);
+};
+
 export const durableObjectSessionRecordStorage = (
   storage: DurableObjectStorage,
+  controlGate: SessionControlGate = makeSessionControlGate(),
 ): SessionRecordStorage => ({
   get: () => storage.get(RECORD_KEY),
-  put: (record) => storage.put(RECORD_KEY, record),
+  put: (record) =>
+    controlGate.run(() =>
+      storage.transaction((transaction) => writeRecordWithNextControlRevision(transaction, record)),
+    ),
   deleteCreateIdempotency: () => storage.delete(CREATE_IDEMPOTENCY_KEY).then(() => undefined),
   transaction: (operation) =>
-    storage.transaction((transaction) =>
-      operation({
-        get: () => transaction.get(RECORD_KEY),
-        put: (record) => transaction.put(RECORD_KEY, record),
-      }),
+    controlGate.run(() =>
+      storage.transaction((transaction) =>
+        operation({
+          get: () => transaction.get(RECORD_KEY),
+          put: (record) => writeRecordWithNextControlRevision(transaction, record),
+        }),
+      ),
     ),
+  readControlAuthority: () => readDurableObjectSessionControlAuthority(storage),
   getInitialRecord: () => storage.get(RECORD_KEY),
   getCreateIdempotency: () => storage.get(CREATE_IDEMPOTENCY_KEY),
   initialSessionTransaction: (operation) =>
-    storage.transaction((transaction) =>
-      operation({
-        getRecord: () => transaction.get(RECORD_KEY),
-        getCreateIdempotency: () => transaction.get(CREATE_IDEMPOTENCY_KEY),
-        putRecord: (record) => transaction.put(RECORD_KEY, record),
-        putCreateIdempotency: (metadata) => transaction.put(CREATE_IDEMPOTENCY_KEY, metadata),
-        deleteCreateIdempotency: () =>
-          transaction.delete(CREATE_IDEMPOTENCY_KEY).then(() => undefined),
-      }),
+    controlGate.run(() =>
+      storage.transaction((transaction) =>
+        operation({
+          getRecord: () => transaction.get(RECORD_KEY),
+          getCreateIdempotency: () => transaction.get(CREATE_IDEMPOTENCY_KEY),
+          putRecord: (record) => writeRecordWithNextControlRevision(transaction, record),
+          putCreateIdempotency: (metadata) => transaction.put(CREATE_IDEMPOTENCY_KEY, metadata),
+          deleteCreateIdempotency: () =>
+            transaction.delete(CREATE_IDEMPOTENCY_KEY).then(() => undefined),
+        }),
+      ),
     ),
 });
 
@@ -243,6 +340,20 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
   return SessionStore.of({
     read: read(),
     requireRecord: requireRecord(),
+    readControlAuthority:
+      storage.readControlAuthority === undefined
+        ? Effect.fail(storageFailure())
+        : Effect.tryPromise({
+            try: storage.readControlAuthority,
+            catch: storageFailure,
+          }).pipe(
+            Effect.flatMap(Effect.fromResult),
+            Effect.flatMap((authority) =>
+              authority === undefined
+                ? Effect.fail(notFound("unknown"))
+                : Effect.succeed(authority),
+            ),
+          ),
     put,
     clearCreateIdempotency:
       storage.deleteCreateIdempotency === undefined
