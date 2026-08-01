@@ -317,7 +317,7 @@ export class HttpConsoleTransport implements ConsoleTransport {
         }
       }
     } finally {
-      void reader.cancel();
+      await reader.cancel().catch(() => undefined);
     }
   };
 }

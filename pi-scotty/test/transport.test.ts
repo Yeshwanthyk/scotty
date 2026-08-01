@@ -63,6 +63,37 @@ describe("HttpConsoleTransport", () => {
     expect(received).toEqual([event(1)]);
   });
 
+  it("contains a rejected stream cancellation during local session switching", async () => {
+    let cancelled = false;
+    const transport = new HttpConsoleTransport(
+      { version: 1, origin: "https://scotty.example", credential: CREDENTIAL },
+      {
+        fetch: async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode(`data: ${JSON.stringify(event(1))}\n\n`),
+                );
+              },
+              cancel() {
+                cancelled = true;
+                return Promise.reject(new DOMException("already aborted", "AbortError"));
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      },
+    );
+    const iterator = transport
+      .streamEvents(SESSION_A, "epoch-1", 0, new AbortController().signal)
+      [Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: event(1) });
+    await expect(iterator.return?.()).resolves.toMatchObject({ done: true });
+    expect(cancelled).toBe(true);
+  });
+
   it("decodes typed production passive-relay unavailability", async () => {
     const transport = new HttpConsoleTransport(
       { version: 1, origin: "https://scotty.example", credential: CREDENTIAL },
