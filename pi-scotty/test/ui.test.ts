@@ -6,7 +6,7 @@ import { FleetConsoleController } from "../src/controller.ts";
 import { FleetConsoleState, SETTLED_TURNS_FOLD_ID } from "../src/state.ts";
 import type { CommandResult, ConsoleTransport } from "../src/transport.ts";
 import { FleetConsoleComponent, composerKeyRoute, safeTerminalTitle } from "../src/ui.ts";
-import { SESSION_A, session, snapshot } from "./fixtures.ts";
+import { SESSION_A, event, session, snapshot } from "./fixtures.ts";
 
 class FakeTerminal implements Terminal {
   columns = 120;
@@ -34,6 +34,8 @@ class FakeTerminal implements Terminal {
 
 class UiTransport implements ConsoleTransport {
   readonly commands: PiConsoleCommandV1[] = [];
+  commandGate: Promise<void> | undefined;
+  commandMode: "accepted" | "error" = "accepted";
 
   readonly listFleet = async () => [session(SESSION_A)];
   readonly getSelected = async () => session(SESSION_A);
@@ -54,6 +56,14 @@ class UiTransport implements ConsoleTransport {
     command: PiConsoleCommandV1,
   ): Promise<CommandResult> => {
     this.commands.push(command);
+    await this.commandGate;
+    if (this.commandMode === "error")
+      return {
+        version: 1,
+        status: "error",
+        code: "invalid_command",
+        retryable: false,
+      };
     const delivered = command.intent.type === "extension_ui_response";
     return {
       version: 1,
@@ -77,17 +87,26 @@ const componentFixture = (selected = false) => {
     state.setMetadata(SESSION_A, session(SESSION_A));
     state.setSnapshot(SESSION_A, snapshot());
   }
+  let component: FleetConsoleComponent | undefined;
   const controller = new FleetConsoleController(
     transport,
     state,
-    undefined,
+    () => component?.render(120),
     () => "123e4567-e89b-42d3-a456-426614174000",
   );
   let exits = 0;
-  const component = new FleetConsoleComponent(tui, controller, () => {
+  component = new FleetConsoleComponent(tui, controller, () => {
     exits += 1;
   });
   return { component, controller, state, terminal, transport, exits: () => exits };
+};
+
+const waitFor = async (predicate: () => boolean): Promise<void> => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("condition not reached");
 };
 
 describe("composer key routing", () => {
@@ -111,6 +130,132 @@ describe("composer key routing", () => {
     selected.component.handleInput("\u0003");
     expect(selected.state.cache(SESSION_A).draft).toBe("keep me");
     expect(selected.transport.commands).toEqual([]);
+  });
+
+  it("submits the SDK editor value after the editor clears its internal state", async () => {
+    const fixture = componentFixture(true);
+    fixture.state.setDraft(SESSION_A, "hello from editor");
+    fixture.component.render(120);
+
+    fixture.component.handleInput("\r");
+    await waitFor(() => fixture.state.cache(SESSION_A).commandStatus === "Command accepted");
+
+    expect(fixture.transport.commands[0]?.intent).toEqual({
+      type: "prompt",
+      message: "hello from editor",
+    });
+    expect(fixture.state.cache(SESSION_A).draft).toBe("");
+  });
+
+  it("does not clear a new draft when a delayed submission is accepted", async () => {
+    const fixture = componentFixture(true);
+    let releaseCommand: (() => void) | undefined;
+    fixture.transport.commandGate = new Promise<void>((resolve) => {
+      releaseCommand = resolve;
+    });
+    fixture.state.setDraft(SESSION_A, "slow submission");
+    fixture.component.render(120);
+
+    fixture.component.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fixture.state.cache(SESSION_A).draft).toBe("");
+    expect(fixture.component.render(120).join("\n")).not.toContain("slow submission");
+    fixture.component.handleInput("x");
+    expect(fixture.state.cache(SESSION_A).draft).toBe("x");
+
+    releaseCommand?.();
+    await waitFor(() => fixture.state.cache(SESSION_A).commandStatus === "Command accepted");
+    expect(fixture.state.cache(SESSION_A).draft).toBe("x");
+  });
+
+  it("restores an unchanged submitted draft after a delayed deterministic rejection", async () => {
+    const fixture = componentFixture(true);
+    let releaseCommand: (() => void) | undefined;
+    fixture.transport.commandMode = "error";
+    fixture.transport.commandGate = new Promise<void>((resolve) => {
+      releaseCommand = resolve;
+    });
+    fixture.state.setDraft(SESSION_A, "retry this submission");
+    fixture.component.render(120);
+
+    fixture.component.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fixture.state.cache(SESSION_A).draft).toBe("");
+
+    releaseCommand?.();
+    await waitFor(() => fixture.state.cache(SESSION_A).draft === "retry this submission");
+    expect(fixture.component.render(120).join("\n")).toContain("retry this submission");
+  });
+
+  it("preserves a remote editor replacement while a submission is pending", async () => {
+    const fixture = componentFixture(true);
+    let releaseCommand: (() => void) | undefined;
+    fixture.transport.commandGate = new Promise<void>((resolve) => {
+      releaseCommand = resolve;
+    });
+    fixture.state.setDraft(SESSION_A, "submitted text");
+    fixture.component.render(120);
+
+    fixture.component.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.state.applyEvent(
+      SESSION_A,
+      event(1, {
+        type: "extension_ui_request",
+        id: "editor-replacement",
+        method: "set_editor_text",
+        text: "remote replacement",
+      }),
+    );
+
+    releaseCommand?.();
+    await waitFor(() => fixture.state.cache(SESSION_A).commandStatus === "Command accepted");
+    expect(fixture.state.cache(SESSION_A).draft).toBe("remote replacement");
+  });
+
+  it("clears a delayed follow-up from the visible editor immediately", async () => {
+    const fixture = componentFixture(true);
+    let releaseCommand: (() => void) | undefined;
+    fixture.transport.commandGate = new Promise<void>((resolve) => {
+      releaseCommand = resolve;
+    });
+    fixture.state.setDraft(SESSION_A, "queued follow-up");
+    fixture.component.render(120);
+
+    fixture.component.handleInput("\u001b\r");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fixture.transport.commands[0]?.intent).toEqual({
+      type: "follow_up",
+      message: "queued follow-up",
+    });
+    expect(fixture.state.cache(SESSION_A).draft).toBe("");
+    expect(fixture.component.render(120).join("\n")).not.toContain("queued follow-up");
+    releaseCommand?.();
+    await waitFor(() => fixture.state.cache(SESSION_A).commandStatus === "Command accepted");
+  });
+
+  it("submits blocking input from the SDK editor callback value", async () => {
+    const fixture = componentFixture(true);
+    const cache = fixture.state.cache(SESSION_A);
+    const live = cache.live;
+    if (live === undefined) throw new Error("missing live fixture");
+    cache.live = {
+      ...live,
+      pendingUi: [{ id: "dialog-submit", method: "input", title: "Name" }],
+    };
+    cache.dialogDrafts.set("dialog-submit", "remote answer");
+    fixture.component.render(120);
+
+    fixture.component.handleInput("\r");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fixture.transport.commands[0]?.intent).toEqual({
+      type: "extension_ui_response",
+      id: "dialog-submit",
+      value: "remote answer",
+    });
   });
 
   it("uses Ctrl+G for standard dialog cancellation without stealing Esc-to-fleet", async () => {
@@ -162,7 +307,9 @@ describe("composer key routing", () => {
     expect(rendered).toContain("Ctrl+G");
     fixture.component.handleInput("j");
     fixture.component.handleInput("\r");
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(
+      () => fixture.state.cache(SESSION_A).uiAnswers.get("epoch-1\0select-1") !== "in_flight",
+    );
     expect(fixture.transport.commands[0]?.intent).toEqual({
       type: "extension_ui_response",
       id: "select-1",
