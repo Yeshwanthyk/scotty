@@ -1,5 +1,6 @@
 import type { OutboundHandlerContext } from "@cloudflare/containers";
 import { supportedPiProvider, type PiCredential } from "../../protocol/pi-auth";
+import { GITHUB_SENTINEL_PREFIX, PI_SENTINEL_PREFIX } from "../../protocol/pi-console-shared.mjs";
 import { Context, Data, Effect, Layer, Option, Result } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import type { Bindings } from "./bindings";
@@ -20,8 +21,7 @@ import {
   type StoredProviderCredential,
 } from "./contracts";
 
-export const PI_SENTINEL_PREFIX = "scotty-pi-";
-export const GITHUB_SENTINEL_PREFIX = "scotty-github-";
+export { GITHUB_SENTINEL_PREFIX, PI_SENTINEL_PREFIX };
 
 export const ALLOWED_HOSTS = [
   "api.openai.com",

@@ -1,0 +1,300 @@
+import { Option, Schema } from "effect";
+import {
+  PiConsoleCommandErrorV1Schema,
+  PiConsoleCommandReceiptV1Schema,
+  PiConsoleEventEnvelopeV1Schema,
+  PiConsoleSnapshotV1Schema,
+  PiConsoleStaleCommandV1Schema,
+  PiConsoleUnavailableV1Schema,
+  type PiConsoleCommandErrorV1,
+  type PiConsoleCommandReceiptV1,
+  type PiConsoleEventEnvelopeV1,
+  type PiConsoleSnapshotV1,
+  type PiConsoleStaleCommandV1,
+  type PiConsoleUnavailableV1,
+} from "../../protocol/pi-console.ts";
+
+const encoder = new TextEncoder();
+const boundedString = (maxBytes: number) =>
+  Schema.String.check(
+    Schema.makeFilter((value) => encoder.encode(value).byteLength <= maxBytes, {
+      expected: `a string of at most ${maxBytes} UTF-8 bytes`,
+    }),
+  );
+const ShortStringSchema = boundedString(4 * 1024);
+const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/u));
+const ClientCredentialSchema = Schema.String.check(
+  Schema.isPattern(/^scotty_client\.[0-9a-f]{12}\.[A-Za-z0-9_-]{32,128}$/u),
+);
+const PairingCredentialSchema = Schema.String.check(
+  Schema.isPattern(/^scotty_pair\.[0-9a-f]{12}\.[A-Za-z0-9_-]{32,128}$/u),
+);
+
+export const PiScottyConfigSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  origin: ShortStringSchema,
+  credential: ClientCredentialSchema,
+});
+export type PiScottyConfig = typeof PiScottyConfigSchema.Type;
+
+const SessionStatusSchema = Schema.Literals(["booting", "warm", "sleeping", "failed", "gone"]);
+const ProviderSchema = Schema.Literals(["cloudflare", "runner"]);
+const ActivitySchema = Schema.Literals(["working", "waiting", "completed", "tool-stalled"]);
+const FailureSchema = Schema.Struct({
+  code: ShortStringSchema,
+  message: ShortStringSchema,
+  recoverable: Schema.Boolean,
+});
+
+export const FleetSessionSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  id: SessionIdSchema,
+  title: ShortStringSchema,
+  status: SessionStatusSchema,
+  provider: ProviderSchema,
+  runner: Schema.optionalKey(ShortStringSchema),
+  repo: ShortStringSchema,
+  defaultBranch: ShortStringSchema,
+  branch: ShortStringSchema,
+  backupId: Schema.optionalKey(ShortStringSchema),
+  codexThreadId: Schema.optionalKey(ShortStringSchema),
+  agentState: Schema.optionalKey(ActivitySchema),
+  lastAgentEventAt: Schema.optionalKey(ShortStringSchema),
+  createdAt: ShortStringSchema,
+  updatedAt: ShortStringSchema,
+  hardCapAt: ShortStringSchema,
+  projectedAt: ShortStringSchema,
+  failure: Schema.optionalKey(FailureSchema),
+  ageSeconds: Schema.optionalKey(Schema.Finite),
+  capRemainingSeconds: Schema.optionalKey(Schema.Finite),
+});
+export type FleetSession = typeof FleetSessionSchema.Type;
+
+export const FleetResponseSchema = Schema.Array(FleetSessionSchema).check(Schema.isMaxLength(500));
+export const SelectedSessionSchema = FleetSessionSchema;
+export type SelectedSession = typeof SelectedSessionSchema.Type;
+
+export const PairingResponseSchema = Schema.Struct({
+  client: Schema.Struct({ id: ShortStringSchema }),
+});
+
+export const ToolEventSchema = Schema.Struct({
+  type: Schema.Literals(["tool_execution_start", "tool_execution_update", "tool_execution_end"]),
+  toolCallId: Schema.optionalKey(ShortStringSchema),
+  tool_call_id: Schema.optionalKey(ShortStringSchema),
+  id: Schema.optionalKey(ShortStringSchema),
+  toolName: Schema.optionalKey(ShortStringSchema),
+  name: Schema.optionalKey(ShortStringSchema),
+  args: Schema.optionalKey(Schema.Json),
+  arguments: Schema.optionalKey(Schema.Json),
+  partialResult: Schema.optionalKey(Schema.Json),
+  output: Schema.optionalKey(Schema.Json),
+});
+export type ToolEvent = typeof ToolEventSchema.Type;
+
+export const MessageEventSchema = Schema.Struct({
+  type: Schema.Literals(["message_start", "message_update", "message_end"]),
+  message: Schema.optionalKey(Schema.Json),
+});
+export type MessageEvent = typeof MessageEventSchema.Type;
+
+const MessageIdentitySchema = Schema.Struct({
+  id: Schema.optionalKey(ShortStringSchema),
+  messageId: Schema.optionalKey(ShortStringSchema),
+  message_id: Schema.optionalKey(ShortStringSchema),
+  role: Schema.optionalKey(ShortStringSchema),
+  timestamp: Schema.optionalKey(Schema.Union([ShortStringSchema, Schema.Finite])),
+});
+
+const QueueEventSchema = Schema.Struct({
+  type: Schema.Literal("queue_update"),
+  steering: Schema.optionalKey(Schema.Array(Schema.Json)),
+  steer: Schema.optionalKey(Schema.Array(Schema.Json)),
+  followUp: Schema.optionalKey(Schema.Array(Schema.Json)),
+  follow_up: Schema.optionalKey(Schema.Array(Schema.Json)),
+});
+
+const PendingUiResolutionEventSchema = Schema.Struct({
+  type: Schema.Literals([
+    "extension_ui_response",
+    "extension_ui_cancelled",
+    "extension_ui_closed",
+    "scotty_extension_ui_expired",
+  ]),
+  id: ShortStringSchema,
+});
+
+export const EventTypeSchema = Schema.Struct({ type: ShortStringSchema });
+
+const ExtensionUiEventSchema = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("select"),
+    title: ShortStringSchema,
+    options: Schema.Array(ShortStringSchema).check(Schema.isMaxLength(100)),
+    timeout: Schema.optionalKey(Schema.Finite),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("confirm"),
+    title: ShortStringSchema,
+    message: ShortStringSchema,
+    timeout: Schema.optionalKey(Schema.Finite),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("input"),
+    title: ShortStringSchema,
+    placeholder: Schema.optionalKey(ShortStringSchema),
+    timeout: Schema.optionalKey(Schema.Finite),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("editor"),
+    title: ShortStringSchema,
+    prefill: Schema.optionalKey(ShortStringSchema),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("notify"),
+    message: ShortStringSchema,
+    notifyType: Schema.optionalKey(Schema.Literals(["info", "warning", "error"])),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("setStatus"),
+    statusKey: ShortStringSchema,
+    statusText: Schema.optionalKey(Schema.NullOr(ShortStringSchema)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("setWidget"),
+    widgetKey: ShortStringSchema,
+    widgetLines: Schema.optionalKey(
+      Schema.NullOr(Schema.Array(ShortStringSchema).check(Schema.isMaxLength(20))),
+    ),
+    widgetPlacement: Schema.optionalKey(Schema.Literals(["aboveEditor", "belowEditor"])),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("setTitle"),
+    title: ShortStringSchema,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: ShortStringSchema,
+    method: Schema.Literal("set_editor_text"),
+    text: ShortStringSchema,
+  }),
+]);
+export type ExtensionUiEvent = typeof ExtensionUiEventSchema.Type;
+
+const StreamingStateSchema = Schema.Struct({
+  isStreaming: Schema.optionalKey(Schema.Boolean),
+  active: Schema.optionalKey(Schema.Boolean),
+  isActive: Schema.optionalKey(Schema.Boolean),
+});
+
+const decodeConfigJsonOption = Schema.decodeUnknownOption(
+  Schema.fromJsonString(PiScottyConfigSchema),
+  { onExcessProperty: "error" },
+);
+const decodeFleetOption = Schema.decodeUnknownOption(FleetResponseSchema, {
+  onExcessProperty: "error",
+});
+const decodeSelectedOption = Schema.decodeUnknownOption(SelectedSessionSchema, {
+  onExcessProperty: "error",
+});
+const decodePairingOption = Schema.decodeUnknownOption(PairingResponseSchema);
+const decodeSnapshotOption = Schema.decodeUnknownOption(PiConsoleSnapshotV1Schema, {
+  onExcessProperty: "error",
+});
+const decodeUnavailableOption = Schema.decodeUnknownOption(PiConsoleUnavailableV1Schema, {
+  onExcessProperty: "error",
+});
+const decodeReceiptOption = Schema.decodeUnknownOption(PiConsoleCommandReceiptV1Schema, {
+  onExcessProperty: "error",
+});
+const decodeCommandErrorOption = Schema.decodeUnknownOption(PiConsoleCommandErrorV1Schema, {
+  onExcessProperty: "error",
+});
+const decodeStaleCommandOption = Schema.decodeUnknownOption(PiConsoleStaleCommandV1Schema, {
+  onExcessProperty: "error",
+});
+const decodeEnvelopeOption = Schema.decodeUnknownOption(PiConsoleEventEnvelopeV1Schema, {
+  onExcessProperty: "error",
+});
+const decodeJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+const decodeToolEventOption = Schema.decodeUnknownOption(ToolEventSchema);
+const decodeMessageEventOption = Schema.decodeUnknownOption(MessageEventSchema);
+const decodeMessageIdentityOption = Schema.decodeUnknownOption(MessageIdentitySchema);
+const decodeQueueEventOption = Schema.decodeUnknownOption(QueueEventSchema);
+const decodePendingUiResolutionEventOption = Schema.decodeUnknownOption(
+  PendingUiResolutionEventSchema,
+);
+const decodeEventTypeOption = Schema.decodeUnknownOption(EventTypeSchema);
+const decodeExtensionUiEventOption = Schema.decodeUnknownOption(ExtensionUiEventSchema);
+const decodeStreamingStateOption = Schema.decodeUnknownOption(StreamingStateSchema);
+
+export const decodeConfigJson = (value: unknown): PiScottyConfig | undefined =>
+  Option.getOrUndefined(decodeConfigJsonOption(value));
+export const decodeFleet = (value: unknown): ReadonlyArray<FleetSession> | undefined =>
+  Option.getOrUndefined(decodeFleetOption(value));
+export const decodeSelected = (value: unknown): SelectedSession | undefined =>
+  Option.getOrUndefined(decodeSelectedOption(value));
+export const decodePairing = (
+  value: unknown,
+): { readonly client: { readonly id: string } } | undefined =>
+  Option.getOrUndefined(decodePairingOption(value));
+export const decodeSnapshot = (value: unknown): PiConsoleSnapshotV1 | undefined =>
+  Option.getOrUndefined(decodeSnapshotOption(value));
+export const decodeUnavailable = (value: unknown): PiConsoleUnavailableV1 | undefined =>
+  Option.getOrUndefined(decodeUnavailableOption(value));
+export const decodeReceipt = (value: unknown): PiConsoleCommandReceiptV1 | undefined =>
+  Option.getOrUndefined(decodeReceiptOption(value));
+export const decodeCommandError = (value: unknown): PiConsoleCommandErrorV1 | undefined =>
+  Option.getOrUndefined(decodeCommandErrorOption(value));
+export const decodeStaleCommand = (value: unknown): PiConsoleStaleCommandV1 | undefined =>
+  Option.getOrUndefined(decodeStaleCommandOption(value));
+export const decodeEnvelope = (value: unknown): PiConsoleEventEnvelopeV1 | undefined =>
+  Option.getOrUndefined(decodeEnvelopeOption(value));
+export const decodeJsonText = (value: string): unknown | undefined =>
+  Option.getOrUndefined(decodeJsonOption(value));
+const decodeClientCredentialOption = Schema.decodeUnknownOption(ClientCredentialSchema);
+const decodePairingCredentialOption = Schema.decodeUnknownOption(PairingCredentialSchema);
+export const decodeClientCredential = (value: unknown): string | undefined =>
+  Option.getOrUndefined(decodeClientCredentialOption(value));
+export const decodePairingCredential = (value: unknown): string | undefined =>
+  Option.getOrUndefined(decodePairingCredentialOption(value));
+export const decodeToolEvent = (value: unknown): ToolEvent | undefined =>
+  Option.getOrUndefined(decodeToolEventOption(value));
+export const decodeMessageEvent = (value: unknown): MessageEvent | undefined =>
+  Option.getOrUndefined(decodeMessageEventOption(value));
+export const decodeMessageIdentity = (
+  value: unknown,
+): typeof MessageIdentitySchema.Type | undefined =>
+  Option.getOrUndefined(decodeMessageIdentityOption(value));
+export const decodeQueueEvent = (value: unknown): typeof QueueEventSchema.Type | undefined =>
+  Option.getOrUndefined(decodeQueueEventOption(value));
+export const decodePendingUiResolutionEvent = (
+  value: unknown,
+): typeof PendingUiResolutionEventSchema.Type | undefined =>
+  Option.getOrUndefined(decodePendingUiResolutionEventOption(value));
+export const decodeEventType = (value: unknown): { readonly type: string } | undefined =>
+  Option.getOrUndefined(decodeEventTypeOption(value));
+export const decodeExtensionUiEvent = (value: unknown): ExtensionUiEvent | undefined =>
+  Option.getOrUndefined(decodeExtensionUiEventOption(value));
+export const decodeStreaming = (value: unknown): boolean => {
+  const state = Option.getOrUndefined(decodeStreamingStateOption(value));
+  return state?.isStreaming ?? state?.active ?? state?.isActive ?? false;
+};
+
+export type ConsoleSnapshotResult = PiConsoleSnapshotV1 | PiConsoleUnavailableV1;

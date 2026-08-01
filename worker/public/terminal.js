@@ -78,6 +78,7 @@ function blankProjection() {
     messageProjection: createMessageProjectionState(),
     tools: new Map(),
     pendingUi: new Map(),
+    deliveredUiResponses: new Set(),
     queue: { steer: [], followUp: [] },
     active: false,
     state: {},
@@ -310,20 +311,21 @@ function applyExtensionSurface(projection, request) {
         : key.includes("task")
           ? "tasks"
           : undefined;
-    if (group) {
-      projection.activity[group] = firstArray(request.widgetLines).map((line, index) => ({
-        id: `${request.widgetKey}:${index}`,
-        title: messageText(line),
-        status: "active",
-      }));
-    }
+    if (group)
+      projection.activity[group] = Array.isArray(request.widgetLines)
+        ? request.widgetLines.map((line, index) => ({
+            id: `${request.widgetKey}:${index}`,
+            title: messageText(line),
+            status: "active",
+          }))
+        : [];
   } else if (method === "setStatus") {
+    const statuses = { ...firstObject(projection.state.extensionStatus) };
+    if (typeof request.statusText === "string") statuses[request.statusKey] = request.statusText;
+    else delete statuses[request.statusKey];
     projection.state = {
       ...projection.state,
-      extensionStatus: {
-        ...firstObject(projection.state.extensionStatus),
-        [request.statusKey]: request.statusText,
-      },
+      extensionStatus: statuses,
     };
   } else if (method === "setTitle" && request.title) {
     projection.state = { ...projection.state, extensionTitle: request.title };
@@ -358,8 +360,19 @@ function applyEvent(projection, payload) {
   )
     return "snapshot";
   if (type === "agent_start" || type === "turn_start") projection.active = true;
-  if (type === "agent_end" || type === "agent_settled" || type === "turn_end") {
+  if (
+    type === "agent_end" ||
+    type === "agent_settled" ||
+    type === "turn_end" ||
+    type === "agent_abort" ||
+    type === "agent_aborted" ||
+    type === "turn_abort" ||
+    type === "turn_aborted" ||
+    type === "scotty_process_exit"
+  ) {
     projection.active = false;
+    projection.pendingUi.clear();
+    projection.deliveredUiResponses.clear();
   }
 
   if (type === "message_start" || type === "message_end") {
@@ -390,7 +403,10 @@ function applyEvent(projection, payload) {
     type === "extension_ui_closed"
   ) {
     const id = uiRequestId(firstObject(event.request, event));
-    if (id) projection.pendingUi.delete(id);
+    if (id) {
+      projection.pendingUi.delete(id);
+      projection.deliveredUiResponses.delete(id);
+    }
   } else if (type === "state" || type === "state_update") {
     projection.state = { ...projection.state, ...firstObject(event.state, event) };
   } else if (type === "scotty_process_exit") {
@@ -793,9 +809,14 @@ function renderAskCard(request) {
   card.dataset.requestId = request.id;
   const header = document.createElement("header");
   header.className = "ask-user-header";
+  const delivered = currentProjection.deliveredUiResponses.has(request.id);
   header.append(
     textElement("span", "", "PI NEEDS YOUR INPUT"),
-    textElement("span", "ask-state", "Pi paused"),
+    textElement(
+      "span",
+      "ask-state",
+      delivered ? "Awaiting Pi continuation · outcome unconfirmed" : "Pi paused",
+    ),
   );
   const body = document.createElement("div");
   body.className = "ask-user-body";
@@ -867,6 +888,8 @@ function renderAskCard(request) {
     body.append(cancel);
   }
   card.append(header, body);
+  if (delivered)
+    for (const control of card.querySelectorAll("button, input, textarea")) control.disabled = true;
   return card;
 }
 
@@ -1094,6 +1117,9 @@ async function loadSnapshot(sessionId, { prefetched = false } = {}) {
   const body = await fetchSnapshot(sessionId, controller.signal);
   const projection = projectionFromSnapshot(body);
   const entry = cacheEntry(sessionId);
+  if (entry.projection.epoch === projection.epoch)
+    for (const requestId of entry.projection.deliveredUiResponses)
+      if (projection.pendingUi.has(requestId)) projection.deliveredUiResponses.add(requestId);
   entry.projection = projection;
   if (sessionId !== currentSessionId) return projection;
   currentProjection = projection;
@@ -1270,28 +1296,30 @@ async function sendUiResponse(requestId, value, { cancelled = false } = {}) {
         ? { type: "extension_ui_response", id: requestId, confirmed: Boolean(value) }
         : { type: "extension_ui_response", id: requestId, value: String(value) };
     await sendCommand(command);
-    currentProjection.pendingUi.delete(requestId);
-    scheduleRender();
+    currentProjection.deliveredUiResponses.add(requestId);
+    disableAskCard(requestId, "Awaiting Pi continuation · outcome unconfirmed");
   } catch (error) {
     enableAskCard(requestId);
     showToast(error instanceof Error ? error.message : "Pi did not accept that response.");
   }
 }
 
-function disableAskCard(requestId) {
+function disableAskCard(requestId, message = "Sending…") {
   const card = [...document.querySelectorAll(".ask-user-card")].find(
     (candidate) => candidate.dataset.requestId === requestId,
   );
-  for (const control of card?.querySelectorAll("button, input") ?? []) control.disabled = true;
+  for (const control of card?.querySelectorAll("button, input, textarea") ?? [])
+    control.disabled = true;
   const state = card?.querySelector(".ask-state");
-  if (state) state.textContent = "Sending…";
+  if (state) state.textContent = message;
 }
 
 function enableAskCard(requestId) {
   const card = [...document.querySelectorAll(".ask-user-card")].find(
     (candidate) => candidate.dataset.requestId === requestId,
   );
-  for (const control of card?.querySelectorAll("button, input") ?? []) control.disabled = false;
+  for (const control of card?.querySelectorAll("button, input, textarea") ?? [])
+    control.disabled = false;
   const state = card?.querySelector(".ask-state");
   if (state) state.textContent = "Pi paused";
 }

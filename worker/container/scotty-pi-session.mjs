@@ -6,6 +6,23 @@ import { access, readFile, rename, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
+import {
+  PI_CONSOLE_MAX_EVENTS,
+  PI_CONSOLE_MAX_MESSAGES,
+  PI_CONSOLE_MAX_RESPONSE_BYTES,
+  PI_CONSOLE_PROTOCOL_VERSION,
+  commandIntentDigest,
+  completeSnapshotOverlap,
+  createPendingUiTracker,
+  createProjectionReducer,
+  filterRemoteCommands,
+  normalizeCommand,
+  normalizeExtensionUiEvent,
+  sanitizeRemoteEvent,
+  sanitizeRemoteString,
+  sanitizeRemoteValue,
+  shouldEmitSseHeartbeat,
+} from "./scotty-pi-protocol.mjs";
 
 const port = Number.parseInt(process.env.SCOTTY_PI_SESSION_PORT ?? "43117", 10);
 const workspace = process.env.SCOTTY_WORKSPACE ?? process.cwd();
@@ -13,20 +30,21 @@ const piHome = process.env.PI_CODING_AGENT_DIR;
 const piBinary = process.env.SCOTTY_PI_BINARY ?? "pi";
 const tokenFile = process.env.SCOTTY_PI_SESSION_TOKEN_FILE;
 const epoch = randomUUID();
-const maxEvents = 2_000;
+const maxEvents = PI_CONSOLE_MAX_EVENTS;
 const maxReceipts = 200;
 const maxBodyBytes = 64 * 1024;
 const requestTimeoutMs = 30_000;
 const blockingUiMethods = new Set(["select", "confirm", "input", "editor"]);
-const commandTypes = new Set([
-  "prompt",
-  "steer",
-  "follow_up",
-  "abort",
-  "extension_ui_response",
-  "set_model",
-  "set_thinking_level",
+const pendingUiSettlementEvents = new Set([
+  "agent_abort",
+  "agent_aborted",
+  "agent_end",
+  "agent_settled",
+  "turn_abort",
+  "turn_aborted",
+  "turn_end",
 ]);
+const snapshotAttempts = 3;
 
 if (!Number.isInteger(port) || port < 1024 || port > 65_535)
   throw new Error("SCOTTY_PI_SESSION_PORT must be a valid unprivileged port");
@@ -46,8 +64,18 @@ let stderrTail = "";
 const events = [];
 const subscribers = new Set();
 const pendingRequests = new Map();
-const pendingUi = new Map();
 const receipts = new Map();
+const inFlightCommands = new Map();
+const projectionReducer = createProjectionReducer();
+const pendingUi = createPendingUiTracker({
+  schedule: (callback, delay) => setTimeout(callback, delay),
+  cancel: (timer) => clearTimeout(timer),
+  onExpire: (id) => appendEvent({ type: "scotty_extension_ui_expired", id }),
+  onOverflow: (id) =>
+    child.stdin.write(
+      `${JSON.stringify({ type: "extension_ui_response", id, cancelled: true })}\n`,
+    ),
+});
 
 const initialPromptPath = resolve(piHome, "initial-prompt");
 const consumedPromptPath = resolve(piHome, "initial-prompt.consumed");
@@ -68,12 +96,17 @@ const child = spawn(piBinary, piArgs, {
 });
 
 const jsonResponse = (response, status, value) => {
+  let body = JSON.stringify(value);
+  if (Buffer.byteLength(body, "utf8") > PI_CONSOLE_MAX_RESPONSE_BYTES) {
+    status = 502;
+    body = JSON.stringify({ error: "response_too_large" });
+  }
   response.writeHead(status, {
     "cache-control": "no-store",
     "content-type": "application/json; charset=utf-8",
     "x-content-type-options": "nosniff",
   });
-  response.end(JSON.stringify(value));
+  response.end(body);
 };
 
 const writeSse = (response, envelope) => {
@@ -82,7 +115,7 @@ const writeSse = (response, envelope) => {
 };
 
 const appendEvent = (event) => {
-  const envelope = { epoch, sequence: ++sequence, event };
+  const envelope = { epoch, sequence: ++sequence, event: sanitizeRemoteEvent(event) };
   events.push(envelope);
   if (events.length > maxEvents) events.splice(0, events.length - maxEvents);
   for (const response of subscribers) writeSse(response, envelope);
@@ -134,18 +167,28 @@ const handlePiMessage = (message) => {
     pending.resolve(message);
     return;
   }
+  const normalizedMessage = normalizeExtensionUiEvent(message);
+  if (normalizedMessage === undefined) return;
+  projectionReducer.reduce(normalizedMessage);
   if (
-    message?.type === "extension_ui_request" &&
-    typeof message.id === "string" &&
-    blockingUiMethods.has(message.method)
+    normalizedMessage?.type === "extension_ui_request" &&
+    typeof normalizedMessage.id === "string" &&
+    blockingUiMethods.has(normalizedMessage.method)
   ) {
     if (quiescing)
       child.stdin.write(
-        `${JSON.stringify({ type: "extension_ui_response", id: message.id, cancelled: true })}\n`,
+        `${JSON.stringify({ type: "extension_ui_response", id: normalizedMessage.id, cancelled: true })}\n`,
       );
-    else pendingUi.set(message.id, message);
+    else pendingUi.track(normalizedMessage);
   }
-  appendEvent(message);
+  if (
+    normalizedMessage?.type === "extension_ui_response" ||
+    normalizedMessage?.type === "extension_ui_cancelled" ||
+    normalizedMessage?.type === "extension_ui_closed"
+  )
+    pendingUi.remove(normalizedMessage.id);
+  if (pendingUiSettlementEvents.has(normalizedMessage?.type)) pendingUi.clear();
+  appendEvent(normalizedMessage);
 };
 
 createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => {
@@ -165,6 +208,8 @@ child.stderr.on("data", (chunk) => {
 
 child.on("exit", (code, signal) => {
   ready = false;
+  pendingUi.clear();
+  projectionReducer.clearVolatile();
   appendEvent({ type: "scotty_process_exit", code, signal });
   for (const pending of pendingRequests.values())
     pending.reject(new Error("Pi RPC process exited"));
@@ -198,38 +243,89 @@ const hasTransportCapability = (request) => {
   );
 };
 
-const snapshot = async () => {
+const snapshotAttempt = async () => {
   const baseSequence = sequence;
-  const [stateResponse, messagesResponse, modelsResponse, thinkingLevelsResponse] =
-    await Promise.all([
-      sendRpc({ type: "get_state" }),
-      sendRpc({ type: "get_messages" }),
-      sendRpc({ type: "get_available_models" }).catch(() => undefined),
-      sendRpc({ type: "get_available_thinking_levels" }).catch(() => undefined),
-    ]);
+  const [
+    stateResponse,
+    messagesResponse,
+    modelsResponse,
+    thinkingLevelsResponse,
+    commandsResponse,
+  ] = await Promise.all([
+    sendRpc({ type: "get_state" }),
+    sendRpc({ type: "get_messages" }),
+    sendRpc({ type: "get_available_models" }).catch(() => undefined),
+    sendRpc({ type: "get_available_thinking_levels" }).catch(() => undefined),
+    sendRpc({ type: "get_commands" }).catch(() => undefined),
+  ]);
   if (stateResponse.success === false || messagesResponse.success === false)
     throw new Error("Pi RPC snapshot failed");
   const endSequence = sequence;
+  const overlapEvents = completeSnapshotOverlap(events, baseSequence, endSequence);
+  if (!overlapEvents) return undefined;
+  const rawMessages = messagesResponse.data?.messages ?? messagesResponse.messages ?? [];
+  const messages = Array.isArray(rawMessages) ? rawMessages.slice(-PI_CONSOLE_MAX_MESSAGES) : [];
+  const sanitizedState = sanitizeRemoteValue(
+    stateResponse.data ?? stateResponse.state ?? stateResponse,
+  );
+  const sanitizedMessages = sanitizeRemoteValue(messages);
+  const models =
+    modelsResponse?.success === false
+      ? []
+      : (modelsResponse?.data?.models ?? modelsResponse?.models ?? []);
+  const projection = projectionReducer.snapshot();
   return {
+    version: PI_CONSOLE_PROTOCOL_VERSION,
     epoch,
+    baseSequence,
     sequence: endSequence,
-    state: stateResponse.data ?? stateResponse.state ?? stateResponse,
-    messages: messagesResponse.data?.messages ?? messagesResponse.messages ?? [],
+    state: sanitizedState.value,
+    messages: sanitizedMessages.value,
+    overlapEvents,
+    // Compatibility alias for the existing browser reducer. New clients use overlapEvents.
+    events: overlapEvents,
+    activeTools: projection.activeTools,
+    queue: projection.queue,
+    pendingUi: pendingUi.values(),
+    pendingUiAuthority: {
+      status: "partial",
+      reason: "pi_0_83_signal_cancellation_unobservable",
+    },
+    extensionSurface: projection.extensionSurface,
     capabilities: {
-      models:
-        modelsResponse?.success === false
-          ? []
-          : (modelsResponse?.data?.models ?? modelsResponse?.models ?? []),
+      models: (Array.isArray(models) ? models : []).slice(0, 100).map((model) => ({
+        provider: sanitizeRemoteString(String(model?.provider ?? "unknown")) || "unknown",
+        id: sanitizeRemoteString(String(model?.id ?? "unknown")) || "unknown",
+        ...(typeof model?.name === "string" ? { name: sanitizeRemoteString(model.name) } : {}),
+      })),
       thinkingLevels:
         thinkingLevelsResponse?.success === false
           ? []
-          : (thinkingLevelsResponse?.data?.levels ?? thinkingLevelsResponse?.levels ?? []),
+          : (thinkingLevelsResponse?.data?.levels ?? thinkingLevelsResponse?.levels ?? [])
+              .filter(
+                (level) =>
+                  typeof level === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u.test(level),
+              )
+              .slice(0, 20),
+      commands: filterRemoteCommands(
+        commandsResponse?.success === false
+          ? []
+          : (commandsResponse?.data?.commands ?? commandsResponse?.commands ?? []),
+      ),
     },
-    events: events.filter(
-      (envelope) => envelope.sequence > baseSequence && envelope.sequence <= endSequence,
-    ),
-    pendingUi: [...pendingUi.values()],
+    truncated: {
+      messages: Array.isArray(rawMessages) && rawMessages.length > PI_CONSOLE_MAX_MESSAGES,
+      values: sanitizedState.truncated || sanitizedMessages.truncated,
+    },
   };
+};
+
+const snapshot = async () => {
+  for (let attempt = 0; attempt < snapshotAttempts; attempt += 1) {
+    const value = await snapshotAttempt();
+    if (value) return value;
+  }
+  throw new Error("scotty_snapshot_overlap_unavailable");
 };
 
 const quiesce = async () => {
@@ -255,41 +351,98 @@ const quiesce = async () => {
   throw new Error("Pi RPC quiesce timed out");
 };
 
-const handleCommand = async (body) => {
-  if (quiescing) return { status: 409, body: { error: "pi_quiescing" } };
-  if (
-    typeof body?.commandId !== "string" ||
-    body.commandId.length < 1 ||
-    body.commandId.length > 100 ||
-    !body?.command ||
-    !commandTypes.has(body.command.type)
-  )
-    return { status: 400, body: { error: "invalid_command" } };
-  const replay = receipts.get(body.commandId);
-  if (replay) return { status: 200, body: replay };
+const commandError = (versioned, status, code) => ({
+  status,
+  body: versioned
+    ? {
+        version: PI_CONSOLE_PROTOCOL_VERSION,
+        status: "error",
+        code,
+        retryable: false,
+      }
+    : { error: code },
+});
 
+const executeCommand = async (normalized, digest, receiptKey) => {
   if (
-    body.command.type === "extension_ui_response" &&
-    (typeof body.command.id !== "string" || !pendingUi.has(body.command.id))
+    normalized.command.type === "extension_ui_response" &&
+    (typeof normalized.command.id !== "string" || !pendingUi.has(normalized.command.id))
   )
-    return { status: 409, body: { error: "extension_ui_not_pending" } };
+    return commandError(normalized.versioned, 409, "extension_ui_not_pending");
+  if (
+    normalized.command.type === "extension_ui_response" &&
+    pendingUi.isDelivered(normalized.command.id)
+  )
+    return commandError(normalized.versioned, 409, "extension_ui_response_already_delivered");
 
-  let response;
-  if (body.command.type === "extension_ui_response") {
-    await sendRpcWithoutResponse(body.command);
-    pendingUi.delete(body.command.id);
-    response = { type: "response", command: "extension_ui_response", success: true };
+  let rpcResponse;
+  if (normalized.command.type === "extension_ui_response") {
+    await sendRpcWithoutResponse(normalized.command);
+    pendingUi.markDelivered(normalized.command.id);
+    rpcResponse = {
+      type: "response",
+      command: "extension_ui_response",
+      delivery: "unconfirmed",
+    };
   } else {
-    const rpcId = `ui-${body.commandId}`;
-    response = await sendRpc(body.command, rpcId);
+    const rpcId = `ui-${normalized.commandId}`;
+    rpcResponse = await sendRpc(normalized.command, rpcId);
   }
+  if (normalized.command.type === "abort" && rpcResponse.success !== false) {
+    pendingUi.clear();
+    projectionReducer.clearVolatile();
+  }
+  const response = sanitizeRemoteValue(rpcResponse).value;
   const receipt = {
-    status: response.success === false ? "rejected" : "accepted",
-    commandId: body.commandId,
+    version: PI_CONSOLE_PROTOCOL_VERSION,
+    epoch,
+    status:
+      normalized.command.type === "extension_ui_response"
+        ? "delivered"
+        : rpcResponse.success === false
+          ? "rejected"
+          : "accepted",
+    commandId: normalized.commandId,
+    commandDigest: digest,
     response,
   };
-  rememberReceipt(body.commandId, receipt);
-  return { status: response.success === false ? 409 : 202, body: receipt };
+  rememberReceipt(receiptKey, receipt);
+  return { status: rpcResponse.success === false ? 409 : 202, body: receipt };
+};
+
+const handleCommand = async (body) => {
+  const versioned = body?.version !== undefined || body?.intent !== undefined;
+  if (quiescing) return commandError(versioned, 409, "pi_quiescing");
+  const normalized = normalizeCommand(body, epoch);
+  if (!normalized.ok)
+    return commandError(
+      versioned,
+      normalized.error === "scotty_epoch_changed" ? 409 : 400,
+      normalized.error,
+    );
+  const digest = await commandIntentDigest(normalized.intent);
+  const receiptKey = `${epoch}:${normalized.commandId}`;
+  const replay = receipts.get(receiptKey);
+  if (replay) {
+    if (replay.commandDigest !== digest)
+      return commandError(normalized.versioned, 409, "command_id_conflict");
+    return { status: 200, body: replay };
+  }
+  const inFlight = inFlightCommands.get(receiptKey);
+  if (inFlight) {
+    if (inFlight.digest !== digest)
+      return commandError(normalized.versioned, 409, "command_id_conflict");
+    return inFlight.promise;
+  }
+
+  const promise = executeCommand(normalized, digest, receiptKey);
+  const flight = { digest, promise };
+  inFlightCommands.set(receiptKey, flight);
+  try {
+    return await promise;
+  } finally {
+    if (inFlightCommands.get(receiptKey) === flight) inFlightCommands.delete(receiptKey);
+  }
 };
 
 const server = createServer(async (request, response) => {
@@ -343,9 +496,11 @@ const server = createServer(async (request, response) => {
             writeSse(response, envelope);
       }
       subscribers.add(response);
-      const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
+      const heartbeat = shouldEmitSseHeartbeat(request.headers)
+        ? setInterval(() => response.write(": keepalive\n\n"), 15_000)
+        : undefined;
       request.on("close", () => {
-        clearInterval(heartbeat);
+        if (heartbeat !== undefined) clearInterval(heartbeat);
         subscribers.delete(response);
       });
       return;
