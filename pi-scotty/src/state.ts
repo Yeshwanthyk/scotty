@@ -66,6 +66,12 @@ export interface LiveProjection {
 
 export type UiAnswerStatus = "in_flight" | "delivered_unconfirmed" | "outcome_unknown";
 
+export interface SessionsPickerState {
+  readonly generation: number;
+  readonly status: "closed" | "loading" | "open" | "error";
+  readonly message?: string;
+}
+
 export interface SessionViewCache {
   draft: string;
   draftGeneration: number;
@@ -480,6 +486,7 @@ export class FleetConsoleState {
   fleetCursor = 0;
   loading = false;
   fleetError: string | undefined;
+  sessionsPicker: SessionsPickerState = { generation: 0, status: "closed" };
   readonly #caches = new Map<string, SessionViewCache>();
 
   cache(sessionId: string): SessionViewCache {
@@ -521,6 +528,35 @@ export class FleetConsoleState {
   closeLocal(): void {
     this.selectedSessionId = undefined;
     this.loading = false;
+    this.closeSessionsPicker();
+  }
+
+  beginSessionsPicker(): number {
+    const generation = this.sessionsPicker.generation + 1;
+    this.sessionsPicker = { generation, status: "loading" };
+    return generation;
+  }
+
+  openSessionsPicker(generation: number): void {
+    if (this.sessionsPicker.generation !== generation) return;
+    this.sessionsPicker = { generation, status: "open" };
+  }
+
+  failSessionsPicker(generation: number, message: string): void {
+    if (this.sessionsPicker.generation !== generation) return;
+    this.sessionsPicker = { generation, status: "error", message };
+  }
+
+  markSessionsPickerUnavailable(message: string): void {
+    if (this.sessionsPicker.status !== "open") return;
+    this.sessionsPicker = { ...this.sessionsPicker, message };
+  }
+
+  closeSessionsPicker(): void {
+    this.sessionsPicker = {
+      generation: this.sessionsPicker.generation + 1,
+      status: "closed",
+    };
   }
 
   setFleet(fleet: ReadonlyArray<FleetSession>): void {

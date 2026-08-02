@@ -6,7 +6,7 @@ import { FleetConsoleController } from "../src/controller.ts";
 import { FleetConsoleState, SETTLED_TURNS_FOLD_ID } from "../src/state.ts";
 import type { CommandResult, ConsoleTransport } from "../src/transport.ts";
 import { FleetConsoleComponent, composerKeyRoute, safeTerminalTitle } from "../src/ui.ts";
-import { SESSION_A, event, session, snapshot } from "./fixtures.ts";
+import { SESSION_A, SESSION_B, event, session, snapshot } from "./fixtures.ts";
 
 class FakeTerminal implements Terminal {
   columns = 120;
@@ -34,12 +34,25 @@ class FakeTerminal implements Terminal {
 
 class UiTransport implements ConsoleTransport {
   readonly commands: PiConsoleCommandV1[] = [];
+  readonly reads: string[] = [];
+  fleet = [session(SESSION_A)];
   commandGate: Promise<void> | undefined;
   commandMode: "accepted" | "error" = "accepted";
+  listGate: Promise<void> | undefined;
 
-  readonly listFleet = async () => [session(SESSION_A)];
-  readonly getSelected = async () => session(SESSION_A);
-  readonly getSnapshot = async () => snapshot();
+  readonly listFleet = async () => {
+    this.reads.push("GET /api/sessions");
+    await this.listGate;
+    return this.fleet;
+  };
+  readonly getSelected = async (sessionId: string) => {
+    this.reads.push(`GET /api/sessions/${sessionId}`);
+    return session(sessionId);
+  };
+  readonly getSnapshot = async (sessionId: string) => {
+    this.reads.push(`GET /s/${sessionId}/console/v1/snapshot`);
+    return snapshot();
+  };
   readonly streamEvents = async function* (
     _sessionId: string,
     _epoch: string,
@@ -130,6 +143,103 @@ describe("composer key routing", () => {
     selected.component.handleInput("\u0003");
     expect(selected.state.cache(SESSION_A).draft).toBe("keep me");
     expect(selected.transport.commands).toEqual([]);
+  });
+
+  it("opens /sessions after refresh, consumes the command, and renders every row", async () => {
+    const fixture = componentFixture(true);
+    let releaseRefresh: (() => void) | undefined;
+    fixture.transport.fleet = [
+      session(SESSION_A),
+      session(SESSION_B, { status: "sleeping", provider: "runner" }),
+    ];
+    fixture.transport.listGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    fixture.state.setDraft(SESSION_A, "/sessions");
+    fixture.component.render(120);
+
+    fixture.component.handleInput("\r");
+    expect(fixture.state.cache(SESSION_A).draft).toBe("");
+    expect(fixture.state.sessionsPicker.status).toBe("loading");
+    expect(fixture.component.render(120).join("\n")).toContain("Refreshing fleet");
+
+    releaseRefresh?.();
+    await waitFor(() => fixture.state.sessionsPicker.status === "open");
+    const rendered = fixture.component.render(120).join("\n");
+    expect(rendered).toContain(`Session ${SESSION_A}`);
+    expect(rendered).toContain(`Session ${SESSION_B}`);
+    expect(rendered).toContain("unavailable");
+    expect(fixture.transport.commands).toEqual([]);
+  });
+
+  it("gives the session picker Esc and Ctrl+C precedence over fleet and abort", async () => {
+    const fixture = componentFixture(true);
+    const live = fixture.state.cache(SESSION_A).live;
+    if (live === undefined) throw new Error("missing live fixture");
+    fixture.state.cache(SESSION_A).live = { ...live, isStreaming: true };
+
+    await fixture.controller.openSessionsPicker();
+    fixture.component.render(120);
+    fixture.component.handleInput("\u0003");
+    expect(fixture.state.selectedSessionId).toBe(SESSION_A);
+    expect(fixture.state.sessionsPicker.status).toBe("closed");
+    expect(fixture.transport.commands).toEqual([]);
+
+    await fixture.controller.openSessionsPicker();
+    fixture.component.render(120);
+    fixture.component.handleInput("\u001b");
+    expect(fixture.state.selectedSessionId).toBe(SESSION_A);
+    expect(fixture.state.sessionsPicker.status).toBe("closed");
+    fixture.component.handleInput("\u001b");
+    expect(fixture.state.selectedSessionId).toBeUndefined();
+  });
+
+  it("keeps unavailable rows inert and switches eligible rows with selector keys", async () => {
+    const fixture = componentFixture(true);
+    fixture.transport.fleet = [
+      session(SESSION_A),
+      session(SESSION_B, { status: "sleeping", provider: "runner" }),
+    ];
+    await fixture.controller.openSessionsPicker();
+    fixture.component.render(120);
+
+    fixture.component.handleInput("j");
+    fixture.component.handleInput("\r");
+    expect(fixture.state.selectedSessionId).toBe(SESSION_A);
+    expect(fixture.state.sessionsPicker.status).toBe("open");
+    expect(fixture.component.render(120).join("\n")).toContain(
+      "Only warm Cloudflare sessions can be opened",
+    );
+    expect(fixture.transport.reads).not.toContain(`GET /api/sessions/${SESSION_B}`);
+
+    fixture.transport.fleet = [session(SESSION_A), session(SESSION_B)];
+    fixture.controller.closeSessionsPicker();
+    fixture.state.setDraft(SESSION_B, "draft B");
+    await fixture.controller.openSessionsPicker();
+    fixture.component.render(120);
+    fixture.component.handleInput("\u001b[B");
+    fixture.component.handleInput("\u001b[A");
+    fixture.component.handleInput("j");
+    fixture.component.handleInput("k");
+    fixture.component.handleInput("\u001b[B");
+    fixture.component.handleInput("\r");
+    await waitFor(() => fixture.state.selectedSessionId === SESSION_B);
+    expect(fixture.state.cache(SESSION_B).draft).toBe("draft B");
+    expect(fixture.transport.reads).toContain(`GET /api/sessions/${SESSION_B}`);
+    expect(fixture.transport.commands).toEqual([]);
+  });
+
+  it("closes a current-session picker choice without reconnecting", async () => {
+    const fixture = componentFixture(true);
+    await fixture.controller.openSessionsPicker();
+    fixture.component.render(120);
+    const readsBefore = [...fixture.transport.reads];
+
+    fixture.component.handleInput("\r");
+
+    expect(fixture.state.sessionsPicker.status).toBe("closed");
+    expect(fixture.state.selectedSessionId).toBe(SESSION_A);
+    expect(fixture.transport.reads).toEqual(readsBefore);
   });
 
   it("submits the SDK editor value after the editor clears its internal state", async () => {
