@@ -76,6 +76,14 @@ const renderFleetSelector = (component: ExtensionSelectorComponent, width: numbe
       : normalized;
   });
 
+const renderSessionsSelector = (component: ExtensionSelectorComponent, width: number): string[] =>
+  component.render(width).map((line) => {
+    const normalized = normalizeRenderedLine(line);
+    return redactRemoteString(normalized).includes("escape/ctrl+c cancel")
+      ? color.muted("↑/↓ or j/k move · Enter switch · Esc/Ctrl+C close")
+      : normalized;
+  });
+
 class RemoteToolCard implements Component {
   readonly #tool: RemoteToolCall;
   #result:
@@ -133,6 +141,9 @@ export class FleetConsoleComponent implements Component {
   readonly #tui: TUI;
   readonly #editor: Editor;
   readonly #selectors = new Map<string, ExtensionSelectorComponent>();
+  #sessionsSelector:
+    | { readonly generation: number; readonly component: ExtensionSelectorComponent }
+    | undefined;
   #editorTarget = "";
   #syncingEditor = false;
   #terminalTitle = "";
@@ -167,6 +178,7 @@ export class FleetConsoleComponent implements Component {
 
   invalidate(): void {
     this.#editor.invalidate();
+    this.#sessionsSelector?.component.invalidate();
     for (const selector of this.#selectors.values()) selector.invalidate();
   }
 
@@ -186,6 +198,14 @@ export class FleetConsoleComponent implements Component {
         return;
       }
       if (matchesKey(data, Key.enter)) void this.#controller.openCursor();
+      return;
+    }
+
+    const picker = state.sessionsPicker;
+    if (picker.status !== "closed") {
+      if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")))
+        this.#controller.closeSessionsPicker();
+      else if (picker.status === "open") this.#sessionPickerSelector().handleInput(data);
       return;
     }
 
@@ -246,7 +266,9 @@ export class FleetConsoleComponent implements Component {
       color.muted(
         state.selectedSessionId === undefined
           ? "↑/↓ or j/k move · Enter open warm session · q quit"
-          : "Enter prompt/steer · Option+Enter follow-up · Shift+Enter newline · Ctrl+C abort active · Esc fleet",
+          : state.sessionsPicker.status === "closed"
+            ? "Enter prompt/steer · Option+Enter follow-up · Shift+Enter newline · Ctrl+C abort active · Esc fleet"
+            : "Session picker active · Esc closes picker · next Esc returns to fleet",
       ),
       "",
     ];
@@ -332,7 +354,22 @@ export class FleetConsoleComponent implements Component {
         lines.push(...widget.lines.map((line) => color.muted(`  ${redactRemoteLine(line)}`)));
 
       const dialog = live.pendingUi.find((request) => isBlockingMethod(request.method));
-      if (dialog !== undefined) {
+      const picker = state.sessionsPicker;
+      if (picker.status !== "closed") {
+        lines.push("");
+        if (picker.status === "loading")
+          lines.push(color.accent("SESSIONS"), color.muted("Refreshing fleet…"));
+        else if (picker.status === "error")
+          lines.push(
+            color.accent("SESSIONS"),
+            color.error(picker.message ?? "Fleet refresh failed"),
+            color.muted("Esc close"),
+          );
+        else {
+          lines.push(...renderSessionsSelector(this.#sessionPickerSelector(), width));
+          if (picker.message !== undefined) lines.push(color.warning(picker.message));
+        }
+      } else if (dialog !== undefined) {
         lines.push("");
         const answerStatus = cache.uiAnswers.get(`${live.epoch}\0${dialog.id}`);
         if (answerStatus === "in_flight") lines.push(color.muted("Answer in flight…"));
@@ -363,7 +400,7 @@ export class FleetConsoleComponent implements Component {
         lines.push(color.muted(redactRemoteLine(cache.commandStatus)));
       lines.push(
         color.muted(
-          "Commands: /subagents · /workflows [runId] · /fold (local settled-turn folding)",
+          "Commands: /sessions · /subagents · /workflows [runId] · /fold (local settled-turn folding)",
         ),
       );
     }
@@ -425,6 +462,32 @@ export class FleetConsoleComponent implements Component {
       if (tool.partialText !== undefined) component.updateResult(tool.partialText, false, true);
     }
     return components.flatMap((component) => renderChild(component, width));
+  }
+
+  #sessionPickerSelector(): ExtensionSelectorComponent {
+    const picker = this.#controller.state.sessionsPicker;
+    const existing = this.#sessionsSelector;
+    if (existing?.generation === picker.generation) return existing.component;
+    const selectedId = this.#controller.state.selectedSessionId;
+    const sessions = [
+      ...this.#controller.state.fleet.filter((session) => session.id === selectedId),
+      ...this.#controller.state.fleet.filter((session) => session.id !== selectedId),
+    ];
+    const options = sessions.map((session, index) => {
+      const current = session.id === selectedId ? " · current" : "";
+      return `${index + 1}. ${sessionLine(session, false).trim()}${current}`;
+    });
+    const component = new ExtensionSelectorComponent(
+      "Sessions",
+      options,
+      (option) => {
+        const session = sessions[options.indexOf(option)];
+        if (session !== undefined) void this.#controller.chooseSession(session.id);
+      },
+      () => this.#controller.closeSessionsPicker(),
+    );
+    this.#sessionsSelector = { generation: picker.generation, component };
+    return component;
   }
 
   #selector(

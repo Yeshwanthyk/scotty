@@ -28,7 +28,7 @@ Session keys:
   Ctrl+C            abort only while the selected turn is active
   Esc               close only the local event stream and return to fleet
 
-Slash commands: /subagents, /workflows [runId], /fold (local only)
+Slash commands: /sessions, /subagents, /workflows [runId], /fold (local only)
 `;
 
 interface ParsedArguments {

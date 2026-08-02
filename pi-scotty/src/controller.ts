@@ -40,6 +40,7 @@ export type ComposerRoute =
   | { readonly type: "empty" }
   | { readonly type: "local_error"; readonly message: string }
   | { readonly type: "fold" }
+  | { readonly type: "sessions" }
   | { readonly type: "remote"; readonly intent: PiConsoleRemoteIntentV1 };
 
 export const routeComposerSubmission = (
@@ -51,6 +52,7 @@ export const routeComposerSubmission = (
   if (message.length === 0) return { type: "empty" };
   if (message.startsWith("/")) {
     if (message === "/fold") return { type: "fold" };
+    if (message === "/sessions") return { type: "sessions" };
     if (message === "/subagents")
       return { type: "remote", intent: { type: "slash_command", name: "subagents" } };
     const workflows = /^\/workflows(?:\s+(\S+))?$/u.exec(message);
@@ -72,7 +74,7 @@ export const routeComposerSubmission = (
     }
     return {
       type: "local_error",
-      message: "Only /subagents, /workflows [runId], and /fold are available",
+      message: "Only /sessions, /subagents, /workflows [runId], and /fold are available",
     };
   }
   return {
@@ -131,6 +133,43 @@ export class FleetConsoleController {
       return;
     }
     await this.select(session.id);
+  }
+
+  async openSessionsPicker(): Promise<void> {
+    if (this.state.selectedSessionId === undefined) return;
+    const generation = this.state.beginSessionsPicker();
+    this.#onChange();
+    try {
+      const fleet = await this.#transport.listFleet();
+      if (this.state.sessionsPicker.generation !== generation) return;
+      this.state.setFleet(fleet);
+      this.state.openSessionsPicker(generation);
+    } catch (error) {
+      this.state.failSessionsPicker(generation, safeErrorMessage(error));
+    }
+    this.#onChange();
+  }
+
+  closeSessionsPicker(): void {
+    if (this.state.sessionsPicker.status === "closed") return;
+    this.state.closeSessionsPicker();
+    this.#onChange();
+  }
+
+  async chooseSession(sessionId: string): Promise<void> {
+    if (this.state.sessionsPicker.status !== "open") return;
+    const session = this.state.fleet.find((candidate) => candidate.id === sessionId);
+    if (session === undefined || session.status !== "warm" || session.provider !== "cloudflare") {
+      this.state.markSessionsPickerUnavailable("Only warm Cloudflare sessions can be opened");
+      this.#onChange();
+      return;
+    }
+    if (sessionId === this.state.selectedSessionId) {
+      this.closeSessionsPicker();
+      return;
+    }
+    this.state.closeSessionsPicker();
+    await this.select(sessionId);
   }
 
   async select(sessionId: string): Promise<void> {
@@ -198,6 +237,11 @@ export class FleetConsoleController {
         ? "Settled turns folded locally"
         : "Settled turns expanded locally";
       this.#onChange();
+      return;
+    }
+    if (route.type === "sessions") {
+      cache.commandStatus = undefined;
+      await this.openSessionsPicker();
       return;
     }
     const submission = await this.sendIntent(route.intent);

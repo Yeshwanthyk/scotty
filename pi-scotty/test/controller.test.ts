@@ -20,10 +20,15 @@ class FakeConsoleTransport implements ConsoleTransport {
   streamMode: "wait" | "eof_once" | "eof" = "wait";
   streamCalls = 0;
   pendingUi: PiConsoleSnapshotV1["pendingUi"] = [];
+  fleet = [session(SESSION_A), session(SESSION_B)];
+  listGate: Promise<void> | undefined;
+  listError: Error | undefined;
 
   readonly listFleet = async () => {
     this.reads.push("GET /api/sessions");
-    return [session(SESSION_A), session(SESSION_B)];
+    await this.listGate;
+    if (this.listError !== undefined) throw this.listError;
+    return this.fleet;
   };
 
   readonly getSelected = async (sessionId: string) => {
@@ -137,8 +142,19 @@ describe("composer routing", () => {
       },
     });
     expect(routeComposerSubmission("/fold", false)).toEqual({ type: "fold" });
-    for (const command of ["/help", "/abort", "/subagents active", "/workflows one two"])
+    expect(routeComposerSubmission("/sessions", false)).toEqual({ type: "sessions" });
+    for (const command of [
+      "/help",
+      "/abort",
+      "/sessions extra",
+      "/subagents active",
+      "/workflows one two",
+    ])
       expect(routeComposerSubmission(command, false).type).toBe("local_error");
+    expect(routeComposerSubmission("/sessions extra", false)).toEqual({
+      type: "local_error",
+      message: "Only /sessions, /subagents, /workflows [runId], and /fold are available",
+    });
   });
 });
 
@@ -393,6 +409,90 @@ describe("FleetConsoleController", () => {
       { type: "extension_ui_response", id: "input-1", value: "typed" },
       { type: "extension_ui_response", id: "editor-1", value: "after\nline" },
     ]);
+    controller.stop();
+  });
+
+  it("refreshes /sessions locally, consumes it, and reports refresh errors locally", async () => {
+    const { controller, transport } = await open();
+    controller.state.setDraft(SESSION_A, "/sessions");
+
+    await controller.submitDraft();
+
+    expect(controller.state.sessionsPicker.status).toBe("open");
+    expect(controller.state.cache(SESSION_A).draft).toBe("");
+    expect(transport.reads.filter((read) => read === "GET /api/sessions")).toHaveLength(2);
+    expect(transport.commands).toEqual([]);
+
+    controller.closeSessionsPicker();
+    transport.listError = new Error("refresh unavailable");
+    controller.state.setDraft(SESSION_A, "/sessions");
+    await controller.submitDraft();
+    expect(controller.state.sessionsPicker).toMatchObject({
+      status: "error",
+      message: "pi-scotty failed",
+    });
+    expect(transport.commands).toEqual([]);
+    controller.stop();
+  });
+
+  it("guards unavailable picker rows and closes a current-session choice without reconnecting", async () => {
+    const { controller, transport } = await open();
+    transport.fleet = [session(SESSION_A), session(SESSION_B, { status: "sleeping" })];
+    await controller.openSessionsPicker();
+    const readsBefore = [...transport.reads];
+
+    await controller.chooseSession(SESSION_B);
+    expect(controller.state.selectedSessionId).toBe(SESSION_A);
+    expect(controller.state.sessionsPicker).toMatchObject({
+      status: "open",
+      message: "Only warm Cloudflare sessions can be opened",
+    });
+    expect(transport.reads).toEqual(readsBefore);
+
+    await controller.chooseSession(SESSION_A);
+    expect(controller.state.sessionsPicker.status).toBe("closed");
+    expect(transport.reads).toEqual(readsBefore);
+    expect(transport.commands).toEqual([]);
+    controller.stop();
+  });
+
+  it("switches an eligible picker choice through select and preserves cached drafts", async () => {
+    const { controller, transport } = await open();
+    controller.state.setDraft(SESSION_A, "draft A");
+    controller.state.setDraft(SESSION_B, "draft B");
+    await controller.openSessionsPicker();
+
+    await controller.chooseSession(SESSION_B);
+    await Promise.resolve();
+
+    expect(controller.state.selectedSessionId).toBe(SESSION_B);
+    expect(controller.state.sessionsPicker.status).toBe("closed");
+    expect(controller.state.cache(SESSION_A).draft).toBe("draft A");
+    expect(controller.state.cache(SESSION_B).draft).toBe("draft B");
+    expect(transport.reads).toContain(`GET /api/sessions/${SESSION_B}`);
+    expect(transport.reads).toContain(`GET /s/${SESSION_B}/console/v1/snapshot`);
+    expect(transport.commands).toEqual([]);
+    expect(transport.remoteLifecycleMutations).toBe(0);
+    controller.stop();
+  });
+
+  it("ignores a late picker refresh after close", async () => {
+    const { controller, transport } = await open();
+    let releaseRefresh: (() => void) | undefined;
+    transport.listGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    transport.fleet = [session(SESSION_B)];
+
+    const refresh = controller.openSessionsPicker();
+    expect(controller.state.sessionsPicker.status).toBe("loading");
+    controller.closeSessionsPicker();
+    releaseRefresh?.();
+    await refresh;
+
+    expect(controller.state.sessionsPicker.status).toBe("closed");
+    expect(controller.state.fleet.map((entry) => entry.id)).toEqual([SESSION_A, SESSION_B]);
+    expect(controller.state.selectedSessionId).toBe(SESSION_A);
     controller.stop();
   });
 
