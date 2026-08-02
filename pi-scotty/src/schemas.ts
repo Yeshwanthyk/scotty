@@ -22,7 +22,7 @@ const boundedString = (maxBytes: number) =>
     }),
   );
 const ShortStringSchema = boundedString(4 * 1024);
-const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/u));
+export const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/u));
 const ClientCredentialSchema = Schema.String.check(
   Schema.isPattern(/^scotty_client\.[0-9a-f]{12}\.[A-Za-z0-9_-]{32,128}$/u),
 );

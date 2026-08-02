@@ -126,8 +126,12 @@ export class FleetConsoleController {
 
   async openCursor(): Promise<void> {
     const session = this.state.fleet[this.state.fleetCursor];
-    if (session === undefined) return;
-    if (session.status !== "warm" || session.provider !== "cloudflare") {
+    if (session !== undefined) await this.openSession(session.id);
+  }
+
+  async openSession(sessionId: string): Promise<void> {
+    const session = this.state.fleet.find((candidate) => candidate.id === sessionId);
+    if (session === undefined || session.status !== "warm" || session.provider !== "cloudflare") {
       this.state.fleetError = "Only warm Cloudflare sessions can be opened";
       this.#onChange();
       return;

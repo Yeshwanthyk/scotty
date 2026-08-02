@@ -1,0 +1,283 @@
+//! Always-dark monochrome theme — concrete values, no indirection.
+//!
+//! Colors use the same oklch-derived neutral scale as Comet. Hairlines stay
+//! white at low alpha so they read on every surface.
+//!
+//! Installed as a gpui [`Global`] at boot (`cx.set_global(Theme::dark())`); read with
+//! [`Theme::of`].
+
+use gpui::{App, Global, Hsla, SharedString, hsla};
+
+/// The app's single dark theme.
+#[derive(Debug, Clone)]
+pub struct Theme {
+    // ---- paint: neutral surfaces (oklch chroma 0) ----
+    /// App background — oklch(0.145 0 0) ≡ `#0a0a0a`.
+    pub bg: Hsla,
+    /// Panel / sidebar surface — one scale step up.
+    pub surface: Hsla,
+    /// Raised surface: popovers, dialogs, cards.
+    pub surface_raised: Hsla,
+    /// Hover wash for interactive rows/buttons (white, low alpha).
+    pub element_hover: Hsla,
+    /// Active/selected wash (white, slightly higher alpha).
+    pub element_active: Hsla,
+    /// Hairline border — white at low alpha.
+    pub border: Hsla,
+    /// Stronger border for focused/raised edges.
+    pub border_strong: Hsla,
+
+    // ---- paint: text ----
+    /// Primary text.
+    pub text: Hsla,
+    /// Muted text: timestamps, secondary labels.
+    pub text_muted: Hsla,
+    /// Faint text: placeholders, disabled.
+    pub text_faint: Hsla,
+
+    // ---- paint: accents ----
+    /// Accent — indigo (working indicator, links, selection tint).
+    pub accent: Hsla,
+    /// Danger — red (errors, stop button).
+    pub danger: Hsla,
+    /// Warning — amber (offline notices, awaiting-input).
+    pub warning: Hsla,
+
+    // ---- fonts ----
+    /// Embedded UI font family.
+    pub font_sans: SharedString,
+}
+
+impl Theme {
+    /// Bare macOS blur needs a heavy scrim; other platforms stay opaque.
+    pub const GLASS_ALPHA: f32 = if cfg!(target_os = "macos") { 0.90 } else { 1.0 };
+    /// The frost tint painted over the blurred window background (macOS
+    /// glass). Darker than `surface` — matched to the reference dark
+    /// vibrancy scrim: `hsl(0 0% 3%)` (#080808) at [`Self::GLASS_ALPHA`].
+    /// On opaque platforms this IS the surface tone (no tint swap).
+    pub fn glass(&self) -> Hsla {
+        if Self::GLASS_ALPHA < 1.0 {
+            grey(8).opacity(Self::GLASS_ALPHA)
+        } else {
+            self.surface
+        }
+    }
+
+    /// Build the (only) theme. The surface tones are sampled straight from the
+    /// reference screenshots of the original app (docs/reference): main panel
+    /// `#060606`, shell/sidebar `#0d0d0d`.
+    pub fn dark() -> Self {
+        Self {
+            bg: grey(6),       // main panel — sampled #060606
+            surface: grey(13), // shell / sidebar — sampled #0d0d0d
+            surface_raised: neutral(0.235),
+            element_hover: wash(0.14),
+            element_active: wash(0.16),
+            border: white_alpha(0.08),
+            border_strong: white_alpha(0.14),
+            text: neutral(0.922),                 // ~neutral-200
+            text_muted: neutral(0.708),           // ~neutral-400
+            text_faint: neutral(0.556),           // ~neutral-500
+            accent: oklch(0.673, 0.182, 276.935), // indigo-400
+            danger: oklch(0.704, 0.191, 22.216),  // red-400
+            warning: oklch(0.828, 0.189, 84.429), // amber-400
+            font_sans: "Geist".into(),
+        }
+    }
+
+    /// Read the theme global.
+    pub fn of(cx: &App) -> &Theme {
+        cx.global::<Theme>()
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl Global for Theme {}
+
+/// A neutral (chroma 0) oklch tone as Hsla. Chroma 0 means r == g == b exactly,
+/// so this goes straight to an achromatic Hsla (skipping the hue math avoids
+/// float-noise saturation).
+pub fn neutral(lightness: f32) -> Hsla {
+    let [v, _, _] = oklch_to_srgb(lightness, 0.0, 0.0);
+    hsla(0.0, 0.0, v, 1.0)
+}
+
+/// A soft-white wash keeps hover and selection visible without hiding the blur.
+pub fn wash(alpha: f32) -> Hsla {
+    hsla(0.0, 0.0, 0.92, alpha)
+}
+
+/// White at the given alpha — the hairline/wash primitive.
+pub fn white_alpha(alpha: f32) -> Hsla {
+    hsla(0.0, 0.0, 1.0, alpha)
+}
+
+/// An exact achromatic tone from an 8-bit channel value (`grey(13)` ≡ `#0d0d0d`)
+/// — for surfaces matched against reference-screenshot samples.
+pub fn grey(value: u8) -> Hsla {
+    hsla(0.0, 0.0, value as f32 / 255.0, 1.0)
+}
+
+/// Convert an oklch color (CSS notation: L 0..1, C, H in degrees) to gpui Hsla.
+pub fn oklch(l: f32, c: f32, h_deg: f32) -> Hsla {
+    let [r, g, b] = oklch_to_srgb(l, c, h_deg);
+    let (h, s, l) = rgb_to_hsl(r, g, b);
+    hsla(h, s, l, 1.0)
+}
+
+/// oklch → sRGB (each 0..1, clamped/gamut-clipped per channel).
+/// Reference: Björn Ottosson's OKLab definition (the same matrices CSS Color 4 uses).
+pub(crate) fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> [f32; 3] {
+    let h = h_deg.to_radians();
+    let a = c * h.cos();
+    let b = c * h.sin();
+
+    // OKLab → LMS (cube roots undone)
+    let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
+    let m_ = l - 0.105_561_346 * a - 0.063_854_17 * b;
+    let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
+    let (l3, m3, s3) = (l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_);
+
+    // LMS → linear sRGB
+    let r = 4.076_741_7 * l3 - 3.307_711_6 * m3 + 0.230_969_93 * s3;
+    let g = -1.268_438 * l3 + 2.609_757_4 * m3 - 0.341_319_4 * s3;
+    let b = -0.004_196_086_3 * l3 - 0.703_418_6 * m3 + 1.707_614_7 * s3;
+
+    [gamma_encode(r), gamma_encode(g), gamma_encode(b)]
+}
+
+fn gamma_encode(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.003_130_8 {
+        12.92 * x
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// sRGB (0..1 components) → HSL, all components 0..1 (gpui's Hsla convention).
+pub(crate) fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let delta = max - min;
+    if delta < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let s = if l > 0.5 {
+        delta / (2.0 - max - min)
+    } else {
+        delta / (max + min)
+    };
+    let h = if (max - r).abs() < f32::EPSILON {
+        ((g - b) / delta).rem_euclid(6.0)
+    } else if (max - g).abs() < f32::EPSILON {
+        (b - r) / delta + 2.0
+    } else {
+        (r - g) / delta + 4.0
+    } / 6.0;
+    (h, s, l)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn srgb_u8(c: [f32; 3]) -> [u8; 3] {
+        [
+            (c[0] * 255.0).round() as u8,
+            (c[1] * 255.0).round() as u8,
+            (c[2] * 255.0).round() as u8,
+        ]
+    }
+
+    #[test]
+    fn neutral_950_is_0a0a0a() {
+        // oklch(0.145 0 0) is Tailwind neutral-950, comet's app background.
+        let rgb = srgb_u8(oklch_to_srgb(0.145, 0.0, 0.0));
+        assert_eq!(rgb, [10, 10, 10]);
+    }
+
+    #[test]
+    fn oklch_accents_match_reference() {
+        // Reference values computed independently (CSS Color 4 matrices).
+        assert_eq!(
+            srgb_u8(oklch_to_srgb(0.673, 0.182, 276.935)),
+            [124, 134, 255]
+        ); // indigo-400
+        assert_eq!(
+            srgb_u8(oklch_to_srgb(0.704, 0.191, 22.216)),
+            [255, 100, 103]
+        ); // red-400
+        assert_eq!(srgb_u8(oklch_to_srgb(0.828, 0.189, 84.429)), [255, 185, 0]); // amber-400
+    }
+
+    #[test]
+    fn neutral_scale_is_ordered() {
+        let t = Theme::dark();
+        assert!(t.bg.l < t.surface.l);
+        assert!(t.surface.l < t.surface_raised.l);
+        assert!(t.surface_raised.l < t.text_faint.l);
+        assert!(t.text_faint.l < t.text_muted.l);
+        assert!(t.text_muted.l < t.text.l);
+        // Monochrome: neutrals carry no saturation.
+        for c in [
+            t.bg,
+            t.surface,
+            t.surface_raised,
+            t.text,
+            t.text_muted,
+            t.text_faint,
+        ] {
+            assert_eq!(c.s, 0.0);
+            assert_eq!(c.a, 1.0);
+        }
+    }
+
+    #[test]
+    fn hairlines_are_white_and_washes_are_mid_grey() {
+        let t = Theme::dark();
+        // Hairlines stay white — they only need to read on dark surfaces.
+        for c in [t.border, t.border_strong] {
+            assert_eq!(c.l, 1.0, "hairlines are white");
+            assert!(c.a > 0.0 && c.a < 0.25, "low alpha, got {}", c.a);
+        }
+        // Washes are translucent soft-white with enough alpha to read at the
+        // glass scrim's brightness ceiling.
+        for c in [t.element_hover, t.element_active] {
+            assert_eq!(c.l, 0.92, "washes are soft-white");
+            assert!(c.a >= 0.05 && c.a < 0.35, "alpha in band, got {}", c.a);
+        }
+        assert!(t.border.a < t.border_strong.a);
+        // Hover intentionally equals the active fill (selection differs by
+        // its ring, not brightness — user request).
+        assert!(t.element_hover.a <= t.element_active.a);
+    }
+
+    #[test]
+    fn accent_hues_land_in_their_bands() {
+        let t = Theme::dark();
+        // Hsla hue is 0..1 of the wheel. Indigo ≈ 230-250°, red < 15°, amber ≈ 40-55°.
+        let deg = |c: Hsla| c.h * 360.0;
+        assert!(
+            (215.0..265.0).contains(&deg(t.accent)),
+            "indigo hue {}",
+            deg(t.accent)
+        );
+        assert!(
+            deg(t.danger) < 15.0 || deg(t.danger) > 345.0,
+            "red hue {}",
+            deg(t.danger)
+        );
+        assert!(
+            (35.0..60.0).contains(&deg(t.warning)),
+            "amber hue {}",
+            deg(t.warning)
+        );
+    }
+}
