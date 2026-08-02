@@ -9,7 +9,7 @@ const forbidden = [
   process.env.SCOTTY_TOKEN,
   process.env.SCOTTY_E2E_TOKEN,
 ].filter((value) => value && value.length >= 8);
-const excluded = new Set(["node_modules", ".git", "work"]);
+const excluded = new Set(["node_modules", ".git", "work", "target"]);
 const files = [];
 function walk(directory) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {

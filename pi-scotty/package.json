@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node ../scripts/build-pi-scotty.mjs",
+    "build:sidecar": "node ../scripts/build-scotty-desktop-sidecar.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run test"
   },
