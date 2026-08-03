@@ -46,6 +46,8 @@ pub struct Theme {
     // ---- fonts ----
     /// Embedded UI font family.
     pub font_sans: SharedString,
+    /// Embedded monospace family for commands, paths, and tool output.
+    pub font_mono: SharedString,
 }
 
 impl Theme {
@@ -82,6 +84,7 @@ impl Theme {
             danger: oklch(0.704, 0.191, 22.216),  // red-400
             warning: oklch(0.828, 0.189, 84.429), // amber-400
             font_sans: "Geist".into(),
+            font_mono: "Geist Mono".into(),
         }
     }
 

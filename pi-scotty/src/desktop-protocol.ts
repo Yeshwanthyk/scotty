@@ -2,6 +2,7 @@ import { Option, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 import { redactRemoteString } from "./redaction.ts";
 import { SessionIdSchema, type FleetSession } from "./schemas.ts";
+import { projectDesktopTranscript } from "./desktop-transcript.ts";
 import type { FleetConsoleState, LiveProjection, SessionViewCache } from "./state.ts";
 
 export const DESKTOP_PROTOCOL_VERSION = 1 as const;
@@ -93,11 +94,10 @@ const projectLive = (live: LiveProjection | undefined) =>
         sequence: live.sequence,
         sessionRevision: live.sessionRevision,
         isStreaming: live.isStreaming,
-        messages: live.messages,
-        activeTools: [...live.activeTools.values()],
+        transcript: projectDesktopTranscript(live.messages, [...live.activeTools.values()]),
         pendingUi: live.pendingUi,
         activity: live.activity,
-        sidecarTruncated: false,
+        sidecarTruncated: live.truncated.messages || live.truncated.values,
       };
 
 const projectSelected = (cache: SessionViewCache | undefined) =>
@@ -150,7 +150,7 @@ export const encodeDesktopFrame = (frame: DesktopFrame): string | undefined => {
     const selected = candidate.state.selected;
     if (selected === undefined) return undefined;
     const live = selected.live;
-    if (live === undefined || live.messages.length <= 1) return undefined;
+    if (live === undefined || live.transcript.length <= 1) return undefined;
     candidate = {
       ...candidate,
       state: {
@@ -159,7 +159,7 @@ export const encodeDesktopFrame = (frame: DesktopFrame): string | undefined => {
           ...selected,
           live: {
             ...live,
-            messages: live.messages.slice(Math.floor(live.messages.length / 2)),
+            transcript: live.transcript.slice(Math.floor(live.transcript.length / 2)),
             sidecarTruncated: true,
           },
         },
