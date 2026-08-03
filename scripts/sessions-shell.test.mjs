@@ -188,6 +188,15 @@ describe("sessions shell", () => {
     assert.doesNotMatch(sessionsHtml, /Running tests|Editing terminal\.js|agent activity/i);
   });
 
+  it("keeps deleting sandboxes visible with recoverable cleanup controls", () => {
+    assert.match(contracts, /deleting: Schema\.optionalKey\(Schema\.Boolean\)/);
+    assert.match(sessionForm, /deleting \|\| pendingAction === "delete"/);
+    assert.match(sessionsHtml, /status === "deleting" \? "Deleting…"/);
+    assert.match(sessionsHtml, /actionButton\("Retry cleanup", "delete", session\.id\)/);
+    assert.match(sessionsHtml, /"Retries automatically"/);
+    assert.match(sessionsHtml, /\.status-deleting \.signal[\s\S]*?animation: none/);
+  });
+
   it("ships only the V1 stats values with loading, empty, and error states", () => {
     assert.equal(statsHtml.match(/data-stat=/g)?.length, 4);
     for (const label of ["Workspaces created", "Projects", "Warm now", "Sleeping now"]) {
