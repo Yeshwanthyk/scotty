@@ -45,7 +45,7 @@ Scotty.app (Rust / GPUI viewport)
                     └── Scotty Worker -> Sandbox DO -> existing Pi supervisor
 ```
 
-For v1, “codex orchestrator” describes the desktop interaction model, **not a new local Codex runtime**. Do not import Comet's Codex harness, engine, CRDT store, cloud relay, WorkOS auth, credential slots, or updater. Those components would create a second session/process/credential authority and conflict with Scotty's binding invariants ([Scotty plan](../../PLAN.md#session-behavior), [Comet topology](https://github.com/zeronsh/comet/blob/b033110d087ae0f1d1ba607b77d97624165c1986/ARCHITECTURE.md#1-topology)).
+For v1, “codex orchestrator” describes the desktop interaction model, **not a new local Codex runtime**. Do not import Comet's Codex harness, engine, CRDT store, cloud relay, WorkOS auth, credential slots, or updater. Those components would create a second session/process/credential authority and conflict with Scotty's binding invariants ([Scotty invariants](../../AGENTS.md#scope-and-invariants), [Comet topology](https://github.com/zeronsh/comet/blob/b033110d087ae0f1d1ba607b77d97624165c1986/ARCHITECTURE.md#1-topology)).
 
 ## What “jump to all open sessions” means
 
@@ -82,7 +82,7 @@ Stock Pi RPC is JSONL over the owning process's stdin/stdout; it is not a retroa
 | Selected session, drafts, scroll, pane widths, filters                    | Desktop/sidecar local cache keyed by Scotty session ID | Non-authoritative and bounded                       |
 | Comet source snapshot/provenance                                          | Repository metadata                                    | Build input only; never runtime state               |
 
-This preserves the repository invariant that the Sandbox DO owns authoritative session state and credentials, KV is only a projection, and R2 holds immutable backups ([AGENTS.md](../../AGENTS.md#scope-and-invariants), [PLAN.md](../../PLAN.md#session-behavior)).
+This preserves the repository invariant that the Sandbox DO owns authoritative session state and credentials, KV is only a projection, and R2 holds immutable backups ([AGENTS.md](../../AGENTS.md#scope-and-invariants)).
 
 ### Existing read path
 

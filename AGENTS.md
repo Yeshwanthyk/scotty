@@ -4,12 +4,13 @@ Read this before changing Scotty.
 
 ## Scope and invariants
 
-- `PLAN.md` defines v1 behavior and security constraints.
-- `IMPLEMENTATION_DAG.md` defines state ownership, lifecycle invariants, and delivery gates.
-- `EFFECT_V4_MIGRATION.md` supersedes their infrastructure, runtime-framework, file-layout, and delivery-order sections. Their public behavior, security, state-ownership, lifecycle, and credential invariants remain binding.
-- Preserve public HTTP routes, CLI JSON shapes/exit codes, persisted session semantics, and credential isolation unless the user explicitly approves a contract change.
-- The Sandbox Durable Object owns authoritative session state and credentials. KV is a non-secret list projection. R2 contains immutable backups. Never move authority into Effect runtime memory.
-- Real Codex/GitHub credentials must never enter container env/files/process args/logs/KV/R2/API responses. Sentinels are container-visible capabilities bound to one Sandbox DO.
+- Preserve public HTTP routes and error envelopes, CLI JSON shapes and exit codes, persisted session semantics, workspace and branch conventions, browser handoff, and credential isolation unless the user explicitly approves a contract change.
+- Installation and runner names are user-supplied. Never infer them from a username, machine, repository, or Cloudflare account. Local config is a pointer, not deployment authority. Repository state contains no account identity, deployed resource identifier, or real credential.
+- The Sandbox Durable Object owns the session record, operation lease, credentials, backup handles, and hard-cap metadata. KV is a non-secret list projection. R2 contains immutable backups. Container files and Effect runtime memory are never authoritative.
+- The Auth Durable Object owns one browser owner, standard clients, pairing, transfer, recovery, revocation, and terminal tickets. It stores credential digests only. The root token is bearer and recovery authority only, never a cookie or URL. Root recovery revokes every browser credential.
+- Only one operation lease may mutate a session. Create arms the hard cap before commit. Snapshot stops Pi before sync and backup. Resume requires the current backup. Vaporize retries until owned state is gone. Interrupted work retains retry state or publishes a typed failure. Never report success from ambiguous provider state.
+- Real Codex/GitHub credentials must never enter container env/files/process args/logs/Git config/KV/R2/API responses or Alchemy props, outputs, and state. Containers receive session-bound sentinels only. OAuth rotation commits before the sanitized response returns.
+- Runner registration is available. Runner-backed session creation remains disabled until native Pi RPC transport and deployed lifecycle proof exist.
 
 ## Effect v4: source first
 
@@ -21,7 +22,7 @@ Before adding or changing any non-trivial Effect pattern:
 2. Read the relevant pattern in `vendor/effect/.patterns/`, especially `effect.md` and `testing.md`.
 3. Search `vendor/effect/ai-docs/src/` and `vendor/effect/migration/` for orientation.
 4. Inspect the actual implementation in `vendor/effect/packages/effect/src/` and its tests. Source and tests outrank remembered APIs or third-party examples.
-5. Search for an analogous established pattern before inventing an abstraction. If none exists, record the decision and trade-off in the migration plan before coding.
+5. Search for an analogous established pattern before inventing an abstraction. If none exists, record the decision and trade-off before coding.
 
 Do not rely on Effect v3 docs or add legacy `@effect/platform` / `@effect/schema` packages. In v4, platform and schema APIs live in `effect` and `effect/unstable/*`; verify every import against the pinned source.
 
@@ -42,7 +43,7 @@ Never put real Codex/GitHub credentials in Alchemy stack outputs, state, `Config
 
 ## Executor and effect-cf references
 
-`EFFECT_V4_MIGRATION.md` records pinned source evidence from UsefulSoftwareCo/executor and its Cloudflare host. Executor is a comparative implementation reference, not a Scotty dependency. Before copying an Executor pattern, inspect the cited source and verify it against pinned Effect beta.99 and Scotty's Cloudflare Sandbox constraints.
+Executor is a comparative implementation reference, not a Scotty dependency. Before copying an Executor pattern, inspect its source and verify it against pinned Effect beta.99 and Scotty's Cloudflare Sandbox constraints.
 
 Use Executor primarily for:
 
@@ -107,4 +108,4 @@ node e2e/scripts/scan.mjs
 bun build cli/scotty.ts --compile --outfile /tmp/scotty-cli
 ```
 
-The migration packet adds Effect-aware tests, Alchemy provider/binding checks, and a deployed Cloudflare canary before production proof can be claimed.
+Production proof requires the guarded Alchemy deployment and full deployed canary. A local fake or reachable host is not enough.
