@@ -137,11 +137,26 @@ describe("request contracts", () => {
     };
     const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));
     assert.ok(!("operation" in projection));
+    assert.isUndefined(projection.deleting);
     assert.deepInclude(toSessionView(projection, Date.parse("2026-01-01T01:00:00.000Z")), {
       title: "Package Pi extensions",
       ageSeconds: 3_600,
       capRemainingSeconds: 10_800,
     });
+
+    const deleting = toProjection(
+      {
+        ...record,
+        operation: {
+          kind: "vaporize",
+          nonce: "private-delete",
+          startedAt: "2026-01-01T00:00:03.000Z",
+        },
+      },
+      new Date("2026-01-01T00:00:04.000Z"),
+    );
+    assert.strictEqual(deleting.deleting, true);
+    assert.ok(!("operation" in deleting));
   });
 
   it("floors partial seconds in session views", () => {
