@@ -403,6 +403,7 @@ describe("Sandbox vaporize orchestration", () => {
       assert.strictEqual(partial?.operation?.kind, "vaporize");
       const nonce = partial?.operation?.nonce;
       assert.ok(nonce !== undefined);
+      assert.ok(harness.events.includes("projection:warm"));
       assert.deepStrictEqual(
         harness.schedules.map((schedule) => schedule.callback),
         ["retryVaporizeSession"],

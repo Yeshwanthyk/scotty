@@ -43,7 +43,11 @@ export function submissionIdentity(
   createKey: () => string,
 ): SubmissionIdentity;
 export function safeSessionPath(value: unknown, id: unknown, origin: string): string | undefined;
-export function sessionDisplayStatus(value: unknown, pendingAction: unknown): string;
+export function sessionDisplayStatus(
+  value: unknown,
+  pendingAction: unknown,
+  deleting?: unknown,
+): string;
 export function sessionKeyboardAction(
   key: unknown,
   focusedIndex: unknown,
