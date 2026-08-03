@@ -27,6 +27,16 @@ static FONT_GEIST_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Geist-SemiBo
 static FONT_GEIST_BOLD: &[u8] = include_bytes!("../assets/fonts/Geist-Bold.ttf");
 
 const MAX_DRAFT_BYTES: usize = 16 * 1024;
+const SIDEBAR_HEADER_PADDING: f32 = 18.0;
+const MACOS_TRAFFIC_LIGHT_SAFE_START: f32 = 88.0;
+
+fn sidebar_header_left_padding(is_macos: bool, fullscreen: bool) -> f32 {
+    if is_macos && !fullscreen {
+        MACOS_TRAFFIC_LIGHT_SAFE_START
+    } else {
+        SIDEBAR_HEADER_PADDING
+    }
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -732,7 +742,7 @@ impl DesktopView {
         cx.notify();
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let selected = self
             .state
@@ -855,7 +865,11 @@ impl DesktopView {
                 div()
                     .h(px(54.0))
                     .flex_none()
-                    .px(px(18.0))
+                    .pl(px(sidebar_header_left_padding(
+                        cfg!(target_os = "macos"),
+                        window.is_fullscreen(),
+                    )))
+                    .pr(px(SIDEBAR_HEADER_PADDING))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -1921,7 +1935,7 @@ impl Render for DesktopView {
             .text_color(theme.text)
             .font_family(theme.font_sans)
             .text_size(px(14.0))
-            .child(self.render_sidebar(cx))
+            .child(self.render_sidebar(window, cx))
             .child(self.render_main(cx))
             .when_some(operation, |root, (message, status)| {
                 root.child(
@@ -2761,7 +2775,16 @@ fn project_label(repo: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolExpansions, parse_hard_cap, should_apply_draft, valid_repo};
+    use super::{
+        ToolExpansions, parse_hard_cap, should_apply_draft, sidebar_header_left_padding, valid_repo,
+    };
+
+    #[test]
+    fn sidebar_header_reserves_windowed_macos_traffic_lights() {
+        assert_eq!(sidebar_header_left_padding(true, false), 88.0);
+        assert_eq!(sidebar_header_left_padding(true, true), 18.0);
+        assert_eq!(sidebar_header_left_padding(false, false), 18.0);
+    }
 
     #[test]
     fn stale_draft_frames_cannot_replace_local_edits() {
