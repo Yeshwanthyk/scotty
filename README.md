@@ -207,11 +207,22 @@ Worker secret without putting it in Alchemy state, and stores the local pointer 
 `~/.scotty.json`. The installation name is required and is never inferred from a username, machine,
 repository, or Cloudflare account.
 
-On a replacement machine, run `scotty init --name NAME --existing`. Cloudflare profile ownership is
-the recovery authority; the CLI reconnects to the same Alchemy stack and rotates the root token.
-Copying `~/.scotty.json` is optional, not required. A pre-existing deployment whose physical or
-Alchemy logical names differ from the generic convention can be preserved with a private
+On a replacement machine, run `scotty recover --name NAME`. Cloudflare profile ownership is the
+recovery authority. The CLI first discovers and displays the resource mapping. It rotates only the
+root token after confirmation. It writes a mode-0600 recovery journal before the remote change, so
+a stopped command can reuse the same token. A pre-existing deployment whose physical or Alchemy
+logical names differ from the generic convention can be recovered with a private
 `--adoption-manifest PATH`; `.scotty-adoption.json` is ignored by Git.
+
+Use `scotty deploy` for normal updates. It reads the managed installation from `~/.scotty.json`,
+checks the current Docker context, and shows the Alchemy resource plan. It asks for confirmation
+only when the plan has changes. A non-interactive deployment with changes needs `--yes`. Deployment
+never generates or changes the root token. On interactive macOS, Scotty offers to start Colima when
+the current Docker context is unavailable. It never changes `DOCKER_HOST`.
+
+Use `scotty uninstall` to remove the Container application and both Workers. It removes the local
+config only after the remote work succeeds. KV and R2 remain by default. Pass `--delete-data` only
+when the session index and every backup must also be deleted. Both modes stop all active sessions.
 
 Alchemy declares the Worker, Durable Objects, Container application, KV namespace, R2 bucket,
 assets, bindings, migrations, and retained-resource policy. Defaults are derived from the
@@ -276,10 +287,15 @@ pass with the pinned Pi version, then the guarded deployment and deployed canary
 ```sh
 npm run build:cli
 ./dist/scotty init --name home
-./dist/scotty init --name home --existing
+./dist/scotty recover --name home
+./dist/scotty deploy
 ./dist/scotty doctor --json
 ./dist/scotty owner recover
 ./dist/scotty beam up "fix the failing tests" --repo owner/project --provider cloudflare --json
+./dist/scotty beam down SESSION_ID --json
+./dist/scotty beam vaporize SESSION_ID --yes --json
+./dist/scotty upgrade
+./dist/scotty uninstall
 ./dist/scotty skills
 ```
 

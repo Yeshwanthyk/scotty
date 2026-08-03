@@ -50,6 +50,11 @@ describe("Effect command tree", () => {
         assert.strictEqual(yield* root.effect, EXIT.OK);
         const rootHelp = root.stdout.join("");
         assert.include(rootHelp, "scotty <subcommand> [flags]");
+        assert.include(rootHelp, "init");
+        assert.include(rootHelp, "recover");
+        assert.include(rootHelp, "deploy");
+        assert.include(rootHelp, "upgrade");
+        assert.include(rootHelp, "uninstall");
         assert.include(rootHelp, "beam");
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
@@ -64,7 +69,15 @@ describe("Effect command tree", () => {
         assert.strictEqual(yield* beam.effect, EXIT.OK);
         assert.include(beam.stdout.join(""), "scotty beam <subcommand> [flags]");
         assert.include(beam.stdout.join(""), "up");
+        assert.include(beam.stdout.join(""), "down");
+        assert.include(beam.stdout.join(""), "vaporize");
         assert.strictEqual(beam.stderr.join(""), "");
+
+        const deploy = run(["deploy", "--help"]);
+        assert.strictEqual(yield* deploy.effect, EXIT.OK);
+        assert.notInclude(deploy.stdout.join(""), "__scotty_trailing__");
+        assert.notInclude(deploy.stdout.join(""), "unexpected");
+        assert.strictEqual(deploy.stderr.join(""), "");
 
         const runner = run(["runner", "--help"]);
         assert.strictEqual(yield* runner.effect, EXIT.OK);

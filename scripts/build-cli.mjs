@@ -8,6 +8,7 @@ const buildDirectory = join(root, ".scotty-build");
 const archivePath = join(buildDirectory, "scotty-deployment.tar.gz");
 const entryPath = join(buildDirectory, "standalone.ts");
 const output = resolve(process.argv[2] ?? join(root, "dist", "scotty"));
+const compileTarget = process.env.SCOTTY_COMPILE_TARGET;
 
 async function collect(path, files) {
   const entries = await readdir(path, { withFileTypes: true });
@@ -44,7 +45,10 @@ await Bun.write(
 await Bun.build({
   entrypoints: [entryPath],
   target: "bun",
-  compile: { outfile: output },
+  compile: {
+    outfile: output,
+    ...(compileTarget ? { target: compileTarget } : {}),
+  },
   minify: true,
   sourcemap: "none",
 });

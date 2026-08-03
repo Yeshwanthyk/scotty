@@ -31,10 +31,11 @@ Run these only after explicit production approval:
    owner laptop.
 2. Run the guarded production deploy with `npm run deploy:production`.
 3. Do not open any historical `?t=` links. They must now fail.
-4. On the intended primary laptop, run:
+4. On the intended primary laptop, recover the named installation through the approved Cloudflare
+   profile, then recover browser ownership:
 
    ```sh
-   scotty init --host https://scotty-worker.<account>.workers.dev --token "$SCOTTY_TOKEN"
+   scotty recover --name <installation-name>
    scotty owner recover
    ```
 

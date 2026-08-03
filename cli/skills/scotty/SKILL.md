@@ -62,10 +62,11 @@ Final response is complete only when it matches one of these shapes:
   `{"id","status","backupId"?}`.
 - Resume a sleeping or recoverably failed session with `scotty resume ID --json`, then observe the
   exact ID when status is `booting`.
-- From the matching local Git repository, run `scotty down ID --json`; expect
+- From the matching local Git repository, run `scotty beam down ID --json`; expect
   `{"branch","sha","rolloutPath","resumeCmd"}`. Run a non-null `resumeCmd` when the user wants local
   continuation.
-- With explicit user intent and work stored elsewhere, run `scotty vaporize ID --yes --json`.
+- With explicit user intent and work stored elsewhere, run
+  `scotty beam vaporize ID --yes --json`.
   Completion is exactly `{"id","status":"gone"}`. Vaporize deletes immediately; create any required
   snapshot first.
 
@@ -76,14 +77,19 @@ vaporize ends at `gone`.
 
 - Before setup, ask the user for an installation name. Never infer it from their username, machine,
   repository, Cloudflare account, or an existing Scotty deployment.
-- `scotty init --name NAME [--profile PROFILE]` authenticates with the user's own Cloudflare
-  account, deploys namespaced resources, creates the root token, and writes a mode-0600
-  `~/.scotty.json`. It is the only prompting command.
-- On a new machine, `scotty init --name NAME --existing [--profile PROFILE]` recovers the named
-  installation and rotates its root token. A legacy deployment can be preserved with a private,
-  uncommitted `--adoption-manifest PATH`.
-- `scotty init --host URL --token TOKEN` connects directly without managing infrastructure.
-  Credential precedence for later commands is flags, environment, then config.
+- `scotty init --name NAME [--profile PROFILE]` creates one namespaced installation, creates the
+  root token, and writes a mode-0600 `~/.scotty.json`. It does not adopt or recover resources.
+- On a new machine, `scotty recover --name NAME [--profile PROFILE]` displays the existing resource
+  mapping and rotates only the root token after confirmation. A legacy deployment can use a
+  private, uncommitted `--adoption-manifest PATH`.
+- `scotty deploy` plans and applies code or resource changes for the managed installation. It does
+  not change credentials. It asks only when the plan contains changes. Use `--yes` for changed
+  non-interactive deployments.
+- `scotty upgrade` installs a newer GitHub Release only after Ed25519 manifest and SHA-256 asset
+  checks pass.
+- `scotty uninstall` deletes compute and retains KV/R2 data by default. `--delete-data` also deletes
+  that data. Both forms require confirmation and stop active sessions.
+- Credential precedence for session commands is flags, environment, then config.
 - `scotty doctor --json` verifies the local installation pointer, Worker reachability, and root
   authentication without exposing the token.
 - Before runner setup, ask for a stable runner name. Never infer it from a username, hostname,

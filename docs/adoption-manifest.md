@@ -28,11 +28,17 @@ match the current `scotty-NAME-*` convention. Keep the file outside the reposito
 }
 ```
 
-Recover or deploy it with:
+Recover access with:
 
 ```sh
-scotty init --name home --existing --adoption-manifest /private/path/adoption.json
+scotty recover --name home --adoption-manifest /private/path/adoption.json
 ```
 
-The manifest contains identifiers, not credentials. Scotty still keeps the generated root token
-only in the Cloudflare Worker secret and the local mode-0600 config.
+Scotty reads the manifest, checks the exact Worker in the selected Cloudflare account, displays the
+mapping, and asks for confirmation before it rotates the root token. Recovery does not deploy code
+or rewrite Alchemy state. A later `scotty deploy` can use this mapping only when the named Alchemy
+stack already owns those resources.
+
+The manifest contains identifiers, not credentials. Scotty keeps the generated root token only in
+the Cloudflare Worker secret, the local mode-0600 config, and a temporary mode-0600 recovery journal
+that it removes after success.

@@ -514,18 +514,18 @@ Behavior:
 - Human output reports that recovery opened and its expiry.
 - JSON output includes only `{ "opened": true, "expiresAt": "..." }`.
 
-Change `browserUrl` so `scotty up` and `scotty attach` open clean `/s/:id` URLs without receiving or
+Change `browserUrl` so `scotty beam up` and `scotty attach` open clean `/s/:id` URLs without receiving or
 injecting the root token. Their existing safe JSON output remains unchanged.
 
 On a replacement laptop the operator flow is:
 
 ```text
-scotty init --host <worker-origin> --token <protected-root-token>
+scotty recover --name <installation-name>
 scotty owner recover
 ```
 
-The operator must keep `SCOTTY_TOKEN` in a password manager or another protected recovery location.
-Cloudflare does not provide the browser with the root secret.
+The operator recovers installation access through the approved Cloudflare profile. The CLI rotates
+`SCOTTY_TOKEN`, stores it in the local mode-0600 config, and does not provide it to the browser.
 
 ## 13. Version-1 migration
 

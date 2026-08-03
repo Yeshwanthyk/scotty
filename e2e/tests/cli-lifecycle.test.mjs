@@ -97,7 +97,7 @@ test("real CLI completes beam up/ls/snapshot/resume/down/vaporize against the fa
 
   const gitFixture = await makeGitFixture(root, service.sessions.get(id).branch);
   service.sessions.get(id).sha = gitFixture.sha;
-  const down = await runCli(["down", id, "--json"], { env, cwd: gitFixture.local });
+  const down = await runCli(["beam", "down", id, "--json"], { env, cwd: gitFixture.local });
   assert.equal(down.code, 0, down.stderr);
   assert.deepEqual(Object.keys(down.json).sort(), ["branch", "resumeCmd", "rolloutPath", "sha"]);
   assert.equal(down.json.branch, service.sessions.get(id).branch);
@@ -113,7 +113,7 @@ test("real CLI completes beam up/ls/snapshot/resume/down/vaporize against the fa
     "beam-down must fetch the remote session branch",
   );
 
-  const vaporize = await runCli(["vaporize", id, "--yes", "--json"], { env });
+  const vaporize = await runCli(["beam", "vaporize", id, "--yes", "--json"], { env });
   assert.equal(vaporize.code, 0, vaporize.stderr);
   assert.equal(vaporize.json.status, "gone");
   const remaining = service.inspect();
@@ -124,7 +124,7 @@ test("real CLI completes beam up/ls/snapshot/resume/down/vaporize against the fa
   assert.deepEqual(remaining.credentialIds, []);
   assert.ok(remaining.tombstones.includes(id));
 
-  const repeated = await runCli(["vaporize", id, "--yes", "--json"], { env });
+  const repeated = await runCli(["beam", "vaporize", id, "--yes", "--json"], { env });
   assert.equal(repeated.code, 0, repeated.stderr);
   assert.equal(repeated.json.status, "gone");
 });
@@ -206,7 +206,7 @@ test("beam-down rejects traversal entries without writing outside CODEX_HOME", a
   ]);
   const local = path.join(root, "local");
   fs.mkdirSync(local);
-  const result = await runCli(["down", up.json.id, "--json"], { env, cwd: local });
+  const result = await runCli(["beam", "down", up.json.id, "--json"], { env, cwd: local });
   assert.notEqual(result.code, 0, "unsafe tar must fail closed");
   assert.equal(fs.existsSync(path.join(root, "escape.jsonl")), false);
   assert.equal(fs.existsSync(path.join(home, "escape.jsonl")), false);
