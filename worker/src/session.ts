@@ -981,6 +981,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (current.operation?.kind !== "vaporize" || current.operation.nonce !== payload.nonce)
       return yield* conflict("Session vaporize lease changed");
 
+    yield* projectSessionBestEffort(current);
     yield* Effect.sync(() => this.cancelVaporizeConflictingSchedules());
     const destroyed =
       current.execution.provider === "runner"
