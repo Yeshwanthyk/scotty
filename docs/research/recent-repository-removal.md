@@ -35,16 +35,11 @@ are derived from session records at render time
 - Keep manual `owner/name` entry available. The next successful creation of a
   session for the forgotten repository should add it to recents again.
 
-This boundary follows Scotty's ownership model: the Sandbox DO is authoritative
-for session lifecycle and credentials, KV is only a list projection, R2 holds
-immutable backups, and the container filesystem is disposable session working
-state
-([`IMPLEMENTATION_DAG.md`, State ownership and invariants](../../IMPLEMENTATION_DAG.md#L101-L148)).
-Source-control publishing is intentionally outside Scotty's HTTP and lifecycle
-orchestration, so a recents mutation cannot own GitHub branch or pull-request
-cleanup
-([`PLAN.md`, source control](../../PLAN.md#L180-L190);
-[`EFFECT_V4_MIGRATION.md`, Chunk 10](../../EFFECT_V4_MIGRATION.md#L631-L638)).
+This boundary follows [Scotty's ownership model](../../AGENTS.md#scope-and-invariants): the Sandbox
+DO is authoritative for session lifecycle and credentials, KV is only a list projection, R2 holds
+immutable backups, and the container filesystem is disposable session working state. Source-control
+publishing is outside Scotty's HTTP and lifecycle orchestration, so a recents mutation cannot own
+GitHub branch or pull-request cleanup.
 
 ## Where Recent repositories comes from
 
@@ -154,9 +149,8 @@ case-insensitively, or migrate future keys to a normalized identity while
 cleaning up legacy aliases. Deleting only the displayed exact-case key is not
 sufficient.
 
-KV is explicitly an eventually consistent projection and may lag without
-changing authoritative transitions
-([`IMPLEMENTATION_DAG.md`](../../IMPLEMENTATION_DAG.md#L103-L107)).
+KV is an eventually consistent projection and may lag without changing authoritative transitions
+([`AGENTS.md`](../../AGENTS.md#scope-and-invariants)).
 The page should optimistically suppress the successfully forgotten identity for
 the remainder of the current view so a stale read cannot make the chip bounce
 back. If a concurrent session creation for the same repository completes after

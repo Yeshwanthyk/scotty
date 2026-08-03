@@ -14,10 +14,8 @@ model:
 - Losing the owner device requires a short-lived recovery grant issued with `SCOTTY_TOKEN`.
 - Passkeys, user accounts, email recovery, and external identity providers are out of scope.
 
-`PLAN.md` and `IMPLEMENTATION_DAG.md` still describe root-query bootstrap and multiple stored admin
-clients. Wave 0 must amend those binding contracts before production code changes. The
-infrastructure, session, credential-isolation, and lifecycle contracts in those files and
-`EFFECT_V4_MIGRATION.md` remain unchanged.
+The live infrastructure, session, credential-isolation, ownership, and lifecycle contracts are in
+[`AGENTS.md`](../AGENTS.md).
 
 ## 1. Current baseline and retained behavior
 
@@ -588,9 +586,7 @@ credential.
 Files:
 
 - `docs/owner-transfer-plan.md`
-- `PLAN.md`
-- `IMPLEMENTATION_DAG.md`
-- `EFFECT_V4_MIGRATION.md`
+- `AGENTS.md`
 
 Work:
 
