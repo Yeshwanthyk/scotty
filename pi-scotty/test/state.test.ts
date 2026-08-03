@@ -56,6 +56,18 @@ describe("snapshot and SSE reducer", () => {
     expect(renderedState.match(/\[sentinel\]/gu)?.length).toBeGreaterThan(8);
   });
 
+  it("keeps every bounded snapshot message independent of its array index", () => {
+    const messages = Array.from({ length: 20 }, (_, index) => ({
+      role: "assistant",
+      content: `message-${index}`,
+    }));
+    const live = hydrateSnapshot({ ...snapshot(), messages });
+
+    expect(live.messages).toHaveLength(20);
+    expect(live.messages.at(13)).toEqual({ role: "assistant", content: "message-13" });
+    expect(live.messages.at(-1)).toEqual({ role: "assistant", content: "message-19" });
+  });
+
   it("hydrates a contiguous overlap, redacts it, and ignores duplicates", () => {
     const overlap = [
       event(1, {

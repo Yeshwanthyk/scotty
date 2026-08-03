@@ -246,6 +246,100 @@ describe("HttpConsoleTransport", () => {
     expect(calls).toBe(1);
   });
 
+  it("performs bounded same-origin sandbox mutations without exposing credentials", async () => {
+    const requests: Request[] = [];
+    const transport = new HttpConsoleTransport(
+      { version: 1, origin: "https://scotty.example", credential: CREDENTIAL },
+      {
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          const path = new URL(request.url).pathname;
+          if (path === "/api/sessions" && request.method === "POST")
+            return Response.json({
+              id: "created-session",
+              title: "Review branch",
+              url: "https://scotty.example/s/created-session",
+              branch: "scotty/created-session",
+              provider: "cloudflare",
+              status: "booting",
+            });
+          if (request.method === "DELETE") return Response.json({ id: SESSION_A, status: "gone" });
+          return Response.json(session(SESSION_A));
+        },
+      },
+    );
+
+    await transport.createSession(
+      {
+        title: "Review branch",
+        prompt: "Review the branch",
+        repo: "owner/repo",
+        hardCapSeconds: 3600,
+      },
+      "request-create-0001",
+    );
+    await transport.renameSession(SESSION_A, "Renamed", "request-rename-0001");
+    await transport.snapshotSession(SESSION_A, "request-snapshot-0001");
+    await transport.resumeSession(SESSION_A, "request-resume-0001");
+    await transport.vaporizeSession(SESSION_A, "request-vaporize-0001");
+
+    expect(requests.map((request) => request.method)).toEqual([
+      "POST",
+      "PATCH",
+      "POST",
+      "POST",
+      "DELETE",
+    ]);
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/api/sessions",
+      `/api/sessions/${SESSION_A}`,
+      `/api/sessions/${SESSION_A}/snapshot`,
+      `/api/sessions/${SESSION_A}/resume`,
+      `/api/sessions/${SESSION_A}`,
+    ]);
+    for (const request of requests) {
+      expect(request.headers.get("cookie")).toBe(`__Host-scotty=${CREDENTIAL}`);
+      expect(request.headers.get("origin")).toBe("https://scotty.example");
+      expect(request.headers.get("sec-fetch-site")).toBe("same-origin");
+      expect(request.url).not.toContain(CREDENTIAL);
+    }
+    expect(requests[0]?.headers.get("idempotency-key")).toBe(
+      "scotty-desktop:create:request-create-0001",
+    );
+    expect(requests.slice(1).every((request) => !request.headers.has("idempotency-key"))).toBe(
+      true,
+    );
+    expect(await requests[0]?.json()).toEqual({
+      title: "Review branch",
+      prompt: "Review the branch",
+      repo: "owner/repo",
+      hardCapSeconds: 3600,
+      provider: "cloudflare",
+    });
+  });
+
+  it("surfaces redacted lifecycle failures without retrying", async () => {
+    let calls = 0;
+    const transport = new HttpConsoleTransport(
+      { version: 1, origin: "https://scotty.example", credential: CREDENTIAL },
+      {
+        fetch: async () => {
+          calls += 1;
+          return Response.json(
+            { error: { message: "Cannot resume github_pat_secret-value" } },
+            { status: 409 },
+          );
+        },
+      },
+    );
+
+    await expect(transport.resumeSession(SESSION_A, "request-resume-0001")).rejects.toThrow(
+      "Cannot resume [credential]-value",
+    );
+    expect(calls).toBe(1);
+  });
+
   it("rejects oversized and malformed untrusted responses", async () => {
     const oversized = new HttpConsoleTransport(
       { version: 1, origin: "https://scotty.example", credential: CREDENTIAL },
