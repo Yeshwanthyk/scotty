@@ -11,7 +11,8 @@ transcript, command, and credential authority.
 2. **Fleet shell** — native window lists every projected Cloudflare session;
    warm sessions attach passively while cold/failed sessions remain inspectable.
 3. **Live session** — selection hydrates the passive snapshot, follows SSE, and
-   renders a virtualized chat/work timeline, waiting input, and unavailable states.
+   renders a virtualized chat/work timeline with Markdown assistant/reasoning blocks,
+   session-scoped expandable tool calls, waiting input, and unavailable states.
 4. **Controls** — composer routes prompt/steer/follow-up/abort and blocking UI
    answers through the existing revision- and epoch-fenced controller. Explicit
    create, rename, snapshot, resume, and confirmed vaporize actions use the

@@ -1,15 +1,19 @@
 mod app_menus;
+mod markdown;
 mod sidecar;
 mod theme;
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use gpui::{
-    App, AppContext as _, Bounds, Context, FocusHandle, Focusable, FollowMode, FontWeight,
-    IntoElement, KeyDownEvent, ListAlignment, ListState, Render, Role, SharedString, Task,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, list, prelude::*, px, size,
+    App, AppContext as _, Bounds, Context, FocusHandle, Focusable, FollowMode, FontStyle,
+    FontWeight, HighlightStyle, IntoElement, KeyDownEvent, ListAlignment, ListState, Render, Role,
+    SharedString, StyledText, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
+    list, prelude::*, px, size,
 };
 use gpui_tokio::Tokio;
+use markdown::{MarkdownBlock, MarkdownBlockKind, MarkdownStyle, parse_markdown};
 use sidecar::{
     DesktopCommand, DesktopState, Frame, ManagementAction, NoticeTone, OperationStatus, PendingUi,
     SelectionFence, SidecarConnection, SidecarEvent, ToolStatus, TranscriptItem,
@@ -96,6 +100,27 @@ enum ConnectionStatus {
     Stopped,
 }
 
+#[derive(Default)]
+struct ToolExpansions {
+    keys: HashSet<String>,
+}
+
+impl ToolExpansions {
+    fn is_expanded(&self, session_id: &str, tool_id: &str) -> bool {
+        self.keys.contains(&tool_key(session_id, tool_id))
+    }
+
+    fn toggle(&mut self, session_id: &str, tool_id: &str) {
+        let key = tool_key(session_id, tool_id);
+        if !self.keys.remove(&key) {
+            if self.keys.len() >= 512 {
+                self.keys.clear();
+            }
+            self.keys.insert(key);
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CreateField {
     Title,
@@ -164,6 +189,7 @@ struct DesktopView {
     transcript_list: ListState,
     transcript_ids: Vec<String>,
     unseen_transcript: usize,
+    tool_expansions: ToolExpansions,
     management_panel: Option<ManagementPanel>,
     operation: Option<OperationNotice>,
     command_error: Option<String>,
@@ -231,6 +257,7 @@ impl DesktopView {
             transcript_list,
             transcript_ids: Vec::new(),
             unseen_transcript: 0,
+            tool_expansions: ToolExpansions::default(),
             management_panel: None,
             operation: None,
             command_error: None,
@@ -926,16 +953,33 @@ impl DesktopView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx).clone();
-        let Some(item) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.selected.as_ref())
-            .and_then(|selected| selected.live.as_ref())
-            .and_then(|live| live.transcript.get(index))
-        else {
+        let Some((session_id, item)) = self.state.as_ref().and_then(|state| {
+            let session_id = state.selected_session_id.clone()?;
+            let item = state
+                .selected
+                .as_ref()?
+                .live
+                .as_ref()?
+                .transcript
+                .get(index)?
+                .clone();
+            Some((session_id, item))
+        }) else {
             return div().into_any_element();
         };
-        render_transcript_item(index, item, &theme)
+        let tool_expanded = match &item {
+            TranscriptItem::Tool { id, .. } => self.tool_expanded(&session_id, id),
+            _ => false,
+        };
+        render_transcript_item(index, &item, &session_id, tool_expanded, &theme, cx)
+    }
+
+    fn tool_expanded(&self, session_id: &str, tool_id: &str) -> bool {
+        self.tool_expansions.is_expanded(session_id, tool_id)
+    }
+
+    fn toggle_tool(&mut self, session_id: &str, tool_id: &str) {
+        self.tool_expansions.toggle(session_id, tool_id);
     }
 
     fn render_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2092,6 +2136,10 @@ fn should_apply_draft(selection_changed: bool, incoming: u64, current: u64) -> b
     selection_changed || incoming > current
 }
 
+fn tool_key(session_id: &str, tool_id: &str) -> String {
+    format!("{session_id}\u{1f}{tool_id}")
+}
+
 fn make_selection_fence(
     session_id: Option<&str>,
     selected: Option<&sidecar::SelectedState>,
@@ -2104,7 +2152,14 @@ fn make_selection_fence(
     })
 }
 
-fn render_transcript_item(index: usize, item: &TranscriptItem, theme: &Theme) -> gpui::AnyElement {
+fn render_transcript_item(
+    index: usize,
+    item: &TranscriptItem,
+    session_id: &str,
+    tool_expanded: bool,
+    theme: &Theme,
+    cx: &mut Context<DesktopView>,
+) -> gpui::AnyElement {
     let row = div()
         .id(SharedString::from(format!("transcript-{}", item.id())))
         .w_full()
@@ -2146,15 +2201,7 @@ fn render_transcript_item(index: usize, item: &TranscriptItem, theme: &Theme) ->
             .into_any_element(),
         TranscriptItem::Assistant { text, .. } => row
             .mb(px(18.0))
-            .child(
-                column.child(
-                    div()
-                        .px(px(2.0))
-                        .text_size(px(13.0))
-                        .text_color(theme.text)
-                        .child(SharedString::from(truncate(text, 16_000))),
-                ),
-            )
+            .child(column.child(render_markdown(text, theme, false)))
             .into_any_element(),
         TranscriptItem::Thinking { text, .. } => row
             .mb(px(10.0))
@@ -2186,27 +2233,34 @@ fn render_transcript_item(index: usize, item: &TranscriptItem, theme: &Theme) ->
                                         .text_color(theme.text_faint)
                                         .child("REASONING"),
                                 )
-                                .child(SharedString::from(truncate(text, 8_000))),
+                                .child(render_markdown(text, theme, true)),
                         ),
                 ),
             )
             .into_any_element(),
         TranscriptItem::Tool {
+            id,
             name,
             summary,
             detail,
             status,
             result,
-            ..
         } => row
             .mb(px(8.0))
             .child(column.child(render_tool(
-                name,
-                summary,
-                detail.as_deref(),
-                *status,
-                result.as_deref(),
+                ToolView {
+                    row_index: index,
+                    session_id,
+                    id,
+                    name,
+                    summary,
+                    detail: detail.as_deref(),
+                    status: *status,
+                    result: result.as_deref(),
+                    expanded: tool_expanded,
+                },
                 theme,
+                cx,
             )))
             .into_any_element(),
         TranscriptItem::Error { message, .. } => row
@@ -2242,49 +2296,208 @@ fn render_transcript_item(index: usize, item: &TranscriptItem, theme: &Theme) ->
     }
 }
 
-fn render_tool(
-    name: &str,
-    summary: &str,
-    detail: Option<&str>,
-    status: ToolStatus,
-    result: Option<&str>,
+fn render_markdown(source: &str, theme: &Theme, muted: bool) -> gpui::AnyElement {
+    let source = truncate(source, 16_000);
+    let blocks = parse_markdown(&source);
+    div()
+        .px(px(2.0))
+        .flex()
+        .flex_col()
+        .gap(px(9.0))
+        .children(
+            blocks
+                .into_iter()
+                .map(|block| render_markdown_block(block, theme, muted))
+                .collect::<Vec<_>>(),
+        )
+        .into_any_element()
+}
+
+fn render_markdown_block(block: MarkdownBlock, theme: &Theme, muted: bool) -> gpui::AnyElement {
+    let text_color = if muted {
+        theme.text_muted.opacity(0.78)
+    } else {
+        theme.text
+    };
+    let content = styled_markdown_text(&block, theme, text_color);
+    match block.kind {
+        MarkdownBlockKind::Heading(level) => div()
+            .mt(if level <= 2 { px(4.0) } else { px(1.0) })
+            .text_size(match level {
+                1 => px(21.0),
+                2 => px(18.0),
+                3 => px(16.0),
+                _ => px(14.0),
+            })
+            .line_height(match level {
+                1 => px(28.0),
+                2 => px(25.0),
+                _ => px(22.0),
+            })
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(text_color)
+            .child(content)
+            .into_any_element(),
+        MarkdownBlockKind::Quote => div()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface.opacity(0.62))
+            .px(px(11.0))
+            .py(px(8.0))
+            .text_size(px(12.5))
+            .line_height(px(19.0))
+            .text_color(if muted { text_color } else { theme.text_muted })
+            .child(content)
+            .into_any_element(),
+        MarkdownBlockKind::Code => div()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface_raised)
+            .px(px(11.0))
+            .py(px(9.0))
+            .font_family(theme.font_mono.clone())
+            .text_size(px(11.5))
+            .line_height(px(18.0))
+            .text_color(text_color.opacity(0.9))
+            .child(SharedString::from(block.text))
+            .into_any_element(),
+        MarkdownBlockKind::ListItem => div()
+            .text_size(px(13.0))
+            .line_height(px(20.0))
+            .text_color(text_color)
+            .child(content)
+            .into_any_element(),
+        MarkdownBlockKind::Rule => div()
+            .my(px(5.0))
+            .h(px(1.0))
+            .w_full()
+            .bg(theme.border)
+            .into_any_element(),
+        MarkdownBlockKind::Paragraph => div()
+            .text_size(px(13.0))
+            .line_height(px(20.0))
+            .text_color(text_color)
+            .child(content)
+            .into_any_element(),
+    }
+}
+
+fn styled_markdown_text(
+    block: &MarkdownBlock,
     theme: &Theme,
+    text_color: gpui::Hsla,
+) -> StyledText {
+    StyledText::new(SharedString::from(block.text.clone())).with_highlights(
+        block.ranges.iter().map(|range| {
+            (
+                range.range.clone(),
+                markdown_highlight(range.style, theme, text_color),
+            )
+        }),
+    )
+}
+
+fn markdown_highlight(
+    style: MarkdownStyle,
+    theme: &Theme,
+    text_color: gpui::Hsla,
+) -> HighlightStyle {
+    HighlightStyle {
+        font_weight: style.strong.then_some(FontWeight::SEMIBOLD),
+        font_style: style.emphasis.then_some(FontStyle::Italic),
+        color: if style.link {
+            Some(theme.accent)
+        } else if style.code {
+            Some(text_color.opacity(0.92))
+        } else {
+            None
+        },
+        background_color: style.code.then_some(theme.element_hover),
+        ..Default::default()
+    }
+}
+
+struct ToolView<'a> {
+    row_index: usize,
+    session_id: &'a str,
+    id: &'a str,
+    name: &'a str,
+    summary: &'a str,
+    detail: Option<&'a str>,
+    status: ToolStatus,
+    result: Option<&'a str>,
+    expanded: bool,
+}
+
+fn render_tool(
+    tool: ToolView<'_>,
+    theme: &Theme,
+    cx: &mut Context<DesktopView>,
 ) -> gpui::AnyElement {
+    let ToolView {
+        row_index,
+        session_id,
+        id: tool_id,
+        name,
+        summary,
+        detail,
+        status,
+        result,
+        expanded,
+    } = tool;
     let (glyph, status_label, tint) = match status {
         ToolStatus::Pending => ("○", "PENDING", theme.text_faint),
         ToolStatus::Running => ("●", "RUNNING", theme.accent),
         ToolStatus::Completed => ("✓", "DONE", theme.text_muted),
         ToolStatus::Failed => ("!", "FAILED", theme.danger),
     };
-    let preview = result
-        .map(|value| single_line(value, 180))
-        .filter(|value| !value.is_empty());
+    let toggle_session = session_id.to_string();
+    let toggle_tool = tool_id.to_string();
+    let accessibility_label = format!(
+        "{} tool call: {}; {}",
+        if expanded { "Collapse" } else { "Expand" },
+        summary,
+        status_label.to_ascii_lowercase()
+    );
     div()
-        .flex()
-        .items_stretch()
-        .child(div().ml(px(12.0)).w(px(1.0)).flex_none().bg(theme.border))
+        .ml(px(12.0))
+        .min_w_0()
+        .rounded(px(9.0))
+        .border_1()
+        .border_color(if status == ToolStatus::Failed {
+            theme.danger.opacity(0.18)
+        } else {
+            theme.border
+        })
+        .bg(if status == ToolStatus::Failed {
+            theme.danger.opacity(0.045)
+        } else {
+            theme.surface.opacity(0.74)
+        })
         .child(
             div()
-                .ml(px(12.0))
-                .min_w_0()
-                .flex_1()
+                .id(SharedString::from(format!(
+                    "tool-toggle-{session_id}-{tool_id}"
+                )))
+                .role(Role::Button)
+                .aria_label(SharedString::from(accessibility_label))
+                .aria_expanded(expanded)
+                .focusable()
+                .tab_stop(true)
+                .cursor_pointer()
                 .flex()
                 .items_center()
                 .gap(px(9.0))
-                .rounded(px(9.0))
-                .border_1()
-                .border_color(if status == ToolStatus::Failed {
-                    theme.danger.opacity(0.18)
-                } else {
-                    theme.border
-                })
-                .bg(if status == ToolStatus::Failed {
-                    theme.danger.opacity(0.045)
-                } else {
-                    theme.surface.opacity(0.74)
-                })
                 .px(px(9.0))
                 .py(px(8.0))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.toggle_tool(&toggle_session, &toggle_tool);
+                    view.transcript_list
+                        .remeasure_items(row_index..row_index.saturating_add(1));
+                    cx.notify();
+                }))
                 .child(
                     div()
                         .size(px(20.0))
@@ -2302,63 +2515,98 @@ fn render_tool(
                     div()
                         .min_w_0()
                         .flex_1()
+                        .flex()
+                        .items_center()
+                        .gap(px(7.0))
                         .child(
                             div()
-                                .flex()
-                                .items_center()
-                                .gap(px(7.0))
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(if status == ToolStatus::Failed {
-                                            theme.danger
-                                        } else {
-                                            theme.text
-                                        })
-                                        .child(SharedString::from(summary.to_string())),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(8.5))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(tint)
-                                        .child(status_label),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(9.0))
-                                        .text_color(theme.text_faint)
-                                        .child(SharedString::from(name.to_string())),
-                                ),
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if status == ToolStatus::Failed {
+                                    theme.danger
+                                } else {
+                                    theme.text
+                                })
+                                .child(SharedString::from(single_line(summary, 180))),
                         )
-                        .when_some(detail, |content, detail| {
-                            content.child(
-                                div()
-                                    .mt(px(2.0))
-                                    .truncate()
-                                    .font_family(theme.font_mono.clone())
-                                    .text_size(px(10.5))
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(single_line(detail, 220))),
-                            )
-                        })
-                        .when_some(preview, |content, preview| {
-                            content.child(
-                                div()
-                                    .mt(px(2.0))
-                                    .truncate()
-                                    .font_family(theme.font_mono.clone())
-                                    .text_size(px(10.0))
-                                    .text_color(if status == ToolStatus::Failed {
-                                        theme.danger.opacity(0.85)
-                                    } else {
-                                        theme.text_faint
-                                    })
-                                    .child(SharedString::from(preview)),
-                            )
-                        }),
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(8.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(tint)
+                                .child(status_label),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(9.0))
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from(single_line(name, 48))),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(14.0))
+                        .text_center()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_faint)
+                        .child(if expanded { "⌄" } else { "›" }),
                 ),
+        )
+        .when(expanded, |card| {
+            card.child(
+                div()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .px(px(10.0))
+                    .py(px(9.0))
+                    .when_some(detail, |body, detail| {
+                        body.child(tool_detail("INPUT", detail, status, theme))
+                    })
+                    .when_some(result, |body, result| {
+                        body.child(tool_detail("OUTPUT", result, status, theme))
+                    })
+                    .when(detail.is_none() && result.is_none(), |body| {
+                        body.text_size(px(10.5))
+                            .text_color(theme.text_faint)
+                            .child("No tool details were projected.")
+                    }),
+            )
+        })
+        .into_any_element()
+}
+
+fn tool_detail(
+    label: &'static str,
+    value: &str,
+    status: ToolStatus,
+    theme: &Theme,
+) -> gpui::AnyElement {
+    div()
+        .mb(px(7.0))
+        .child(
+            div()
+                .mb(px(4.0))
+                .text_size(px(8.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_faint)
+                .child(label),
+        )
+        .child(
+            div()
+                .font_family(theme.font_mono.clone())
+                .text_size(px(10.5))
+                .line_height(px(16.0))
+                .text_color(if status == ToolStatus::Failed {
+                    theme.danger.opacity(0.9)
+                } else {
+                    theme.text_muted
+                })
+                .child(SharedString::from(truncate(value, 8_000))),
         )
         .into_any_element()
 }
@@ -2513,7 +2761,7 @@ fn project_label(repo: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_hard_cap, should_apply_draft, valid_repo};
+    use super::{ToolExpansions, parse_hard_cap, should_apply_draft, valid_repo};
 
     #[test]
     fn stale_draft_frames_cannot_replace_local_edits() {
@@ -2521,6 +2769,20 @@ mod tests {
         assert!(!should_apply_draft(false, 5, 5));
         assert!(should_apply_draft(false, 6, 5));
         assert!(should_apply_draft(true, 0, 5));
+    }
+
+    #[test]
+    fn tool_expansion_is_stable_and_namespaced_by_session() {
+        let mut expansions = ToolExpansions::default();
+        assert!(!expansions.is_expanded("session-a", "tool-1"));
+
+        expansions.toggle("session-a", "tool-1");
+        assert!(expansions.is_expanded("session-a", "tool-1"));
+        assert!(!expansions.is_expanded("session-b", "tool-1"));
+        assert!(!expansions.is_expanded("session-a", "tool-2"));
+
+        expansions.toggle("session-a", "tool-1");
+        assert!(!expansions.is_expanded("session-a", "tool-1"));
     }
 
     #[test]

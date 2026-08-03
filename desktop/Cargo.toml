@@ -16,6 +16,7 @@ gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "a6c1ad501f90c
   "runtime_shaders",
 ] }
 gpui_tokio = { git = "https://github.com/wingleeio/zed", rev = "a6c1ad501f90c9437d2553bde691958f150364c5" }
+pulldown-cmark = { version = "0.13.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "process", "rt-multi-thread", "sync", "time"] }

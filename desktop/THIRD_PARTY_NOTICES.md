@@ -15,6 +15,12 @@ The bundled Geist font files are copyright (c) 2023 Vercel, in collaboration
 with basement.studio, and licensed under the SIL Open Font License 1.1. See
 [`GEIST_LICENSE.txt`](GEIST_LICENSE.txt).
 
+## pulldown-cmark
+
+Assistant and reasoning Markdown is parsed with
+[`pulldown-cmark`](https://github.com/raphlinus/pulldown-cmark) 0.13.4, licensed
+under the MIT License.
+
 ## GPUI
 
 The desktop uses GPUI from the `wingleeio/zed` fork pinned in `Cargo.toml` at
