@@ -446,7 +446,9 @@ export const hydrateSnapshot = (snapshot: PiConsoleSnapshotV1): LiveProjection =
   }
 
   const state = redactRemoteValue(snapshot.state);
-  const messages = snapshot.messages.map(redactRemoteValue).slice(-PI_CONSOLE_MAX_MESSAGES);
+  const messages = snapshot.messages
+    .map((message) => redactRemoteValue(message))
+    .slice(-PI_CONSOLE_MAX_MESSAGES);
   const pendingUi = sanitizePendingUi(snapshot.pendingUi);
   let live: LiveProjection = {
     epoch: snapshot.epoch,
@@ -567,6 +569,14 @@ export class FleetConsoleState {
 
   setMetadata(sessionId: string, metadata: SelectedSession): void {
     this.cache(sessionId).metadata = metadata;
+  }
+
+  setReadOnly(sessionId: string): void {
+    const cache = this.cache(sessionId);
+    cache.live = undefined;
+    cache.unavailable = undefined;
+    cache.error = undefined;
+    if (this.selectedSessionId === sessionId) this.loading = false;
   }
 
   setSnapshot(sessionId: string, snapshot: PiConsoleSnapshotV1): void {

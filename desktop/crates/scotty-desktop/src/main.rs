@@ -5,14 +5,14 @@ mod theme;
 use std::borrow::Cow;
 
 use gpui::{
-    App, AppContext as _, Bounds, Context, FocusHandle, Focusable, FontWeight, IntoElement,
-    KeyDownEvent, Render, SharedString, Task, TitlebarOptions, Window, WindowBounds, WindowOptions,
-    div, prelude::*, px, size,
+    App, AppContext as _, Bounds, Context, FocusHandle, Focusable, FollowMode, FontWeight,
+    IntoElement, KeyDownEvent, ListAlignment, ListState, Render, Role, SharedString, Task,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, div, list, prelude::*, px, size,
 };
 use gpui_tokio::Tokio;
 use sidecar::{
-    DesktopCommand, DesktopState, Frame, PendingUi, SelectionFence, SidecarConnection,
-    SidecarEvent, ToolStatus, TranscriptItem,
+    DesktopCommand, DesktopState, Frame, ManagementAction, NoticeTone, OperationStatus, PendingUi,
+    SelectionFence, SidecarConnection, SidecarEvent, ToolStatus, TranscriptItem,
 };
 use theme::Theme;
 
@@ -96,6 +96,63 @@ enum ConnectionStatus {
     Stopped,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreateField {
+    Title,
+    Repo,
+    Prompt,
+    HardCap,
+}
+
+impl CreateField {
+    fn next(self) -> Self {
+        match self {
+            Self::Title => Self::Repo,
+            Self::Repo => Self::Prompt,
+            Self::Prompt => Self::HardCap,
+            Self::HardCap => Self::Title,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum ManagementPanel {
+    Create {
+        field: CreateField,
+        title: String,
+        repo: String,
+        prompt: String,
+        hard_cap: String,
+    },
+    Rename {
+        session_id: String,
+        title: String,
+    },
+    Vaporize {
+        session_id: String,
+        title: String,
+        confirmation: String,
+    },
+}
+
+impl ManagementPanel {
+    fn action(&self) -> ManagementAction {
+        match self {
+            Self::Create { .. } => ManagementAction::Create,
+            Self::Rename { .. } => ManagementAction::Rename,
+            Self::Vaporize { .. } => ManagementAction::Vaporize,
+        }
+    }
+}
+
+struct OperationNotice {
+    request_id: String,
+    action: ManagementAction,
+    session_id: Option<String>,
+    status: OperationStatus,
+    message: String,
+}
+
 struct DesktopView {
     focus: FocusHandle,
     connection: ConnectionStatus,
@@ -104,11 +161,19 @@ struct DesktopView {
     shutdown: Option<tokio::sync::watch::Sender<bool>>,
     draft: String,
     draft_generation: u64,
+    transcript_list: ListState,
+    transcript_ids: Vec<String>,
+    unseen_transcript: usize,
+    management_panel: Option<ManagementPanel>,
+    operation: Option<OperationNotice>,
+    command_error: Option<String>,
     _events: Task<()>,
 }
 
 impl DesktopView {
     fn new(cx: &mut Context<Self>) -> Self {
+        let transcript_list = ListState::new(0, ListAlignment::Bottom, px(600.0));
+        transcript_list.set_follow_mode(FollowMode::Tail);
         let boot = Tokio::spawn(cx, SidecarConnection::spawn());
         let events = cx.spawn(async move |this, cx| {
             let connection = match boot.await {
@@ -163,6 +228,12 @@ impl DesktopView {
             shutdown: None,
             draft: String::new(),
             draft_generation: 0,
+            transcript_list,
+            transcript_ids: Vec::new(),
+            unseen_transcript: 0,
+            management_panel: None,
+            operation: None,
+            command_error: None,
             _events: events,
         }
     }
@@ -189,22 +260,101 @@ impl DesktopView {
                     self.draft.clear();
                     self.draft_generation = 0;
                 }
+                self.sync_transcript_list(&state, selection_changed);
                 self.state = Some(*state);
                 self.connection = ConnectionStatus::Ready;
             }
             SidecarEvent::Frame(Frame::Error { code, message, .. }) => {
-                self.connection = ConnectionStatus::Failed(format!("{code}: {message}"));
+                let message = format!("{code}: {message}");
+                if matches!(self.connection, ConnectionStatus::Connecting) {
+                    self.connection = ConnectionStatus::Failed(message);
+                } else {
+                    self.command_error = Some(message);
+                }
+            }
+            SidecarEvent::Frame(Frame::Operation {
+                request_id,
+                action,
+                session_id,
+                status,
+                message,
+                ..
+            }) => {
+                if status == OperationStatus::Succeeded
+                    && self
+                        .management_panel
+                        .as_ref()
+                        .is_some_and(|panel| panel.action() == action)
+                {
+                    self.management_panel = None;
+                }
+                self.operation = Some(OperationNotice {
+                    request_id,
+                    action,
+                    session_id,
+                    status,
+                    message,
+                });
             }
             SidecarEvent::Frame(Frame::Stopped { .. }) => {
-                self.connection = ConnectionStatus::Stopped;
+                if !matches!(self.connection, ConnectionStatus::Failed(_)) {
+                    self.connection = ConnectionStatus::Stopped;
+                }
             }
             SidecarEvent::Disconnected(message) => {
-                self.connection = ConnectionStatus::Failed(message);
+                if !matches!(self.connection, ConnectionStatus::Failed(_)) {
+                    self.connection = ConnectionStatus::Failed(message);
+                }
             }
         }
     }
 
+    fn sync_transcript_list(&mut self, state: &DesktopState, selection_changed: bool) {
+        let was_at_end = self.transcript_list.is_scrolled_to_end().unwrap_or(true);
+        let previous_len = self.transcript_ids.len();
+        let next_ids = state
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.live.as_ref())
+            .map(|live| {
+                live.transcript
+                    .iter()
+                    .map(|item| item.id().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if selection_changed {
+            self.transcript_list.reset(next_ids.len());
+            self.transcript_list.set_follow_mode(FollowMode::Tail);
+            self.unseen_transcript = 0;
+        } else if next_ids == self.transcript_ids {
+            let start = next_ids.len().saturating_sub(8);
+            if start < next_ids.len() {
+                self.transcript_list.remeasure_items(start..next_ids.len());
+            }
+        } else {
+            let prefix = self
+                .transcript_ids
+                .iter()
+                .zip(&next_ids)
+                .take_while(|(current, next)| current == next)
+                .count();
+            self.transcript_list
+                .splice(prefix..self.transcript_ids.len(), next_ids.len() - prefix);
+            if was_at_end {
+                self.unseen_transcript = 0;
+            } else {
+                self.unseen_transcript = self
+                    .unseen_transcript
+                    .saturating_add(next_ids.len().saturating_sub(previous_len));
+            }
+        }
+        self.transcript_ids = next_ids;
+    }
+
     fn send(&mut self, command: DesktopCommand) {
+        self.command_error = None;
         let Some(commands) = &self.commands else {
             return;
         };
@@ -262,10 +412,259 @@ impl DesktopView {
         ));
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn next_request_id(&self, action: &str) -> String {
+        format!("desktop-{action}-{}", uuid::Uuid::new_v4())
+    }
+
+    fn open_create(&mut self) {
+        let repo = self
+            .state
+            .as_ref()
+            .and_then(|state| {
+                let selected_id = state.selected_session_id.as_deref()?;
+                state.fleet.iter().find(|session| session.id == selected_id)
+            })
+            .map(|session| session.repo.clone())
+            .unwrap_or_default();
+        self.management_panel = Some(ManagementPanel::Create {
+            field: CreateField::Title,
+            title: String::new(),
+            repo,
+            prompt: String::new(),
+            hard_cap: "4h".into(),
+        });
+    }
+
+    fn open_rename(&mut self, session_id: String, title: String) {
+        self.management_panel = Some(ManagementPanel::Rename { session_id, title });
+    }
+
+    fn open_vaporize(&mut self, session_id: String, title: String) {
+        self.management_panel = Some(ManagementPanel::Vaporize {
+            session_id,
+            title,
+            confirmation: String::new(),
+        });
+    }
+
+    fn management_failure(&mut self, action: ManagementAction, message: impl Into<String>) {
+        self.operation = Some(OperationNotice {
+            request_id: "local-validation".into(),
+            action,
+            session_id: None,
+            status: OperationStatus::Failed,
+            message: message.into(),
+        });
+    }
+
+    fn submit_management(&mut self) {
+        if self.operation_running() {
+            return;
+        }
+        let Some(panel) = self.management_panel.clone() else {
+            return;
+        };
+        match panel {
+            ManagementPanel::Create {
+                field: _,
+                title,
+                repo,
+                prompt,
+                hard_cap,
+            } => {
+                let title = title.trim().to_string();
+                let repo = repo.trim().to_string();
+                let prompt = prompt.trim().to_string();
+                let validation = if title.is_empty() {
+                    Err("Title is required")
+                } else if prompt.is_empty() {
+                    Err("Initial prompt is required")
+                } else if !valid_repo(&repo) {
+                    Err("Repository must be OWNER/NAME")
+                } else {
+                    Ok(())
+                };
+                let hard_cap_seconds = match validation.and_then(|_| parse_hard_cap(&hard_cap)) {
+                    Ok(seconds) => seconds,
+                    Err(message) => {
+                        self.management_failure(ManagementAction::Create, message);
+                        return;
+                    }
+                };
+                let request_id = self.next_request_id("create");
+                self.send(DesktopCommand::create_sandbox(
+                    request_id,
+                    title,
+                    prompt,
+                    repo,
+                    hard_cap_seconds,
+                ));
+            }
+            ManagementPanel::Rename { session_id, title } => {
+                let title = title.trim().to_string();
+                if title.is_empty() {
+                    self.management_failure(ManagementAction::Rename, "Title is required");
+                    return;
+                }
+                let request_id = self.next_request_id("rename");
+                self.send(DesktopCommand::rename_sandbox(
+                    request_id, session_id, title,
+                ));
+            }
+            ManagementPanel::Vaporize {
+                session_id,
+                title: _,
+                confirmation,
+            } => {
+                if confirmation.trim() != session_id {
+                    self.management_failure(
+                        ManagementAction::Vaporize,
+                        "Type the sandbox ID exactly to confirm vaporization",
+                    );
+                    return;
+                }
+                let request_id = self.next_request_id("vaporize");
+                self.send(DesktopCommand::vaporize_sandbox(request_id, session_id));
+            }
+        }
+    }
+
+    fn operation_running(&self) -> bool {
+        self.operation
+            .as_ref()
+            .is_some_and(|operation| operation.status == OperationStatus::Started)
+    }
+
+    fn on_management_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        if self.management_panel.is_none() {
+            return false;
+        }
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
-        if modifiers.platform && key == "r" {
+        if key == "escape" {
+            self.management_panel = None;
+        } else if modifiers.platform && key == "a" {
+            match &mut self.management_panel {
+                Some(ManagementPanel::Create {
+                    field,
+                    title,
+                    repo,
+                    prompt,
+                    hard_cap,
+                }) => match field {
+                    CreateField::Title => title.clear(),
+                    CreateField::Repo => repo.clear(),
+                    CreateField::Prompt => prompt.clear(),
+                    CreateField::HardCap => hard_cap.clear(),
+                },
+                Some(ManagementPanel::Rename { title, .. }) => title.clear(),
+                Some(ManagementPanel::Vaporize { confirmation, .. }) => confirmation.clear(),
+                None => {}
+            }
+        } else if key == "tab" {
+            if let Some(ManagementPanel::Create { field, .. }) = &mut self.management_panel {
+                *field = field.next();
+            }
+        } else if key == "enter" {
+            let should_submit = match &mut self.management_panel {
+                Some(ManagementPanel::Create { field, prompt, .. })
+                    if *field == CreateField::Prompt && !modifiers.platform =>
+                {
+                    prompt.push('\n');
+                    false
+                }
+                Some(ManagementPanel::Create { field, .. }) if !modifiers.platform => {
+                    *field = field.next();
+                    false
+                }
+                _ => true,
+            };
+            if should_submit {
+                self.submit_management();
+            }
+        } else if key == "backspace" {
+            match &mut self.management_panel {
+                Some(ManagementPanel::Create {
+                    field,
+                    title,
+                    repo,
+                    prompt,
+                    hard_cap,
+                }) => match field {
+                    CreateField::Title => {
+                        title.pop();
+                    }
+                    CreateField::Repo => {
+                        repo.pop();
+                    }
+                    CreateField::Prompt => {
+                        prompt.pop();
+                    }
+                    CreateField::HardCap => {
+                        hard_cap.pop();
+                    }
+                },
+                Some(ManagementPanel::Rename { title, .. }) => {
+                    title.pop();
+                }
+                Some(ManagementPanel::Vaporize { confirmation, .. }) => {
+                    confirmation.pop();
+                }
+                None => {}
+            }
+        } else {
+            let inserted = if modifiers.platform && key == "v" {
+                cx.read_from_clipboard().and_then(|item| item.text())
+            } else if !modifiers.platform && !modifiers.control {
+                event.keystroke.key_char.clone()
+            } else {
+                None
+            };
+            let Some(inserted) = inserted else {
+                return true;
+            };
+            match &mut self.management_panel {
+                Some(ManagementPanel::Create {
+                    field,
+                    title,
+                    repo,
+                    prompt,
+                    hard_cap,
+                }) => {
+                    let (target, limit) = match field {
+                        CreateField::Title => (title, 120),
+                        CreateField::Repo => (repo, 200),
+                        CreateField::Prompt => (prompt, MAX_DRAFT_BYTES),
+                        CreateField::HardCap => (hard_cap, 16),
+                    };
+                    append_bounded(target, &inserted, limit);
+                }
+                Some(ManagementPanel::Rename { title, .. }) => {
+                    append_bounded(title, &inserted, 120);
+                }
+                Some(ManagementPanel::Vaporize { confirmation, .. }) => {
+                    append_bounded(confirmation, &inserted, 64);
+                }
+                None => {}
+            }
+        }
+        cx.stop_propagation();
+        cx.notify();
+        true
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        if self.on_management_key(event, cx) {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        if modifiers.platform && key == "n" {
+            self.open_create();
+        } else if modifiers.platform && key == "r" {
             self.send(DesktopCommand::refresh_fleet());
         } else if modifiers.control && key == "c" {
             if let Some(fence) = self.selection_fence() {
@@ -275,8 +674,10 @@ impl DesktopView {
             self.send(DesktopCommand::close());
         } else if key == "enter" {
             if modifiers.shift {
-                self.draft.push('\n');
-                self.sync_draft();
+                if self.draft.len() < MAX_DRAFT_BYTES {
+                    self.draft.push('\n');
+                    self.sync_draft();
+                }
             } else {
                 self.submit(modifiers.alt);
             }
@@ -319,8 +720,13 @@ impl DesktopView {
                     .iter()
                     .map(|session| {
                         let id = session.id.clone();
+                        let accessibility_label = format!(
+                            "{} sandbox, {}, {}, {}",
+                            session.title, session.status, session.repo, session.branch
+                        );
                         let active = selected == Some(session.id.as_str());
                         let usable = session.usable();
+                        let selectable = session.selectable();
                         let status_color = match session.agent_state.as_deref() {
                             Some("waiting") => theme.warning,
                             Some("working") => theme.accent,
@@ -329,6 +735,10 @@ impl DesktopView {
                         };
                         div()
                             .id(SharedString::from(format!("session-{id}")))
+                            .role(Role::Button)
+                            .aria_label(SharedString::from(accessibility_label))
+                            .focusable()
+                            .tab_stop(true)
                             .mx(px(8.0))
                             .mb(px(2.0))
                             .px(px(10.0))
@@ -339,7 +749,7 @@ impl DesktopView {
                             } else {
                                 gpui::transparent_black()
                             })
-                            .when(usable, |row| {
+                            .when(selectable, |row| {
                                 row.cursor_pointer()
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         view.send(DesktopCommand::select(id.clone()));
@@ -367,7 +777,7 @@ impl DesktopView {
                                                 div()
                                                     .text_size(px(13.0))
                                                     .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(if usable {
+                                                    .text_color(if selectable {
                                                         theme.text
                                                     } else {
                                                         theme.text_faint
@@ -392,9 +802,11 @@ impl DesktopView {
                                                     .mt(px(2.0))
                                                     .text_size(px(9.5))
                                                     .text_color(theme.text_faint)
-                                                    .child(SharedString::from(
-                                                        session.updated_at.clone(),
-                                                    )),
+                                                    .child(SharedString::from(format!(
+                                                        "{} · {}",
+                                                        session.status.to_uppercase(),
+                                                        session.updated_at
+                                                    ))),
                                             ),
                                     ),
                             )
@@ -437,23 +849,55 @@ impl DesktopView {
                     )
                     .child(
                         div()
-                            .id("refresh-fleet")
-                            .px(px(8.0))
-                            .py(px(5.0))
-                            .rounded(px(6.0))
-                            .bg(theme.element_hover)
-                            .cursor_pointer()
-                            .text_size(px(10.0))
-                            .text_color(theme.text_muted)
-                            .on_click(cx.listener(|view, _, _, _| {
-                                view.send(DesktopCommand::refresh_fleet())
-                            }))
-                            .child("REFRESH"),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .id("new-sandbox")
+                                    .role(Role::Button)
+                                    .aria_label("Create sandbox")
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .px(px(8.0))
+                                    .py(px(5.0))
+                                    .rounded(px(6.0))
+                                    .bg(theme.accent.opacity(0.16))
+                                    .cursor_pointer()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.accent)
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.open_create();
+                                        cx.notify();
+                                    }))
+                                    .child("+ NEW"),
+                            )
+                            .child(
+                                div()
+                                    .id("refresh-fleet")
+                                    .role(Role::Button)
+                                    .aria_label("Refresh sandbox fleet")
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .px(px(8.0))
+                                    .py(px(5.0))
+                                    .rounded(px(6.0))
+                                    .bg(theme.element_hover)
+                                    .cursor_pointer()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_muted)
+                                    .on_click(cx.listener(|view, _, _, _| {
+                                        view.send(DesktopCommand::refresh_fleet())
+                                    }))
+                                    .child("↻"),
+                            ),
                     ),
             )
             .child(
                 div()
                     .id("fleet-scroll")
+                    .role(Role::List)
+                    .aria_label("Scotty sandboxes")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -475,41 +919,83 @@ impl DesktopView {
             )
     }
 
+    fn render_transcript_row(
+        &mut self,
+        index: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = Theme::of(cx).clone();
+        let Some(item) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.selected.as_ref())
+            .and_then(|selected| selected.live.as_ref())
+            .and_then(|live| live.transcript.get(index))
+        else {
+            return div().into_any_element();
+        };
+        render_transcript_item(index, item, &theme)
+    }
+
     fn render_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let selected_id = self
             .state
             .as_ref()
             .and_then(|state| state.selected_session_id.as_deref());
-        let selected_row = selected_id.and_then(|id| {
-            self.state
-                .as_ref()?
-                .fleet
-                .iter()
-                .find(|session| session.id == id)
-        });
         let selected = self
             .state
             .as_ref()
             .and_then(|state| state.selected.as_ref());
+        let selected_row = selected
+            .and_then(|selected| selected.metadata.as_ref())
+            .or_else(|| {
+                selected_id.and_then(|id| {
+                    self.state
+                        .as_ref()?
+                        .fleet
+                        .iter()
+                        .find(|session| session.id == id)
+                })
+            });
         let title = selected_row
             .map(|session| session.title.clone())
             .unwrap_or_else(|| "Choose a session".into());
         let subtitle = selected_row
-            .map(|session| format!("{} · {}", session.repo, session.branch))
-            .unwrap_or_else(|| {
-                "Every warm session remains active while you move between them.".into()
-            });
-        let transcript = selected
-            .and_then(|selected| selected.live.as_ref())
-            .map(|live| {
-                live.transcript
-                    .iter()
-                    .enumerate()
-                    .map(|(index, item)| render_transcript_item(index, item, &theme))
-                    .collect::<Vec<_>>()
+            .map(|session| {
+                format!(
+                    "{} · {} → {} · {} · cap {}",
+                    session.repo,
+                    session.branch,
+                    session.default_branch,
+                    session.status,
+                    session
+                        .cap_remaining_seconds
+                        .map(format_seconds)
+                        .unwrap_or_else(|| "unknown".into())
+                )
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                "Every remote session remains active while you move between them.".into()
+            });
+        let inspector = selected_row.map(|session| {
+            format!(
+                "id {} · age {} · created {} · hard cap {} · synced {} · backup {}",
+                session.id,
+                session
+                    .age_seconds
+                    .map(format_seconds)
+                    .unwrap_or_else(|| "unknown".into()),
+                session.created_at,
+                session.hard_cap_at,
+                session.projected_at,
+                session.backup_id.as_deref().unwrap_or("none")
+            )
+        });
+        let transcript_truncated = selected
+            .and_then(|selected| selected.live.as_ref())
+            .is_some_and(|live| live.sidecar_truncated);
         let activity = selected
             .and_then(|selected| selected.live.as_ref())
             .map(|live| live.activity.as_str())
@@ -521,6 +1007,20 @@ impl DesktopView {
                 .and_then(|live| live.pending_ui.first()),
         );
         let loading = self.state.as_ref().is_some_and(|state| state.loading);
+        let session_failure = selected_row.and_then(|session| {
+            session.failure.as_ref().map(|failure| {
+                format!(
+                    "{}: {}{}",
+                    failure.code,
+                    failure.message,
+                    if failure.recoverable {
+                        " (recoverable)"
+                    } else {
+                        ""
+                    }
+                )
+            })
+        });
         let error = self
             .state
             .as_ref()
@@ -530,7 +1030,19 @@ impl DesktopView {
                 selected
                     .and_then(|selected| selected.unavailable.as_ref())
                     .map(|unavailable| unavailable.reason.as_str())
-            });
+            })
+            .or(session_failure.as_deref())
+            .or(self.command_error.as_deref());
+        let selected_identity =
+            selected_row.map(|session| (session.id.clone(), session.title.clone()));
+        let operation_running = self.operation_running();
+        let can_snapshot = selected_row.is_some_and(|session| session.status == "warm")
+            && selected
+                .and_then(|selected| selected.live.as_ref())
+                .is_some_and(|live| !live.is_streaming && live.activity != "working");
+        let can_resume = selected_row.is_some_and(|session| {
+            matches!(session.status.as_str(), "sleeping" | "failed") && session.backup_id.is_some()
+        });
 
         div()
             .flex_1()
@@ -541,7 +1053,7 @@ impl DesktopView {
             .bg(theme.bg)
             .child(
                 div()
-                    .h(px(62.0))
+                    .h(px(78.0))
                     .flex_none()
                     .px(px(22.0))
                     .flex()
@@ -564,31 +1076,206 @@ impl DesktopView {
                                     .text_size(px(10.5))
                                     .text_color(theme.text_muted)
                                     .child(SharedString::from(subtitle)),
-                            ),
+                            )
+                            .when_some(inspector, |header, inspector| {
+                                header.child(
+                                    div()
+                                        .mt(px(2.0))
+                                        .text_size(px(9.0))
+                                        .text_color(theme.text_faint)
+                                        .font_family(theme.font_mono.clone())
+                                        .child(SharedString::from(inspector)),
+                                )
+                            }),
                     )
                     .child(
                         div()
-                            .px(px(9.0))
-                            .py(px(5.0))
-                            .rounded_full()
-                            .bg(theme.element_hover)
-                            .text_size(px(9.5))
-                            .text_color(match activity {
-                                "working" => theme.accent,
-                                "waiting" => theme.warning,
-                                _ => theme.text_muted,
-                            })
-                            .child(SharedString::from(activity.to_uppercase())),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .px(px(9.0))
+                                    .py(px(5.0))
+                                    .rounded_full()
+                                    .bg(theme.element_hover)
+                                    .text_size(px(9.5))
+                                    .text_color(match activity {
+                                        "working" => theme.accent,
+                                        "waiting" => theme.warning,
+                                        _ => theme.text_muted,
+                                    })
+                                    .child(SharedString::from(activity.to_uppercase())),
+                            )
+                            .when_some(
+                                selected_identity.clone().filter(|_| !operation_running),
+                                |actions, (id, title)| {
+                                let rename_id = id.clone();
+                                let rename_title = title.clone();
+                                actions.child(
+                                    div()
+                                        .id("rename-sandbox")
+                                        .role(Role::Button)
+                                        .aria_label("Rename selected sandbox")
+                                        .focusable()
+                                        .tab_stop(true)
+                                        .px(px(8.0))
+                                        .py(px(5.0))
+                                        .rounded(px(6.0))
+                                        .bg(theme.element_hover)
+                                        .cursor_pointer()
+                                        .text_size(px(9.5))
+                                        .text_color(theme.text_muted)
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.open_rename(rename_id.clone(), rename_title.clone());
+                                            cx.notify();
+                                        }))
+                                        .child("RENAME"),
+                                )
+                            },
+                            )
+                            .when_some(
+                                selected_identity
+                                    .clone()
+                                    .filter(|_| can_snapshot && !operation_running),
+                                |actions, (id, _)| {
+                                    actions.child(
+                                        div()
+                                            .id("snapshot-sandbox")
+                                            .role(Role::Button)
+                                            .aria_label("Snapshot selected sandbox")
+                                            .focusable()
+                                            .tab_stop(true)
+                                            .px(px(8.0))
+                                            .py(px(5.0))
+                                            .rounded(px(6.0))
+                                            .bg(theme.element_hover)
+                                            .cursor_pointer()
+                                            .text_size(px(9.5))
+                                            .text_color(theme.text_muted)
+                                            .on_click(cx.listener(move |view, _, _, _| {
+                                                let request_id = view.next_request_id("snapshot");
+                                                view.send(DesktopCommand::snapshot_sandbox(
+                                                    request_id,
+                                                    id.clone(),
+                                                ));
+                                            }))
+                                            .child("SNAPSHOT"),
+                                    )
+                                },
+                            )
+                            .when_some(
+                                selected_identity
+                                    .clone()
+                                    .filter(|_| can_resume && !operation_running),
+                                |actions, (id, _)| {
+                                    actions.child(
+                                        div()
+                                            .id("resume-sandbox")
+                                            .role(Role::Button)
+                                            .aria_label("Resume selected sandbox")
+                                            .focusable()
+                                            .tab_stop(true)
+                                            .px(px(8.0))
+                                            .py(px(5.0))
+                                            .rounded(px(6.0))
+                                            .bg(theme.accent.opacity(0.12))
+                                            .cursor_pointer()
+                                            .text_size(px(9.5))
+                                            .text_color(theme.accent)
+                                            .on_click(cx.listener(move |view, _, _, _| {
+                                                let request_id = view.next_request_id("resume");
+                                                view.send(DesktopCommand::resume_sandbox(
+                                                    request_id,
+                                                    id.clone(),
+                                                ));
+                                            }))
+                                            .child("RESUME"),
+                                    )
+                                },
+                            )
+                            .when_some(
+                                selected_identity.filter(|_| !operation_running),
+                                |actions, (id, title)| {
+                                actions.child(
+                                    div()
+                                        .id("vaporize-sandbox")
+                                        .role(Role::Button)
+                                        .aria_label("Vaporize selected sandbox")
+                                        .focusable()
+                                        .tab_stop(true)
+                                        .px(px(8.0))
+                                        .py(px(5.0))
+                                        .rounded(px(6.0))
+                                        .cursor_pointer()
+                                        .text_size(px(9.5))
+                                        .text_color(theme.danger)
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.open_vaporize(id.clone(), title.clone());
+                                            cx.notify();
+                                        }))
+                                        .child("VAPORIZE"),
+                                )
+                            },
+                            ),
                     ),
             )
             .child(
                 div()
                     .id("transcript-scroll")
+                    .role(Role::Log)
+                    .aria_label("Selected sandbox transcript")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .py(px(26.0))
-                    .children(transcript)
+                    .flex()
+                    .flex_col()
+                    .when(transcript_truncated, |content| {
+                        content.child(render_truncation_notice(&theme))
+                    })
+                    .when(self.unseen_transcript > 0, |content| {
+                        let count = self.unseen_transcript;
+                        content.child(
+                            div()
+                                .id("jump-to-latest")
+                                .role(Role::Button)
+                                .aria_label(SharedString::from(format!(
+                                    "{count} new transcript items; jump to latest"
+                                )))
+                                .focusable()
+                                .tab_stop(true)
+                                .absolute()
+                                .top(px(12.0))
+                                .right(px(20.0))
+                                .px(px(11.0))
+                                .py(px(7.0))
+                                .rounded(px(7.0))
+                                .bg(theme.surface_raised)
+                                .border_1()
+                                .border_color(theme.accent.opacity(0.35))
+                                .text_size(px(10.0))
+                                .text_color(theme.accent)
+                                .cursor_pointer()
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.transcript_list.scroll_to_end();
+                                    view.transcript_list.set_follow_mode(FollowMode::Tail);
+                                    view.unseen_transcript = 0;
+                                    cx.notify();
+                                }))
+                                .child(SharedString::from(format!("{count} NEW · LATEST"))),
+                        )
+                    })
+                    .when(selected_id.is_some(), |content| {
+                        content.child(
+                            list(
+                                self.transcript_list.clone(),
+                                cx.processor(Self::render_transcript_row),
+                            )
+                            .flex_1()
+                            .min_h_0()
+                            .with_sizing_behavior(gpui::ListSizingBehavior::Auto),
+                        )
+                    })
                     .when(
                         selected
                             .and_then(|selected| selected.live.as_ref())
@@ -617,7 +1304,7 @@ impl DesktopView {
                                                 .mt(px(12.0))
                                                 .text_size(px(13.0))
                                                 .text_color(theme.text_muted)
-                                                .child("Select a warm session. Scotty changes only the view; the remote Pi process keeps running."),
+                                                .child("Select any sandbox to inspect it. Warm sessions attach passively; cold sessions stay stopped until you choose Resume."),
                                         ),
                                 ),
                         )
@@ -651,6 +1338,235 @@ impl DesktopView {
             .child(self.render_composer(selected_id, selected, cx))
     }
 
+    fn render_management_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::of(cx).clone();
+        let Some(panel) = &self.management_panel else {
+            return div().into_any_element();
+        };
+        let cancel = div()
+            .id("cancel-management")
+            .role(Role::Button)
+            .aria_label("Cancel sandbox operation")
+            .focusable()
+            .tab_stop(true)
+            .px(px(10.0))
+            .py(px(7.0))
+            .rounded(px(7.0))
+            .cursor_pointer()
+            .text_size(px(10.0))
+            .text_color(theme.text_muted)
+            .on_click(cx.listener(|view, _, _, cx| {
+                view.management_panel = None;
+                cx.notify();
+            }))
+            .child("CANCEL");
+        let body = match panel {
+            ManagementPanel::Create {
+                field,
+                title,
+                repo,
+                prompt,
+                hard_cap,
+            } => div()
+                .child(management_field(
+                    "create-title",
+                    "Title",
+                    title,
+                    *field == CreateField::Title,
+                    false,
+                    &theme,
+                ))
+                .child(management_field(
+                    "create-repository",
+                    "Repository",
+                    repo,
+                    *field == CreateField::Repo,
+                    false,
+                    &theme,
+                ))
+                .child(management_field(
+                    "create-prompt",
+                    "Initial prompt",
+                    prompt,
+                    *field == CreateField::Prompt,
+                    true,
+                    &theme,
+                ))
+                .child(management_field(
+                    "create-hard-cap",
+                    "Hard cap",
+                    hard_cap,
+                    *field == CreateField::HardCap,
+                    false,
+                    &theme,
+                ))
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(9.5))
+                                .text_color(theme.text_faint)
+                                .child("Tab fields · ⌘Enter create · cap: 30m, 4h, 1d"),
+                        )
+                        .child(
+                            div().flex().gap(px(6.0)).child(cancel).child(
+                                div()
+                                    .id("submit-create")
+                                    .role(Role::Button)
+                                    .aria_label("Create sandbox")
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .px(px(11.0))
+                                    .py(px(7.0))
+                                    .rounded(px(7.0))
+                                    .bg(theme.accent.opacity(0.18))
+                                    .cursor_pointer()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.accent)
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.submit_management();
+                                        cx.notify();
+                                    }))
+                                    .child("CREATE SANDBOX"),
+                            ),
+                        ),
+                ),
+            ManagementPanel::Rename { title, .. } => div()
+                .child(management_field(
+                    "rename-title",
+                    "Sandbox title",
+                    title,
+                    true,
+                    false,
+                    &theme,
+                ))
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .flex()
+                        .justify_end()
+                        .gap(px(6.0))
+                        .child(cancel)
+                        .child(
+                            div()
+                                .id("submit-rename")
+                                .role(Role::Button)
+                                .aria_label("Save sandbox title")
+                                .focusable()
+                                .tab_stop(true)
+                                .px(px(11.0))
+                                .py(px(7.0))
+                                .rounded(px(7.0))
+                                .bg(theme.accent.opacity(0.18))
+                                .cursor_pointer()
+                                .text_size(px(10.0))
+                                .text_color(theme.accent)
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.submit_management();
+                                    cx.notify();
+                                }))
+                                .child("SAVE"),
+                        ),
+                ),
+            ManagementPanel::Vaporize {
+                session_id,
+                title,
+                confirmation,
+            } => div()
+                .child(
+                    div()
+                        .mb(px(12.0))
+                        .p(px(10.0))
+                        .rounded(px(8.0))
+                        .bg(theme.danger.opacity(0.08))
+                        .text_size(px(11.0))
+                        .text_color(theme.danger)
+                        .child(SharedString::from(format!(
+                            "Permanently delete {title}. This cannot be undone."
+                        ))),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(theme.text_muted)
+                        .child("Type the sandbox ID to confirm:"),
+                )
+                .child(
+                    div()
+                        .mt(px(4.0))
+                        .font_family(theme.font_mono.clone())
+                        .text_size(px(10.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(session_id.clone())),
+                )
+                .child(management_field(
+                    "vaporize-confirmation",
+                    "Confirmation",
+                    confirmation,
+                    true,
+                    false,
+                    &theme,
+                ))
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .flex()
+                        .justify_end()
+                        .gap(px(6.0))
+                        .child(cancel)
+                        .child(
+                            div()
+                                .id("confirm-vaporize")
+                                .role(Role::Button)
+                                .aria_label("Confirm permanent sandbox deletion")
+                                .focusable()
+                                .tab_stop(true)
+                                .px(px(11.0))
+                                .py(px(7.0))
+                                .rounded(px(7.0))
+                                .bg(theme.danger.opacity(0.12))
+                                .cursor_pointer()
+                                .text_size(px(10.0))
+                                .text_color(theme.danger)
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.submit_management();
+                                    cx.notify();
+                                }))
+                                .child("VAPORIZE"),
+                        ),
+                ),
+        };
+        let heading = match panel {
+            ManagementPanel::Create { .. } => "New sandbox",
+            ManagementPanel::Rename { .. } => "Rename sandbox",
+            ManagementPanel::Vaporize { .. } => "Vaporize sandbox",
+        };
+        div()
+            .absolute()
+            .top(px(76.0))
+            .right(px(24.0))
+            .w(px(430.0))
+            .p(px(16.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.surface_raised)
+            .shadow_lg()
+            .child(
+                div()
+                    .mb(px(14.0))
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(heading),
+            )
+            .child(body)
+            .into_any_element()
+    }
+
     fn render_pending(
         &self,
         fence: SelectionFence,
@@ -670,6 +1586,10 @@ impl DesktopView {
                         let value = option.clone();
                         div()
                             .id(("pending-option", index))
+                            .role(Role::Button)
+                            .aria_label(SharedString::from(option.clone()))
+                            .focusable()
+                            .tab_stop(true)
                             .mt(px(7.0))
                             .px(px(10.0))
                             .py(px(8.0))
@@ -752,6 +1672,10 @@ impl DesktopView {
                     .child(
                         div()
                             .id("cancel-pending")
+                            .role(Role::Button)
+                            .aria_label("Cancel pending sandbox request")
+                            .focusable()
+                            .tab_stop(true)
                             .cursor_pointer()
                             .text_size(px(10.0))
                             .text_color(theme.text_muted)
@@ -774,8 +1698,8 @@ impl DesktopView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let enabled = selected_session_id.is_some();
         let abort_fence = make_selection_fence(selected_session_id, selected);
+        let enabled = abort_fence.is_some();
         let status = selected.and_then(|selected| selected.command_status.as_deref());
         let streaming = selected
             .and_then(|selected| selected.live.as_ref())
@@ -800,6 +1724,11 @@ impl DesktopView {
                     .bg(theme.surface)
                     .child(
                         div()
+                            .id("composer-input")
+                            .role(Role::TextInput)
+                            .aria_label("Message selected sandbox")
+                            .aria_value(SharedString::from(self.draft.clone()))
+                            .aria_placeholder("Message the selected sandbox")
                             .min_h(px(20.0))
                             .text_size(px(13.0))
                             .text_color(if self.draft.is_empty() {
@@ -808,7 +1737,11 @@ impl DesktopView {
                                 theme.text
                             })
                             .child(SharedString::from(if !enabled {
-                                "Select a warm session".into()
+                                if selected_session_id.is_some() {
+                                    "Resume this sandbox to send a message".into()
+                                } else {
+                                    "Select a sandbox".into()
+                                }
                             } else if self.draft.is_empty() {
                                 "Message the selected session…".into()
                             } else {
@@ -835,6 +1768,10 @@ impl DesktopView {
                                         actions.child(
                                             div()
                                                 .id("abort-active")
+                                                .role(Role::Button)
+                                                .aria_label("Abort active sandbox response")
+                                                .focusable()
+                                                .tab_stop(true)
                                                 .px(px(7.0))
                                                 .py(px(3.0))
                                                 .rounded(px(5.0))
@@ -853,6 +1790,14 @@ impl DesktopView {
                                     .child(
                                         div()
                                             .id("submit-draft")
+                                            .role(Role::Button)
+                                            .aria_label(if streaming {
+                                                "Steer active sandbox"
+                                            } else {
+                                                "Send message to sandbox"
+                                            })
+                                            .focusable()
+                                            .tab_stop(true)
                                             .px(px(7.0))
                                             .py(px(3.0))
                                             .rounded(px(5.0))
@@ -903,11 +1848,29 @@ impl Render for DesktopView {
             ConnectionStatus::Stopped => Some("Desktop sidecar stopped"),
             ConnectionStatus::Ready => None,
         };
+        let operation = self.operation.as_ref().map(|operation| {
+            let identity = operation
+                .session_id
+                .as_deref()
+                .unwrap_or(operation.request_id.as_str());
+            (
+                format!(
+                    "{} · {} · {}",
+                    action_label(operation.action),
+                    identity,
+                    operation.message
+                ),
+                operation.status,
+            )
+        });
         div()
             .id("scotty-desktop-root")
+            .role(Role::Application)
+            .aria_label("Scotty Desktop")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
+            .relative()
             .flex()
             .flex_row()
             .bg(theme.glass())
@@ -916,6 +1879,47 @@ impl Render for DesktopView {
             .text_size(px(14.0))
             .child(self.render_sidebar(cx))
             .child(self.render_main(cx))
+            .when_some(operation, |root, (message, status)| {
+                root.child(
+                    div()
+                        .id("operation-notice")
+                        .absolute()
+                        .top(px(68.0))
+                        .left(px(308.0))
+                        .px(px(10.0))
+                        .py(px(7.0))
+                        .rounded(px(7.0))
+                        .bg(theme.surface_raised)
+                        .border_1()
+                        .role(Role::Status)
+                        .aria_label(SharedString::from(message.clone()))
+                        .border_color(match status {
+                            OperationStatus::Failed => theme.danger.opacity(0.45),
+                            OperationStatus::Succeeded => theme.accent.opacity(0.35),
+                            OperationStatus::Started | OperationStatus::Unknown => {
+                                theme.warning.opacity(0.35)
+                            }
+                        })
+                        .text_size(px(10.0))
+                        .text_color(match status {
+                            OperationStatus::Failed => theme.danger,
+                            OperationStatus::Succeeded => theme.accent,
+                            OperationStatus::Started | OperationStatus::Unknown => theme.warning,
+                        })
+                        .when(status != OperationStatus::Started, |notice| {
+                            notice.focusable().tab_stop(true).cursor_pointer().on_click(
+                                cx.listener(|view, _, _, cx| {
+                                    view.operation = None;
+                                    cx.notify();
+                                }),
+                            )
+                        })
+                        .child(SharedString::from(message)),
+                )
+            })
+            .when(self.management_panel.is_some(), |root| {
+                root.child(self.render_management_panel(cx))
+            })
             .when_some(connection, |root, message| {
                 root.child(
                     div()
@@ -946,6 +1950,10 @@ fn confirm_button(
 ) -> gpui::AnyElement {
     div()
         .id(SharedString::from(format!("confirm-{label}")))
+        .role(Role::Button)
+        .aria_label(label)
+        .focusable()
+        .tab_stop(true)
         .px(px(11.0))
         .py(px(6.0))
         .rounded(px(7.0))
@@ -960,6 +1968,124 @@ fn confirm_button(
         }))
         .child(label)
         .into_any_element()
+}
+
+fn management_field(
+    id: &'static str,
+    label: &'static str,
+    value: &str,
+    active: bool,
+    multiline: bool,
+    theme: &Theme,
+) -> gpui::AnyElement {
+    div()
+        .mt(px(10.0))
+        .child(
+            div()
+                .mb(px(5.0))
+                .text_size(px(10.0))
+                .text_color(theme.text_muted)
+                .child(label),
+        )
+        .child(
+            div()
+                .id(id)
+                .role(Role::TextInput)
+                .aria_label(label)
+                .aria_value(SharedString::from(value.to_string()))
+                .aria_placeholder("Type here")
+                .min_h(if multiline { px(92.0) } else { px(34.0) })
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(if active {
+                    theme.accent.opacity(0.65)
+                } else {
+                    theme.border
+                })
+                .bg(theme.bg)
+                .text_size(px(11.5))
+                .text_color(if value.is_empty() {
+                    theme.text_faint
+                } else {
+                    theme.text
+                })
+                .child(SharedString::from(if value.is_empty() {
+                    "Type here…".into()
+                } else {
+                    value.to_string()
+                })),
+        )
+        .into_any_element()
+}
+
+fn append_bounded(target: &mut String, value: &str, max_bytes: usize) {
+    if target.len() >= max_bytes {
+        return;
+    }
+    let available = max_bytes - target.len();
+    let end = value.floor_char_boundary(available.min(value.len()));
+    target.push_str(&value[..end]);
+}
+
+fn valid_repo(repo: &str) -> bool {
+    let Some((owner, name)) = repo.split_once('/') else {
+        return false;
+    };
+    !owner.is_empty()
+        && !name.is_empty()
+        && !name.contains('/')
+        && owner
+            .chars()
+            .chain(name.chars())
+            .all(|character| character.is_ascii_alphanumeric() || "_.-".contains(character))
+}
+
+fn parse_hard_cap(value: &str) -> Result<u64, &'static str> {
+    let value = value.trim().to_ascii_lowercase();
+    let (number, multiplier) = if let Some(number) = value.strip_suffix('m') {
+        (number, 60)
+    } else if let Some(number) = value.strip_suffix('h') {
+        (number, 60 * 60)
+    } else if let Some(number) = value.strip_suffix('d') {
+        (number, 24 * 60 * 60)
+    } else {
+        (value.as_str(), 1)
+    };
+    let seconds = number
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(multiplier))
+        .ok_or("Hard cap must be seconds or a duration such as 30m, 4h, or 1d")?;
+    if (60..=24 * 60 * 60).contains(&seconds) {
+        Ok(seconds)
+    } else {
+        Err("Hard cap must be between 1 minute and 1 day")
+    }
+}
+
+fn format_seconds(seconds: f64) -> String {
+    let seconds = seconds.max(0.0).round() as u64;
+    if seconds >= 24 * 60 * 60 {
+        format!("{}d", seconds / (24 * 60 * 60))
+    } else if seconds >= 60 * 60 {
+        format!("{}h", seconds / (60 * 60))
+    } else if seconds >= 60 {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn action_label(action: ManagementAction) -> &'static str {
+    match action {
+        ManagementAction::Create => "Create",
+        ManagementAction::Rename => "Rename",
+        ManagementAction::Snapshot => "Snapshot",
+        ManagementAction::Resume => "Resume",
+        ManagementAction::Vaporize => "Vaporize",
+    }
 }
 
 fn should_apply_draft(selection_changed: bool, incoming: u64, current: u64) -> bool {
@@ -980,12 +2106,10 @@ fn make_selection_fence(
 
 fn render_transcript_item(index: usize, item: &TranscriptItem, theme: &Theme) -> gpui::AnyElement {
     let row = div()
-        .id(SharedString::from(format!(
-            "transcript-{index}-{}",
-            item.id()
-        )))
+        .id(SharedString::from(format!("transcript-{}", item.id())))
         .w_full()
         .px(px(48.0))
+        .when(index == 0, |row| row.pt(px(26.0)))
         .mb(px(14.0))
         .flex()
         .justify_center();
@@ -1088,6 +2212,15 @@ fn render_transcript_item(index: usize, item: &TranscriptItem, theme: &Theme) ->
         TranscriptItem::Error { message, .. } => row
             .mb(px(10.0))
             .child(column.child(render_error(message, theme)))
+            .into_any_element(),
+        TranscriptItem::Notice {
+            title,
+            message,
+            tone,
+            ..
+        } => row
+            .mb(px(10.0))
+            .child(column.child(render_notice(title, message, *tone, theme)))
             .into_any_element(),
         TranscriptItem::Fallback { text, .. } => row
             .mb(px(9.0))
@@ -1274,6 +2407,62 @@ fn render_error(message: &str, theme: &Theme) -> gpui::AnyElement {
         .into_any_element()
 }
 
+fn render_notice(title: &str, message: &str, tone: NoticeTone, theme: &Theme) -> gpui::AnyElement {
+    let tint = if tone == NoticeTone::Warning {
+        theme.warning
+    } else {
+        theme.text_muted
+    };
+    div()
+        .min_h(px(36.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(tint.opacity(0.16))
+        .bg(tint.opacity(0.045))
+        .px(px(9.0))
+        .py(px(7.0))
+        .text_size(px(12.0))
+        .child(
+            div()
+                .flex_none()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(tint)
+                .child(SharedString::from(title.to_string())),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .text_color(theme.text.opacity(0.82))
+                .child(SharedString::from(truncate(message, 4_000))),
+        )
+        .into_any_element()
+}
+
+fn render_truncation_notice(theme: &Theme) -> gpui::AnyElement {
+    div()
+        .w_full()
+        .px(px(48.0))
+        .mb(px(14.0))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .w_full()
+                .max_w(px(768.0))
+                .border_b_1()
+                .border_color(theme.border)
+                .pb(px(9.0))
+                .text_size(px(10.5))
+                .text_color(theme.text_faint)
+                .child("Some transcript content was truncated."),
+        )
+        .into_any_element()
+}
+
 fn render_working(theme: &Theme) -> gpui::AnyElement {
     div()
         .w_full()
@@ -1324,7 +2513,7 @@ fn project_label(repo: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::should_apply_draft;
+    use super::{parse_hard_cap, should_apply_draft, valid_repo};
 
     #[test]
     fn stale_draft_frames_cannot_replace_local_edits() {
@@ -1332,5 +2521,17 @@ mod tests {
         assert!(!should_apply_draft(false, 5, 5));
         assert!(should_apply_draft(false, 6, 5));
         assert!(should_apply_draft(true, 0, 5));
+    }
+
+    #[test]
+    fn management_inputs_are_normalized_before_crossing_the_sidecar_boundary() {
+        assert_eq!(parse_hard_cap("30m"), Ok(1_800));
+        assert_eq!(parse_hard_cap("4h"), Ok(14_400));
+        assert_eq!(parse_hard_cap("1d"), Ok(86_400));
+        assert!(parse_hard_cap("59").is_err());
+        assert!(parse_hard_cap("2d").is_err());
+        assert!(valid_repo("owner/repo"));
+        assert!(!valid_repo("owner/repo/extra"));
+        assert!(!valid_repo("owner repo"));
     }
 }

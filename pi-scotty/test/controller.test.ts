@@ -17,6 +17,7 @@ class FakeConsoleTransport implements ConsoleTransport {
   remoteLifecycleMutations = 0;
   commandMode: "accepted" | "rejected" | "stale" | "ambiguous" = "accepted";
   snapshotRevision = 7;
+  selectedStatus: "warm" | "sleeping" | "failed" = "warm";
   streamMode: "wait" | "eof_once" | "eof" = "wait";
   streamCalls = 0;
   pendingUi: PiConsoleSnapshotV1["pendingUi"] = [];
@@ -33,7 +34,7 @@ class FakeConsoleTransport implements ConsoleTransport {
 
   readonly getSelected = async (sessionId: string) => {
     this.reads.push(`GET /api/sessions/${sessionId}`);
-    return session(sessionId);
+    return session(sessionId, { status: this.selectedStatus });
   };
 
   readonly getSnapshot = async (sessionId: string) => {
@@ -173,6 +174,23 @@ describe("FleetConsoleController", () => {
     expect(controller.state.selectedSessionId).toBe(SESSION_B);
     expect(transport.commands).toEqual([]);
     expect(transport.remoteLifecycleMutations).toBe(0);
+    controller.stop();
+  });
+
+  it("inspects a sleeping sandbox without attaching its console or changing lifecycle", async () => {
+    const transport = new FakeConsoleTransport();
+    transport.selectedStatus = "sleeping";
+    transport.fleet = [session(SESSION_A, { status: "sleeping", backupId: "backup-1" })];
+    const controller = new FleetConsoleController(transport);
+
+    await controller.loadFleet();
+    await controller.inspectSession(SESSION_A);
+
+    expect(controller.state.selectedSessionId).toBe(SESSION_A);
+    expect(controller.state.cache(SESSION_A).metadata?.status).toBe("sleeping");
+    expect(controller.state.cache(SESSION_A).live).toBeUndefined();
+    expect(transport.reads).toEqual(["GET /api/sessions", `GET /api/sessions/${SESSION_A}`]);
+    expect(transport.commands).toEqual([]);
     controller.stop();
   });
 

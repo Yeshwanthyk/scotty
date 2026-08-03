@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { chmod, cp, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 if (process.platform !== "darwin")
@@ -10,6 +10,31 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const version = process.env.SCOTTY_DESKTOP_VERSION ?? manifest.version;
 const output = resolve(root, process.argv[2] ?? "dist/Scotty.app");
+const distRoot = resolve(root, "dist");
+const relativeOutput = relative(distRoot, output);
+if (
+  relativeOutput === "" ||
+  relativeOutput.startsWith(`..${sep}`) ||
+  relativeOutput === ".." ||
+  isAbsolute(relativeOutput) ||
+  dirname(output) !== distRoot ||
+  !output.endsWith(".app")
+)
+  throw new Error(
+    "Desktop bundle output must be a direct .app child of the repository dist directory",
+  );
+await mkdir(distRoot, { recursive: true });
+const assertSafeOutput = async () => {
+  if ((await lstat(distRoot)).isSymbolicLink() || (await realpath(distRoot)) !== distRoot)
+    throw new Error("Desktop dist directory must not be a symbolic link");
+  try {
+    if ((await lstat(output)).isSymbolicLink())
+      throw new Error("Desktop bundle output must not be a symbolic link");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+};
+await assertSafeOutput();
 const contents = join(output, "Contents");
 const macos = join(contents, "MacOS");
 const resources = join(contents, "Resources");
@@ -34,6 +59,8 @@ await run("cargo", [
   "--release",
   "--locked",
 ]);
+// Recheck after the long build so recursive deletion never relies on stale path evidence.
+await assertSafeOutput();
 await rm(output, { recursive: true, force: true });
 await Promise.all([mkdir(macos, { recursive: true }), mkdir(licenses, { recursive: true })]);
 await run(process.execPath, [

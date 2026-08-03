@@ -74,6 +74,29 @@ export const FleetResponseSchema = Schema.Array(FleetSessionSchema).check(Schema
 export const SelectedSessionSchema = FleetSessionSchema;
 export type SelectedSession = typeof SelectedSessionSchema.Type;
 
+export const CreateSessionResultSchema = Schema.Struct({
+  id: SessionIdSchema,
+  title: ShortStringSchema,
+  url: ShortStringSchema,
+  branch: ShortStringSchema,
+  provider: ProviderSchema,
+  runner: Schema.optionalKey(ShortStringSchema),
+  status: SessionStatusSchema,
+});
+export type CreateSessionResult = typeof CreateSessionResultSchema.Type;
+
+export const VaporizeSessionResultSchema = Schema.Struct({
+  id: SessionIdSchema,
+  status: Schema.Literal("gone"),
+});
+export type VaporizeSessionResult = typeof VaporizeSessionResultSchema.Type;
+
+const ApiErrorResponseSchema = Schema.Struct({
+  error: Schema.Struct({
+    message: ShortStringSchema,
+  }),
+});
+
 export const PairingResponseSchema = Schema.Struct({
   client: Schema.Struct({ id: ShortStringSchema }),
 });
@@ -213,6 +236,13 @@ const decodeFleetOption = Schema.decodeUnknownOption(FleetResponseSchema, {
 const decodeSelectedOption = Schema.decodeUnknownOption(SelectedSessionSchema, {
   onExcessProperty: "error",
 });
+const decodeCreateSessionResultOption = Schema.decodeUnknownOption(CreateSessionResultSchema, {
+  onExcessProperty: "error",
+});
+const decodeVaporizeSessionResultOption = Schema.decodeUnknownOption(VaporizeSessionResultSchema, {
+  onExcessProperty: "error",
+});
+const decodeApiErrorResponseOption = Schema.decodeUnknownOption(ApiErrorResponseSchema);
 const decodePairingOption = Schema.decodeUnknownOption(PairingResponseSchema);
 const decodeSnapshotOption = Schema.decodeUnknownOption(PiConsoleSnapshotV1Schema, {
   onExcessProperty: "error",
@@ -250,6 +280,12 @@ export const decodeFleet = (value: unknown): ReadonlyArray<FleetSession> | undef
   Option.getOrUndefined(decodeFleetOption(value));
 export const decodeSelected = (value: unknown): SelectedSession | undefined =>
   Option.getOrUndefined(decodeSelectedOption(value));
+export const decodeCreateSessionResult = (value: unknown): CreateSessionResult | undefined =>
+  Option.getOrUndefined(decodeCreateSessionResultOption(value));
+export const decodeVaporizeSessionResult = (value: unknown): VaporizeSessionResult | undefined =>
+  Option.getOrUndefined(decodeVaporizeSessionResultOption(value));
+export const decodeApiErrorMessage = (value: unknown): string | undefined =>
+  Option.getOrUndefined(decodeApiErrorResponseOption(value))?.error.message;
 export const decodePairing = (
   value: unknown,
 ): { readonly client: { readonly id: string } } | undefined =>

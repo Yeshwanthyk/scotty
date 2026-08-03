@@ -117,6 +117,11 @@ const sidecarClient = await readFile(
   "utf8",
 );
 const sidecarBuild = await readFile(join(root, "scripts/build-scotty-desktop-sidecar.mjs"), "utf8");
+const desktopPackager = await readFile(join(root, "scripts/package-scotty-desktop.mjs"), "utf8");
+const desktopBuildCheck = await readFile(
+  join(root, "scripts/check-scotty-desktop-build.mjs"),
+  "utf8",
+);
 if (!sidecarMain.includes("loadConfig") || !sidecarMain.includes("HttpConsoleTransport"))
   failures.push("desktop sidecar must reuse the paired Scotty transport boundary");
 if (/process\.env\.(?:SCOTTY_CREDENTIAL|CODEX_API_KEY|GITHUB_TOKEN)/u.test(sidecarMain))
@@ -125,6 +130,18 @@ if (!sidecarClient.includes("command.env_clear()"))
   failures.push("desktop client must start the sidecar with an allowlisted environment");
 for (const flag of ["--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig"])
   if (!sidecarBuild.includes(flag)) failures.push(`desktop sidecar build is missing ${flag}`);
+if (
+  !desktopPackager.includes("relative(distRoot, output)") ||
+  !desktopPackager.includes('endsWith(".app")') ||
+  !desktopPackager.includes("isSymbolicLink()") ||
+  !desktopPackager.includes("realpath(distRoot)")
+)
+  failures.push(
+    "desktop packager must constrain recursive deletion to a non-symlinked .app under dist",
+  );
+for (const command of ["cargo", "clippy", "test"])
+  if (!desktopBuildCheck.includes(command))
+    failures.push(`desktop build gate is missing ${command}`);
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));

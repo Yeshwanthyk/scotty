@@ -10,8 +10,10 @@ import {
 } from "../../protocol/pi-console.ts";
 import { PiScottyError } from "./errors.ts";
 import {
+  decodeApiErrorMessage,
   decodeClientCredential,
   decodeCommandError,
+  decodeCreateSessionResult,
   decodeEnvelope,
   decodeFleet,
   decodeJsonText,
@@ -20,11 +22,14 @@ import {
   decodeSnapshot,
   decodeStaleCommand,
   decodeUnavailable,
+  decodeVaporizeSessionResult,
   type ConsoleSnapshotResult,
+  type CreateSessionResult,
   type FleetSession,
   type PiScottyConfig,
   type SelectedSession,
 } from "./schemas.ts";
+import { redactRemoteString } from "./redaction.ts";
 
 const MAX_SSE_EVENT_BYTES = 256 * 1024;
 const MAX_SSE_BUFFER_BYTES = MAX_SSE_EVENT_BYTES * 2;
@@ -56,6 +61,28 @@ export type CommandResult =
 
 export interface ConsoleTransport extends ReadOnlyConsoleTransport {
   readonly postCommand: (sessionId: string, command: PiConsoleCommandV1) => Promise<CommandResult>;
+}
+
+export interface CreateSessionInput {
+  readonly title: string;
+  readonly prompt: string;
+  readonly repo: string;
+  readonly hardCapSeconds: number;
+}
+
+export interface DesktopManagementTransport extends ConsoleTransport {
+  readonly createSession: (
+    input: CreateSessionInput,
+    requestId: string,
+  ) => Promise<CreateSessionResult>;
+  readonly renameSession: (
+    sessionId: string,
+    title: string,
+    requestId: string,
+  ) => Promise<SelectedSession>;
+  readonly snapshotSession: (sessionId: string, requestId: string) => Promise<SelectedSession>;
+  readonly resumeSession: (sessionId: string, requestId: string) => Promise<SelectedSession>;
+  readonly vaporizeSession: (sessionId: string, requestId: string) => Promise<void>;
 }
 
 export interface HttpConsoleTransportOptions {
@@ -98,7 +125,7 @@ export const extractClientCookie = (header: string | null): string | undefined =
   return decodeClientCredential(match?.[1]);
 };
 
-export class HttpConsoleTransport implements ConsoleTransport {
+export class HttpConsoleTransport implements DesktopManagementTransport {
   readonly #origin: string;
   #credential: string;
   readonly #fetch: FetchImplementation;
@@ -152,6 +179,42 @@ export class HttpConsoleTransport implements ConsoleTransport {
     return response;
   };
 
+  readonly #mutate = async (
+    path: string,
+    method: "POST" | "PATCH" | "DELETE",
+    body?: unknown,
+    idempotencyKey?: string,
+  ): Promise<unknown> => {
+    const headers = this.#headers("application/json");
+    headers.set("origin", this.#origin);
+    headers.set("sec-fetch-site", "same-origin");
+    if (idempotencyKey !== undefined) headers.set("idempotency-key", idempotencyKey);
+    if (body !== undefined) headers.set("content-type", "application/json");
+    const response = await this.#fetch(this.#url(path), {
+      method,
+      headers,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      redirect: "error",
+      cache: "no-store",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (response.url && new URL(response.url).origin !== this.#origin)
+      throw new PiScottyError("transport_failed", "Refused a cross-origin Scotty response");
+    await this.#refreshCredential(response);
+    const json = await responseJson(response, PI_CONSOLE_MAX_RESPONSE_BYTES);
+    if (!response.ok) {
+      const message = decodeApiErrorMessage(json);
+      throw new PiScottyError(
+        "transport_failed",
+        message === undefined
+          ? `Sandbox operation failed with HTTP ${response.status}`
+          : redactRemoteString(message).slice(0, 1024),
+        response.status,
+      );
+    }
+    return json;
+  };
+
   readonly listFleet = async (): Promise<ReadonlyArray<FleetSession>> => {
     const response = await this.#get("/api/sessions");
     if (!response.ok)
@@ -185,6 +248,71 @@ export class HttpConsoleTransport implements ConsoleTransport {
     if (decoded === undefined)
       throw new PiScottyError("response_invalid", "Selected-session metadata was invalid");
     return decoded;
+  };
+
+  readonly createSession = async (
+    input: CreateSessionInput,
+    requestId: string,
+  ): Promise<CreateSessionResult> => {
+    const json = await this.#mutate(
+      "/api/sessions",
+      "POST",
+      { ...input, provider: "cloudflare" },
+      `scotty-desktop:create:${requestId}`,
+    );
+    const result = decodeCreateSessionResult(json);
+    if (result === undefined)
+      throw new PiScottyError("response_invalid", "Create-sandbox response was invalid");
+    return result;
+  };
+
+  readonly renameSession = async (
+    sessionId: string,
+    title: string,
+    _requestId: string,
+  ): Promise<SelectedSession> => {
+    const json = await this.#mutate(`/api/sessions/${encodeURIComponent(sessionId)}`, "PATCH", {
+      title,
+    });
+    const result = decodeSelected(json);
+    if (result === undefined || result.id !== sessionId)
+      throw new PiScottyError("response_invalid", "Rename-sandbox response was invalid");
+    return result;
+  };
+
+  readonly snapshotSession = async (
+    sessionId: string,
+    _requestId: string,
+  ): Promise<SelectedSession> => {
+    const json = await this.#mutate(
+      `/api/sessions/${encodeURIComponent(sessionId)}/snapshot`,
+      "POST",
+    );
+    const result = decodeSelected(json);
+    if (result === undefined || result.id !== sessionId)
+      throw new PiScottyError("response_invalid", "Snapshot response was invalid");
+    return result;
+  };
+
+  readonly resumeSession = async (
+    sessionId: string,
+    _requestId: string,
+  ): Promise<SelectedSession> => {
+    const json = await this.#mutate(
+      `/api/sessions/${encodeURIComponent(sessionId)}/resume`,
+      "POST",
+    );
+    const result = decodeSelected(json);
+    if (result === undefined || result.id !== sessionId)
+      throw new PiScottyError("response_invalid", "Resume response was invalid");
+    return result;
+  };
+
+  readonly vaporizeSession = async (sessionId: string, _requestId: string): Promise<void> => {
+    const json = await this.#mutate(`/api/sessions/${encodeURIComponent(sessionId)}`, "DELETE");
+    const result = decodeVaporizeSessionResult(json);
+    if (result === undefined || result.id !== sessionId)
+      throw new PiScottyError("response_invalid", "Vaporize response was invalid");
   };
 
   readonly getSnapshot = async (
