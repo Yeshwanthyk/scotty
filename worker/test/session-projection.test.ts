@@ -37,6 +37,20 @@ describe("SessionProjection", () => {
         projectedAt: "2026-04-05T06:07:08.000Z",
       });
 
+      yield* withProjection(
+        storage,
+        projectSessionBestEffort(
+          record({
+            operation: {
+              kind: "vaporize",
+              nonce: "delete-nonce",
+              startedAt: "2026-04-05T06:07:08.000Z",
+            },
+          }),
+        ),
+      );
+      assert.deepInclude(storage.values.get("session:a0b1c2d3e4f5"), { deleting: true });
+
       yield* withProjection(storage, projectSessionBestEffort(record({ status: "gone" })));
       assert.strictEqual(storage.values.size, 0);
     }),

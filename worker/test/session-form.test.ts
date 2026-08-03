@@ -159,9 +159,10 @@ describe("session form", () => {
     );
   });
 
-  it("shows an optimistic stopping state only while a warm session is running the sleep action", () => {
+  it("shows optimistic and projected transition states while lifecycle actions run", () => {
     assert.strictEqual(sessionDisplayStatus("warm", "sleep"), "stopping");
-    assert.strictEqual(sessionDisplayStatus("warm", "delete"), "warm");
+    assert.strictEqual(sessionDisplayStatus("warm", "delete"), "deleting");
+    assert.strictEqual(sessionDisplayStatus("warm", undefined, true), "deleting");
     assert.strictEqual(sessionDisplayStatus("sleeping", "sleep"), "sleeping");
     assert.strictEqual(sessionDisplayStatus(undefined, undefined), "unknown");
   });
