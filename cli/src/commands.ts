@@ -4,6 +4,7 @@ import {
   Argument,
   CliConfig,
   CliError as EffectCliError,
+  CliOutput,
   Command,
   Flag,
   GlobalFlag,
@@ -55,12 +56,23 @@ import {
   stableUp,
   usage,
 } from "./pure";
-import { BrowserLauncher, CliRuntime, InstallationDeployer, ProcessRunner } from "./services";
+import {
+  BrowserLauncher,
+  CliRuntime,
+  CliUpgrader,
+  FileSystem as CliFileSystem,
+  InstallationCreator,
+  InstallationDeployer,
+  InstallationRecovery,
+  InstallationUninstaller,
+  ProcessRunner,
+  type InstallationResult,
+} from "./services";
 import { runRunnerSupervisor } from "./runner-link";
 import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
 import { requestJson } from "./transport";
-import { parseInstallationName } from "../../infra/installation.ts";
+import { makeInstallationTopology, parseInstallationName } from "../../infra/installation.ts";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -78,9 +90,22 @@ const RUNNER_CHILD_ENV_KEYS = [
   "TZ",
   "USER",
 ] as const;
+const TRAILING_ARGUMENT_NAME = "__scotty_trailing__";
 const trailingArguments: Argument.Argument<ReadonlyArray<string>> = Param.withHidden(
-  Argument.variadic(Argument.string("unexpected")),
+  Argument.variadic(Argument.string(TRAILING_ARGUMENT_NAME)),
 );
+const defaultCliFormatter = CliOutput.defaultFormatter();
+const scottyCliFormatter: CliOutput.Formatter = {
+  ...defaultCliFormatter,
+  formatHelpDoc: (doc) =>
+    defaultCliFormatter.formatHelpDoc({
+      ...doc,
+      usage: doc.usage.replace(` <${TRAILING_ARGUMENT_NAME}...>`, ""),
+      ...(doc.args === undefined
+        ? {}
+        : { args: doc.args.filter((argument) => argument.name !== TRAILING_ARGUMENT_NAME) }),
+    }),
+};
 
 const formatConsoleArguments = (args: ReadonlyArray<unknown>): string =>
   args.map((value) => String(value)).join(" ");
@@ -224,6 +249,72 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     };
   });
 
+  const requireInstallationName = Effect.fnUntraced(function* (
+    command: "init" | "recover",
+    name: Option.Option<string>,
+  ) {
+    const runtime = yield* CliRuntime;
+    let installationName = Option.getOrUndefined(name)?.trim();
+    if (!installationName && runtime.stdinIsTTY)
+      installationName = runtime.prompt("Installation name: ")?.trim();
+    if (!installationName) return yield* usage(`${command} needs --name when stdin is not a TTY`);
+    if (Option.isNone(parseInstallationName(installationName)))
+      return yield* usage("Installation name must be 2-32 lowercase letters, numbers, or hyphens");
+    return installationName;
+  });
+
+  const ensureDocker = Effect.fnUntraced(function* () {
+    const runtime = yield* CliRuntime;
+    const processRunner = yield* ProcessRunner;
+    const first = yield* processRunner.run(["docker", "info", "--format", "{{.ServerVersion}}"]);
+    if (first.exitCode === 0) return;
+    if (process.platform === "darwin" && runtime.stdinIsTTY && runtime.stdoutIsTTY) {
+      const answer = runtime.prompt("Docker is unavailable. Start Colima? [y/N]: ");
+      if (answer?.trim().toLowerCase() === "y") {
+        const started = yield* processRunner.run(["colima", "start"]);
+        if (started.exitCode === 0) {
+          const retried = yield* processRunner.run([
+            "docker",
+            "info",
+            "--format",
+            "{{.ServerVersion}}",
+          ]);
+          if (retried.exitCode === 0) return;
+        }
+      }
+    }
+    return yield* new CliError(
+      "docker_unavailable",
+      "Docker is not available in the current Docker context",
+      "Start your Docker runtime or select a working Docker context, then retry.",
+      EXIT.GENERIC,
+    );
+  });
+
+  const rootToken = (): string =>
+    `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
+
+  const managedConfig = (
+    deployed: InstallationResult,
+    token: string,
+    adoptionManifestPath?: string,
+  ) => ({
+    version: 1 as const,
+    installationName: deployed.installationName,
+    profile: deployed.profile,
+    stackName: deployed.stackName,
+    stage: deployed.stage,
+    accountId: deployed.accountId,
+    workerName: deployed.workerName,
+    runnerWorkerName: deployed.runnerWorkerName,
+    containerName: deployed.containerName,
+    kvTitle: deployed.kvTitle,
+    backupBucketName: deployed.backupBucketName,
+    ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
+    host: deployed.host,
+    token,
+  });
+
   const init = Command.make(
     "init",
     {
@@ -235,107 +326,417 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDefault("default"),
         Flag.withDescription("Alchemy Cloudflare authentication profile"),
       ),
-      existing: Flag.boolean("existing").pipe(
-        Flag.withDescription("Adopt or recover an existing named installation"),
-      ),
-      adoptionManifest: Flag.string("adoption-manifest").pipe(
-        Flag.optional,
-        Flag.withDescription("Private manifest for adopting legacy resource names"),
-      ),
       trailing: trailingArguments,
     },
-    ({ name, profile, existing, adoptionManifest, trailing }) =>
+    ({ name, profile, trailing }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
-        const configPath = join(runtime.home, ".scotty.json");
-
-        if (options.host || options.token) {
-          if (!options.host || !options.token)
-            return yield* usage("init needs both --host and --token when connecting directly");
-          if (Option.isSome(name) || Option.isSome(adoptionManifest) || existing)
-            return yield* usage(
-              "--host/--token cannot be mixed with installation deployment flags",
+        if (options.host || options.token)
+          return yield* usage("init does not accept --host or --token");
+        const installationName = yield* requireInstallationName("init", name);
+        yield* ensureDocker();
+        const fileSystem = yield* CliFileSystem;
+        const operationPath = join(runtime.home, ".scotty", `init-${installationName}`);
+        yield* fileSystem.withLock(
+          operationPath,
+          Effect.gen(function* () {
+            const token = rootToken();
+            if (!autoJson)
+              runtime.stdout(
+                `Creating installation ${installationName} with Cloudflare profile ${profile}...\n`,
+              );
+            const creator = yield* InstallationCreator;
+            const deployed = yield* creator.create({ installationName, profile, token });
+            const host = yield* Effect.fromResult(normalizeHost(deployed.host));
+            const configPath = join(runtime.home, ".scotty.json");
+            yield* secureWrite(
+              configPath,
+              `${JSON.stringify(managedConfig({ ...deployed, host }, token), null, 2)}\n`,
             );
-          const host = yield* Effect.fromResult(normalizeHost(options.host));
-          yield* secureWrite(
-            configPath,
-            `${JSON.stringify({ version: 1, host, token: options.token }, null, 2)}\n`,
-          );
-          const result = { configPath, host, mode: "connected" };
-          if (autoJson) outputJson(runtime.stdout, result);
-          else runtime.stdout(`Saved ${configPath} with mode 0600\n`);
-          return;
-        }
-
-        let installationName = Option.getOrUndefined(name)?.trim();
-        if (!installationName && runtime.stdinIsTTY)
-          installationName = runtime.prompt("Installation name: ")?.trim();
-        if (!installationName) return yield* usage("init needs --name when stdin is not a TTY");
-        if (Option.isNone(parseInstallationName(installationName)))
-          return yield* usage(
-            "Installation name must be 2-32 lowercase letters, numbers, or hyphens",
-          );
-
-        const token = `${crypto.randomUUID().replaceAll("-", "")}${crypto
-          .randomUUID()
-          .replaceAll("-", "")}`;
-        if (!autoJson) {
-          runtime.stdout(
-            `${existing ? "Recovering" : "Creating"} installation ${installationName} with Cloudflare profile ${profile}...\n`,
-          );
-        }
-        const deployer = yield* InstallationDeployer;
-        const deployed = yield* deployer.deploy({
-          installationName,
-          profile,
-          token,
-          ...(Option.isSome(adoptionManifest)
-            ? { adoptionManifestPath: adoptionManifest.value }
-            : {}),
-        });
-        const host = yield* Effect.fromResult(normalizeHost(deployed.host));
-        const config = {
-          version: 1,
-          installationName: deployed.installationName,
-          profile: deployed.profile,
-          stackName: deployed.stackName,
-          stage: deployed.stage,
-          accountId: deployed.accountId,
-          workerName: deployed.workerName,
-          host,
-          token,
-        } as const;
-        yield* secureWrite(configPath, `${JSON.stringify(config, null, 2)}\n`);
-        const result = {
-          configPath,
-          installationName: deployed.installationName,
-          profile: deployed.profile,
-          accountId: deployed.accountId,
-          workerName: deployed.workerName,
-          host,
-          rootTokenRotated: true,
-        };
-        if (autoJson) outputJson(runtime.stdout, result);
-        else {
-          runtime.stdout(`Saved ${configPath} with mode 0600\n`);
-          runtime.stdout(
-            existing
-              ? "Recovered the installation and rotated its root token.\n"
-              : "Scotty is deployed and ready.\n",
-          );
-        }
+            const result = {
+              configPath,
+              installationName: deployed.installationName,
+              profile: deployed.profile,
+              accountId: deployed.accountId,
+              workerName: deployed.workerName,
+              host,
+              rootTokenRotated: true,
+            };
+            if (autoJson) outputJson(runtime.stdout, result);
+            else {
+              runtime.stdout(`Saved ${configPath} with mode 0600\n`);
+              runtime.stdout("Scotty is deployed and ready.\n");
+            }
+          }),
+        );
       }),
   ).pipe(
-    Command.withDescription("Create, adopt, or connect to a Scotty installation"),
+    Command.withDescription("Create a new Scotty installation"),
     Command.withExamples([
       { command: "scotty init --name home", description: "Create a named installation" },
-      {
-        command: "scotty init --name home --existing",
-        description: "Recover an installation on a new machine",
-      },
     ]),
   );
+
+  const recover = Command.make(
+    "recover",
+    {
+      name: Flag.string("name").pipe(
+        Flag.optional,
+        Flag.withDescription("Existing Scotty installation name"),
+      ),
+      profile: Flag.string("profile").pipe(
+        Flag.withDefault("default"),
+        Flag.withDescription("Alchemy Cloudflare authentication profile"),
+      ),
+      adoptionManifest: Flag.string("adoption-manifest").pipe(
+        Flag.optional,
+        Flag.withDescription("Private legacy resource-name mapping"),
+      ),
+      yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed resource mapping")),
+      trailing: trailingArguments,
+    },
+    ({ adoptionManifest, name, profile, trailing, yes }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (options.host || options.token)
+          return yield* usage("recover does not accept --host or --token");
+        const installationName = yield* requireInstallationName("recover", name);
+        const adoptionManifestPath = Option.getOrUndefined(adoptionManifest);
+        const recovery = yield* InstallationRecovery;
+        const inspected = yield* recovery.inspect({
+          installationName,
+          profile,
+          ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
+        });
+        if (!yes) {
+          if (!runtime.stdinIsTTY || !runtime.stdoutIsTTY)
+            return yield* usage(
+              "recover requires --yes in non-interactive use",
+              "Review the resource mapping in an interactive terminal, or retry with --yes.",
+            );
+          runtime.stdout(
+            [
+              `Installation: ${inspected.installationName}`,
+              `Account: ${inspected.accountId}`,
+              `Worker: ${inspected.workerName}`,
+              `Runner Worker: ${inspected.runnerWorkerName}`,
+              `Container: ${inspected.containerName}`,
+              `KV: ${inspected.kvTitle}`,
+              `R2: ${inspected.backupBucketName}`,
+              `Host: ${inspected.host}`,
+              "",
+            ].join("\n"),
+          );
+          const answer = runtime.prompt(
+            `Rotate access for ${installationName}? Type ${installationName}: `,
+          );
+          if (answer !== installationName)
+            return yield* new CliError(
+              "cancelled",
+              "Installation recovery cancelled",
+              "No credentials were changed.",
+              EXIT.USAGE,
+            );
+        }
+
+        const configPath = join(runtime.home, ".scotty.json");
+        const journalPath = join(runtime.home, ".scotty", `recover-${installationName}.json`);
+        const fileSystem = yield* CliFileSystem;
+        yield* fileSystem.withLock(
+          journalPath,
+          Effect.gen(function* () {
+            const existingJournal = yield* readConfig(journalPath);
+            const journalMatchesTarget =
+              existingJournal.installationName === installationName &&
+              existingJournal.profile === profile &&
+              existingJournal.accountId === inspected.accountId &&
+              existingJournal.workerName === inspected.workerName &&
+              existingJournal.runnerWorkerName === inspected.runnerWorkerName &&
+              existingJournal.containerName === inspected.containerName &&
+              existingJournal.kvTitle === inspected.kvTitle &&
+              existingJournal.backupBucketName === inspected.backupBucketName &&
+              existingJournal.adoptionManifestPath === adoptionManifestPath;
+            const token =
+              journalMatchesTarget && existingJournal.token ? existingJournal.token : rootToken();
+            yield* secureWrite(
+              journalPath,
+              `${JSON.stringify(managedConfig(inspected, token, adoptionManifestPath), null, 2)}\n`,
+            );
+            const recovered = yield* recovery.recover({
+              installationName,
+              profile,
+              token,
+              expectedAccountId: inspected.accountId,
+              expectedWorkerName: inspected.workerName,
+              expectedRunnerWorkerName: inspected.runnerWorkerName,
+              expectedContainerName: inspected.containerName,
+              expectedKvTitle: inspected.kvTitle,
+              expectedBackupBucketName: inspected.backupBucketName,
+              ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
+            });
+            const host = yield* Effect.fromResult(normalizeHost(recovered.host));
+            yield* secureWrite(
+              configPath,
+              `${JSON.stringify(
+                managedConfig({ ...recovered, host }, token, adoptionManifestPath),
+                null,
+                2,
+              )}\n`,
+            );
+            yield* fileSystem
+              .remove(journalPath)
+              .pipe(
+                Effect.catch((error) =>
+                  error.code === "ENOENT"
+                    ? Effect.void
+                    : Effect.fail(
+                        new CliError(
+                          "recovery_journal_cleanup_failed",
+                          "Access was recovered but the recovery journal could not be removed",
+                          `Remove ${journalPath} after confirming ${configPath} exists.`,
+                          EXIT.GENERIC,
+                        ),
+                      ),
+                ),
+              );
+            const result = {
+              configPath,
+              installationName,
+              profile,
+              accountId: recovered.accountId,
+              workerName: recovered.workerName,
+              host,
+              rootTokenRotated: true,
+            };
+            if (autoJson) outputJson(runtime.stdout, result);
+            else
+              runtime.stdout(
+                `Recovered ${installationName} and saved ${configPath} with mode 0600.\n`,
+              );
+          }),
+        );
+      }),
+  ).pipe(Command.withDescription("Recover access to an existing Scotty installation"));
+
+  const uninstall = Command.make(
+    "uninstall",
+    {
+      deleteData: Flag.boolean("delete-data").pipe(
+        Flag.withDescription("Also delete the retained KV session index and R2 backups"),
+      ),
+      yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm installation removal")),
+      trailing: trailingArguments,
+    },
+    ({ deleteData, trailing, yes }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (options.host || options.token)
+          return yield* usage("uninstall does not accept --host or --token");
+        const configPath = join(runtime.home, ".scotty.json");
+        const config = yield* readConfig(configPath);
+        if (!config.installationName || !config.profile)
+          return yield* usage(
+            "No managed Scotty installation is configured",
+            "Run uninstall on a machine with the installation config, or recover it first.",
+          );
+        const conventional = makeInstallationTopology(config.installationName);
+        const workerName = config.workerName ?? conventional.workerName;
+        const runnerWorkerName = config.runnerWorkerName ?? conventional.runnerWorkerName;
+        const containerName = config.containerName ?? conventional.containerName;
+        const kvTitle = config.kvTitle ?? conventional.kvTitle;
+        const backupBucketName = config.backupBucketName ?? conventional.backupBucketName;
+        if (
+          !config.accountId ||
+          (config.adoptionManifestPath !== undefined &&
+            (!config.workerName ||
+              !config.runnerWorkerName ||
+              !config.containerName ||
+              !config.kvTitle ||
+              !config.backupBucketName))
+        )
+          return yield* usage(
+            "Installation ownership details are incomplete",
+            "Run scotty recover --name NAME before uninstalling.",
+          );
+        if (!yes) {
+          if (!runtime.stdinIsTTY || !runtime.stdoutIsTTY)
+            return yield* usage(
+              "uninstall requires --yes in non-interactive use",
+              "Run scotty uninstall interactively to review the impact, or retry with --yes.",
+            );
+          runtime.stdout(
+            deleteData
+              ? "This stops every session and deletes Scotty compute, the KV session index, and every R2 backup.\n"
+              : "This stops every session and deletes Scotty compute. KV and R2 data stay in Cloudflare.\n",
+          );
+          const answer = runtime.prompt(
+            `Uninstall ${config.installationName}? Type ${config.installationName}: `,
+          );
+          if (answer !== config.installationName)
+            return yield* new CliError(
+              "cancelled",
+              "Installation uninstall cancelled",
+              "No resources were changed.",
+              EXIT.USAGE,
+            );
+        }
+        const uninstaller = yield* InstallationUninstaller;
+        const result = yield* uninstaller.uninstall({
+          installationName: config.installationName,
+          profile: config.profile,
+          deleteData,
+          expectedAccountId: config.accountId,
+          expectedWorkerName: workerName,
+          expectedRunnerWorkerName: runnerWorkerName,
+          expectedContainerName: containerName,
+          expectedKvTitle: kvTitle,
+          expectedBackupBucketName: backupBucketName,
+          ...(config.adoptionManifestPath === undefined
+            ? {}
+            : { adoptionManifestPath: config.adoptionManifestPath }),
+        });
+        const fileSystem = yield* CliFileSystem;
+        yield* fileSystem
+          .remove(configPath)
+          .pipe(
+            Effect.catch((error) =>
+              error.code === "ENOENT"
+                ? Effect.void
+                : Effect.fail(
+                    new CliError(
+                      "config_cleanup_failed",
+                      "Cloudflare resources were removed but the local config remains",
+                      `Remove ${configPath} manually.`,
+                      EXIT.GENERIC,
+                    ),
+                  ),
+            ),
+          );
+        const output = { ...result, configRemoved: true };
+        if (autoJson) outputJson(runtime.stdout, output);
+        else {
+          runtime.stdout(`Uninstalled ${result.installationName}.\n`);
+          if (result.retainedData.length > 0)
+            runtime.stdout(`Retained data: ${result.retainedData.join(", ")}\n`);
+        }
+      }),
+  ).pipe(Command.withDescription("Remove Scotty compute and retain data by default"));
+
+  const upgrade = Command.make("upgrade", { trailing: trailingArguments }, ({ trailing }) =>
+    Effect.gen(function* () {
+      yield* rejectTrailingArguments(trailing);
+      const { autoJson, options, runtime } = yield* commandContext();
+      if (options.host || options.token)
+        return yield* usage("upgrade does not accept --host or --token");
+      const upgrader = yield* CliUpgrader;
+      const result = yield* upgrader.upgrade({
+        currentVersion: VERSION,
+        executablePath: process.execPath,
+        platform: process.platform,
+        architecture: process.arch,
+      });
+      if (autoJson) outputJson(runtime.stdout, result);
+      else if (result.updated)
+        runtime.stdout(`Upgraded Scotty from ${result.previousVersion} to ${result.version}.\n`);
+      else runtime.stdout(`Scotty ${result.version} is already current.\n`);
+    }),
+  ).pipe(Command.withDescription("Install the latest signed Scotty CLI release"));
+
+  const deployInstallationCommand = Command.make(
+    "deploy",
+    {
+      yes: Flag.boolean("yes").pipe(Flag.withDescription("Apply a deployment with changes")),
+      trailing: trailingArguments,
+    },
+    ({ trailing, yes }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (options.host || options.token)
+          return yield* usage("deploy does not accept --host or --token");
+        const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+        if (!config.installationName || !config.profile)
+          return yield* usage(
+            "No managed Scotty installation is configured",
+            "Run scotty init or scotty recover first.",
+          );
+        if (!config.token)
+          return yield* usage(
+            "Managed installation credentials are missing",
+            "Run scotty recover --name NAME first.",
+          );
+        yield* ensureDocker();
+        const deployer = yield* InstallationDeployer;
+        const request = {
+          installationName: config.installationName,
+          profile: config.profile,
+          ...(config.adoptionManifestPath === undefined
+            ? {}
+            : { adoptionManifestPath: config.adoptionManifestPath }),
+        };
+        const plan = yield* deployer.plan(request);
+        if (plan.changes.length === 0) {
+          const result = {
+            installationName: config.installationName,
+            changed: false,
+            changes: [],
+            rootTokenRotated: false,
+          };
+          if (autoJson) outputJson(runtime.stdout, result);
+          else runtime.stdout(`${config.installationName} is already up to date.\n`);
+          return;
+        }
+        if (!yes) {
+          if (!runtime.stdinIsTTY || !runtime.stdoutIsTTY)
+            return yield* usage(
+              "deploy requires --yes when the plan contains changes",
+              "Run scotty deploy interactively to review the plan, or retry with --yes.",
+            );
+          runtime.stdout(
+            `${plan.changes.map((change) => `${change.action.padEnd(7)} ${change.id}`).join("\n")}\n`,
+          );
+          const answer = runtime.prompt(`Deploy ${config.installationName}? [y/N]: `);
+          if (answer?.trim().toLowerCase() !== "y")
+            return yield* new CliError(
+              "cancelled",
+              "Deployment cancelled",
+              "No resources were changed.",
+              EXIT.USAGE,
+            );
+        }
+        if (!autoJson) runtime.stdout(`Deploying ${config.installationName}...\n`);
+        const deployed = yield* deployer.deploy({
+          ...request,
+          expectedPlanFingerprint: plan.fingerprint,
+        });
+        const host = yield* Effect.fromResult(normalizeHost(deployed.host));
+        yield* secureWrite(
+          join(runtime.home, ".scotty.json"),
+          `${JSON.stringify(
+            managedConfig({ ...deployed, host }, config.token, config.adoptionManifestPath),
+            null,
+            2,
+          )}\n`,
+        );
+        const result = {
+          installationName: deployed.installationName,
+          profile: deployed.profile,
+          workerName: deployed.workerName,
+          host,
+          changed: true,
+          changes: plan.changes,
+          rootTokenRotated: false,
+        };
+        if (autoJson) outputJson(runtime.stdout, result);
+        else
+          runtime.stdout(
+            `Deployed ${deployed.installationName}. Root credentials were unchanged.\n`,
+          );
+      }),
+  ).pipe(Command.withDescription("Deploy Scotty code without changing credentials"));
 
   const beamUp = Command.make(
     "up",
@@ -400,11 +801,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         description: "Start a Cloudflare session",
       },
     ]),
-  );
-
-  const beam = Command.make("beam").pipe(
-    Command.withDescription("Create agent sessions"),
-    Command.withSubcommands([beamUp]),
   );
 
   const list = Command.make("ls", { trailing: trailingArguments }, ({ trailing }) =>
@@ -1101,9 +1497,18 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       rejectTrailingArguments(trailing).pipe(Effect.andThen(sessionOperation("vaporize", id, yes))),
   ).pipe(Command.withDescription("Permanently delete a session"));
 
+  const beam = Command.make("beam").pipe(
+    Command.withDescription("Manage agent session lifecycle"),
+    Command.withSubcommands([beamUp, down, vaporize]),
+  );
+
   return scotty.pipe(
     Command.withSubcommands([
       init,
+      recover,
+      deployInstallationCommand,
+      upgrade,
+      uninstall,
       beam,
       list,
       doctor,
@@ -1112,8 +1517,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       owner,
       snapshot,
       resume,
-      down,
-      vaporize,
       skills,
       tools,
       runner,
@@ -1130,6 +1533,7 @@ export const execute = Effect.fnUntraced(function* (rawArgs: ReadonlyArray<strin
   const executed = yield* Effect.result(
     Command.runWith(command, { version: VERSION })(rawArgs).pipe(
       Effect.provide(CliConfig.layer({ builtIns: [GlobalFlag.Help] })),
+      Effect.provideService(CliOutput.Formatter, scottyCliFormatter),
       Effect.provideService(Console.Console, captureConsole(parserStdout, parserStderr)),
     ),
   );

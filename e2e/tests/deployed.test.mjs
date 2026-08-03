@@ -172,7 +172,7 @@ test(
         }
       }
       for (const sessionId of cleanupIds) {
-        await runCli(["vaporize", sessionId, "--yes", "--json"], {
+        await runCli(["beam", "vaporize", sessionId, "--yes", "--json"], {
           env,
           cwd,
           timeoutMs: 180_000,
@@ -309,14 +309,14 @@ test(
       sentinelsOnly: true,
     });
 
-    const down = await runCli(["down", id, "--json"], { env, cwd, timeoutMs: 180_000 });
+    const down = await runCli(["beam", "down", id, "--json"], { env, cwd, timeoutMs: 180_000 });
     assert.equal(down.code, 0, down.stderr);
     assert.equal(fs.statSync(down.json.rolloutPath).mode & 0o777, 0o600);
     assert.equal(down.json.sha, await git(["rev-parse", "FETCH_HEAD"], cwd));
     await git(["push", "origin", "--delete", remoteBranch], cwd);
     remoteBranch = undefined;
 
-    const vaporize = await runCli(["vaporize", id, "--yes", "--json"], {
+    const vaporize = await runCli(["beam", "vaporize", id, "--yes", "--json"], {
       env,
       cwd,
       timeoutMs: 180_000,

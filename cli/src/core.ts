@@ -1,3 +1,6 @@
+import { Data } from "effect";
+import packageMetadata from "../../package.json" with { type: "json" };
+
 export const EXIT = {
   OK: 0,
   GENERIC: 1,
@@ -28,9 +31,8 @@ export class CliError extends Data.TaggedError("CliError")<{
   }
 }
 
-export const VERSION = "0.2.2";
+export const VERSION = packageMetadata.version;
 export const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const MUTATION_REQUEST_TIMEOUT_MS = 5 * 60_000;
 export const PENDING_UP_TTL_MS = 24 * 60 * 60_000;
-import { Data } from "effect";

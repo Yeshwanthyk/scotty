@@ -58,6 +58,11 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
   const stage = Option.getOrUndefined(decodeString(raw.value.stage));
   const accountId = Option.getOrUndefined(decodeString(raw.value.accountId));
   const workerName = Option.getOrUndefined(decodeString(raw.value.workerName));
+  const runnerWorkerName = Option.getOrUndefined(decodeString(raw.value.runnerWorkerName));
+  const containerName = Option.getOrUndefined(decodeString(raw.value.containerName));
+  const kvTitle = Option.getOrUndefined(decodeString(raw.value.kvTitle));
+  const backupBucketName = Option.getOrUndefined(decodeString(raw.value.backupBucketName));
+  const adoptionManifestPath = Option.getOrUndefined(decodeString(raw.value.adoptionManifestPath));
   return {
     ...(raw.value.version === 1 ? { version: 1 as const } : {}),
     ...(installationName === undefined ? {} : { installationName }),
@@ -66,6 +71,11 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
     ...(stage === undefined ? {} : { stage }),
     ...(accountId === undefined ? {} : { accountId }),
     ...(workerName === undefined ? {} : { workerName }),
+    ...(runnerWorkerName === undefined ? {} : { runnerWorkerName }),
+    ...(containerName === undefined ? {} : { containerName }),
+    ...(kvTitle === undefined ? {} : { kvTitle }),
+    ...(backupBucketName === undefined ? {} : { backupBucketName }),
+    ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
     ...(host === undefined ? {} : { host }),
     ...(token === undefined ? {} : { token }),
   } satisfies Config;

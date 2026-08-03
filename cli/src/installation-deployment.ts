@@ -2,6 +2,9 @@ import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { NodeServices } from "@effect/platform-node";
+import * as Containers from "@distilled.cloud/cloudflare/containers";
+import * as KV from "@distilled.cloud/cloudflare/kv";
+import * as R2 from "@distilled.cloud/cloudflare/r2";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import * as Alchemy from "alchemy";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
@@ -11,9 +14,11 @@ import { CredentialsStoreLive } from "alchemy/Auth/Credentials";
 import { ProfileLive } from "alchemy/Auth/Profile";
 import { LoggingCli } from "alchemy/Cli/LoggingCli";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { deploy } from "alchemy/Deploy";
+import * as Apply from "alchemy/Apply";
+import * as Plan from "alchemy/Plan";
+import { evalStack } from "alchemy/Stack";
 import { PlatformServices } from "alchemy/Util/PlatformServices";
-import { Data, Effect, Layer, Option } from "effect";
+import { Data, Effect, Layer, Option, Stream } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import {
   cloudflareStack,
@@ -28,10 +33,33 @@ import {
   type AdoptionManifest,
 } from "../../infra/installation.ts";
 import { CONTAINER_INPUTS, DEPLOYMENT_INPUTS } from "./deployment-inputs.ts";
-import type { InstallationDeployRequest, InstallationDeployResult } from "./services.ts";
+import type {
+  InstallationApplyRequest,
+  InstallationCreateRequest,
+  InstallationDeployRequest,
+  InstallationInspectRequest,
+  InstallationPlan,
+  InstallationRecoverRequest,
+  InstallationResult,
+  InstallationUninstallRequest,
+  InstallationUninstallResult,
+} from "./services.ts";
 
 const DEPLOYMENT_ARCHIVE_NAME = "scotty-deployment.tar.gz";
 const CONTAINER_CONTEXT_PATH = ".alchemy/scotty-container-context";
+type WorkerBinding = NonNullable<
+  Workers.GetScriptScriptAndVersionSettingResponse["bindings"]
+>[number];
+type DurableObjectBinding = Extract<WorkerBinding, { readonly type: "durable_object_namespace" }>;
+type KvBinding = Extract<WorkerBinding, { readonly type: "kv_namespace" }>;
+type R2Binding = Extract<WorkerBinding, { readonly type: "r2_bucket" }>;
+
+const isDurableObjectBinding = (binding: WorkerBinding): binding is DurableObjectBinding =>
+  binding.type === "durable_object_namespace";
+const isKvBinding = (binding: WorkerBinding): binding is KvBinding =>
+  binding.type === "kv_namespace";
+const isR2Binding = (binding: WorkerBinding): binding is R2Binding => binding.type === "r2_bucket";
+
 class InstallationDeploymentError extends Data.TaggedError("InstallationDeploymentError")<{
   readonly message: string;
   readonly cause?: unknown;
@@ -86,7 +114,7 @@ const readAdoptionManifest = async (
   const text = await Bun.file(path).text();
   const decoded = decodeAdoptionManifestJson(text);
   if (Option.isNone(decoded) || !adoptionMatchesInstallation(decoded.value, installationName)) {
-    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise file adapter rejects invalid machine-local adoption input before Alchemy evaluation
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise file adapter rejects invalid machine-local adoption input before Cloudflare access
     throw new InstallationDeploymentError({
       message: "Adoption manifest is invalid or names a different installation.",
     });
@@ -94,19 +122,51 @@ const readAdoptionManifest = async (
   return decoded.value;
 };
 
-const deployWithProfile = async (
-  request: InstallationDeployRequest,
+const alchemyRuntimeLayer = Layer.provideMerge(
+  Layer.mergeAll(LoggingCli, AlchemyContextLive),
+  Layer.mergeAll(
+    PlatformServices,
+    NodeServices.layer,
+    FetchHttpClient.layer,
+    Layer.provide(ProfileLive, PlatformServices),
+    Layer.provide(CredentialsStoreLive, PlatformServices),
+  ),
+);
+
+const provideAlchemy = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  program.pipe(
+    Effect.provide(Cloudflare.state()),
+    Effect.provideService(ArtifactStore, createArtifactStore()),
+    Effect.provideService(AuthProviders, {}),
+    Effect.provide(alchemyRuntimeLayer),
+  );
+
+const runWithProfile = async <A, E>(
+  profile: string,
   root: string,
-  adoption: AdoptionManifest | undefined,
-): Promise<InstallationDeployResult> => {
-  const installation = makeInstallationTopology(request.installationName, adoption);
+  makeProgram: () => Effect.Effect<A, E>,
+): Promise<A> => {
   const previousProfile = process.env.ALCHEMY_PROFILE;
   const previousTelemetry = process.env.ALCHEMY_TELEMETRY_DISABLED;
   const previousDirectory = process.cwd();
-  process.env.ALCHEMY_PROFILE = request.profile;
+  process.env.ALCHEMY_PROFILE = profile;
   process.env.ALCHEMY_TELEMETRY_DISABLED = "1";
   process.chdir(root);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must restore process-wide profile and cwd state
+  try {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone CLI owns this Alchemy Effect-to-Promise execution
+    return await Effect.runPromise(makeProgram());
+  } finally {
+    process.chdir(previousDirectory);
+    if (previousProfile === undefined) delete process.env.ALCHEMY_PROFILE;
+    else process.env.ALCHEMY_PROFILE = previousProfile;
+    if (previousTelemetry === undefined) delete process.env.ALCHEMY_TELEMETRY_DISABLED;
+    else process.env.ALCHEMY_TELEMETRY_DISABLED = previousTelemetry;
+  }
+};
 
+const makeStack = (request: InstallationDeployRequest, adoption: AdoptionManifest | undefined) => {
+  const installation = makeInstallationTopology(request.installationName, adoption);
   const stack = Alchemy.Stack(
     installation.stackName,
     {
@@ -121,63 +181,272 @@ const deployWithProfile = async (
       approval: expectedCloudflareStackApproval(installation),
     }),
   );
+  return { installation, stack };
+};
 
-  const program = Effect.gen(function* () {
-    const output = yield* deploy({ stack, stage: CLOUDFLARE_STAGE });
-    if (!output.url)
-      return yield* new InstallationDeploymentError({
-        message: "Deployed Worker has no URL.",
-      });
-    yield* Workers.putScriptSecret({
-      accountId: output.accountId,
-      scriptName: output.workerName,
-      name: "SCOTTY_TOKEN",
-      text: request.token,
-      type: "secret_text",
-    }).pipe(Effect.provide(Cloudflare.CloudflareApiLive()));
-    return {
-      installationName: request.installationName,
-      profile: request.profile,
-      stackName: installation.stackName,
-      stage: CLOUDFLARE_STAGE,
-      accountId: output.accountId,
-      workerName: output.workerName,
-      host: output.url,
-    } satisfies InstallationDeployResult;
-  }).pipe(
-    Effect.provide(Cloudflare.state()),
-    Effect.provideService(ArtifactStore, createArtifactStore()),
-    Effect.provideService(AuthProviders, {}),
-    Effect.provide(
-      Layer.provideMerge(
-        Layer.mergeAll(LoggingCli, AlchemyContextLive),
-        Layer.mergeAll(
-          PlatformServices,
-          NodeServices.layer,
-          FetchHttpClient.layer,
-          Layer.provide(ProfileLive, PlatformServices),
-          Layer.provide(CredentialsStoreLive, PlatformServices),
-        ),
+const bindingPlanAction = (
+  action: Plan.BindingAction,
+): "binding-create" | "binding-update" | "binding-delete" | undefined => {
+  if (action === "create") return "binding-create";
+  if (action === "update") return "binding-update";
+  if (action === "delete") return "binding-delete";
+  return undefined;
+};
+
+const fingerprintPlan = Effect.fnUntraced(function* (installationName: string, plan: Plan.Plan) {
+  const changes: InstallationPlan["changes"] = [
+    ...Object.entries(plan.resources).flatMap(([id, node]) => [
+      ...(node.action === "noop" ? [] : [{ id, action: node.action }]),
+      ...node.bindings.flatMap((binding) => {
+        const action = bindingPlanAction(binding.action);
+        return action === undefined ? [] : [{ id: `${id}#${binding.sid}`, action }];
+      }),
+    ]),
+    ...Object.entries(plan.deletions).flatMap(([id, node]) =>
+      node === undefined ? [] : [{ id, action: "delete" as const }],
+    ),
+    ...Object.entries(plan.actions).flatMap(([id, node]) =>
+      node.action === "noop" ? [] : [{ id, action: "run" as const }],
+    ),
+    ...Object.entries(plan.actionDeletions).flatMap(([id, node]) =>
+      node === undefined ? [] : [{ id, action: "delete" as const }],
+    ),
+  ].sort(
+    (left, right) => left.id.localeCompare(right.id) || left.action.localeCompare(right.action),
+  );
+  const fingerprintInput = {
+    installationName,
+    resources: Object.entries(plan.resources)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, node]) => ({
+        id,
+        action: node.action,
+        type: node.resource.Type,
+        props: node.action === "noop" ? node.state.props : node.props,
+        previousProps: node.state?.props,
+        bindings: node.bindings.map((binding) => ({
+          sid: binding.sid,
+          action: binding.action,
+          data: binding.data,
+        })),
+      })),
+    deletions: Object.keys(plan.deletions).sort(),
+    actions: Object.entries(plan.actions)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, node]) => ({ id, action: node.action })),
+    actionDeletions: Object.keys(plan.actionDeletions).sort(),
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(fingerprintInput));
+  const digest = yield* Effect.tryPromise({
+    try: () => crypto.subtle.digest("SHA-256", encoded),
+    catch: (cause) =>
+      new InstallationDeploymentError({ message: "Could not fingerprint deployment plan.", cause }),
+  });
+  const fingerprint = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return {
+    installationName,
+    hasExistingResources: Object.values(plan.resources).some((node) => node.action !== "create"),
+    fingerprint,
+    changes,
+  } satisfies InstallationPlan;
+});
+
+const planWithProfile = async (
+  request: InstallationDeployRequest,
+  root: string,
+  adoption: AdoptionManifest | undefined,
+): Promise<InstallationPlan> => {
+  const { stack } = makeStack(request, adoption);
+  return runWithProfile(request.profile, root, () =>
+    provideAlchemy(
+      evalStack(
+        stack,
+        (compiled) =>
+          Plan.make(compiled).pipe(
+            Effect.flatMap((plan) => fingerprintPlan(request.installationName, plan)),
+          ),
+        { stage: CLOUDFLARE_STAGE },
       ),
     ),
   );
-
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must restore process-wide profile and cwd state
-  try {
-    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone installer owns the one Alchemy Effect-to-Promise execution
-    return await Effect.runPromise(program);
-  } finally {
-    process.chdir(previousDirectory);
-    if (previousProfile === undefined) delete process.env.ALCHEMY_PROFILE;
-    else process.env.ALCHEMY_PROFILE = previousProfile;
-    if (previousTelemetry === undefined) delete process.env.ALCHEMY_TELEMETRY_DISABLED;
-    else process.env.ALCHEMY_TELEMETRY_DISABLED = previousTelemetry;
-  }
 };
 
-export async function deployInstallation(
+const deployWithProfile = async (
+  request: InstallationApplyRequest,
+  root: string,
+  adoption: AdoptionManifest | undefined,
+): Promise<InstallationResult> => {
+  const { installation, stack } = makeStack(request, adoption);
+  return runWithProfile(request.profile, root, () =>
+    provideAlchemy(
+      evalStack(
+        stack,
+        (compiled) =>
+          Effect.gen(function* () {
+            const plan = yield* Plan.make(compiled);
+            const summary = yield* fingerprintPlan(request.installationName, plan);
+            if (summary.fingerprint !== request.expectedPlanFingerprint)
+              return yield* new InstallationDeploymentError({
+                message: "The deployment plan changed after confirmation.",
+              });
+            const output = yield* Apply.apply(plan);
+            if (!output.url)
+              return yield* new InstallationDeploymentError({
+                message: "Deployed Worker has no URL.",
+              });
+            return {
+              installationName: request.installationName,
+              profile: request.profile,
+              stackName: installation.stackName,
+              stage: CLOUDFLARE_STAGE,
+              accountId: output.accountId,
+              workerName: output.workerName,
+              runnerWorkerName: installation.runnerWorkerName,
+              containerName: installation.containerName,
+              kvTitle: installation.kvTitle,
+              backupBucketName: installation.backupBucketName,
+              host: output.url,
+            } satisfies InstallationResult;
+          }),
+        { stage: CLOUDFLARE_STAGE },
+      ),
+    ),
+  );
+};
+
+const inspectWithProfile = async (
+  request: InstallationInspectRequest,
+  adoption: AdoptionManifest | undefined,
+  token?: string,
+  expectedAccountId?: string,
+): Promise<InstallationResult> => {
+  const installation = makeInstallationTopology(request.installationName, adoption);
+  return runWithProfile(request.profile, sourceRoot(), () =>
+    provideAlchemy(
+      Effect.gen(function* () {
+        const environment = yield* Cloudflare.CloudflareEnvironment;
+        const { accountId } = yield* environment;
+        if (expectedAccountId !== undefined && accountId !== expectedAccountId)
+          return yield* new InstallationDeploymentError({
+            message: "The Cloudflare account changed after confirmation.",
+          });
+        const workerSettings = yield* Workers.getScriptScriptAndVersionSetting({
+          accountId,
+          scriptName: installation.workerName,
+        });
+        const bindings = workerSettings.bindings ?? [];
+        const bindingNames = new Set(bindings.map((binding) => binding.name));
+        const requiredBindings = [
+          "AUTH",
+          "RUNNER_REGISTRY",
+          "RUNNERS",
+          "SANDBOX",
+          "SESSIONS",
+          "BACKUP_BUCKET",
+        ];
+        const sandboxBinding = bindings
+          .filter(isDurableObjectBinding)
+          .find((binding) => binding.name === "SANDBOX");
+        const sessionsBinding = bindings
+          .filter(isKvBinding)
+          .find((binding) => binding.name === "SESSIONS");
+        const backupBinding = bindings
+          .filter(isR2Binding)
+          .find((binding) => binding.name === "BACKUP_BUCKET");
+        if (
+          requiredBindings.some((name) => !bindingNames.has(name)) ||
+          sandboxBinding?.namespaceId === undefined ||
+          sessionsBinding?.namespaceId === undefined ||
+          backupBinding?.bucketName !== installation.backupBucketName
+        )
+          return yield* new InstallationDeploymentError({
+            message: "The named Worker does not have the required Scotty bindings.",
+          });
+        yield* Workers.getScriptScriptAndVersionSetting({
+          accountId,
+          scriptName: installation.runnerWorkerName,
+        }).pipe(Effect.asVoid);
+        const applications = yield* Containers.listContainerApplications({ accountId });
+        const application = applications.find(
+          (candidate) => candidate.name === installation.containerName,
+        );
+        if (
+          !application ||
+          (application.durableObjectNamespaceId ?? application.durableObjects?.namespaceId) !==
+            sandboxBinding.namespaceId
+        )
+          return yield* new InstallationDeploymentError({
+            message: "The named Scotty Container application is not bound to this Worker.",
+          });
+        const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
+          Stream.filter((candidate) => candidate.title === installation.kvTitle),
+          Stream.runHead,
+        );
+        if (Option.isNone(namespace) || namespace.value.id !== sessionsBinding.namespaceId)
+          return yield* new InstallationDeploymentError({
+            message: "The named Scotty KV namespace is not bound to this Worker.",
+          });
+        yield* R2.getBucket({
+          accountId,
+          bucketName: installation.backupBucketName,
+        }).pipe(Effect.asVoid);
+        const scriptSubdomain = yield* Workers.getScriptSubdomain({
+          accountId,
+          scriptName: installation.workerName,
+        });
+        if (!scriptSubdomain.enabled)
+          return yield* new InstallationDeploymentError({
+            message: "The Scotty Worker has no workers.dev URL.",
+          });
+        const { subdomain } = yield* Workers.getSubdomain({ accountId });
+        if (token !== undefined)
+          yield* Workers.putScriptSecret({
+            accountId,
+            scriptName: installation.workerName,
+            name: "SCOTTY_TOKEN",
+            text: token,
+            type: "secret_text",
+          });
+        return {
+          installationName: request.installationName,
+          profile: request.profile,
+          stackName: installation.stackName,
+          stage: CLOUDFLARE_STAGE,
+          accountId,
+          workerName: installation.workerName,
+          runnerWorkerName: installation.runnerWorkerName,
+          containerName: installation.containerName,
+          kvTitle: installation.kvTitle,
+          backupBucketName: installation.backupBucketName,
+          host: `https://${installation.workerName}.${subdomain}.workers.dev`,
+        } satisfies InstallationResult;
+      }).pipe(Effect.provide(Cloudflare.CloudflareApiLive())),
+    ),
+  );
+};
+
+export async function planInstallation(
   request: InstallationDeployRequest,
-): Promise<InstallationDeployResult> {
+): Promise<InstallationPlan> {
+  const deployment = await prepareDeploymentRoot();
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
+  try {
+    const adoption = await readAdoptionManifest(
+      request.adoptionManifestPath,
+      request.installationName,
+    );
+    await prepareContainerContext(deployment.root);
+    return await planWithProfile(request, deployment.root, adoption);
+  } finally {
+    await deployment.cleanup();
+  }
+}
+
+export async function deployInstallation(
+  request: InstallationApplyRequest,
+): Promise<InstallationResult> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
   try {
@@ -190,6 +459,211 @@ export async function deployInstallation(
   } finally {
     await deployment.cleanup();
   }
+}
+
+export async function createInstallation(
+  request: InstallationCreateRequest,
+): Promise<InstallationResult> {
+  const deployment = await prepareDeploymentRoot();
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
+  try {
+    await prepareContainerContext(deployment.root);
+    const deployRequest = {
+      installationName: request.installationName,
+      profile: request.profile,
+    };
+    const plan = await planWithProfile(deployRequest, deployment.root, undefined);
+    if (
+      plan.hasExistingResources ||
+      plan.changes.length === 0 ||
+      plan.changes.some(
+        (change) =>
+          change.action !== "create" &&
+          change.action !== "run" &&
+          change.action !== "binding-create",
+      )
+    ) {
+      // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: create-only Promise adapter rejects an existing or ambiguous installation before apply
+      throw new InstallationDeploymentError({
+        message: "The named Scotty installation already exists or is not empty.",
+      });
+    }
+    const deployed = await deployWithProfile(
+      { ...deployRequest, expectedPlanFingerprint: plan.fingerprint },
+      deployment.root,
+      undefined,
+    );
+    await inspectWithProfile(request, undefined, request.token);
+    return deployed;
+  } finally {
+    await deployment.cleanup();
+  }
+}
+
+export async function uninstallInstallation(
+  request: InstallationUninstallRequest,
+): Promise<InstallationUninstallResult> {
+  const deployment = await prepareDeploymentRoot();
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
+  try {
+    const adoption = await readAdoptionManifest(
+      request.adoptionManifestPath,
+      request.installationName,
+    );
+    await prepareContainerContext(deployment.root);
+    const installation = makeInstallationTopology(request.installationName, adoption);
+    const { stack } = makeStack(request, adoption);
+    return await runWithProfile(request.profile, deployment.root, () =>
+      provideAlchemy(
+        evalStack(
+          stack,
+          (compiled) =>
+            Effect.gen(function* () {
+              const environment = yield* Cloudflare.CloudflareEnvironment;
+              const { accountId } = yield* environment;
+              if (
+                accountId !== request.expectedAccountId ||
+                installation.workerName !== request.expectedWorkerName ||
+                installation.runnerWorkerName !== request.expectedRunnerWorkerName ||
+                installation.containerName !== request.expectedContainerName ||
+                installation.kvTitle !== request.expectedKvTitle ||
+                installation.backupBucketName !== request.expectedBackupBucketName
+              )
+                return yield* new InstallationDeploymentError({
+                  message: "The uninstall target no longer matches the saved installation.",
+                });
+
+              const destroyPlan = yield* Plan.make({
+                ...compiled,
+                resources: {},
+                bindings: {},
+                actions: {},
+                output: {},
+              });
+              const missingOwnership = Object.keys(compiled.resources).filter(
+                (id) => destroyPlan.deletions[id] === undefined,
+              );
+              if (missingOwnership.length > 0)
+                return yield* new InstallationDeploymentError({
+                  message: "Alchemy state does not prove ownership of every installation resource.",
+                });
+
+              const applications = yield* Containers.listContainerApplications({ accountId });
+              const application = applications.find(
+                (candidate) => candidate.name === installation.containerName,
+              );
+              if (application)
+                yield* Containers.deleteContainerApplication({
+                  accountId,
+                  applicationId: application.id,
+                }).pipe(Effect.catchTag("ContainerApplicationNotFound", () => Effect.void));
+
+              yield* Workers.deleteScript({
+                accountId,
+                scriptName: installation.runnerWorkerName,
+              }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
+              yield* Workers.deleteScript({
+                accountId,
+                scriptName: installation.workerName,
+              }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
+
+              const retainedData = [installation.kvTitle, installation.backupBucketName];
+              const deletedData: string[] = [];
+              if (request.deleteData) {
+                const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
+                  Stream.filter((candidate) => candidate.title === installation.kvTitle),
+                  Stream.runHead,
+                );
+                if (Option.isSome(namespace)) {
+                  yield* KV.deleteNamespace({
+                    accountId,
+                    namespaceId: namespace.value.id,
+                  }).pipe(Effect.catchTag("NamespaceNotFound", () => Effect.void));
+                  deletedData.push(installation.kvTitle);
+                }
+
+                yield* R2.listObjects
+                  .items({
+                    accountId,
+                    bucketName: installation.backupBucketName,
+                    perPage: 1000,
+                  })
+                  .pipe(
+                    Stream.filter(
+                      (object): object is typeof object & { key: string } =>
+                        typeof object.key === "string" && object.key.length > 0,
+                    ),
+                    Stream.map((object) => object.key),
+                    Stream.runForEachArray((keys) =>
+                      R2.deleteObjects({
+                        accountId,
+                        bucketName: installation.backupBucketName,
+                        body: [...keys],
+                      }),
+                    ),
+                    Effect.catchTag("NoSuchBucket", () => Effect.void),
+                  );
+                yield* R2.deleteBucket({
+                  accountId,
+                  bucketName: installation.backupBucketName,
+                }).pipe(Effect.catchTag("NoSuchBucket", () => Effect.void));
+                deletedData.push(installation.backupBucketName);
+              }
+
+              // Retained resources stay in Alchemy state until every direct deletion succeeds.
+              // This preserves ownership proof across interruption and makes retries safe.
+              yield* Apply.apply(destroyPlan);
+              return {
+                installationName: request.installationName,
+                deletedCompute: [
+                  installation.containerName,
+                  installation.runnerWorkerName,
+                  installation.workerName,
+                ],
+                retainedData: request.deleteData ? [] : retainedData,
+                deletedData,
+              } satisfies InstallationUninstallResult;
+            }).pipe(Effect.provide(Cloudflare.CloudflareApiLive())),
+          { stage: CLOUDFLARE_STAGE },
+        ),
+      ),
+    );
+  } finally {
+    await deployment.cleanup();
+  }
+}
+
+export async function inspectInstallation(
+  request: InstallationInspectRequest,
+): Promise<InstallationResult> {
+  const adoption = await readAdoptionManifest(
+    request.adoptionManifestPath,
+    request.installationName,
+  );
+  return inspectWithProfile(request, adoption);
+}
+
+export async function recoverInstallation(
+  request: InstallationRecoverRequest,
+): Promise<InstallationResult> {
+  const adoption = await readAdoptionManifest(
+    request.adoptionManifestPath,
+    request.installationName,
+  );
+  const installation = makeInstallationTopology(request.installationName, adoption);
+  if (
+    installation.workerName !== request.expectedWorkerName ||
+    installation.runnerWorkerName !== request.expectedRunnerWorkerName ||
+    installation.containerName !== request.expectedContainerName ||
+    installation.kvTitle !== request.expectedKvTitle ||
+    installation.backupBucketName !== request.expectedBackupBucketName
+  ) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise recovery adapter rejects a mapping that changed after confirmation
+    throw new InstallationDeploymentError({
+      message: "The recovery resource mapping changed after confirmation.",
+    });
+  }
+  return inspectWithProfile(request, adoption, request.token, request.expectedAccountId);
 }
 
 export { DEPLOYMENT_ARCHIVE_NAME, DEPLOYMENT_INPUTS };

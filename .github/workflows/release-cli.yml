@@ -1,0 +1,106 @@
+name: Release Scotty CLI
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.13
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci
+      - run: npm run fmt:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:all
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: darwin
+            architecture: arm64
+            target: bun-darwin-arm64
+          - platform: darwin
+            architecture: x64
+            target: bun-darwin-x64
+          - platform: linux
+            architecture: arm64
+            target: bun-linux-arm64
+          - platform: linux
+            architecture: x64
+            target: bun-linux-x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.13
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci
+      - name: Build standalone CLI
+        env:
+          SCOTTY_COMPILE_TARGET: ${{ matrix.target }}
+        run: bun scripts/build-cli.mjs dist/release/scotty-${{ matrix.platform }}-${{ matrix.architecture }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scotty-${{ matrix.platform }}-${{ matrix.architecture }}
+          path: dist/release/scotty-${{ matrix.platform }}-${{ matrix.architecture }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: cli-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.13
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: scotty-*
+          path: dist/release
+          merge-multiple: true
+      - name: Sign release manifest
+        env:
+          SCOTTY_RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.SCOTTY_RELEASE_ED25519_PRIVATE_KEY }}
+        run: bun scripts/make-cli-release.mjs "${GITHUB_REF_NAME}" dist/release
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/release/* --verify-tag --generate-notes

@@ -2,7 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { EMBEDDED_SKILL, EXIT, main, STANDARD_TOOLSET, type CliDependencies } from "../scotty";
+import {
+  EMBEDDED_SKILL,
+  EXIT,
+  main,
+  STANDARD_TOOLSET,
+  VERSION,
+  type CliDependencies,
+} from "../scotty";
 
 const temporaryDirectories: string[] = [];
 
@@ -304,32 +311,26 @@ describe("configuration and transport", () => {
     expect(h.stdout.join("")).not.toContain("must-not-leak");
   });
 
-  test("init writes a 0600 config without echoing the token", async () => {
+  test("init is create-only and rejects direct connection credentials", async () => {
     const home = await temporaryDirectory();
     const h = harness({ home });
     const code = await main(
       ["init", "--host", "https://worker.example/", "--token", "top-secret"],
       h.deps,
     );
-    const configPath = join(home, ".scotty.json");
 
-    expect(code).toBe(EXIT.OK);
-    expect((await stat(configPath)).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
-      version: 1,
-      host: "https://worker.example",
-      token: "top-secret",
-    });
+    expect(code).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("init does not accept --host or --token");
     expect(h.stdout.join("")).not.toContain("top-secret");
     expect(h.prompts()).toBe(0);
   });
 
-  test("init deploys a required named installation and stores a portable pointer", async () => {
+  test("init creates a required named installation and stores a portable pointer", async () => {
     const home = await temporaryDirectory();
-    let request: Parameters<NonNullable<CliDependencies["deployInstallation"]>>[0] | undefined;
+    let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
     const h = harness({
       home,
-      deployInstallation: async (input) => {
+      createInstallation: async (input) => {
         request = input;
         return {
           installationName: input.installationName,
@@ -338,6 +339,10 @@ describe("configuration and transport", () => {
           stage: "production",
           accountId: "0123456789abcdef0123456789abcdef",
           workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
           host: "https://scotty-home-worker.example.workers.dev/",
         };
       },
@@ -350,6 +355,7 @@ describe("configuration and transport", () => {
     });
     expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
     const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect((await stat(join(home, ".scotty.json"))).mode & 0o777).toBe(0o600);
     expect(config).toEqual({
       version: 1,
       installationName: "home",
@@ -358,6 +364,10 @@ describe("configuration and transport", () => {
       stage: "production",
       accountId: "0123456789abcdef0123456789abcdef",
       workerName: "scotty-home-worker",
+      runnerWorkerName: "scotty-home-runner",
+      containerName: "scotty-home-sandbox",
+      kvTitle: "scotty-home-sessions",
+      backupBucketName: "scotty-home-backups",
       host: "https://scotty-home-worker.example.workers.dev",
       token: request?.token,
     });
@@ -373,36 +383,276 @@ describe("configuration and transport", () => {
     });
   });
 
-  test("init existing uses the same deployer and accepts a private adoption manifest", async () => {
+  test("recover inspects, confirms, rotates only the token, and stores a private mapping", async () => {
     const home = await temporaryDirectory();
-    const requests: unknown[] = [];
+    const inspected: Array<Parameters<NonNullable<CliDependencies["inspectInstallation"]>>[0]> = [];
+    const recovered: Array<Parameters<NonNullable<CliDependencies["recoverInstallation"]>>[0]> = [];
+    const result = {
+      installationName: "home",
+      profile: "default",
+      stackName: "Legacy",
+      stage: "production",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "legacy-worker",
+      runnerWorkerName: "legacy-runner",
+      containerName: "legacy-container",
+      kvTitle: "legacy-sessions",
+      backupBucketName: "legacy-backups",
+      host: "https://legacy-worker.example.workers.dev",
+    } as const;
     const h = harness({
       home,
-      deployInstallation: async (input) => {
-        requests.push(input);
-        return {
-          installationName: input.installationName,
-          profile: input.profile,
-          stackName: "Legacy",
-          stage: "production",
-          accountId: "0123456789abcdef0123456789abcdef",
-          workerName: "legacy-worker",
-          host: "https://legacy-worker.example.workers.dev",
-        };
+      inspectInstallation: async (input) => {
+        inspected.push(input);
+        return result;
+      },
+      recoverInstallation: async (input) => {
+        recovered.push(input);
+        return result;
       },
     });
     expect(
       await main(
-        ["init", "--name", "home", "--existing", "--adoption-manifest", "/private/adoption.json"],
+        ["recover", "--name", "home", "--adoption-manifest", "/private/adoption.json", "--yes"],
         h.deps,
       ),
     ).toBe(EXIT.OK);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({
+    expect(inspected).toEqual([
+      {
+        installationName: "home",
+        profile: "default",
+        adoptionManifestPath: "/private/adoption.json",
+      },
+    ]);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
       installationName: "home",
       profile: "default",
       adoptionManifestPath: "/private/adoption.json",
+      expectedAccountId: "0123456789abcdef0123456789abcdef",
+      expectedWorkerName: "legacy-worker",
+      expectedRunnerWorkerName: "legacy-runner",
+      expectedContainerName: "legacy-container",
+      expectedKvTitle: "legacy-sessions",
+      expectedBackupBucketName: "legacy-backups",
     });
+    expect(recovered[0]?.token).toMatch(/^[0-9a-f]{64}$/u);
+    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect(config.adoptionManifestPath).toBe("/private/adoption.json");
+    expect(config.token).toBe(recovered[0]?.token);
+    expect(h.stdout.join("")).not.toContain(config.token);
+  });
+
+  test("deploy updates code without passing or changing the root token", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        host: "https://old.example",
+        token: "root-secret",
+      }),
+    );
+    let request: Parameters<NonNullable<CliDependencies["deployInstallation"]>>[0] | undefined;
+    const h = harness({
+      home,
+      planInstallation: async () => ({
+        installationName: "home",
+        hasExistingResources: true,
+        fingerprint: "plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async (input) => {
+        request = input;
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          host: "https://new.example/",
+        };
+      },
+    });
+
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(request).toEqual({
+      installationName: "home",
+      profile: "personal",
+      expectedPlanFingerprint: "plan-1",
+    });
+    expect(request).not.toHaveProperty("token");
+    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect(config.token).toBe("root-secret");
+    expect(config.host).toBe("https://new.example");
+    expect(h.json().rootTokenRotated).toBe(false);
+  });
+
+  test("deploy skips confirmation and apply when the plan has no changes", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "default",
+        token: "root-secret",
+      }),
+    );
+    let applied = false;
+    const h = harness({
+      home,
+      planInstallation: async () => ({
+        installationName: "home",
+        hasExistingResources: true,
+        fingerprint: "plan-noop",
+        changes: [],
+      }),
+      deployInstallation: async () => {
+        applied = true;
+        throw new Error("must not apply a no-op plan");
+      },
+    });
+
+    expect(await main(["deploy"], h.deps)).toBe(EXIT.OK);
+    expect(applied).toBe(false);
+    expect(h.json()).toEqual({
+      installationName: "home",
+      changed: false,
+      changes: [],
+      rootTokenRotated: false,
+    });
+  });
+
+  test("deploy requires confirmation only when a non-interactive plan has changes", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "default",
+        token: "root-secret",
+      }),
+    );
+    const h = harness({
+      home,
+      planInstallation: async () => ({
+        installationName: "home",
+        hasExistingResources: true,
+        fingerprint: "plan-2",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+    });
+
+    expect(await main(["deploy"], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("deploy requires --yes when the plan contains changes");
+  });
+
+  test("upgrade delegates to the signed updater and returns stable JSON", async () => {
+    let request: Parameters<NonNullable<CliDependencies["upgradeCli"]>>[0] | undefined;
+    const h = harness({
+      upgradeCli: async (input) => {
+        request = input;
+        return { previousVersion: input.currentVersion, version: "9.8.7", updated: true };
+      },
+    });
+
+    expect(await main(["upgrade"], h.deps)).toBe(EXIT.OK);
+    expect(request).toMatchObject({ currentVersion: VERSION });
+    expect(request?.executablePath).toBe(process.execPath);
+    expect(h.json()).toEqual({
+      previousVersion: VERSION,
+      version: "9.8.7",
+      updated: true,
+    });
+  });
+
+  test("uninstall removes compute, retains data by default, and deletes local config", async () => {
+    const home = await temporaryDirectory();
+    const configPath = join(home, ".scotty.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "0123456789abcdef0123456789abcdef",
+        host: "https://worker.example",
+        token: "root-secret",
+      }),
+    );
+    let request: Parameters<NonNullable<CliDependencies["uninstallInstallation"]>>[0] | undefined;
+    const h = harness({
+      home,
+      uninstallInstallation: async (input) => {
+        request = input;
+        return {
+          installationName: input.installationName,
+          deletedCompute: ["scotty-home-sandbox", "scotty-home-runner", "scotty-home-worker"],
+          retainedData: ["scotty-home-sessions", "scotty-home-backups"],
+          deletedData: [],
+        };
+      },
+    });
+
+    expect(await main(["uninstall", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(request).toEqual({
+      installationName: "home",
+      profile: "personal",
+      deleteData: false,
+      expectedAccountId: "0123456789abcdef0123456789abcdef",
+      expectedWorkerName: "scotty-home-worker",
+      expectedRunnerWorkerName: "scotty-home-runner",
+      expectedContainerName: "scotty-home-sandbox",
+      expectedKvTitle: "scotty-home-sessions",
+      expectedBackupBucketName: "scotty-home-backups",
+    });
+    expect(await Bun.file(configPath).exists()).toBe(false);
+    expect(h.json()).toEqual({
+      installationName: "home",
+      deletedCompute: ["scotty-home-sandbox", "scotty-home-runner", "scotty-home-worker"],
+      retainedData: ["scotty-home-sessions", "scotty-home-backups"],
+      deletedData: [],
+      configRemoved: true,
+    });
+  });
+
+  test("uninstall passes the explicit data deletion choice", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "default",
+        accountId: "0123456789abcdef0123456789abcdef",
+      }),
+    );
+    let deleteData = false;
+    const h = harness({
+      home,
+      uninstallInstallation: async (input) => {
+        deleteData = input.deleteData;
+        return {
+          installationName: input.installationName,
+          deletedCompute: [],
+          retainedData: [],
+          deletedData: ["scotty-home-sessions", "scotty-home-backups"],
+        };
+      },
+    });
+
+    expect(await main(["uninstall", "--delete-data", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(deleteData).toBe(true);
+    expect(h.json().deletedData).toEqual(["scotty-home-sessions", "scotty-home-backups"]);
   });
 
   test("init never infers an installation name in a non-interactive shell", async () => {
@@ -870,8 +1120,8 @@ describe("commands and schemas", () => {
     }
   });
 
-  test("removed source-control publishing commands fail as unknown commands", async () => {
-    for (const command of ["pr", "publish"]) {
+  test("removed commands and top-level lifecycle aliases fail as unknown commands", async () => {
+    for (const command of ["pr", "publish", "up", "down", "vaporize"]) {
       const h = harness();
       expect(await main([command, "s1"], h.deps)).toBe(EXIT.USAGE);
       expect(h.error().error.code).toBe("bad_usage");
@@ -1117,7 +1367,7 @@ describe("commands and schemas", () => {
     });
     expect(
       await main(
-        ["vaporize", "s1", "--host", "https://worker.example", "--token", "secret"],
+        ["beam", "vaporize", "s1", "--host", "https://worker.example", "--token", "secret"],
         h.deps,
       ),
     ).toBe(EXIT.OK);
@@ -1135,7 +1385,16 @@ describe("commands and schemas", () => {
       const h = harness({ fetch: async () => Response.json(reply) });
       expect(
         await main(
-          ["vaporize", "s1", "--yes", "--host", "https://worker.example", "--token", "secret"],
+          [
+            "beam",
+            "vaporize",
+            "s1",
+            "--yes",
+            "--host",
+            "https://worker.example",
+            "--token",
+            "secret",
+          ],
           h.deps,
         ),
       ).toBe(EXIT.GENERIC);
@@ -1372,7 +1631,10 @@ describe("beam down and embedded skill", () => {
     });
 
     expect(
-      await main(["down", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
+      await main(
+        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
+        h.deps,
+      ),
     ).toBe(EXIT.OK);
     expect(commands).toEqual([
       ["git", "fetch", "origin", "scotty/s1"],
@@ -1412,7 +1674,10 @@ describe("beam down and embedded skill", () => {
     });
 
     expect(
-      await main(["down", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
+      await main(
+        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
+        h.deps,
+      ),
     ).toBe(EXIT.OK);
     const result = h.json();
     expect(result).toEqual({
@@ -1451,7 +1716,10 @@ describe("beam down and embedded skill", () => {
     });
 
     expect(
-      await main(["down", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
+      await main(
+        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
+        h.deps,
+      ),
     ).toBe(EXIT.OK);
     expect(h.json()).toEqual({
       branch: "scotty/s1",
@@ -1483,7 +1751,10 @@ describe("beam down and embedded skill", () => {
       },
     });
     expect(
-      await main(["down", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
+      await main(
+        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
+        h.deps,
+      ),
     ).toBe(EXIT.GENERIC);
     expect(ran).toBe(false);
     expect(h.error().error.code).toBe("invalid_response");
@@ -1515,7 +1786,10 @@ describe("beam down and embedded skill", () => {
       },
     });
     expect(
-      await main(["down", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
+      await main(
+        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
+        h.deps,
+      ),
     ).toBe(EXIT.GENERIC);
     expect(ran).toBe(false);
     expect(h.error().error.code).toBe("invalid_archive");

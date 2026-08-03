@@ -12,6 +12,11 @@ export const ConfigSchema = Schema.Struct({
   stage: Schema.optionalKey(Schema.String),
   accountId: Schema.optionalKey(Schema.String),
   workerName: Schema.optionalKey(Schema.String),
+  runnerWorkerName: Schema.optionalKey(Schema.String),
+  containerName: Schema.optionalKey(Schema.String),
+  kvTitle: Schema.optionalKey(Schema.String),
+  backupBucketName: Schema.optionalKey(Schema.String),
+  adoptionManifestPath: Schema.optionalKey(Schema.String),
   host: Schema.optionalKey(Schema.String),
   token: Schema.optionalKey(Schema.String),
 });
@@ -61,6 +66,11 @@ export const RawConfigSchema = Schema.Struct({
   stage: Schema.optionalKey(Schema.Unknown),
   accountId: Schema.optionalKey(Schema.Unknown),
   workerName: Schema.optionalKey(Schema.Unknown),
+  runnerWorkerName: Schema.optionalKey(Schema.Unknown),
+  containerName: Schema.optionalKey(Schema.Unknown),
+  kvTitle: Schema.optionalKey(Schema.Unknown),
+  backupBucketName: Schema.optionalKey(Schema.Unknown),
+  adoptionManifestPath: Schema.optionalKey(Schema.Unknown),
   host: Schema.optionalKey(Schema.Unknown),
   token: Schema.optionalKey(Schema.Unknown),
 });

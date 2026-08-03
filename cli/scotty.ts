@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-export { EXIT } from "./src/core";
+export { EXIT, VERSION } from "./src/core";
 export { type CliDependencies } from "./src/dependencies";
 export { main } from "./src/main";
 export { EMBEDDED_SKILL } from "./src/pure";
