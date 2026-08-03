@@ -2,7 +2,7 @@
 
 ## Comet
 
-Selected presentation source and assets are derived from
+Selected presentation, native composer input source, and assets are derived from
 [`zeronsh/comet`](https://github.com/zeronsh/comet) commit
 `b033110d087ae0f1d1ba607b77d97624165c1986`.
 

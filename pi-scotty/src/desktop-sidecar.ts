@@ -49,6 +49,7 @@ export class DesktopSidecar {
   readonly #transport: DesktopManagementTransport;
   readonly #write: DesktopFrameWriter;
   readonly #inFlightRequests = new Set<string>();
+  readonly #vaporizedSessionIds = new Set<string>();
   #stopped = false;
 
   constructor(
@@ -69,10 +70,14 @@ export class DesktopSidecar {
 
   publish(): void {
     if (this.#stopped) return;
+    const state = projectDesktopState(this.#controller.state);
     this.#write({
       version: DESKTOP_PROTOCOL_VERSION,
       type: "state",
-      state: projectDesktopState(this.#controller.state),
+      state: {
+        ...state,
+        fleet: state.fleet.filter((session) => !this.#vaporizedSessionIds.has(session.id)),
+      },
     });
   }
 
@@ -215,6 +220,7 @@ export class DesktopSidecar {
         selectedResult = await this.#transport.resumeSession(command.sessionId, command.requestId);
       } else {
         await this.#transport.vaporizeSession(command.sessionId, command.requestId);
+        this.#vaporizedSessionIds.add(command.sessionId);
         if (this.#controller.state.selectedSessionId === command.sessionId)
           this.#controller.closeLocal();
       }
@@ -226,6 +232,14 @@ export class DesktopSidecar {
         this.#controller.state.setMetadata(sessionId, selectedResult);
       this.#inFlightRequests.delete(command.requestId);
       if (this.#stopped) return;
+      await this.#controller.loadFleet();
+      if (
+        action === "resume" &&
+        sessionId !== undefined &&
+        this.#controller.state.selectedSessionId === sessionId
+      )
+        await this.#controller.inspectSession(sessionId);
+      this.publish();
       this.#write({
         version: DESKTOP_PROTOCOL_VERSION,
         type: "operation",
@@ -235,14 +249,6 @@ export class DesktopSidecar {
         status: "succeeded",
         message: `${managementLabels[action]} completed`,
       });
-      await this.#controller.loadFleet();
-      if (
-        action === "resume" &&
-        sessionId !== undefined &&
-        this.#controller.state.selectedSessionId === sessionId
-      )
-        await this.#controller.inspectSession(sessionId);
-      this.publish();
     } catch (error) {
       this.#inFlightRequests.delete(command.requestId);
       if (this.#stopped) return;

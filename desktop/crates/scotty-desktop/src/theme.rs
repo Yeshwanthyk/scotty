@@ -1,94 +1,140 @@
-//! Always-dark monochrome theme — concrete values, no indirection.
-//!
-//! Colors use the same oklch-derived neutral scale as Comet. Hairlines stay
-//! white at low alpha so they read on every surface.
-//!
-//! Installed as a gpui [`Global`] at boot (`cx.set_global(Theme::dark())`); read with
-//! [`Theme::of`].
+//! Scotty's system-aware palette and typography tokens.
 
-use gpui::{App, Global, Hsla, SharedString, hsla};
+use gpui::{App, Global, Hsla, SharedString, WindowAppearance, hsla};
 
-/// The app's single dark theme.
+use crate::preferences::{
+    AppearancePreference, DesktopPreferences, MonoFontPreference, UiFontPreference,
+};
+
 #[derive(Debug, Clone)]
 pub struct Theme {
-    // ---- paint: neutral surfaces (oklch chroma 0) ----
-    /// App background — oklch(0.145 0 0) ≡ `#0a0a0a`.
     pub bg: Hsla,
-    /// Panel / sidebar surface — one scale step up.
     pub surface: Hsla,
-    /// Raised surface: popovers, dialogs, cards.
     pub surface_raised: Hsla,
-    /// Hover wash for interactive rows/buttons (white, low alpha).
     pub element_hover: Hsla,
-    /// Active/selected wash (white, slightly higher alpha).
     pub element_active: Hsla,
-    /// Hairline border — white at low alpha.
     pub border: Hsla,
-    /// Stronger border for focused/raised edges.
     pub border_strong: Hsla,
-
-    // ---- paint: text ----
-    /// Primary text.
     pub text: Hsla,
-    /// Muted text: timestamps, secondary labels.
     pub text_muted: Hsla,
-    /// Faint text: placeholders, disabled.
     pub text_faint: Hsla,
-
-    // ---- paint: accents ----
-    /// Accent — indigo (working indicator, links, selection tint).
     pub accent: Hsla,
-    /// Danger — red (errors, stop button).
     pub danger: Hsla,
-    /// Warning — amber (offline notices, awaiting-input).
     pub warning: Hsla,
-
-    // ---- fonts ----
-    /// Embedded UI font family.
     pub font_sans: SharedString,
-    /// Embedded monospace family for commands, paths, and tool output.
     pub font_mono: SharedString,
+    pub ui_text_size: f32,
+    pub composer_text_size: f32,
+    pub mono_text_size: f32,
+    pub density: f32,
+    glass: Hsla,
 }
 
 impl Theme {
-    /// Bare macOS blur needs a heavy scrim; other platforms stay opaque.
-    pub const GLASS_ALPHA: f32 = if cfg!(target_os = "macos") { 0.90 } else { 1.0 };
-    /// The frost tint painted over the blurred window background (macOS
-    /// glass). Darker than `surface` — matched to the reference dark
-    /// vibrancy scrim: `hsl(0 0% 3%)` (#080808) at [`Self::GLASS_ALPHA`].
-    /// On opaque platforms this IS the surface tone (no tint swap).
-    pub fn glass(&self) -> Hsla {
-        if Self::GLASS_ALPHA < 1.0 {
-            grey(8).opacity(Self::GLASS_ALPHA)
+    pub fn from_preferences(
+        preferences: &DesktopPreferences,
+        appearance: WindowAppearance,
+    ) -> Self {
+        let use_light = preferences.appearance == AppearancePreference::System
+            && matches!(
+                appearance,
+                WindowAppearance::Light | WindowAppearance::VibrantLight
+            );
+        let mut theme = if use_light {
+            Self::light()
         } else {
-            self.surface
-        }
+            Self::dark()
+        };
+        theme.font_sans = match preferences.ui_font {
+            UiFontPreference::Geist => "Geist".into(),
+            UiFontPreference::System => ".SystemUIFont".into(),
+        };
+        theme.font_mono = match preferences.mono_font {
+            MonoFontPreference::GeistMono => "Geist Mono".into(),
+            MonoFontPreference::System if cfg!(target_os = "macos") => "Menlo".into(),
+            MonoFontPreference::System => ".ZedMono".into(),
+        };
+        theme.ui_text_size = preferences.ui_text_size;
+        theme.composer_text_size = preferences.composer_text_size;
+        theme.mono_text_size = preferences.mono_text_size;
+        theme.density = preferences.density.scale();
+        theme
     }
 
-    /// Build the (only) theme. The surface tones are sampled straight from the
-    /// reference screenshots of the original app (docs/reference): main panel
-    /// `#060606`, shell/sidebar `#0d0d0d`.
+    pub fn glass(&self) -> Hsla {
+        self.glass
+    }
+
+    pub fn rem_size(&self) -> f32 {
+        16.0 * self.ui_text_size / 13.0
+    }
+
+    pub fn space(&self, value: f32) -> gpui::Pixels {
+        gpui::px(value * self.density)
+    }
+
+    pub fn mono_size(&self, value: f32) -> gpui::Pixels {
+        gpui::px(value * self.mono_text_size / 11.5)
+    }
+
     pub fn dark() -> Self {
         Self {
-            bg: grey(6),       // main panel — sampled #060606
-            surface: grey(13), // shell / sidebar — sampled #0d0d0d
+            bg: grey(6),
+            surface: grey(13),
             surface_raised: neutral(0.235),
             element_hover: wash(0.14),
             element_active: wash(0.16),
             border: white_alpha(0.08),
             border_strong: white_alpha(0.14),
-            text: neutral(0.922),                 // ~neutral-200
-            text_muted: neutral(0.708),           // ~neutral-400
-            text_faint: neutral(0.556),           // ~neutral-500
-            accent: oklch(0.673, 0.182, 276.935), // indigo-400
-            danger: oklch(0.704, 0.191, 22.216),  // red-400
-            warning: oklch(0.828, 0.189, 84.429), // amber-400
+            text: neutral(0.922),
+            text_muted: neutral(0.708),
+            text_faint: neutral(0.556),
+            accent: oklch(0.673, 0.182, 276.935),
+            danger: oklch(0.704, 0.191, 22.216),
+            warning: oklch(0.828, 0.189, 84.429),
             font_sans: "Geist".into(),
             font_mono: "Geist Mono".into(),
+            ui_text_size: 13.0,
+            composer_text_size: 13.0,
+            mono_text_size: 11.5,
+            density: 1.0,
+            glass: if cfg!(target_os = "macos") {
+                grey(8).opacity(0.90)
+            } else {
+                grey(13)
+            },
         }
     }
 
-    /// Read the theme global.
+    pub fn light() -> Self {
+        Self {
+            bg: grey(250),
+            surface: grey(242),
+            surface_raised: grey(255),
+            element_hover: black_alpha(0.055),
+            element_active: black_alpha(0.085),
+            border: black_alpha(0.09),
+            border_strong: black_alpha(0.16),
+            text: grey(28),
+            text_muted: grey(82),
+            text_faint: grey(116),
+            accent: oklch(0.55, 0.21, 276.935),
+            danger: oklch(0.57, 0.22, 22.216),
+            warning: oklch(0.59, 0.16, 72.0),
+            font_sans: "Geist".into(),
+            font_mono: "Geist Mono".into(),
+            ui_text_size: 13.0,
+            composer_text_size: 13.0,
+            mono_text_size: 11.5,
+            density: 1.0,
+            glass: if cfg!(target_os = "macos") {
+                grey(250).opacity(0.92)
+            } else {
+                grey(242)
+            },
+        }
+    }
+
     pub fn of(cx: &App) -> &Theme {
         cx.global::<Theme>()
     }
@@ -118,6 +164,10 @@ pub fn wash(alpha: f32) -> Hsla {
 /// White at the given alpha — the hairline/wash primitive.
 pub fn white_alpha(alpha: f32) -> Hsla {
     hsla(0.0, 0.0, 1.0, alpha)
+}
+
+pub fn black_alpha(alpha: f32) -> Hsla {
+    hsla(0.0, 0.0, 0.0, alpha)
 }
 
 /// An exact achromatic tone from an 8-bit channel value (`grey(13)` ≡ `#0d0d0d`)
@@ -218,6 +268,20 @@ mod tests {
             [255, 100, 103]
         ); // red-400
         assert_eq!(srgb_u8(oklch_to_srgb(0.828, 0.189, 84.429)), [255, 185, 0]); // amber-400
+    }
+
+    #[test]
+    fn preferences_follow_system_light_but_can_force_dark() {
+        let system = DesktopPreferences::default();
+        let light = Theme::from_preferences(&system, WindowAppearance::Light);
+        assert!(light.bg.l > light.text.l);
+
+        let forced = DesktopPreferences {
+            appearance: AppearancePreference::Dark,
+            ..DesktopPreferences::default()
+        };
+        let dark = Theme::from_preferences(&forced, WindowAppearance::Light);
+        assert!(dark.bg.l < dark.text.l);
     }
 
     #[test]
