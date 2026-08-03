@@ -320,6 +320,47 @@ describe("desktop sidecar", () => {
     sidecar.stop();
   });
 
+  it("removes a vaporized sandbox from the fleet before reporting completion", async () => {
+    const transport = new FakeDesktopTransport();
+    const frames: DesktopFrame[] = [];
+    const sidecar = makeDesktopSidecar(transport, (frame) => frames.push(frame));
+    await sidecar.start();
+
+    await sidecar.handleLine(
+      JSON.stringify({
+        version: 2,
+        type: "vaporize_sandbox",
+        requestId: "request-vaporize-stale-projection",
+        sessionId: SESSION_B,
+      }),
+    );
+
+    await vi.waitFor(() =>
+      expect(
+        frames.findIndex(
+          (frame) =>
+            frame.type === "operation" &&
+            frame.requestId === "request-vaporize-stale-projection" &&
+            frame.status === "succeeded",
+        ),
+      ).toBeGreaterThan(-1),
+    );
+    const succeededIndex = frames.findIndex(
+      (frame) =>
+        frame.type === "operation" &&
+        frame.requestId === "request-vaporize-stale-projection" &&
+        frame.status === "succeeded",
+    );
+    const stateBeforeSuccess = frames
+      .slice(0, succeededIndex)
+      .reverse()
+      .find((frame) => frame.type === "state");
+
+    expect(stateBeforeSuccess?.state.fleet.map((entry) => entry.id)).toEqual([SESSION_A]);
+    expect(latestState(frames)?.fleet.map((entry) => entry.id)).toEqual([SESSION_A]);
+    sidecar.stop();
+  });
+
   it("marks an ambiguous lifecycle outcome unknown and refreshes before reporting it", async () => {
     const transport = new FakeDesktopTransport();
     transport.managementError = new Error("connection reset");

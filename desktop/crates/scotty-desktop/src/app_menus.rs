@@ -10,6 +10,8 @@ actions!(
         Hide,
         HideOthers,
         ShowAll,
+        OpenSettings,
+        OpenCommandPalette,
         Minimize,
         Zoom,
         CloseWindow
@@ -24,13 +26,22 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window| window.minimize_window()));
     cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window| window.zoom_window()));
     cx.on_action(|_: &CloseWindow, cx| with_active_window(cx, |window| window.remove_window()));
+    cx.on_action(|_: &OpenSettings, cx| crate::settings_window::open(cx));
+    cx.on_action(|_: &OpenCommandPalette, cx| crate::open_command_palette(cx));
     if cfg!(target_os = "macos") {
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-h", Hide, None),
             KeyBinding::new("alt-cmd-h", HideOthers, None),
+            KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("cmd-k", OpenCommandPalette, None),
             KeyBinding::new("cmd-m", Minimize, None),
             KeyBinding::new("cmd-w", CloseWindow, None),
+        ]);
+    } else {
+        cx.bind_keys([
+            KeyBinding::new("ctrl-,", OpenSettings, None),
+            KeyBinding::new("ctrl-k", OpenCommandPalette, None),
         ]);
     }
 }
@@ -44,6 +55,9 @@ fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window)) {
 pub fn app_menus() -> Vec<Menu> {
     let mut app_items = vec![
         MenuItem::action("About Scotty", About).disabled(true),
+        MenuItem::separator(),
+        MenuItem::action("Settings…", OpenSettings),
+        MenuItem::action("Command Palette…", OpenCommandPalette),
         MenuItem::separator(),
     ];
     if cfg!(target_os = "macos") {

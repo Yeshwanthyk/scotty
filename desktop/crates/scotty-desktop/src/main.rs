@@ -1,16 +1,20 @@
 mod app_menus;
+mod composer_input;
 mod markdown;
+mod preferences;
+mod settings_window;
 mod sidecar;
 mod theme;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+use composer_input::{ComposerInput, ComposerInputEvent};
 use gpui::{
-    App, AppContext as _, Bounds, Context, FocusHandle, Focusable, FollowMode, FontStyle,
-    FontWeight, HighlightStyle, IntoElement, KeyDownEvent, ListAlignment, ListState, Render, Role,
-    SharedString, StyledText, Task, TitlebarOptions, Window, WindowBounds, WindowOptions, div,
-    list, prelude::*, px, size,
+    App, AppContext as _, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable,
+    FollowMode, FontStyle, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, ListAlignment,
+    ListState, Render, Role, SharedString, StyledText, Subscription, Task, TitlebarOptions, Window,
+    WindowBounds, WindowControlArea, WindowOptions, div, list, prelude::*, px, rems, size,
 };
 use gpui_tokio::Tokio;
 use markdown::{MarkdownBlock, MarkdownBlockKind, MarkdownStyle, parse_markdown};
@@ -55,10 +59,26 @@ fn main() {
         gpui_tokio::init(cx);
         register_fonts(cx);
         app_menus::init(cx);
+        composer_input::init(cx);
         cx.set_menus(app_menus::app_menus());
-        cx.set_global(Theme::dark());
+        preferences::init(cx);
         open_main_window(cx);
     });
+}
+
+fn open_command_palette(cx: &mut App) {
+    if let Some(handle) = cx
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<DesktopView>())
+    {
+        handle
+            .update(cx, |view, window, cx| {
+                window.activate_window();
+                view.open_command_palette(window, cx);
+            })
+            .ok();
+    }
 }
 
 fn open_main_window(cx: &mut App) {
@@ -82,8 +102,8 @@ fn open_main_window(cx: &mut App) {
             ..Default::default()
         },
         |window, cx| {
-            let view = cx.new(DesktopView::new);
-            window.focus(&view.read(cx).focus_handle(cx), cx);
+            let view = cx.new(|cx| DesktopView::new(window, cx));
+            window.focus(&view.read(cx).composer.focus_handle(cx), cx);
             view
         },
     )
@@ -167,7 +187,64 @@ enum ManagementPanel {
         session_id: String,
         title: String,
         confirmation: String,
+        id_copied: bool,
     },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PaletteCommand {
+    Settings,
+    NewSandbox,
+    RefreshFleet,
+    RenameSandbox,
+    SnapshotSandbox,
+    ResumeSandbox,
+    VaporizeSandbox,
+}
+
+impl PaletteCommand {
+    const ALL: [Self; 7] = [
+        Self::Settings,
+        Self::NewSandbox,
+        Self::RefreshFleet,
+        Self::RenameSandbox,
+        Self::SnapshotSandbox,
+        Self::ResumeSandbox,
+        Self::VaporizeSandbox,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Settings => "Open Settings",
+            Self::NewSandbox => "New Sandbox",
+            Self::RefreshFleet => "Refresh Fleet",
+            Self::RenameSandbox => "Rename Selected Sandbox",
+            Self::SnapshotSandbox => "Snapshot Selected Sandbox",
+            Self::ResumeSandbox => "Resume Selected Sandbox",
+            Self::VaporizeSandbox => "Vaporize Selected Sandbox",
+        }
+    }
+
+    fn keywords(self) -> &'static str {
+        match self {
+            Self::Settings => "preferences appearance font theme density",
+            Self::NewSandbox => "create launch container",
+            Self::RefreshFleet => "reload sync sessions",
+            Self::RenameSandbox => "title edit",
+            Self::SnapshotSandbox => "backup save",
+            Self::ResumeSandbox => "wake restore sleeping failed",
+            Self::VaporizeSandbox => "delete destroy remove",
+        }
+    }
+
+    fn shortcut(self) -> &'static str {
+        match self {
+            Self::Settings => "⌘,",
+            Self::NewSandbox => "⌘N",
+            Self::RefreshFleet => "⌘R",
+            _ => "",
+        }
+    }
 }
 
 impl ManagementPanel {
@@ -194,7 +271,9 @@ struct DesktopView {
     state: Option<DesktopState>,
     commands: Option<tokio::sync::mpsc::Sender<DesktopCommand>>,
     shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    draft: String,
+    composer: Entity<ComposerInput>,
+    command_input: Entity<ComposerInput>,
+    command_palette_selection: Option<usize>,
     draft_generation: u64,
     transcript_list: ListState,
     transcript_ids: Vec<String>,
@@ -203,13 +282,46 @@ struct DesktopView {
     management_panel: Option<ManagementPanel>,
     operation: Option<OperationNotice>,
     command_error: Option<String>,
+    _composer_subscription: Subscription,
+    _command_input_subscription: Subscription,
+    _appearance_subscription: Subscription,
     _events: Task<()>,
 }
 
 impl DesktopView {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let transcript_list = ListState::new(0, ListAlignment::Bottom, px(600.0));
         transcript_list.set_follow_mode(FollowMode::Tail);
+        let composer =
+            cx.new(|cx| ComposerInput::new("Message the selected session…", MAX_DRAFT_BYTES, cx));
+        let composer_subscription = cx.subscribe(
+            &composer,
+            |view, composer, event: &ComposerInputEvent, cx| match event {
+                ComposerInputEvent::Edited => {
+                    view.sync_draft(composer.read(cx).text().to_string());
+                    cx.notify();
+                }
+                ComposerInputEvent::Submitted { force_follow_up } => {
+                    view.submit(*force_follow_up, cx);
+                    cx.notify();
+                }
+            },
+        );
+        let command_input = cx.new(|cx| {
+            ComposerInput::new("Search commands…", 256, cx)
+                .with_context_and_label("PaletteSearch", "Search Scotty commands")
+        });
+        let command_input_subscription =
+            cx.subscribe(&command_input, |view, _, event: &ComposerInputEvent, cx| {
+                if matches!(event, ComposerInputEvent::Edited)
+                    && view.command_palette_selection.is_some()
+                {
+                    view.command_palette_selection = Some(0);
+                }
+                cx.notify();
+            });
+        let appearance_subscription =
+            cx.observe_window_appearance(window, |_, _, cx| preferences::apply_theme(cx));
         let boot = Tokio::spawn(cx, SidecarConnection::spawn());
         let events = cx.spawn(async move |this, cx| {
             let connection = match boot.await {
@@ -247,7 +359,7 @@ impl DesktopView {
             while let Some(event) = incoming.recv().await {
                 if this
                     .update(cx, |view, cx| {
-                        view.apply_event(event);
+                        view.apply_event(event, cx);
                         cx.notify();
                     })
                     .is_err()
@@ -262,7 +374,9 @@ impl DesktopView {
             state: None,
             commands: None,
             shutdown: None,
-            draft: String::new(),
+            composer,
+            command_input,
+            command_palette_selection: None,
             draft_generation: 0,
             transcript_list,
             transcript_ids: Vec::new(),
@@ -271,11 +385,14 @@ impl DesktopView {
             management_panel: None,
             operation: None,
             command_error: None,
+            _composer_subscription: composer_subscription,
+            _command_input_subscription: command_input_subscription,
+            _appearance_subscription: appearance_subscription,
             _events: events,
         }
     }
 
-    fn apply_event(&mut self, event: SidecarEvent) {
+    fn apply_event(&mut self, event: SidecarEvent, cx: &mut Context<Self>) {
         match event {
             SidecarEvent::Frame(Frame::Ready { .. }) => self.connection = ConnectionStatus::Ready,
             SidecarEvent::Frame(Frame::State { state, .. }) => {
@@ -290,13 +407,24 @@ impl DesktopView {
                         selected.draft_generation,
                         self.draft_generation,
                     ) {
-                        self.draft = selected.draft.clone();
+                        self.composer.update(cx, |composer, cx| {
+                            composer.replace_document(selected.draft.clone(), cx)
+                        });
                         self.draft_generation = selected.draft_generation;
                     }
                 } else if selection_changed {
-                    self.draft.clear();
+                    self.composer.update(cx, |composer, cx| {
+                        composer.replace_document(String::new(), cx)
+                    });
                     self.draft_generation = 0;
                 }
+                let editable = make_selection_fence(
+                    state.selected_session_id.as_deref(),
+                    state.selected.as_ref(),
+                )
+                .is_some();
+                self.composer
+                    .update(cx, |composer, cx| composer.set_editable(editable, cx));
                 self.sync_transcript_list(&state, selection_changed);
                 self.state = Some(*state);
                 self.connection = ConnectionStatus::Ready;
@@ -400,14 +528,14 @@ impl DesktopView {
         }
     }
 
-    fn sync_draft(&mut self) {
+    fn sync_draft(&mut self, draft: String) {
         if let Some(session_id) = self
             .state
             .as_ref()
             .and_then(|state| state.selected_session_id.clone())
         {
             self.draft_generation = self.draft_generation.saturating_add(1);
-            self.send(DesktopCommand::set_draft(session_id, self.draft.clone()));
+            self.send(DesktopCommand::set_draft(session_id, draft));
         }
     }
 
@@ -419,8 +547,9 @@ impl DesktopView {
         )
     }
 
-    fn submit(&mut self, force_follow_up: bool) {
-        if self.draft.trim().is_empty() {
+    fn submit(&mut self, force_follow_up: bool, cx: &mut Context<Self>) {
+        let draft = self.composer.read(cx).text().to_string();
+        if draft.trim().is_empty() {
             return;
         }
         let Some(fence) = self.selection_fence() else {
@@ -436,17 +565,13 @@ impl DesktopView {
         if let Some(pending) = pending {
             match pending {
                 PendingUi::Input { id, .. } | PendingUi::Editor { id, .. } => {
-                    self.send(DesktopCommand::answer_value(fence, id, self.draft.clone()));
+                    self.send(DesktopCommand::answer_value(fence, id, draft));
                     return;
                 }
                 PendingUi::Select { .. } | PendingUi::Confirm { .. } => return,
             }
         }
-        self.send(DesktopCommand::submit(
-            fence,
-            self.draft.clone(),
-            force_follow_up,
-        ));
+        self.send(DesktopCommand::submit(fence, draft, force_follow_up));
     }
 
     fn next_request_id(&self, action: &str) -> String {
@@ -481,6 +606,7 @@ impl DesktopView {
             session_id,
             title,
             confirmation: String::new(),
+            id_copied: false,
         });
     }
 
@@ -552,6 +678,7 @@ impl DesktopView {
                 session_id,
                 title: _,
                 confirmation,
+                id_copied: _,
             } => {
                 if confirmation.trim() != session_id {
                     self.management_failure(
@@ -572,7 +699,181 @@ impl DesktopView {
             .is_some_and(|operation| operation.status == OperationStatus::Started)
     }
 
-    fn on_management_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+    fn selected_identity(&self) -> Option<(String, String)> {
+        let state = self.state.as_ref()?;
+        let selected_id = state.selected_session_id.as_deref()?;
+        state
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.metadata.as_ref())
+            .or_else(|| state.fleet.iter().find(|session| session.id == selected_id))
+            .map(|session| (session.id.clone(), session.title.clone()))
+    }
+
+    fn palette_command_available(&self, command: PaletteCommand) -> bool {
+        let selected_row = self.state.as_ref().and_then(|state| {
+            let selected_id = state.selected_session_id.as_deref()?;
+            state
+                .selected
+                .as_ref()
+                .and_then(|selected| selected.metadata.as_ref())
+                .or_else(|| state.fleet.iter().find(|session| session.id == selected_id))
+        });
+        let live = self
+            .state
+            .as_ref()
+            .and_then(|state| state.selected.as_ref())
+            .and_then(|selected| selected.live.as_ref());
+        match command {
+            PaletteCommand::Settings
+            | PaletteCommand::NewSandbox
+            | PaletteCommand::RefreshFleet => true,
+            PaletteCommand::RenameSandbox | PaletteCommand::VaporizeSandbox => {
+                selected_row.is_some() && !self.operation_running()
+            }
+            PaletteCommand::SnapshotSandbox => {
+                selected_row.is_some_and(|session| session.status == "warm")
+                    && live.is_some_and(|live| !live.is_streaming && live.activity != "working")
+                    && !self.operation_running()
+            }
+            PaletteCommand::ResumeSandbox => {
+                selected_row.is_some_and(|session| {
+                    matches!(session.status.as_str(), "sleeping" | "failed")
+                        && session.backup_id.is_some()
+                }) && !self.operation_running()
+            }
+        }
+    }
+
+    fn palette_commands(&self, cx: &App) -> Vec<PaletteCommand> {
+        let query = self.command_input.read(cx).text().trim().to_lowercase();
+        PaletteCommand::ALL
+            .into_iter()
+            .filter(|command| self.palette_command_available(*command))
+            .filter(|command| {
+                query.is_empty()
+                    || command.label().to_lowercase().contains(&query)
+                    || command.keywords().contains(&query)
+            })
+            .collect()
+    }
+
+    fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.management_panel = None;
+        self.command_palette_selection = Some(0);
+        self.command_input.update(cx, |input, cx| {
+            input.replace_document(String::new(), cx);
+            input.set_editable(true, cx);
+        });
+        window.focus(&self.command_input.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    fn close_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.command_palette_selection = None;
+        self.command_input.update(cx, |input, cx| {
+            input.replace_document(String::new(), cx);
+            input.set_editable(false, cx);
+        });
+        window.focus(&self.composer.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    fn toggle_command_palette(
+        &mut self,
+        _: &app_menus::OpenCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.command_palette_selection.is_some() {
+            self.close_command_palette(window, cx);
+        } else {
+            self.open_command_palette(window, cx);
+        }
+    }
+
+    fn execute_palette_command(
+        &mut self,
+        command: PaletteCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_command_palette(window, cx);
+        match command {
+            PaletteCommand::Settings => settings_window::open(cx),
+            PaletteCommand::NewSandbox => {
+                self.open_create();
+                window.focus(&self.focus, cx);
+            }
+            PaletteCommand::RefreshFleet => self.send(DesktopCommand::refresh_fleet()),
+            PaletteCommand::RenameSandbox => {
+                if let Some((id, title)) = self.selected_identity() {
+                    self.open_rename(id, title);
+                    window.focus(&self.focus, cx);
+                }
+            }
+            PaletteCommand::SnapshotSandbox => {
+                if let Some((id, _)) = self.selected_identity() {
+                    let request_id = self.next_request_id("snapshot");
+                    self.send(DesktopCommand::snapshot_sandbox(request_id, id));
+                }
+            }
+            PaletteCommand::ResumeSandbox => {
+                if let Some((id, _)) = self.selected_identity() {
+                    let request_id = self.next_request_id("resume");
+                    self.send(DesktopCommand::resume_sandbox(request_id, id));
+                }
+            }
+            PaletteCommand::VaporizeSandbox => {
+                if let Some((id, title)) = self.selected_identity() {
+                    self.open_vaporize(id, title);
+                    window.focus(&self.focus, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_palette_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(selected) = self.command_palette_selection else {
+            return false;
+        };
+        let key = event.keystroke.key.as_str();
+        if key == "escape" {
+            self.close_command_palette(window, cx);
+        } else if matches!(key, "up" | "down") {
+            let count = self.palette_commands(cx).len();
+            if count > 0 {
+                self.command_palette_selection = Some(if key == "up" {
+                    selected.checked_sub(1).unwrap_or(count - 1)
+                } else {
+                    (selected + 1) % count
+                });
+            }
+        } else if key == "enter" {
+            let commands = self.palette_commands(cx);
+            if let Some(command) = commands.get(selected.min(commands.len().saturating_sub(1))) {
+                self.execute_palette_command(*command, window, cx);
+            }
+        } else {
+            return false;
+        }
+        cx.stop_propagation();
+        cx.notify();
+        true
+    }
+
+    fn on_management_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.management_panel.is_none() {
             return false;
         }
@@ -580,6 +881,7 @@ impl DesktopView {
         let modifiers = event.keystroke.modifiers;
         if key == "escape" {
             self.management_panel = None;
+            window.focus(&self.composer.focus_handle(cx), cx);
         } else if modifiers.platform && key == "a" {
             match &mut self.management_panel {
                 Some(ManagementPanel::Create {
@@ -691,50 +993,29 @@ impl DesktopView {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.focus.is_focused(window) {
+        if self.on_palette_key(event, window, cx) {
             return;
         }
-        if self.on_management_key(event, cx) {
+        if self.on_management_key(event, window, cx) {
             return;
         }
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         if modifiers.platform && key == "n" {
             self.open_create();
+            window.focus(&self.focus, cx);
         } else if modifiers.platform && key == "r" {
             self.send(DesktopCommand::refresh_fleet());
-        } else if modifiers.control && key == "c" {
+        } else if modifiers.control
+            && key == "c"
+            && !(self.composer.focus_handle(cx).is_focused(window)
+                && self.composer.read(cx).has_selection())
+        {
             if let Some(fence) = self.selection_fence() {
                 self.send(DesktopCommand::abort(fence));
             }
         } else if key == "escape" {
             self.send(DesktopCommand::close());
-        } else if key == "enter" {
-            if modifiers.shift {
-                if self.draft.len() < MAX_DRAFT_BYTES {
-                    self.draft.push('\n');
-                    self.sync_draft();
-                }
-            } else {
-                self.submit(modifiers.alt);
-            }
-        } else if key == "backspace" {
-            self.draft.pop();
-            self.sync_draft();
-        } else if modifiers.platform && key == "v" {
-            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                self.draft.push_str(&text);
-                self.draft
-                    .truncate(self.draft.floor_char_boundary(MAX_DRAFT_BYTES));
-                self.sync_draft();
-            }
-        } else if !modifiers.platform && !modifiers.control {
-            if let Some(text) = event.keystroke.key_char.as_deref()
-                && self.draft.len() + text.len() <= MAX_DRAFT_BYTES
-            {
-                self.draft.push_str(text);
-                self.sync_draft();
-            }
         } else {
             return;
         }
@@ -778,8 +1059,8 @@ impl DesktopView {
                             .tab_stop(true)
                             .mx(px(8.0))
                             .mb(px(2.0))
-                            .px(px(10.0))
-                            .py(px(9.0))
+                            .px(theme.space(10.0))
+                            .py(theme.space(9.0))
                             .rounded(px(8.0))
                             .bg(if active {
                                 theme.element_active
@@ -787,11 +1068,13 @@ impl DesktopView {
                                 gpui::transparent_black()
                             })
                             .when(selectable, |row| {
-                                row.cursor_pointer()
-                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                row.cursor_pointer().on_click(cx.listener(
+                                    move |view, _, window, cx| {
                                         view.send(DesktopCommand::select(id.clone()));
+                                        window.focus(&view.composer.focus_handle(cx), cx);
                                         cx.notify();
-                                    }))
+                                    },
+                                ))
                             })
                             .child(
                                 div()
@@ -812,7 +1095,7 @@ impl DesktopView {
                                             .flex_1()
                                             .child(
                                                 div()
-                                                    .text_size(px(13.0))
+                                                    .text_size(rems(13.0 / 16.0))
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .text_color(if selectable {
                                                         theme.text
@@ -826,7 +1109,7 @@ impl DesktopView {
                                             .child(
                                                 div()
                                                     .mt(px(2.0))
-                                                    .text_size(px(10.5))
+                                                    .text_size(rems(10.5 / 16.0))
                                                     .text_color(theme.text_muted)
                                                     .child(SharedString::from(format!(
                                                         "{} · {}",
@@ -837,7 +1120,7 @@ impl DesktopView {
                                             .child(
                                                 div()
                                                     .mt(px(2.0))
-                                                    .text_size(px(9.5))
+                                                    .text_size(rems(9.5 / 16.0))
                                                     .text_color(theme.text_faint)
                                                     .child(SharedString::from(format!(
                                                         "{} · {}",
@@ -865,6 +1148,7 @@ impl DesktopView {
                 div()
                     .h(px(54.0))
                     .flex_none()
+                    .window_control_area(WindowControlArea::Drag)
                     .pl(px(sidebar_header_left_padding(
                         cfg!(target_os = "macos"),
                         window.is_fullscreen(),
@@ -877,13 +1161,13 @@ impl DesktopView {
                         div()
                             .child(
                                 div()
-                                    .text_size(px(13.0))
+                                    .text_size(rems(13.0 / 16.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("SCOTTY"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(9.0))
+                                    .text_size(rems(9.0 / 16.0))
                                     .text_color(theme.text_faint)
                                     .child("REMOTE FLEET"),
                             ),
@@ -905,10 +1189,11 @@ impl DesktopView {
                                     .rounded(px(6.0))
                                     .bg(theme.accent.opacity(0.16))
                                     .cursor_pointer()
-                                    .text_size(px(10.0))
+                                    .text_size(rems(10.0 / 16.0))
                                     .text_color(theme.accent)
-                                    .on_click(cx.listener(|view, _, _, cx| {
+                                    .on_click(cx.listener(|view, _, window, cx| {
                                         view.open_create();
+                                        window.focus(&view.focus, cx);
                                         cx.notify();
                                     }))
                                     .child("+ NEW"),
@@ -925,7 +1210,7 @@ impl DesktopView {
                                     .rounded(px(6.0))
                                     .bg(theme.element_hover)
                                     .cursor_pointer()
-                                    .text_size(px(10.0))
+                                    .text_size(rems(10.0 / 16.0))
                                     .text_color(theme.text_muted)
                                     .on_click(cx.listener(|view, _, _, _| {
                                         view.send(DesktopCommand::refresh_fleet())
@@ -952,7 +1237,7 @@ impl DesktopView {
                     panel.child(
                         div()
                             .p(px(18.0))
-                            .text_size(px(12.0))
+                            .text_size(rems(12.0 / 16.0))
                             .text_color(theme.text_muted)
                             .child("No Scotty sessions are listed."),
                     )
@@ -1113,6 +1398,7 @@ impl DesktopView {
                 div()
                     .h(px(78.0))
                     .flex_none()
+                    .window_control_area(WindowControlArea::Drag)
                     .px(px(22.0))
                     .flex()
                     .items_center()
@@ -1124,14 +1410,14 @@ impl DesktopView {
                             .min_w_0()
                             .child(
                                 div()
-                                    .text_size(px(15.0))
+                                    .text_size(rems(15.0 / 16.0))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(SharedString::from(title)),
                             )
                             .child(
                                 div()
                                     .mt(px(2.0))
-                                    .text_size(px(10.5))
+                                    .text_size(rems(10.5 / 16.0))
                                     .text_color(theme.text_muted)
                                     .child(SharedString::from(subtitle)),
                             )
@@ -1139,7 +1425,7 @@ impl DesktopView {
                                 header.child(
                                     div()
                                         .mt(px(2.0))
-                                        .text_size(px(9.0))
+                                        .text_size(theme.mono_size(9.0))
                                         .text_color(theme.text_faint)
                                         .font_family(theme.font_mono.clone())
                                         .child(SharedString::from(inspector)),
@@ -1157,7 +1443,7 @@ impl DesktopView {
                                     .py(px(5.0))
                                     .rounded_full()
                                     .bg(theme.element_hover)
-                                    .text_size(px(9.5))
+                                    .text_size(rems(9.5 / 16.0))
                                     .text_color(match activity {
                                         "working" => theme.accent,
                                         "waiting" => theme.warning,
@@ -1182,10 +1468,11 @@ impl DesktopView {
                                         .rounded(px(6.0))
                                         .bg(theme.element_hover)
                                         .cursor_pointer()
-                                        .text_size(px(9.5))
+                                        .text_size(rems(9.5 / 16.0))
                                         .text_color(theme.text_muted)
-                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                        .on_click(cx.listener(move |view, _, window, cx| {
                                             view.open_rename(rename_id.clone(), rename_title.clone());
+                                            window.focus(&view.focus, cx);
                                             cx.notify();
                                         }))
                                         .child("RENAME"),
@@ -1209,7 +1496,7 @@ impl DesktopView {
                                             .rounded(px(6.0))
                                             .bg(theme.element_hover)
                                             .cursor_pointer()
-                                            .text_size(px(9.5))
+                                            .text_size(rems(9.5 / 16.0))
                                             .text_color(theme.text_muted)
                                             .on_click(cx.listener(move |view, _, _, _| {
                                                 let request_id = view.next_request_id("snapshot");
@@ -1239,7 +1526,7 @@ impl DesktopView {
                                             .rounded(px(6.0))
                                             .bg(theme.accent.opacity(0.12))
                                             .cursor_pointer()
-                                            .text_size(px(9.5))
+                                            .text_size(rems(9.5 / 16.0))
                                             .text_color(theme.accent)
                                             .on_click(cx.listener(move |view, _, _, _| {
                                                 let request_id = view.next_request_id("resume");
@@ -1266,10 +1553,11 @@ impl DesktopView {
                                         .py(px(5.0))
                                         .rounded(px(6.0))
                                         .cursor_pointer()
-                                        .text_size(px(9.5))
+                                        .text_size(rems(9.5 / 16.0))
                                         .text_color(theme.danger)
-                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                        .on_click(cx.listener(move |view, _, window, cx| {
                                             view.open_vaporize(id.clone(), title.clone());
+                                            window.focus(&view.focus, cx);
                                             cx.notify();
                                         }))
                                         .child("VAPORIZE"),
@@ -1311,7 +1599,7 @@ impl DesktopView {
                                 .bg(theme.surface_raised)
                                 .border_1()
                                 .border_color(theme.accent.opacity(0.35))
-                                .text_size(px(10.0))
+                                .text_size(rems(10.0 / 16.0))
                                 .text_color(theme.accent)
                                 .cursor_pointer()
                                 .on_click(cx.listener(|view, _, _, cx| {
@@ -1353,14 +1641,14 @@ impl DesktopView {
                                         .text_center()
                                         .child(
                                             div()
-                                                .text_size(px(28.0))
+                                                .text_size(rems(28.0 / 16.0))
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .child("Your sessions, still in motion."),
                                         )
                                         .child(
                                             div()
                                                 .mt(px(12.0))
-                                                .text_size(px(13.0))
+                                                .text_size(rems(13.0 / 16.0))
                                                 .text_color(theme.text_muted)
                                                 .child("Select any sandbox to inspect it. Warm sessions attach passively; cold sessions stay stopped until you choose Resume."),
                                         ),
@@ -1371,7 +1659,7 @@ impl DesktopView {
                         content.child(
                             div()
                                 .mx(px(22.0))
-                                .text_size(px(12.0))
+                                .text_size(rems(12.0 / 16.0))
                                 .text_color(theme.text_muted)
                                 .child("Connecting to the existing supervisor…"),
                         )
@@ -1384,7 +1672,7 @@ impl DesktopView {
                                 .py(px(10.0))
                                 .rounded(px(8.0))
                                 .bg(theme.danger.opacity(0.08))
-                                .text_size(px(11.0))
+                                .text_size(rems(11.0 / 16.0))
                                 .text_color(theme.danger)
                                 .child(SharedString::from(error.to_string())),
                         )
@@ -1394,6 +1682,115 @@ impl DesktopView {
                 panel.child(self.render_pending(fence, pending, cx))
             })
             .child(self.render_composer(selected_id, selected, cx))
+    }
+
+    fn render_command_palette(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::of(cx).clone();
+        let commands = self.palette_commands(cx);
+        let selected = self.command_palette_selection.unwrap_or_default();
+        let rows = if commands.is_empty() {
+            div()
+                .h(px(72.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(rems(11.0 / 16.0))
+                .text_color(theme.text_faint)
+                .child("No matching commands")
+                .into_any_element()
+        } else {
+            div()
+                .p(px(6.0))
+                .children(commands.into_iter().enumerate().map(|(index, command)| {
+                    div()
+                        .id(SharedString::from(format!("palette-{}", command.label())))
+                        .role(Role::Button)
+                        .aria_label(command.label())
+                        .aria_selected(index == selected)
+                        .focusable()
+                        .tab_stop(true)
+                        .h(px(38.0))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .rounded(px(7.0))
+                        .bg(if index == selected {
+                            theme.element_active
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .hover(|row| row.bg(theme.element_hover))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.execute_palette_command(command, window, cx)
+                        }))
+                        .child(
+                            div()
+                                .text_size(rems(12.0 / 16.0))
+                                .text_color(theme.text)
+                                .child(command.label()),
+                        )
+                        .when(!command.shortcut().is_empty(), |row| {
+                            row.child(
+                                div()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(theme.mono_size(9.5))
+                                    .text_color(theme.text_faint)
+                                    .child(command.shortcut()),
+                            )
+                        })
+                }))
+                .into_any_element()
+        };
+
+        div()
+            .absolute()
+            .top(px(0.0))
+            .right(px(0.0))
+            .bottom(px(0.0))
+            .left(px(0.0))
+            .occlude()
+            .bg(gpui::hsla(0.0, 0.0, 0.0, 0.42))
+            .flex()
+            .justify_center()
+            .pt(px(92.0))
+            .child(
+                div()
+                    .w(px(540.0))
+                    .rounded(px(13.0))
+                    .border_1()
+                    .border_color(theme.border_strong)
+                    .bg(theme.surface_raised)
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(52.0))
+                            .px(px(14.0))
+                            .flex()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(theme.border)
+                            .child(self.command_input.clone()),
+                    )
+                    .child(rows)
+                    .child(
+                        div()
+                            .h(px(30.0))
+                            .px(px(12.0))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .text_size(rems(9.0 / 16.0))
+                            .text_color(theme.text_faint)
+                            .child("↑↓ Navigate · ↵ Run")
+                            .child("Esc Close"),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_management_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1411,10 +1808,11 @@ impl DesktopView {
             .py(px(7.0))
             .rounded(px(7.0))
             .cursor_pointer()
-            .text_size(px(10.0))
+            .text_size(rems(10.0 / 16.0))
             .text_color(theme.text_muted)
-            .on_click(cx.listener(|view, _, _, cx| {
+            .on_click(cx.listener(|view, _, window, cx| {
                 view.management_panel = None;
+                window.focus(&view.composer.focus_handle(cx), cx);
                 cx.notify();
             }))
             .child("CANCEL");
@@ -1466,7 +1864,7 @@ impl DesktopView {
                         .justify_between()
                         .child(
                             div()
-                                .text_size(px(9.5))
+                                .text_size(rems(9.5 / 16.0))
                                 .text_color(theme.text_faint)
                                 .child("Tab fields · ⌘Enter create · cap: 30m, 4h, 1d"),
                         )
@@ -1483,7 +1881,7 @@ impl DesktopView {
                                     .rounded(px(7.0))
                                     .bg(theme.accent.opacity(0.18))
                                     .cursor_pointer()
-                                    .text_size(px(10.0))
+                                    .text_size(rems(10.0 / 16.0))
                                     .text_color(theme.accent)
                                     .on_click(cx.listener(|view, _, _, cx| {
                                         view.submit_management();
@@ -1521,7 +1919,7 @@ impl DesktopView {
                                 .rounded(px(7.0))
                                 .bg(theme.accent.opacity(0.18))
                                 .cursor_pointer()
-                                .text_size(px(10.0))
+                                .text_size(rems(10.0 / 16.0))
                                 .text_color(theme.accent)
                                 .on_click(cx.listener(|view, _, _, cx| {
                                     view.submit_management();
@@ -1534,69 +1932,115 @@ impl DesktopView {
                 session_id,
                 title,
                 confirmation,
-            } => div()
-                .child(
-                    div()
-                        .mb(px(12.0))
-                        .p(px(10.0))
-                        .rounded(px(8.0))
-                        .bg(theme.danger.opacity(0.08))
-                        .text_size(px(11.0))
-                        .text_color(theme.danger)
-                        .child(SharedString::from(format!(
-                            "Permanently delete {title}. This cannot be undone."
-                        ))),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.0))
-                        .text_color(theme.text_muted)
-                        .child("Type the sandbox ID to confirm:"),
-                )
-                .child(
-                    div()
-                        .mt(px(4.0))
-                        .font_family(theme.font_mono.clone())
-                        .text_size(px(10.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from(session_id.clone())),
-                )
-                .child(management_field(
-                    "vaporize-confirmation",
-                    "Confirmation",
-                    confirmation,
-                    true,
-                    false,
-                    &theme,
-                ))
-                .child(
-                    div()
-                        .mt(px(12.0))
-                        .flex()
-                        .justify_end()
-                        .gap(px(6.0))
-                        .child(cancel)
-                        .child(
-                            div()
-                                .id("confirm-vaporize")
-                                .role(Role::Button)
-                                .aria_label("Confirm permanent sandbox deletion")
-                                .focusable()
-                                .tab_stop(true)
-                                .px(px(11.0))
-                                .py(px(7.0))
-                                .rounded(px(7.0))
-                                .bg(theme.danger.opacity(0.12))
-                                .cursor_pointer()
-                                .text_size(px(10.0))
-                                .text_color(theme.danger)
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.submit_management();
-                                    cx.notify();
-                                }))
-                                .child("VAPORIZE"),
-                        ),
-                ),
+                id_copied,
+            } => {
+                let copied_session_id = session_id.clone();
+                div()
+                    .child(
+                        div()
+                            .mb(px(12.0))
+                            .p(px(10.0))
+                            .rounded(px(8.0))
+                            .bg(theme.danger.opacity(0.08))
+                            .text_size(rems(11.0 / 16.0))
+                            .text_color(theme.danger)
+                            .child(SharedString::from(format!(
+                                "Permanently delete {title}. This cannot be undone."
+                            ))),
+                    )
+                    .child(
+                        div()
+                            .text_size(rems(10.0 / 16.0))
+                            .text_color(theme.text_muted)
+                            .child("Type the sandbox ID to confirm:"),
+                    )
+                    .child(
+                        div()
+                            .id("copy-vaporize-id")
+                            .role(Role::Button)
+                            .aria_label(SharedString::from(format!("Copy sandbox ID {session_id}")))
+                            .focusable()
+                            .tab_stop(true)
+                            .mt(px(5.0))
+                            .px(px(9.0))
+                            .py(px(7.0))
+                            .rounded(px(7.0))
+                            .bg(theme.element_hover)
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    copied_session_id.clone(),
+                                ));
+                                if let Some(ManagementPanel::Vaporize {
+                                    session_id,
+                                    id_copied,
+                                    ..
+                                }) = &mut view.management_panel
+                                    && *session_id == copied_session_id
+                                {
+                                    *id_copied = true;
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(theme.mono_size(10.0))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(session_id.clone())),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rems(9.0 / 16.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(if *id_copied {
+                                        theme.accent
+                                    } else {
+                                        theme.text_faint
+                                    })
+                                    .child(if *id_copied { "COPIED" } else { "COPY" }),
+                            ),
+                    )
+                    .child(management_field(
+                        "vaporize-confirmation",
+                        "Confirmation",
+                        confirmation,
+                        true,
+                        false,
+                        &theme,
+                    ))
+                    .child(
+                        div()
+                            .mt(px(12.0))
+                            .flex()
+                            .justify_end()
+                            .gap(px(6.0))
+                            .child(cancel)
+                            .child(
+                                div()
+                                    .id("confirm-vaporize")
+                                    .role(Role::Button)
+                                    .aria_label("Confirm permanent sandbox deletion")
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .px(px(11.0))
+                                    .py(px(7.0))
+                                    .rounded(px(7.0))
+                                    .bg(theme.danger.opacity(0.12))
+                                    .cursor_pointer()
+                                    .text_size(rems(10.0 / 16.0))
+                                    .text_color(theme.danger)
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.submit_management();
+                                        cx.notify();
+                                    }))
+                                    .child("VAPORIZE"),
+                            ),
+                    )
+            }
         };
         let heading = match panel {
             ManagementPanel::Create { .. } => "New sandbox",
@@ -1617,7 +2061,7 @@ impl DesktopView {
             .child(
                 div()
                     .mb(px(14.0))
-                    .text_size(px(14.0))
+                    .text_size(rems(14.0 / 16.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(heading),
             )
@@ -1668,7 +2112,7 @@ impl DesktopView {
             PendingUi::Confirm { message, .. } => div()
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(rems(11.0 / 16.0))
                         .text_color(theme.text_muted)
                         .child(SharedString::from(message.clone())),
                 )
@@ -1695,13 +2139,13 @@ impl DesktopView {
                         )),
                 ),
             PendingUi::Input { placeholder, .. } => div()
-                .text_size(px(11.0))
+                .text_size(rems(11.0 / 16.0))
                 .text_color(theme.text_muted)
                 .child(SharedString::from(placeholder.clone().unwrap_or_else(
                     || "Type your answer below and press Enter.".into(),
                 ))),
             PendingUi::Editor { prefill, .. } => div()
-                .text_size(px(11.0))
+                .text_size(rems(11.0 / 16.0))
                 .text_color(theme.text_muted)
                 .child(SharedString::from(prefill.clone().unwrap_or_else(|| {
                     "Type your answer below and press Enter.".into()
@@ -1723,7 +2167,7 @@ impl DesktopView {
                     .justify_between()
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(rems(12.0 / 16.0))
                             .font_weight(FontWeight::MEDIUM)
                             .child(SharedString::from(pending.title().to_string())),
                     )
@@ -1735,7 +2179,7 @@ impl DesktopView {
                             .focusable()
                             .tab_stop(true)
                             .cursor_pointer()
-                            .text_size(px(10.0))
+                            .text_size(rems(10.0 / 16.0))
                             .text_color(theme.text_muted)
                             .on_click(cx.listener(move |view, _, _, _| {
                                 view.send(DesktopCommand::answer_cancelled(
@@ -1764,14 +2208,14 @@ impl DesktopView {
             .is_some_and(|live| live.is_streaming);
         div()
             .flex_none()
-            .px(px(22.0))
-            .pb(px(18.0))
-            .pt(px(8.0))
+            .px(theme.space(22.0))
+            .pb(theme.space(18.0))
+            .pt(theme.space(8.0))
             .child(
                 div()
                     .min_h(px(58.0))
-                    .px(px(15.0))
-                    .py(px(12.0))
+                    .px(theme.space(15.0))
+                    .py(theme.space(12.0))
                     .rounded(px(16.0))
                     .border_1()
                     .border_color(if enabled {
@@ -1783,28 +2227,8 @@ impl DesktopView {
                     .child(
                         div()
                             .id("composer-input")
-                            .role(Role::TextInput)
-                            .aria_label("Message selected sandbox")
-                            .aria_value(SharedString::from(self.draft.clone()))
-                            .aria_placeholder("Message the selected sandbox")
                             .min_h(px(20.0))
-                            .text_size(px(13.0))
-                            .text_color(if self.draft.is_empty() {
-                                theme.text_faint
-                            } else {
-                                theme.text
-                            })
-                            .child(SharedString::from(if !enabled {
-                                if selected_session_id.is_some() {
-                                    "Resume this sandbox to send a message".into()
-                                } else {
-                                    "Select a sandbox".into()
-                                }
-                            } else if self.draft.is_empty() {
-                                "Message the selected session…".into()
-                            } else {
-                                self.draft.clone()
-                            })),
+                            .child(self.composer.clone()),
                     )
                     .child(
                         div()
@@ -1812,7 +2236,7 @@ impl DesktopView {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .text_size(px(9.5))
+                            .text_size(rems(9.5 / 16.0))
                             .text_color(theme.text_faint)
                             .child(SharedString::from(
                                 status.unwrap_or("Enter send · ⇧Enter newline · ⌥Enter follow-up"),
@@ -1867,7 +2291,7 @@ impl DesktopView {
                                             })
                                             .on_click(cx.listener(move |view, _, _, cx| {
                                                 if enabled {
-                                                    view.submit(false);
+                                                    view.submit(false, cx);
                                                     cx.notify();
                                                 }
                                             }))
@@ -1896,10 +2320,13 @@ impl Focusable for DesktopView {
 
 impl Render for DesktopView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if window.focused(cx).is_none() {
-            window.focus(&self.focus, cx);
+        if self.management_panel.is_none()
+            && (window.focused(cx).is_none() || self.focus.is_focused(window))
+        {
+            window.focus(&self.composer.focus_handle(cx), cx);
         }
         let theme = Theme::of(cx).clone();
+        window.set_rem_size(px(theme.rem_size()));
         let connection = match &self.connection {
             ConnectionStatus::Connecting => Some("Starting desktop sidecar…"),
             ConnectionStatus::Failed(message) => Some(message.as_str()),
@@ -1927,6 +2354,7 @@ impl Render for DesktopView {
             .aria_label("Scotty Desktop")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_action(cx.listener(Self::toggle_command_palette))
             .size_full()
             .relative()
             .flex()
@@ -1934,7 +2362,7 @@ impl Render for DesktopView {
             .bg(theme.glass())
             .text_color(theme.text)
             .font_family(theme.font_sans)
-            .text_size(px(14.0))
+            .text_size(rems(14.0 / 16.0))
             .child(self.render_sidebar(window, cx))
             .child(self.render_main(cx))
             .when_some(operation, |root, (message, status)| {
@@ -1958,7 +2386,7 @@ impl Render for DesktopView {
                                 theme.warning.opacity(0.35)
                             }
                         })
-                        .text_size(px(10.0))
+                        .text_size(rems(10.0 / 16.0))
                         .text_color(match status {
                             OperationStatus::Failed => theme.danger,
                             OperationStatus::Succeeded => theme.accent,
@@ -1990,10 +2418,13 @@ impl Render for DesktopView {
                         .bg(theme.surface_raised)
                         .border_1()
                         .border_color(theme.border)
-                        .text_size(px(10.0))
+                        .text_size(rems(10.0 / 16.0))
                         .text_color(theme.text_muted)
                         .child(SharedString::from(message.to_string())),
                 )
+            })
+            .when(self.command_palette_selection.is_some(), |root| {
+                root.child(self.render_command_palette(cx))
             })
     }
 }
@@ -2041,7 +2472,7 @@ fn management_field(
         .child(
             div()
                 .mb(px(5.0))
-                .text_size(px(10.0))
+                .text_size(rems(10.0 / 16.0))
                 .text_color(theme.text_muted)
                 .child(label),
         )
@@ -2063,7 +2494,7 @@ fn management_field(
                     theme.border
                 })
                 .bg(theme.bg)
-                .text_size(px(11.5))
+                .text_size(rems(11.5 / 16.0))
                 .text_color(if value.is_empty() {
                     theme.text_faint
                 } else {
@@ -2199,14 +2630,14 @@ fn render_transcript_item(
                         .child(
                             div()
                                 .mb(px(5.0))
-                                .text_size(px(9.0))
+                                .text_size(rems(9.0 / 16.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.accent.opacity(0.9))
                                 .child("YOU"),
                         )
                         .child(
                             div()
-                                .text_size(px(13.0))
+                                .text_size(rems(13.0 / 16.0))
                                 .text_color(theme.text)
                                 .child(SharedString::from(truncate(text, 16_000))),
                         ),
@@ -2226,7 +2657,7 @@ fn render_transcript_item(
                         .items_start()
                         .gap(px(9.0))
                         .px(px(2.0))
-                        .text_size(px(11.5))
+                        .text_size(rems(11.5 / 16.0))
                         .text_color(theme.text_muted.opacity(0.72))
                         .child(
                             div()
@@ -2242,7 +2673,7 @@ fn render_transcript_item(
                                 .child(
                                     div()
                                         .mb(px(3.0))
-                                        .text_size(px(9.0))
+                                        .text_size(rems(9.0 / 16.0))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(theme.text_faint)
                                         .child("REASONING"),
@@ -2301,7 +2732,7 @@ fn render_transcript_item(
                         .bg(theme.surface.opacity(0.72))
                         .px(px(10.0))
                         .py(px(8.0))
-                        .text_size(px(11.0))
+                        .text_size(rems(11.0 / 16.0))
                         .text_color(theme.text_muted)
                         .child(SharedString::from(truncate(text, 2_000))),
                 ),
@@ -2359,8 +2790,8 @@ fn render_markdown_block(block: MarkdownBlock, theme: &Theme, muted: bool) -> gp
             .bg(theme.surface.opacity(0.62))
             .px(px(11.0))
             .py(px(8.0))
-            .text_size(px(12.5))
-            .line_height(px(19.0))
+            .text_size(rems(12.5 / 16.0))
+            .line_height(rems(19.0 / 16.0))
             .text_color(if muted { text_color } else { theme.text_muted })
             .child(content)
             .into_any_element(),
@@ -2372,14 +2803,14 @@ fn render_markdown_block(block: MarkdownBlock, theme: &Theme, muted: bool) -> gp
             .px(px(11.0))
             .py(px(9.0))
             .font_family(theme.font_mono.clone())
-            .text_size(px(11.5))
-            .line_height(px(18.0))
+            .text_size(theme.mono_size(11.5))
+            .line_height(rems(18.0 / 16.0))
             .text_color(text_color.opacity(0.9))
             .child(SharedString::from(block.text))
             .into_any_element(),
         MarkdownBlockKind::ListItem => div()
-            .text_size(px(13.0))
-            .line_height(px(20.0))
+            .text_size(rems(13.0 / 16.0))
+            .line_height(rems(20.0 / 16.0))
             .text_color(text_color)
             .child(content)
             .into_any_element(),
@@ -2390,8 +2821,8 @@ fn render_markdown_block(block: MarkdownBlock, theme: &Theme, muted: bool) -> gp
             .bg(theme.border)
             .into_any_element(),
         MarkdownBlockKind::Paragraph => div()
-            .text_size(px(13.0))
-            .line_height(px(20.0))
+            .text_size(rems(13.0 / 16.0))
+            .line_height(rems(20.0 / 16.0))
             .text_color(text_color)
             .child(content)
             .into_any_element(),
@@ -2521,7 +2952,7 @@ fn render_tool(
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(px(10.0))
+                        .text_size(rems(10.0 / 16.0))
                         .text_color(tint)
                         .child(glyph),
                 )
@@ -2536,7 +2967,7 @@ fn render_tool(
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(12.0))
+                                .text_size(rems(12.0 / 16.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(if status == ToolStatus::Failed {
                                     theme.danger
@@ -2548,7 +2979,7 @@ fn render_tool(
                         .child(
                             div()
                                 .flex_none()
-                                .text_size(px(8.5))
+                                .text_size(rems(8.5 / 16.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(tint)
                                 .child(status_label),
@@ -2556,7 +2987,7 @@ fn render_tool(
                         .child(
                             div()
                                 .flex_none()
-                                .text_size(px(9.0))
+                                .text_size(rems(9.0 / 16.0))
                                 .text_color(theme.text_faint)
                                 .child(SharedString::from(single_line(name, 48))),
                         ),
@@ -2566,7 +2997,7 @@ fn render_tool(
                         .flex_none()
                         .w(px(14.0))
                         .text_center()
-                        .text_size(px(11.0))
+                        .text_size(rems(11.0 / 16.0))
                         .text_color(theme.text_faint)
                         .child(if expanded { "⌄" } else { "›" }),
                 ),
@@ -2585,7 +3016,7 @@ fn render_tool(
                         body.child(tool_detail("OUTPUT", result, status, theme))
                     })
                     .when(detail.is_none() && result.is_none(), |body| {
-                        body.text_size(px(10.5))
+                        body.text_size(rems(10.5 / 16.0))
                             .text_color(theme.text_faint)
                             .child("No tool details were projected.")
                     }),
@@ -2605,7 +3036,7 @@ fn tool_detail(
         .child(
             div()
                 .mb(px(4.0))
-                .text_size(px(8.5))
+                .text_size(rems(8.5 / 16.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_faint)
                 .child(label),
@@ -2613,8 +3044,8 @@ fn tool_detail(
         .child(
             div()
                 .font_family(theme.font_mono.clone())
-                .text_size(px(10.5))
-                .line_height(px(16.0))
+                .text_size(theme.mono_size(10.5))
+                .line_height(rems(1.0))
                 .text_color(if status == ToolStatus::Failed {
                     theme.danger.opacity(0.9)
                 } else {
@@ -2638,7 +3069,7 @@ fn render_error(message: &str, theme: &Theme) -> gpui::AnyElement {
         .bg(theme.danger.opacity(0.055))
         .px(px(8.0))
         .py(px(7.0))
-        .text_size(px(12.0))
+        .text_size(rems(12.0 / 16.0))
         .child(
             div()
                 .size(px(20.0))
@@ -2686,7 +3117,7 @@ fn render_notice(title: &str, message: &str, tone: NoticeTone, theme: &Theme) ->
         .bg(tint.opacity(0.045))
         .px(px(9.0))
         .py(px(7.0))
-        .text_size(px(12.0))
+        .text_size(rems(12.0 / 16.0))
         .child(
             div()
                 .flex_none()
@@ -2718,7 +3149,7 @@ fn render_truncation_notice(theme: &Theme) -> gpui::AnyElement {
                 .border_b_1()
                 .border_color(theme.border)
                 .pb(px(9.0))
-                .text_size(px(10.5))
+                .text_size(rems(10.5 / 16.0))
                 .text_color(theme.text_faint)
                 .child("Some transcript content was truncated."),
         )
@@ -2740,7 +3171,7 @@ fn render_working(theme: &Theme) -> gpui::AnyElement {
                 .items_center()
                 .gap(px(7.0))
                 .px(px(2.0))
-                .text_size(px(10.5))
+                .text_size(rems(10.5 / 16.0))
                 .text_color(theme.text_muted.opacity(0.72))
                 .child(
                     div()
