@@ -1,6 +1,7 @@
 /work/
 **/node_modules/
 /dist/
+/desktop/target/
 .wrangler/
 .alchemy/
 .dev.vars

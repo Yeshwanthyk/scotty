@@ -77,6 +77,8 @@ it has the native Pi RPC worklog transport.
 - `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, direct Pi RPC
   lifecycle and worklog, and trusted-runner control plane.
 - `cli/` — Effect-native Bun CLI and embedded `scotty skills` guide.
+- `pi-scotty/` — passive terminal fleet console and shared desktop sidecar.
+- `desktop/` — macOS GPUI viewport for switching among existing warm Scotty sessions.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
 - `spikes/` — executable probes for the upstream Sandbox contracts.
@@ -124,6 +126,17 @@ git submodule update --init vendor/effect vendor/alchemy
 npm ci --no-audit --no-fund
 npm run check
 ```
+
+On macOS, build the ad-hoc-signed development desktop bundle with:
+
+```sh
+npm run build:desktop
+open dist/Scotty.app
+```
+
+Desktop uses the same mode-0600 paired-client config as `pi-scotty` at
+`~/.config/pi-scotty/config.json`. See [`desktop/README.md`](desktop/README.md) for fixture testing,
+pairing, platform requirements, and distribution limitations.
 
 For a fresh Linux agent environment, [`.agents/setup`](.agents/setup) installs the pinned Node
 version, initializes the reference-source submodules, and runs `npm ci`. A resumed agent can use
