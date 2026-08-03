@@ -12,12 +12,12 @@ import { SESSION_A, session, snapshot } from "./fixtures.ts";
 describe("desktop protocol", () => {
   it("decodes only bounded, exact command shapes", () => {
     expect(
-      decodeDesktopCommand(JSON.stringify({ version: 1, type: "select", sessionId: SESSION_A })),
-    ).toEqual({ version: 1, type: "select", sessionId: SESSION_A });
+      decodeDesktopCommand(JSON.stringify({ version: 2, type: "select", sessionId: SESSION_A })),
+    ).toEqual({ version: 2, type: "select", sessionId: SESSION_A });
     expect(
       decodeDesktopCommand(
         JSON.stringify({
-          version: 1,
+          version: 2,
           type: "submit",
           sessionId: SESSION_A,
           expectedEpoch: "epoch-1",
@@ -33,12 +33,67 @@ describe("desktop protocol", () => {
     });
     expect(
       decodeDesktopCommand(
-        JSON.stringify({ version: 1, type: "submit", sessionId: SESSION_A, text: "ship" }),
+        JSON.stringify({
+          version: 2,
+          type: "create_sandbox",
+          requestId: "request-create-0001",
+          title: "Review branch",
+          prompt: "Review this branch",
+          repo: "owner/repo",
+          hardCapSeconds: 3600,
+        }),
+      ),
+    ).toMatchObject({ type: "create_sandbox", repo: "owner/repo", hardCapSeconds: 3600 });
+    expect(
+      decodeDesktopCommand(
+        JSON.stringify({
+          version: 2,
+          type: "create_sandbox",
+          requestId: "bad request id",
+          title: "Review branch",
+          prompt: "Review this branch",
+          repo: "not-a-repo",
+          hardCapSeconds: 30,
+        }),
       ),
     ).toBeUndefined();
     expect(
       decodeDesktopCommand(
-        JSON.stringify({ version: 1, type: "select", sessionId: SESSION_A, credential: "no" }),
+        JSON.stringify({ version: 2, type: "submit", sessionId: SESSION_A, text: "ship" }),
+      ),
+    ).toBeUndefined();
+    expect(
+      decodeDesktopCommand(
+        JSON.stringify({ version: 2, type: "select", sessionId: SESSION_A, credential: "no" }),
+      ),
+    ).toBeUndefined();
+    expect(
+      decodeDesktopCommand(JSON.stringify({ version: 1, type: "select", sessionId: SESSION_A })),
+    ).toBeUndefined();
+    expect(
+      decodeDesktopCommand(
+        JSON.stringify({
+          version: 2,
+          type: "create_sandbox",
+          requestId: "request-create-escaped",
+          title: "Review branch",
+          prompt: "\u0000".repeat(16 * 1024),
+          repo: "owner/repo",
+          hardCapSeconds: 3600,
+        }),
+      ),
+    ).toBeDefined();
+    expect(
+      decodeDesktopCommand(
+        JSON.stringify({
+          version: 2,
+          type: "create_sandbox",
+          requestId: "request-create-oversized",
+          title: "Review branch",
+          prompt: "x".repeat(60 * 1024 + 1),
+          repo: "owner/repo",
+          hardCapSeconds: 3600,
+        }),
       ),
     ).toBeUndefined();
     expect(decodeDesktopCommand("not json")).toBeUndefined();
@@ -47,7 +102,13 @@ describe("desktop protocol", () => {
 
   it("projects maps and sets into a redacted JSON-safe selected state", () => {
     const state = new FleetConsoleState();
-    state.setFleet([{ ...session(SESSION_A), title: "github_pat_fleet-secret" }]);
+    state.setFleet([
+      {
+        ...session(SESSION_A),
+        title: "github_pat_fleet-secret",
+        backupId: "github_pat_backup-secret",
+      },
+    ]);
     state.selectLocal(SESSION_A);
     state.setMetadata(SESSION_A, session(SESSION_A));
     state.setSnapshot(SESSION_A, {
@@ -65,10 +126,11 @@ describe("desktop protocol", () => {
     expect(projected.selected?.draftGeneration).toBe(0);
     expect(projected.fleet[0]?.title).toContain("[credential]");
     expect(projected.fleet[0]?.title).not.toContain("github_pat");
+    expect(projected.fleet[0]?.backupId).toBe("[credential]-secret");
     expect(projected.selected?.live?.transcript).toEqual([
       {
         kind: "assistant",
-        id: "message-0-text-0",
+        id: "message-assistant-0-text",
         text: "[credential]-value",
       },
       {
@@ -83,10 +145,10 @@ describe("desktop protocol", () => {
     ]);
     expect(JSON.stringify(projected)).not.toContain("github_pat_secret-value");
     expect(JSON.stringify(projected)).toContain("[credential]");
-    expect(encodeDesktopFrame({ version: 1, type: "state", state: projected })).toMatch(/\n$/u);
+    expect(encodeDesktopFrame({ version: 2, type: "state", state: projected })).toMatch(/\n$/u);
     expect(
       encodeDesktopFrame({
-        version: 1,
+        version: 2,
         type: "error",
         code: "command_failed",
         message: "x".repeat(DESKTOP_MAX_FRAME_BYTES),
@@ -106,7 +168,7 @@ describe("desktop protocol", () => {
       throw new Error("expected selected live state");
 
     const encoded = encodeDesktopFrame({
-      version: 1,
+      version: 2,
       type: "state",
       state: {
         ...projected,

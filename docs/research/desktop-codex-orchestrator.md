@@ -12,15 +12,18 @@ Research used local first-party source only. No live Scotty session, deployment,
 
 ## Implementation status
 
-The thin v1 is implemented on `feat/desktop-codex-orchestrator`:
+The thin vertical product slice is implemented on `feat/desktop-codex-orchestrator`:
 
-- one native GPUI fleet window with side-effect-free warm-session selection;
-- transcript, active-tool, waiting-input, prompt/steer/follow-up, and abort controls;
+- one native GPUI fleet window with side-effect-free selection across projected Cloudflare sessions;
+- a virtualized T3Code-style chat/work timeline with normalized user, assistant, reasoning, tool, error, notice, and hidden-extension handling;
+- waiting-input, prompt/steer/follow-up, abort, create, rename, snapshot, resume, selection-based metadata inspection, and confirmed vaporize controls;
 - one compiled Bun sidecar that imports the existing `pi-scotty` controller, state, transport, schemas, redaction, pairing, and receipt checks directly;
-- a bounded versioned NDJSON child-pipe protocol; Rust never receives the paired credential;
+- a bounded desktop protocol v2 over private NDJSON child pipes; Rust never receives the paired credential;
 - a signed local macOS app bundle with pinned GPUI/Comet sources, notices, and a credential-free fixture smoke path.
 
-The MVP intentionally defers deep-link activation, sidecar restart/backoff, transcript virtualization/Markdown, keychain migration, auto-update, and Comet's motion/sound layers. macOS LaunchServices prevents duplicate bundle instances; all session jumps happen inside the fleet rail.
+The existing paired standard-client credential owns `sessions:read` and `sessions:write`, so lifecycle requests stay in the Bun sidecar behind the same cookie, same-origin, decoding, rotation, and redaction boundary. The Sandbox DO remains authoritative; desktop actions are explicit operator intents and never infer lifecycle from the KV fleet projection.
+
+The MVP intentionally defers deep-link activation, sidecar restart/backoff, Markdown, keychain migration, auto-update, and Comet's motion/sound layers. macOS LaunchServices prevents duplicate bundle instances; all session jumps happen inside the fleet rail.
 
 ## Decision
 
@@ -58,7 +61,7 @@ These terms must not be collapsed:
 | **resumable**              | Scotty lifecycle allows an explicit resume operation from a backup                             | Sandbox DO; not inferred by desktop       |
 | **saved local Pi session** | A JSONL file exists on this machine                                                            | Pi session store; no liveness implication |
 
-The v1 jump contract is **select a usable remote Scotty session without changing that session's lifecycle or Pi owner**. It is not “open this JSONL in another Pi process,” “resume a stopped session,” or “find and focus an arbitrary terminal tab.”
+The jump contract is **select a projected remote Scotty session without changing that session's lifecycle or Pi owner**. Warm sessions attach to the passive console; sleeping and failed sessions remain inspectable until the operator explicitly chooses Resume. It is not “open this JSONL in another Pi process,” an implicit wake/keepalive, or “find and focus an arbitrary terminal tab.”
 
 Pi's `SessionManager.listAll()` enumerates persisted JSONL files, but `SessionInfo` has no PID, control endpoint, window identity, lock, or liveness field ([session-manager declarations](/Users/yesh/.nvm/versions/node/v22.22.2/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.d.ts#L125), [implementation](/Users/yesh/.nvm/versions/node/v22.22.2/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js#L1289)). Opening can rewrite migrations and normal persistence appends without a session-file ownership lock ([open/rewrite](/Users/yesh/.nvm/versions/node/v22.22.2/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js#L610), [append](/Users/yesh/.nvm/versions/node/v22.22.2/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js#L724)). Therefore filesystem discovery cannot safely implement “open sessions.”
 
@@ -174,6 +177,11 @@ interface DesktopConsoleBackend {
   select(sessionId: ScottySessionId, signal: AbortSignal): AsyncIterable<SelectedFrame>;
   submit(sessionId: ScottySessionId, intent: PiConsoleRemoteIntentV1): Promise<IntentReceipt>;
   answerUi(sessionId: ScottySessionId, requestId: string, answer: UiAnswer): Promise<IntentReceipt>;
+  create(input: CreateSessionInput, requestId: string): Promise<OperationResult>;
+  rename(sessionId: ScottySessionId, title: string, requestId: string): Promise<OperationResult>;
+  snapshot(sessionId: ScottySessionId, requestId: string): Promise<OperationResult>;
+  resume(sessionId: ScottySessionId, requestId: string): Promise<OperationResult>;
+  vaporize(sessionId: ScottySessionId, requestId: string): Promise<OperationResult>;
   setDraft(sessionId: ScottySessionId, text: string): void;
   shutdown(): Promise<void>;
 }
@@ -182,26 +190,51 @@ interface DesktopConsoleBackend {
 Wire frames are versioned, bounded NDJSON:
 
 ```ts
-interface SelectionFenceV1 {
+interface SelectionFenceV2 {
   readonly sessionId: string;
   readonly expectedEpoch: string;
   readonly expectedSessionRevision: number;
 }
 
-type DesktopRequestV1 =
-  | { version: 1; type: "refresh_fleet" }
-  | { version: 1; type: "select"; sessionId: string }
-  | { version: 1; type: "close" }
-  | ({ version: 1; type: "submit"; text: string; forceFollowUp?: boolean } & SelectionFenceV1)
-  | ({ version: 1; type: "abort" } & SelectionFenceV1)
-  | ({ version: 1; type: "answer"; requestId: string; answer: UiAnswer } & SelectionFenceV1)
-  | { version: 1; type: "shutdown" };
+type DesktopRequestV2 =
+  | { version: 2; type: "refresh_fleet" }
+  | { version: 2; type: "select"; sessionId: string }
+  | { version: 2; type: "close" }
+  | ({ version: 2; type: "submit"; text: string; forceFollowUp?: boolean } & SelectionFenceV2)
+  | ({ version: 2; type: "abort" } & SelectionFenceV2)
+  | ({ version: 2; type: "answer"; requestId: string; answer: UiAnswer } & SelectionFenceV2)
+  | {
+      version: 2;
+      type: "create_sandbox";
+      requestId: string;
+      title: string;
+      prompt: string;
+      repo: string;
+      hardCapSeconds: number;
+    }
+  | { version: 2; type: "rename_sandbox"; requestId: string; sessionId: string; title: string }
+  | {
+      version: 2;
+      type: "snapshot_sandbox" | "resume_sandbox" | "vaporize_sandbox";
+      requestId: string;
+      sessionId: string;
+    }
+  | { version: 2; type: "shutdown" };
 
-type DesktopFrameV1 =
-  | { version: 1; type: "ready" }
-  | { version: 1; type: "state"; state: DesktopState }
-  | { version: 1; type: "error"; code: string; message: string }
-  | { version: 1; type: "stopped" };
+type DesktopFrameV2 =
+  | { version: 2; type: "ready" }
+  | { version: 2; type: "state"; state: DesktopState }
+  | {
+      version: 2;
+      type: "operation";
+      requestId: string;
+      action: string;
+      sessionId?: string;
+      status: "started" | "succeeded" | "failed" | "unknown";
+      message: string;
+    }
+  | { version: 2; type: "error"; code: string; message: string }
+  | { version: 2; type: "stopped" };
 ```
 
 Do not send the cookie, internal sandbox capability, provider/GitHub credentials, credential sentinels, raw response headers, loopback coordinates, unredacted errors, or unbounded unknown objects over this boundary.
@@ -248,7 +281,7 @@ Selection never emits Pi `switch_session`, `new_session`, `fork`, `abort`, `snap
 5. Ambiguous command outcomes are never automatically retried across an epoch change.
 6. Every cache, pending UI answer, receipt, draft, and scroll anchor is namespaced by Scotty session ID; volatile items also include epoch/request identity.
 7. A desktop crash cannot stop, detach, archive, or resume a remote session.
-8. Sidecar restart loses only projection caches; it reloads fleet, re-snapshots selection, and reports any in-flight command outcome as unknown.
+8. Sidecar exit never replays an in-flight command. V1 shows the disconnect and requires an app restart plus explicit reselection; remote sessions continue unchanged.
 9. No local JSONL scan creates an attachable/running row.
 10. Unknown messages/tools render through a bounded generic card after redaction.
 

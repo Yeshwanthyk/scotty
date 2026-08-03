@@ -6,11 +6,30 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::sync::{mpsc, watch};
 
-const PROTOCOL_VERSION: u8 = 1;
+const PROTOCOL_VERSION: u8 = 2;
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProtocolVersion;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConsoleProtocolVersion;
+
+impl<'de> Deserialize<'de> for ConsoleProtocolVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let version = u8::deserialize(deserializer)?;
+        if version == 1 {
+            Ok(Self)
+        } else {
+            Err(de::Error::custom(format!(
+                "unsupported console protocol version {version}"
+            )))
+        }
+    }
+}
 
 impl<'de> Deserialize<'de> for ProtocolVersion {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -48,20 +67,41 @@ pub struct FleetSession {
     pub status: String,
     pub provider: String,
     pub repo: String,
+    pub default_branch: String,
     pub branch: String,
+    pub backup_id: Option<String>,
     pub agent_state: Option<String>,
+    pub created_at: String,
     pub updated_at: String,
+    pub hard_cap_at: String,
+    pub projected_at: String,
+    pub age_seconds: Option<f64>,
+    pub cap_remaining_seconds: Option<f64>,
+    pub failure: Option<SessionFailure>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionFailure {
+    pub code: String,
+    pub message: String,
+    pub recoverable: bool,
 }
 
 impl FleetSession {
     pub fn usable(&self) -> bool {
         self.status == "warm" && self.provider == "cloudflare"
     }
+
+    pub fn selectable(&self) -> bool {
+        self.status != "gone" && self.provider == "cloudflare"
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelectedState {
+    pub metadata: Option<FleetSession>,
     pub draft: String,
     pub draft_generation: u64,
     pub live: Option<LiveState>,
@@ -82,7 +122,7 @@ pub struct LiveState {
     pub pending_ui: Vec<PendingUi>,
     pub activity: String,
     #[serde(rename = "sidecarTruncated")]
-    pub _sidecar_truncated: bool,
+    pub sidecar_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -121,10 +161,23 @@ pub enum TranscriptItem {
         id: String,
         message: String,
     },
+    Notice {
+        id: String,
+        title: String,
+        message: String,
+        tone: NoticeTone,
+    },
     Fallback {
         id: String,
         text: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NoticeTone {
+    Info,
+    Warning,
 }
 
 impl TranscriptItem {
@@ -135,6 +188,7 @@ impl TranscriptItem {
             | Self::Thinking { id, .. }
             | Self::Tool { id, .. }
             | Self::Error { id, .. }
+            | Self::Notice { id, .. }
             | Self::Fallback { id, .. } => id,
         }
     }
@@ -195,7 +249,7 @@ impl PendingUi {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UnavailableState {
     #[serde(rename = "version")]
-    pub _version: ProtocolVersion,
+    pub _version: ConsoleProtocolVersion,
     #[serde(rename = "status")]
     pub _status: String,
     pub reason: String,
@@ -221,10 +275,40 @@ pub enum Frame {
         code: String,
         message: String,
     },
+    Operation {
+        #[serde(rename = "version")]
+        _version: ProtocolVersion,
+        #[serde(rename = "requestId")]
+        request_id: String,
+        action: ManagementAction,
+        #[serde(rename = "sessionId")]
+        session_id: Option<String>,
+        status: OperationStatus,
+        message: String,
+    },
     Stopped {
         #[serde(rename = "version")]
         _version: ProtocolVersion,
     },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ManagementAction {
+    Create,
+    Rename,
+    Snapshot,
+    Resume,
+    Vaporize,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationStatus {
+    Started,
+    Succeeded,
+    Failed,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -266,6 +350,40 @@ enum CommandBody {
         #[serde(rename = "requestId")]
         request_id: String,
         answer: Answer,
+    },
+    CreateSandbox {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        title: String,
+        prompt: String,
+        repo: String,
+        #[serde(rename = "hardCapSeconds")]
+        hard_cap_seconds: u64,
+    },
+    RenameSandbox {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        title: String,
+    },
+    SnapshotSandbox {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
+    ResumeSandbox {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
+    VaporizeSandbox {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        #[serde(rename = "sessionId")]
+        session_id: String,
     },
     Shutdown,
 }
@@ -335,6 +453,51 @@ impl DesktopCommand {
             fence,
             request_id,
             answer: Answer::Cancelled,
+        })
+    }
+
+    pub fn create_sandbox(
+        request_id: String,
+        title: String,
+        prompt: String,
+        repo: String,
+        hard_cap_seconds: u64,
+    ) -> Self {
+        Self::new(CommandBody::CreateSandbox {
+            request_id,
+            title,
+            prompt,
+            repo,
+            hard_cap_seconds,
+        })
+    }
+
+    pub fn rename_sandbox(request_id: String, session_id: String, title: String) -> Self {
+        Self::new(CommandBody::RenameSandbox {
+            request_id,
+            session_id,
+            title,
+        })
+    }
+
+    pub fn snapshot_sandbox(request_id: String, session_id: String) -> Self {
+        Self::new(CommandBody::SnapshotSandbox {
+            request_id,
+            session_id,
+        })
+    }
+
+    pub fn resume_sandbox(request_id: String, session_id: String) -> Self {
+        Self::new(CommandBody::ResumeSandbox {
+            request_id,
+            session_id,
+        })
+    }
+
+    pub fn vaporize_sandbox(request_id: String, session_id: String) -> Self {
+        Self::new(CommandBody::VaporizeSandbox {
+            request_id,
+            session_id,
         })
     }
 
@@ -591,7 +754,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(DesktopCommand::select("a0b1c2d3e4f5".into())).unwrap(),
             serde_json::json!({
-                "version": 1,
+                "version": 2,
                 "type": "select",
                 "sessionId": "a0b1c2d3e4f5"
             })
@@ -604,13 +767,32 @@ mod tests {
             ))
             .unwrap(),
             serde_json::json!({
-                "version": 1,
+                "version": 2,
                 "type": "answer",
                 "sessionId": "a0b1c2d3e4f5",
                 "expectedEpoch": "epoch-1",
                 "expectedSessionRevision": 7,
                 "requestId": "request-1",
                 "answer": { "type": "confirmed", "confirmed": true }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(DesktopCommand::create_sandbox(
+                "request-create-0001".into(),
+                "Review branch".into(),
+                "Review this branch".into(),
+                "owner/repo".into(),
+                14_400,
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "version": 2,
+                "type": "create_sandbox",
+                "requestId": "request-create-0001",
+                "title": "Review branch",
+                "prompt": "Review this branch",
+                "repo": "owner/repo",
+                "hardCapSeconds": 14_400
             })
         );
         assert!(matches!(
@@ -623,16 +805,28 @@ mod tests {
     fn rejects_an_unknown_protocol_version_or_field() {
         assert!(
             serde_json::from_value::<Frame>(serde_json::json!({
-                "version": 2,
+                "version": 1,
                 "type": "ready"
             }))
             .is_err()
         );
         assert!(
             serde_json::from_value::<Frame>(serde_json::json!({
-                "version": 1,
+                "version": 2,
                 "type": "ready",
                 "credential": "no"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<Frame>(serde_json::json!({
+                "version": 1,
+                "type": "operation",
+                "requestId": "request-resume-0001",
+                "action": "resume",
+                "sessionId": "a0b1c2d3e4f5",
+                "status": "succeeded",
+                "message": "Resume completed"
             }))
             .is_err()
         );
@@ -641,19 +835,23 @@ mod tests {
     #[test]
     fn decodes_a_selected_live_session_projection() {
         let mut wire = serde_json::json!({
-            "version": 1,
+            "version": 2,
             "type": "state",
             "state": {
-                "version": 1,
+                "version": 2,
                 "fleet": [{
                     "id": "a0b1c2d3e4f5",
                     "title": "Desktop",
                     "status": "warm",
                     "provider": "cloudflare",
                     "repo": "owner/scotty",
+                    "defaultBranch": "main",
                     "branch": "feature",
                     "agentState": "waiting",
-                    "updatedAt": "now"
+                    "createdAt": "then",
+                    "updatedAt": "now",
+                    "hardCapAt": "later",
+                    "projectedAt": "now"
                 }],
                 "fleetError": null,
                 "selectedSessionId": "a0b1c2d3e4f5",
@@ -699,6 +897,69 @@ mod tests {
         assert!(matches!(
             selected.live.unwrap().pending_ui[0],
             PendingUi::Confirm { .. }
+        ));
+    }
+
+    #[test]
+    fn accepts_console_v1_unavailable_state_inside_desktop_v2() {
+        let frame = serde_json::from_value::<Frame>(serde_json::json!({
+            "version": 2,
+            "type": "state",
+            "state": {
+                "version": 2,
+                "fleet": [],
+                "fleetError": null,
+                "selectedSessionId": "a0b1c2d3e4f5",
+                "loading": false,
+                "selected": {
+                    "metadata": null,
+                    "draft": "",
+                    "draftGeneration": 0,
+                    "live": null,
+                    "unavailable": {
+                        "version": 1,
+                        "status": "unavailable",
+                        "reason": "Session is sleeping",
+                        "retryable": true
+                    },
+                    "error": null,
+                    "commandStatus": null
+                }
+            }
+        }))
+        .unwrap();
+
+        let Frame::State { state, .. } = frame else {
+            panic!("expected state frame")
+        };
+        assert_eq!(
+            state
+                .selected
+                .and_then(|selected| selected.unavailable)
+                .map(|unavailable| unavailable.reason),
+            Some("Session is sleeping".into())
+        );
+    }
+
+    #[test]
+    fn accepts_unknown_operation_outcomes() {
+        let frame = serde_json::from_value::<Frame>(serde_json::json!({
+            "version": 2,
+            "type": "operation",
+            "requestId": "request-snapshot-0001",
+            "action": "snapshot",
+            "sessionId": "a0b1c2d3e4f5",
+            "status": "unknown",
+            "message": "Outcome unknown; inspect the refreshed fleet"
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            frame,
+            Frame::Operation {
+                status: super::OperationStatus::Unknown,
+                ..
+            }
         ));
     }
 }

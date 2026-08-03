@@ -139,6 +139,37 @@ export class FleetConsoleController {
     await this.select(session.id);
   }
 
+  async inspectSession(sessionId: string): Promise<void> {
+    const session = this.state.fleet.find((candidate) => candidate.id === sessionId);
+    if (session === undefined || session.status === "gone" || session.provider !== "cloudflare") {
+      this.state.fleetError = "Only active Cloudflare sandboxes can be inspected";
+      this.#onChange();
+      return;
+    }
+    this.#eventsAbort?.abort();
+    const abort = new AbortController();
+    this.#eventsAbort = abort;
+    const generation = ++this.#generation;
+    this.state.selectLocal(sessionId);
+    this.#onChange();
+    try {
+      const metadata = await this.#transport.getSelected(sessionId, abort.signal);
+      if (!this.#isCurrent(sessionId, generation)) return;
+      this.state.setMetadata(sessionId, metadata);
+      this.#onChange();
+      if (metadata.status === "warm") await this.#loadSnapshot(sessionId, generation, abort);
+      else {
+        this.state.setReadOnly(sessionId);
+        this.#onChange();
+      }
+    } catch (error) {
+      if (!abort.signal.aborted && this.#isCurrent(sessionId, generation)) {
+        this.state.setError(sessionId, safeErrorMessage(error));
+        this.#onChange();
+      }
+    }
+  }
+
   async openSessionsPicker(): Promise<void> {
     if (this.state.selectedSessionId === undefined) return;
     const generation = this.state.beginSessionsPicker();

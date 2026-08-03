@@ -8,16 +8,20 @@ transcript, command, and credential authority.
 
 1. **Sidecar boundary** — compiled Bun child loads the paired-client config and
    emits bounded, redacted fleet/selected projections over NDJSON stdio.
-2. **Fleet shell** — native window lists every projected session and selects
-   only warm Cloudflare sessions.
+2. **Fleet shell** — native window lists every projected Cloudflare session;
+   warm sessions attach passively while cold/failed sessions remain inspectable.
 3. **Live session** — selection hydrates the passive snapshot, follows SSE, and
-   renders messages, tools, waiting input, reconnect, and unavailable states.
+   renders a virtualized chat/work timeline, waiting input, and unavailable states.
 4. **Controls** — composer routes prompt/steer/follow-up/abort and blocking UI
-   answers through the existing revision- and epoch-fenced controller.
+   answers through the existing revision- and epoch-fenced controller. Explicit
+   create, rename, snapshot, resume, and confirmed vaporize actions use the
+   paired client's lifecycle scope without moving credentials into Rust.
 5. **Bundle** — package the Rust viewport and compiled sidecar together without
    a local Pi, Codex, Comet engine, or credential manager.
 
-Every slice is independently demoable with the existing fake transport tests.
+Every slice is independently demoable with the credential-free fake sidecar.
+In the New Sandbox panel, use Tab to move fields and Command-Enter to create.
+Vaporize requires typing the exact sandbox ID.
 
 ## Development
 
