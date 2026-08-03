@@ -10,9 +10,9 @@ use gpui::{
     div, prelude::*, px, size,
 };
 use gpui_tokio::Tokio;
-use serde_json::Value;
 use sidecar::{
-    DesktopCommand, DesktopState, Frame, PendingUi, SelectionFence, SidecarConnection, SidecarEvent,
+    DesktopCommand, DesktopState, Frame, PendingUi, SelectionFence, SidecarConnection,
+    SidecarEvent, ToolStatus, TranscriptItem,
 };
 use theme::Theme;
 
@@ -500,44 +500,13 @@ impl DesktopView {
             .unwrap_or_else(|| {
                 "Every warm session remains active while you move between them.".into()
             });
-        let messages = selected
+        let transcript = selected
             .and_then(|selected| selected.live.as_ref())
             .map(|live| {
-                live.messages
+                live.transcript
                     .iter()
                     .enumerate()
-                    .map(|(index, message)| render_message(index, message, &theme))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let tools = selected
-            .and_then(|selected| selected.live.as_ref())
-            .map(|live| {
-                live.active_tools
-                    .iter()
-                    .enumerate()
-                    .map(|(index, tool)| {
-                        div()
-                            .id(("tool", index))
-                            .mx(px(22.0))
-                            .mb(px(8.0))
-                            .px(px(12.0))
-                            .py(px(9.0))
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.surface_raised)
-                            .text_size(px(11.0))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from(format!(
-                                "RUNNING  {}  {}",
-                                tool.name,
-                                compact_json(
-                                    tool.arguments.as_ref().or(tool.partial_result.as_ref())
-                                )
-                            )))
-                            .into_any_element()
-                    })
+                    .map(|(index, item)| render_transcript_item(index, item, &theme))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -618,9 +587,14 @@ impl DesktopView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .py(px(22.0))
-                    .children(messages)
-                    .children(tools)
+                    .py(px(26.0))
+                    .children(transcript)
+                    .when(
+                        selected
+                            .and_then(|selected| selected.live.as_ref())
+                            .is_some_and(|live| live.is_streaming),
+                        |content| content.child(render_working(&theme)),
+                    )
                     .when(selected_id.is_none(), |content| {
                         content.child(
                             div()
@@ -1004,86 +978,333 @@ fn make_selection_fence(
     })
 }
 
-fn render_message(index: usize, message: &Value, theme: &Theme) -> gpui::AnyElement {
-    let role = message
-        .get("role")
-        .and_then(Value::as_str)
-        .unwrap_or("event");
-    let content = message
-        .get("content")
-        .map(message_content)
-        .unwrap_or_else(|| compact_json(Some(message)));
-    let user = role == "user";
-    div()
-        .id(("message", index))
-        .mx(px(22.0))
-        .mb(px(12.0))
+fn render_transcript_item(index: usize, item: &TranscriptItem, theme: &Theme) -> gpui::AnyElement {
+    let row = div()
+        .id(SharedString::from(format!(
+            "transcript-{index}-{}",
+            item.id()
+        )))
+        .w_full()
+        .px(px(48.0))
+        .mb(px(14.0))
         .flex()
-        .justify_end()
-        .when(!user, |row| row.justify_start())
+        .justify_center();
+    let column = div().w_full().max_w(px(768.0)).min_w_0();
+
+    match item {
+        TranscriptItem::User { text, .. } => row
+            .child(
+                column.flex().justify_end().child(
+                    div()
+                        .max_w(px(620.0))
+                        .px(px(14.0))
+                        .py(px(11.0))
+                        .rounded(px(14.0))
+                        .bg(theme.element_active)
+                        .border_1()
+                        .border_color(theme.border_strong)
+                        .child(
+                            div()
+                                .mb(px(5.0))
+                                .text_size(px(9.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.accent.opacity(0.9))
+                                .child("YOU"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(theme.text)
+                                .child(SharedString::from(truncate(text, 16_000))),
+                        ),
+                ),
+            )
+            .into_any_element(),
+        TranscriptItem::Assistant { text, .. } => row
+            .mb(px(18.0))
+            .child(
+                column.child(
+                    div()
+                        .px(px(2.0))
+                        .text_size(px(13.0))
+                        .text_color(theme.text)
+                        .child(SharedString::from(truncate(text, 16_000))),
+                ),
+            )
+            .into_any_element(),
+        TranscriptItem::Thinking { text, .. } => row
+            .mb(px(10.0))
+            .child(
+                column.child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(9.0))
+                        .px(px(2.0))
+                        .text_size(px(11.5))
+                        .text_color(theme.text_muted.opacity(0.72))
+                        .child(
+                            div()
+                                .mt(px(5.0))
+                                .size(px(6.0))
+                                .rounded_full()
+                                .bg(theme.accent.opacity(0.55)),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .child(
+                                    div()
+                                        .mb(px(3.0))
+                                        .text_size(px(9.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.text_faint)
+                                        .child("REASONING"),
+                                )
+                                .child(SharedString::from(truncate(text, 8_000))),
+                        ),
+                ),
+            )
+            .into_any_element(),
+        TranscriptItem::Tool {
+            name,
+            summary,
+            detail,
+            status,
+            result,
+            ..
+        } => row
+            .mb(px(8.0))
+            .child(column.child(render_tool(
+                name,
+                summary,
+                detail.as_deref(),
+                *status,
+                result.as_deref(),
+                theme,
+            )))
+            .into_any_element(),
+        TranscriptItem::Error { message, .. } => row
+            .mb(px(10.0))
+            .child(column.child(render_error(message, theme)))
+            .into_any_element(),
+        TranscriptItem::Fallback { text, .. } => row
+            .mb(px(9.0))
+            .child(
+                column.child(
+                    div()
+                        .rounded(px(9.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.surface.opacity(0.72))
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(truncate(text, 2_000))),
+                ),
+            )
+            .into_any_element(),
+    }
+}
+
+fn render_tool(
+    name: &str,
+    summary: &str,
+    detail: Option<&str>,
+    status: ToolStatus,
+    result: Option<&str>,
+    theme: &Theme,
+) -> gpui::AnyElement {
+    let (glyph, status_label, tint) = match status {
+        ToolStatus::Pending => ("○", "PENDING", theme.text_faint),
+        ToolStatus::Running => ("●", "RUNNING", theme.accent),
+        ToolStatus::Completed => ("✓", "DONE", theme.text_muted),
+        ToolStatus::Failed => ("!", "FAILED", theme.danger),
+    };
+    let preview = result
+        .map(|value| single_line(value, 180))
+        .filter(|value| !value.is_empty());
+    div()
+        .flex()
+        .items_stretch()
+        .child(div().ml(px(12.0)).w(px(1.0)).flex_none().bg(theme.border))
         .child(
             div()
-                .max_w(px(760.0))
-                .px(px(13.0))
-                .py(px(10.0))
-                .rounded(px(12.0))
-                .bg(if user {
-                    theme.element_active
-                } else {
-                    theme.surface
-                })
+                .ml(px(12.0))
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .items_center()
+                .gap(px(9.0))
+                .rounded(px(9.0))
                 .border_1()
-                .border_color(if user {
-                    theme.border_strong
+                .border_color(if status == ToolStatus::Failed {
+                    theme.danger.opacity(0.18)
                 } else {
                     theme.border
                 })
+                .bg(if status == ToolStatus::Failed {
+                    theme.danger.opacity(0.045)
+                } else {
+                    theme.surface.opacity(0.74)
+                })
+                .px(px(9.0))
+                .py(px(8.0))
                 .child(
                     div()
-                        .mb(px(5.0))
-                        .text_size(px(9.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if user { theme.accent } else { theme.text_faint })
-                        .child(SharedString::from(role.to_uppercase())),
+                        .size(px(20.0))
+                        .flex_none()
+                        .rounded(px(6.0))
+                        .bg(tint.opacity(0.12))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(10.0))
+                        .text_color(tint)
+                        .child(glyph),
                 )
                 .child(
                     div()
-                        .text_size(px(13.0))
-                        .text_color(theme.text)
-                        .child(SharedString::from(content)),
+                        .min_w_0()
+                        .flex_1()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(7.0))
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(if status == ToolStatus::Failed {
+                                            theme.danger
+                                        } else {
+                                            theme.text
+                                        })
+                                        .child(SharedString::from(summary.to_string())),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(8.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(tint)
+                                        .child(status_label),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(theme.text_faint)
+                                        .child(SharedString::from(name.to_string())),
+                                ),
+                        )
+                        .when_some(detail, |content, detail| {
+                            content.child(
+                                div()
+                                    .mt(px(2.0))
+                                    .truncate()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(10.5))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(single_line(detail, 220))),
+                            )
+                        })
+                        .when_some(preview, |content, preview| {
+                            content.child(
+                                div()
+                                    .mt(px(2.0))
+                                    .truncate()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(10.0))
+                                    .text_color(if status == ToolStatus::Failed {
+                                        theme.danger.opacity(0.85)
+                                    } else {
+                                        theme.text_faint
+                                    })
+                                    .child(SharedString::from(preview)),
+                            )
+                        }),
                 ),
         )
         .into_any_element()
 }
 
-fn message_content(value: &Value) -> String {
-    if let Some(text) = value.as_str() {
-        return truncate(text, 12_000);
-    }
-    if let Some(parts) = value.as_array() {
-        let text = parts
-            .iter()
-            .filter_map(|part| {
-                part.as_str().or_else(|| {
-                    part.get("text")
-                        .and_then(Value::as_str)
-                        .or_else(|| part.get("content").and_then(Value::as_str))
-                })
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !text.is_empty() {
-            return truncate(&text, 12_000);
-        }
-    }
-    compact_json(Some(value))
+fn render_error(message: &str, theme: &Theme) -> gpui::AnyElement {
+    div()
+        .min_h(px(36.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .overflow_hidden()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(theme.danger.opacity(0.18))
+        .bg(theme.danger.opacity(0.055))
+        .px(px(8.0))
+        .py(px(7.0))
+        .text_size(px(12.0))
+        .child(
+            div()
+                .size(px(20.0))
+                .flex_none()
+                .rounded(px(6.0))
+                .bg(theme.danger.opacity(0.13))
+                .flex()
+                .items_center()
+                .justify_center()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.danger)
+                .child("!"),
+        )
+        .child(
+            div()
+                .flex_none()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.danger)
+                .child("Error"),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .text_color(theme.text.opacity(0.84))
+                .child(SharedString::from(truncate(message, 2_000))),
+        )
+        .into_any_element()
 }
 
-fn compact_json(value: Option<&Value>) -> String {
-    value
-        .and_then(|value| serde_json::to_string(value).ok())
-        .map(|value| truncate(&value, 2_000))
-        .unwrap_or_default()
+fn render_working(theme: &Theme) -> gpui::AnyElement {
+    div()
+        .w_full()
+        .px(px(48.0))
+        .mb(px(12.0))
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .w_full()
+                .max_w(px(768.0))
+                .flex()
+                .items_center()
+                .gap(px(7.0))
+                .px(px(2.0))
+                .text_size(px(10.5))
+                .text_color(theme.text_muted.opacity(0.72))
+                .child(
+                    div()
+                        .size(px(6.0))
+                        .rounded_full()
+                        .bg(theme.accent.opacity(0.7)),
+                )
+                .child("Working…"),
+        )
+        .into_any_element()
+}
+
+fn single_line(value: &str, max: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate(&normalized, max)
 }
 
 fn truncate(value: &str, max: usize) -> String {

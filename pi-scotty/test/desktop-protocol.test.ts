@@ -65,8 +65,21 @@ describe("desktop protocol", () => {
     expect(projected.selected?.draftGeneration).toBe(0);
     expect(projected.fleet[0]?.title).toContain("[credential]");
     expect(projected.fleet[0]?.title).not.toContain("github_pat");
-    expect(projected.selected?.live?.activeTools).toEqual([
-      { id: "tool-1", name: "read", arguments: { path: "/tmp/a" }, partialResult: null },
+    expect(projected.selected?.live?.transcript).toEqual([
+      {
+        kind: "assistant",
+        id: "message-0-text-0",
+        text: "[credential]-value",
+      },
+      {
+        kind: "tool",
+        id: "tool-1",
+        name: "read",
+        summary: "Read file",
+        detail: "/tmp/a",
+        status: "running",
+        result: null,
+      },
     ]);
     expect(JSON.stringify(projected)).not.toContain("github_pat_secret-value");
     expect(JSON.stringify(projected)).toContain("[credential]");
@@ -101,7 +114,11 @@ describe("desktop protocol", () => {
           ...selected,
           live: {
             ...live,
-            messages: Array.from({ length: 1200 }, (_, index) => `${index}:${"x".repeat(8_000)}`),
+            transcript: Array.from({ length: 1200 }, (_, index) => ({
+              kind: "assistant" as const,
+              id: `message-${index}`,
+              text: `${index}:${"x".repeat(8_000)}`,
+            })),
           },
         },
       },

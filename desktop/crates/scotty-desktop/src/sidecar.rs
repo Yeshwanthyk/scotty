@@ -3,7 +3,6 @@ use std::process::Stdio;
 
 use anyhow::{Context as _, bail};
 use serde::{Deserialize, Deserializer, Serialize, de};
-use serde_json::Value;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::sync::{mpsc, watch};
 
@@ -79,22 +78,66 @@ pub struct LiveState {
     pub _sequence: u64,
     pub session_revision: u64,
     pub is_streaming: bool,
-    pub messages: Vec<Value>,
-    pub active_tools: Vec<ToolState>,
+    pub transcript: Vec<TranscriptItem>,
     pub pending_ui: Vec<PendingUi>,
     pub activity: String,
     #[serde(rename = "sidecarTruncated")]
     pub _sidecar_truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ToolState {
-    #[serde(rename = "id")]
-    pub _id: String,
-    pub name: String,
-    pub arguments: Option<Value>,
-    pub partial_result: Option<Value>,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TranscriptItem {
+    User {
+        id: String,
+        text: String,
+    },
+    Assistant {
+        id: String,
+        text: String,
+    },
+    Thinking {
+        id: String,
+        text: String,
+    },
+    Tool {
+        id: String,
+        name: String,
+        summary: String,
+        detail: Option<String>,
+        status: ToolStatus,
+        result: Option<String>,
+    },
+    Error {
+        id: String,
+        message: String,
+    },
+    Fallback {
+        id: String,
+        text: String,
+    },
+}
+
+impl TranscriptItem {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::User { id, .. }
+            | Self::Assistant { id, .. }
+            | Self::Thinking { id, .. }
+            | Self::Tool { id, .. }
+            | Self::Error { id, .. }
+            | Self::Fallback { id, .. } => id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -623,8 +666,11 @@ mod tests {
                         "sequence": 9,
                         "sessionRevision": 7,
                         "isStreaming": true,
-                        "messages": [{ "role": "assistant", "content": "Ready" }],
-                        "activeTools": [],
+                        "transcript": [{
+                            "kind": "assistant",
+                            "id": "message-1",
+                            "text": "Ready"
+                        }],
                         "pendingUi": [{
                             "id": "request-1",
                             "method": "confirm",
@@ -649,7 +695,7 @@ mod tests {
         };
         let selected = state.selected.unwrap();
         assert_eq!(state.fleet[0].title, "Desktop");
-        assert_eq!(selected.live.as_ref().unwrap().messages.len(), 1);
+        assert_eq!(selected.live.as_ref().unwrap().transcript.len(), 1);
         assert!(matches!(
             selected.live.unwrap().pending_ui[0],
             PendingUi::Confirm { .. }
