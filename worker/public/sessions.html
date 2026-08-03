@@ -772,6 +772,12 @@
         }
       }
 
+      @keyframes cleanup-pulse {
+        50% {
+          opacity: 0.38;
+        }
+      }
+
       .composer-actions {
         display: flex;
         flex: none;
@@ -1143,6 +1149,26 @@
         background: var(--warm);
       }
 
+      .status-deleting {
+        background: oklch(14% 0.012 245 / 0.72);
+        box-shadow: var(--ring);
+      }
+
+      .status-deleting:hover {
+        background: oklch(14% 0.012 245 / 0.72);
+        box-shadow: var(--ring-hover);
+      }
+
+      .status-deleting .status-line {
+        background: oklch(70% 0.16 25 / 0.08);
+        color: oklch(78% 0.1 25);
+      }
+
+      .status-deleting .signal {
+        background: var(--danger);
+        animation: cleanup-pulse 1.6s var(--ease-out) infinite;
+      }
+
       .status-failed .status-line {
         background: oklch(70% 0.16 25 / 0.09);
         color: var(--danger);
@@ -1466,7 +1492,8 @@
         }
 
         .launch-orbit::before,
-        .launch-sweep {
+        .launch-sweep,
+        .status-deleting .signal {
           animation: none;
         }
 
@@ -1919,22 +1946,28 @@
         button.textContent =
           pendingAction === "sleep" && action === "sleep"
             ? "Stopping…"
-            : pendingAction && action !== "confirm-delete"
-              ? "Working…"
-              : label;
+            : pendingAction === "delete" && action === "delete"
+              ? "Retrying…"
+              : pendingAction && action !== "confirm-delete"
+                ? "Working…"
+                : label;
         return button;
       }
 
       function projectSummary(projectSessions) {
         const counts = new Map();
         for (const session of projectSessions) {
-          const status = sessionDisplayStatus(session.status, busy.get(session.id));
+          const status = sessionDisplayStatus(
+            session.status,
+            busy.get(session.id),
+            session.deleting,
+          );
           counts.set(status, (counts.get(status) || 0) + 1);
         }
         const parts = [
           `${projectSessions.length} ${projectSessions.length === 1 ? "sandbox" : "sandboxes"}`,
         ];
-        for (const status of ["warm", "sleeping", "stopping", "failed"]) {
+        for (const status of ["warm", "sleeping", "stopping", "deleting", "failed"]) {
           const count = counts.get(status);
           if (count) parts.push(`${count} ${status}`);
         }
@@ -1954,7 +1987,7 @@
 
       function renderSessionRow(session) {
         const item = document.createElement("li");
-        const status = sessionDisplayStatus(session.status, busy.get(session.id));
+        const status = sessionDisplayStatus(session.status, busy.get(session.id), session.deleting);
         item.className = `session status-${status}`;
 
         if (status === "warm" && renamingId !== session.id && !confirmations.has(session.id)) {
@@ -1968,7 +2001,7 @@
 
         const identity = document.createElement("div");
         identity.className = "session-identity";
-        if (renamingId === session.id) {
+        if (renamingId === session.id && status !== "deleting") {
           const form = document.createElement("form");
           form.className = "rename-form";
           form.dataset.id = session.id;
@@ -1992,11 +2025,13 @@
           const titleLine = document.createElement("div");
           titleLine.className = "session-title-line";
           addText(titleLine, "session-title", sessionTitle(session), "h3");
-          const rename = actionButton("✎", "rename", session.id);
-          rename.classList.add("rename-button");
-          rename.setAttribute("aria-label", `Rename ${sessionTitle(session)}`);
-          rename.title = "Rename";
-          titleLine.append(rename);
+          if (status !== "deleting") {
+            const rename = actionButton("✎", "rename", session.id);
+            rename.classList.add("rename-button");
+            rename.setAttribute("aria-label", `Rename ${sessionTitle(session)}`);
+            rename.title = "Rename";
+            titleLine.append(rename);
+          }
           identity.append(titleLine);
         }
 
@@ -2026,17 +2061,21 @@
         signal.setAttribute("aria-hidden", "true");
         statusLine.append(
           signal,
-          document.createTextNode(status === "stopping" ? "Stopping…" : status),
+          document.createTextNode(
+            status === "stopping" ? "Stopping…" : status === "deleting" ? "Deleting…" : status,
+          ),
         );
         details.append(statusLine);
         addText(
           details,
           "placement",
-          session.provider === "runner"
-            ? session.runner || "Runner"
-            : session.provider === "cloudflare"
-              ? "Cloudflare"
-              : "Unknown runtime",
+          status === "deleting"
+            ? "Cleanup in progress"
+            : session.provider === "runner"
+              ? session.runner || "Runner"
+              : session.provider === "cloudflare"
+                ? "Cloudflare"
+                : "Unknown runtime",
           "span",
         );
         item.append(details);
@@ -2049,20 +2088,33 @@
         const createdValue = addText(createdTiming, "", created.label, "dd");
         if (created.title) createdValue.title = created.title;
         const capTiming = document.createElement("div");
-        addText(capTiming, "", status === "sleeping" ? "Backup" : "Auto-stop", "dt");
+        addText(
+          capTiming,
+          "",
+          status === "deleting" ? "Cleanup" : status === "sleeping" ? "Backup" : "Auto-stop",
+          "dt",
+        );
         const capValue = addText(
           capTiming,
           "",
-          status === "sleeping"
-            ? session.backupId
-              ? "Ready"
-              : "Unavailable"
-            : session.capRemainingSeconds > 0
-              ? `in ${duration(session.capRemainingSeconds)}`
-              : "Limit reached",
+          status === "deleting"
+            ? busy.get(session.id) === "delete"
+              ? "Retrying now"
+              : "Retries automatically"
+            : status === "sleeping"
+              ? session.backupId
+                ? "Ready"
+                : "Unavailable"
+              : session.capRemainingSeconds > 0
+                ? `in ${duration(session.capRemainingSeconds)}`
+                : "Limit reached",
           "dd",
         );
-        if (status !== "sleeping" && typeof session.hardCapAt === "string") {
+        if (
+          status !== "sleeping" &&
+          status !== "deleting" &&
+          typeof session.hardCapAt === "string"
+        ) {
           capValue.title = new Date(session.hardCapAt).toLocaleString();
         }
         timing.append(createdTiming, capTiming);
@@ -2070,17 +2122,21 @@
 
         const actions = document.createElement("div");
         actions.className = "actions";
-        if (status === "stopping") {
-          actions.append(actionButton("Stopping…", "sleep", session.id, true));
-        } else if (status === "warm") {
-          actions.append(actionButton("Stop", "sleep", session.id));
-        } else if (status === "sleeping" || (status === "failed" && session.backupId)) {
-          actions.append(actionButton("Resume & open", "resume", session.id, true));
-        }
-        if (status !== "stopping") {
-          const deleteButton = actionButton("Delete", "confirm-delete", session.id);
-          deleteButton.classList.add("button-danger");
-          actions.append(deleteButton);
+        if (status === "deleting") {
+          actions.append(actionButton("Retry cleanup", "delete", session.id));
+        } else {
+          if (status === "stopping") {
+            actions.append(actionButton("Stopping…", "sleep", session.id, true));
+          } else if (status === "warm") {
+            actions.append(actionButton("Stop", "sleep", session.id));
+          } else if (status === "sleeping" || (status === "failed" && session.backupId)) {
+            actions.append(actionButton("Resume & open", "resume", session.id, true));
+          }
+          if (status !== "stopping") {
+            const deleteButton = actionButton("Delete", "confirm-delete", session.id);
+            deleteButton.classList.add("button-danger");
+            actions.append(deleteButton);
+          }
         }
         item.append(actions);
 
