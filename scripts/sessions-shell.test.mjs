@@ -10,6 +10,18 @@ const sharedStyles = await readFile(
   new URL("../worker/public/scotty-ui.css", import.meta.url),
   "utf8",
 );
+const sessionsStyles = await readFile(
+  new URL("../worker/public/sessions.css", import.meta.url),
+  "utf8",
+);
+const sessionsScript = await readFile(
+  new URL("../worker/public/sessions.js", import.meta.url),
+  "utf8",
+);
+const sessionList = await readFile(
+  new URL("../worker/public/session-list.js", import.meta.url),
+  "utf8",
+);
 const providersHtml = await readFile(
   new URL("../worker/public/providers.html", import.meta.url),
   "utf8",
@@ -36,6 +48,10 @@ const terminalScript = await readFile(
 );
 const terminalTimeline = await readFile(
   new URL("../worker/public/terminal-timeline.js", import.meta.url),
+  "utf8",
+);
+const terminalConsoleClient = await readFile(
+  new URL("../worker/public/terminal-console-client.js", import.meta.url),
   "utf8",
 );
 const terminalMarkdown = await readFile(
@@ -150,26 +166,34 @@ describe("sessions shell", () => {
 
     assert.match(sharedStyles, /\.sessions-page main\s*\{[\s\S]*?width:\s*min\(100%, 980px\);/);
     assert.match(
-      sessionsHtml,
+      sessionsStyles,
       /grid-template-areas:\s*"identity state timing actions";[\s\S]*?grid-template-columns:\s*minmax\(230px, 1\.2fr\)/,
+    );
+    assert.match(
+      sessionsStyles,
+      /@media \(max-width: 720px\)[\s\S]*?body\.sessions-page \.session\s*\{[\s\S]*?"identity primary disclosure"[\s\S]*?min-height:\s*80px/,
+    );
+    assert.match(
+      sessionsStyles,
+      /body\.sessions-page \.mobile-actions\s*\{[\s\S]*?grid-area:\s*auto;[\s\S]*?width:\s*100%;[\s\S]*?flex-wrap:\s*nowrap/,
     );
   });
 
   it("ships sessions-only keyboard navigation for visible, openable rows", () => {
-    assert.match(sessionsHtml, /document\.addEventListener\("keydown"/);
+    assert.match(sessionsScript, /document\.addEventListener\("keydown"/);
     assert.match(
-      sessionsHtml,
+      sessionsScript,
       /event\.defaultPrevented[\s\S]*?event\.isComposing[\s\S]*?!event\.metaKey[\s\S]*?event\.ctrlKey[\s\S]*?event\.altKey[\s\S]*?event\.shiftKey/,
     );
-    assert.match(sessionsHtml, /target\.matches\("input, textarea, select"\)/);
-    assert.match(sessionsHtml, /target\.isContentEditable/);
+    assert.match(sessionsScript, /target\.matches\("input, textarea, select"\)/);
+    assert.match(sessionsScript, /target\.isContentEditable/);
     assert.match(
-      sessionsHtml,
+      sessionsScript,
       /querySelectorAll\("\.session-row-link"\)[\s\S]*?getClientRects\(\)\.length > 0/,
     );
-    assert.match(sessionsHtml, /sessionKeyboardAction\([\s\S]*?event\.key/);
-    assert.match(sessionsHtml, /action\.type === "open"[\s\S]*?sessionLink\.click\(\)/);
-    assert.match(sessionsHtml, /else sessionLink\.focus\(\)/);
+    assert.match(sessionsScript, /sessionKeyboardAction\([\s\S]*?event\.key/);
+    assert.match(sessionsScript, /action\.type === "open"[\s\S]*?sessionLink\.click\(\)/);
+    assert.match(sessionsScript, /else sessionLink\.focus\(\)/);
     assert.doesNotMatch(terminalHtml + terminalScript, /sessionKeyboardAction/);
   });
 
@@ -178,23 +202,23 @@ describe("sessions shell", () => {
       sessionsHtml,
       /id="session-title"[\s\S]*?name="title"[\s\S]*?maxlength="120"[\s\S]*?required/,
     );
-    assert.match(
-      sessionsHtml,
-      /if \(status === "warm"[\s\S]*?rowLink\.className = "session-row-link"/,
+    assert.match(sessionList, /status === "warm"[\s\S]*?rowLink\.className = "session-row-link"/);
+    assert.match(sessionList, /sleeping\.className = "sleeping-group"/);
+    assert.match(sessionList, /actionButton\(state, "Resume & open", "resume"/);
+    assert.match(sessionsScript, /method: "PATCH"/);
+    assert.doesNotMatch(
+      sessionsHtml + sessionsScript,
+      /Running tests|Editing terminal\.js|agent activity/i,
     );
-    assert.match(sessionsHtml, /sleeping\.className = "sleeping-group"/);
-    assert.match(sessionsHtml, /actionButton\("Resume & open", "resume"/);
-    assert.match(sessionsHtml, /method: "PATCH"/);
-    assert.doesNotMatch(sessionsHtml, /Running tests|Editing terminal\.js|agent activity/i);
   });
 
   it("keeps deleting sandboxes visible with recoverable cleanup controls", () => {
     assert.match(contracts, /deleting: Schema\.optionalKey\(Schema\.Boolean\)/);
     assert.match(sessionForm, /deleting \|\| pendingAction === "delete"/);
-    assert.match(sessionsHtml, /status === "deleting" \? "Deleting…"/);
-    assert.match(sessionsHtml, /actionButton\("Retry cleanup", "delete", session\.id\)/);
-    assert.match(sessionsHtml, /"Retries automatically"/);
-    assert.match(sessionsHtml, /\.status-deleting \.signal[\s\S]*?animation: none/);
+    assert.match(sessionList, /if \(status === "deleting"\) return "Deleting…"/);
+    assert.match(sessionList, /actionButton\(state, "Retry cleanup", "delete", session\.id/);
+    assert.match(sessionList, /"Retries automatically"/);
+    assert.match(sessionsStyles, /\.status-deleting \.signal[\s\S]*?animation: none/);
   });
 
   it("ships only the V1 stats values with loading, empty, and error states", () => {
@@ -255,7 +279,7 @@ describe("sessions shell", () => {
     );
   });
 
-  it("ships the native Pi worklog, live RPC projection, and one responsive composer", () => {
+  it("ships the native Pi worklog, versioned console projection, and one responsive composer", () => {
     assert.match(terminalHtml, /id="worklog"[\s\S]*?id="worklog-feed"/);
     assert.match(terminalHtml, /id="activity-drawer"/);
     assert.match(
@@ -267,22 +291,27 @@ describe("sessions shell", () => {
       terminalHtml,
       /class="composer-shell"[\s\S]*?id="delivery-receipts"[\s\S]*?<form id="composer" class="composer"[\s\S]*?id="composer-input"[\s\S]*?rows="2"/,
     );
-    assert.match(terminalScript, /rpcUrl\(sessionId, "snapshot"\)/);
-    assert.match(terminalScript, /rpcUrl\(sessionId, "events"\)/);
-    assert.match(terminalScript, /rpcUrl\(currentSessionId, "command"\)/);
+    assert.match(
+      terminalConsoleClient,
+      /`\/s\/\$\{encodeURIComponent\(sessionId\)\}\/console\/v1\/\$\{operation\}`/,
+    );
+    assert.match(terminalScript, /consoleClient\.snapshot\(sessionId, signal\)/);
+    assert.match(terminalScript, /consoleClient\.events\(sessionId,/);
+    assert.match(terminalScript, /consoleClient\.command\(sessionId, envelope\)/);
+    assert.doesNotMatch(terminalScript + terminalConsoleClient, /\/rpc\//);
     assert.match(terminalScript, /new EventSource\(url\)/);
     assert.match(terminalScript, /window\.history\.pushState/);
     assert.match(terminalScript, /window\.addEventListener\("popstate"/);
     assert.match(terminalScript, /const sessionCache = new Map\(\)/);
-    assert.match(
-      terminalScript,
-      /import \{[\s\S]*?conversationItems,[\s\S]*?\} from "\/terminal-timeline\.js"/,
-    );
+    assert.match(terminalScript, /import \{ conversationItems \} from "\/terminal-timeline\.js"/);
     assert.match(
       terminalScript,
       /import \{ assistantMarkdownFragment \} from "\/terminal-markdown\.js"/,
     );
-    assert.match(terminalScript, /body\.append\(renderAssistantCopy\(text\)\)/);
+    assert.match(
+      terminalScript,
+      /renderAssistantCopy\(text, `markdown:\$\{currentSessionId\}:\$\{conversation\.key\}:\$\{index\}`\)/,
+    );
     assert.match(
       terminalScript,
       /function renderUserMessage\([\s\S]*?textElement\("div", "message-copy", text\)/,
@@ -313,11 +342,14 @@ describe("sessions shell", () => {
       terminalScript,
       /type: "set_model"[\s\S]*?provider: selected\.provider[\s\S]*?modelId:/,
     );
-    assert.match(terminalScript, /sendCommand\(\{ type: "set_thinking_level", level \}\)/);
     assert.match(
       terminalScript,
-      /const streamingBehavior = deliveryMode === "steer" \? "steer" : "followUp";[\s\S]*?sendCommand\(\{ type: "prompt", message: text, streamingBehavior \}\)/,
-      "prompt delivery must let Pi atomically start or queue instead of racing a stale snapshot",
+      /sendCommand\([\s\S]*?\{ type: "set_thinking_level", level \}[\s\S]*?`Change thinking to \$\{level\}`[\s\S]*?\{ sessionId, projection \}[\s\S]*?\);/,
+    );
+    assert.match(
+      terminalScript,
+      /const streamingBehavior = deliveryMode === "steer" \? "steer" : "followUp";[\s\S]*?queueCommand\(\{ type: "prompt", message: text, streamingBehavior \}, text\)/,
+      "prompt delivery must enter the serialized command lane without racing a stale snapshot",
     );
     assert.doesNotMatch(terminalScript, /active \? deliveryMode : "prompt"/);
     assert.doesNotMatch(terminalScript, /ghostty|new WebSocket|\/terminal["'`]/u);

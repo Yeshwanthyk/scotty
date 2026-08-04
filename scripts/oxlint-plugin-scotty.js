@@ -1,3 +1,4 @@
+import noBrowserPersistence from "./oxlint-plugin-scotty/rules/no-browser-persistence.js";
 import noConditionalTests from "./oxlint-plugin-scotty/rules/no-conditional-tests.js";
 import noDirectDoStorage from "./oxlint-plugin-scotty/rules/no-direct-do-storage.js";
 import noDoubleCast from "./oxlint-plugin-scotty/rules/no-double-cast.js";
@@ -12,6 +13,7 @@ import noInlineSchemaCompile from "./oxlint-plugin-scotty/rules/no-inline-schema
 import noInstanceofError from "./oxlint-plugin-scotty/rules/no-instanceof-error.js";
 import noInstanceofTaggedError from "./oxlint-plugin-scotty/rules/no-instanceof-tagged-error.js";
 import noJsonParse from "./oxlint-plugin-scotty/rules/no-json-parse.js";
+import noLegacyBrowserRpcPath from "./oxlint-plugin-scotty/rules/no-legacy-browser-rpc-path.js";
 import noManualTagCheck from "./oxlint-plugin-scotty/rules/no-manual-tag-check.js";
 import noMatchOrelse from "./oxlint-plugin-scotty/rules/no-match-orelse.js";
 import noPromiseCatch from "./oxlint-plugin-scotty/rules/no-promise-catch.js";
@@ -29,6 +31,7 @@ import noTryCatchOrThrow from "./oxlint-plugin-scotty/rules/no-try-catch-or-thro
 import noTsNocheck from "./oxlint-plugin-scotty/rules/no-ts-nocheck.js";
 import noUnknownErrorMessage from "./oxlint-plugin-scotty/rules/no-unknown-error-message.js";
 import noUnsupportedEffectApi from "./oxlint-plugin-scotty/rules/no-unsupported-effect-api.js";
+import noUnsafeDomHtmlSink from "./oxlint-plugin-scotty/rules/no-unsafe-dom-html-sink.js";
 import preferEffectPredicate from "./oxlint-plugin-scotty/rules/prefer-effect-predicate.js";
 import preferSchemaInferredTypes from "./oxlint-plugin-scotty/rules/prefer-schema-inferred-types.js";
 import preferValueInferredExtensionTypes from "./oxlint-plugin-scotty/rules/prefer-value-inferred-extension-types.js";
@@ -36,6 +39,7 @@ import preferValueInferredExtensionTypes from "./oxlint-plugin-scotty/rules/pref
 export default {
   meta: { name: "scotty" },
   rules: {
+    "no-browser-persistence": noBrowserPersistence,
     "no-conditional-tests": noConditionalTests,
     "no-direct-do-storage": noDirectDoStorage,
     "no-double-cast": noDoubleCast,
@@ -50,6 +54,7 @@ export default {
     "no-instanceof-error": noInstanceofError,
     "no-instanceof-tagged-error": noInstanceofTaggedError,
     "no-json-parse": noJsonParse,
+    "no-legacy-browser-rpc-path": noLegacyBrowserRpcPath,
     "no-manual-tag-check": noManualTagCheck,
     "no-match-orelse": noMatchOrelse,
     "no-promise-catch": noPromiseCatch,
@@ -67,6 +72,7 @@ export default {
     "no-ts-nocheck": noTsNocheck,
     "no-unknown-error-message": noUnknownErrorMessage,
     "no-unsupported-effect-api": noUnsupportedEffectApi,
+    "no-unsafe-dom-html-sink": noUnsafeDomHtmlSink,
     "prefer-effect-predicate": preferEffectPredicate,
     "prefer-schema-inferred-types": preferSchemaInferredTypes,
     "prefer-value-inferred-extension-types": preferValueInferredExtensionTypes,

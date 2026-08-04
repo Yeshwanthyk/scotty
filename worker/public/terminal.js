@@ -1,12 +1,34 @@
 import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
+import { createCommandLane } from "/terminal-command-lane.js";
+import { createComposerDrafts } from "/terminal-draft.js";
+import { renderCommandReceipts } from "/terminal-command-view.js";
+import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
+import { evictableSessions, hasBlockingCommands } from "/terminal-session-cache.js";
 import {
-  createMessageProjectionState,
-  finishMessageSnapshot,
-  projectMessageEvent,
-} from "/terminal-message-projection.js";
-import { conversationItems, appendAssistantMessageDelta } from "/terminal-timeline.js";
+  createUiResponseTracker,
+  markUiResponseDelivered,
+  sendUiResponseForProjection,
+  uiResponseCardState,
+} from "/terminal-ui-response.js";
+import {
+  applyEvent,
+  blankProjection,
+  contentParts,
+  eventPayload,
+  firstArray,
+  firstObject,
+  firstString,
+  messageText,
+  projectionFromSnapshot,
+} from "/terminal-projection.js";
+import { conversationItems } from "/terminal-timeline.js";
+import {
+  createWorklogView,
+  meaningfulWorklogAnnouncement,
+  semanticSignature,
+} from "/terminal-worklog-view.js";
 
 const CACHE_LIMIT = 6;
 const compactViewport = window.matchMedia("(max-width: 780px)");
@@ -26,6 +48,7 @@ const workspaceRail = document.querySelector("#workspace-rail");
 const sessionWorkspace = document.querySelector("#session-workspace");
 const worklog = document.querySelector("#worklog");
 const worklogFeed = document.querySelector("#worklog-feed");
+const worklogAnnouncer = document.querySelector("#worklog-announcer");
 const composer = document.querySelector("#composer");
 const composerInput = document.querySelector("#composer-input");
 const composerSend = document.querySelector("#composer-send");
@@ -41,6 +64,10 @@ const modelSelect = document.querySelector("#model-select");
 const thinkingSelect = document.querySelector("#thinking-select");
 const stopRunButton = document.querySelector("#stop-run");
 const deliveryReceipts = document.querySelector("#delivery-receipts");
+const commandRecovery = document.querySelector("#command-recovery");
+const commandRecoveryTitle = document.querySelector("#command-recovery-title");
+const commandRecoveryCopy = document.querySelector("#command-recovery-copy");
+const discardHeldCommandsButton = document.querySelector("#discard-held-commands");
 const openActivityButton = document.querySelector("#open-activity");
 const closeActivityButton = document.querySelector("#close-activity");
 const activityDrawer = document.querySelector("#activity-drawer");
@@ -57,35 +84,34 @@ let workspaceListSignature;
 let sessions = [];
 let disposed = false;
 let deliveryMode = "follow_up";
-let commandPending = false;
 let composing = false;
 let renderScheduled = false;
 let runtimeOptionsSignature;
+let localCommandItems = [];
 const sessionCache = new Map();
+const composerDrafts = createComposerDrafts(cacheEntry);
+const uiResponses = createUiResponseTracker();
 const prefetching = new Map();
 const disclosureState = new Map();
+const worklogView = createWorklogView(worklogFeed);
+const consoleClient = createConsoleClient({
+  fetch: window.fetch.bind(window),
+  eventSource: (url) => new EventSource(url),
+  origin: window.location.origin,
+});
+const commandLane = createCommandLane({
+  send: (sessionId, envelope) => consoleClient.command(sessionId, envelope),
+  randomUUID: () => crypto.randomUUID(),
+  onChange: (items) => {
+    localCommandItems = items;
+    if (currentProjection) renderReceipts();
+    updateComposer();
+  },
+});
 
 function sessionIdFromLocation() {
   const match = window.location.pathname.match(/^\/s\/([^/]+)$/u);
   return match ? decodeURIComponent(match[1]) : "";
-}
-
-function blankProjection() {
-  return {
-    epoch: undefined,
-    sequence: 0,
-    messages: [],
-    messageProjection: createMessageProjectionState(),
-    tools: new Map(),
-    pendingUi: new Map(),
-    deliveredUiResponses: new Set(),
-    queue: { steer: [], followUp: [] },
-    active: false,
-    state: {},
-    capabilities: { models: [], thinkingLevels: [] },
-    activity: { tasks: [], subagents: [], workflows: [] },
-    loaded: false,
-  };
 }
 
 function cacheEntry(sessionId) {
@@ -106,339 +132,18 @@ function cacheEntry(sessionId) {
 
 function trimCache() {
   if (sessionCache.size <= CACHE_LIMIT) return;
-  const candidates = [...sessionCache.entries()]
-    .filter(([id]) => id !== currentSessionId)
-    .sort((left, right) => left[1].touchedAt - right[1].touchedAt);
+  const candidates = evictableSessions(sessionCache.entries(), currentSessionId, (sessionId) => {
+    const laneItems = commandLane.state(sessionId).items;
+    return hasBlockingCommands(laneItems) || uiResponses.hasPending(sessionId);
+  });
   while (sessionCache.size > CACHE_LIMIT && candidates.length > 0) {
     sessionCache.delete(candidates.shift()[0]);
   }
 }
 
-function rpcUrl(sessionId, operation) {
-  return `/s/${encodeURIComponent(sessionId)}/rpc/${operation}`;
-}
-
 function setConnection(state, label) {
   connectionState.dataset.state = state;
   connectionLabel.textContent = label;
-}
-
-function isObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function firstArray(...values) {
-  return values.find(Array.isArray) ?? [];
-}
-
-function firstObject(...values) {
-  return values.find(isObject) ?? {};
-}
-
-function firstString(...values) {
-  return values.find((value) => typeof value === "string" && value.length > 0);
-}
-
-function numberValue(...values) {
-  return values.find((value) => Number.isFinite(value));
-}
-
-function normalizeQueue(value) {
-  const queue = firstObject(value);
-  return {
-    steer: firstArray(queue.steer, queue.steering, queue.pendingSteer).map(normalizeQueueItem),
-    followUp: firstArray(
-      queue.followUp,
-      queue.follow_up,
-      queue.followUps,
-      queue.follow_ups,
-      queue.queued,
-    ).map(normalizeQueueItem),
-  };
-}
-
-function normalizeQueueItem(value, index) {
-  if (typeof value === "string") return { id: `${index}:${value}`, text: value };
-  return {
-    id: firstString(value?.id, value?.requestId, value?.commandId) ?? String(index),
-    text: messageText(value?.message ?? value?.text ?? value?.content),
-  };
-}
-
-function unwrapSnapshot(body) {
-  const outer = firstObject(body);
-  const snapshot = firstObject(outer.snapshot, outer.projection, outer.data, outer);
-  return { outer, snapshot };
-}
-
-function projectionFromSnapshot(body) {
-  const { outer, snapshot } = unwrapSnapshot(body);
-  const state = firstObject(snapshot.state, outer.state);
-  const projection = blankProjection();
-  projection.epoch = firstString(outer.epoch, snapshot.epoch);
-  const snapshotSequence =
-    numberValue(outer.sequence, snapshot.sequence, outer.seq, snapshot.seq) ?? 0;
-  projection.messages = firstArray(
-    snapshot.messages,
-    snapshot.entries,
-    state.messages,
-    outer.messages,
-  ).filter(isObject);
-  projection.messageProjection = createMessageProjectionState(projection.messages, true);
-  projection.active = Boolean(
-    state.active ??
-    state.isActive ??
-    state.isStreaming ??
-    snapshot.active ??
-    snapshot.running ??
-    outer.active,
-  );
-  projection.state = state;
-  const capabilities = firstObject(snapshot.capabilities, state.capabilities, outer.capabilities);
-  projection.capabilities = {
-    models: firstArray(capabilities.models).filter(isObject),
-    thinkingLevels: firstArray(
-      capabilities.thinkingLevels,
-      capabilities.thinking_levels,
-      capabilities.levels,
-    ).filter((level) => typeof level === "string"),
-  };
-  projection.queue = normalizeQueue(
-    firstObject(snapshot.queue, state.queue, snapshot.queues, state.queues),
-  );
-  projection.activity = {
-    tasks: firstArray(snapshot.tasks, state.tasks, snapshot.activity?.tasks),
-    subagents: firstArray(snapshot.subagents, state.subagents, snapshot.activity?.subagents),
-    workflows: firstArray(snapshot.workflows, state.workflows, snapshot.activity?.workflows),
-  };
-  const tools = firstArray(snapshot.tools, snapshot.toolCalls, state.tools);
-  for (const tool of tools) upsertTool(projection, tool);
-  hydrateToolsFromMessages(projection);
-  const pendingUi = firstArray(
-    snapshot.pendingUi,
-    snapshot.pending_ui,
-    state.pendingUi,
-    state.pending_ui,
-    snapshot.uiRequests,
-  );
-  for (const request of pendingUi) upsertUiRequest(projection, request);
-  const snapshotEvents = firstArray(outer.events, snapshot.events).sort(
-    (left, right) => (left?.sequence ?? 0) - (right?.sequence ?? 0),
-  );
-  if (snapshotEvents.length > 0) {
-    projection.sequence = Math.max(0, (snapshotEvents[0]?.sequence ?? 1) - 1);
-    for (const event of snapshotEvents) applyEvent(projection, event);
-  }
-  finishMessageSnapshot(projection.messageProjection);
-  projection.sequence = Math.max(projection.sequence, snapshotSequence);
-  projection.loaded = true;
-  return projection;
-}
-
-function hydrateToolsFromMessages(projection) {
-  for (const message of projection.messages) {
-    for (const part of contentParts(message)) {
-      const type = part?.type;
-      if (type === "toolCall" || type === "tool_call" || type === "tool-call") {
-        upsertTool(projection, part, "running");
-      }
-    }
-    const role = message?.role;
-    if (role === "toolResult" || role === "tool_result" || role === "tool") {
-      upsertTool(
-        projection,
-        {
-          ...message,
-          result: message.content ?? message.result,
-          error: message.isError ? (message.content ?? true) : message.error,
-        },
-        message.isError || message.error ? "error" : "done",
-      );
-    }
-  }
-}
-
-function toolId(tool) {
-  return firstString(tool?.toolCallId, tool?.tool_call_id, tool?.id, tool?.callId);
-}
-
-function upsertTool(projection, rawTool, phase) {
-  if (!isObject(rawTool)) return;
-  const id = toolId(rawTool);
-  if (!id) return;
-  const previous = projection.tools.get(id) ?? {};
-  projection.tools.set(id, {
-    ...previous,
-    ...rawTool,
-    id,
-    name: firstString(rawTool.toolName, rawTool.tool_name, rawTool.name, previous.name, "tool"),
-    arguments: rawTool.arguments ?? rawTool.args ?? rawTool.input ?? previous.arguments,
-    result:
-      rawTool.result ??
-      rawTool.partialResult ??
-      rawTool.output ??
-      rawTool.content ??
-      previous.result,
-    error: rawTool.error ?? previous.error,
-    status:
-      phase ??
-      rawTool.status ??
-      previous.status ??
-      (rawTool.error ? "error" : rawTool.result === undefined ? "running" : "done"),
-  });
-}
-
-function uiRequestId(request) {
-  return firstString(request?.requestId, request?.request_id, request?.id);
-}
-
-function upsertUiRequest(projection, request) {
-  if (!isObject(request)) return;
-  if (!["select", "confirm", "input", "editor"].includes(request.method)) return;
-  const id = uiRequestId(request);
-  if (!id) return;
-  projection.pendingUi.set(id, { ...request, id });
-}
-
-function applyExtensionSurface(projection, request) {
-  const method = request.method;
-  if (method === "setWidget") {
-    const key = String(request.widgetKey ?? "").toLowerCase();
-    const group = key.includes("subagent")
-      ? "subagents"
-      : key.includes("workflow")
-        ? "workflows"
-        : key.includes("task")
-          ? "tasks"
-          : undefined;
-    if (group)
-      projection.activity[group] = Array.isArray(request.widgetLines)
-        ? request.widgetLines.map((line, index) => ({
-            id: `${request.widgetKey}:${index}`,
-            title: messageText(line),
-            status: "active",
-          }))
-        : [];
-  } else if (method === "setStatus") {
-    const statuses = { ...firstObject(projection.state.extensionStatus) };
-    if (typeof request.statusText === "string") statuses[request.statusKey] = request.statusText;
-    else delete statuses[request.statusKey];
-    projection.state = {
-      ...projection.state,
-      extensionStatus: statuses,
-    };
-  } else if (method === "setTitle" && request.title) {
-    projection.state = { ...projection.state, extensionTitle: request.title };
-  } else if (method === "set_editor_text") {
-    projection.state = { ...projection.state, editorText: request.text ?? "" };
-  }
-}
-
-function eventPayload(payload) {
-  const outer = firstObject(payload);
-  const event = firstObject(outer.event, outer.data, outer);
-  return { outer, event };
-}
-
-function applyEvent(projection, payload) {
-  const { outer, event } = eventPayload(payload);
-  const epoch = firstString(outer.epoch, event.epoch);
-  const sequence = numberValue(outer.sequence, event.sequence, outer.seq, event.seq);
-  if (epoch && projection.epoch && epoch !== projection.epoch) return "epoch-mismatch";
-  if (sequence !== undefined && sequence <= projection.sequence) return "duplicate";
-  if (epoch) projection.epoch = epoch;
-  if (sequence !== undefined) projection.sequence = sequence;
-
-  const type = firstString(event.type, event.event);
-  if (!type) return "ignored";
-
-  if (
-    type === "snapshot" ||
-    type === "projection" ||
-    type === "scotty_replay_gap" ||
-    type === "scotty_epoch_changed"
-  )
-    return "snapshot";
-  if (type === "agent_start" || type === "turn_start") projection.active = true;
-  if (
-    type === "agent_end" ||
-    type === "agent_settled" ||
-    type === "turn_end" ||
-    type === "agent_abort" ||
-    type === "agent_aborted" ||
-    type === "turn_abort" ||
-    type === "turn_aborted" ||
-    type === "scotty_process_exit"
-  ) {
-    projection.active = false;
-    projection.pendingUi.clear();
-    projection.deliveredUiResponses.clear();
-  }
-
-  if (type === "message_start" || type === "message_end") {
-    const message = firstObject(event.message, event.data);
-    if (Object.keys(message).length > 0)
-      projectMessageEvent(projection.messages, projection.messageProjection, type, message);
-  } else if (type === "message_update") {
-    const message = firstObject(event.message);
-    if (Object.keys(message).length > 0)
-      projectMessageEvent(projection.messages, projection.messageProjection, type, message);
-    else applyMessageDelta(projection, event);
-  } else if (type === "tool_execution_start") {
-    upsertTool(projection, event, "running");
-  } else if (type === "tool_execution_update") {
-    upsertTool(projection, event, "running");
-  } else if (type === "tool_execution_end") {
-    upsertTool(projection, event, event.error || event.isError ? "error" : "done");
-  } else if (type === "queue_update") {
-    projection.queue = normalizeQueue(firstObject(event.queue, event));
-  } else if (type === "extension_ui_request") {
-    const request = firstObject(event.request, event);
-    if (["select", "confirm", "input", "editor"].includes(request.method))
-      upsertUiRequest(projection, request);
-    else applyExtensionSurface(projection, request);
-  } else if (
-    type === "extension_ui_response" ||
-    type === "extension_ui_cancelled" ||
-    type === "extension_ui_closed"
-  ) {
-    const id = uiRequestId(firstObject(event.request, event));
-    if (id) {
-      projection.pendingUi.delete(id);
-      projection.deliveredUiResponses.delete(id);
-    }
-  } else if (type === "state" || type === "state_update") {
-    projection.state = { ...projection.state, ...firstObject(event.state, event) };
-  } else if (type === "scotty_process_exit") {
-    projection.active = false;
-    projection.state = { ...projection.state, processExited: true };
-  }
-  return "applied";
-}
-
-function applyMessageDelta(projection, event) {
-  appendAssistantMessageDelta(projection.messages, event);
-}
-
-function messageText(value) {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        if (typeof item === "string") return item;
-        return firstString(item?.text, item?.content, item?.thinking, "");
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
-  if (isObject(value)) return firstString(value.text, value.content, value.message, "") ?? "";
-  return "";
-}
-
-function contentParts(message) {
-  if (Array.isArray(message?.content)) return message.content;
-  if (typeof message?.content === "string") return [{ type: "text", text: message.content }];
-  return [];
 }
 
 function textElement(tag, className, text) {
@@ -448,22 +153,77 @@ function textElement(tag, className, text) {
   return element;
 }
 
-function renderAssistantCopy(text) {
+function setWorklogFocusKey(element, key) {
+  element.setAttribute("data-worklog-focus-key", key);
+  return element;
+}
+
+function renderAssistantCopy(text, focusKeyPrefix) {
   const element = document.createElement("div");
   element.className = "message-copy markdown";
   element.append(
     assistantMarkdownFragment(document, text, {
       baseUrl: window.location.href,
+      focusKeyPrefix,
     }),
   );
   return element;
 }
 
-function renderProjection({ restoreScroll = false } = {}) {
-  renderScheduled = false;
-  if (!currentProjection) return;
-  const nearBottom = worklog.scrollHeight - worklog.scrollTop - worklog.clientHeight < 100;
-  const fragment = document.createDocumentFragment();
+function announceWorklog(message) {
+  if (!message) return;
+  worklogAnnouncer.textContent = "";
+  requestAnimationFrame(() => {
+    worklogAnnouncer.textContent = message;
+  });
+}
+
+function uniqueWorklogKey(sessionId, key, occurrences) {
+  const count = occurrences.get(key) ?? 0;
+  occurrences.set(key, count + 1);
+  return `${sessionId}:${key}:${count}`;
+}
+
+function conversationTools(conversation) {
+  return [
+    ...conversation.toolIds
+      .map((id) => currentProjection.tools.get(id))
+      .filter((tool) => tool && !secondaryActivityTool(tool)),
+    ...conversation.inlineTools.filter((tool) => !secondaryActivityTool(tool)),
+  ];
+}
+
+function assistantTurnParts(conversation) {
+  const textParts = [];
+  const reasoningParts = [];
+  for (const message of conversation.assistants) {
+    const parts = contentParts(message);
+    if (parts.length === 0) {
+      const text = messageText(message.text ?? message.message);
+      if (text) textParts.push(text);
+      continue;
+    }
+    for (const part of parts) {
+      if (typeof part === "string") {
+        if (part) textParts.push(part);
+        continue;
+      }
+      const type = firstString(part?.type, "text");
+      if (type === "text") {
+        const text = messageText(part);
+        if (text) textParts.push(text);
+      } else if (type === "thinking" || type === "reasoning") {
+        const text = messageText(part);
+        if (text) reasoningParts.push(text);
+      }
+    }
+  }
+  return { textParts, reasoningParts, tools: conversationTools(conversation) };
+}
+
+function worklogEntries() {
+  const entries = [];
+  const occurrences = new Map();
   const { items, claimedToolIds } = conversationItems(currentProjection.messages);
   let lastConversation = items.findLast((item) => item.kind === "conversation");
   for (const tool of currentProjection.tools.values()) {
@@ -477,25 +237,80 @@ function renderProjection({ restoreScroll = false } = {}) {
   const lastConversationIndex = items.findLastIndex((item) => item.kind === "conversation");
   for (const [index, item] of items.entries()) {
     if (item.kind === "system") {
-      const turn = renderSystemMessage(item.message);
-      if (turn) fragment.append(turn);
+      const text = messageText(item.message.content ?? item.message.text ?? item.message.message);
+      if (!text) continue;
+      entries.push({
+        key: uniqueWorklogKey(currentSessionId, `system:${index}`, occurrences),
+        signature: semanticSignature(text),
+        render: () => renderSystemMessage(item.message),
+      });
       continue;
     }
-    if (item.user) fragment.append(renderUserMessage(item.user));
-    const assistantTurn = renderAssistantTurn(item, index === lastConversationIndex);
-    if (assistantTurn) fragment.append(assistantTurn);
+    if (item.user) {
+      const delivery = firstString(
+        item.user.deliveryMode,
+        item.user.delivery_mode,
+        item.user.source,
+      );
+      entries.push({
+        key: uniqueWorklogKey(currentSessionId, `user:${item.key}`, occurrences),
+        signature: semanticSignature([
+          messageText(item.user.content ?? item.user.text ?? item.user.message),
+          delivery,
+        ]),
+        render: () => renderUserMessage(item.user),
+      });
+    }
+    const isLatest = index === lastConversationIndex;
+    const parts = assistantTurnParts(item);
+    if (
+      parts.textParts.length === 0 &&
+      parts.reasoningParts.length === 0 &&
+      parts.tools.length === 0
+    )
+      continue;
+    entries.push({
+      key: uniqueWorklogKey(currentSessionId, `assistant:${item.key}`, occurrences),
+      signature: semanticSignature([
+        parts.textParts,
+        parts.reasoningParts,
+        parts.tools,
+        Boolean(currentProjection.active && isLatest),
+      ]),
+      render: () => renderAssistantTurn(item, isLatest, parts),
+    });
   }
   for (const request of currentProjection.pendingUi.values()) {
-    fragment.append(renderUiRequest(request));
+    entries.push({
+      key: uniqueWorklogKey(currentSessionId, `request:${request.id}`, occurrences),
+      signature: semanticSignature([
+        request,
+        currentProjection.deliveredUiResponses.has(request.id),
+      ]),
+      render: () => renderUiRequest(request),
+    });
   }
+  if (entries.length === 0) {
+    entries.push({
+      key: uniqueWorklogKey(currentSessionId, "empty", occurrences),
+      signature: "empty",
+      render: () => {
+        const empty = document.createElement("div");
+        empty.className = "feed-empty";
+        empty.append(textElement("p", "", "This Pi session has no messages yet."));
+        return empty;
+      },
+    });
+  }
+  return entries;
+}
 
-  if (fragment.childNodes.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "feed-empty";
-    empty.append(textElement("p", "", "This Pi session has no messages yet."));
-    fragment.append(empty);
-  }
-  worklogFeed.replaceChildren(fragment);
+function renderProjection({ restoreScroll = false } = {}) {
+  renderScheduled = false;
+  if (!currentProjection) return;
+  const nearBottom = worklog.scrollHeight - worklog.scrollTop - worklog.clientHeight < 100;
+  const entries = worklogEntries();
+  worklogView.update(entries);
   worklogFeed.setAttribute("aria-busy", "false");
   renderReceipts();
   renderActivity();
@@ -546,38 +361,8 @@ function renderUserMessage(message) {
   return turn;
 }
 
-function renderAssistantTurn(conversation, isLatest) {
-  const textParts = [];
-  const reasoningParts = [];
-  for (const message of conversation.assistants) {
-    const parts = contentParts(message);
-    if (parts.length === 0) {
-      const text = messageText(message.text ?? message.message);
-      if (text) textParts.push(text);
-      continue;
-    }
-    for (const part of parts) {
-      if (typeof part === "string") {
-        if (part) textParts.push(part);
-        continue;
-      }
-      const type = firstString(part?.type, "text");
-      if (type === "text") {
-        const text = messageText(part);
-        if (text) textParts.push(text);
-      } else if (type === "thinking" || type === "reasoning") {
-        const text = messageText(part);
-        if (text) reasoningParts.push(text);
-      }
-    }
-  }
-
-  const tools = [
-    ...conversation.toolIds
-      .map((id) => currentProjection.tools.get(id))
-      .filter((tool) => tool && !secondaryActivityTool(tool)),
-    ...conversation.inlineTools.filter((tool) => !secondaryActivityTool(tool)),
-  ];
+function renderAssistantTurn(conversation, isLatest, parts = assistantTurnParts(conversation)) {
+  const { textParts, reasoningParts, tools } = parts;
   if (textParts.length === 0 && reasoningParts.length === 0 && tools.length === 0) return undefined;
 
   const turn = document.createElement("article");
@@ -585,7 +370,11 @@ function renderAssistantTurn(conversation, isLatest) {
   turn.append(textElement("div", "speaker-label pi", "PI"));
   const body = document.createElement("div");
   body.className = "turn-body";
-  for (const text of textParts) body.append(renderAssistantCopy(text));
+  for (const [index, text] of textParts.entries()) {
+    body.append(
+      renderAssistantCopy(text, `markdown:${currentSessionId}:${conversation.key}:${index}`),
+    );
+  }
   if (reasoningParts.length > 0 || tools.length > 0) {
     body.append(
       renderActivityFold(
@@ -618,6 +407,7 @@ function renderActivityFold(reasoningParts, tools, active, conversationKey) {
   );
   const stepCount = tools.length + (reasoningParts.length > 0 ? 1 : 0);
   const summary = document.createElement("summary");
+  setWorklogFocusKey(summary, `activity:${conversationKey}`);
   summary.append(
     textElement("span", "activity-caret", "›"),
     textElement("span", "activity-label", active ? "Working" : "Worked"),
@@ -629,7 +419,9 @@ function renderActivityFold(reasoningParts, tools, active, conversationKey) {
     const reasoning = document.createElement("details");
     reasoning.className = "thinking";
     applyDisclosureState(reasoning, `reasoning:${conversationKey}`);
-    reasoning.append(textElement("summary", "", "Reasoning"));
+    reasoning.append(
+      setWorklogFocusKey(textElement("summary", "", "Reasoning"), `reasoning:${conversationKey}`),
+    );
     reasoning.append(textElement("div", "thinking-copy", reasoningParts.join("\n\n")));
     body.append(reasoning);
   }
@@ -664,6 +456,7 @@ function renderTool(tool, disclosureKey) {
   const status = tool.error || tool.status === "error" ? "error" : (tool.status ?? "done");
   applyDisclosureState(details, `tool:${disclosureKey}`, status === "error");
   const summary = document.createElement("summary");
+  setWorklogFocusKey(summary, `tool:${disclosureKey}`);
   summary.append(
     textElement(
       "i",
@@ -792,6 +585,13 @@ function renderDiff(tool, diff) {
   return body;
 }
 
+function syncUiResponseState(sessionId, projection) {
+  uiResponses.sync(sessionId, projection.epoch, projection.pendingUi.keys());
+  for (const requestId of projection.pendingUi.keys())
+    if (uiResponses.isDelivered(sessionId, projection.epoch, requestId))
+      projection.deliveredUiResponses.add(requestId);
+}
+
 function renderUiRequest(request) {
   const turn = document.createElement("article");
   turn.className = "worklog-turn system";
@@ -809,14 +609,14 @@ function renderAskCard(request) {
   card.dataset.requestId = request.id;
   const header = document.createElement("header");
   header.className = "ask-user-header";
-  const delivered = currentProjection.deliveredUiResponses.has(request.id);
+  const delivered =
+    currentProjection.deliveredUiResponses.has(request.id) ||
+    uiResponses.isDelivered(currentSessionId, currentProjection.epoch, request.id);
+  const sending = uiResponses.isPending(currentSessionId, currentProjection.epoch, request.id);
+  const responseState = uiResponseCardState(delivered, sending);
   header.append(
     textElement("span", "", "PI NEEDS YOUR INPUT"),
-    textElement(
-      "span",
-      "ask-state",
-      delivered ? "Awaiting Pi continuation · outcome unconfirmed" : "Pi paused",
-    ),
+    textElement("span", "ask-state", responseState.label),
   );
   const body = document.createElement("div");
   body.className = "ask-user-body";
@@ -847,6 +647,12 @@ function renderAskCard(request) {
       const button = document.createElement("button");
       button.className = "ask-option";
       button.type = "button";
+      const optionId =
+        typeof option === "object"
+          ? (firstString(option.id, option.optionId, option.option_id) ??
+            semanticSignature(option.value ?? value))
+          : semanticSignature(value);
+      setWorklogFocusKey(button, `ask:${request.id}:option:${index}:${optionId}`);
       button.dataset.uiResponse =
         typeof option === "object" ? JSON.stringify(option.value ?? value) : value;
       if (typeof option === "object") button.dataset.uiResponseJson = "";
@@ -873,43 +679,37 @@ function renderAskCard(request) {
     input.name = "answer";
     input.placeholder = options.length > 0 ? "Or write your own answer…" : "Your response…";
     input.setAttribute("aria-label", "Custom response");
+    setWorklogFocusKey(input, `ask:${request.id}:custom`);
     if (request.method === "editor") input.value = request.prefill ?? "";
     const send = textElement("button", "send-button", "Reply");
     send.type = "submit";
+    setWorklogFocusKey(send, `ask:${request.id}:reply`);
     const cancel = textElement("button", "quiet-button", "Cancel");
     cancel.type = "button";
     cancel.dataset.uiCancel = "";
+    setWorklogFocusKey(cancel, `ask:${request.id}:cancel`);
     custom.append(input, cancel, send);
     body.append(custom);
   } else {
     const cancel = textElement("button", "quiet-button ask-cancel", "Cancel");
     cancel.type = "button";
     cancel.dataset.uiCancel = "";
+    setWorklogFocusKey(cancel, `ask:${request.id}:cancel`);
     body.append(cancel);
   }
   card.append(header, body);
-  if (delivered)
+  if (responseState.disabled)
     for (const control of card.querySelectorAll("button, input, textarea")) control.disabled = true;
   return card;
 }
 
 function renderReceipts() {
-  const fragment = document.createDocumentFragment();
-  for (const [kind, items] of [
-    ["steer", currentProjection.queue.steer],
-    ["follow_up", currentProjection.queue.followUp],
-  ]) {
-    items.forEach((item, index) => {
-      const receipt = document.createElement("div");
-      receipt.className = `receipt ${kind === "steer" ? "steer" : ""}`;
-      receipt.append(
-        textElement("strong", "", kind === "steer" ? "Steering next" : `Queued ${index + 1}`),
-        textElement("span", "", item.text),
-      );
-      fragment.append(receipt);
-    });
-  }
-  deliveryReceipts.replaceChildren(fragment);
+  renderCommandReceipts(
+    document,
+    deliveryReceipts,
+    currentProjection.queue,
+    localCommandItems.filter((item) => item.sessionId === currentSessionId),
+  );
 }
 
 function activityGroups() {
@@ -997,10 +797,11 @@ function renderRuntimeControls() {
     currentProjection?.state?.thinking_level,
   );
   const visible = hasAvailableRuntime(currentProjection);
+  const commandPaused = Boolean(commandLane.state(currentSessionId).paused);
   runtimeControlsButton.hidden = !visible;
-  runtimeControlsButton.disabled = commandPending || !currentProjection?.loaded;
-  modelSelect.disabled = commandPending || models.length === 0;
-  thinkingSelect.disabled = commandPending || thinkingLevels.length === 0;
+  runtimeControlsButton.disabled = commandPaused || !currentProjection?.loaded;
+  modelSelect.disabled = commandPaused || models.length === 0;
+  thinkingSelect.disabled = commandPaused || thinkingLevels.length === 0;
   modelSelect.closest(".runtime-field").hidden = models.length === 0;
   thinkingSelect.closest(".runtime-field").hidden = thinkingLevels.length === 0;
   runtimeModelLabel.textContent = modelLabel(currentModel);
@@ -1053,27 +854,44 @@ function renderRuntimeControls() {
 function updateComposer() {
   const active = Boolean(currentProjection?.active);
   const runtimeAvailable = hasAvailableRuntime(currentProjection);
+  const laneState = commandLane.state(currentSessionId);
   deliveryModeButton.hidden = !active;
   stopRunButton.hidden = !active;
+  stopRunButton.disabled = Boolean(laneState.paused);
   if (!active) setDeliveryMenu(false);
   const text = composerText(composerInput.value);
-  composerSend.disabled =
-    commandPending || !text || !currentProjection?.loaded || !runtimeAvailable;
+  composerSend.disabled = Boolean(
+    laneState.paused || !text || !currentProjection?.loaded || !runtimeAvailable,
+  );
   composerSend.textContent = active ? (deliveryMode === "steer" ? "Steer" : "Queue") : "Send";
   deliveryModeLabel.textContent = deliveryMode === "steer" ? "Steer" : "Queue";
-  composerStatus.textContent = commandPending
-    ? "Submitting…"
-    : active
-      ? "Pi is active"
-      : currentProjection?.loaded
-        ? runtimeAvailable
-          ? "Pi is ready"
-          : "Pi model unavailable"
-        : "Loading session state…";
+  composerStatus.textContent = laneState.paused
+    ? laneState.paused === "stale"
+      ? "Session changed · pending commands are held"
+      : "Command outcome unknown · pending commands are held"
+    : laneState.items.some((item) => item.state === "sending")
+      ? "Submitting…"
+      : active
+        ? "Pi is active"
+        : currentProjection?.loaded
+          ? runtimeAvailable
+            ? "Pi is ready"
+            : "Pi model unavailable"
+          : "Loading session state…";
   for (const option of deliveryMenu.querySelectorAll("[data-delivery-mode]")) {
     option.setAttribute("aria-checked", String(option.dataset.deliveryMode === deliveryMode));
   }
+  updateCommandRecovery(laneState.paused);
   renderRuntimeControls();
+}
+
+function updateCommandRecovery(reason) {
+  commandRecovery.hidden = !reason;
+  if (!reason) return;
+  commandRecoveryTitle.textContent =
+    reason === "stale" ? "This session changed" : "This command outcome is unknown";
+  commandRecoveryCopy.textContent =
+    "Review the held text above. Discard it to refresh this session and continue; it will never be sent or replayed.";
 }
 
 function setDeliveryMenu(open) {
@@ -1098,13 +916,7 @@ function autosizeComposer() {
 }
 
 async function fetchSnapshot(sessionId, signal) {
-  const response = await fetch(rpcUrl(sessionId, "snapshot"), {
-    headers: { accept: "application/json" },
-    cache: "no-store",
-    signal,
-  });
-  if (!response.ok) throw new Error(`Could not load Pi session (${response.status})`);
-  return response.json();
+  return consoleClient.snapshot(sessionId, signal);
 }
 
 async function loadSnapshot(sessionId, { prefetched = false } = {}) {
@@ -1116,6 +928,7 @@ async function loadSnapshot(sessionId, { prefetched = false } = {}) {
   }
   const body = await fetchSnapshot(sessionId, controller.signal);
   const projection = projectionFromSnapshot(body);
+  syncUiResponseState(sessionId, projection);
   const entry = cacheEntry(sessionId);
   if (entry.projection.epoch === projection.epoch)
     for (const requestId of entry.projection.deliveredUiResponses)
@@ -1131,12 +944,11 @@ async function loadSnapshot(sessionId, { prefetched = false } = {}) {
 function connectEvents(sessionId) {
   eventSource?.close();
   if (disposed || sessionId !== currentSessionId) return;
-  const url = new URL(rpcUrl(sessionId, "events"), window.location.origin);
-  if (currentProjection?.epoch) url.searchParams.set("epoch", currentProjection.epoch);
-  if (currentProjection?.sequence)
-    url.searchParams.set("since", String(currentProjection.sequence));
   setConnection("connecting", "Connecting");
-  const source = new EventSource(url);
+  const source = consoleClient.events(sessionId, {
+    epoch: currentProjection?.epoch,
+    sequence: currentProjection?.sequence,
+  });
   eventSource = source;
   source.addEventListener("open", () => {
     if (source !== eventSource) return;
@@ -1173,6 +985,7 @@ function consumeSseEvent(messageEvent, source, namedType) {
   try {
     const payload = JSON.parse(messageEvent.data);
     if (namedType && !payload.type && !payload.event?.type) payload.type = namedType;
+    const wasActive = Boolean(currentProjection.active);
     const result = applyEvent(currentProjection, payload);
     if (result === "epoch-mismatch" || result === "snapshot") {
       source.close();
@@ -1180,13 +993,25 @@ function consumeSseEvent(messageEvent, source, namedType) {
       return;
     }
     const { event } = eventPayload(payload);
+    const request = firstObject(event.request, event);
+    if (result === "applied") {
+      announceWorklog(
+        meaningfulWorklogAnnouncement({
+          type: event.type,
+          method: request.method,
+          wasActive,
+          isActive: Boolean(currentProjection.active),
+        }),
+      );
+    }
     if (event.type === "extension_ui_request" && event.method === "notify") {
       showToast(firstString(event.message, "Pi sent a notification."));
     } else if (event.type === "extension_ui_request" && event.method === "set_editor_text") {
       composerInput.value = event.text ?? "";
-      cacheEntry(currentSessionId).draft = composerInput.value;
+      composerDrafts.set(currentSessionId, composerInput.value);
       autosizeComposer();
     }
+    syncUiResponseState(currentSessionId, currentProjection);
     cacheEntry(currentSessionId).projection = currentProjection;
     setConnection("connected", currentProjection.active ? "Pi working" : "Connected");
     scheduleRender();
@@ -1195,48 +1020,95 @@ function consumeSseEvent(messageEvent, source, namedType) {
   }
 }
 
-async function sendCommand(command) {
-  if (commandPending) return undefined;
-  commandPending = true;
-  updateComposer();
-  const commandId = crypto.randomUUID();
+function queueCommand(
+  intent,
+  label,
+  { sessionId = currentSessionId, projection = currentProjection } = {},
+) {
+  if (!projection?.loaded || !projection.epoch || !Number.isSafeInteger(projection.sessionRevision))
+    throw new Error("Refresh the session before sending a command.");
+  return {
+    ...commandLane.enqueue({
+      sessionId,
+      epoch: projection.epoch,
+      expectedSessionRevision: projection.sessionRevision,
+      intent,
+      label,
+    }),
+    sessionId,
+  };
+}
+
+function commandOutcomeMessage(outcome) {
+  if (outcome.status === "stale") return "The session changed. Review it and submit again.";
+  if (outcome.status === "ambiguous") return "The command outcome is unknown. It was not retried.";
+  if (outcome.status === "discarded") return "The held command was discarded without being sent.";
+  return outcome.message ?? "Pi did not accept that command.";
+}
+
+async function sendCommand(intent, label, authority) {
+  const submission = queueCommand(intent, label, authority);
+  const { outcome } = submission;
+  const result = await outcome;
+  if (result.status === "stale" || result.status === "ambiguous")
+    refreshAffectedSession(submission.sessionId);
+  if (result.status !== "accepted") throw new Error(commandOutcomeMessage(result));
+  return result.receipt;
+}
+
+function refreshAffectedSession(sessionId) {
+  loadSnapshot(sessionId, { prefetched: sessionId !== currentSessionId }).catch((error) => {
+    if (sessionId === currentSessionId) showLoadError(error);
+  });
+}
+
+async function discardHeldCommands() {
+  const sessionId = currentSessionId;
+  if (!commandLane.state(sessionId).paused) return;
+  discardHeldCommandsButton.disabled = true;
+  commandRecovery.setAttribute("aria-busy", "true");
   try {
-    const response = await fetch(rpcUrl(currentSessionId, "command"), {
-      method: "POST",
-      headers: { accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify({ commandId, command }),
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(
-        firstString(
-          body.message,
-          body.error?.message,
-          typeof body.error === "string" ? body.error : undefined,
-          body.response?.error?.message,
-          typeof body.response?.error === "string" ? body.response.error : undefined,
-          `Command failed (${response.status})`,
-        ),
-      );
+    await loadSnapshot(sessionId);
+    if (!commandLane.state(sessionId).paused) return;
+    commandLane.discard(sessionId);
+    if (sessionId === currentSessionId) {
+      showToast("Held commands discarded. This session is ready for a fresh command.");
+      composerInput.focus({ preventScroll: true });
     }
-    return body;
+  } catch (error) {
+    if (sessionId === currentSessionId) showLoadError(error);
   } finally {
-    commandPending = false;
+    discardHeldCommandsButton.disabled = false;
+    commandRecovery.removeAttribute("aria-busy");
     updateComposer();
   }
 }
 
 async function submitComposer() {
-  const text = composerText(composerInput.value);
+  const editableDraft = composerInput.value;
+  const text = composerText(editableDraft);
   if (!text || !currentProjection?.loaded) return;
   const streamingBehavior = deliveryMode === "steer" ? "steer" : "followUp";
+  let submission;
   try {
-    await sendCommand({ type: "prompt", message: text, streamingBehavior });
+    submission = queueCommand({ type: "prompt", message: text, streamingBehavior }, text);
+    const draftSubmission = composerDrafts.begin(submission.sessionId, editableDraft);
     composerInput.value = "";
-    cacheEntry(currentSessionId).draft = "";
     autosizeComposer();
     updateComposer();
     composerInput.focus({ preventScroll: true });
+    const outcome = await submission.outcome;
+    if (outcome.status !== "accepted") {
+      const restored = composerDrafts.settle(draftSubmission, outcome.status);
+      if (restored && submission.sessionId === currentSessionId) {
+        composerInput.value = cacheEntry(submission.sessionId).draft;
+        autosizeComposer();
+        updateComposer();
+      }
+      if (outcome.status === "stale" || outcome.status === "ambiguous")
+        refreshAffectedSession(submission.sessionId);
+      showToast(commandOutcomeMessage(outcome));
+    }
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Pi did not accept that message.");
     composerInput.focus({ preventScroll: true });
@@ -1244,64 +1116,106 @@ async function submitComposer() {
 }
 
 async function selectModel() {
-  const selected = currentProjection.capabilities.models.find(
+  const sessionId = currentSessionId;
+  const projection = currentProjection;
+  const selected = projection.capabilities.models.find(
     (model) => modelIdentity(model) === modelSelect.value,
   );
   if (!selected) return;
   try {
-    await sendCommand({
-      type: "set_model",
-      provider: selected.provider,
-      modelId: firstString(selected.id, selected.modelId, selected.model_id),
-    });
-    currentProjection.state = { ...currentProjection.state, model: selected };
+    await sendCommand(
+      {
+        type: "set_model",
+        provider: selected.provider,
+        modelId: firstString(selected.id, selected.modelId, selected.model_id),
+      },
+      `Change model to ${modelLabel(selected)}`,
+      { sessionId, projection },
+    );
+    if (sessionId !== currentSessionId || projection !== currentProjection) {
+      refreshAffectedSession(sessionId);
+      return;
+    }
+    projection.state = { ...projection.state, model: selected };
     setRuntimeMenu(false);
     updateComposer();
     runtimeControlsButton.focus({ preventScroll: true });
-    loadSnapshot(currentSessionId).catch(() => {
+    loadSnapshot(sessionId).catch(() => {
       showToast("The model changed, but its updated thinking options could not be refreshed.");
     });
   } catch (error) {
+    if (sessionId !== currentSessionId || projection !== currentProjection) return;
     renderRuntimeControls();
     showToast(error instanceof Error ? error.message : "Pi could not change models.");
   }
 }
 
 async function selectThinkingLevel() {
+  const sessionId = currentSessionId;
+  const projection = currentProjection;
   const level = thinkingSelect.value;
   if (!level) return;
   try {
-    await sendCommand({ type: "set_thinking_level", level });
-    currentProjection.state = {
-      ...currentProjection.state,
+    await sendCommand({ type: "set_thinking_level", level }, `Change thinking to ${level}`, {
+      sessionId,
+      projection,
+    });
+    if (sessionId !== currentSessionId || projection !== currentProjection) {
+      refreshAffectedSession(sessionId);
+      return;
+    }
+    projection.state = {
+      ...projection.state,
       thinkingLevel: level,
     };
     setRuntimeMenu(false);
     updateComposer();
     runtimeControlsButton.focus({ preventScroll: true });
   } catch (error) {
+    if (sessionId !== currentSessionId || projection !== currentProjection) return;
     renderRuntimeControls();
     showToast(error instanceof Error ? error.message : "Pi could not change thinking level.");
   }
 }
 
 async function sendUiResponse(requestId, value, { cancelled = false } = {}) {
-  const request = currentProjection.pendingUi.get(requestId);
-  if (!request) return;
-  disableAskCard(requestId);
-  try {
-    const command = cancelled
-      ? { type: "extension_ui_response", id: requestId, cancelled: true }
-      : request.method === "confirm"
-        ? { type: "extension_ui_response", id: requestId, confirmed: Boolean(value) }
-        : { type: "extension_ui_response", id: requestId, value: String(value) };
-    await sendCommand(command);
-    currentProjection.deliveredUiResponses.add(requestId);
-    disableAskCard(requestId, "Awaiting Pi continuation · outcome unconfirmed");
-  } catch (error) {
-    enableAskCard(requestId);
-    showToast(error instanceof Error ? error.message : "Pi did not accept that response.");
-  }
+  const sessionId = currentSessionId;
+  const projection = currentProjection;
+  await sendUiResponseForProjection({
+    sessionId,
+    projection,
+    requestId,
+    value,
+    cancelled,
+    sendCommand: (intent, label) => sendCommand(intent, label, { sessionId, projection }),
+    hasCurrentRequest: (targetSessionId, targetProjection, targetRequestId) =>
+      targetSessionId === currentSessionId &&
+      currentProjection.epoch === targetProjection.epoch &&
+      currentProjection.pendingUi.has(targetRequestId) &&
+      !currentProjection.deliveredUiResponses.has(targetRequestId) &&
+      !uiResponses.isDelivered(targetSessionId, targetProjection.epoch, targetRequestId),
+    hasCurrentDelivery: (targetSessionId, targetRequestId) =>
+      targetSessionId === currentSessionId &&
+      (currentProjection.deliveredUiResponses.has(targetRequestId) ||
+        uiResponses.isDelivered(targetSessionId, currentProjection.epoch, targetRequestId)),
+    markDelivered: (targetSessionId, targetProjection, targetRequestId) => {
+      uiResponses.markDelivered(targetSessionId, targetProjection.epoch, targetRequestId);
+      markUiResponseDelivered(
+        targetProjection,
+        cacheEntry(targetSessionId).projection,
+        targetRequestId,
+      );
+    },
+    setPendingState: (targetSessionId, targetProjection, targetRequestId, pending) => {
+      if (pending) uiResponses.begin(targetSessionId, targetProjection.epoch, targetRequestId);
+      else uiResponses.finish(targetSessionId, targetProjection.epoch, targetRequestId);
+    },
+    setCardPending: () => disableAskCard(requestId),
+    setCardDelivered: () =>
+      disableAskCard(requestId, "Awaiting Pi continuation · outcome unconfirmed"),
+    setCardRetryable: () => enableAskCard(requestId),
+    reportError: showToast,
+  });
 }
 
 function disableAskCard(requestId, message = "Sending…") {
@@ -1456,7 +1370,7 @@ async function loadWorkspaces() {
 function saveCurrentView() {
   if (!currentSessionId) return;
   const entry = cacheEntry(currentSessionId);
-  entry.draft = composerInput.value;
+  composerDrafts.set(currentSessionId, composerInput.value);
   entry.scrollTop = worklog.scrollTop;
   if (currentProjection) entry.projection = currentProjection;
 }
@@ -1593,7 +1507,7 @@ composerInput.addEventListener("compositionend", () => {
   composing = false;
 });
 composerInput.addEventListener("input", () => {
-  cacheEntry(currentSessionId).draft = composerInput.value;
+  composerDrafts.set(currentSessionId, composerInput.value);
   autosizeComposer();
   updateComposer();
 });
@@ -1624,6 +1538,7 @@ runtimeControlsButton.addEventListener("click", () => {
 });
 modelSelect.addEventListener("change", selectModel);
 thinkingSelect.addEventListener("change", selectThinkingLevel);
+discardHeldCommandsButton.addEventListener("click", discardHeldCommands);
 deliveryMenu.addEventListener("click", (event) => {
   const option = event.target.closest?.("[data-delivery-mode]");
   if (!option) return;
@@ -1634,7 +1549,7 @@ deliveryMenu.addEventListener("click", (event) => {
 });
 stopRunButton.addEventListener("click", async () => {
   try {
-    await sendCommand({ type: "abort" });
+    await sendCommand({ type: "abort" }, "Stop Pi");
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Pi could not be stopped.");
   }

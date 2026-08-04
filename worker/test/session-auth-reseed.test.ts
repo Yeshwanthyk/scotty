@@ -19,7 +19,7 @@ describe("Sandbox Pi auth reseed", () => {
       },
     });
 
-    await harness.sandbox.fetch(new Request("http://scotty.internal/_scotty/pi-session/snapshot"));
+    await harness.sandbox.preparePiSessionAccess();
     const reseedStart = harness.events.length;
     const writeStart = harness.writtenFiles.length;
 

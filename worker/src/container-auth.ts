@@ -18,7 +18,6 @@ export const PI_PACKAGES = [
 
 export const PI_SESSION_PORT = 43_117;
 export const PI_SESSION_PROCESS_ID = "scotty-pi-session";
-export const PI_SESSION_PROXY_PREFIX = "/_scotty/pi-session";
 export const PI_SESSION_TOKEN_HEADER = "x-scotty-pi-session";
 
 const piSessionTokenPath = (id: SessionRecord["id"]): string =>

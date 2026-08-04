@@ -26,7 +26,7 @@ const maxArrayItems = 500;
 const maxObjectKeys = 100;
 const maxNodes = 20_000;
 const remoteSlashCommands = new Set(["subagents", "workflows"]);
-const versionedCommandTypes = new Set([
+const commandTypes = new Set([
   "prompt",
   "steer",
   "follow_up",
@@ -35,15 +35,6 @@ const versionedCommandTypes = new Set([
   "set_model",
   "set_thinking_level",
   "slash_command",
-]);
-const legacyCommandTypes = new Set([
-  "prompt",
-  "steer",
-  "follow_up",
-  "abort",
-  "extension_ui_response",
-  "set_model",
-  "set_thinking_level",
 ]);
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -460,14 +451,10 @@ export const completeSnapshotOverlap = (events, baseSequence, endSequence) => {
   return overlapEvents;
 };
 
-const validCommandId = (value, versioned) =>
-  typeof value === "string" &&
-  value.length > 0 &&
-  value.length <= 100 &&
-  (!versioned || uuidPattern.test(value));
+const validCommandId = (value) => typeof value === "string" && uuidPattern.test(value);
 
-const validVersionedIntent = (command) => {
-  if (!versionedCommandTypes.has(command.type))
+const validIntent = (command) => {
+  if (!commandTypes.has(command.type))
     return {
       ok: false,
       error: command.type === "fold" ? "local_intent_only" : "invalid_command",
@@ -518,25 +505,19 @@ const validVersionedIntent = (command) => {
 };
 
 export const normalizeCommand = (body, currentEpoch) => {
-  const versioned = body?.version !== undefined || body?.intent !== undefined;
   if (
-    versioned &&
-    (body?.version !== PI_CONSOLE_PROTOCOL_VERSION ||
-      !Number.isSafeInteger(body?.expectedSessionRevision) ||
-      body.expectedSessionRevision < 0)
+    body?.version !== PI_CONSOLE_PROTOCOL_VERSION ||
+    !Number.isSafeInteger(body?.expectedSessionRevision) ||
+    body.expectedSessionRevision < 0
   )
     return { ok: false, error: "invalid_command" };
-  const command = versioned ? body?.intent : body?.command;
+  const command = body?.intent;
   const commandId = body?.commandId;
-  if (!validCommandId(commandId, versioned) || !command || typeof command !== "object")
+  if (!validCommandId(commandId) || !command || typeof command !== "object")
     return { ok: false, error: "invalid_command" };
-  if (versioned && body.epoch !== currentEpoch) return { ok: false, error: "scotty_epoch_changed" };
-  if (versioned) {
-    const validation = validVersionedIntent(command);
-    if (!validation.ok) return validation;
-  } else if (!legacyCommandTypes.has(command.type)) {
-    return { ok: false, error: "invalid_command" };
-  }
+  if (body.epoch !== currentEpoch) return { ok: false, error: "scotty_epoch_changed" };
+  const validation = validIntent(command);
+  if (!validation.ok) return validation;
   if (command.type === "slash_command") {
     const argumentsText = command.arguments?.trim();
     const translated = {
@@ -545,13 +526,12 @@ export const normalizeCommand = (body, currentEpoch) => {
     };
     return {
       ok: true,
-      versioned,
       commandId,
       command: translated,
       intent: command,
     };
   }
-  return { ok: true, versioned, commandId, command, intent: command };
+  return { ok: true, commandId, command, intent: command };
 };
 
 export const filterRemoteCommands = (commands) => {

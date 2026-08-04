@@ -94,16 +94,43 @@
         </header>
 
         <section id="worklog" class="worklog" aria-label="Pi work log" tabindex="-1">
-          <div id="worklog-feed" class="worklog-feed" aria-live="polite" aria-busy="true">
+          <div id="worklog-feed" class="worklog-feed" aria-busy="true">
             <div class="feed-placeholder">
               <span class="placeholder-mark" aria-hidden="true"></span>
               <p>Loading this Pi session…</p>
             </div>
           </div>
+          <p
+            id="worklog-announcer"
+            class="visually-hidden"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          ></p>
         </section>
 
         <div class="composer-shell">
           <div id="delivery-receipts" class="delivery-receipts" aria-live="polite"></div>
+
+          <div
+            id="command-recovery"
+            class="command-recovery"
+            role="alert"
+            aria-labelledby="command-recovery-title"
+            aria-describedby="command-recovery-copy"
+            hidden
+          >
+            <span class="command-recovery-message">
+              <strong id="command-recovery-title">This session needs recovery</strong>
+              <span id="command-recovery-copy">
+                Review the held text above. Discard it to refresh this session and continue; it will
+                never be sent or replayed.
+              </span>
+            </span>
+            <button id="discard-held-commands" class="quiet-button" type="button">
+              Discard held commands
+            </button>
+          </div>
 
           <form id="composer" class="composer" aria-label="Message Pi">
             <label class="visually-hidden" for="composer-input">Message Pi</label>

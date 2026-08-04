@@ -2057,25 +2057,26 @@ describe("real Hono boundary", () => {
     expect(sandbox.containerFetch).not.toHaveBeenCalled();
   });
 
-  it("proxies an authenticated worklog snapshot without browser credentials", async () => {
-    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
-      expect(new URL(request.url).pathname).toBe("/_scotty/pi-session/snapshot");
-      expect(request.headers.get("cookie")).toBeNull();
-      expect(request.headers.get("authorization")).toBeNull();
-      return Response.json({ epoch: "epoch-1", sequence: 7, messages: [] });
-    });
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5/rpc/snapshot",
-      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
-    );
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      epoch: "epoch-1",
-      sequence: 7,
-      messages: [],
-    });
-    expect(sandbox.fetch).toHaveBeenCalledOnce();
+  it("does not expose the removed browser RPC surface", async () => {
+    for (const [action, method] of [
+      ["snapshot", "GET"],
+      ["events", "GET"],
+      ["command", "POST"],
+    ] as const) {
+      const response = await app.request(
+        `/s/a0b1c2d3e4f5/rpc/${action}`,
+        {
+          method,
+          headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` },
+        },
+        env(),
+      );
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "not_found", message: "Route not found" },
+      });
+    }
+    expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
   it("routes the versioned console only through the passive sandbox boundary", async () => {
@@ -2164,49 +2165,9 @@ describe("real Hono boundary", () => {
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
-  it("proxies worklog commands with same-origin mutation protection", async () => {
-    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
-      expect(new URL(request.url).pathname).toBe("/_scotty/pi-session/command");
-      expect(request.headers.get("cookie")).toBeNull();
-      expect(request.headers.get("content-type")).toBe("application/json");
-      expect(await request.json()).toEqual({
-        commandId: "command-1",
-        command: {
-          type: "prompt",
-          message: "Focus on tests",
-          streamingBehavior: "steer",
-        },
-      });
-      return Response.json({ status: "accepted", commandId: "command-1" }, { status: 202 });
-    });
+  it("rejects cross-origin modern console commands before reaching the sandbox", async () => {
     const response = await app.request(
-      "/s/a0b1c2d3e4f5/rpc/command",
-      {
-        method: "POST",
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          origin: "http://localhost",
-          "sec-fetch-site": "same-origin",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          commandId: "command-1",
-          command: {
-            type: "prompt",
-            message: "Focus on tests",
-            streamingBehavior: "steer",
-          },
-        }),
-      },
-      env(),
-    );
-    expect(response.status).toBe(202);
-    expect(sandbox.fetch).toHaveBeenCalledOnce();
-  });
-
-  it("rejects cross-origin worklog commands before reaching the sandbox", async () => {
-    const response = await app.request(
-      "/s/a0b1c2d3e4f5/rpc/command",
+      "/s/a0b1c2d3e4f5/console/v1/command",
       {
         method: "POST",
         headers: {
@@ -2215,12 +2176,16 @@ describe("real Hono boundary", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          commandId: "command-1",
-          command: { type: "abort" },
+          version: 1,
+          epoch: "epoch-1",
+          commandId: "123e4567-e89b-42d3-a456-426614174000",
+          expectedSessionRevision: 7,
+          intent: { type: "abort" },
         }),
       },
       env(),
     );
+
     expect(response.status).toBe(400);
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });

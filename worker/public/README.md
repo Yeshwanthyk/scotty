@@ -10,6 +10,10 @@ worklog at `/s/:id` receives snapshots and live events through same-origin Worke
 ports and browser credentials are never forwarded. Root credentials are never accepted from
 cookies or query parameters.
 
+The worklog uses only `/s/:id/console/v1/{snapshot,events,command}`. Commands are serialized with
+their snapshot epoch and session revision, and unconfirmed or stale mutations are held for explicit
+operator review rather than replayed.
+
 `devices.html` is the primary-device-only browser manager. It creates five-minute one-use pairing
 links, starts target-bound ownership transfers, distinguishes the server-derived `Primary` role
 from `This device`, and renders capability QR matrices locally. `pair.html`, `owner-transfer.html`,

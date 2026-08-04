@@ -1043,6 +1043,10 @@ textarea:focus-visible,
   color: #d9b0a2;
 }
 
+.receipt.local {
+  border-left: 2px solid var(--accent);
+}
+
 .receipt strong {
   color: #d3e3e5;
 }
@@ -1052,6 +1056,41 @@ textarea:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.command-recovery {
+  display: flex;
+  width: min(100%, 820px);
+  min-height: 52px;
+  align-items: center;
+  gap: 12px;
+  margin: 0 auto 9px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid rgb(224 121 84 / 32%);
+  border-radius: 8px;
+  background: rgb(224 121 84 / 9%);
+}
+
+.command-recovery[hidden] {
+  display: none;
+}
+
+.command-recovery-message {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+  color: #d9b0a2;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.command-recovery-message strong {
+  color: var(--ink-strong);
+}
+
+.command-recovery .quiet-button {
+  flex: none;
 }
 
 .composer-shell {

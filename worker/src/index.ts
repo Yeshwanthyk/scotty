@@ -72,7 +72,6 @@ import {
   type ScottyRunnerRegistryStub,
 } from "./runner-registry-object";
 import { Sandbox as ScottySandbox } from "./session";
-import { PI_SESSION_PROXY_PREFIX } from "./container-auth";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
 
@@ -585,44 +584,6 @@ app.all("/s/:id/terminal", async (c) => {
       },
     },
     410,
-  );
-});
-
-app.all("/s/:id/rpc/:action", async (c) => {
-  const id = parseSessionId(c.req.param("id"));
-  rejectRootQuery(c.req.raw);
-  const principal = await requireClientCookieRequest(c.req.raw, c.env);
-  refreshClientAuthCookie(c, principal);
-  const action = c.req.param("action");
-  const expectedMethod =
-    action === "snapshot" || action === "events"
-      ? "GET"
-      : action === "command"
-        ? "POST"
-        : undefined;
-  if (expectedMethod === undefined || c.req.method !== expectedMethod)
-    return c.json({ error: { code: "not_found", message: "Route not found" } }, 404);
-  if (c.req.method === "POST") {
-    requireCookieMutationSecurity(c.req.raw);
-    requireJsonContentType(c.req.raw);
-  }
-
-  const sandbox = sessionSandbox(c.env, id);
-  const incomingUrl = new URL(c.req.url);
-  const targetUrl = new URL(`http://scotty.internal${PI_SESSION_PROXY_PREFIX}/${action}`);
-  targetUrl.search = incomingUrl.search;
-  const headers = new Headers();
-  for (const name of ["accept", "content-type", "last-event-id"]) {
-    const value = c.req.header(name);
-    if (value) headers.set(name, value);
-  }
-  const body = c.req.method === "POST" ? await c.req.arrayBuffer() : undefined;
-  return sandbox.fetch(
-    new Request(targetUrl, {
-      method: c.req.method,
-      headers,
-      body,
-    }),
   );
 });
 
