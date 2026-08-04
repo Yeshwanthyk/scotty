@@ -5,7 +5,7 @@ import { renderCommandReceipts } from "/terminal-command-view.js";
 import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
-import { sendUiResponseForProjection } from "/terminal-ui-response.js";
+import { markUiResponseDelivered, sendUiResponseForProjection } from "/terminal-ui-response.js";
 import {
   applyEvent,
   blankProjection,
@@ -1099,7 +1099,9 @@ async function submitComposer() {
 }
 
 async function selectModel() {
-  const selected = currentProjection.capabilities.models.find(
+  const sessionId = currentSessionId;
+  const projection = currentProjection;
+  const selected = projection.capabilities.models.find(
     (model) => modelIdentity(model) === modelSelect.value,
   );
   if (!selected) return;
@@ -1111,33 +1113,49 @@ async function selectModel() {
         modelId: firstString(selected.id, selected.modelId, selected.model_id),
       },
       `Change model to ${modelLabel(selected)}`,
+      { sessionId, projection },
     );
-    currentProjection.state = { ...currentProjection.state, model: selected };
+    if (sessionId !== currentSessionId || projection !== currentProjection) {
+      refreshAffectedSession(sessionId);
+      return;
+    }
+    projection.state = { ...projection.state, model: selected };
     setRuntimeMenu(false);
     updateComposer();
     runtimeControlsButton.focus({ preventScroll: true });
-    loadSnapshot(currentSessionId).catch(() => {
+    loadSnapshot(sessionId).catch(() => {
       showToast("The model changed, but its updated thinking options could not be refreshed.");
     });
   } catch (error) {
+    if (sessionId !== currentSessionId || projection !== currentProjection) return;
     renderRuntimeControls();
     showToast(error instanceof Error ? error.message : "Pi could not change models.");
   }
 }
 
 async function selectThinkingLevel() {
+  const sessionId = currentSessionId;
+  const projection = currentProjection;
   const level = thinkingSelect.value;
   if (!level) return;
   try {
-    await sendCommand({ type: "set_thinking_level", level }, `Change thinking to ${level}`);
-    currentProjection.state = {
-      ...currentProjection.state,
+    await sendCommand({ type: "set_thinking_level", level }, `Change thinking to ${level}`, {
+      sessionId,
+      projection,
+    });
+    if (sessionId !== currentSessionId || projection !== currentProjection) {
+      refreshAffectedSession(sessionId);
+      return;
+    }
+    projection.state = {
+      ...projection.state,
       thinkingLevel: level,
     };
     setRuntimeMenu(false);
     updateComposer();
     runtimeControlsButton.focus({ preventScroll: true });
   } catch (error) {
+    if (sessionId !== currentSessionId || projection !== currentProjection) return;
     renderRuntimeControls();
     showToast(error instanceof Error ? error.message : "Pi could not change thinking level.");
   }
@@ -1155,6 +1173,12 @@ async function sendUiResponse(requestId, value, { cancelled = false } = {}) {
     sendCommand: (intent, label) => sendCommand(intent, label, { sessionId, projection }),
     isCurrentProjection: (targetSessionId, targetProjection) =>
       targetSessionId === currentSessionId && targetProjection === currentProjection,
+    markDelivered: (targetSessionId, targetProjection, targetRequestId) =>
+      markUiResponseDelivered(
+        targetProjection,
+        cacheEntry(targetSessionId).projection,
+        targetRequestId,
+      ),
     setCardPending: () => disableAskCard(requestId),
     setCardDelivered: () =>
       disableAskCard(requestId, "Awaiting Pi continuation · outcome unconfirmed"),

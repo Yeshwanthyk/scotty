@@ -232,7 +232,7 @@ describe("browser command lane", () => {
     );
   });
 
-  it("restores the newest discarded prompt as a draft without replaying held intent", async () => {
+  it("restores every unsent prompt as a draft without replaying held intent", async () => {
     const staleResponse = deferred<ConsoleCommandTransportResult>();
     const sends: ConsoleCommandEnvelope[] = [];
     const entry = { draft: "" };
@@ -274,11 +274,11 @@ describe("browser command lane", () => {
         retryable: false,
       },
     });
-    assert.isFalse(drafts.settle(staleDraft, (await stale.outcome).status));
+    assert.isTrue(drafts.settle(staleDraft, (await stale.outcome).status));
     lane.discard("session-a");
     assert.isTrue(drafts.settle(heldDraft, (await held.outcome).status));
 
-    assert.strictEqual(entry.draft, "held prompt");
+    assert.strictEqual(entry.draft, "stale prompt\n\nheld prompt");
     assert.deepStrictEqual(
       sends.map((envelope) => envelope.intent.message),
       ["stale prompt"],

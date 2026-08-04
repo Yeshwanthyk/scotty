@@ -344,7 +344,7 @@ describe("sessions shell", () => {
     );
     assert.match(
       terminalScript,
-      /sendCommand\(\{ type: "set_thinking_level", level \}, `Change thinking to \$\{level\}`\)/,
+      /sendCommand\([\s\S]*?\{ type: "set_thinking_level", level \}[\s\S]*?`Change thinking to \$\{level\}`[\s\S]*?\{ sessionId, projection \}[\s\S]*?\);/,
     );
     assert.match(
       terminalScript,

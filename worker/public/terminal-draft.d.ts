@@ -3,7 +3,7 @@ export type ComposerDraftEntry = { draft: string };
 export type ComposerDraftSubmission = {
   readonly sessionId: string;
   readonly draft: string;
-  readonly revision: number;
+  readonly sequence: number;
 };
 
 export type ComposerDraftOutcome = "accepted" | "rejected" | "stale" | "ambiguous" | "discarded";

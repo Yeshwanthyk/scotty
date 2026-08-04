@@ -1,3 +1,13 @@
+export function markUiResponseDelivered(projection, latestProjection, requestId) {
+  projection.deliveredUiResponses.add(requestId);
+  if (
+    latestProjection !== projection &&
+    latestProjection?.epoch === projection.epoch &&
+    latestProjection.pendingUi.has(requestId)
+  )
+    latestProjection.deliveredUiResponses.add(requestId);
+}
+
 export async function sendUiResponseForProjection({
   sessionId,
   projection,
@@ -6,6 +16,7 @@ export async function sendUiResponseForProjection({
   cancelled = false,
   sendCommand,
   isCurrentProjection,
+  markDelivered,
   setCardPending,
   setCardDelivered,
   setCardRetryable,
@@ -26,7 +37,7 @@ export async function sendUiResponseForProjection({
     );
     if (receipt.status !== "delivered")
       throw new Error("Pi did not confirm delivery of that response.");
-    projection.deliveredUiResponses.add(requestId);
+    markDelivered(sessionId, projection, requestId);
     if (isCurrentProjection(sessionId, projection)) setCardDelivered();
   } catch (error) {
     if (!isCurrentProjection(sessionId, projection)) return;

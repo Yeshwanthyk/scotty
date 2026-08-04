@@ -1,5 +1,8 @@
 import { assert, describe, it } from "vitest";
-import { sendUiResponseForProjection } from "../public/terminal-ui-response.js";
+import {
+  markUiResponseDelivered,
+  sendUiResponseForProjection,
+} from "../public/terminal-ui-response.js";
 
 const deferred = <A>() => {
   let resolve = (_value: A): void => undefined;
@@ -9,7 +12,8 @@ const deferred = <A>() => {
   return { promise, resolve };
 };
 
-const projectionWithRequest = (requestId: string) => ({
+const projectionWithRequest = (requestId: string, epoch = "epoch-a") => ({
+  epoch,
   pendingUi: new Map([[requestId, { id: requestId, method: "input" }]]),
   deliveredUiResponses: new Set<string>(),
 });
@@ -36,6 +40,8 @@ describe("terminal UI responses", () => {
       },
       isCurrentProjection: (sessionId, projection) =>
         sessionId === currentSessionId && projection === currentProjection,
+      markDelivered: (_sessionId, projection, targetRequestId) =>
+        markUiResponseDelivered(projection, projection, targetRequestId),
       setCardPending: () => cardStates.push("sending"),
       setCardDelivered: () => cardStates.push("delivered"),
       setCardRetryable: () => cardStates.push("retryable"),
@@ -56,5 +62,19 @@ describe("terminal UI responses", () => {
     assert.deepStrictEqual([...projectionA.deliveredUiResponses], [requestId]);
     assert.deepStrictEqual([...projectionB.deliveredUiResponses], []);
     assert.deepStrictEqual(cardStates, ["sending"]);
+  });
+
+  it("carries delivery state into a refreshed projection from the same epoch", () => {
+    const requestId = "request-1";
+    const original = projectionWithRequest(requestId);
+    const refreshed = projectionWithRequest(requestId);
+    const nextEpoch = projectionWithRequest(requestId, "epoch-b");
+
+    markUiResponseDelivered(original, refreshed, requestId);
+    markUiResponseDelivered(original, nextEpoch, requestId);
+
+    assert.deepStrictEqual([...original.deliveredUiResponses], [requestId]);
+    assert.deepStrictEqual([...refreshed.deliveredUiResponses], [requestId]);
+    assert.deepStrictEqual([...nextEpoch.deliveredUiResponses], []);
   });
 });

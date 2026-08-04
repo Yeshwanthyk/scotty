@@ -1,11 +1,26 @@
 export function createComposerDrafts(entryForSession) {
-  const revisions = new Map();
+  const sessions = new Map();
+
+  const stateFor = (sessionId) => {
+    let state = sessions.get(sessionId);
+    if (!state) {
+      state = {
+        draft: entryForSession(sessionId).draft,
+        nextSequence: 0,
+        recovered: new Map(),
+      };
+      sessions.set(sessionId, state);
+    }
+    return state;
+  };
 
   const set = (sessionId, draft) => {
     const entry = entryForSession(sessionId);
+    const state = stateFor(sessionId);
     if (entry.draft === draft) return entry.draft;
     entry.draft = draft;
-    revisions.set(sessionId, (revisions.get(sessionId) ?? 0) + 1);
+    state.draft = draft;
+    state.recovered.clear();
     return entry.draft;
   };
 
@@ -14,22 +29,34 @@ export function createComposerDrafts(entryForSession) {
 
     begin(sessionId, draft) {
       set(sessionId, draft);
+      const state = stateFor(sessionId);
       const submission = {
         sessionId,
         draft,
-        revision: revisions.get(sessionId) ?? 0,
+        sequence: state.nextSequence,
       };
+      state.nextSequence += 1;
+      state.draft = "";
+      state.recovered.clear();
       entryForSession(sessionId).draft = "";
       return submission;
     },
 
     settle(submission, status) {
-      if (status === "accepted" || revisions.get(submission.sessionId) !== submission.revision)
-        return false;
+      if (status === "accepted") return false;
+      const state = stateFor(submission.sessionId);
       const entry = entryForSession(submission.sessionId);
-      entry.draft = submission.draft;
-      revisions.set(submission.sessionId, submission.revision + 1);
-      return true;
+      const previous = entry.draft;
+      state.recovered.set(submission.sequence, submission.draft);
+      entry.draft = [
+        ...[...state.recovered.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([, draft]) => draft),
+        state.draft,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      return entry.draft !== previous;
     },
   };
 }

@@ -51,13 +51,26 @@ describe("terminal composer draft recovery", () => {
     assert.strictEqual(entry("session-b").draft, "session B text");
   });
 
-  it("does not overwrite a newer edit in the submitted session", () => {
+  it("keeps both failed text and a newer edit in the submitted session", () => {
     const { drafts, entry } = draftHarness();
     drafts.set("session-a", "submitted text");
     const submission = drafts.begin("session-a", "submitted text");
     drafts.set("session-a", "newer user edit");
 
-    assert.isFalse(drafts.settle(submission, "ambiguous"));
-    assert.strictEqual(entry("session-a").draft, "newer user edit");
+    assert.isTrue(drafts.settle(submission, "ambiguous"));
+    assert.strictEqual(entry("session-a").draft, "submitted text\n\nnewer user edit");
+  });
+
+  it("restores multiple failed submissions in submission order", () => {
+    const { drafts, entry } = draftHarness();
+    drafts.set("session-a", "first prompt");
+    const first = drafts.begin("session-a", "first prompt");
+    drafts.set("session-a", "second prompt");
+    const second = drafts.begin("session-a", "second prompt");
+
+    drafts.settle(first, "ambiguous");
+    drafts.settle(second, "discarded");
+
+    assert.strictEqual(entry("session-a").draft, "first prompt\n\nsecond prompt");
   });
 });

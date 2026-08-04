@@ -1,7 +1,14 @@
 export interface UiResponseProjection {
+  readonly epoch?: unknown;
   readonly pendingUi: ReadonlyMap<string, { readonly method?: unknown }>;
   readonly deliveredUiResponses: Set<string>;
 }
+
+export function markUiResponseDelivered(
+  projection: UiResponseProjection,
+  latestProjection: UiResponseProjection | undefined,
+  requestId: string,
+): void;
 
 export function sendUiResponseForProjection(options: {
   readonly sessionId: string;
@@ -14,6 +21,11 @@ export function sendUiResponseForProjection(options: {
     label: string,
   ) => Promise<{ readonly status?: unknown }>;
   readonly isCurrentProjection: (sessionId: string, projection: UiResponseProjection) => boolean;
+  readonly markDelivered: (
+    sessionId: string,
+    projection: UiResponseProjection,
+    requestId: string,
+  ) => void;
   readonly setCardPending: () => void;
   readonly setCardDelivered: () => void;
   readonly setCardRetryable: () => void;
