@@ -59,3 +59,59 @@ diff --git a/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts b/nod
            ).sort();
            const doNamespacesStable =
              oldWorkerName === workerName &&
+diff --git a/node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js b/node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js
+--- a/node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js
++++ b/node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js
+@@ -2,6 +2,7 @@
+ import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
+ import * as Output from "../../Output.js";
++import { ALCHEMY_PHASE } from "../../Phase.js";
+ import { packEnvValueKeepRedacted, unpackEnvValue, } from "../../RuntimeContext.js";
+ import { makeRequestHandler } from "./HttpServer.js";
+ import { ExportedHandlerMethods, WorkerEnvironment, WorkerExecutionContext, WorkerTypeId, deferredExecutionContext, } from "./Worker.js";
+@@ -49,6 +50,13 @@
+         // provides the live per-event context.
+         Layer.succeed(WorkerExecutionContext, deferredExecutionContext)),
+         exports: Effect.gen(function* () {
++            const phase = yield* ALCHEMY_PHASE;
++            // Plan props only need export names and kinds. Runtime constructors and
++            // Effect Context services are rebuilt from the bundled entrypoint, and
++            // Context is cyclic in Effect v4, so it must not enter resource state.
++            if (phase === "plan") {
++                return Object.fromEntries(Object.entries(exports).map(([name, entry]) => [name, { kind: entry.kind }]));
++            }
+             const handlers = yield* Effect.all(listeners, {
+                 concurrency: "unbounded",
+             });
+diff --git a/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts b/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts
+--- a/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts
++++ b/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts
+@@ -4,6 +4,7 @@
+ import * as Option from "effect/Option";
+ import type { HttpEffect } from "../../Http.ts";
+ import * as Output from "../../Output.ts";
++import { ALCHEMY_PHASE } from "../../Phase.ts";
+ import {
+   packEnvValueKeepRedacted,
+   unpackEnvValue,
+@@ -87,6 +88,19 @@
+       Layer.succeed(WorkerExecutionContext, deferredExecutionContext),
+     ),
+     exports: Effect.gen(function* () {
++      const phase = yield* ALCHEMY_PHASE;
++      // Plan props only need export names and kinds. Runtime constructors and
++      // Effect Context services are rebuilt from the bundled entrypoint, and
++      // Context is cyclic in Effect v4, so it must not enter resource state.
++      if (phase === "plan") {
++        return Object.fromEntries(
++          Object.entries(exports).map(([name, entry]) => [
++            name,
++            { kind: entry.kind },
++          ]),
++        ) as Record<string, DurableObjectExport | WorkflowExport>;
++      }
++
+       const handlers = yield* Effect.all(listeners, {
+         concurrency: "unbounded",
+       });
