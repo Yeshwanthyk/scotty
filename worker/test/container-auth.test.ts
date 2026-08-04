@@ -313,7 +313,7 @@ describe("ContainerAuth", () => {
       assert.deepInclude(JSON.parse(writes[3]?.content ?? ""), {
         defaultProvider: "openai-codex",
         defaultModel: "gpt-5.6-sol",
-        theme: "amp-neo",
+        theme: "dark",
         packages: [...PI_PACKAGES],
       });
       assert.deepStrictEqual(JSON.parse(writes[5]?.content ?? ""), {
