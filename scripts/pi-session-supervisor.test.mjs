@@ -163,13 +163,21 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   );
   assert.equal(snapshot.pendingUi[0].id, "ask-1");
 
+  let commandSequence = 0;
+  const commandEnvelope = (intent) => ({
+    version: 1,
+    epoch: snapshot.epoch,
+    commandId: `123e4567-e89b-42d3-a456-${String(++commandSequence).padStart(12, "0")}`,
+    expectedSessionRevision: 7,
+    intent,
+  });
+
   const setModel = await fetch(`${url}/command`, {
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
-    body: JSON.stringify({
-      commandId: "model-1",
-      command: { type: "set_model", provider: "anthropic", modelId: "claude-sonnet-4" },
-    }),
+    body: JSON.stringify(
+      commandEnvelope({ type: "set_model", provider: "anthropic", modelId: "claude-sonnet-4" }),
+    ),
   });
   assert.equal(setModel.status, 202);
   assert.equal((await setModel.json()).response.data.id, "claude-sonnet-4");
@@ -177,10 +185,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   const setThinking = await fetch(`${url}/command`, {
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
-    body: JSON.stringify({
-      commandId: "thinking-1",
-      command: { type: "set_thinking_level", level: "low" },
-    }),
+    body: JSON.stringify(commandEnvelope({ type: "set_thinking_level", level: "low" })),
   });
   assert.equal(setThinking.status, 202);
   const changedSnapshot = await (
@@ -189,14 +194,11 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   assert.equal(changedSnapshot.state.model.id, "claude-sonnet-4");
   assert.equal(changedSnapshot.state.thinkingLevel, "low");
 
-  const steer = {
-    commandId: "steer-1",
-    command: {
-      type: "prompt",
-      message: "Focus on tests",
-      streamingBehavior: "steer",
-    },
-  };
+  const steer = commandEnvelope({
+    type: "prompt",
+    message: "Focus on tests",
+    streamingBehavior: "steer",
+  });
   const first = await fetch(`${url}/command`, {
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
@@ -276,14 +278,13 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   const followUp = await fetch(`${url}/command`, {
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
-    body: JSON.stringify({
-      commandId: "follow-up-1",
-      command: {
+    body: JSON.stringify(
+      commandEnvelope({
         type: "prompt",
         message: "Race-safe follow-up",
         streamingBehavior: "followUp",
-      },
-    }),
+      }),
+    ),
   });
   assert.equal(followUp.status, 202);
 
@@ -307,10 +308,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   await fetch(`${url}/command`, {
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
-    body: JSON.stringify({
-      commandId: "oversized-dialog",
-      command: { type: "prompt", message: "Oversized dialog" },
-    }),
+    body: JSON.stringify(commandEnvelope({ type: "prompt", message: "Oversized dialog" })),
   });
   const afterOversizedDialog = await (
     await fetch(`${url}/snapshot`, { headers: transportHeaders })
@@ -321,25 +319,24 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   await fetch(`${url}/command`, {
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
-    body: JSON.stringify({
-      commandId: "dialog-again",
-      command: { type: "prompt", message: "Ask again" },
-    }),
+    body: JSON.stringify(commandEnvelope({ type: "prompt", message: "Ask again" })),
+  });
+  const answerCommand = commandEnvelope({
+    type: "extension_ui_response",
+    id: "ask-1",
+    value: "A",
   });
   const answer = await fetch(`${url}/command`, {
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
-    body: JSON.stringify({
-      commandId: "answer-1",
-      command: { type: "extension_ui_response", id: "ask-1", value: "A" },
-    }),
+    body: JSON.stringify(answerCommand),
   });
   assert.equal(answer.status, 202);
   assert.deepEqual(await answer.json(), {
     version: 1,
     epoch: snapshot.epoch,
     status: "delivered",
-    commandId: "answer-1",
+    commandId: answerCommand.commandId,
     commandDigest: await import("../protocol/pi-console-shared.mjs").then(
       ({ commandIntentDigest }) =>
         commandIntentDigest({ type: "extension_ui_response", id: "ask-1", value: "A" }),
@@ -358,14 +355,16 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   const duplicateAnswer = await fetch(`${url}/command`, {
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
-    body: JSON.stringify({
-      commandId: "answer-2",
-      command: { type: "extension_ui_response", id: "ask-1", value: "B" },
-    }),
+    body: JSON.stringify(
+      commandEnvelope({ type: "extension_ui_response", id: "ask-1", value: "B" }),
+    ),
   });
   assert.equal(duplicateAnswer.status, 409);
   assert.deepEqual(await duplicateAnswer.json(), {
-    error: "extension_ui_response_already_delivered",
+    version: 1,
+    status: "error",
+    code: "extension_ui_response_already_delivered",
+    retryable: false,
   });
   assert.equal(stderr, "");
 });
