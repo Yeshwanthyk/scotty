@@ -53,7 +53,7 @@
     "worker:dev": "npm run dev --workspace @scotty/worker"
   },
   "dependencies": {
-    "@distilled.cloud/cloudflare": "0.29.1",
+    "@distilled.cloud/cloudflare": "0.30.3",
     "@effect/platform-bun": "4.0.0-beta.103",
     "@effect/platform-node": "4.0.0-beta.103",
     "alchemy": "2.0.0-beta.67",
