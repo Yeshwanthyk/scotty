@@ -26,11 +26,9 @@ jobs:
         with:
           node-version: 22.22.2
           cache: npm
-      - run: npm ci
-      - run: npm run fmt:check
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run test:all
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npm run build
 
   build:
     needs: verify
@@ -62,7 +60,7 @@ jobs:
         with:
           node-version: 22.22.2
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - name: Build standalone CLI
         env:
           SCOTTY_COMPILE_TARGET: ${{ matrix.target }}
@@ -90,7 +88,7 @@ jobs:
         with:
           node-version: 22.22.2
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: scotty-*
