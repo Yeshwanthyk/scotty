@@ -8,7 +8,7 @@ import {
   submissionIdentity,
   titleText,
 } from "/session-form.js";
-import { renderSessionsView } from "/session-list.js";
+import { renderSessionsView, sessionsRenderSignature } from "/session-list.js";
 
 const POLL_INTERVAL = 5000;
 const content = document.querySelector("#content");
@@ -62,6 +62,7 @@ const rowErrors = new Map();
 const suppressedRepositories = new Set();
 let renamingId;
 let renameDraft = "";
+let renderedSessionsSignature;
 
 function sessionPath(id, suffix = "") {
   return `/api/sessions/${encodeURIComponent(id)}${suffix}`;
@@ -243,7 +244,12 @@ async function forgetRepository(repository) {
 }
 
 function render(options = {}) {
-  return renderSessionsView({
+  const signature = sessionsRenderSignature(sessions, loaded);
+  if (options.preserveUnchanged && signature === renderedSessionsSignature) {
+    content.setAttribute("aria-busy", fetching ? "true" : "false");
+    return { preservedDraft: false, preservedView: true };
+  }
+  const result = renderSessionsView({
     content,
     summary,
     sessions,
@@ -258,6 +264,8 @@ function render(options = {}) {
     renameDraft,
     preserveFocusedDraft: options.preserveFocusedDraft === true,
   });
+  if (!result.preservedDraft) renderedSessionsSignature = signature;
+  return { ...result, preservedView: false };
 }
 
 async function errorMessage(response, fallback) {
@@ -416,8 +424,10 @@ async function refresh(options = {}) {
     if (options.actionId) rowErrors.set(options.actionId, noticeText.textContent);
   } finally {
     fetching = false;
-    renderRepositorySuggestions();
-    render({ preserveFocusedDraft: options.actionId === undefined });
+    render({
+      preserveFocusedDraft: options.actionId === undefined,
+      preserveUnchanged: options.actionId === undefined,
+    });
   }
 }
 

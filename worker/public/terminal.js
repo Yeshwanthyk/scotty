@@ -16,6 +16,11 @@ import {
   projectionFromSnapshot,
 } from "/terminal-projection.js";
 import { conversationItems } from "/terminal-timeline.js";
+import {
+  createWorklogView,
+  meaningfulWorklogAnnouncement,
+  semanticSignature,
+} from "/terminal-worklog-view.js";
 
 const CACHE_LIMIT = 6;
 const compactViewport = window.matchMedia("(max-width: 780px)");
@@ -35,6 +40,7 @@ const workspaceRail = document.querySelector("#workspace-rail");
 const sessionWorkspace = document.querySelector("#session-workspace");
 const worklog = document.querySelector("#worklog");
 const worklogFeed = document.querySelector("#worklog-feed");
+const worklogAnnouncer = document.querySelector("#worklog-announcer");
 const composer = document.querySelector("#composer");
 const composerInput = document.querySelector("#composer-input");
 const composerSend = document.querySelector("#composer-send");
@@ -73,6 +79,7 @@ let localCommandItems = [];
 const sessionCache = new Map();
 const prefetching = new Map();
 const disclosureState = new Map();
+const worklogView = createWorklogView(worklogFeed);
 const consoleClient = createConsoleClient({
   fetch: window.fetch.bind(window),
   eventSource: (url) => new EventSource(url),
@@ -142,11 +149,60 @@ function renderAssistantCopy(text) {
   return element;
 }
 
-function renderProjection({ restoreScroll = false } = {}) {
-  renderScheduled = false;
-  if (!currentProjection) return;
-  const nearBottom = worklog.scrollHeight - worklog.scrollTop - worklog.clientHeight < 100;
-  const fragment = document.createDocumentFragment();
+function announceWorklog(message) {
+  if (!message) return;
+  worklogAnnouncer.textContent = "";
+  requestAnimationFrame(() => {
+    worklogAnnouncer.textContent = message;
+  });
+}
+
+function uniqueWorklogKey(sessionId, key, occurrences) {
+  const count = occurrences.get(key) ?? 0;
+  occurrences.set(key, count + 1);
+  return `${sessionId}:${key}:${count}`;
+}
+
+function conversationTools(conversation) {
+  return [
+    ...conversation.toolIds
+      .map((id) => currentProjection.tools.get(id))
+      .filter((tool) => tool && !secondaryActivityTool(tool)),
+    ...conversation.inlineTools.filter((tool) => !secondaryActivityTool(tool)),
+  ];
+}
+
+function assistantTurnParts(conversation) {
+  const textParts = [];
+  const reasoningParts = [];
+  for (const message of conversation.assistants) {
+    const parts = contentParts(message);
+    if (parts.length === 0) {
+      const text = messageText(message.text ?? message.message);
+      if (text) textParts.push(text);
+      continue;
+    }
+    for (const part of parts) {
+      if (typeof part === "string") {
+        if (part) textParts.push(part);
+        continue;
+      }
+      const type = firstString(part?.type, "text");
+      if (type === "text") {
+        const text = messageText(part);
+        if (text) textParts.push(text);
+      } else if (type === "thinking" || type === "reasoning") {
+        const text = messageText(part);
+        if (text) reasoningParts.push(text);
+      }
+    }
+  }
+  return { textParts, reasoningParts, tools: conversationTools(conversation) };
+}
+
+function worklogEntries() {
+  const entries = [];
+  const occurrences = new Map();
   const { items, claimedToolIds } = conversationItems(currentProjection.messages);
   let lastConversation = items.findLast((item) => item.kind === "conversation");
   for (const tool of currentProjection.tools.values()) {
@@ -160,25 +216,80 @@ function renderProjection({ restoreScroll = false } = {}) {
   const lastConversationIndex = items.findLastIndex((item) => item.kind === "conversation");
   for (const [index, item] of items.entries()) {
     if (item.kind === "system") {
-      const turn = renderSystemMessage(item.message);
-      if (turn) fragment.append(turn);
+      const text = messageText(item.message.content ?? item.message.text ?? item.message.message);
+      if (!text) continue;
+      entries.push({
+        key: uniqueWorklogKey(currentSessionId, `system:${index}`, occurrences),
+        signature: semanticSignature(text),
+        render: () => renderSystemMessage(item.message),
+      });
       continue;
     }
-    if (item.user) fragment.append(renderUserMessage(item.user));
-    const assistantTurn = renderAssistantTurn(item, index === lastConversationIndex);
-    if (assistantTurn) fragment.append(assistantTurn);
+    if (item.user) {
+      const delivery = firstString(
+        item.user.deliveryMode,
+        item.user.delivery_mode,
+        item.user.source,
+      );
+      entries.push({
+        key: uniqueWorklogKey(currentSessionId, `user:${item.key}`, occurrences),
+        signature: semanticSignature([
+          messageText(item.user.content ?? item.user.text ?? item.user.message),
+          delivery,
+        ]),
+        render: () => renderUserMessage(item.user),
+      });
+    }
+    const isLatest = index === lastConversationIndex;
+    const parts = assistantTurnParts(item);
+    if (
+      parts.textParts.length === 0 &&
+      parts.reasoningParts.length === 0 &&
+      parts.tools.length === 0
+    )
+      continue;
+    entries.push({
+      key: uniqueWorklogKey(currentSessionId, `assistant:${item.key}`, occurrences),
+      signature: semanticSignature([
+        parts.textParts,
+        parts.reasoningParts,
+        parts.tools,
+        Boolean(currentProjection.active && isLatest),
+      ]),
+      render: () => renderAssistantTurn(item, isLatest, parts),
+    });
   }
   for (const request of currentProjection.pendingUi.values()) {
-    fragment.append(renderUiRequest(request));
+    entries.push({
+      key: uniqueWorklogKey(currentSessionId, `request:${request.id}`, occurrences),
+      signature: semanticSignature([
+        request,
+        currentProjection.deliveredUiResponses.has(request.id),
+      ]),
+      render: () => renderUiRequest(request),
+    });
   }
+  if (entries.length === 0) {
+    entries.push({
+      key: uniqueWorklogKey(currentSessionId, "empty", occurrences),
+      signature: "empty",
+      render: () => {
+        const empty = document.createElement("div");
+        empty.className = "feed-empty";
+        empty.append(textElement("p", "", "This Pi session has no messages yet."));
+        return empty;
+      },
+    });
+  }
+  return entries;
+}
 
-  if (fragment.childNodes.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "feed-empty";
-    empty.append(textElement("p", "", "This Pi session has no messages yet."));
-    fragment.append(empty);
-  }
-  worklogFeed.replaceChildren(fragment);
+function renderProjection({ restoreScroll = false } = {}) {
+  renderScheduled = false;
+  if (!currentProjection) return;
+  const nearBottom = worklog.scrollHeight - worklog.scrollTop - worklog.clientHeight < 100;
+  const entries = worklogEntries();
+  worklogView.update(entries);
   worklogFeed.setAttribute("aria-busy", "false");
   renderReceipts();
   renderActivity();
@@ -229,38 +340,8 @@ function renderUserMessage(message) {
   return turn;
 }
 
-function renderAssistantTurn(conversation, isLatest) {
-  const textParts = [];
-  const reasoningParts = [];
-  for (const message of conversation.assistants) {
-    const parts = contentParts(message);
-    if (parts.length === 0) {
-      const text = messageText(message.text ?? message.message);
-      if (text) textParts.push(text);
-      continue;
-    }
-    for (const part of parts) {
-      if (typeof part === "string") {
-        if (part) textParts.push(part);
-        continue;
-      }
-      const type = firstString(part?.type, "text");
-      if (type === "text") {
-        const text = messageText(part);
-        if (text) textParts.push(text);
-      } else if (type === "thinking" || type === "reasoning") {
-        const text = messageText(part);
-        if (text) reasoningParts.push(text);
-      }
-    }
-  }
-
-  const tools = [
-    ...conversation.toolIds
-      .map((id) => currentProjection.tools.get(id))
-      .filter((tool) => tool && !secondaryActivityTool(tool)),
-    ...conversation.inlineTools.filter((tool) => !secondaryActivityTool(tool)),
-  ];
+function renderAssistantTurn(conversation, isLatest, parts = assistantTurnParts(conversation)) {
+  const { textParts, reasoningParts, tools } = parts;
   if (textParts.length === 0 && reasoningParts.length === 0 && tools.length === 0) return undefined;
 
   const turn = document.createElement("article");
@@ -847,6 +928,7 @@ function consumeSseEvent(messageEvent, source, namedType) {
   try {
     const payload = JSON.parse(messageEvent.data);
     if (namedType && !payload.type && !payload.event?.type) payload.type = namedType;
+    const wasActive = Boolean(currentProjection.active);
     const result = applyEvent(currentProjection, payload);
     if (result === "epoch-mismatch" || result === "snapshot") {
       source.close();
@@ -854,6 +936,17 @@ function consumeSseEvent(messageEvent, source, namedType) {
       return;
     }
     const { event } = eventPayload(payload);
+    const request = firstObject(event.request, event);
+    if (result === "applied") {
+      announceWorklog(
+        meaningfulWorklogAnnouncement({
+          type: event.type,
+          method: request.method,
+          wasActive,
+          isActive: Boolean(currentProjection.active),
+        }),
+      );
+    }
     if (event.type === "extension_ui_request" && event.method === "notify") {
       showToast(firstString(event.message, "Pi sent a notification."));
     } else if (event.type === "extension_ui_request" && event.method === "set_editor_text") {

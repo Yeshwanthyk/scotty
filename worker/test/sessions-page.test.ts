@@ -1,5 +1,9 @@
 import { assert, describe, it } from "vitest";
-import { focusKeyNeedsStableDraft, sessionPrimaryTiming } from "../public/session-list.js";
+import {
+  focusKeyNeedsStableDraft,
+  sessionPrimaryTiming,
+  sessionsRenderSignature,
+} from "../public/session-list.js";
 import sessionListSource from "../public/session-list.js?raw";
 import sessionsHtml from "../public/sessions.html?raw";
 import sessionsScript from "../public/sessions.js?raw";
@@ -53,5 +57,33 @@ describe("sessions page", () => {
     assert.isTrue(focusKeyNeedsStableDraft("rename:session-1"));
     assert.isFalse(focusKeyNeedsStableDraft("details-toggle-details:session-1"));
     assert.isFalse(focusKeyNeedsStableDraft(undefined));
+  });
+
+  it("keeps passive session renders stable within a minute", () => {
+    const now = Date.parse("2026-08-04T14:30:05.000Z");
+    const session = {
+      id: "session-1",
+      repo: "openai/scotty",
+      title: "Accessibility",
+      status: "warm",
+      createdAt: "2026-08-04T14:00:00.000Z",
+      capRemainingSeconds: 5_430,
+    };
+    const signature = sessionsRenderSignature([session], true, now);
+
+    assert.strictEqual(
+      sessionsRenderSignature([{ ...session, capRemainingSeconds: 5_425 }], true, now + 5_000),
+      signature,
+    );
+    assert.notStrictEqual(
+      sessionsRenderSignature([{ ...session, status: "sleeping" }], true, now + 5_000),
+      signature,
+    );
+    assert.notStrictEqual(sessionsRenderSignature([session], true, now + 60_000), signature);
+  });
+
+  it("guards passive polling before replacing session nodes", () => {
+    assert.include(sessionsScript, "signature === renderedSessionsSignature");
+    assert.include(sessionsScript, "preserveUnchanged: options.actionId === undefined");
   });
 });

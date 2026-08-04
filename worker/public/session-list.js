@@ -25,6 +25,34 @@ export function focusKeyNeedsStableDraft(value) {
   return typeof value === "string" && value.startsWith("rename:");
 }
 
+export function sessionsRenderSignature(sessions, loaded, now = Date.now()) {
+  if (!loaded) return "loading";
+  const minute = Math.floor(now / 60_000);
+  const groups = groupSessionsByRepository(sessions);
+  return JSON.stringify([
+    minute,
+    groups.map((group) => [
+      group.repo,
+      group.sessions.map((session) => [
+        session.id,
+        sessionTitle(session),
+        session.branch,
+        session.provider,
+        session.runner,
+        session.status,
+        Boolean(session.deleting),
+        session.backupId,
+        Number.isFinite(session.capRemainingSeconds)
+          ? Math.floor(session.capRemainingSeconds / 60)
+          : null,
+        session.hardCapAt,
+        session.createdAt,
+        typeof session.failure?.message === "string" ? session.failure.message : null,
+      ]),
+    ]),
+  ]);
+}
+
 function addText(parent, className, text, tag = "div") {
   const element = document.createElement(tag);
   element.className = className;
