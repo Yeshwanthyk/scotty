@@ -9,5 +9,5 @@ The bundled skill directories are unmodified snapshots recorded in `skills.lock.
 - `jakubkrehel/make-interfaces-feel-better` is MIT licensed. See
   `licenses/MIT-make-interfaces-feel-better.txt`.
 - `anthropics/skills` carries its license in `bundled/frontend-design/LICENSE.txt`.
-- `Yeshwanthyk/agent-skills` is owned by the Scotty project owner and does not declare
-  a repository license at the pinned revision.
+- `Yeshwanthyk/agent-skills` is MIT licensed. See
+  `licenses/MIT-Yeshwanthyk-agent-skills.txt`.

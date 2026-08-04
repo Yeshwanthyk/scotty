@@ -60,7 +60,7 @@ const piSettings = (credential: StoredCredential): string =>
     defaultModel: "gpt-5.6-sol",
     defaultThinkingLevel: "high",
     steeringMode: "one-at-a-time",
-    theme: "amp-neo",
+    theme: "dark",
     hideThinkingBlock: false,
     quietStartup: true,
     defaultProjectTrust: "always",
