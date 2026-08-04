@@ -4,6 +4,7 @@ import { renderCommandReceipts } from "/terminal-command-view.js";
 import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
+import { sendUiResponseForProjection } from "/terminal-ui-response.js";
 import {
   applyEvent,
   blankProjection,
@@ -995,19 +996,18 @@ function consumeSseEvent(messageEvent, source, namedType) {
   }
 }
 
-function queueCommand(intent, label) {
-  if (
-    !currentProjection?.loaded ||
-    !currentProjection.epoch ||
-    !Number.isSafeInteger(currentProjection.sessionRevision)
-  )
+function queueCommand(
+  intent,
+  label,
+  { sessionId = currentSessionId, projection = currentProjection } = {},
+) {
+  if (!projection?.loaded || !projection.epoch || !Number.isSafeInteger(projection.sessionRevision))
     throw new Error("Refresh the session before sending a command.");
-  const sessionId = currentSessionId;
   return {
     ...commandLane.enqueue({
       sessionId,
-      epoch: currentProjection.epoch,
-      expectedSessionRevision: currentProjection.sessionRevision,
+      epoch: projection.epoch,
+      expectedSessionRevision: projection.sessionRevision,
       intent,
       label,
     }),
@@ -1022,8 +1022,8 @@ function commandOutcomeMessage(outcome) {
   return outcome.message ?? "Pi did not accept that command.";
 }
 
-async function sendCommand(intent, label) {
-  const submission = queueCommand(intent, label);
+async function sendCommand(intent, label, authority) {
+  const submission = queueCommand(intent, label, authority);
   const { outcome } = submission;
   const result = await outcome;
   if (result.status === "stale" || result.status === "ambiguous")
@@ -1130,27 +1130,23 @@ async function selectThinkingLevel() {
 }
 
 async function sendUiResponse(requestId, value, { cancelled = false } = {}) {
-  const request = currentProjection.pendingUi.get(requestId);
-  if (!request) return;
-  disableAskCard(requestId);
-  try {
-    const command = cancelled
-      ? { type: "extension_ui_response", id: requestId, cancelled: true }
-      : request.method === "confirm"
-        ? { type: "extension_ui_response", id: requestId, confirmed: Boolean(value) }
-        : { type: "extension_ui_response", id: requestId, value: String(value) };
-    const receipt = await sendCommand(
-      command,
-      cancelled ? "Cancel Pi question" : `Answer Pi question: ${String(value)}`,
-    );
-    if (receipt.status !== "delivered")
-      throw new Error("Pi did not confirm delivery of that response.");
-    currentProjection.deliveredUiResponses.add(requestId);
-    disableAskCard(requestId, "Awaiting Pi continuation · outcome unconfirmed");
-  } catch (error) {
-    enableAskCard(requestId);
-    showToast(error instanceof Error ? error.message : "Pi did not accept that response.");
-  }
+  const sessionId = currentSessionId;
+  const projection = currentProjection;
+  await sendUiResponseForProjection({
+    sessionId,
+    projection,
+    requestId,
+    value,
+    cancelled,
+    sendCommand: (intent, label) => sendCommand(intent, label, { sessionId, projection }),
+    isCurrentProjection: (targetSessionId, targetProjection) =>
+      targetSessionId === currentSessionId && targetProjection === currentProjection,
+    setCardPending: () => disableAskCard(requestId),
+    setCardDelivered: () =>
+      disableAskCard(requestId, "Awaiting Pi continuation · outcome unconfirmed"),
+    setCardRetryable: () => enableAskCard(requestId),
+    reportError: showToast,
+  });
 }
 
 function disableAskCard(requestId, message = "Sending…") {
