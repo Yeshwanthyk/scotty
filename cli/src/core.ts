@@ -17,7 +17,7 @@ export type Writer = (text: string) => void;
 export interface GlobalOptions {
   json: boolean;
   host?: string;
-  token?: string;
+  tokenFile?: string;
 }
 
 export class CliError extends Data.TaggedError("CliError")<{

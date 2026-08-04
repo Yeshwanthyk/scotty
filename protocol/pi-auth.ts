@@ -16,6 +16,7 @@ export const PiOAuthCredentialSchema = Schema.StructWithRest(
     refresh: Schema.NonEmptyString,
     access: Schema.NonEmptyString,
     expires: Schema.Finite,
+    accountId: Schema.optionalKey(Schema.NonEmptyString),
   }),
   [Schema.Record(Schema.String, Schema.Unknown)],
 );

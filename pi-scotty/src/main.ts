@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 import { mkdir } from "node:fs/promises";
-import { createInterface } from "node:readline/promises";
-import { hostname } from "node:os";
+
 import { ProcessTerminal, TUI } from "@earendil-works/pi-tui";
 import { defaultConfigPath, defaultStateDirectory, loadConfig, saveConfig } from "./config.ts";
 import { FleetConsoleController } from "./controller.ts";
 import { PiScottyError, safeErrorMessage } from "./errors.ts";
 import { consumePairing } from "./pairing.ts";
+import { readSecretLine } from "./secret-input.ts";
 import { HttpConsoleTransport } from "./transport.ts";
 import { FleetConsoleComponent } from "./ui.ts";
 
@@ -43,7 +43,7 @@ const parseArguments = (args: ReadonlyArray<string>): ParsedArguments => {
     return { command: "help", label: "", configPath: defaultConfigPath() };
   const command = args[0] === "pair" ? "pair" : "run";
   const origin = command === "pair" ? args[1] : undefined;
-  let label = `pi-scotty on ${hostname()}`;
+  let label = "pi-scotty";
   let configPath = defaultConfigPath();
   for (let index = command === "pair" ? 2 : 0; index < args.length; index += 2) {
     const flag = args[index];
@@ -60,9 +60,7 @@ const parseArguments = (args: ReadonlyArray<string>): ParsedArguments => {
 };
 
 const pair = async (arguments_: ParsedArguments): Promise<void> => {
-  const terminal = createInterface({ input: process.stdin, output: process.stdout });
-  const pairingInput = await terminal.question("Pairing credential or URL: ");
-  terminal.close();
+  const pairingInput = await readSecretLine("Pairing credential or URL: ");
   const config = await consumePairing({
     origin: arguments_.origin ?? "",
     pairingInput,

@@ -720,7 +720,12 @@ export class FakeWorkerService {
       return error(404, "not_found", "Route not found", "Check the Scotty host");
     const principal = this.#principal(request);
     if (!principal)
-      return error(401, "auth", "Authentication required", "Pass SCOTTY_TOKEN or --token");
+      return error(
+        401,
+        "auth",
+        "Authentication required",
+        "Use managed config, SCOTTY_TOKEN, or --token-file",
+      );
     if (principal.kind === "client" && request.method !== "GET" && !this.#sameOrigin(request))
       return error(400, "bad_request", "Request must come from this Scotty origin");
 

@@ -1,4 +1,5 @@
 export type PiScottyErrorCode =
+  | "config_missing"
   | "config_invalid"
   | "config_permissions"
   | "input_invalid"

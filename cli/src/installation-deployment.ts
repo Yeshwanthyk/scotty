@@ -42,6 +42,9 @@ import type {
   InstallationPlan,
   InstallationRecoverRequest,
   InstallationResult,
+  PiAuthTargetRequest,
+  PiAuthTargetResult,
+  PiAuthUploadRequest,
   InstallationUninstallRequest,
   InstallationUninstallResult,
 } from "./services.ts";
@@ -212,7 +215,11 @@ const bindingPlanAction = (
   return undefined;
 };
 
-const fingerprintPlan = Effect.fnUntraced(function* (installationName: string, plan: Plan.Plan) {
+const fingerprintPlan = Effect.fnUntraced(function* (
+  installationName: string,
+  accountId: string,
+  plan: Plan.Plan,
+) {
   const changes: InstallationPlan["changes"] = [
     ...Object.entries(plan.resources).flatMap(([id, node]) => [
       ...(node.action === "noop" ? [] : [{ id, action: node.action }]),
@@ -266,6 +273,7 @@ const fingerprintPlan = Effect.fnUntraced(function* (installationName: string, p
   ).join("");
   return {
     installationName,
+    accountId,
     hasExistingResources: Object.values(plan.resources).some((node) => node.action !== "create"),
     fingerprint,
     changes,
@@ -283,9 +291,12 @@ const planWithProfile = async (
       evalStack(
         stack,
         (compiled) =>
-          Plan.make(compiled).pipe(
-            Effect.flatMap((plan) => fingerprintPlan(request.installationName, plan)),
-          ),
+          Effect.gen(function* () {
+            const environment = yield* Cloudflare.CloudflareEnvironment;
+            const { accountId } = yield* environment;
+            const plan = yield* Plan.make(compiled);
+            return yield* fingerprintPlan(request.installationName, accountId, plan);
+          }).pipe(Effect.provide(cloudflareApiLive())),
         { stage: CLOUDFLARE_STAGE },
       ),
     ),
@@ -304,8 +315,14 @@ const deployWithProfile = async (
         stack,
         (compiled) =>
           Effect.gen(function* () {
+            const environment = yield* Cloudflare.CloudflareEnvironment;
+            const { accountId } = yield* environment;
+            if (accountId !== request.expectedAccountId)
+              return yield* new InstallationDeploymentError({
+                message: "The Cloudflare account changed after confirmation.",
+              });
             const plan = yield* Plan.make(compiled);
-            const summary = yield* fingerprintPlan(request.installationName, plan);
+            const summary = yield* fingerprintPlan(request.installationName, accountId, plan);
             if (summary.fingerprint !== request.expectedPlanFingerprint)
               return yield* new InstallationDeploymentError({
                 message: "The deployment plan changed after confirmation.",
@@ -480,6 +497,19 @@ export async function deployInstallation(
   }
 }
 
+export async function planCreateInstallation(
+  request: InstallationDeployRequest,
+): Promise<InstallationPlan> {
+  const deployment = await prepareDeploymentRoot();
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
+  try {
+    await prepareContainerContext(deployment.root);
+    return await planWithProfile(request, deployment.root, undefined);
+  } finally {
+    await deployment.cleanup();
+  }
+}
+
 export async function createInstallation(
   request: InstallationCreateRequest,
 ): Promise<InstallationResult> {
@@ -493,6 +523,15 @@ export async function createInstallation(
     };
     const plan = await planWithProfile(deployRequest, deployment.root, undefined);
     if (
+      plan.accountId !== request.expectedAccountId ||
+      plan.fingerprint !== request.expectedPlanFingerprint
+    ) {
+      // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: confirmed account and plan must remain stable before mutation
+      throw new InstallationDeploymentError({
+        message: "The installation target changed after confirmation.",
+      });
+    }
+    const unsafeFreshPlan =
       plan.hasExistingResources ||
       plan.changes.length === 0 ||
       plan.changes.some(
@@ -500,19 +539,36 @@ export async function createInstallation(
           change.action !== "create" &&
           change.action !== "run" &&
           change.action !== "binding-create",
-      )
+      );
+    const unsafeResumePlan = plan.changes.some(
+      (change) =>
+        change.action === "delete" ||
+        change.action === "replace" ||
+        change.action === "binding-delete",
+    );
+    if (
+      (request.mode === "fresh" && unsafeFreshPlan) ||
+      (request.mode === "resume" && unsafeResumePlan)
     ) {
-      // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: create-only Promise adapter rejects an existing or ambiguous installation before apply
+      // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: create replay rejects unowned, destructive, or ambiguous resource plans
       throw new InstallationDeploymentError({
-        message: "The named Scotty installation already exists or is not empty.",
+        message: "The named Scotty installation cannot be created or safely resumed.",
       });
     }
-    const deployed = await deployWithProfile(
-      { ...deployRequest, expectedPlanFingerprint: plan.fingerprint },
-      deployment.root,
-      undefined,
-    );
-    await inspectWithProfile(request, undefined, request.token);
+    const deployed =
+      plan.changes.length === 0
+        ? await inspectWithProfile(request, undefined, request.token, request.expectedAccountId)
+        : await deployWithProfile(
+            {
+              ...deployRequest,
+              expectedAccountId: request.expectedAccountId,
+              expectedPlanFingerprint: plan.fingerprint,
+            },
+            deployment.root,
+            undefined,
+          );
+    if (plan.changes.length > 0)
+      await inspectWithProfile(request, undefined, request.token, request.expectedAccountId);
     return deployed;
   } finally {
     await deployment.cleanup();
@@ -650,6 +706,71 @@ export async function uninstallInstallation(
   } finally {
     await deployment.cleanup();
   }
+}
+
+const piAuthTargetProgram = Effect.fnUntraced(function* (request: PiAuthTargetRequest) {
+  const environment = yield* Cloudflare.CloudflareEnvironment;
+  const { accountId } = yield* environment;
+  if (accountId !== request.expectedAccountId)
+    return yield* new InstallationDeploymentError({
+      message: "The Cloudflare account does not match the saved Scotty installation.",
+    });
+  const settings = yield* Workers.getScriptScriptAndVersionSetting({
+    accountId,
+    scriptName: request.expectedWorkerName,
+  });
+  const bindingNames = new Set((settings.bindings ?? []).map((binding) => binding.name));
+  if (["AUTH", "SANDBOX", "SESSIONS", "BACKUP_BUCKET"].some((name) => !bindingNames.has(name)))
+    return yield* new InstallationDeploymentError({
+      message: "The saved Worker does not have the required Scotty bindings.",
+    });
+  const scriptSubdomain = yield* Workers.getScriptSubdomain({
+    accountId,
+    scriptName: request.expectedWorkerName,
+  });
+  if (!scriptSubdomain.enabled)
+    return yield* new InstallationDeploymentError({
+      message: "The saved Scotty Worker has no workers.dev URL.",
+    });
+  const { subdomain } = yield* Workers.getSubdomain({ accountId });
+  const host = `https://${request.expectedWorkerName}.${subdomain}.workers.dev`;
+  if (host !== request.expectedHost)
+    return yield* new InstallationDeploymentError({
+      message: "The saved Worker origin does not match Cloudflare.",
+    });
+  return {
+    accountId,
+    workerName: request.expectedWorkerName,
+    host,
+  } satisfies PiAuthTargetResult;
+});
+
+export async function inspectPiAuthTarget(
+  request: PiAuthTargetRequest,
+): Promise<PiAuthTargetResult> {
+  return runWithProfile(request.profile, sourceRoot(), () =>
+    provideAlchemy(piAuthTargetProgram(request).pipe(Effect.provide(cloudflareApiLive()))),
+  );
+}
+
+export async function uploadPiAuthSecret(
+  request: PiAuthUploadRequest,
+): Promise<PiAuthTargetResult> {
+  return runWithProfile(request.profile, sourceRoot(), () =>
+    provideAlchemy(
+      Effect.gen(function* () {
+        const target = yield* piAuthTargetProgram(request);
+        yield* Workers.putScriptSecret({
+          accountId: target.accountId,
+          scriptName: target.workerName,
+          name: "PI_AUTH_JSON",
+          text: request.json,
+          type: "secret_text",
+        });
+        return target;
+      }).pipe(Effect.provide(cloudflareApiLive())),
+    ),
+  );
 }
 
 export async function inspectInstallation(

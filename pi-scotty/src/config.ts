@@ -1,4 +1,5 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, lstat, mkdir, open, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -31,14 +32,61 @@ export const normalizeOrigin = (input: string): string => {
   return url.origin;
 };
 
-export const loadConfig = async (path = defaultConfigPath()): Promise<PiScottyConfig> => {
-  const metadata = await stat(path);
-  if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0)
+const errorCode = (error: unknown): string | undefined =>
+  typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
+
+const configAccessError = (path: string, error: unknown): PiScottyError =>
+  errorCode(error) === "ENOENT"
+    ? new PiScottyError(
+        "config_missing",
+        `No paired-client config found at ${path}. Pair this device with: pi-scotty pair <origin>`,
+      )
+    : new PiScottyError("config_invalid", `Paired-client config could not be read: ${path}`);
+
+const readPrivateConfig = async (path: string): Promise<string> => {
+  const pathMetadata = await lstat(path).catch((error: unknown) => {
+    throw configAccessError(path, error);
+  });
+  if (
+    pathMetadata.isSymbolicLink() ||
+    !pathMetadata.isFile() ||
+    (process.platform !== "win32" &&
+      ((pathMetadata.mode & 0o077) !== 0 ||
+        (typeof process.geteuid === "function" && pathMetadata.uid !== process.geteuid())))
+  )
     throw new PiScottyError(
       "config_permissions",
-      `Paired-client config must be mode 0600: ${path}`,
+      `Paired-client config must be a non-symlinked mode-0600 file: ${path}`,
     );
-  const decoded = decodeConfigJson(await readFile(path, "utf8"));
+  const flags =
+    process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
+  const file = await open(path, flags).catch((error: unknown) => {
+    throw configAccessError(path, error);
+  });
+  try {
+    const openedMetadata = await file.stat();
+    if (
+      !openedMetadata.isFile() ||
+      (process.platform !== "win32" &&
+        ((openedMetadata.mode & 0o077) !== 0 ||
+          (typeof process.geteuid === "function" && openedMetadata.uid !== process.geteuid()) ||
+          openedMetadata.dev !== pathMetadata.dev ||
+          openedMetadata.ino !== pathMetadata.ino))
+    )
+      throw new PiScottyError(
+        "config_permissions",
+        `Paired-client config must be a non-symlinked mode-0600 file: ${path}`,
+      );
+    return await file.readFile("utf8");
+  } finally {
+    await file.close();
+  }
+};
+
+export const loadConfig = async (path = defaultConfigPath()): Promise<PiScottyConfig> => {
+  const decoded = decodeConfigJson(await readPrivateConfig(path));
   if (decoded === undefined || normalizeOrigin(decoded.origin) !== decoded.origin)
     throw new PiScottyError("config_invalid", `Paired-client config is invalid: ${path}`);
   return decoded;

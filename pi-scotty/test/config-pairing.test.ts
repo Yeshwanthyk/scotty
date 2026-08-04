@@ -1,9 +1,11 @@
-import { chmod, mkdtemp, readFile, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, symlink } from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultStateDirectory, loadConfig, saveConfig } from "../src/config.ts";
 import { consumePairing } from "../src/pairing.ts";
+import { readSecretLine } from "../src/secret-input.ts";
 import type { FetchImplementation } from "../src/transport.ts";
 
 const CLIENT_CREDENTIAL = `scotty_client.0123456789ab.${"c".repeat(32)}`;
@@ -41,6 +43,29 @@ describe("paired-client config", () => {
     expect(text).not.toContain("PI_CODING_AGENT_DIR");
   });
 
+  it("explains how to pair when config is missing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-scotty-missing-"));
+    const path = join(directory, "config.json");
+
+    await expect(loadConfig(path)).rejects.toMatchObject({
+      code: "config_missing",
+      message: `No paired-client config found at ${path}. Pair this device with: pi-scotty pair <origin>`,
+    });
+  });
+
+  it("rejects a symlinked config", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-scotty-symlink-"));
+    const target = join(directory, "target.json");
+    const path = join(directory, "config.json");
+    await saveConfig(
+      { version: 1, origin: "https://scotty.example", credential: CLIENT_CREDENTIAL },
+      target,
+    );
+    await symlink(target, path);
+
+    await expect(loadConfig(path)).rejects.toMatchObject({ code: "config_permissions" });
+  });
+
   it("rejects group/world-readable config", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-scotty-mode-"));
     const path = join(directory, "config.json");
@@ -51,6 +76,67 @@ describe("paired-client config", () => {
     await chmod(path, 0o644);
 
     await expect(loadConfig(path)).rejects.toMatchObject({ code: "config_permissions" });
+  });
+});
+
+class PairingInput extends EventEmitter {
+  isTTY = true;
+  isRaw = false;
+  rawModes: boolean[] = [];
+
+  setRawMode(mode: boolean): void {
+    this.isRaw = mode;
+    this.rawModes.push(mode);
+  }
+
+  resume(): void {}
+  pause(): void {}
+}
+
+describe("pairing input", () => {
+  it("does not echo a pairing credential in a TTY", async () => {
+    const input = new PairingInput();
+    const output: string[] = [];
+    const result = readSecretLine("Pairing credential or URL: ", input, {
+      write: (text) => output.push(text),
+    });
+    input.emit("data", Buffer.from(`${PAIRING_CREDENTIAL}\r`));
+
+    await expect(result).resolves.toBe(PAIRING_CREDENTIAL);
+    expect(input.rawModes).toEqual([true, false]);
+    expect(output.join("")).toBe("Pairing credential or URL: \n");
+    expect(output.join("")).not.toContain(PAIRING_CREDENTIAL);
+  });
+
+  it("restores the terminal and fails on empty EOF", async () => {
+    const input = new PairingInput();
+    const output: string[] = [];
+    const result = readSecretLine("Pairing credential or URL: ", input, {
+      write: (text) => output.push(text),
+    });
+    input.emit("end");
+
+    await expect(result).rejects.toMatchObject({
+      code: "input_invalid",
+      message: "Pairing input ended before a credential was entered",
+    });
+    expect(input.rawModes).toEqual([true, false]);
+    expect(output.join("")).toBe("Pairing credential or URL: \n");
+  });
+
+  it("accepts a piped credential that ends without a newline", async () => {
+    const input = new PairingInput();
+    input.isTTY = false;
+    const output: string[] = [];
+    const result = readSecretLine("Pairing credential or URL: ", input, {
+      write: (text) => output.push(text),
+    });
+    input.emit("data", Buffer.from(PAIRING_CREDENTIAL));
+    input.emit("end");
+
+    await expect(result).resolves.toBe(PAIRING_CREDENTIAL);
+    expect(input.rawModes).toEqual([]);
+    expect(output.join("")).not.toContain(PAIRING_CREDENTIAL);
   });
 });
 
