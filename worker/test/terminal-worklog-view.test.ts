@@ -156,7 +156,7 @@ describe("terminal worklog view", () => {
     assert.include(terminalSource, "`reasoning:${conversationKey}`");
     assert.include(terminalSource, "`${conversationKey}:${tool.id ?? index}`");
     assert.include(terminalSource, "`tool:${disclosureKey}`");
-    assert.include(terminalSource, "`ask:${request.id}:option:${optionId}`");
+    assert.include(terminalSource, "`ask:${request.id}:option:${index}:${optionId}`");
     assert.include(terminalSource, "`ask:${request.id}:custom`");
     assert.include(terminalSource, "`ask:${request.id}:reply`");
     assert.include(terminalSource, "`ask:${request.id}:cancel`");

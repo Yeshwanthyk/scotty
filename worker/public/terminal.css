@@ -1066,10 +1066,9 @@ textarea:focus-visible,
   gap: 12px;
   margin: 0 auto 9px;
   padding: 9px 10px 9px 12px;
-  border-left: 2px solid var(--accent);
+  border: 1px solid rgb(224 121 84 / 32%);
   border-radius: 8px;
   background: rgb(224 121 84 / 9%);
-  box-shadow: 0 0 0 1px rgb(224 121 84 / 28%);
 }
 
 .command-recovery[hidden] {

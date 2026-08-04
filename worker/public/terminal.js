@@ -629,7 +629,7 @@ function renderAskCard(request) {
           ? (firstString(option.id, option.optionId, option.option_id) ??
             semanticSignature(option.value ?? value))
           : semanticSignature(value);
-      setWorklogFocusKey(button, `ask:${request.id}:option:${optionId}`);
+      setWorklogFocusKey(button, `ask:${request.id}:option:${index}:${optionId}`);
       button.dataset.uiResponse =
         typeof option === "object" ? JSON.stringify(option.value ?? value) : value;
       if (typeof option === "object") button.dataset.uiResponseJson = "";
