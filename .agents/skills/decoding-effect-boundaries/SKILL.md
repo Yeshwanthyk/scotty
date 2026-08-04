@@ -2,7 +2,7 @@
 name: decoding-effect-boundaries
 description: Decodes unknown HTTP, environment, storage, OAuth, CLI, archive, and SDK data with Effect Schema or precise typed adapters. Use when data is cast, manually probed, or parsed without validation.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-beta.99; verify Schema APIs against vendor/effect.
+compatibility: Scotty with Effect 4.0.0-beta.103; verify Schema APIs against vendor/effect.
 ---
 
 # Decode Effect boundaries

@@ -14,7 +14,7 @@ Read this before changing Scotty.
 
 ## Effect v4: source first
 
-Effect is pinned for this repository at `vendor/effect`, commit `6184a7dc53cb9310e299b65ad6d6c712c2cbf202`, corresponding to the `4.0.0-beta.99` package set. Treat the submodule as read-only reference source.
+Effect is pinned for this repository at `vendor/effect`, commit `dff25449dfc927f2cce912c329f343cfb5365f88`, corresponding to the `4.0.0-beta.103` package set. Treat the submodule as read-only reference source.
 
 Before adding or changing any non-trivial Effect pattern:
 

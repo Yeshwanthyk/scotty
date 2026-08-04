@@ -121,7 +121,7 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   const worker = yield* Cloudflare.Worker("CanaryWorker", {
     name: names.worker,
     main: "spikes/infra/full-stack-canary-worker.ts",
-    url: true,
+    workersDev: true,
     assets: {
       ...assetConfig,
       hash: fullStackCanaryAssetHash(assetDigest),

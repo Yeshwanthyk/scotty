@@ -357,7 +357,7 @@ const RawOAuthUpstreamSuccessSchema = Schema.Struct({
   expires_in: Schema.optionalKey(Schema.Unknown),
 });
 
-export const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+export const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 export const decodeStoredCredentialOption = Schema.decodeUnknownOption(StoredCredentialSchema);
 export const decodeStoredCredentialResult = Schema.decodeUnknownResult(StoredCredentialSchema, {
   onExcessProperty: "error",

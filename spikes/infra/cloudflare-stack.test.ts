@@ -161,6 +161,6 @@ describe("Cloudflare stack source contract", () => {
     assert.notMatch(externalWorkerSource, /(?:import|export).*\bScottyRunner\b/u);
     assert.match(runnerWorkerSource, /Worker<[\s\S]*ScottyRunner/u);
     assert.match(runnerWorkerSource, /makeScottyRunnerWorker/u);
-    assert.match(runnerWorkerSource, /url: false/u);
+    assert.match(runnerWorkerSource, /workersDev: false/u);
   });
 });

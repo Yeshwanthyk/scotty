@@ -2,7 +2,7 @@
 name: maintaining-typescript-safety
 description: Maintains TypeScript safety across Effect domain and host boundaries without broad suppressions, double casts, or hidden runtime ownership. Use when fixing type escape hatches or deciding where an Effect may execute.
 license: MIT
-compatibility: Scotty TypeScript 7 and Effect 4.0.0-beta.99.
+compatibility: Scotty TypeScript 7 and Effect 4.0.0-beta.103.
 ---
 
 # Maintain TypeScript safety

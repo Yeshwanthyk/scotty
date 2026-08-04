@@ -74,16 +74,16 @@ const snapshot = ({ application: applicationOverrides = {}, rollouts = [] } = {}
 describe("production deployment ownership", () => {
   it("keeps the pinned Alchemy binding-state backport installed and deterministic", () => {
     const rootPackage = JSON.parse(read("package.json"));
-    const patch = read("patches/alchemy+2.0.0-beta.63.patch");
+    const patch = read("patches/alchemy+2.0.0-beta.67.patch");
     const installedApply = read("node_modules/alchemy/lib/Apply.js");
     const installedWorkerProvider = read(
       "node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js",
     );
 
-    assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.63");
+    assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.67");
     assert.equal(rootPackage.scripts.postinstall, "node scripts/apply-dependency-patches.mjs");
-    assert.match(patch, /bindings: bindingOutputs/u);
-    assert.match(patch, /bindings: stripUnresolved\(newBindings\)/u);
+    assert.match(patch, /const oldDoBindings = oldBindings\.flatMap/u);
+    assert.doesNotMatch(patch, /bindings: bindingOutputs/u);
     assert.match(installedApply, /bindings: bindingOutputs/u);
     assert.match(installedApply, /bindings: stripUnresolved\(newBindings\)/u);
     assert.match(installedWorkerProvider, /const news = stripEffects\(desired\)/u);

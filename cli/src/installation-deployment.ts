@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
+import { Credentials as DistilledCredentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as KV from "@distilled.cloud/cloudflare/kv";
 import * as R2 from "@distilled.cloud/cloudflare/r2";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
@@ -18,7 +19,7 @@ import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
 import { PlatformServices } from "alchemy/Util/PlatformServices";
-import { Data, Effect, Layer, Option, Stream } from "effect";
+import { Context, Data, Effect, Layer, Option, Stream } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import {
   cloudflareStack,
@@ -132,6 +133,24 @@ const alchemyRuntimeLayer = Layer.provideMerge(
     Layer.provide(CredentialsStoreLive, PlatformServices),
   ),
 );
+
+const cloudflareApiLive = () => {
+  const live = Cloudflare.CloudflareApiLive();
+  // Alchemy and its runtime peers install different Distilled versions under the same Context key.
+  // Re-expose Alchemy's resolved credentials through the direct API client's tag.
+
+  return Layer.fromBuild((memoMap, scope) =>
+    Layer.buildWithMemoMap(live, memoMap, scope).pipe(
+      Effect.map((services) =>
+        Context.add(
+          services,
+          DistilledCredentials,
+          Context.get(services as Context.Context<DistilledCredentials>, DistilledCredentials),
+        ),
+      ),
+    ),
+  );
+};
 
 const provideAlchemy = <A, E, R>(program: Effect.Effect<A, E, R>) =>
   program.pipe(
@@ -422,7 +441,7 @@ const inspectWithProfile = async (
           backupBucketName: installation.backupBucketName,
           host: `https://${installation.workerName}.${subdomain}.workers.dev`,
         } satisfies InstallationResult;
-      }).pipe(Effect.provide(Cloudflare.CloudflareApiLive())),
+      }).pipe(Effect.provide(cloudflareApiLive())),
     ),
   );
 };
@@ -623,7 +642,7 @@ export async function uninstallInstallation(
                 retainedData: request.deleteData ? [] : retainedData,
                 deletedData,
               } satisfies InstallationUninstallResult;
-            }).pipe(Effect.provide(Cloudflare.CloudflareApiLive())),
+            }).pipe(Effect.provide(cloudflareApiLive())),
           { stage: CLOUDFLARE_STAGE },
         ),
       ),

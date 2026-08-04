@@ -177,7 +177,7 @@ export const RunnerRemovalResponseSchema = Schema.Struct({
 
 export type SessionResponse = typeof SessionResponseSchema.Type;
 
-export const decodeJsonValue = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+export const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 export const decodeRawConfig = Schema.decodeUnknownOption(RawConfigSchema);
 export const decodePendingUp = Schema.decodeUnknownOption(PendingUpSchema);
 export const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);

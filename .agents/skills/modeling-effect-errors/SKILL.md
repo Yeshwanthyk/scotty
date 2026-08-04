@@ -2,7 +2,7 @@
 name: modeling-effect-errors
 description: Models failures as typed Effect values and keeps defects, throws, Promise rejections, and unknown errors at explicit host boundaries. Use when implementing or reviewing Effect error handling.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-beta.99; verify APIs against vendor/effect.
+compatibility: Scotty with Effect 4.0.0-beta.103; verify APIs against vendor/effect.
 ---
 
 # Model Effect errors

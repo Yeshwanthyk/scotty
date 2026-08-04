@@ -2,7 +2,7 @@
 name: testing-effect-programs
 description: Tests Effect programs with @effect/vitest, deterministic clocks, Layers, scopes, failures, and interruption. Use when adding Effect-returning tests or fixing conditional assertions and runtime escape hatches in tests.
 license: MIT
-compatibility: Scotty with @effect/vitest and Effect 4.0.0-beta.99.
+compatibility: Scotty with @effect/vitest and Effect 4.0.0-beta.103.
 ---
 
 # Test Effect programs
