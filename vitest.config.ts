@@ -5,6 +5,7 @@ export default defineConfig({
   assetsInclude: ["**/*.md"],
   test: {
     exclude: ["**/node_modules/**", "vendor/**", "work/**"],
+    reporters: ["default"],
   },
   resolve: {
     alias: {
