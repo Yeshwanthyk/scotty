@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const patches = ["patches/alchemy+2.0.0-beta.63.patch"];
+const patches = ["patches/alchemy+2.0.0-beta.67.patch"];
 
 const gitApply = (args, patch) =>
   spawnSync("git", ["apply", ...args, patch], {

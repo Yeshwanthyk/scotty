@@ -2,7 +2,7 @@
 name: wrapping-promise-clients
 description: Wraps Promise-based SDKs in Effect services with typed failures, interruption, and explicit retry ownership. Use when domain-facing APIs expose Promise rejection or raw third-party clients.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-beta.99; verify APIs against vendor/effect.
+compatibility: Scotty with Effect 4.0.0-beta.103; verify APIs against vendor/effect.
 ---
 
 # Wrap Promise clients

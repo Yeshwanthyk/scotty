@@ -167,7 +167,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   const worker = yield* Cloudflare.Worker(topology.worker.logicalId, {
     name: topology.worker.name,
     main: topology.worker.main,
-    url: topology.worker.url,
+    workersDev: topology.worker.url,
     assets: assetConfig,
     compatibility: {
       date: topology.worker.compatibilityDate,

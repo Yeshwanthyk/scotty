@@ -229,7 +229,7 @@ export const m01bCanaryProgram = Effect.fnUntraced(function* (config: M01BCanary
   const worker = yield* Cloudflare.Worker("SyntheticBindingWorker", {
     name: desired.names.worker,
     main: "spikes/infra/account-secrets-store-canary-worker.ts",
-    url: true,
+    workersDev: true,
     observability: { enabled: false },
     env: config.bindingAttached ? { M01B_SYNTHETIC_SECRET: desired.binding } : {},
   }).pipe(RemovalPolicy.destroy());

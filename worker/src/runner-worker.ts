@@ -13,7 +13,7 @@ export const makeScottyRunnerWorker = (name: string) =>
     {
       main: "worker/src/runner-worker.ts",
       name,
-      url: false,
+      workersDev: false,
       compatibility: {
         date: "2026-07-20",
         flags: ["nodejs_compat"],

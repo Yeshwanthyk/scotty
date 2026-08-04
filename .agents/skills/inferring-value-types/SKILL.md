@@ -2,7 +2,7 @@
 name: inferring-value-types
 description: Infers TypeScript object API types from the runtime factory or value that owns their shape. Use when an interface or type alias duplicates an extension, client surface, route map, handler table, or other returned object.
 license: MIT
-compatibility: Scotty TypeScript 7 and Effect 4.0.0-beta.99.
+compatibility: Scotty TypeScript 7 and Effect 4.0.0-beta.103.
 ---
 
 # Infer value-owned types

@@ -2,7 +2,7 @@
 name: routing-effect-http
 description: Routes HTTP through Effect v4 HttpClient and HttpRouter while preserving native Cloudflare Request, Response, WebSocket, stream, and Durable Object boundaries. Use for networked domain code, APIs, and Worker adapters.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-beta.99 effect/unstable/http and Alchemy beta.63.
+compatibility: Scotty with Effect 4.0.0-beta.103 effect/unstable/http and Alchemy beta.67.
 ---
 
 # Route Effect HTTP

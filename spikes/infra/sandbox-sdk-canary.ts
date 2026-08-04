@@ -186,7 +186,7 @@ export const m01cCanaryProgram = Effect.fnUntraced(function* (config: M01CCanary
   const worker = yield* Cloudflare.Worker("SandboxHost", {
     name: names.worker,
     main: "spikes/infra/sandbox-sdk-canary-worker.ts",
-    url: true,
+    workersDev: true,
     assets: {
       ...assetConfig,
       hash: assetHash,

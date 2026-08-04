@@ -1,0 +1,61 @@
+diff --git a/node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js b/node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js
+--- a/node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js
++++ b/node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js
+@@ -2896,7 +2896,7 @@
+                 ]
+                 : []))));
+         }),
+-        diff: Effect.fn(function* ({ id, news: desired, olds, output, newBindings, }) {
++        diff: Effect.fn(function* ({ id, news: desired, olds, output, oldBindings, newBindings, }) {
+             const { accountId } = yield* yield* CloudflareEnvironment;
+             // Effect-valued `env` entries (tagged Worker classes / resource
+             // Effects — the circular-bindings pattern) never resolve at plan
+@@ -3018,10 +3018,11 @@
+             // bound resource on every deploy. Class names are structural (not the
+             // namespace id), so this comparison holds even when `newBindings` is
+             // otherwise unresolved.
++            const oldDoBindings = oldBindings.flatMap((binding) => binding.data.bindings ?? []);
+             const newDoClassNames = Array.isArray(newBindings)
+-                ? getExpectedDurableObjectClassNames(newBindings.flatMap((b) => b.data.bindings ?? []), workerName).sort()
++                ? getExpectedDurableObjectClassNames(newBindings.flatMap((binding) => binding.data.bindings ?? []), workerName).sort()
+                 : [];
+-            const oldDoClassNames = Object.keys(output.durableObjectNamespaces ?? {}).sort();
++            const oldDoClassNames = getExpectedDurableObjectClassNames(oldDoBindings, oldWorkerName).sort();
+             const doNamespacesStable = oldWorkerName === workerName &&
+                 newDoClassNames.length === oldDoClassNames.length &&
+                 newDoClassNames.every((name, i) => name === oldDoClassNames[i]);
+diff --git a/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts b/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts
+--- a/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts
++++ b/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts
+@@ -3948,6 +3948,7 @@
+           news: desired,
+           olds,
+           output,
++          oldBindings,
+           newBindings,
+         }) {
+           const { accountId } = yield* yield* CloudflareEnvironment;
+@@ -4086,16 +4087,20 @@
+           // bound resource on every deploy. Class names are structural (not the
+           // namespace id), so this comparison holds even when `newBindings` is
+           // otherwise unresolved.
++          const oldDoBindings = oldBindings.flatMap(
++            (binding) => binding.data.bindings ?? [],
++          );
+           const newDoClassNames = Array.isArray(newBindings)
+             ? getExpectedDurableObjectClassNames(
+                 (newBindings as ResourceBinding<Worker["Binding"]>[]).flatMap(
+-                  (b) => b.data.bindings ?? [],
++                  (binding) => binding.data.bindings ?? [],
+                 ),
+                 workerName,
+               ).sort()
+             : [];
+-          const oldDoClassNames = Object.keys(
+-            output.durableObjectNamespaces ?? {},
++          const oldDoClassNames = getExpectedDurableObjectClassNames(
++            oldDoBindings,
++            oldWorkerName,
+           ).sort();
+           const doNamespacesStable =
+             oldWorkerName === workerName &&

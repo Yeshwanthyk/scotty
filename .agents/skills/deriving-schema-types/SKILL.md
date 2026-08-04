@@ -2,7 +2,7 @@
 name: deriving-schema-types
 description: Derives TypeScript data types from the Effect Schema that owns their runtime shape. Use when an interface or object type duplicates a nearby Schema definition and can drift from decoding.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-beta.99.
+compatibility: Scotty with Effect 4.0.0-beta.103.
 ---
 
 # Derive schema-owned types
