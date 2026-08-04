@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import * as Effect from "effect/Effect";
+import { makeWorkerRuntimeContext } from "../node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js";
 import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
 import {
   assessContainerSettlement,
@@ -72,12 +73,15 @@ const snapshot = ({ application: applicationOverrides = {}, rollouts = [] } = {}
 });
 
 describe("production deployment ownership", () => {
-  it("keeps the pinned Alchemy binding-state backport installed and deterministic", () => {
+  it("keeps the pinned Alchemy deployment backports installed and deterministic", async () => {
     const rootPackage = JSON.parse(read("package.json"));
     const patch = read("patches/alchemy+2.0.0-beta.67.patch");
     const installedApply = read("node_modules/alchemy/lib/Apply.js");
     const installedWorkerProvider = read(
       "node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js",
+    );
+    const installedWorkerRuntimeContext = read(
+      "node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js",
     );
 
     assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.67");
@@ -93,6 +97,23 @@ describe("production deployment ownership", () => {
       /getExpectedDurableObjectClassNames\(\s*oldDoBindings,\s*oldWorkerName/u,
     );
     assert.doesNotMatch(installedWorkerProvider, /scriptName: old\.scriptName/u);
+    assert.match(patch, /Context is cyclic in Effect v4/u);
+    assert.match(installedWorkerRuntimeContext, /if \(phase === "plan"\)/u);
+
+    const runtimeContext = makeWorkerRuntimeContext("deployment-props-probe");
+    const services = {};
+    services.cacheRoot = services;
+    await Effect.runPromise(
+      runtimeContext.export("Probe", {
+        kind: "durableObject",
+        constructor: Effect.void,
+        services,
+      }),
+    );
+    const deploymentExports = await Effect.runPromise(runtimeContext.exports);
+    assert.deepEqual(deploymentExports, { Probe: { kind: "durableObject" } });
+    assert.doesNotThrow(() => JSON.stringify(deploymentExports));
+
     assert.deepEqual(stripEffects({ stable: 1, effect: Effect.succeed(2) }), {
       stable: 1,
       effect: undefined,
