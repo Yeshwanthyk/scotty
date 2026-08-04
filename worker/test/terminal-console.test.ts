@@ -6,6 +6,7 @@ import {
   type ConsoleCommandTransportResult,
 } from "../public/terminal-console-client.js";
 import { createCommandLane } from "../public/terminal-command-lane.js";
+import { createComposerDrafts } from "../public/terminal-draft.js";
 import { commandIntentDigest } from "../public/terminal-console-protocol.js";
 import { commandIntentDigest as serverCommandIntentDigest } from "../../protocol/pi-console-shared.mjs";
 import terminalHtml from "../public/terminal.html?raw";
@@ -231,6 +232,59 @@ describe("browser command lane", () => {
     );
   });
 
+  it("restores the newest discarded prompt as a draft without replaying held intent", async () => {
+    const staleResponse = deferred<ConsoleCommandTransportResult>();
+    const sends: ConsoleCommandEnvelope[] = [];
+    const entry = { draft: "" };
+    const drafts = createComposerDrafts(() => entry);
+    let idIndex = 0;
+    const lane = createCommandLane({
+      send: async (_sessionId, envelope) => {
+        sends.push(envelope);
+        return staleResponse.promise;
+      },
+      randomUUID: () => ids[idIndex++] ?? ids[1],
+    });
+    const authority = { sessionId: "session-a", epoch: "epoch-a", expectedSessionRevision: 7 };
+
+    drafts.set("session-a", "stale prompt");
+    const staleDraft = drafts.begin("session-a", "stale prompt");
+    const stale = lane.enqueue({
+      ...authority,
+      intent: { type: "prompt", message: "stale prompt" },
+      label: "stale prompt",
+    });
+    drafts.set("session-a", "held prompt");
+    const heldDraft = drafts.begin("session-a", "held prompt");
+    const held = lane.enqueue({
+      ...authority,
+      intent: { type: "prompt", message: "held prompt" },
+      label: "held prompt",
+    });
+
+    staleResponse.resolve({
+      ok: false,
+      status: 409,
+      readable: true,
+      body: {
+        version: 1,
+        status: "stale",
+        expectedSessionRevision: 7,
+        sessionRevision: 8,
+        retryable: false,
+      },
+    });
+    assert.isFalse(drafts.settle(staleDraft, (await stale.outcome).status));
+    lane.discard("session-a");
+    assert.isTrue(drafts.settle(heldDraft, (await held.outcome).status));
+
+    assert.strictEqual(entry.draft, "held prompt");
+    assert.deepStrictEqual(
+      sends.map((envelope) => envelope.intent.message),
+      ["stale prompt"],
+    );
+  });
+
   it("isolates ambiguous authority and settles its held queue on discard", async () => {
     const sends: Array<{ sessionId: string; label: unknown }> = [];
     const lane = createCommandLane({
@@ -291,5 +345,8 @@ describe("browser command lane", () => {
     assert.include(terminalSource, "commandLane.state(currentSessionId)");
     assert.include(terminalSource, "commandLane.discard(sessionId)");
     assert.include(terminalSource, "await loadSnapshot(sessionId)");
+    assert.include(terminalSource, "composerDrafts.begin(submission.sessionId, editableDraft)");
+    assert.include(terminalSource, "composerDrafts.settle(draftSubmission, outcome.status)");
+    assert.include(terminalSource, "submission.sessionId === currentSessionId");
   });
 });

@@ -1,5 +1,6 @@
 import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
 import { createCommandLane } from "/terminal-command-lane.js";
+import { createComposerDrafts } from "/terminal-draft.js";
 import { renderCommandReceipts } from "/terminal-command-view.js";
 import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
@@ -82,6 +83,7 @@ let renderScheduled = false;
 let runtimeOptionsSignature;
 let localCommandItems = [];
 const sessionCache = new Map();
+const composerDrafts = createComposerDrafts(cacheEntry);
 const prefetching = new Map();
 const disclosureState = new Map();
 const worklogView = createWorklogView(worklogFeed);
@@ -985,7 +987,7 @@ function consumeSseEvent(messageEvent, source, namedType) {
       showToast(firstString(event.message, "Pi sent a notification."));
     } else if (event.type === "extension_ui_request" && event.method === "set_editor_text") {
       composerInput.value = event.text ?? "";
-      cacheEntry(currentSessionId).draft = composerInput.value;
+      composerDrafts.set(currentSessionId, composerInput.value);
       autosizeComposer();
     }
     cacheEntry(currentSessionId).projection = currentProjection;
@@ -1061,19 +1063,26 @@ async function discardHeldCommands() {
 }
 
 async function submitComposer() {
-  const text = composerText(composerInput.value);
+  const editableDraft = composerInput.value;
+  const text = composerText(editableDraft);
   if (!text || !currentProjection?.loaded) return;
   const streamingBehavior = deliveryMode === "steer" ? "steer" : "followUp";
   let submission;
   try {
     submission = queueCommand({ type: "prompt", message: text, streamingBehavior }, text);
+    const draftSubmission = composerDrafts.begin(submission.sessionId, editableDraft);
     composerInput.value = "";
-    cacheEntry(currentSessionId).draft = "";
     autosizeComposer();
     updateComposer();
     composerInput.focus({ preventScroll: true });
     const outcome = await submission.outcome;
     if (outcome.status !== "accepted") {
+      const restored = composerDrafts.settle(draftSubmission, outcome.status);
+      if (restored && submission.sessionId === currentSessionId) {
+        composerInput.value = cacheEntry(submission.sessionId).draft;
+        autosizeComposer();
+        updateComposer();
+      }
       if (outcome.status === "stale" || outcome.status === "ambiguous")
         refreshAffectedSession(submission.sessionId);
       showToast(commandOutcomeMessage(outcome));
@@ -1301,7 +1310,7 @@ async function loadWorkspaces() {
 function saveCurrentView() {
   if (!currentSessionId) return;
   const entry = cacheEntry(currentSessionId);
-  entry.draft = composerInput.value;
+  composerDrafts.set(currentSessionId, composerInput.value);
   entry.scrollTop = worklog.scrollTop;
   if (currentProjection) entry.projection = currentProjection;
 }
@@ -1438,7 +1447,7 @@ composerInput.addEventListener("compositionend", () => {
   composing = false;
 });
 composerInput.addEventListener("input", () => {
-  cacheEntry(currentSessionId).draft = composerInput.value;
+  composerDrafts.set(currentSessionId, composerInput.value);
   autosizeComposer();
   updateComposer();
 });
