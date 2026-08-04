@@ -71,9 +71,9 @@ const readPrivateConfig = async (path: string): Promise<string> => {
       !openedMetadata.isFile() ||
       (process.platform !== "win32" &&
         ((openedMetadata.mode & 0o077) !== 0 ||
-          (typeof process.geteuid === "function" && openedMetadata.uid !== process.geteuid()) ||
-          openedMetadata.dev !== pathMetadata.dev ||
-          openedMetadata.ino !== pathMetadata.ino))
+          (typeof process.geteuid === "function" && openedMetadata.uid !== process.geteuid()))) ||
+      openedMetadata.dev !== pathMetadata.dev ||
+      openedMetadata.ino !== pathMetadata.ino
     )
       throw new PiScottyError(
         "config_permissions",

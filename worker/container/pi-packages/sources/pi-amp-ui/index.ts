@@ -18,12 +18,12 @@ import {
   terminalSafeFrameWidth,
   type GitDiffStats,
 } from "./layout.ts";
+import { formatProcessedTokens, summarizeSessionUsage } from "./usage.ts";
 
 let requestRender: (() => void) | undefined;
 let branch: string | undefined;
 let gitDiff: GitDiffStats = { additions: 0, deletions: 0 };
 let enabled = true;
-let previousTheme: Theme | undefined;
 
 const activity = new ActivityController(() => requestRender?.());
 let uiTheme: Theme | undefined;
@@ -80,10 +80,13 @@ class AmpEditor extends CustomEditor {
     keybindings: KeybindingsManager,
     private readonly pi: ExtensionAPI,
     private readonly ctx: ExtensionContext,
-    private readonly appTheme: Theme,
   ) {
     super(tui, editorTheme, keybindings, { paddingX: 1 });
     requestRender = () => tui.requestRender();
+  }
+
+  private get appTheme(): Theme {
+    return this.ctx.ui.theme;
   }
 
   override render(width: number): string[] {
@@ -103,11 +106,31 @@ class AmpEditor extends CustomEditor {
     const mode = thinkingLabel(this.pi);
     const model = this.ctx.model?.name ?? this.ctx.model?.id;
     const contextPercent = this.ctx.getContextUsage()?.percent;
-    const topRight = [
+    const sessionUsage = summarizeSessionUsage(
+      this.ctx.sessionManager.getEntries(),
+      this.ctx.sessionManager.getBranch(),
+    );
+    const usageLabels = [
+      sessionUsage.processedTokens > 0
+        ? this.appTheme.fg("muted", ` ${formatProcessedTokens(sessionUsage.processedTokens)} `)
+        : "",
+      sessionUsage.latestCacheHitPercent != null
+        ? this.appTheme.fg(
+            "muted",
+            ` C ${Math.round(Math.min(100, Math.max(0, sessionUsage.latestCacheHitPercent)))} `,
+          )
+        : "",
+    ].filter(Boolean);
+    const chromeLabels = [
       contextLabel(contextPercent, this.appTheme),
       model ? this.appTheme.fg("accent", ` ${model} `) : "",
       this.appTheme.fg("syntaxType", ` ${mode} `),
-    ].filter(Boolean).join(paint("─"));
+    ].filter(Boolean);
+    const separator = paint("─");
+    const topRightWithUsage = [...usageLabels, ...chromeLabels].join(separator);
+    const topRight = usageLabels.length > 0 && visibleWidth(topRightWithUsage) <= frameWidth - 3
+      ? topRightWithUsage
+      : chromeLabels.join(separator);
     const bottomLeft = stateLabel(this.appTheme);
     const bottomRight = locationLabel(this.ctx, this.appTheme, frameWidth);
     const railAvailable = Math.max(
@@ -138,8 +161,6 @@ class EmptyFooter implements Component {
 }
 
 function installChrome(pi: ExtensionAPI, ctx: ExtensionContext): void {
-  previousTheme ??= ctx.ui.theme;
-  ctx.ui.setTheme("amp-neo");
   ctx.ui.setWorkingVisible(false);
   ctx.ui.setFooter(() => new EmptyFooter());
   ctx.ui.setHeader((_tui, theme) => ({
@@ -155,7 +176,7 @@ function installChrome(pi: ExtensionAPI, ctx: ExtensionContext): void {
     invalidate() {},
   }));
   ctx.ui.setEditorComponent((tui, editorTheme, keybindings) =>
-    new AmpEditor(tui, editorTheme, keybindings, pi, ctx, ctx.ui.theme),
+    new AmpEditor(tui, editorTheme, keybindings, pi, ctx),
   );
 }
 
@@ -165,7 +186,6 @@ function uninstallChrome(ctx: ExtensionContext): void {
   ctx.ui.setFooter(undefined);
   ctx.ui.setEditorComponent(undefined);
   ctx.ui.setWorkingVisible(true);
-  if (previousTheme) ctx.ui.setTheme(previousTheme);
 }
 
 async function refreshGitState(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {

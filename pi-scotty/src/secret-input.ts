@@ -34,14 +34,24 @@ export const readSecretLine = async (
     ): void => {
       if (settled) return;
       settled = true;
-      input.removeListener("data", onData);
-      input.removeListener("end", onEnd);
-      input.removeListener("close", onEnd);
-      input.removeListener("error", onError);
-      if (useRawMode) input.setRawMode?.(wasRaw);
-      input.pause();
-      output.write("\n");
-      if ("error" in result) reject(result.error);
+      let cleanupFailed = false;
+      const cleanup = (operation: () => unknown): void => {
+        try {
+          operation();
+        } catch {
+          cleanupFailed = true;
+        }
+      };
+      cleanup(() => input.removeListener("data", onData));
+      cleanup(() => input.removeListener("end", onEnd));
+      cleanup(() => input.removeListener("close", onEnd));
+      cleanup(() => input.removeListener("error", onError));
+      if (useRawMode) cleanup(() => input.setRawMode?.(wasRaw));
+      cleanup(() => input.pause());
+      cleanup(() => output.write("\n"));
+      if (cleanupFailed)
+        reject(new PiScottyError("input_invalid", "Pairing input could not be restored safely"));
+      else if ("error" in result) reject(result.error);
       else resolve(result.value);
     };
     const ended = (): void =>
@@ -76,11 +86,15 @@ export const readSecretLine = async (
         else if (character >= " ") value += character;
       }
     };
-    input.on("data", onData);
-    input.on("end", onEnd);
-    input.on("close", onEnd);
-    input.on("error", onError);
-    if (useRawMode) input.setRawMode?.(true);
-    input.resume();
+    try {
+      input.on("data", onData);
+      input.on("end", onEnd);
+      input.on("close", onEnd);
+      input.on("error", onError);
+      if (useRawMode) input.setRawMode?.(true);
+      input.resume();
+    } catch {
+      finish({ error: new PiScottyError("input_invalid", "Pairing input could not be read") });
+    }
   });
 };
