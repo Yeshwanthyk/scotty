@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 import { RuleTester } from "oxlint/plugins-dev";
+import noBrowserPersistence from "../../scripts/oxlint-plugin-scotty/rules/no-browser-persistence.js";
 import noConditionalTests from "../../scripts/oxlint-plugin-scotty/rules/no-conditional-tests.js";
 import noDirectDoStorage from "../../scripts/oxlint-plugin-scotty/rules/no-direct-do-storage.js";
 import noDoubleCast from "../../scripts/oxlint-plugin-scotty/rules/no-double-cast.js";
@@ -14,6 +15,7 @@ import noInlineObjectTypeAssertion from "../../scripts/oxlint-plugin-scotty/rule
 import noInlineSchemaCompile from "../../scripts/oxlint-plugin-scotty/rules/no-inline-schema-compile.js";
 import noInstanceofError from "../../scripts/oxlint-plugin-scotty/rules/no-instanceof-error.js";
 import noJsonParse from "../../scripts/oxlint-plugin-scotty/rules/no-json-parse.js";
+import noLegacyBrowserRpcPath from "../../scripts/oxlint-plugin-scotty/rules/no-legacy-browser-rpc-path.js";
 import noManualTagCheck from "../../scripts/oxlint-plugin-scotty/rules/no-manual-tag-check.js";
 import noMatchOrelse from "../../scripts/oxlint-plugin-scotty/rules/no-match-orelse.js";
 import noPromiseClientSurface from "../../scripts/oxlint-plugin-scotty/rules/no-promise-client-surface.js";
@@ -29,6 +31,7 @@ import noSwitchStatement from "../../scripts/oxlint-plugin-scotty/rules/no-switc
 import noTryCatchOrThrow from "../../scripts/oxlint-plugin-scotty/rules/no-try-catch-or-throw.js";
 import noTsNocheck from "../../scripts/oxlint-plugin-scotty/rules/no-ts-nocheck.js";
 import noUnsupportedEffectApi from "../../scripts/oxlint-plugin-scotty/rules/no-unsupported-effect-api.js";
+import noUnsafeDomHtmlSink from "../../scripts/oxlint-plugin-scotty/rules/no-unsafe-dom-html-sink.js";
 import preferEffectPredicate from "../../scripts/oxlint-plugin-scotty/rules/prefer-effect-predicate.js";
 import preferSchemaInferredTypes from "../../scripts/oxlint-plugin-scotty/rules/prefer-schema-inferred-types.js";
 import preferValueInferredExtensionTypes from "../../scripts/oxlint-plugin-scotty/rules/prefer-value-inferred-extension-types.js";
@@ -38,12 +41,102 @@ RuleTester.describe = describe;
 RuleTester.it = it;
 
 const tester = new RuleTester({
-  languageOptions: { parserOptions: { lang: "ts" }, sourceType: "module" },
+  languageOptions: {
+    env: { browser: true },
+    parserOptions: { lang: "ts" },
+    sourceType: "module",
+  },
 });
 const productionFile = "spikes/infra/write-only-secret.ts";
 const testFile = "spikes/infra/example.test.ts";
 const toolingFile = path.resolve(import.meta.dirname, "../../scripts/example.ts");
 const workerFile = (name) => path.resolve(import.meta.dirname, `../../worker/src/${name}`);
+const browserFile = (name) => path.resolve(import.meta.dirname, `../../worker/public/${name}`);
+
+tester.run("no-legacy-browser-rpc-path", noLegacyBrowserRpcPath, {
+  valid: [
+    {
+      filename: browserFile("terminal-console-client.js"),
+      code: `const current = "/s/id/console/v1/command"; const word = "/rpcish"`,
+    },
+    {
+      filename: browserFile("terminal-console-client.js"),
+      code: `const routes = { "/rpc": handler, [\`/rpc\`]: computed }; routes["/rpc"]`,
+    },
+  ],
+  invalid: [
+    {
+      filename: browserFile("terminal-console-client.js"),
+      code: `fetch("/rpc"); const endpoint = "https://example.test/rpc?stream=1"`,
+      errors: 2,
+    },
+    {
+      filename: browserFile("terminal-console-client.js"),
+      code: "const endpoint = `/sessions/${sessionId}/rpc/events`; const root = `/rpc/${operation}`",
+      errors: 2,
+    },
+  ],
+});
+
+tester.run("no-unsafe-dom-html-sink", noUnsafeDomHtmlSink, {
+  valid: [
+    {
+      filename: browserFile("terminal.js"),
+      code: `async function render(node) { node.textContent = await Promise.resolve("safe"); node.setAttribute("aria-label", "safe"); document.createElement("span"); fetch("/api"); new EventSource("/events") }`,
+    },
+    {
+      filename: browserFile("terminal.js"),
+      code: `const sinks = { innerHTML: value, insertAdjacentHTML() {} }; function write(document, window) { document.write(value); window.document.writeln(value) }`,
+    },
+  ],
+  invalid: [
+    {
+      filename: browserFile("terminal.js"),
+      code: `node.innerHTML = html; node["outerHTML"] += html; frame.srcdoc = html`,
+      errors: 3,
+    },
+    {
+      filename: browserFile("terminal.js"),
+      code: `node.insertAdjacentHTML("beforeend", html); node["setHTMLUnsafe"](html); document.write(html); window.document.writeln(html)`,
+      errors: 4,
+    },
+    {
+      filename: browserFile("terminal.js"),
+      code: `frame.setAttribute("srcdoc", html); frame.setAttribute(\`SRCDOC\`, html)`,
+      errors: 2,
+    },
+  ],
+});
+
+tester.run("no-browser-persistence", noBrowserPersistence, {
+  valid: [
+    {
+      filename: browserFile("sessions.js"),
+      code: `const adapters = { localStorage: memory, sessionStorage() {}, indexedDB: db, caches: cache, cookieStore: cookies }; const { localStorage, cookieStore: localCookies } = adapters; adapters.localStorage.get("key"); localStorage.getItem("key")`,
+    },
+    {
+      filename: browserFile("sessions.js"),
+      code: `function read(localStorage, document, window) { localStorage.getItem("key"); document.cookie; window.sessionStorage }`,
+    },
+  ],
+  invalid: [
+    {
+      filename: browserFile("sessions.js"),
+      code: `localStorage.getItem("key"); sessionStorage.setItem("key", value); indexedDB.open("db"); caches.open("v1"); cookieStore.get("key")`,
+      errors: 5,
+    },
+    {
+      filename: browserFile("sessions.js"),
+      code: `window.localStorage; globalThis["sessionStorage"]; self.indexedDB; window.caches; globalThis.cookieStore`,
+      errors: 5,
+    },
+    {
+      filename: browserFile("sessions.js"),
+      code: `document.cookie = value; window.document.cookie; globalThis["document"]["cookie"]; self.document.cookie`,
+      errors: 4,
+    },
+  ],
+});
 
 tester.run("no-conditional-tests", noConditionalTests, {
   valid: [
@@ -607,5 +700,27 @@ describe("Scotty Oxlint policy integration", () => {
     assert.ok(strict.files.some((file) => file.startsWith("cli/")));
     assert.ok(!strict.files.some((file) => file.startsWith("worker/test/")));
     assert.equal(workerTests.rules["scotty/no-raw-wall-clock"], "error");
+  });
+
+  it("scopes browser quality rules to public adapters without banning browser ownership", () => {
+    const repoRoot = path.resolve(import.meta.dirname, "../..");
+    const config = JSON.parse(readFileSync(path.join(repoRoot, ".oxlintrc.json"), "utf8"));
+    const browser = config.overrides.find(
+      (override) => override.files.length === 1 && override.files[0] === "worker/public/**/*.js",
+    );
+    const browserRules = [
+      "no-browser-persistence",
+      "no-legacy-browser-rpc-path",
+      "no-unsafe-dom-html-sink",
+    ];
+
+    assert.deepEqual(browser.env, { browser: true });
+    for (const rule of browserRules) {
+      assert.ok(scottyPlugin.rules[rule]);
+      assert.equal(config.rules[`scotty/${rule}`], undefined);
+      assert.equal(browser.rules[`scotty/${rule}`], "error");
+    }
+    assert.equal(browser.rules["scotty/no-promise-catch"], "off");
+    assert.equal(browser.rules["scotty/no-raw-fetch"], undefined);
   });
 });

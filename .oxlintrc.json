@@ -89,6 +89,18 @@
       }
     },
     {
+      "files": ["worker/public/**/*.js"],
+      "env": {
+        "browser": true
+      },
+      "rules": {
+        "scotty/no-browser-persistence": "error",
+        "scotty/no-legacy-browser-rpc-path": "error",
+        "scotty/no-promise-catch": "off",
+        "scotty/no-unsafe-dom-html-sink": "error"
+      }
+    },
+    {
       "files": ["worker/src/session.ts"],
       "rules": {
         "scotty/no-raw-error-throw": "error",
