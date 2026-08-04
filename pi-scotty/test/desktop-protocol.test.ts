@@ -23,6 +23,7 @@ describe("desktop protocol", () => {
           expectedEpoch: "epoch-1",
           expectedSessionRevision: 7,
           text: "ship",
+          images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
         }),
       ),
     ).toMatchObject({
@@ -30,6 +31,7 @@ describe("desktop protocol", () => {
       sessionId: SESSION_A,
       expectedEpoch: "epoch-1",
       expectedSessionRevision: 7,
+      images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
     });
     expect(
       decodeDesktopCommand(
@@ -62,6 +64,25 @@ describe("desktop protocol", () => {
         JSON.stringify({ version: 2, type: "submit", sessionId: SESSION_A, text: "ship" }),
       ),
     ).toBeUndefined();
+    for (const image of [
+      { type: "image", data: "not base64", mimeType: "image/png" },
+      { type: "image", data: "AA==", mimeType: "image/svg+xml" },
+      { type: "image", data: "AA==", mimeType: "image/png", filename: "secret.png" },
+      { type: "image", data: "AA==", mimeType: "image/png", path: "/tmp/secret.png" },
+    ])
+      expect(
+        decodeDesktopCommand(
+          JSON.stringify({
+            version: 2,
+            type: "submit",
+            sessionId: SESSION_A,
+            expectedEpoch: "epoch-1",
+            expectedSessionRevision: 7,
+            text: "ship",
+            images: [image],
+          }),
+        ),
+      ).toBeUndefined();
     expect(
       decodeDesktopCommand(
         JSON.stringify({ version: 2, type: "select", sessionId: SESSION_A, credential: "no" }),
@@ -97,6 +118,7 @@ describe("desktop protocol", () => {
       ),
     ).toBeUndefined();
     expect(decodeDesktopCommand("not json")).toBeUndefined();
+    expect(DESKTOP_MAX_COMMAND_BYTES).toBe(8 * 1024 * 1024);
     expect(decodeDesktopCommand("x".repeat(DESKTOP_MAX_COMMAND_BYTES + 1))).toBeUndefined();
   });
 

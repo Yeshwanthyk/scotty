@@ -126,6 +126,7 @@ describe("desktop sidecar", () => {
         expectedEpoch: "epoch-1",
         expectedSessionRevision: 7,
         text: "ship the slice",
+        images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
       }),
     );
 
@@ -134,7 +135,11 @@ describe("desktop sidecar", () => {
       version: 1,
       epoch: "epoch-1",
       expectedSessionRevision: 7,
-      intent: { type: "prompt", message: "ship the slice" },
+      intent: {
+        type: "prompt",
+        message: "ship the slice",
+        images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+      },
     });
     expect(latestState(frames)?.selected?.commandStatus).toBe("Command accepted");
 

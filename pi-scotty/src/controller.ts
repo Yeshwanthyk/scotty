@@ -1,6 +1,7 @@
 import {
   PI_CONSOLE_PROTOCOL_VERSION,
   type PiConsoleCommandV1,
+  type PiConsoleImage,
   type PiConsoleRemoteIntentV1,
 } from "../../protocol/pi-console.ts";
 import { safeErrorMessage } from "./errors.ts";
@@ -47,10 +48,17 @@ export const routeComposerSubmission = (
   text: string,
   streaming: boolean,
   forceFollowUp = false,
+  images?: ReadonlyArray<PiConsoleImage>,
 ): ComposerRoute => {
   const message = text.trim();
-  if (message.length === 0) return { type: "empty" };
+  const hasImages = images !== undefined && images.length > 0;
+  if (message.length === 0 && !hasImages) return { type: "empty" };
   if (message.startsWith("/")) {
+    if (hasImages)
+      return {
+        type: "local_error",
+        message: "Images cannot be attached to slash commands",
+      };
     if (message === "/fold") return { type: "fold" };
     if (message === "/sessions") return { type: "sessions" };
     if (message === "/subagents")
@@ -80,10 +88,10 @@ export const routeComposerSubmission = (
   return {
     type: "remote",
     intent: forceFollowUp
-      ? { type: "follow_up", message }
+      ? { type: "follow_up", message, ...(images === undefined ? {} : { images }) }
       : streaming
-        ? { type: "steer", message }
-        : { type: "prompt", message },
+        ? { type: "steer", message, ...(images === undefined ? {} : { images }) }
+        : { type: "prompt", message, ...(images === undefined ? {} : { images }) },
   };
 };
 
@@ -237,13 +245,17 @@ export class FleetConsoleController {
     this.#onChange();
   }
 
-  async submitDraft(forceFollowUp = false): Promise<void> {
+  async submitDraft(forceFollowUp = false, images?: ReadonlyArray<PiConsoleImage>): Promise<void> {
     const sessionId = this.state.selectedSessionId;
     if (sessionId === undefined) return;
-    await this.submitText(this.state.cache(sessionId).draft, forceFollowUp);
+    await this.submitText(this.state.cache(sessionId).draft, forceFollowUp, images);
   }
 
-  async submitText(text: string, forceFollowUp = false): Promise<void> {
+  async submitText(
+    text: string,
+    forceFollowUp = false,
+    images?: ReadonlyArray<PiConsoleImage>,
+  ): Promise<void> {
     const sessionId = this.state.selectedSessionId;
     if (sessionId === undefined) return;
     const cache = this.state.cache(sessionId);
@@ -252,6 +264,7 @@ export class FleetConsoleController {
       submittedText,
       cache.live?.isStreaming ?? false,
       forceFollowUp,
+      images,
     );
     if (route.type === "empty") return;
     if (cache.draft === submittedText) this.state.setDraft(sessionId, "");

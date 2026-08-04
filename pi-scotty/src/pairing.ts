@@ -1,4 +1,3 @@
-import { PI_CONSOLE_MAX_COMMAND_BYTES } from "../../protocol/pi-console.ts";
 import { normalizeOrigin } from "./config.ts";
 import { PiScottyError } from "./errors.ts";
 import {
@@ -9,8 +8,10 @@ import {
 } from "./schemas.ts";
 import { extractClientCookie, readBoundedText, type FetchImplementation } from "./transport.ts";
 
+const PAIRING_MAX_RESPONSE_BYTES = 64 * 1024;
+
 const readBoundedPairingResponse = async (response: Response): Promise<unknown> => {
-  const decoded = decodeJsonText(await readBoundedText(response, PI_CONSOLE_MAX_COMMAND_BYTES));
+  const decoded = decodeJsonText(await readBoundedText(response, PAIRING_MAX_RESPONSE_BYTES));
   if (decoded === undefined)
     throw new PiScottyError("pairing_failed", "Scotty returned an invalid pairing response");
   return decoded;

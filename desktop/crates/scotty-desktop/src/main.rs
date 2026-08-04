@@ -1,28 +1,40 @@
 mod app_menus;
+mod attachments;
 mod composer_input;
 mod markdown;
+mod markdown_mend;
 mod preferences;
+mod selectable_text;
 mod settings_window;
 mod sidecar;
+mod syntax_highlight;
 mod theme;
+mod transcript_selection;
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
+use attachments::StagedAttachment;
 use composer_input::{ComposerInput, ComposerInputEvent};
 use gpui::{
-    App, AppContext as _, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable,
-    FollowMode, FontStyle, FontWeight, HighlightStyle, IntoElement, KeyDownEvent, ListAlignment,
-    ListState, Render, Role, SharedString, StyledText, Subscription, Task, TitlebarOptions, Window,
-    WindowBounds, WindowControlArea, WindowOptions, div, list, prelude::*, px, rems, size,
+    App, AppContext as _, Bounds, ClipboardItem, Context, CursorStyle, Entity, FocusHandle,
+    Focusable, FollowMode, FontStyle, FontWeight, HighlightStyle, IntoElement, KeyDownEvent,
+    ListAlignment, ListState, ObjectFit, PathPromptOptions, Render, Role, SharedString,
+    StrikethroughStyle, StyledImage as _, StyledText, Subscription, Task, TitlebarOptions,
+    UnderlineStyle, Window, WindowBounds, WindowControlArea, WindowOptions, div, img, list,
+    prelude::*, px, rems, size,
 };
 use gpui_tokio::Tokio;
-use markdown::{MarkdownBlock, MarkdownBlockKind, MarkdownStyle, parse_markdown};
+use markdown::{MarkdownBlock, MarkdownBlockKind, MarkdownStyle, parse_markdown_for_display};
+use markdown_mend::PENDING_LINK_URL;
 use sidecar::{
-    DesktopCommand, DesktopState, Frame, ManagementAction, NoticeTone, OperationStatus, PendingUi,
-    SelectionFence, SidecarConnection, SidecarEvent, ToolStatus, TranscriptItem,
+    DesktopCommand, DesktopState, Frame, ImageAttachment, ManagementAction, NoticeTone,
+    OperationStatus, PendingUi, SelectionFence, SidecarConnection, SidecarEvent, ToolStatus,
+    TranscriptItem,
 };
-use theme::Theme;
+use syntax_highlight::{TokenClass, lang_for_tag, tokenize_block};
+use theme::{Theme, oklch};
 
 static FONT_GEIST: &[u8] = include_bytes!("../assets/fonts/Geist.ttf");
 static FONT_GEIST_MONO: &[u8] = include_bytes!("../assets/fonts/GeistMono.ttf");
@@ -33,6 +45,21 @@ static FONT_GEIST_BOLD: &[u8] = include_bytes!("../assets/fonts/Geist-Bold.ttf")
 const MAX_DRAFT_BYTES: usize = 16 * 1024;
 const SIDEBAR_HEADER_PADDING: f32 = 18.0;
 const MACOS_TRAFFIC_LIGHT_SAFE_START: f32 = 88.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentSubmissionOutcome {
+    Pending,
+    Accepted,
+    Retained,
+}
+
+fn attachment_submission_outcome(status: Option<&str>) -> AttachmentSubmissionOutcome {
+    match status {
+        Some("Command accepted") => AttachmentSubmissionOutcome::Accepted,
+        Some("Sending…") | None => AttachmentSubmissionOutcome::Pending,
+        Some(_) => AttachmentSubmissionOutcome::Retained,
+    }
+}
 
 fn sidebar_header_left_padding(is_macos: bool, fullscreen: bool) -> f32 {
     if is_macos && !fullscreen {
@@ -192,6 +219,54 @@ enum ManagementPanel {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum ManagementInputTarget {
+    Create(CreateField),
+    Rename,
+    Vaporize,
+}
+
+struct ManagementInputs {
+    create_title: Entity<ComposerInput>,
+    create_repo: Entity<ComposerInput>,
+    create_prompt: Entity<ComposerInput>,
+    create_hard_cap: Entity<ComposerInput>,
+    rename: Entity<ComposerInput>,
+    vaporize: Entity<ComposerInput>,
+}
+
+impl ManagementInputs {
+    fn create(&self, field: CreateField) -> &Entity<ComposerInput> {
+        match field {
+            CreateField::Title => &self.create_title,
+            CreateField::Repo => &self.create_repo,
+            CreateField::Prompt => &self.create_prompt,
+            CreateField::HardCap => &self.create_hard_cap,
+        }
+    }
+
+    fn target(&self, target: ManagementInputTarget) -> &Entity<ComposerInput> {
+        match target {
+            ManagementInputTarget::Create(field) => self.create(field),
+            ManagementInputTarget::Rename => &self.rename,
+            ManagementInputTarget::Vaporize => &self.vaporize,
+        }
+    }
+
+    fn is_focused(&self, window: &Window, cx: &App) -> bool {
+        [
+            &self.create_title,
+            &self.create_repo,
+            &self.create_prompt,
+            &self.create_hard_cap,
+            &self.rename,
+            &self.vaporize,
+        ]
+        .into_iter()
+        .any(|input| input.focus_handle(cx).is_focused(window))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PaletteCommand {
     Settings,
     NewSandbox,
@@ -273,8 +348,13 @@ struct DesktopView {
     shutdown: Option<tokio::sync::watch::Sender<bool>>,
     composer: Entity<ComposerInput>,
     command_input: Entity<ComposerInput>,
+    management_inputs: ManagementInputs,
     command_palette_selection: Option<usize>,
     draft_generation: u64,
+    attachments: HashMap<String, Vec<StagedAttachment>>,
+    attachment_submission: Option<String>,
+    attachment_error: Option<String>,
+    attachment_picker: Option<Task<()>>,
     transcript_list: ListState,
     transcript_ids: Vec<String>,
     unseen_transcript: usize,
@@ -284,8 +364,23 @@ struct DesktopView {
     command_error: Option<String>,
     _composer_subscription: Subscription,
     _command_input_subscription: Subscription,
+    _management_input_subscriptions: Vec<Subscription>,
     _appearance_subscription: Subscription,
     _events: Task<()>,
+}
+
+fn new_management_input(
+    placeholder: &'static str,
+    max_bytes: usize,
+    aria_label: &'static str,
+    cx: &mut Context<DesktopView>,
+) -> Entity<ComposerInput> {
+    cx.new(|cx| {
+        let mut input = ComposerInput::new(placeholder, max_bytes, cx)
+            .with_context_and_label("ScottyManagementInput", aria_label);
+        input.set_editable(true, cx);
+        input
+    })
 }
 
 impl DesktopView {
@@ -320,6 +415,93 @@ impl DesktopView {
                 }
                 cx.notify();
             });
+        let management_inputs = ManagementInputs {
+            create_title: new_management_input("Type here…", 120, "New sandbox title", cx),
+            create_repo: new_management_input("OWNER/NAME", 200, "New sandbox repository", cx),
+            create_prompt: new_management_input(
+                "Type here…",
+                MAX_DRAFT_BYTES,
+                "New sandbox initial prompt",
+                cx,
+            ),
+            create_hard_cap: new_management_input("30m, 4h, or 1d", 16, "New sandbox hard cap", cx),
+            rename: new_management_input("Type here…", 120, "Sandbox title", cx),
+            vaporize: new_management_input("Type here…", 64, "Vaporize confirmation", cx),
+        };
+        let management_input_subscriptions = vec![
+            cx.subscribe(
+                &management_inputs.create_title,
+                |view, input, event: &ComposerInputEvent, cx| {
+                    if matches!(event, ComposerInputEvent::Edited)
+                        && let Some(ManagementPanel::Create { title, .. }) =
+                            &mut view.management_panel
+                    {
+                        *title = input.read(cx).text().to_string();
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.subscribe(
+                &management_inputs.create_repo,
+                |view, input, event: &ComposerInputEvent, cx| {
+                    if matches!(event, ComposerInputEvent::Edited)
+                        && let Some(ManagementPanel::Create { repo, .. }) =
+                            &mut view.management_panel
+                    {
+                        *repo = input.read(cx).text().to_string();
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.subscribe(
+                &management_inputs.create_prompt,
+                |view, input, event: &ComposerInputEvent, cx| {
+                    if matches!(event, ComposerInputEvent::Edited)
+                        && let Some(ManagementPanel::Create { prompt, .. }) =
+                            &mut view.management_panel
+                    {
+                        *prompt = input.read(cx).text().to_string();
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.subscribe(
+                &management_inputs.create_hard_cap,
+                |view, input, event: &ComposerInputEvent, cx| {
+                    if matches!(event, ComposerInputEvent::Edited)
+                        && let Some(ManagementPanel::Create { hard_cap, .. }) =
+                            &mut view.management_panel
+                    {
+                        *hard_cap = input.read(cx).text().to_string();
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.subscribe(
+                &management_inputs.rename,
+                |view, input, event: &ComposerInputEvent, cx| {
+                    if matches!(event, ComposerInputEvent::Edited)
+                        && let Some(ManagementPanel::Rename { title, .. }) =
+                            &mut view.management_panel
+                    {
+                        *title = input.read(cx).text().to_string();
+                        cx.notify();
+                    }
+                },
+            ),
+            cx.subscribe(
+                &management_inputs.vaporize,
+                |view, input, event: &ComposerInputEvent, cx| {
+                    if matches!(event, ComposerInputEvent::Edited)
+                        && let Some(ManagementPanel::Vaporize { confirmation, .. }) =
+                            &mut view.management_panel
+                    {
+                        *confirmation = input.read(cx).text().to_string();
+                        cx.notify();
+                    }
+                },
+            ),
+        ];
         let appearance_subscription =
             cx.observe_window_appearance(window, |_, _, cx| preferences::apply_theme(cx));
         let boot = Tokio::spawn(cx, SidecarConnection::spawn());
@@ -376,8 +558,13 @@ impl DesktopView {
             shutdown: None,
             composer,
             command_input,
+            management_inputs,
             command_palette_selection: None,
             draft_generation: 0,
+            attachments: HashMap::new(),
+            attachment_submission: None,
+            attachment_error: None,
+            attachment_picker: None,
             transcript_list,
             transcript_ids: Vec::new(),
             unseen_transcript: 0,
@@ -387,6 +574,7 @@ impl DesktopView {
             command_error: None,
             _composer_subscription: composer_subscription,
             _command_input_subscription: command_input_subscription,
+            _management_input_subscriptions: management_input_subscriptions,
             _appearance_subscription: appearance_subscription,
             _events: events,
         }
@@ -396,6 +584,7 @@ impl DesktopView {
         match event {
             SidecarEvent::Frame(Frame::Ready { .. }) => self.connection = ConnectionStatus::Ready,
             SidecarEvent::Frame(Frame::State { state, .. }) => {
+                self.resolve_attachment_submission(&state);
                 let selection_changed = self
                     .state
                     .as_ref()
@@ -431,6 +620,9 @@ impl DesktopView {
             }
             SidecarEvent::Frame(Frame::Error { code, message, .. }) => {
                 let message = format!("{code}: {message}");
+                if self.attachment_submission.take().is_some() {
+                    self.attachment_error = Some(message.clone());
+                }
                 if matches!(self.connection, ConnectionStatus::Connecting) {
                     self.connection = ConnectionStatus::Failed(message);
                 } else {
@@ -518,14 +710,20 @@ impl DesktopView {
         self.transcript_ids = next_ids;
     }
 
-    fn send(&mut self, command: DesktopCommand) {
+    fn try_send(&mut self, command: DesktopCommand) -> bool {
         self.command_error = None;
         let Some(commands) = &self.commands else {
-            return;
+            return false;
         };
         if commands.try_send(command).is_err() {
             self.connection = ConnectionStatus::Failed("Desktop command queue is full".into());
+            return false;
         }
+        true
+    }
+
+    fn send(&mut self, command: DesktopCommand) {
+        self.try_send(command);
     }
 
     fn sync_draft(&mut self, draft: String) {
@@ -547,14 +745,139 @@ impl DesktopView {
         )
     }
 
-    fn submit(&mut self, force_follow_up: bool, cx: &mut Context<Self>) {
-        let draft = self.composer.read(cx).text().to_string();
-        if draft.trim().is_empty() {
+    fn resolve_attachment_submission(&mut self, state: &DesktopState) {
+        let Some(session_id) = self.attachment_submission.as_deref() else {
+            return;
+        };
+        if state.selected_session_id.as_deref() != Some(session_id) {
             return;
         }
+        let status = state
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.command_status.as_deref());
+        match attachment_submission_outcome(status) {
+            AttachmentSubmissionOutcome::Pending => {}
+            AttachmentSubmissionOutcome::Accepted => {
+                let session_id = session_id.to_string();
+                self.attachments.remove(&session_id);
+                self.attachment_submission = None;
+                self.attachment_error = None;
+            }
+            AttachmentSubmissionOutcome::Retained => {
+                self.attachment_submission = None;
+                self.attachment_error = status.map(str::to_string);
+            }
+        }
+    }
+
+    fn open_attachment_picker(&mut self, cx: &mut Context<Self>) {
+        if self.attachment_picker.is_some() || self.attachment_submission.is_some() {
+            return;
+        }
+        let Some(session_id) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.selected_session_id.clone())
+        else {
+            return;
+        };
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach images".into()),
+        });
+        let executor = cx.background_executor().clone();
+        self.attachment_picker = Some(cx.spawn(async move |this, cx| {
+            let paths = match picker.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Ok(None)) => Vec::new(),
+                Ok(Err(error)) => {
+                    this.update(cx, |view, cx| {
+                        view.attachment_error = Some(error.to_string());
+                        view.attachment_picker = None;
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+                Err(error) => {
+                    this.update(cx, |view, cx| {
+                        view.attachment_error = Some(error.to_string());
+                        view.attachment_picker = None;
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            if paths.is_empty() {
+                this.update(cx, |view, _| view.attachment_picker = None)
+                    .ok();
+                return;
+            }
+            let staged = executor
+                .spawn(async move {
+                    paths
+                        .iter()
+                        .map(|path| attachments::stage_file(path))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |view, cx| {
+                view.attachment_picker = None;
+                let mut candidates = Vec::new();
+                let mut errors = Vec::new();
+                for result in staged {
+                    match result {
+                        Ok(attachment) => candidates.push(attachment),
+                        Err(error) => errors.push(error),
+                    }
+                }
+                errors.extend(attachments::add_staged(
+                    view.attachments.entry(session_id.clone()).or_default(),
+                    candidates,
+                ));
+                if view.attachments.get(&session_id).is_some_and(Vec::is_empty) {
+                    view.attachments.remove(&session_id);
+                }
+                view.attachment_error = (!errors.is_empty()).then(|| errors.join(" "));
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn remove_attachment(&mut self, session_id: &str, attachment_id: &str) {
+        if self.attachment_submission.as_deref() == Some(session_id) {
+            return;
+        }
+        if let Some(staged) = self.attachments.get_mut(session_id) {
+            staged.retain(|attachment| attachment.id != attachment_id);
+            if staged.is_empty() {
+                self.attachments.remove(session_id);
+            }
+        }
+        self.attachment_error = None;
+    }
+
+    fn submit(&mut self, force_follow_up: bool, cx: &mut Context<Self>) {
+        if self.attachment_submission.is_some() {
+            return;
+        }
+        let draft = self.composer.read(cx).text().to_string();
         let Some(fence) = self.selection_fence() else {
             return;
         };
+        let staged = self
+            .attachments
+            .get(&fence.session_id)
+            .cloned()
+            .unwrap_or_default();
+        if draft.trim().is_empty() && staged.is_empty() {
+            return;
+        }
         let pending = self
             .state
             .as_ref()
@@ -563,6 +886,11 @@ impl DesktopView {
             .and_then(|live| live.pending_ui.first())
             .cloned();
         if let Some(pending) = pending {
+            if !staged.is_empty() {
+                self.attachment_error =
+                    Some("Attachments cannot answer a pending sandbox request.".into());
+                return;
+            }
             match pending {
                 PendingUi::Input { id, .. } | PendingUi::Editor { id, .. } => {
                     self.send(DesktopCommand::answer_value(fence, id, draft));
@@ -571,14 +899,31 @@ impl DesktopView {
                 PendingUi::Select { .. } | PendingUi::Confirm { .. } => return,
             }
         }
-        self.send(DesktopCommand::submit(fence, draft, force_follow_up));
+        let images = staged
+            .iter()
+            .map(|attachment| {
+                let encoded = attachment.encoded();
+                ImageAttachment::new(encoded.data, encoded.mime_type)
+            })
+            .collect();
+        let session_id = fence.session_id.clone();
+        if self.try_send(DesktopCommand::submit_with_images(
+            fence,
+            draft,
+            images,
+            force_follow_up,
+        )) && !staged.is_empty()
+        {
+            self.attachment_submission = Some(session_id);
+            self.attachment_error = None;
+        }
     }
 
     fn next_request_id(&self, action: &str) -> String {
         format!("desktop-{action}-{}", uuid::Uuid::new_v4())
     }
 
-    fn open_create(&mut self) {
+    fn open_create(&mut self, cx: &mut Context<Self>) {
         let repo = self
             .state
             .as_ref()
@@ -588,6 +933,18 @@ impl DesktopView {
             })
             .map(|session| session.repo.clone())
             .unwrap_or_default();
+        self.management_inputs
+            .create_title
+            .update(cx, |input, cx| input.replace_document(String::new(), cx));
+        self.management_inputs
+            .create_repo
+            .update(cx, |input, cx| input.replace_document(repo.clone(), cx));
+        self.management_inputs
+            .create_prompt
+            .update(cx, |input, cx| input.replace_document(String::new(), cx));
+        self.management_inputs
+            .create_hard_cap
+            .update(cx, |input, cx| input.replace_document("4h", cx));
         self.management_panel = Some(ManagementPanel::Create {
             field: CreateField::Title,
             title: String::new(),
@@ -597,17 +954,51 @@ impl DesktopView {
         });
     }
 
-    fn open_rename(&mut self, session_id: String, title: String) {
+    fn open_rename(&mut self, session_id: String, title: String, cx: &mut Context<Self>) {
+        self.management_inputs
+            .rename
+            .update(cx, |input, cx| input.replace_document(title.clone(), cx));
         self.management_panel = Some(ManagementPanel::Rename { session_id, title });
     }
 
-    fn open_vaporize(&mut self, session_id: String, title: String) {
+    fn open_vaporize(&mut self, session_id: String, title: String, cx: &mut Context<Self>) {
+        self.management_inputs
+            .vaporize
+            .update(cx, |input, cx| input.replace_document(String::new(), cx));
         self.management_panel = Some(ManagementPanel::Vaporize {
             session_id,
             title,
             confirmation: String::new(),
             id_copied: false,
         });
+    }
+
+    fn activate_management_input(
+        &mut self,
+        target: ManagementInputTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match (&mut self.management_panel, target) {
+            (Some(ManagementPanel::Create { field, .. }), ManagementInputTarget::Create(next)) => {
+                *field = next;
+            }
+            (Some(ManagementPanel::Rename { .. }), ManagementInputTarget::Rename)
+            | (Some(ManagementPanel::Vaporize { .. }), ManagementInputTarget::Vaporize) => {}
+            _ => return,
+        }
+        window.focus(&self.management_inputs.target(target).focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    fn focus_active_management_input(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = match &self.management_panel {
+            Some(ManagementPanel::Create { field, .. }) => ManagementInputTarget::Create(*field),
+            Some(ManagementPanel::Rename { .. }) => ManagementInputTarget::Rename,
+            Some(ManagementPanel::Vaporize { .. }) => ManagementInputTarget::Vaporize,
+            None => return,
+        };
+        window.focus(&self.management_inputs.target(target).focus_handle(cx), cx);
     }
 
     fn management_failure(&mut self, action: ManagementAction, message: impl Into<String>) {
@@ -802,14 +1193,14 @@ impl DesktopView {
         match command {
             PaletteCommand::Settings => settings_window::open(cx),
             PaletteCommand::NewSandbox => {
-                self.open_create();
-                window.focus(&self.focus, cx);
+                self.open_create(cx);
+                self.focus_active_management_input(window, cx);
             }
             PaletteCommand::RefreshFleet => self.send(DesktopCommand::refresh_fleet()),
             PaletteCommand::RenameSandbox => {
                 if let Some((id, title)) = self.selected_identity() {
-                    self.open_rename(id, title);
-                    window.focus(&self.focus, cx);
+                    self.open_rename(id, title, cx);
+                    self.focus_active_management_input(window, cx);
                 }
             }
             PaletteCommand::SnapshotSandbox => {
@@ -826,8 +1217,8 @@ impl DesktopView {
             }
             PaletteCommand::VaporizeSandbox => {
                 if let Some((id, title)) = self.selected_identity() {
-                    self.open_vaporize(id, title);
-                    window.focus(&self.focus, cx);
+                    self.open_vaporize(id, title, cx);
+                    self.focus_active_management_input(window, cx);
                 }
             }
         }
@@ -882,110 +1273,37 @@ impl DesktopView {
         if key == "escape" {
             self.management_panel = None;
             window.focus(&self.composer.focus_handle(cx), cx);
-        } else if modifiers.platform && key == "a" {
-            match &mut self.management_panel {
-                Some(ManagementPanel::Create {
-                    field,
-                    title,
-                    repo,
-                    prompt,
-                    hard_cap,
-                }) => match field {
-                    CreateField::Title => title.clear(),
-                    CreateField::Repo => repo.clear(),
-                    CreateField::Prompt => prompt.clear(),
-                    CreateField::HardCap => hard_cap.clear(),
-                },
-                Some(ManagementPanel::Rename { title, .. }) => title.clear(),
-                Some(ManagementPanel::Vaporize { confirmation, .. }) => confirmation.clear(),
-                None => {}
-            }
         } else if key == "tab" {
-            if let Some(ManagementPanel::Create { field, .. }) = &mut self.management_panel {
-                *field = field.next();
-            }
-        } else if key == "enter" {
-            let should_submit = match &mut self.management_panel {
-                Some(ManagementPanel::Create { field, prompt, .. })
-                    if *field == CreateField::Prompt && !modifiers.platform =>
-                {
-                    prompt.push('\n');
-                    false
-                }
-                Some(ManagementPanel::Create { field, .. }) if !modifiers.platform => {
-                    *field = field.next();
-                    false
-                }
-                _ => true,
+            let Some(ManagementPanel::Create { field, .. }) = &mut self.management_panel else {
+                return false;
             };
-            if should_submit {
+            *field = field.next();
+            self.focus_active_management_input(window, cx);
+        } else if key == "enter" {
+            if modifiers.platform {
                 self.submit_management();
-            }
-        } else if key == "backspace" {
-            match &mut self.management_panel {
-                Some(ManagementPanel::Create {
-                    field,
-                    title,
-                    repo,
-                    prompt,
-                    hard_cap,
-                }) => match field {
-                    CreateField::Title => {
-                        title.pop();
+            } else {
+                match &mut self.management_panel {
+                    Some(ManagementPanel::Create { field, .. })
+                        if *field == CreateField::Prompt =>
+                    {
+                        self.management_inputs
+                            .create_prompt
+                            .update(cx, |input, cx| {
+                                input.insert_text("\n", cx);
+                            });
                     }
-                    CreateField::Repo => {
-                        repo.pop();
+                    Some(ManagementPanel::Create { field, .. }) => {
+                        *field = field.next();
+                        self.focus_active_management_input(window, cx);
                     }
-                    CreateField::Prompt => {
-                        prompt.pop();
-                    }
-                    CreateField::HardCap => {
-                        hard_cap.pop();
-                    }
-                },
-                Some(ManagementPanel::Rename { title, .. }) => {
-                    title.pop();
+                    Some(ManagementPanel::Rename { .. })
+                    | Some(ManagementPanel::Vaporize { .. }) => self.submit_management(),
+                    None => return false,
                 }
-                Some(ManagementPanel::Vaporize { confirmation, .. }) => {
-                    confirmation.pop();
-                }
-                None => {}
             }
         } else {
-            let inserted = if modifiers.platform && key == "v" {
-                cx.read_from_clipboard().and_then(|item| item.text())
-            } else if !modifiers.platform && !modifiers.control {
-                event.keystroke.key_char.clone()
-            } else {
-                None
-            };
-            let Some(inserted) = inserted else {
-                return true;
-            };
-            match &mut self.management_panel {
-                Some(ManagementPanel::Create {
-                    field,
-                    title,
-                    repo,
-                    prompt,
-                    hard_cap,
-                }) => {
-                    let (target, limit) = match field {
-                        CreateField::Title => (title, 120),
-                        CreateField::Repo => (repo, 200),
-                        CreateField::Prompt => (prompt, MAX_DRAFT_BYTES),
-                        CreateField::HardCap => (hard_cap, 16),
-                    };
-                    append_bounded(target, &inserted, limit);
-                }
-                Some(ManagementPanel::Rename { title, .. }) => {
-                    append_bounded(title, &inserted, 120);
-                }
-                Some(ManagementPanel::Vaporize { confirmation, .. }) => {
-                    append_bounded(confirmation, &inserted, 64);
-                }
-                None => {}
-            }
+            return false;
         }
         cx.stop_propagation();
         cx.notify();
@@ -1002,8 +1320,8 @@ impl DesktopView {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         if modifiers.platform && key == "n" {
-            self.open_create();
-            window.focus(&self.focus, cx);
+            self.open_create(cx);
+            self.focus_active_management_input(window, cx);
         } else if modifiers.platform && key == "r" {
             self.send(DesktopCommand::refresh_fleet());
         } else if modifiers.control
@@ -1192,8 +1510,8 @@ impl DesktopView {
                                     .text_size(rems(10.0 / 16.0))
                                     .text_color(theme.accent)
                                     .on_click(cx.listener(|view, _, window, cx| {
-                                        view.open_create();
-                                        window.focus(&view.focus, cx);
+                                        view.open_create(cx);
+                                        view.focus_active_management_input(window, cx);
                                         cx.notify();
                                     }))
                                     .child("+ NEW"),
@@ -1252,17 +1570,22 @@ impl DesktopView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx).clone();
-        let Some((session_id, item)) = self.state.as_ref().and_then(|state| {
+        let Some((session_id, item, streaming_markdown)) = self.state.as_ref().and_then(|state| {
             let session_id = state.selected_session_id.clone()?;
-            let item = state
-                .selected
-                .as_ref()?
-                .live
-                .as_ref()?
-                .transcript
-                .get(index)?
-                .clone();
-            Some((session_id, item))
+            let live = state.selected.as_ref()?.live.as_ref()?;
+            let item = live.transcript.get(index)?.clone();
+            let streaming_markdown = live.is_streaming
+                && matches!(
+                    item,
+                    TranscriptItem::Assistant { .. } | TranscriptItem::Thinking { .. }
+                )
+                && !live.transcript[index + 1..].iter().any(|later| {
+                    matches!(
+                        later,
+                        TranscriptItem::Assistant { .. } | TranscriptItem::Thinking { .. }
+                    )
+                });
+            Some((session_id, item, streaming_markdown))
         }) else {
             return div().into_any_element();
         };
@@ -1270,7 +1593,15 @@ impl DesktopView {
             TranscriptItem::Tool { id, .. } => self.tool_expanded(&session_id, id),
             _ => false,
         };
-        render_transcript_item(index, &item, &session_id, tool_expanded, &theme, cx)
+        render_transcript_item(
+            index,
+            &item,
+            &session_id,
+            tool_expanded,
+            streaming_markdown,
+            &theme,
+            cx,
+        )
     }
 
     fn tool_expanded(&self, session_id: &str, tool_id: &str) -> bool {
@@ -1471,8 +1802,12 @@ impl DesktopView {
                                         .text_size(rems(9.5 / 16.0))
                                         .text_color(theme.text_muted)
                                         .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.open_rename(rename_id.clone(), rename_title.clone());
-                                            window.focus(&view.focus, cx);
+                                            view.open_rename(
+                                                rename_id.clone(),
+                                                rename_title.clone(),
+                                                cx,
+                                            );
+                                            view.focus_active_management_input(window, cx);
                                             cx.notify();
                                         }))
                                         .child("RENAME"),
@@ -1556,8 +1891,8 @@ impl DesktopView {
                                         .text_size(rems(9.5 / 16.0))
                                         .text_color(theme.danger)
                                         .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.open_vaporize(id.clone(), title.clone());
-                                            window.focus(&view.focus, cx);
+                                            view.open_vaporize(id.clone(), title.clone(), cx);
+                                            view.focus_active_management_input(window, cx);
                                             cx.notify();
                                         }))
                                         .child("VAPORIZE"),
@@ -1576,6 +1911,10 @@ impl DesktopView {
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    // GPUI paints plain text without native selection. Comet's
+                    // selection model rebuilds document order from this
+                    // frame-scoped registry before transcript rows paint.
+                    .child(selectable_text::selection_frame_reset())
                     .when(transcript_truncated, |content| {
                         content.child(render_truncation_notice(&theme))
                     })
@@ -1817,44 +2156,42 @@ impl DesktopView {
             }))
             .child("CANCEL");
         let body = match panel {
-            ManagementPanel::Create {
-                field,
-                title,
-                repo,
-                prompt,
-                hard_cap,
-            } => div()
+            ManagementPanel::Create { field, .. } => div()
                 .child(management_field(
                     "create-title",
                     "Title",
-                    title,
+                    self.management_inputs.create_title.clone(),
                     *field == CreateField::Title,
-                    false,
+                    ManagementInputTarget::Create(CreateField::Title),
                     &theme,
+                    cx,
                 ))
                 .child(management_field(
                     "create-repository",
                     "Repository",
-                    repo,
+                    self.management_inputs.create_repo.clone(),
                     *field == CreateField::Repo,
-                    false,
+                    ManagementInputTarget::Create(CreateField::Repo),
                     &theme,
+                    cx,
                 ))
                 .child(management_field(
                     "create-prompt",
                     "Initial prompt",
-                    prompt,
+                    self.management_inputs.create_prompt.clone(),
                     *field == CreateField::Prompt,
-                    true,
+                    ManagementInputTarget::Create(CreateField::Prompt),
                     &theme,
+                    cx,
                 ))
                 .child(management_field(
                     "create-hard-cap",
                     "Hard cap",
-                    hard_cap,
+                    self.management_inputs.create_hard_cap.clone(),
                     *field == CreateField::HardCap,
-                    false,
+                    ManagementInputTarget::Create(CreateField::HardCap),
                     &theme,
+                    cx,
                 ))
                 .child(
                     div()
@@ -1891,14 +2228,15 @@ impl DesktopView {
                             ),
                         ),
                 ),
-            ManagementPanel::Rename { title, .. } => div()
+            ManagementPanel::Rename { .. } => div()
                 .child(management_field(
                     "rename-title",
                     "Sandbox title",
-                    title,
+                    self.management_inputs.rename.clone(),
                     true,
-                    false,
+                    ManagementInputTarget::Rename,
                     &theme,
+                    cx,
                 ))
                 .child(
                     div()
@@ -1931,7 +2269,7 @@ impl DesktopView {
             ManagementPanel::Vaporize {
                 session_id,
                 title,
-                confirmation,
+                confirmation: _,
                 id_copied,
             } => {
                 let copied_session_id = session_id.clone();
@@ -2007,10 +2345,11 @@ impl DesktopView {
                     .child(management_field(
                         "vaporize-confirmation",
                         "Confirmation",
-                        confirmation,
+                        self.management_inputs.vaporize.clone(),
                         true,
-                        false,
+                        ManagementInputTarget::Vaporize,
                         &theme,
+                        cx,
                     ))
                     .child(
                         div()
@@ -2202,10 +2541,41 @@ impl DesktopView {
         let theme = Theme::of(cx).clone();
         let abort_fence = make_selection_fence(selected_session_id, selected);
         let enabled = abort_fence.is_some();
-        let status = selected.and_then(|selected| selected.command_status.as_deref());
+        let submitting_attachments = selected_session_id
+            .is_some_and(|session_id| self.attachment_submission.as_deref() == Some(session_id));
+        let submit_enabled = enabled && !submitting_attachments;
+        let staged = selected_session_id
+            .and_then(|session_id| self.attachments.get(session_id))
+            .cloned()
+            .unwrap_or_default();
+        let staged_count = staged.len();
+        let staged_bytes = staged.iter().map(StagedAttachment::byte_len).sum::<usize>();
+        let can_attach = enabled
+            && !submitting_attachments
+            && self.attachment_picker.is_none()
+            && staged_count < attachments::MAX_IMAGE_COUNT;
+        let status = self
+            .attachment_error
+            .as_deref()
+            .or_else(|| selected.and_then(|selected| selected.command_status.as_deref()));
+        let footer_status = if staged_count > 0 {
+            let count = format!(
+                "{staged_count}/{} images · {:.1} MB",
+                attachments::MAX_IMAGE_COUNT,
+                staged_bytes as f64 / (1024.0 * 1024.0)
+            );
+            self.attachment_error
+                .as_deref()
+                .map_or(count.clone(), |error| format!("{count} · {error}"))
+        } else {
+            status
+                .unwrap_or("Enter send · ⇧Enter newline · ⌥Enter follow-up")
+                .to_string()
+        };
         let streaming = selected
             .and_then(|selected| selected.live.as_ref())
             .is_some_and(|live| live.is_streaming);
+        let attachment_session_id = selected_session_id.map(str::to_string);
         div()
             .flex_none()
             .px(theme.space(22.0))
@@ -2224,6 +2594,65 @@ impl DesktopView {
                         theme.border
                     })
                     .bg(theme.surface)
+                    .when(!staged.is_empty(), |composer| {
+                        composer.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .flex_wrap()
+                                .gap(px(8.0))
+                                .pb(px(10.0))
+                                .children(staged.into_iter().map(|attachment| {
+                                    let remove_session_id =
+                                        attachment_session_id.clone().unwrap_or_default();
+                                    let remove_attachment_id = attachment.id.clone();
+                                    let remove_label =
+                                        format!("Remove attached image {}", attachment.name);
+                                    div()
+                                        .relative()
+                                        .size(px(56.0))
+                                        .rounded(px(8.0))
+                                        .overflow_hidden()
+                                        .border_1()
+                                        .border_color(theme.border_strong)
+                                        .child(
+                                            img(attachment.image)
+                                                .size_full()
+                                                .object_fit(ObjectFit::Cover),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "remove-attachment-{remove_attachment_id}"
+                                                )))
+                                                .role(Role::Button)
+                                                .aria_label(SharedString::from(remove_label))
+                                                .focusable()
+                                                .tab_stop(true)
+                                                .absolute()
+                                                .top(px(3.0))
+                                                .right(px(3.0))
+                                                .size(px(18.0))
+                                                .rounded_full()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .bg(theme.bg.opacity(0.9))
+                                                .text_size(rems(11.0 / 16.0))
+                                                .text_color(theme.text)
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(move |view, _, _, cx| {
+                                                    view.remove_attachment(
+                                                        &remove_session_id,
+                                                        &remove_attachment_id,
+                                                    );
+                                                    cx.notify();
+                                                }))
+                                                .child("×"),
+                                        )
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .id("composer-input")
@@ -2238,9 +2667,38 @@ impl DesktopView {
                             .justify_between()
                             .text_size(rems(9.5 / 16.0))
                             .text_color(theme.text_faint)
-                            .child(SharedString::from(
-                                status.unwrap_or("Enter send · ⇧Enter newline · ⌥Enter follow-up"),
-                            ))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .id("attach-images")
+                                            .role(Role::Button)
+                                            .aria_label("Attach images")
+                                            .focusable()
+                                            .tab_stop(true)
+                                            .px(px(7.0))
+                                            .py(px(3.0))
+                                            .rounded(px(5.0))
+                                            .cursor_pointer()
+                                            .text_color(if can_attach {
+                                                theme.text_muted
+                                            } else {
+                                                theme.text_faint
+                                            })
+                                            .on_click(cx.listener(move |view, _, _, cx| {
+                                                if can_attach {
+                                                    view.open_attachment_picker(cx);
+                                                    cx.notify();
+                                                }
+                                            }))
+                                            .child("ATTACH"),
+                                    )
+                                    .child(SharedString::from(footer_status)),
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -2284,18 +2742,24 @@ impl DesktopView {
                                             .py(px(3.0))
                                             .rounded(px(5.0))
                                             .cursor_pointer()
-                                            .text_color(if enabled {
+                                            .text_color(if submit_enabled {
                                                 theme.accent
                                             } else {
                                                 theme.text_faint
                                             })
                                             .on_click(cx.listener(move |view, _, _, cx| {
-                                                if enabled {
+                                                if submit_enabled {
                                                     view.submit(false, cx);
                                                     cx.notify();
                                                 }
                                             }))
-                                            .child(if streaming { "STEER" } else { "SEND" }),
+                                            .child(if submitting_attachments {
+                                                "SENDING"
+                                            } else if streaming {
+                                                "STEER"
+                                            } else {
+                                                "SEND"
+                                            }),
                                     ),
                             ),
                     ),
@@ -2321,7 +2785,9 @@ impl Focusable for DesktopView {
 impl Render for DesktopView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.management_panel.is_none()
-            && (window.focused(cx).is_none() || self.focus.is_focused(window))
+            && (window.focused(cx).is_none()
+                || self.focus.is_focused(window)
+                || self.management_inputs.is_focused(window, cx))
         {
             window.focus(&self.composer.focus_handle(cx), cx);
         }
@@ -2462,11 +2928,13 @@ fn confirm_button(
 fn management_field(
     id: &'static str,
     label: &'static str,
-    value: &str,
+    input: Entity<ComposerInput>,
     active: bool,
-    multiline: bool,
+    target: ManagementInputTarget,
     theme: &Theme,
+    cx: &mut Context<DesktopView>,
 ) -> gpui::AnyElement {
+    let multiline = target == ManagementInputTarget::Create(CreateField::Prompt);
     div()
         .mt(px(10.0))
         .child(
@@ -2479,10 +2947,6 @@ fn management_field(
         .child(
             div()
                 .id(id)
-                .role(Role::TextInput)
-                .aria_label(label)
-                .aria_value(SharedString::from(value.to_string()))
-                .aria_placeholder("Type here")
                 .min_h(if multiline { px(92.0) } else { px(34.0) })
                 .px(px(10.0))
                 .py(px(8.0))
@@ -2494,28 +2958,13 @@ fn management_field(
                     theme.border
                 })
                 .bg(theme.bg)
-                .text_size(rems(11.5 / 16.0))
-                .text_color(if value.is_empty() {
-                    theme.text_faint
-                } else {
-                    theme.text
-                })
-                .child(SharedString::from(if value.is_empty() {
-                    "Type here…".into()
-                } else {
-                    value.to_string()
-                })),
+                .cursor(CursorStyle::IBeam)
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    view.activate_management_input(target, window, cx);
+                }))
+                .child(input),
         )
         .into_any_element()
-}
-
-fn append_bounded(target: &mut String, value: &str, max_bytes: usize) {
-    if target.len() >= max_bytes {
-        return;
-    }
-    let available = max_bytes - target.len();
-    let end = value.floor_char_boundary(available.min(value.len()));
-    target.push_str(&value[..end]);
 }
 
 fn valid_repo(repo: &str) -> bool {
@@ -2602,6 +3051,7 @@ fn render_transcript_item(
     item: &TranscriptItem,
     session_id: &str,
     tool_expanded: bool,
+    streaming_markdown: bool,
     theme: &Theme,
     cx: &mut Context<DesktopView>,
 ) -> gpui::AnyElement {
@@ -2614,9 +3064,12 @@ fn render_transcript_item(
         .flex()
         .justify_center();
     let column = div().w_full().max_w(px(768.0)).min_w_0();
+    let selection_prefix = format!("{session_id}:{}", item.id());
 
     match item {
-        TranscriptItem::User { text, .. } => row
+        TranscriptItem::User {
+            text, image_count, ..
+        } => row
             .child(
                 column.flex().justify_end().child(
                     div()
@@ -2635,18 +3088,50 @@ fn render_transcript_item(
                                 .text_color(theme.accent.opacity(0.9))
                                 .child("YOU"),
                         )
-                        .child(
-                            div()
-                                .text_size(rems(13.0 / 16.0))
-                                .text_color(theme.text)
-                                .child(SharedString::from(truncate(text, 16_000))),
-                        ),
+                        .when(*image_count > 0, |bubble| {
+                            bubble.child(
+                                div()
+                                    .mb(if text.is_empty() { px(0.0) } else { px(8.0) })
+                                    .px(px(8.0))
+                                    .py(px(5.0))
+                                    .rounded(px(7.0))
+                                    .border_1()
+                                    .border_color(theme.border_strong)
+                                    .bg(theme.surface.opacity(0.7))
+                                    .text_size(rems(10.5 / 16.0))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from(if *image_count == 1 {
+                                        "1 attached image".to_string()
+                                    } else {
+                                        format!("{image_count} attached images")
+                                    })),
+                            )
+                        })
+                        .when(!text.is_empty(), |bubble| {
+                            bubble.child(
+                                div()
+                                    .text_size(rems(13.0 / 16.0))
+                                    .text_color(theme.text)
+                                    .child(selectable_transcript_text(
+                                        format!("{selection_prefix}:user"),
+                                        truncate(text, 16_000),
+                                        theme,
+                                    )),
+                            )
+                        }),
                 ),
             )
             .into_any_element(),
         TranscriptItem::Assistant { text, .. } => row
             .mb(px(18.0))
-            .child(column.child(render_markdown(text, theme, false)))
+            .child(column.child(render_markdown(
+                text,
+                theme,
+                false,
+                streaming_markdown,
+                &selection_prefix,
+                cx,
+            )))
             .into_any_element(),
         TranscriptItem::Thinking { text, .. } => row
             .mb(px(10.0))
@@ -2678,7 +3163,14 @@ fn render_transcript_item(
                                         .text_color(theme.text_faint)
                                         .child("REASONING"),
                                 )
-                                .child(render_markdown(text, theme, true)),
+                                .child(render_markdown(
+                                    text,
+                                    theme,
+                                    true,
+                                    streaming_markdown,
+                                    &selection_prefix,
+                                    cx,
+                                )),
                         ),
                 ),
             )
@@ -2710,7 +3202,11 @@ fn render_transcript_item(
             .into_any_element(),
         TranscriptItem::Error { message, .. } => row
             .mb(px(10.0))
-            .child(column.child(render_error(message, theme)))
+            .child(column.child(render_error(
+                message,
+                theme,
+                format!("{selection_prefix}:error"),
+            )))
             .into_any_element(),
         TranscriptItem::Notice {
             title,
@@ -2719,7 +3215,13 @@ fn render_transcript_item(
             ..
         } => row
             .mb(px(10.0))
-            .child(column.child(render_notice(title, message, *tone, theme)))
+            .child(column.child(render_notice(
+                title,
+                message,
+                *tone,
+                theme,
+                format!("{selection_prefix}:notice"),
+            )))
             .into_any_element(),
         TranscriptItem::Fallback { text, .. } => row
             .mb(px(9.0))
@@ -2734,16 +3236,37 @@ fn render_transcript_item(
                         .py(px(8.0))
                         .text_size(rems(11.0 / 16.0))
                         .text_color(theme.text_muted)
-                        .child(SharedString::from(truncate(text, 2_000))),
+                        .child(selectable_transcript_text(
+                            format!("{selection_prefix}:fallback"),
+                            truncate(text, 2_000),
+                            theme,
+                        )),
                 ),
             )
             .into_any_element(),
     }
 }
 
-fn render_markdown(source: &str, theme: &Theme, muted: bool) -> gpui::AnyElement {
+fn selectable_transcript_text(key: String, text: String, theme: &Theme) -> gpui::AnyElement {
+    let text = SharedString::from(text);
+    selectable_text::selectable(
+        key,
+        text.clone(),
+        StyledText::new(text),
+        theme.accent.opacity(0.35),
+    )
+}
+
+fn render_markdown(
+    source: &str,
+    theme: &Theme,
+    muted: bool,
+    streaming: bool,
+    selection_prefix: &str,
+    cx: &mut Context<DesktopView>,
+) -> gpui::AnyElement {
     let source = truncate(source, 16_000);
-    let blocks = parse_markdown(&source);
+    let blocks = parse_markdown_for_display(&source, streaming);
     div()
         .px(px(2.0))
         .flex()
@@ -2752,19 +3275,54 @@ fn render_markdown(source: &str, theme: &Theme, muted: bool) -> gpui::AnyElement
         .children(
             blocks
                 .into_iter()
-                .map(|block| render_markdown_block(block, theme, muted))
+                .enumerate()
+                .map(|(index, block)| {
+                    render_markdown_block(
+                        block,
+                        theme,
+                        muted,
+                        format!("{selection_prefix}:markdown:{index}"),
+                        cx,
+                    )
+                })
                 .collect::<Vec<_>>(),
         )
         .into_any_element()
 }
 
-fn render_markdown_block(block: MarkdownBlock, theme: &Theme, muted: bool) -> gpui::AnyElement {
+fn render_markdown_block(
+    block: MarkdownBlock,
+    theme: &Theme,
+    muted: bool,
+    selection_key: String,
+    cx: &mut Context<DesktopView>,
+) -> gpui::AnyElement {
     let text_color = if muted {
         theme.text_muted.opacity(0.78)
     } else {
         theme.text
     };
-    let content = styled_markdown_text(&block, theme, text_color);
+    let block_text = SharedString::from(block.text.clone());
+    let links = block
+        .ranges
+        .iter()
+        .filter_map(|range| {
+            range
+                .style
+                .link
+                .as_ref()
+                .filter(|url| url.as_str() != PENDING_LINK_URL)
+                .map(|url| (range.range.clone(), url.clone()))
+        })
+        .collect();
+    let copy_button_id = format!("{selection_key}:copy");
+    let content = selectable_text::selectable_with_links(
+        selection_key,
+        block_text.clone(),
+        styled_markdown_text(&block, theme, text_color),
+        links,
+        theme.accent.opacity(0.35),
+    );
     match block.kind {
         MarkdownBlockKind::Heading(level) => div()
             .mt(if level <= 2 { px(4.0) } else { px(1.0) })
@@ -2795,19 +3353,49 @@ fn render_markdown_block(block: MarkdownBlock, theme: &Theme, muted: bool) -> gp
             .text_color(if muted { text_color } else { theme.text_muted })
             .child(content)
             .into_any_element(),
-        MarkdownBlockKind::Code => div()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_raised)
-            .px(px(11.0))
-            .py(px(9.0))
-            .font_family(theme.font_mono.clone())
-            .text_size(theme.mono_size(11.5))
-            .line_height(rems(18.0 / 16.0))
-            .text_color(text_color.opacity(0.9))
-            .child(SharedString::from(block.text))
-            .into_any_element(),
+        MarkdownBlockKind::Code(_) => {
+            let code = block.text.clone();
+            div()
+                .relative()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface_raised)
+                .pl(px(11.0))
+                .pr(px(62.0))
+                .py(px(9.0))
+                .font_family(theme.font_mono.clone())
+                .text_size(theme.mono_size(11.5))
+                .line_height(rems(18.0 / 16.0))
+                .text_color(text_color.opacity(0.9))
+                .child(content)
+                .child(
+                    div()
+                        .id(SharedString::from(copy_button_id))
+                        .role(Role::Button)
+                        .aria_label("Copy code block")
+                        .focusable()
+                        .tab_stop(true)
+                        .absolute()
+                        .top(px(7.0))
+                        .right(px(7.0))
+                        .px(px(7.0))
+                        .py(px(4.0))
+                        .rounded(px(5.0))
+                        .bg(theme.element_hover)
+                        .font_family(theme.font_sans.clone())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(rems(8.5 / 16.0))
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                            cx.stop_propagation();
+                        }))
+                        .child("COPY"),
+                )
+                .into_any_element()
+        }
         MarkdownBlockKind::ListItem => div()
             .text_size(rems(13.0 / 16.0))
             .line_height(rems(20.0 / 16.0))
@@ -2834,25 +3422,73 @@ fn styled_markdown_text(
     theme: &Theme,
     text_color: gpui::Hsla,
 ) -> StyledText {
-    StyledText::new(SharedString::from(block.text.clone())).with_highlights(
-        block.ranges.iter().map(|range| {
+    let mut highlights = block
+        .ranges
+        .iter()
+        .map(|range| {
             (
                 range.range.clone(),
-                markdown_highlight(range.style, theme, text_color),
+                markdown_highlight(&range.style, theme, text_color),
             )
-        }),
-    )
+        })
+        .collect::<Vec<_>>();
+    highlights.extend(syntax_highlights(block, theme));
+    highlights.sort_by_key(|(range, _)| range.start);
+
+    StyledText::new(SharedString::from(block.text.clone())).with_highlights(highlights)
+}
+
+fn syntax_highlights(block: &MarkdownBlock, theme: &Theme) -> Vec<(Range<usize>, HighlightStyle)> {
+    let MarkdownBlockKind::Code(Some(tag)) = &block.kind else {
+        return Vec::new();
+    };
+    let Some(language) = lang_for_tag(tag) else {
+        return Vec::new();
+    };
+
+    let mut offset = 0;
+    let mut highlights = Vec::new();
+    for (line, tokens) in block
+        .text
+        .split('\n')
+        .zip(tokenize_block(language, &block.text))
+    {
+        highlights.extend(tokens.into_iter().map(|token| {
+            (
+                offset + token.range.start..offset + token.range.end,
+                HighlightStyle {
+                    color: Some(syntax_color(token.class, theme)),
+                    ..Default::default()
+                },
+            )
+        }));
+        offset += line.len() + 1;
+    }
+    highlights
+}
+
+fn syntax_color(class: TokenClass, theme: &Theme) -> gpui::Hsla {
+    let light = theme.bg.l > theme.text.l;
+    match (class, light) {
+        (TokenClass::Keyword, false) => oklch(0.709, 0.129, 20.0),
+        (TokenClass::StringLit, false) => oklch(0.77, 0.11, 168.0),
+        (TokenClass::Number, false) => oklch(0.78, 0.12, 80.0),
+        (TokenClass::Keyword, true) => oklch(0.52, 0.16, 20.0),
+        (TokenClass::StringLit, true) => oklch(0.48, 0.12, 168.0),
+        (TokenClass::Number, true) => oklch(0.52, 0.14, 70.0),
+        (TokenClass::Comment, _) => theme.text_faint,
+    }
 }
 
 fn markdown_highlight(
-    style: MarkdownStyle,
+    style: &MarkdownStyle,
     theme: &Theme,
     text_color: gpui::Hsla,
 ) -> HighlightStyle {
     HighlightStyle {
         font_weight: style.strong.then_some(FontWeight::SEMIBOLD),
         font_style: style.emphasis.then_some(FontStyle::Italic),
-        color: if style.link {
+        color: if style.link.is_some() {
             Some(theme.accent)
         } else if style.code {
             Some(text_color.opacity(0.92))
@@ -2860,6 +3496,15 @@ fn markdown_highlight(
             None
         },
         background_color: style.code.then_some(theme.element_hover),
+        underline: style.link.is_some().then_some(UnderlineStyle {
+            color: Some(theme.accent.opacity(0.72)),
+            thickness: px(1.0),
+            wavy: false,
+        }),
+        strikethrough: style.strike.then_some(StrikethroughStyle {
+            color: None,
+            thickness: px(1.0),
+        }),
         ..Default::default()
     }
 }
@@ -2900,6 +3545,7 @@ fn render_tool(
     };
     let toggle_session = session_id.to_string();
     let toggle_tool = tool_id.to_string();
+    let selection_prefix = format!("{session_id}:{tool_id}:tool");
     let accessibility_label = format!(
         "{} tool call: {}; {}",
         if expanded { "Collapse" } else { "Expand" },
@@ -2974,6 +3620,9 @@ fn render_tool(
                                 } else {
                                     theme.text
                                 })
+                                // Keep the interactive tool-header label out of
+                                // transcript selection: a drag/double-click here
+                                // would otherwise race the row's expand action.
                                 .child(SharedString::from(single_line(summary, 180))),
                         )
                         .child(
@@ -3010,10 +3659,22 @@ fn render_tool(
                     .px(px(10.0))
                     .py(px(9.0))
                     .when_some(detail, |body, detail| {
-                        body.child(tool_detail("INPUT", detail, status, theme))
+                        body.child(tool_detail(
+                            "INPUT",
+                            detail,
+                            status,
+                            theme,
+                            format!("{selection_prefix}:input"),
+                        ))
                     })
                     .when_some(result, |body, result| {
-                        body.child(tool_detail("OUTPUT", result, status, theme))
+                        body.child(tool_detail(
+                            "OUTPUT",
+                            result,
+                            status,
+                            theme,
+                            format!("{selection_prefix}:output"),
+                        ))
                     })
                     .when(detail.is_none() && result.is_none(), |body| {
                         body.text_size(rems(10.5 / 16.0))
@@ -3030,6 +3691,7 @@ fn tool_detail(
     value: &str,
     status: ToolStatus,
     theme: &Theme,
+    selection_key: String,
 ) -> gpui::AnyElement {
     div()
         .mb(px(7.0))
@@ -3051,12 +3713,16 @@ fn tool_detail(
                 } else {
                     theme.text_muted
                 })
-                .child(SharedString::from(truncate(value, 8_000))),
+                .child(selectable_transcript_text(
+                    selection_key,
+                    truncate(value, 8_000),
+                    theme,
+                )),
         )
         .into_any_element()
 }
 
-fn render_error(message: &str, theme: &Theme) -> gpui::AnyElement {
+fn render_error(message: &str, theme: &Theme, selection_key: String) -> gpui::AnyElement {
     div()
         .min_h(px(36.0))
         .flex()
@@ -3095,12 +3761,22 @@ fn render_error(message: &str, theme: &Theme) -> gpui::AnyElement {
                 .min_w_0()
                 .flex_1()
                 .text_color(theme.text.opacity(0.84))
-                .child(SharedString::from(truncate(message, 2_000))),
+                .child(selectable_transcript_text(
+                    selection_key,
+                    truncate(message, 2_000),
+                    theme,
+                )),
         )
         .into_any_element()
 }
 
-fn render_notice(title: &str, message: &str, tone: NoticeTone, theme: &Theme) -> gpui::AnyElement {
+fn render_notice(
+    title: &str,
+    message: &str,
+    tone: NoticeTone,
+    theme: &Theme,
+    selection_key: String,
+) -> gpui::AnyElement {
     let tint = if tone == NoticeTone::Warning {
         theme.warning
     } else {
@@ -3130,7 +3806,11 @@ fn render_notice(title: &str, message: &str, tone: NoticeTone, theme: &Theme) ->
                 .min_w_0()
                 .flex_1()
                 .text_color(theme.text.opacity(0.82))
-                .child(SharedString::from(truncate(message, 4_000))),
+                .child(selectable_transcript_text(
+                    selection_key,
+                    truncate(message, 4_000),
+                    theme,
+                )),
         )
         .into_any_element()
 }
@@ -3207,14 +3887,45 @@ fn project_label(repo: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ToolExpansions, parse_hard_cap, should_apply_draft, sidebar_header_left_padding, valid_repo,
+        AttachmentSubmissionOutcome, HighlightStyle, Theme, ToolExpansions,
+        attachment_submission_outcome, parse_hard_cap, should_apply_draft,
+        sidebar_header_left_padding, syntax_highlights, valid_repo,
     };
+    use crate::markdown::parse_markdown;
 
     #[test]
     fn sidebar_header_reserves_windowed_macos_traffic_lights() {
         assert_eq!(sidebar_header_left_padding(true, false), 88.0);
         assert_eq!(sidebar_header_left_padding(true, true), 18.0);
         assert_eq!(sidebar_header_left_padding(false, false), 18.0);
+    }
+
+    #[test]
+    fn attachment_bytes_clear_only_after_acceptance() {
+        assert_eq!(
+            attachment_submission_outcome(None),
+            AttachmentSubmissionOutcome::Pending
+        );
+        assert_eq!(
+            attachment_submission_outcome(Some("Sending…")),
+            AttachmentSubmissionOutcome::Pending
+        );
+        assert_eq!(
+            attachment_submission_outcome(Some("Command accepted")),
+            AttachmentSubmissionOutcome::Accepted
+        );
+        assert_eq!(
+            attachment_submission_outcome(Some(
+                "Session changed; refreshed. Submit again to send."
+            )),
+            AttachmentSubmissionOutcome::Retained
+        );
+        assert_eq!(
+            attachment_submission_outcome(Some(
+                "Outcome unknown (command-id); refreshing passively"
+            )),
+            AttachmentSubmissionOutcome::Retained
+        );
     }
 
     #[test]
@@ -3237,6 +3948,42 @@ mod tests {
 
         expansions.toggle("session-a", "tool-1");
         assert!(!expansions.is_expanded("session-a", "tool-1"));
+    }
+
+    #[test]
+    fn code_syntax_highlights_are_color_only_and_keep_source_byte_ranges() {
+        let block = parse_markdown("```rust\nlet name = \"東京\"; // note\n```")
+            .into_iter()
+            .next()
+            .expect("code block");
+        let highlights = syntax_highlights(&block, &Theme::dark());
+        let highlighted = highlights
+            .iter()
+            .map(|(range, style)| (&block.text[range.clone()], style))
+            .collect::<Vec<_>>();
+
+        assert!(highlighted.iter().any(|(text, _)| *text == "let"));
+        assert!(highlighted.iter().any(|(text, _)| *text == "\"東京\""));
+        assert!(highlighted.iter().any(|(text, _)| *text == "// note"));
+        assert!(highlights.iter().all(|(_, style)| {
+            *style
+                == HighlightStyle {
+                    color: style.color,
+                    ..Default::default()
+                }
+        }));
+    }
+
+    #[test]
+    fn unknown_and_indented_code_have_no_syntax_highlights() {
+        let theme = Theme::dark();
+        for source in ["```unknown-lang\nopaque\n```", "    opaque\n"] {
+            let block = parse_markdown(source)
+                .into_iter()
+                .next()
+                .expect("code block");
+            assert!(syntax_highlights(&block, &theme).is_empty());
+        }
     }
 
     #[test]

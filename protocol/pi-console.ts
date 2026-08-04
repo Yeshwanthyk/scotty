@@ -13,7 +13,15 @@ export const PI_CONSOLE_PROTOCOL_VERSION = 1 as const;
 export const PI_CONSOLE_PUBLIC_PATH_SEGMENT = "console/v1";
 export const PI_CONSOLE_PROXY_PREFIX = "/_scotty/pi-console/v1";
 export const PI_CONSOLE_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-export const PI_CONSOLE_MAX_COMMAND_BYTES = 64 * 1024;
+export const PI_CONSOLE_MAX_COMMAND_BYTES = 8 * 1024 * 1024;
+export const PI_CONSOLE_MAX_IMAGES = 4;
+export const PI_CONSOLE_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export const PI_CONSOLE_ALLOWED_IMAGE_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+] as const;
 export const PI_CONSOLE_MAX_EVENTS = 2_000;
 export const PI_CONSOLE_MAX_MESSAGES = 500;
 export const PI_CONSOLE_MAX_ACTIVE_TOOLS = 100;
@@ -165,14 +173,62 @@ export const PiConsoleSnapshotV1Schema = Schema.Struct({
 });
 export type PiConsoleSnapshotV1 = typeof PiConsoleSnapshotV1Schema.Type;
 
+const maxBase64ImageCharacters = Math.ceil(PI_CONSOLE_MAX_IMAGE_BYTES / 3) * 4;
+const isBase64Character = (code: number): boolean =>
+  (code >= 65 && code <= 90) ||
+  (code >= 97 && code <= 122) ||
+  (code >= 48 && code <= 57) ||
+  code === 43 ||
+  code === 47;
+const isBase64 = (data: string): boolean => {
+  if (data.length === 0 || data.length % 4 !== 0) return false;
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  const contentLength = data.length - padding;
+  for (let index = 0; index < contentLength; index += 1)
+    if (!isBase64Character(data.charCodeAt(index))) return false;
+  for (let index = contentLength; index < data.length; index += 1)
+    if (data.charCodeAt(index) !== 61) return false;
+  return true;
+};
+const decodedBase64Bytes = (data: string): number =>
+  (data.length / 4) * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+const ImageDataSchema = Schema.String.check(
+  Schema.isMaxLength(maxBase64ImageCharacters),
+  Schema.makeFilter(isBase64, { expected: "a base64 encoded string" }),
+);
+export const PiConsoleImageSchema = Schema.Struct({
+  type: Schema.Literal("image"),
+  data: ImageDataSchema,
+  mimeType: Schema.Literals(PI_CONSOLE_ALLOWED_IMAGE_MIME_TYPES),
+});
+export type PiConsoleImage = typeof PiConsoleImageSchema.Type;
+export const PiConsoleImagesSchema = Schema.Array(PiConsoleImageSchema).check(
+  Schema.isMaxLength(PI_CONSOLE_MAX_IMAGES),
+  Schema.makeFilter(
+    (images) =>
+      images.reduce((total, image) => total + decodedBase64Bytes(image.data), 0) <=
+      PI_CONSOLE_MAX_IMAGE_BYTES,
+    { expected: `images totaling at most ${PI_CONSOLE_MAX_IMAGE_BYTES} decoded bytes` },
+  ),
+);
+
 const PromptIntentSchema = Schema.Struct({
   type: Schema.Literal("prompt"),
   message: BoundedStringSchema,
+  images: Schema.optionalKey(PiConsoleImagesSchema),
   streamingBehavior: Schema.optionalKey(Schema.Literals(["steer", "followUp"])),
 }).check(Schema.makeFilter((intent) => !intent.message.trimStart().startsWith("/")));
 const MessageIntentSchema = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("steer"), message: BoundedStringSchema }),
-  Schema.Struct({ type: Schema.Literal("follow_up"), message: BoundedStringSchema }),
+  Schema.Struct({
+    type: Schema.Literal("steer"),
+    message: BoundedStringSchema,
+    images: Schema.optionalKey(PiConsoleImagesSchema),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("follow_up"),
+    message: BoundedStringSchema,
+    images: Schema.optionalKey(PiConsoleImagesSchema),
+  }),
 ]);
 const ExtensionUiResponseIntentSchema = Schema.Union([
   Schema.Struct({

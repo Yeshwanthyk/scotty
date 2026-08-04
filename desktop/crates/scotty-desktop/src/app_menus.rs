@@ -1,6 +1,6 @@
 //! Native application and window menus, adapted from Comet's GPUI shell.
 
-use gpui::{App, KeyBinding, Menu, MenuItem, SystemMenuType, Window, actions};
+use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions};
 
 actions!(
     scotty,
@@ -72,7 +72,26 @@ pub fn app_menus() -> Vec<Menu> {
     }
     app_items.push(MenuItem::action("Quit Scotty", Quit));
 
-    let mut menus = vec![Menu::new("Scotty").items(app_items)];
+    let mut menus = vec![
+        Menu::new("Scotty").items(app_items),
+        // Route native clipboard selectors through the focused GPUI input.
+        // The composer's Copy action falls back to Scotty's settled transcript
+        // selection when the draft itself has no selection.
+        Menu::new("Edit").items([
+            MenuItem::action("Undo", crate::composer_input::Undo),
+            MenuItem::action("Redo", crate::composer_input::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", crate::composer_input::Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", crate::composer_input::Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", crate::composer_input::Paste, OsAction::Paste),
+            MenuItem::separator(),
+            MenuItem::os_action(
+                "Select All",
+                crate::composer_input::SelectAll,
+                OsAction::SelectAll,
+            ),
+        ]),
+    ];
     if cfg!(target_os = "macos") {
         menus.push(Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
@@ -82,4 +101,45 @@ pub fn app_menus() -> Vec<Menu> {
         ]));
     }
     menus
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::Action as _;
+
+    use super::*;
+
+    #[test]
+    fn edit_menu_routes_native_clipboard_actions_to_the_composer() {
+        let menus = app_menus();
+        let edit = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "Edit")
+            .expect("Edit menu present");
+        let expected = [
+            (crate::composer_input::Cut.name(), OsAction::Cut),
+            (crate::composer_input::Copy.name(), OsAction::Copy),
+            (crate::composer_input::Paste.name(), OsAction::Paste),
+            (crate::composer_input::SelectAll.name(), OsAction::SelectAll),
+        ];
+        let actual: Vec<(&str, OsAction)> = edit
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action {
+                    action,
+                    os_action: Some(os_action),
+                    ..
+                } => Some((action.name(), *os_action)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actual.len(), expected.len());
+        for ((actual_name, actual_os), (expected_name, expected_os)) in
+            actual.iter().zip(expected.iter())
+        {
+            assert_eq!(actual_name, expected_name);
+            assert!(actual_os == expected_os, "OS action mismatch");
+        }
+    }
 }

@@ -21,8 +21,25 @@ transcript, command, and credential authority.
    a local Pi, Codex, Comet engine, or credential manager.
 
 Every slice is independently demoable with the credential-free fake sidecar.
+New Sandbox, rename, and vaporize use the same native selectable text input as
+the composer, including a visible caret and standard clipboard/undo shortcuts.
 In the New Sandbox panel, use Tab to move fields and Command-Enter to create.
 Vaporize requires typing the exact sandbox ID.
+
+Transcript text uses Comet's native GPUI selection model: drag across rendered
+blocks, double-click a word, triple-click a block, then use Command-C/Control-C.
+Rendered links open normally. Code blocks expose a Copy button and color-only
+syntax highlighting for Rust, JavaScript, TypeScript, Python, Go, JSON, shell,
+TOML, and Markdown. While an assistant response streams, Scotty repairs only
+the displayed final Markdown block. It never changes the canonical transcript
+text, and incomplete links stay non-clickable.
+
+The composer supports bounded Command-Z/Command-Shift-Z undo and redo. Use
+**Attach** to stage up to four PNG, JPEG, WebP, or GIF images with a 5 MiB total
+limit. Scotty shows local thumbnails and accessible remove controls. Image-only
+messages are valid. A pending attachment stays staged after rejection, stale
+state, or an unknown outcome. Scotty clears it only after the command is
+accepted. Local paths and file names never leave the Rust process.
 
 ## Pair this device
 

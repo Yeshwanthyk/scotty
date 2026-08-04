@@ -112,7 +112,7 @@ export class DesktopSidecar {
       } else if (command.type === "submit") {
         this.#assertFence(command);
         this.#setDraft(command.sessionId, command.text);
-        await this.#controller.submitDraft(command.forceFollowUp ?? false);
+        await this.#controller.submitDraft(command.forceFollowUp ?? false, command.images);
       } else if (command.type === "abort") {
         this.#assertFence(command);
         await this.#controller.abortActive();

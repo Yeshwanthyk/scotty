@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
 import {
+  PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
   PiConsoleStaleCommandV1Schema,
 } from "../../protocol/pi-console";
@@ -298,7 +299,14 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
   });
 
   it("relays a current native command over the raw TCP transport", async () => {
-    const command = consoleCommand(0);
+    const command = {
+      ...consoleCommand(0),
+      intent: {
+        type: "prompt" as const,
+        message: "inspect",
+        images: [{ type: "image" as const, data: "AA==", mimeType: "image/png" as const }],
+      },
+    };
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
@@ -465,7 +473,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
       new Request("http://scotty.internal/_scotty/pi-console/v1/command", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "x".repeat(64 * 1024 + 1),
+        body: "x".repeat(PI_CONSOLE_MAX_COMMAND_BYTES + 1),
       }),
     );
     assert.strictEqual(oversized.status, 413);

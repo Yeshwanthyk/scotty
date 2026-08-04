@@ -1,24 +1,26 @@
 use std::ops::Range;
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use crate::markdown_mend::close_hanging;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MarkdownBlockKind {
     Paragraph,
     Heading(u8),
     Quote,
-    Code,
+    Code(Option<String>),
     ListItem,
     Rule,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MarkdownStyle {
     pub strong: bool,
     pub emphasis: bool,
     pub code: bool,
     pub strike: bool,
-    pub link: bool,
+    pub link: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,7 +41,7 @@ struct InlineState {
     strong: usize,
     emphasis: usize,
     strike: usize,
-    link: usize,
+    links: Vec<String>,
 }
 
 impl InlineState {
@@ -49,7 +51,7 @@ impl InlineState {
             emphasis: self.emphasis > 0,
             code,
             strike: self.strike > 0,
-            link: self.link > 0,
+            link: self.links.last().cloned(),
         }
     }
 }
@@ -218,13 +220,13 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
                     output.start(MarkdownBlockKind::Heading(heading_level(level)))
                 }
                 Tag::BlockQuote(_) => output.quote_depth += 1,
-                Tag::CodeBlock(_) => output.start(MarkdownBlockKind::Code),
+                Tag::CodeBlock(kind) => output.start(MarkdownBlockKind::Code(code_language(kind))),
                 Tag::List(next) => output.lists.push(ListState { next }),
                 Tag::Item => output.start_item(),
                 Tag::Emphasis => output.inline.emphasis += 1,
                 Tag::Strong => output.inline.strong += 1,
                 Tag::Strikethrough => output.inline.strike += 1,
-                Tag::Link { .. } => output.inline.link += 1,
+                Tag::Link { dest_url, .. } => output.inline.links.push(dest_url.to_string()),
                 Tag::TableRow => output.start(MarkdownBlockKind::Paragraph),
                 Tag::TableCell
                     if output
@@ -258,7 +260,9 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
                 TagEnd::Strikethrough => {
                     output.inline.strike = output.inline.strike.saturating_sub(1)
                 }
-                TagEnd::Link => output.inline.link = output.inline.link.saturating_sub(1),
+                TagEnd::Link => {
+                    output.inline.links.pop();
+                }
                 _ => {}
             },
             Event::Text(text) => output.append(&text, false),
@@ -286,6 +290,49 @@ pub fn parse_markdown(source: &str) -> Vec<MarkdownBlock> {
     output.finish()
 }
 
+pub fn parse_markdown_for_display(source: &str, streaming: bool) -> Vec<MarkdownBlock> {
+    let canonical = parse_markdown(source);
+    if !streaming
+        || canonical.last().is_some_and(|block| {
+            matches!(
+                block.kind,
+                MarkdownBlockKind::Code(_) | MarkdownBlockKind::Rule
+            )
+        })
+    {
+        return canonical;
+    }
+    let Some(mended) = close_hanging(source) else {
+        return canonical;
+    };
+    let mut display = parse_markdown(&mended);
+    if let Some(last) = display.last_mut()
+        && last.text.ends_with('\u{200b}')
+    {
+        last.text.pop();
+        let end = last.text.len();
+        last.ranges.retain_mut(|range| {
+            if range.range.start >= end {
+                return false;
+            }
+            range.range.end = range.range.end.min(end);
+            range.range.start < range.range.end
+        });
+    }
+    display
+}
+
+fn code_language(kind: CodeBlockKind<'_>) -> Option<String> {
+    match kind {
+        CodeBlockKind::Indented => None,
+        CodeBlockKind::Fenced(info) => info
+            .split_whitespace()
+            .next()
+            .filter(|token| !token.is_empty())
+            .map(str::to_string),
+    }
+}
+
 fn heading_level(level: HeadingLevel) -> u8 {
     match level {
         HeadingLevel::H1 => 1,
@@ -299,7 +346,8 @@ fn heading_level(level: HeadingLevel) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MarkdownBlockKind, parse_markdown};
+    use super::{MarkdownBlockKind, parse_markdown, parse_markdown_for_display};
+    use crate::markdown_mend::PENDING_LINK_URL;
 
     #[test]
     fn parses_the_reported_bold_lines_without_markdown_delimiters() {
@@ -325,8 +373,80 @@ mod tests {
         assert!(blocks[1].text.starts_with("• done"));
         assert!(blocks[1].ranges.iter().any(|range| range.style.strong));
         assert!(blocks[1].ranges.iter().any(|range| range.style.code));
-        assert!(blocks[2].ranges.iter().any(|range| range.style.link));
+        assert!(
+            blocks[2]
+                .ranges
+                .iter()
+                .any(|range| range.style.link.as_deref() == Some("https://example.test"))
+        );
         assert_eq!(blocks[3].kind, MarkdownBlockKind::Quote);
-        assert_eq!(blocks[4].kind, MarkdownBlockKind::Code);
+        assert_eq!(
+            blocks[4].kind,
+            MarkdownBlockKind::Code(Some("sh".to_string()))
+        );
+    }
+
+    #[test]
+    fn retains_only_the_first_fenced_code_info_token() {
+        let blocks = parse_markdown("```rust title=example\nlet π = 3;\n```");
+
+        assert_eq!(
+            blocks[0].kind,
+            MarkdownBlockKind::Code(Some("rust".to_string()))
+        );
+        assert_eq!(blocks[0].text, "let π = 3;");
+    }
+
+    #[test]
+    fn preserves_unknown_fenced_languages_and_marks_indented_code_untyped() {
+        let fenced = parse_markdown("```unknown-lang\nopaque\n```");
+        let indented = parse_markdown("    opaque\n");
+
+        assert_eq!(
+            fenced[0].kind,
+            MarkdownBlockKind::Code(Some("unknown-lang".to_string()))
+        );
+        assert_eq!(indented[0].kind, MarkdownBlockKind::Code(None));
+    }
+
+    #[test]
+    fn streaming_display_mends_inline_styles_without_changing_canonical_text() {
+        let canonical = parse_markdown("A **bold");
+        let display = parse_markdown_for_display("A **bold", true);
+
+        assert_eq!(canonical[0].text, "A **bold");
+        assert_eq!(display[0].text, "A bold");
+        assert!(display[0].ranges.iter().any(|range| range.style.strong));
+        assert_eq!(parse_markdown_for_display("A **bold", false), canonical);
+    }
+
+    #[test]
+    fn streaming_links_hide_partial_urls_behind_a_non_clickable_sentinel() {
+        let display = parse_markdown_for_display("See [docs](https://private.example/pa", true);
+
+        assert_eq!(display[0].text, "See docs");
+        assert!(
+            display[0]
+                .ranges
+                .iter()
+                .any(|range| { range.style.link.as_deref() == Some(PENDING_LINK_URL) })
+        );
+        assert!(!display[0].text.contains("private.example"));
+    }
+
+    #[test]
+    fn streaming_setext_guard_never_enters_visible_or_selectable_text() {
+        let display = parse_markdown_for_display("paragraph\n-", true);
+
+        assert!(display.iter().all(|block| !block.text.contains('\u{200b}')));
+    }
+
+    #[test]
+    fn open_code_fences_stay_canonical_during_streaming() {
+        let source = "```rust\nlet value = **raw";
+        assert_eq!(
+            parse_markdown_for_display(source, true),
+            parse_markdown(source)
+        );
     }
 }

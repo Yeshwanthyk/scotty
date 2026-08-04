@@ -1,12 +1,16 @@
 import { Option, Schema } from "effect";
-import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
+import {
+  PI_CONSOLE_MAX_COMMAND_BYTES,
+  PI_CONSOLE_MAX_STRING_BYTES,
+  PiConsoleImagesSchema,
+} from "../../protocol/pi-console.ts";
 import { redactRemoteString, truncateRemoteString } from "./redaction.ts";
 import { SessionIdSchema, type FleetSession } from "./schemas.ts";
 import { projectDesktopTranscript } from "./desktop-transcript.ts";
 import type { FleetConsoleState, LiveProjection, SessionViewCache } from "./state.ts";
 
 export const DESKTOP_PROTOCOL_VERSION = 2 as const;
-export const DESKTOP_MAX_COMMAND_BYTES = 128 * 1024;
+export const DESKTOP_MAX_COMMAND_BYTES = PI_CONSOLE_MAX_COMMAND_BYTES;
 export const DESKTOP_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
 const encoder = new TextEncoder();
@@ -55,6 +59,7 @@ export const DesktopCommandSchema = Schema.Union([
     type: Schema.Literal("submit"),
     ...SelectionFenceFields,
     text: MessageSchema,
+    images: Schema.optionalKey(PiConsoleImagesSchema),
     forceFollowUp: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({

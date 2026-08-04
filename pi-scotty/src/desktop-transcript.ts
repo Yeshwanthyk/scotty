@@ -18,7 +18,12 @@ type DesktopToolStatus = "pending" | "running" | "completed" | "failed";
 type DesktopNoticeTone = "info" | "warning";
 
 export type DesktopTranscriptItem =
-  | { readonly kind: "user"; readonly id: string; readonly text: string }
+  | {
+      readonly kind: "user";
+      readonly id: string;
+      readonly text: string;
+      readonly imageCount: number;
+    }
   | { readonly kind: "assistant"; readonly id: string; readonly text: string }
   | { readonly kind: "thinking"; readonly id: string; readonly text: string }
   | {
@@ -243,7 +248,8 @@ export const projectDesktopTranscript = (
       append({
         kind: "user",
         id: baseId,
-        text: content.text ?? (content.images > 0 ? "[Image attachment]" : "[Empty message]"),
+        text: content.text ?? (content.images > 0 ? "" : "[Empty message]"),
+        imageCount: content.images,
       });
       return;
     }

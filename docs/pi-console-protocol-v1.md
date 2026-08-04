@@ -110,11 +110,14 @@ No client may treat `pendingUi` as complete while that state is present.
 ## Commands
 
 Versioned commands carry the supervisor `epoch`, a UUID `commandId`, the selected snapshot's
-`expectedSessionRevision`, and an explicit intent. Command bodies are limited to 64 KiB and decoded
-at both the public Worker and authoritative Sandbox Durable Object boundaries. Ordinary
-prompt intents beginning with `/` are rejected. Only `slash_command` intents for `subagents` and
-`workflows` are translated to Pi prompt input. Fold is local console state and is not part of the
-remote command schema, so it never reaches Pi.
+`expectedSessionRevision`, and an explicit intent. Command bodies are limited to 8 MiB and decoded
+at both the public Worker and authoritative Sandbox Durable Object boundaries. The `prompt`,
+`steer`, and `follow_up` intents can include up to four PNG, JPEG, WebP, or GIF images with at most
+5 MiB of decoded image data in total. Each image contains only its MIME type and base64 data.
+Paths and file names are not part of the protocol. Image data remains part of the canonical command
+digest but never appears in receipts. Ordinary prompt intents beginning with `/` are rejected.
+Only `slash_command` intents for `subagents` and `workflows` are translated to Pi prompt input.
+Fold is local console state and is not part of the remote command schema, so it never reaches Pi.
 
 Receipts include `version`, `epoch`, `commandId`, and a canonical SHA-256 `commandDigest`. Reusing a
 command ID with a different digest is rejected. The memory-only receipt cache is scoped to one

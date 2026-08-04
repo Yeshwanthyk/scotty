@@ -10,6 +10,7 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1"
+base64 = "0.22"
 gpui = { git = "https://github.com/wingleeio/zed", rev = "a6c1ad501f90c9437d2553bde691958f150364c5" }
 gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "a6c1ad501f90c9437d2553bde691958f150364c5", features = [
   "font-kit",

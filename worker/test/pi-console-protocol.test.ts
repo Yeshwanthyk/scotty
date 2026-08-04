@@ -7,7 +7,10 @@ import {
   decodePiConsoleStaleCommandV1,
   CREDENTIAL_SENTINEL_PREFIXES,
   decodePiConsoleUnavailableV1,
+  PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_MAX_EVENTS,
+  PI_CONSOLE_MAX_IMAGE_BYTES,
+  PI_CONSOLE_MAX_IMAGES,
   PI_CONSOLE_MAX_STATUSES,
   PI_CONSOLE_MAX_STRING_BYTES,
 } from "../../protocol/pi-console";
@@ -52,6 +55,11 @@ const assertDecodeFailure = (effect: Effect.Effect<unknown, unknown>) =>
     const result = yield* Effect.result(effect);
     assert.isTrue(Result.isFailure(result));
   });
+
+const base64ZeroBytes = (decodedBytes: number): string => {
+  assert.strictEqual(decodedBytes % 3, 0);
+  return "AAAA".repeat(decodedBytes / 3);
+};
 
 describe("Pi console protocol v1", () => {
   it.effect("decodes the bounded versioned snapshot and typed unavailable state", () =>
@@ -123,6 +131,69 @@ describe("Pi console protocol v1", () => {
           command({ type: "prompt", message: "🙂".repeat(PI_CONSOLE_MAX_STRING_BYTES / 4 + 1) }),
         ),
       );
+    }),
+  );
+
+  it.effect("accepts bounded images only on prompt, steer, and follow-up intents", () =>
+    Effect.gen(function* () {
+      const images = [
+        { type: "image", data: "AA==", mimeType: "image/png" },
+        { type: "image", data: "AAA=", mimeType: "image/jpeg" },
+        { type: "image", data: "AAAA", mimeType: "image/webp" },
+        { type: "image", data: "AQID", mimeType: "image/gif" },
+      ] as const;
+      for (const intent of [
+        { type: "prompt", message: "inspect", images },
+        { type: "steer", message: "adjust", images: images.slice(0, 1) },
+        { type: "follow_up", message: "continue", images: images.slice(1, 2) },
+      ] as const) {
+        const value = command(intent);
+        assert.deepStrictEqual(yield* decodePiConsoleCommandV1(value), value);
+      }
+
+      yield* assertDecodeFailure(
+        decodePiConsoleCommandV1(
+          command({
+            type: "prompt",
+            message: "too many",
+            images: Array.from({ length: PI_CONSOLE_MAX_IMAGES + 1 }, () => images[0]),
+          }),
+        ),
+      );
+      for (const invalidImage of [
+        { type: "image", data: "", mimeType: "image/png" },
+        { type: "image", data: "not base64", mimeType: "image/png" },
+        { type: "image", data: "AA==", mimeType: "image/svg+xml" },
+        { type: "image", data: "AA==", mimeType: "image/png", filename: "secret.png" },
+        { type: "image", data: "AA==", mimeType: "image/png", path: "/tmp/secret.png" },
+      ])
+        yield* assertDecodeFailure(
+          decodePiConsoleCommandV1(
+            command({ type: "prompt", message: "invalid", images: [invalidImage] }),
+          ),
+        );
+      yield* assertDecodeFailure(
+        decodePiConsoleCommandV1(command({ type: "abort", images: images.slice(0, 1) })),
+      );
+
+      const overTotal = [
+        {
+          type: "image",
+          data: base64ZeroBytes(3 * 1024 * 1024),
+          mimeType: "image/png",
+        },
+        {
+          type: "image",
+          data: base64ZeroBytes(PI_CONSOLE_MAX_IMAGE_BYTES - 3 * 1024 * 1024 + 1),
+          mimeType: "image/jpeg",
+        },
+      ];
+      yield* assertDecodeFailure(
+        decodePiConsoleCommandV1(
+          command({ type: "prompt", message: "too large", images: overTotal }),
+        ),
+      );
+      assert.strictEqual(PI_CONSOLE_MAX_COMMAND_BYTES, 8 * 1024 * 1024);
     }),
   );
 

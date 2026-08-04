@@ -10,6 +10,7 @@ import type { CommandResult, ConsoleTransport } from "../src/transport.ts";
 import { SESSION_A, SESSION_B, session, snapshot } from "./fixtures.ts";
 
 const COMMAND_ID = "123e4567-e89b-42d3-a456-426614174000";
+const IMAGE = { type: "image", data: "AA==", mimeType: "image/png" } as const;
 
 class FakeConsoleTransport implements ConsoleTransport {
   readonly reads: string[] = [];
@@ -127,6 +128,22 @@ describe("composer routing", () => {
       type: "remote",
       intent: { type: "follow_up", message: "next" },
     });
+    expect(routeComposerSubmission("inspect", false, false, [IMAGE])).toEqual({
+      type: "remote",
+      intent: { type: "prompt", message: "inspect", images: [IMAGE] },
+    });
+    expect(routeComposerSubmission("adjust", true, false, [IMAGE])).toEqual({
+      type: "remote",
+      intent: { type: "steer", message: "adjust", images: [IMAGE] },
+    });
+    expect(routeComposerSubmission("next", true, true, [IMAGE])).toEqual({
+      type: "remote",
+      intent: { type: "follow_up", message: "next", images: [IMAGE] },
+    });
+    expect(routeComposerSubmission("", false, false, [IMAGE])).toEqual({
+      type: "remote",
+      intent: { type: "prompt", message: "", images: [IMAGE] },
+    });
   });
 
   it("allows only the strict remote slash surface and local fold", () => {
@@ -155,6 +172,10 @@ describe("composer routing", () => {
     expect(routeComposerSubmission("/sessions extra", false)).toEqual({
       type: "local_error",
       message: "Only /sessions, /subagents, /workflows [runId], and /fold are available",
+    });
+    expect(routeComposerSubmission("/subagents", false, false, [IMAGE])).toEqual({
+      type: "local_error",
+      message: "Images cannot be attached to slash commands",
     });
   });
 });
@@ -267,6 +288,33 @@ describe("FleetConsoleController", () => {
       },
     ]);
     expect(controller.state.cache(SESSION_A).draft).toBe("");
+    controller.stop();
+  });
+
+  it("passes images to every message intent and restores submitted text after rejection", async () => {
+    const { controller, transport } = await open();
+    await controller.submitText("inspect", false, [IMAGE]);
+    const live = controller.state.cache(SESSION_A).live;
+    if (live === undefined) throw new Error("missing fixture live state");
+    controller.state.cache(SESSION_A).live = { ...live, isStreaming: true };
+    await controller.submitText("adjust", false, [IMAGE]);
+    await controller.submitText("next", true, [IMAGE]);
+
+    expect(transport.commands.map((entry) => entry.intent)).toEqual([
+      { type: "prompt", message: "inspect", images: [IMAGE] },
+      { type: "steer", message: "adjust", images: [IMAGE] },
+      { type: "follow_up", message: "next", images: [IMAGE] },
+    ]);
+
+    transport.commandMode = "rejected";
+    controller.state.setDraft(SESSION_A, "  describe this  ");
+    await controller.submitDraft(false, [IMAGE]);
+    expect(transport.commands.at(-1)?.intent).toEqual({
+      type: "steer",
+      message: "describe this",
+      images: [IMAGE],
+    });
+    expect(controller.state.cache(SESSION_A).draft).toBe("  describe this  ");
     controller.stop();
   });
 
