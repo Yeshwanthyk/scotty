@@ -12,7 +12,7 @@
     "@cloudflare/containers": "0.3.5",
     "@cloudflare/sandbox": "0.12.3",
     "effect": "4.0.0-beta.103",
-    "hono": "4.12.31",
+    "hono": "4.12.33",
     "qrcode-generator": "1.4.4"
   }
 }
