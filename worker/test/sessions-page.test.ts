@@ -3,6 +3,7 @@ import {
   focusKeyNeedsStableDraft,
   sessionPrimaryTiming,
   sessionsRenderSignature,
+  sleepingProjectFocusKey,
 } from "../public/session-list.js";
 import sessionListSource from "../public/session-list.js?raw";
 import sessionsHtml from "../public/sessions.html?raw";
@@ -57,6 +58,21 @@ describe("sessions page", () => {
     assert.isTrue(focusKeyNeedsStableDraft("rename:session-1"));
     assert.isFalse(focusKeyNeedsStableDraft("details-toggle-details:session-1"));
     assert.isFalse(focusKeyNeedsStableDraft(undefined));
+  });
+
+  it("derives a safe stable focus key from repository identity", () => {
+    const focusKey = sleepingProjectFocusKey('ExampleUser/scotty"]');
+
+    assert.strictEqual(focusKey, "sleeping-project:exampleuser%2Fscotty%22%5D");
+    assert.strictEqual(sleepingProjectFocusKey('exampleuser/SCOTTY"]'), focusKey);
+  });
+
+  it("binds sleeping-project summaries to visible-control focus restoration", () => {
+    assert.include(
+      sessionListSource,
+      "sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo)",
+    );
+    assert.include(sessionListSource, "focusRenderedControl(content, focusKey)");
   });
 
   it("keeps passive session renders stable within a minute", () => {

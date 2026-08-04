@@ -21,6 +21,7 @@ export function sessionPrimaryTiming(
   pendingAction?: unknown,
 ): string;
 export function focusKeyNeedsStableDraft(value: unknown): boolean;
+export function sleepingProjectFocusKey(repository: string): string;
 export function sessionsRenderSignature(
   sessions: ReadonlyArray<SessionListItem>,
   loaded: boolean,

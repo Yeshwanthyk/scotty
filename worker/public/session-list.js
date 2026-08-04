@@ -25,6 +25,10 @@ export function focusKeyNeedsStableDraft(value) {
   return typeof value === "string" && value.startsWith("rename:");
 }
 
+export function sleepingProjectFocusKey(repository) {
+  return `sleeping-project:${encodeURIComponent(repository.toLocaleLowerCase("en-US"))}`;
+}
+
 export function sessionsRenderSignature(sessions, loaded, now = Date.now()) {
   if (!loaded) return "loading";
   const minute = Math.floor(now / 60_000);
@@ -495,6 +499,7 @@ export function renderSessionsView(state) {
       sleeping.dataset.repo = group.repo;
       sleeping.open = state.expandedSleepingProjects.has(group.repo);
       const sleepingSummary = document.createElement("summary");
+      sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo);
       sleepingSummary.append(
         document.createTextNode(
           `${sleepingSessions.length} sleeping ${
