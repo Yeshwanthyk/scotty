@@ -5,8 +5,13 @@ import { renderCommandReceipts } from "/terminal-command-view.js";
 import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
-import { evictableSessions } from "/terminal-session-cache.js";
-import { markUiResponseDelivered, sendUiResponseForProjection } from "/terminal-ui-response.js";
+import { evictableSessions, hasBlockingCommands } from "/terminal-session-cache.js";
+import {
+  createUiResponseTracker,
+  markUiResponseDelivered,
+  sendUiResponseForProjection,
+  uiResponseCardState,
+} from "/terminal-ui-response.js";
 import {
   applyEvent,
   blankProjection,
@@ -85,6 +90,7 @@ let runtimeOptionsSignature;
 let localCommandItems = [];
 const sessionCache = new Map();
 const composerDrafts = createComposerDrafts(cacheEntry);
+const uiResponses = createUiResponseTracker();
 const prefetching = new Map();
 const disclosureState = new Map();
 const worklogView = createWorklogView(worklogFeed);
@@ -126,11 +132,10 @@ function cacheEntry(sessionId) {
 
 function trimCache() {
   if (sessionCache.size <= CACHE_LIMIT) return;
-  const candidates = evictableSessions(
-    sessionCache.entries(),
-    currentSessionId,
-    (sessionId) => commandLane.state(sessionId).items.length > 0,
-  );
+  const candidates = evictableSessions(sessionCache.entries(), currentSessionId, (sessionId) => {
+    const laneItems = commandLane.state(sessionId).items;
+    return hasBlockingCommands(laneItems) || uiResponses.hasPending(sessionId);
+  });
   while (sessionCache.size > CACHE_LIMIT && candidates.length > 0) {
     sessionCache.delete(candidates.shift()[0]);
   }
@@ -580,6 +585,13 @@ function renderDiff(tool, diff) {
   return body;
 }
 
+function syncUiResponseState(sessionId, projection) {
+  uiResponses.sync(sessionId, projection.epoch, projection.pendingUi.keys());
+  for (const requestId of projection.pendingUi.keys())
+    if (uiResponses.isDelivered(sessionId, projection.epoch, requestId))
+      projection.deliveredUiResponses.add(requestId);
+}
+
 function renderUiRequest(request) {
   const turn = document.createElement("article");
   turn.className = "worklog-turn system";
@@ -597,14 +609,14 @@ function renderAskCard(request) {
   card.dataset.requestId = request.id;
   const header = document.createElement("header");
   header.className = "ask-user-header";
-  const delivered = currentProjection.deliveredUiResponses.has(request.id);
+  const delivered =
+    currentProjection.deliveredUiResponses.has(request.id) ||
+    uiResponses.isDelivered(currentSessionId, currentProjection.epoch, request.id);
+  const sending = uiResponses.isPending(currentSessionId, currentProjection.epoch, request.id);
+  const responseState = uiResponseCardState(delivered, sending);
   header.append(
     textElement("span", "", "PI NEEDS YOUR INPUT"),
-    textElement(
-      "span",
-      "ask-state",
-      delivered ? "Awaiting Pi continuation · outcome unconfirmed" : "Pi paused",
-    ),
+    textElement("span", "ask-state", responseState.label),
   );
   const body = document.createElement("div");
   body.className = "ask-user-body";
@@ -686,7 +698,7 @@ function renderAskCard(request) {
     body.append(cancel);
   }
   card.append(header, body);
-  if (delivered)
+  if (responseState.disabled)
     for (const control of card.querySelectorAll("button, input, textarea")) control.disabled = true;
   return card;
 }
@@ -916,6 +928,7 @@ async function loadSnapshot(sessionId, { prefetched = false } = {}) {
   }
   const body = await fetchSnapshot(sessionId, controller.signal);
   const projection = projectionFromSnapshot(body);
+  syncUiResponseState(sessionId, projection);
   const entry = cacheEntry(sessionId);
   if (entry.projection.epoch === projection.epoch)
     for (const requestId of entry.projection.deliveredUiResponses)
@@ -998,6 +1011,7 @@ function consumeSseEvent(messageEvent, source, namedType) {
       composerDrafts.set(currentSessionId, composerInput.value);
       autosizeComposer();
     }
+    syncUiResponseState(currentSessionId, currentProjection);
     cacheEntry(currentSessionId).projection = currentProjection;
     setConnection("connected", currentProjection.active ? "Pi working" : "Connected");
     scheduleRender();
@@ -1177,16 +1191,25 @@ async function sendUiResponse(requestId, value, { cancelled = false } = {}) {
     hasCurrentRequest: (targetSessionId, targetProjection, targetRequestId) =>
       targetSessionId === currentSessionId &&
       currentProjection.epoch === targetProjection.epoch &&
-      currentProjection.pendingUi.has(targetRequestId),
+      currentProjection.pendingUi.has(targetRequestId) &&
+      !currentProjection.deliveredUiResponses.has(targetRequestId) &&
+      !uiResponses.isDelivered(targetSessionId, targetProjection.epoch, targetRequestId),
     hasCurrentDelivery: (targetSessionId, targetRequestId) =>
       targetSessionId === currentSessionId &&
-      currentProjection.deliveredUiResponses.has(targetRequestId),
-    markDelivered: (targetSessionId, targetProjection, targetRequestId) =>
+      (currentProjection.deliveredUiResponses.has(targetRequestId) ||
+        uiResponses.isDelivered(targetSessionId, currentProjection.epoch, targetRequestId)),
+    markDelivered: (targetSessionId, targetProjection, targetRequestId) => {
+      uiResponses.markDelivered(targetSessionId, targetProjection.epoch, targetRequestId);
       markUiResponseDelivered(
         targetProjection,
         cacheEntry(targetSessionId).projection,
         targetRequestId,
-      ),
+      );
+    },
+    setPendingState: (targetSessionId, targetProjection, targetRequestId, pending) => {
+      if (pending) uiResponses.begin(targetSessionId, targetProjection.epoch, targetRequestId);
+      else uiResponses.finish(targetSessionId, targetProjection.epoch, targetRequestId);
+    },
     setCardPending: () => disableAskCard(requestId),
     setCardDelivered: () =>
       disableAskCard(requestId, "Awaiting Pi continuation · outcome unconfirmed"),

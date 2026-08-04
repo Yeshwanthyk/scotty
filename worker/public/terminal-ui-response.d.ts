@@ -4,6 +4,21 @@ export interface UiResponseProjection {
   readonly deliveredUiResponses: Set<string>;
 }
 
+export function createUiResponseTracker(): {
+  readonly begin: (sessionId: string, epoch: unknown, requestId: string) => void;
+  readonly finish: (sessionId: string, epoch: unknown, requestId: string) => void;
+  readonly markDelivered: (sessionId: string, epoch: unknown, requestId: string) => void;
+  readonly sync: (sessionId: string, epoch: unknown, requestIds: Iterable<string>) => void;
+  readonly isPending: (sessionId: string, epoch: unknown, requestId: string) => boolean;
+  readonly isDelivered: (sessionId: string, epoch: unknown, requestId: string) => boolean;
+  readonly hasPending: (sessionId: string) => boolean;
+};
+
+export function uiResponseCardState(
+  delivered: boolean,
+  pending: boolean,
+): { readonly disabled: boolean; readonly label: string };
+
 export function markUiResponseDelivered(
   projection: UiResponseProjection,
   latestProjection: UiResponseProjection | undefined,
@@ -30,6 +45,12 @@ export function sendUiResponseForProjection(options: {
     sessionId: string,
     projection: UiResponseProjection,
     requestId: string,
+  ) => void;
+  readonly setPendingState: (
+    sessionId: string,
+    projection: UiResponseProjection,
+    requestId: string,
+    pending: boolean,
   ) => void;
   readonly setCardPending: () => void;
   readonly setCardDelivered: () => void;
