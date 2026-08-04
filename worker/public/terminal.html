@@ -112,6 +112,26 @@
         <div class="composer-shell">
           <div id="delivery-receipts" class="delivery-receipts" aria-live="polite"></div>
 
+          <div
+            id="command-recovery"
+            class="command-recovery"
+            role="alert"
+            aria-labelledby="command-recovery-title"
+            aria-describedby="command-recovery-copy"
+            hidden
+          >
+            <span class="command-recovery-message">
+              <strong id="command-recovery-title">This session needs recovery</strong>
+              <span id="command-recovery-copy">
+                Review the held text above. Discard it to refresh this session and continue; it will
+                never be sent or replayed.
+              </span>
+            </span>
+            <button id="discard-held-commands" class="quiet-button" type="button">
+              Discard held commands
+            </button>
+          </div>
+
           <form id="composer" class="composer" aria-label="Message Pi">
             <label class="visually-hidden" for="composer-input">Message Pi</label>
             <textarea

@@ -12,7 +12,8 @@ export type CommandOutcome =
       readonly message: string;
     }
   | { readonly status: "stale"; readonly response: unknown }
-  | { readonly status: "ambiguous"; readonly response?: unknown; readonly message: string };
+  | { readonly status: "ambiguous"; readonly response?: unknown; readonly message: string }
+  | { readonly status: "discarded"; readonly accepted: false; readonly message: string };
 
 export type CommandLaneItem = {
   readonly sessionId: string;
@@ -37,7 +38,8 @@ export function createCommandLane(options: {
     readonly intent: Readonly<Record<string, unknown>>;
     readonly label: string;
   }) => { readonly commandId: string; readonly outcome: Promise<CommandOutcome> };
-  readonly state: () => {
+  readonly discard: (sessionId: string) => { readonly discardedCount: number };
+  readonly state: (sessionId: string) => {
     readonly paused: "stale" | "ambiguous" | undefined;
     readonly items: readonly CommandLaneItem[];
   };

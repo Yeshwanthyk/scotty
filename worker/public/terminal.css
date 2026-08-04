@@ -1058,6 +1058,42 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
+.command-recovery {
+  display: flex;
+  width: min(100%, 820px);
+  min-height: 52px;
+  align-items: center;
+  gap: 12px;
+  margin: 0 auto 9px;
+  padding: 9px 10px 9px 12px;
+  border-left: 2px solid var(--accent);
+  border-radius: 8px;
+  background: rgb(224 121 84 / 9%);
+  box-shadow: 0 0 0 1px rgb(224 121 84 / 28%);
+}
+
+.command-recovery[hidden] {
+  display: none;
+}
+
+.command-recovery-message {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+  color: #d9b0a2;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.command-recovery-message strong {
+  color: var(--ink-strong);
+}
+
+.command-recovery .quiet-button {
+  flex: none;
+}
+
 .composer-shell {
   position: relative;
   z-index: 12;

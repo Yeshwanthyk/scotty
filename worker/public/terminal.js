@@ -56,6 +56,10 @@ const modelSelect = document.querySelector("#model-select");
 const thinkingSelect = document.querySelector("#thinking-select");
 const stopRunButton = document.querySelector("#stop-run");
 const deliveryReceipts = document.querySelector("#delivery-receipts");
+const commandRecovery = document.querySelector("#command-recovery");
+const commandRecoveryTitle = document.querySelector("#command-recovery-title");
+const commandRecoveryCopy = document.querySelector("#command-recovery-copy");
+const discardHeldCommandsButton = document.querySelector("#discard-held-commands");
 const openActivityButton = document.querySelector("#open-activity");
 const closeActivityButton = document.querySelector("#close-activity");
 const activityDrawer = document.querySelector("#activity-drawer");
@@ -770,7 +774,7 @@ function renderRuntimeControls() {
     currentProjection?.state?.thinking_level,
   );
   const visible = hasAvailableRuntime(currentProjection);
-  const commandPaused = Boolean(commandLane.state().paused);
+  const commandPaused = Boolean(commandLane.state(currentSessionId).paused);
   runtimeControlsButton.hidden = !visible;
   runtimeControlsButton.disabled = commandPaused || !currentProjection?.loaded;
   modelSelect.disabled = commandPaused || models.length === 0;
@@ -827,7 +831,7 @@ function renderRuntimeControls() {
 function updateComposer() {
   const active = Boolean(currentProjection?.active);
   const runtimeAvailable = hasAvailableRuntime(currentProjection);
-  const laneState = commandLane.state();
+  const laneState = commandLane.state(currentSessionId);
   deliveryModeButton.hidden = !active;
   stopRunButton.hidden = !active;
   stopRunButton.disabled = Boolean(laneState.paused);
@@ -854,7 +858,17 @@ function updateComposer() {
   for (const option of deliveryMenu.querySelectorAll("[data-delivery-mode]")) {
     option.setAttribute("aria-checked", String(option.dataset.deliveryMode === deliveryMode));
   }
+  updateCommandRecovery(laneState.paused);
   renderRuntimeControls();
+}
+
+function updateCommandRecovery(reason) {
+  commandRecovery.hidden = !reason;
+  if (!reason) return;
+  commandRecoveryTitle.textContent =
+    reason === "stale" ? "This session changed" : "This command outcome is unknown";
+  commandRecoveryCopy.textContent =
+    "Review the held text above. Discard it to refresh this session and continue; it will never be sent or replayed.";
 }
 
 function setDeliveryMenu(open) {
@@ -1004,6 +1018,7 @@ function queueCommand(intent, label) {
 function commandOutcomeMessage(outcome) {
   if (outcome.status === "stale") return "The session changed. Review it and submit again.";
   if (outcome.status === "ambiguous") return "The command outcome is unknown. It was not retried.";
+  if (outcome.status === "discarded") return "The held command was discarded without being sent.";
   return outcome.message ?? "Pi did not accept that command.";
 }
 
@@ -1011,15 +1026,38 @@ async function sendCommand(intent, label) {
   const submission = queueCommand(intent, label);
   const { outcome } = submission;
   const result = await outcome;
-  if (result.status === "stale") refreshStaleSession(submission.sessionId);
+  if (result.status === "stale" || result.status === "ambiguous")
+    refreshAffectedSession(submission.sessionId);
   if (result.status !== "accepted") throw new Error(commandOutcomeMessage(result));
   return result.receipt;
 }
 
-function refreshStaleSession(sessionId) {
+function refreshAffectedSession(sessionId) {
   loadSnapshot(sessionId, { prefetched: sessionId !== currentSessionId }).catch((error) => {
     if (sessionId === currentSessionId) showLoadError(error);
   });
+}
+
+async function discardHeldCommands() {
+  const sessionId = currentSessionId;
+  if (!commandLane.state(sessionId).paused) return;
+  discardHeldCommandsButton.disabled = true;
+  commandRecovery.setAttribute("aria-busy", "true");
+  try {
+    await loadSnapshot(sessionId);
+    if (!commandLane.state(sessionId).paused) return;
+    commandLane.discard(sessionId);
+    if (sessionId === currentSessionId) {
+      showToast("Held commands discarded. This session is ready for a fresh command.");
+      composerInput.focus({ preventScroll: true });
+    }
+  } catch (error) {
+    if (sessionId === currentSessionId) showLoadError(error);
+  } finally {
+    discardHeldCommandsButton.disabled = false;
+    commandRecovery.removeAttribute("aria-busy");
+    updateComposer();
+  }
 }
 
 async function submitComposer() {
@@ -1036,7 +1074,8 @@ async function submitComposer() {
     composerInput.focus({ preventScroll: true });
     const outcome = await submission.outcome;
     if (outcome.status !== "accepted") {
-      if (outcome.status === "stale") refreshStaleSession(submission.sessionId);
+      if (outcome.status === "stale" || outcome.status === "ambiguous")
+        refreshAffectedSession(submission.sessionId);
       showToast(commandOutcomeMessage(outcome));
     }
   } catch (error) {
@@ -1434,6 +1473,7 @@ runtimeControlsButton.addEventListener("click", () => {
 });
 modelSelect.addEventListener("change", selectModel);
 thinkingSelect.addEventListener("change", selectThinkingLevel);
+discardHeldCommandsButton.addEventListener("click", discardHeldCommands);
 deliveryMenu.addEventListener("click", (event) => {
   const option = event.target.closest?.("[data-delivery-mode]");
   if (!option) return;

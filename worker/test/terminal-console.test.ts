@@ -3,10 +3,13 @@ import {
   consoleUrl,
   createConsoleClient,
   type ConsoleCommandEnvelope,
+  type ConsoleCommandTransportResult,
 } from "../public/terminal-console-client.js";
 import { createCommandLane } from "../public/terminal-command-lane.js";
 import { commandIntentDigest } from "../public/terminal-console-protocol.js";
 import { commandIntentDigest as serverCommandIntentDigest } from "../../protocol/pi-console-shared.mjs";
+import terminalHtml from "../public/terminal.html?raw";
+import terminalSource from "../public/terminal.js?raw";
 
 const ids = ["123e4567-e89b-42d3-a456-426614174000", "123e4567-e89b-42d3-a456-426614174001"];
 
@@ -113,7 +116,9 @@ describe("browser command lane", () => {
       intent: { type: "prompt", message: "first" },
     });
     assert.deepStrictEqual(
-      lane.state().items.map((item: { label: string; state: string }) => [item.label, item.state]),
+      lane
+        .state("session-a")
+        .items.map((item: { label: string; state: string }) => [item.label, item.state]),
       [
         ["first", "sending"],
         ["second", "queued"],
@@ -129,69 +134,110 @@ describe("browser command lane", () => {
       commandId: ids[1],
       intent: { type: "prompt", message: "second" },
     });
-    assert.deepStrictEqual(lane.state().items, []);
+    assert.deepStrictEqual(lane.state("session-a").items, []);
   });
 
-  it("pauses on stale authority and never replays or advances queued intent", async () => {
-    const sends: ConsoleCommandEnvelope[] = [];
+  it("isolates stale authority by session and discards held intent without replay", async () => {
+    const staleResponse = deferred<ConsoleCommandTransportResult>();
+    const sends: Array<{ sessionId: string; envelope: ConsoleCommandEnvelope }> = [];
     let idIndex = 0;
     const lane = createCommandLane({
-      send: async (_sessionId, envelope) => {
-        sends.push(envelope);
-        return {
-          ok: false,
-          status: 409,
-          readable: true,
-          body: {
-            version: 1,
-            status: "stale",
-            expectedSessionRevision: 7,
-            sessionRevision: 8,
-            retryable: false,
-          },
-        };
+      send: async (sessionId, envelope) => {
+        sends.push({ sessionId, envelope });
+        if (sessionId === "session-a" && envelope.intent.message === "stale")
+          return staleResponse.promise;
+        return accepted(envelope, await commandIntentDigest(envelope.intent));
       },
       randomUUID: () => ids[idIndex++] ?? ids[1],
     });
-    const authority = { sessionId: "session-a", epoch: "epoch-1", expectedSessionRevision: 7 };
+    const authorityA = { sessionId: "session-a", epoch: "epoch-a", expectedSessionRevision: 7 };
     const stale = lane.enqueue({
-      ...authority,
+      ...authorityA,
       intent: { type: "prompt", message: "stale" },
       label: "stale",
     });
-    lane.enqueue({
-      ...authority,
+    const held = lane.enqueue({
+      ...authorityA,
       intent: { type: "prompt", message: "must not replay" },
       label: "must not replay",
     });
+    staleResponse.resolve({
+      ok: false,
+      status: 409,
+      readable: true,
+      body: {
+        version: 1,
+        status: "stale",
+        expectedSessionRevision: 7,
+        sessionRevision: 8,
+        retryable: false,
+      },
+    });
 
     assert.strictEqual((await stale.outcome).status, "stale");
-    assert.strictEqual(sends.length, 1);
-    assert.strictEqual(lane.state().paused, "stale");
+    const otherSession = lane.enqueue({
+      sessionId: "session-b",
+      epoch: "epoch-b",
+      expectedSessionRevision: 3,
+      intent: { type: "prompt", message: "session B continues" },
+      label: "session B continues",
+    });
+    assert.strictEqual((await otherSession.outcome).status, "accepted");
+    assert.strictEqual(sends.length, 2);
+    assert.strictEqual(lane.state("session-a").paused, "stale");
+    assert.isUndefined(lane.state("session-b").paused);
     assert.deepStrictEqual(
-      lane.state().items.map((item: { label: string; state: string }) => [item.label, item.state]),
+      lane
+        .state("session-a")
+        .items.map((item: { label: string; state: string }) => [item.label, item.state]),
       [
         ["stale", "stale"],
         ["must not replay", "paused"],
       ],
     );
-    await Promise.resolve();
-    assert.strictEqual(sends.length, 1);
     assert.throws(
       () =>
         lane.enqueue({
-          ...authority,
+          ...authorityA,
           intent: { type: "abort" },
           label: "new intent",
         }),
-      /Command lane is paused/u,
+      /session is paused/u,
+    );
+
+    lane.discard("session-a");
+    assert.deepInclude(await held.outcome, {
+      status: "discarded",
+      accepted: false,
+      message: "Command discarded without being sent",
+    });
+    assert.deepStrictEqual(lane.state("session-a"), { paused: undefined, items: [] });
+
+    const fresh = lane.enqueue({
+      sessionId: "session-a",
+      epoch: "epoch-a-refreshed",
+      expectedSessionRevision: 8,
+      intent: { type: "prompt", message: "fresh command" },
+      label: "fresh command",
+    });
+    assert.strictEqual((await fresh.outcome).status, "accepted");
+    assert.deepStrictEqual(
+      sends.map(({ sessionId, envelope }) => [sessionId, envelope.intent.message]),
+      [
+        ["session-a", "stale"],
+        ["session-b", "session B continues"],
+        ["session-a", "fresh command"],
+      ],
     );
   });
 
-  it("holds an ambiguous command and stops the lane", async () => {
+  it("isolates ambiguous authority and settles its held queue on discard", async () => {
+    const sends: Array<{ sessionId: string; label: unknown }> = [];
     const lane = createCommandLane({
-      send: async () => {
-        throw new TypeError("network interrupted");
+      send: async (sessionId, envelope) => {
+        sends.push({ sessionId, label: envelope.intent.message ?? envelope.intent.type });
+        if (sessionId === "session-a") throw new TypeError("network interrupted");
+        return accepted(envelope, await commandIntentDigest(envelope.intent));
       },
       randomUUID: () => ids[0],
     });
@@ -202,10 +248,48 @@ describe("browser command lane", () => {
       intent: { type: "abort" },
       label: "Stop Pi",
     });
-
+    const held = lane.enqueue({
+      sessionId: "session-a",
+      epoch: "epoch-1",
+      expectedSessionRevision: 7,
+      intent: { type: "prompt", message: "held text" },
+      label: "held text",
+    });
     const outcome = await command.outcome;
     assert.deepInclude(outcome, { status: "ambiguous", message: "network interrupted" });
-    assert.strictEqual(lane.state().paused, "ambiguous");
-    assert.deepInclude(lane.state().items[0], { label: "Stop Pi", state: "ambiguous" });
+    const otherSession = lane.enqueue({
+      sessionId: "session-b",
+      epoch: "epoch-2",
+      expectedSessionRevision: 2,
+      intent: { type: "prompt", message: "B still sends" },
+      label: "B still sends",
+    });
+    assert.strictEqual((await otherSession.outcome).status, "accepted");
+    assert.strictEqual(lane.state("session-a").paused, "ambiguous");
+    assert.deepInclude(lane.state("session-a").items[0], {
+      label: "Stop Pi",
+      state: "ambiguous",
+    });
+    assert.deepInclude(lane.state("session-a").items[1], {
+      label: "held text",
+      state: "paused",
+    });
+
+    lane.discard("session-a");
+    assert.deepInclude(await held.outcome, { status: "discarded", accepted: false });
+    assert.deepStrictEqual(sends, [
+      { sessionId: "session-a", label: "abort" },
+      { sessionId: "session-b", label: "B still sends" },
+    ]);
+  });
+
+  it("exposes an accessible recovery control scoped to the current session", () => {
+    assert.match(
+      terminalHtml,
+      /id="command-recovery"[\s\S]*?role="alert"[\s\S]*?id="discard-held-commands"[\s\S]*?>\s*Discard held commands\s*</u,
+    );
+    assert.include(terminalSource, "commandLane.state(currentSessionId)");
+    assert.include(terminalSource, "commandLane.discard(sessionId)");
+    assert.include(terminalSource, "await loadSnapshot(sessionId)");
   });
 });
