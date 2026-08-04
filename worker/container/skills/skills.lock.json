@@ -4,13 +4,6 @@
   "snapshotAt": "2026-07-24T02:35:07.182Z",
   "skills": [
     {
-      "name": "breadboarding",
-      "source": "github:rjs/shaping-skills/breadboarding",
-      "subpath": ".",
-      "contentHash": "sha256:330af7bfea720c890a26ae512b73aa2b1974adc0b5e5ae5ca0c4d154a53ebaa2",
-      "resolvedCommit": "d8b65d7733c71e9bf436f0c2e4da60e5214a96d9"
-    },
-    {
       "name": "domain-modeling",
       "source": "github:mattpocock/skills",
       "subpath": "skills/engineering/domain-modeling",
@@ -93,13 +86,6 @@
       "subpath": "skills/engineering/research",
       "contentHash": "sha256:6d02c11a6a7192f3e6058533e1cc310060cfceddd118623ea53e6d1da605d659",
       "resolvedCommit": "9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
-    },
-    {
-      "name": "shaping",
-      "source": "github:rjs/shaping-skills/shaping",
-      "subpath": ".",
-      "contentHash": "sha256:bedb8aa62190760a78b9a3f3a694791a133024bbcca0f4cdb530b1e0a9f9ff86",
-      "resolvedCommit": "d8b65d7733c71e9bf436f0c2e4da60e5214a96d9"
     },
     {
       "name": "stateful-systems",
