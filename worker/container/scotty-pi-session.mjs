@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import {
+  PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_MAX_EVENTS,
   PI_CONSOLE_MAX_MESSAGES,
   PI_CONSOLE_MAX_RESPONSE_BYTES,
@@ -32,7 +33,7 @@ const tokenFile = process.env.SCOTTY_PI_SESSION_TOKEN_FILE;
 const epoch = randomUUID();
 const maxEvents = PI_CONSOLE_MAX_EVENTS;
 const maxReceipts = 200;
-const maxBodyBytes = 64 * 1024;
+const maxBodyBytes = PI_CONSOLE_MAX_COMMAND_BYTES;
 const requestTimeoutMs = 30_000;
 const blockingUiMethods = new Set(["select", "confirm", "input", "editor"]);
 const pendingUiSettlementEvents = new Set([

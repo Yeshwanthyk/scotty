@@ -60,8 +60,14 @@ const fleet = [
 let selectedSessionId;
 let draft = "";
 let draftGeneration = 0;
+let commandStatus = null;
 let transcript = [
-  { kind: "user", id: "user-1", text: "Map the smallest complete desktop slice." },
+  {
+    kind: "user",
+    id: "user-1",
+    text: "Map the smallest complete desktop slice.",
+    imageCount: 0,
+  },
   {
     kind: "assistant",
     id: "assistant-1",
@@ -119,7 +125,7 @@ const state = () => ({
           live: live(),
           unavailable: null,
           error: null,
-          commandStatus: null,
+          commandStatus,
         },
 });
 const emit = (frame) => process.stdout.write(`${JSON.stringify(frame)}\n`);
@@ -184,12 +190,15 @@ createInterface({ input: process.stdin, terminal: false }).on("line", (line) => 
     draft = command.text;
     draftGeneration += 1;
   } else if (command.type === "submit") {
+    const imageCount = Array.isArray(command.images) ? command.images.length : 0;
+    const text = command.text.trim();
     transcript = [
       ...transcript,
-      { kind: "user", id: `user-${transcript.length}`, text: command.text },
+      { kind: "user", id: `user-${transcript.length}`, text, imageCount },
     ];
     draft = "";
     draftGeneration += 2;
+    commandStatus = "Command accepted";
   } else if (command.type === "answer" && selectedSessionId === "review-session") {
     selectedSessionId = "alpha-session";
   }

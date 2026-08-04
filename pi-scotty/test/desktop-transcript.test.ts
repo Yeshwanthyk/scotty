@@ -28,7 +28,7 @@ describe("desktop transcript projection", () => {
     expect(projected).toEqual({
       truncated: false,
       items: [
-        { kind: "user", id: "user-1", text: "Review this branch" },
+        { kind: "user", id: "user-1", text: "Review this branch", imageCount: 0 },
         {
           kind: "thinking",
           id: "assistant-1-part-0",
@@ -166,7 +166,10 @@ describe("desktop transcript projection", () => {
       [],
     );
     expect(projected.items.map((item) => item.kind)).toEqual(["user", "tool", "notice", "notice"]);
-    expect(projected.items[0]).toMatchObject({ text: "Review this screenshot" });
+    expect(projected.items[0]).toMatchObject({
+      text: "Review this screenshot",
+      imageCount: 1,
+    });
     expect(JSON.stringify(projected)).not.toContain("base64-secret");
   });
 

@@ -7,6 +7,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::sync::{mpsc, watch};
 
 const PROTOCOL_VERSION: u8 = 2;
+const MAX_COMMAND_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -140,6 +141,8 @@ pub enum TranscriptItem {
     User {
         id: String,
         text: String,
+        #[serde(rename = "imageCount", default)]
+        image_count: usize,
     },
     Assistant {
         id: String,
@@ -320,6 +323,25 @@ pub struct SelectionFence {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    data: String,
+    mime_type: String,
+}
+
+impl ImageAttachment {
+    pub fn new(data: String, mime_type: impl Into<String>) -> Self {
+        Self {
+            kind: "image",
+            data,
+            mime_type: mime_type.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum CommandBody {
     RefreshFleet,
@@ -337,6 +359,8 @@ enum CommandBody {
         #[serde(flatten)]
         fence: SelectionFence,
         text: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageAttachment>,
         #[serde(rename = "forceFollowUp", skip_serializing_if = "std::ops::Not::not")]
         force_follow_up: bool,
     },
@@ -420,10 +444,16 @@ impl DesktopCommand {
         Self::new(CommandBody::SetDraft { session_id, text })
     }
 
-    pub fn submit(fence: SelectionFence, text: String, force_follow_up: bool) -> Self {
+    pub fn submit_with_images(
+        fence: SelectionFence,
+        text: String,
+        images: Vec<ImageAttachment>,
+        force_follow_up: bool,
+    ) -> Self {
         Self::new(CommandBody::Submit {
             fence,
             text,
+            images,
             force_follow_up,
         })
     }
@@ -575,7 +605,16 @@ impl SidecarConnection {
             while let Some(command) = command_rx.recv().await {
                 let shutdown = matches!(command.body, CommandBody::Shutdown);
                 let encoded = match serde_json::to_vec(&command) {
-                    Ok(encoded) => encoded,
+                    Ok(encoded) if encoded.len() <= MAX_COMMAND_BYTES => encoded,
+                    Ok(_) => {
+                        let _ = writer_events
+                            .send(SidecarEvent::Disconnected(
+                                "Desktop sidecar command exceeded its size limit".into(),
+                            ))
+                            .await;
+                        let _ = writer_shutdown.send(true);
+                        return;
+                    }
                     Err(error) => {
                         let _ = writer_events
                             .send(SidecarEvent::Disconnected(error.to_string()))
@@ -739,7 +778,7 @@ fn resolve_sidecar_path() -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandBody, DesktopCommand, Frame, PendingUi, SelectionFence};
+    use super::{CommandBody, DesktopCommand, Frame, ImageAttachment, PendingUi, SelectionFence};
 
     fn fence() -> SelectionFence {
         SelectionFence {
@@ -774,6 +813,45 @@ mod tests {
                 "expectedSessionRevision": 7,
                 "requestId": "request-1",
                 "answer": { "type": "confirmed", "confirmed": true }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(DesktopCommand::submit_with_images(
+                fence(),
+                "Hello".into(),
+                Vec::new(),
+                false,
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "version": 2,
+                "type": "submit",
+                "sessionId": "a0b1c2d3e4f5",
+                "expectedEpoch": "epoch-1",
+                "expectedSessionRevision": 7,
+                "text": "Hello"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(DesktopCommand::submit_with_images(
+                fence(),
+                "Review this image".into(),
+                vec![ImageAttachment::new("aW1hZ2U=".into(), "image/png")],
+                false,
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "version": 2,
+                "type": "submit",
+                "sessionId": "a0b1c2d3e4f5",
+                "expectedEpoch": "epoch-1",
+                "expectedSessionRevision": 7,
+                "text": "Review this image",
+                "images": [{
+                    "type": "image",
+                    "data": "aW1hZ2U=",
+                    "mimeType": "image/png"
+                }]
             })
         );
         assert_eq!(
@@ -865,9 +943,10 @@ mod tests {
                         "sessionRevision": 7,
                         "isStreaming": true,
                         "transcript": [{
-                            "kind": "assistant",
+                            "kind": "user",
                             "id": "message-1",
-                            "text": "Ready"
+                            "text": "Review this",
+                            "imageCount": 1
                         }],
                         "pendingUi": [{
                             "id": "request-1",
@@ -893,7 +972,10 @@ mod tests {
         };
         let selected = state.selected.unwrap();
         assert_eq!(state.fleet[0].title, "Desktop");
-        assert_eq!(selected.live.as_ref().unwrap().transcript.len(), 1);
+        assert!(matches!(
+            &selected.live.as_ref().unwrap().transcript[0],
+            super::TranscriptItem::User { image_count: 1, .. }
+        ));
         assert!(matches!(
             selected.live.unwrap().pending_ui[0],
             PendingUi::Confirm { .. }

@@ -116,15 +116,30 @@ actions!(
         Newline,
         Submit,
         SubmitFollowUp,
+        Undo,
+        Redo,
     ]
 );
 
-pub fn init(cx: &mut App) {
-    let context = Some("ScottyComposer");
+const UNDO_COALESCE: Duration = Duration::from_millis(700);
+const UNDO_LIMIT: usize = 200;
+
+#[derive(Clone)]
+struct EditSnapshot {
+    content: String,
+    selected_range: Range<usize>,
+    selection_reversed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    Insert,
+    Delete,
+}
+
+fn text_edit_bindings(context: &'static str) -> Vec<KeyBinding> {
+    let context = Some(context);
     let mut bindings = vec![
-        KeyBinding::new("enter", Submit, context),
-        KeyBinding::new("alt-enter", SubmitFollowUp, context),
-        KeyBinding::new("shift-enter", Newline, context),
         KeyBinding::new("backspace", Backspace, context),
         KeyBinding::new("delete", Delete, context),
         KeyBinding::new("left", Left, context),
@@ -190,8 +205,24 @@ pub fn init(cx: &mut App) {
         bindings.push(KeyBinding::new(&format!("{prefix}-c"), Copy, context));
         bindings.push(KeyBinding::new(&format!("{prefix}-x"), Cut, context));
         bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, context));
+        bindings.push(KeyBinding::new(&format!("{prefix}-z"), Undo, context));
+        bindings.push(KeyBinding::new(&format!("shift-{prefix}-z"), Redo, context));
     }
-    cx.bind_keys(bindings);
+    bindings
+}
+
+pub fn init(cx: &mut App) {
+    let context = Some("ScottyComposer");
+    let mut composer_bindings = text_edit_bindings("ScottyComposer");
+    composer_bindings.extend([
+        KeyBinding::new("enter", Submit, context),
+        KeyBinding::new("alt-enter", SubmitFollowUp, context),
+        KeyBinding::new("shift-enter", Newline, context),
+    ]);
+    cx.bind_keys(composer_bindings);
+    // Management forms reuse native editing but reserve Enter and Tab for
+    // panel navigation, multiline prompts, and submission in DesktopView.
+    cx.bind_keys(text_edit_bindings("ScottyManagementInput"));
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some("PaletteSearch")),
         KeyBinding::new("delete", Delete, Some("PaletteSearch")),
@@ -203,6 +234,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-x", Cut, Some("PaletteSearch")),
         KeyBinding::new("cmd-v", Paste, Some("PaletteSearch")),
         KeyBinding::new("ctrl-v", Paste, Some("PaletteSearch")),
+        KeyBinding::new("cmd-z", Undo, Some("PaletteSearch")),
+        KeyBinding::new("ctrl-z", Undo, Some("PaletteSearch")),
+        KeyBinding::new("shift-cmd-z", Redo, Some("PaletteSearch")),
+        KeyBinding::new("shift-ctrl-z", Redo, Some("PaletteSearch")),
     ]);
 }
 
@@ -237,6 +272,9 @@ pub struct ComposerInput {
     display_is_placeholder: bool,
     blink_anchor: Instant,
     blink_task: Option<Task<()>>,
+    undo_stack: Vec<EditSnapshot>,
+    redo_stack: Vec<EditSnapshot>,
+    last_edit: Option<(EditKind, usize, Instant)>,
 }
 
 impl ComposerInput {
@@ -270,6 +308,9 @@ impl ComposerInput {
             display_is_placeholder: true,
             blink_anchor: Instant::now(),
             blink_task: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_edit: None,
         }
     }
 
@@ -297,8 +338,84 @@ impl ComposerInput {
         self.marked_range = None;
         self.scroll_top = 0.0;
         self.follow_cursor = true;
+        // Sidecar draft hydration and clear-on-submit replace the document;
+        // undo must never cross that authoritative boundary.
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.last_edit = None;
         self.reset_blink();
         cx.notify();
+    }
+
+    fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            content: self.content.clone(),
+            selected_range: self.selected_range.clone(),
+            selection_reversed: self.selection_reversed,
+        }
+    }
+
+    fn record_edit(&mut self, range: &Range<usize>, new_text: &str) {
+        let kind = if new_text.is_empty() {
+            EditKind::Delete
+        } else {
+            EditKind::Insert
+        };
+        let mergeable = match (kind, &self.last_edit) {
+            (EditKind::Insert, Some((EditKind::Insert, at, when))) => {
+                range.is_empty()
+                    && range.start == *at
+                    && new_text.chars().count() == 1
+                    && !new_text.starts_with(['\n', ' ', '\t'])
+                    && when.elapsed() < UNDO_COALESCE
+            }
+            (EditKind::Delete, Some((EditKind::Delete, at, when))) => {
+                range.end == *at && when.elapsed() < UNDO_COALESCE
+            }
+            _ => false,
+        };
+        if !mergeable {
+            self.undo_stack.push(self.snapshot());
+            if self.undo_stack.len() > UNDO_LIMIT {
+                self.undo_stack.remove(0);
+            }
+        }
+        self.redo_stack.clear();
+        let tail = match kind {
+            EditKind::Insert => range.start + new_text.len(),
+            EditKind::Delete => range.start,
+        };
+        self.last_edit = Some((kind, tail, Instant::now()));
+    }
+
+    fn restore(&mut self, snapshot: EditSnapshot, cx: &mut Context<Self>) {
+        self.content = snapshot.content;
+        self.selected_range = snapshot.selected_range;
+        self.selection_reversed = snapshot.selection_reversed;
+        self.marked_range = None;
+        self.follow_cursor = true;
+        self.last_edit = None;
+        self.reset_blink();
+        cx.emit(ComposerInputEvent::Edited);
+        cx.notify();
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(previous) = self.undo_stack.pop() else {
+            return;
+        };
+        let current = self.snapshot();
+        self.redo_stack.push(current);
+        self.restore(previous, cx);
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(next) = self.redo_stack.pop() else {
+            return;
+        };
+        let current = self.snapshot();
+        self.undo_stack.push(current);
+        self.restore(next, cx);
     }
 
     pub fn set_editable(&mut self, editable: bool, cx: &mut Context<Self>) {
@@ -316,6 +433,10 @@ impl ComposerInput {
 
     pub fn has_selection(&self) -> bool {
         !self.selected_range.is_empty()
+    }
+
+    pub fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.replace_selection(text, cx);
     }
 
     fn reset_blink(&mut self) {
@@ -434,6 +555,9 @@ impl ComposerInput {
         let replacement = &new_text[..end];
         if range.is_empty() && replacement.is_empty() {
             return;
+        }
+        if self.marked_range.is_none() {
+            self.record_edit(&range, replacement);
         }
         self.content.replace_range(range.clone(), replacement);
         let cursor = range.start + replacement.len();
@@ -617,6 +741,11 @@ impl ComposerInput {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
+        } else if let Some(text) = crate::transcript_selection::selected_text() {
+            // The composer keeps focus while the user reads the transcript.
+            // Match Comet: Cmd/Ctrl+C with no draft selection copies the
+            // settled rendered-text selection instead.
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 
@@ -996,11 +1125,32 @@ impl EntityInputHandler for ComposerInput {
         if !self.editable {
             return;
         }
-        if let Some(range) = range_utf16 {
-            self.selected_range = self.range_from_utf16(&range);
-            self.marked_range = None;
+        let range = range_utf16
+            .as_ref()
+            .map(|range| self.range_from_utf16(range))
+            .or(self.marked_range.clone())
+            .unwrap_or(self.selected_range.clone());
+        let retained = self.content.len().saturating_sub(range.len());
+        let available = self.max_bytes.saturating_sub(retained);
+        let end = new_text.floor_char_boundary(new_text.len().min(available));
+        let replacement = &new_text[..end];
+        if range.is_empty() && replacement.is_empty() {
+            return;
         }
-        self.replace_selection(new_text, cx);
+        // The first marked-text update already captured the pre-composition
+        // state, so committing that composition must not add a second step.
+        if self.marked_range.is_none() {
+            self.record_edit(&range, replacement);
+        }
+        self.content.replace_range(range.clone(), replacement);
+        let cursor = range.start + replacement.len();
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.follow_cursor = true;
+        self.reset_blink();
+        cx.emit(ComposerInputEvent::Edited);
+        cx.notify();
     }
 
     fn replace_and_mark_text_in_range(
@@ -1023,6 +1173,14 @@ impl EntityInputHandler for ComposerInput {
         let available = self.max_bytes.saturating_sub(retained);
         let end = new_text.floor_char_boundary(new_text.len().min(available));
         let replacement = &new_text[..end];
+        if self.marked_range.is_none() {
+            self.undo_stack.push(self.snapshot());
+            if self.undo_stack.len() > UNDO_LIMIT {
+                self.undo_stack.remove(0);
+            }
+            self.redo_stack.clear();
+            self.last_edit = None;
+        }
         self.content.replace_range(range.clone(), replacement);
         self.marked_range =
             (!replacement.is_empty()).then_some(range.start..range.start + replacement.len());
@@ -1307,6 +1465,8 @@ impl Render for ComposerInput {
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::submit_follow_up))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1357,6 +1517,48 @@ mod tests {
     }
 
     #[gpui::test]
+    fn keyboard_undo_and_redo_restore_text_and_caret(cx: &mut TestAppContext) {
+        let window = input_window(cx, 64);
+        window
+            .update(cx, |input, _, cx| input.set_editable(true, cx))
+            .unwrap();
+        cx.simulate_input(*window, "hello");
+
+        cx.simulate_keystrokes(*window, "cmd-z");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.text(), "");
+                assert_eq!(input.selected_range, 0..0);
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(*window, "shift-cmd-z");
+        window
+            .update(cx, |input, _, _| {
+                assert_eq!(input.text(), "hello");
+                assert_eq!(input.selected_range, 5..5);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn authoritative_draft_replacement_clears_undo_history(cx: &mut TestAppContext) {
+        let window = input_window(cx, 64);
+        window
+            .update(cx, |input, _, cx| input.set_editable(true, cx))
+            .unwrap();
+        cx.simulate_input(*window, "local");
+        window
+            .update(cx, |input, _, cx| input.replace_document("remote", cx))
+            .unwrap();
+
+        cx.simulate_keystrokes(*window, "cmd-z");
+        window
+            .update(cx, |input, _, _| assert_eq!(input.text(), "remote"))
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn keyboard_caret_movement_and_deletion_are_grapheme_safe(cx: &mut TestAppContext) {
         let window = input_window(cx, 64);
         window
@@ -1375,6 +1577,24 @@ mod tests {
                 assert_eq!(input.selected_range, 1..1);
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn copy_falls_back_to_the_settled_transcript_selection(cx: &mut TestAppContext) {
+        let _selection = crate::transcript_selection::test_lock();
+        crate::transcript_selection::begin_with_span("transcript", "selected reply", 0..8);
+        assert_eq!(
+            crate::transcript_selection::end_drag("transcript").as_deref(),
+            Some("selected")
+        );
+
+        let window = input_window(cx, 64);
+        window
+            .update(cx, |input, window, cx| input.copy(&Copy, window, cx))
+            .unwrap();
+        let copied = cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+        assert_eq!(copied.as_deref(), Some("selected"));
+        assert!(crate::transcript_selection::clear_if_owner("transcript"));
     }
 
     #[gpui::test]

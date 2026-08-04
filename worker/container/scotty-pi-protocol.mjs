@@ -8,6 +8,9 @@ export { commandIntentDigest };
 
 export const PI_CONSOLE_PROTOCOL_VERSION = 1;
 export const PI_CONSOLE_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+export const PI_CONSOLE_MAX_COMMAND_BYTES = 8 * 1024 * 1024;
+export const PI_CONSOLE_MAX_IMAGES = 4;
+export const PI_CONSOLE_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const PI_CONSOLE_MAX_EVENT_BYTES = 256 * 1024;
 export const PI_CONSOLE_MAX_EVENTS = 2_000;
 export const PI_CONSOLE_MAX_MESSAGES = 500;
@@ -26,6 +29,9 @@ const maxArrayItems = 500;
 const maxObjectKeys = 100;
 const maxNodes = 20_000;
 const remoteSlashCommands = new Set(["subagents", "workflows"]);
+const imageCommandTypes = new Set(["prompt", "steer", "follow_up"]);
+const allowedImageMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const maxBase64ImageCharacters = Math.ceil(PI_CONSOLE_MAX_IMAGE_BYTES / 3) * 4;
 const commandTypes = new Set([
   "prompt",
   "steer",
@@ -39,6 +45,47 @@ const commandTypes = new Set([
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const workflowRunIdPattern = /^wf_[0-9a-f]{12}$/u;
+
+const isBase64Character = (code) =>
+  (code >= 65 && code <= 90) ||
+  (code >= 97 && code <= 122) ||
+  (code >= 48 && code <= 57) ||
+  code === 43 ||
+  code === 47;
+const isBase64 = (data) => {
+  if (data.length === 0 || data.length % 4 !== 0) return false;
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  const contentLength = data.length - padding;
+  for (let index = 0; index < contentLength; index += 1)
+    if (!isBase64Character(data.charCodeAt(index))) return false;
+  for (let index = contentLength; index < data.length; index += 1)
+    if (data.charCodeAt(index) !== 61) return false;
+  return true;
+};
+const decodedBase64Bytes = (data) =>
+  (data.length / 4) * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+const validImages = (images) => {
+  if (images === undefined) return true;
+  if (!Array.isArray(images) || images.length > PI_CONSOLE_MAX_IMAGES) return false;
+  let decodedBytes = 0;
+  for (const image of images) {
+    if (
+      !image ||
+      typeof image !== "object" ||
+      Array.isArray(image) ||
+      Object.keys(image).length !== 3 ||
+      image.type !== "image" ||
+      typeof image.data !== "string" ||
+      image.data.length > maxBase64ImageCharacters ||
+      !isBase64(image.data) ||
+      !allowedImageMimeTypes.has(image.mimeType)
+    )
+      return false;
+    decodedBytes += decodedBase64Bytes(image.data);
+    if (decodedBytes > PI_CONSOLE_MAX_IMAGE_BYTES) return false;
+  }
+  return true;
+};
 
 const isBoundedString = (value) =>
   typeof value === "string" && Buffer.byteLength(value, "utf8") <= maxStringBytes;
@@ -459,9 +506,12 @@ const validIntent = (command) => {
       ok: false,
       error: command.type === "fold" ? "local_intent_only" : "invalid_command",
     };
+  if (!imageCommandTypes.has(command.type) && command.images !== undefined)
+    return { ok: false, error: "invalid_command" };
   if (command.type === "prompt") {
     if (
       !isBoundedString(command.message) ||
+      !validImages(command.images) ||
       (command.streamingBehavior !== undefined &&
         command.streamingBehavior !== "steer" &&
         command.streamingBehavior !== "followUp")
@@ -470,7 +520,8 @@ const validIntent = (command) => {
     if (command.message.trimStart().startsWith("/"))
       return { ok: false, error: "slash_prompt_requires_intent" };
   } else if (command.type === "steer" || command.type === "follow_up") {
-    if (!isBoundedString(command.message)) return { ok: false, error: "invalid_command" };
+    if (!isBoundedString(command.message) || !validImages(command.images))
+      return { ok: false, error: "invalid_command" };
   } else if (command.type === "extension_ui_response") {
     if (
       !isIdentifier(command.id) ||

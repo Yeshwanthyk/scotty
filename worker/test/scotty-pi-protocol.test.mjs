@@ -1,5 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  PI_CONSOLE_MAX_COMMAND_BYTES,
+  PI_CONSOLE_MAX_IMAGE_BYTES,
+  PI_CONSOLE_MAX_IMAGES,
   PI_CONSOLE_MAX_PENDING_UI,
   PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
   commandIntentDigest,
@@ -17,6 +20,10 @@ import {
 
 const epoch = "epoch-1";
 const commandId = "123e4567-e89b-42d3-a456-426614174000";
+const base64ZeroBytes = (decodedBytes) => {
+  assert.strictEqual(decodedBytes % 3, 0);
+  return "AAAA".repeat(decodedBytes / 3);
+};
 
 describe("Scotty Pi supervisor protocol", () => {
   it("requires a complete contiguous snapshot overlap", () => {
@@ -292,6 +299,66 @@ describe("Scotty Pi supervisor protocol", () => {
     );
   });
 
+  it("preserves bounded images and rejects invalid image command shapes", () => {
+    const image = { type: "image", data: "AA==", mimeType: "image/png" };
+    for (const intent of [
+      { type: "prompt", message: "inspect", images: [image] },
+      { type: "steer", message: "adjust", images: [image] },
+      { type: "follow_up", message: "continue", images: [image] },
+    ]) {
+      const normalized = normalizeCommand(
+        { version: 1, epoch, commandId, expectedSessionRevision: 7, intent },
+        epoch,
+      );
+      assert.strictEqual(normalized.ok, true);
+      assert.deepStrictEqual(normalized.command, intent);
+    }
+
+    const invalidImages = [
+      Array.from({ length: PI_CONSOLE_MAX_IMAGES + 1 }, () => image),
+      [{ ...image, data: "" }],
+      [{ ...image, data: "not base64" }],
+      [{ ...image, mimeType: "image/svg+xml" }],
+      [{ ...image, filename: "secret.png" }],
+      [{ ...image, path: "/tmp/secret.png" }],
+      [
+        { ...image, data: base64ZeroBytes(3 * 1024 * 1024) },
+        {
+          ...image,
+          data: base64ZeroBytes(PI_CONSOLE_MAX_IMAGE_BYTES - 3 * 1024 * 1024 + 1),
+        },
+      ],
+    ];
+    for (const images of invalidImages)
+      assert.deepStrictEqual(
+        normalizeCommand(
+          {
+            version: 1,
+            epoch,
+            commandId,
+            expectedSessionRevision: 7,
+            intent: { type: "prompt", message: "invalid", images },
+          },
+          epoch,
+        ),
+        { ok: false, error: "invalid_command" },
+      );
+    assert.deepStrictEqual(
+      normalizeCommand(
+        {
+          version: 1,
+          epoch,
+          commandId,
+          expectedSessionRevision: 7,
+          intent: { type: "abort", images: [image] },
+        },
+        epoch,
+      ),
+      { ok: false, error: "invalid_command" },
+    );
+    assert.strictEqual(PI_CONSOLE_MAX_COMMAND_BYTES, 8 * 1024 * 1024);
+  });
+
   it("scopes canonical command digests to exact intent and filters capabilities", async () => {
     assert.strictEqual(
       await commandIntentDigest({ type: "prompt", message: "one" }),
@@ -300,6 +367,14 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.notStrictEqual(
       await commandIntentDigest({ type: "prompt", message: "one" }),
       await commandIntentDigest({ type: "prompt", message: "two" }),
+    );
+    assert.notStrictEqual(
+      await commandIntentDigest({ type: "prompt", message: "one" }),
+      await commandIntentDigest({
+        type: "prompt",
+        message: "one",
+        images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+      }),
     );
     assert.deepStrictEqual(
       filterRemoteCommands([
