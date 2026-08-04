@@ -87,12 +87,54 @@ function patchChildren(container, nodes) {
   }
 }
 
+function captureKeyedFocus(container) {
+  const activeElement = container.ownerDocument?.activeElement;
+  if (!activeElement || !container.contains?.(activeElement)) return undefined;
+
+  let keyedElement = activeElement;
+  while (keyedElement && keyedElement !== container) {
+    const key = keyedElement.dataset?.worklogFocusKey;
+    if (key) {
+      const selection =
+        typeof keyedElement.selectionStart === "number" &&
+        typeof keyedElement.selectionEnd === "number"
+          ? {
+              start: keyedElement.selectionStart,
+              end: keyedElement.selectionEnd,
+              direction: keyedElement.selectionDirection ?? undefined,
+            }
+          : undefined;
+      return { element: keyedElement, key, selection };
+    }
+    keyedElement = keyedElement.parentElement ?? keyedElement.parentNode;
+  }
+  return undefined;
+}
+
+function restoreKeyedFocus(container, focused) {
+  if (!focused || container.contains?.(focused.element)) return;
+  const replacement = [...(container.querySelectorAll?.("[data-worklog-focus-key]") ?? [])].find(
+    (candidate) => candidate.dataset?.worklogFocusKey === focused.key,
+  );
+  if (typeof replacement?.focus !== "function") return;
+  replacement.focus({ preventScroll: true });
+  if (focused.selection && typeof replacement.setSelectionRange === "function") {
+    replacement.setSelectionRange(
+      focused.selection.start,
+      focused.selection.end,
+      focused.selection.direction,
+    );
+  }
+}
+
 export function createWorklogView(container) {
   let rendered = new Map();
   return {
     update(entries) {
+      const focused = captureKeyedFocus(container);
       const result = resolveKeyedItems(rendered, entries);
       patchChildren(container, result.nodes);
+      restoreKeyedFocus(container, focused);
       rendered = result.next;
       return {
         added: result.added,

@@ -11,6 +11,9 @@ export interface RenderedWorklogEntry<Node> {
 
 export interface WorklogContainer<Node> {
   readonly children: ArrayLike<Node>;
+  readonly ownerDocument?: { readonly activeElement?: unknown };
+  contains?(node: unknown): boolean;
+  querySelectorAll?(selectors: string): ArrayLike<unknown>;
   insertBefore(node: Node, before: Node | null): unknown;
   removeChild(node: Node): unknown;
 }

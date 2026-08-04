@@ -138,6 +138,11 @@ function textElement(tag, className, text) {
   return element;
 }
 
+function setWorklogFocusKey(element, key) {
+  element.setAttribute("data-worklog-focus-key", key);
+  return element;
+}
+
 function renderAssistantCopy(text) {
   const element = document.createElement("div");
   element.className = "message-copy markdown";
@@ -382,6 +387,7 @@ function renderActivityFold(reasoningParts, tools, active, conversationKey) {
   );
   const stepCount = tools.length + (reasoningParts.length > 0 ? 1 : 0);
   const summary = document.createElement("summary");
+  setWorklogFocusKey(summary, `activity:${conversationKey}`);
   summary.append(
     textElement("span", "activity-caret", "›"),
     textElement("span", "activity-label", active ? "Working" : "Worked"),
@@ -393,7 +399,9 @@ function renderActivityFold(reasoningParts, tools, active, conversationKey) {
     const reasoning = document.createElement("details");
     reasoning.className = "thinking";
     applyDisclosureState(reasoning, `reasoning:${conversationKey}`);
-    reasoning.append(textElement("summary", "", "Reasoning"));
+    reasoning.append(
+      setWorklogFocusKey(textElement("summary", "", "Reasoning"), `reasoning:${conversationKey}`),
+    );
     reasoning.append(textElement("div", "thinking-copy", reasoningParts.join("\n\n")));
     body.append(reasoning);
   }
@@ -428,6 +436,7 @@ function renderTool(tool, disclosureKey) {
   const status = tool.error || tool.status === "error" ? "error" : (tool.status ?? "done");
   applyDisclosureState(details, `tool:${disclosureKey}`, status === "error");
   const summary = document.createElement("summary");
+  setWorklogFocusKey(summary, `tool:${disclosureKey}`);
   summary.append(
     textElement(
       "i",
@@ -611,6 +620,12 @@ function renderAskCard(request) {
       const button = document.createElement("button");
       button.className = "ask-option";
       button.type = "button";
+      const optionId =
+        typeof option === "object"
+          ? (firstString(option.id, option.optionId, option.option_id) ??
+            semanticSignature(option.value ?? value))
+          : semanticSignature(value);
+      setWorklogFocusKey(button, `ask:${request.id}:option:${optionId}`);
       button.dataset.uiResponse =
         typeof option === "object" ? JSON.stringify(option.value ?? value) : value;
       if (typeof option === "object") button.dataset.uiResponseJson = "";
@@ -637,18 +652,22 @@ function renderAskCard(request) {
     input.name = "answer";
     input.placeholder = options.length > 0 ? "Or write your own answer…" : "Your response…";
     input.setAttribute("aria-label", "Custom response");
+    setWorklogFocusKey(input, `ask:${request.id}:custom`);
     if (request.method === "editor") input.value = request.prefill ?? "";
     const send = textElement("button", "send-button", "Reply");
     send.type = "submit";
+    setWorklogFocusKey(send, `ask:${request.id}:reply`);
     const cancel = textElement("button", "quiet-button", "Cancel");
     cancel.type = "button";
     cancel.dataset.uiCancel = "";
+    setWorklogFocusKey(cancel, `ask:${request.id}:cancel`);
     custom.append(input, cancel, send);
     body.append(custom);
   } else {
     const cancel = textElement("button", "quiet-button ask-cancel", "Cancel");
     cancel.type = "button";
     cancel.dataset.uiCancel = "";
+    setWorklogFocusKey(cancel, `ask:${request.id}:cancel`);
     body.append(cancel);
   }
   card.append(header, body);
