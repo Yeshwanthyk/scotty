@@ -1,6 +1,6 @@
 # Copy to .dev.vars; never commit the populated file.
 SCOTTY_TOKEN="replace-with-a-random-32-byte-token"
-CODEX_AUTH_JSON='{"tokens":{"id_token":"replace","access_token":"replace","refresh_token":"replace","account_id":"replace"}}'
+PI_AUTH_JSON='{"openai-codex":{"type":"oauth","refresh":"replace","access":"replace","expires":0,"accountId":"replace"}}'
 GH_TOKEN="github_pat_replace"
 R2_ACCESS_KEY_ID="replace"
 R2_SECRET_ACCESS_KEY="replace"

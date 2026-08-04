@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -30,7 +30,7 @@ function harness(overrides: Partial<CliDependencies> = {}) {
   const stderr: string[] = [];
   let prompts = 0;
   const deps: Partial<CliDependencies> = {
-    env: {},
+    env: { SCOTTY_TOKEN: "secret" },
     home: "/tmp/unused-scotty-home",
     cwd: "/tmp/repo",
     stdoutIsTTY: false,
@@ -65,7 +65,10 @@ describe("configuration and transport", () => {
     await writeFile(
       join(home, ".scotty.json"),
       JSON.stringify({ host: "https://config.example", token: "config-token" }),
+      { mode: 0o600 },
     );
+    const tokenPath = join(home, "root-token");
+    await writeFile(tokenPath, "flag-token\n", { mode: 0o600 });
     let request: Request | undefined;
     const h = harness({
       home,
@@ -97,8 +100,8 @@ describe("configuration and transport", () => {
         "--detach",
         "--host",
         "https://flag.example/",
-        "--token",
-        "flag-token",
+        "--token-file",
+        tokenPath,
       ],
       h.deps,
     );
@@ -121,6 +124,35 @@ describe("configuration and transport", () => {
       status: "warm",
     });
     expect(h.stdout.join("")).not.toContain("server-secret");
+  });
+
+  test("rejects the removed raw token flag and unsafe token files", async () => {
+    const home = await temporaryDirectory();
+    const leaked = harness({ home });
+    expect(
+      await main(["ls", "--host", "https://worker.example", "--token", "raw-secret"], leaked.deps),
+    ).toBe(EXIT.USAGE);
+    expect(leaked.stderr.join("")).not.toContain("raw-secret");
+
+    const tokenPath = join(home, "token");
+    await writeFile(tokenPath, "file-secret\n", { mode: 0o644 });
+    const exposed = harness({ home, env: {} });
+    expect(
+      await main(
+        ["ls", "--host", "https://worker.example", "--token-file", tokenPath],
+        exposed.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(exposed.error().error.code).toBe("token_file_invalid");
+    expect(exposed.stderr.join("")).not.toContain("file-secret");
+
+    await chmod(tokenPath, 0o600);
+    await writeFile(tokenPath, "", { mode: 0o600 });
+    const empty = harness({ home, env: {} });
+    expect(
+      await main(["ls", "--host", "https://worker.example", "--token-file", tokenPath], empty.deps),
+    ).toBe(EXIT.USAGE);
+    expect(empty.error().error.message).toBe("Scotty token file is empty");
   });
 
   test("beam up converts the human cap to the Worker contract", async () => {
@@ -155,8 +187,6 @@ describe("configuration and transport", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         h.deps,
       ),
@@ -188,8 +218,6 @@ describe("configuration and transport", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         invalid.deps,
       ),
@@ -228,8 +256,6 @@ describe("configuration and transport", () => {
       "--detach",
       "--host",
       "https://worker.example",
-      "--token",
-      "secret",
     ];
 
     expect(await main(args, harness({ home, fetch }).deps)).toBe(EXIT.GENERIC);
@@ -246,6 +272,7 @@ describe("configuration and transport", () => {
     await writeFile(
       join(home, ".scotty.json"),
       JSON.stringify({ host: "https://config.example", token: "config-token" }),
+      { mode: 0o600 },
     );
     const seen: string[] = [];
     const h = harness({
@@ -275,13 +302,38 @@ describe("configuration and transport", () => {
     ]);
   });
 
-  test("complete flags bypass a malformed config for stateless agents", async () => {
+  test("rejects unsafe and symlinked config files", async () => {
     const home = await temporaryDirectory();
-    await writeFile(join(home, ".scotty.json"), "not-json");
+    const configPath = join(home, ".scotty.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({ host: "https://worker.example", token: "root-secret" }),
+      { mode: 0o600 },
+    );
+    await chmod(configPath, 0o644);
+    const exposed = harness({ home });
+    expect(await main(["ls"], exposed.deps)).toBe(EXIT.USAGE);
+    expect(exposed.error().error.code).toBe("config_permissions");
+
+    await rm(configPath);
+    const target = join(home, "private-config.json");
+    await writeFile(
+      target,
+      JSON.stringify({ host: "https://worker.example", token: "root-secret" }),
+      { mode: 0o600 },
+    );
+    await symlink(target, configPath);
+    const linked = harness({ home });
+    expect(await main(["ls"], linked.deps)).toBe(EXIT.USAGE);
+    expect(linked.error().error.code).toBe("config_permissions");
+    expect(linked.stderr.join("")).not.toContain("root-secret");
+  });
+
+  test("complete overrides bypass a malformed config for stateless agents", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(join(home, ".scotty.json"), "not-json", { mode: 0o600 });
     const h = harness({ home, fetch: async () => Response.json([]) });
-    expect(
-      await main(["ls", "--host", "https://worker.example", "--token", "secret"], h.deps),
-    ).toBe(EXIT.OK);
+    expect(await main(["ls", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
     expect(h.json()).toEqual([]);
   });
 
@@ -294,6 +346,7 @@ describe("configuration and transport", () => {
         token: "config-token",
         credentialBundle: "must-not-leak",
       }),
+      { mode: 0o600 },
     );
     let request: Request | undefined;
     const h = harness({
@@ -315,13 +368,13 @@ describe("configuration and transport", () => {
     const home = await temporaryDirectory();
     const h = harness({ home });
     const code = await main(
-      ["init", "--host", "https://worker.example/", "--token", "top-secret"],
+      ["init", "--host", "https://worker.example/", "--token-file", "/private/token"],
       h.deps,
     );
 
     expect(code).toBe(EXIT.USAGE);
-    expect(h.error().error.message).toBe("init does not accept --host or --token");
-    expect(h.stdout.join("")).not.toContain("top-secret");
+    expect(h.error().error.message).toBe("init does not accept --host or --token-file");
+    expect(h.stdout.join("")).not.toContain("/private/token");
     expect(h.prompts()).toBe(0);
   });
 
@@ -330,6 +383,13 @@ describe("configuration and transport", () => {
     let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
     const h = harness({
       home,
+      planCreateInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: false,
+        fingerprint: "create-plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "create" }],
+      }),
       createInstallation: async (input) => {
         request = input;
         return {
@@ -348,10 +408,15 @@ describe("configuration and transport", () => {
       },
     });
 
-    expect(await main(["init", "--name", "home", "--profile", "personal"], h.deps)).toBe(EXIT.OK);
+    expect(await main(["init", "--name", "home", "--profile", "personal", "--yes"], h.deps)).toBe(
+      EXIT.OK,
+    );
     expect(request).toMatchObject({
       installationName: "home",
       profile: "personal",
+      expectedAccountId: "0123456789abcdef0123456789abcdef",
+      expectedPlanFingerprint: "create-plan-1",
+      mode: "fresh",
     });
     expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
     const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
@@ -381,6 +446,57 @@ describe("configuration and transport", () => {
       host: "https://scotty-home-worker.example.workers.dev",
       rootTokenRotated: true,
     });
+  });
+
+  test("init resumes an apply-started journal with the same token", async () => {
+    const home = await temporaryDirectory();
+    const requests: Array<Parameters<NonNullable<CliDependencies["createInstallation"]>>[0]> = [];
+    let plans = 0;
+    const result = {
+      installationName: "home",
+      profile: "personal",
+      stackName: "Scotty-home",
+      stage: "production",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "scotty-home-worker",
+      runnerWorkerName: "scotty-home-runner",
+      containerName: "scotty-home-sandbox",
+      kvTitle: "scotty-home-sessions",
+      backupBucketName: "scotty-home-backups",
+      host: "https://scotty-home-worker.example.workers.dev",
+    } as const;
+    const h = harness({
+      home,
+      planCreateInstallation: async () => {
+        plans += 1;
+        return {
+          installationName: "home",
+          accountId: result.accountId,
+          hasExistingResources: plans > 1,
+          fingerprint: plans === 1 ? "create-plan" : "resume-plan",
+          changes: plans === 1 ? [{ id: "Scotty-home/Worker", action: "create" }] : [],
+        };
+      },
+      createInstallation: async (request) => {
+        requests.push(request);
+        if (requests.length === 1) throw new Error("ambiguous apply result");
+        return result;
+      },
+    });
+
+    expect(await main(["init", "--name", "home", "--profile", "personal", "--yes"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    const journalPath = join(home, ".scotty", "init-home.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8"));
+    expect(journal.phase).toBe("apply_started");
+    expect((await stat(journalPath)).mode & 0o777).toBe(0o600);
+
+    expect(await main(["init", "--name", "home", "--profile", "personal"], h.deps)).toBe(EXIT.OK);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({ mode: "resume", expectedPlanFingerprint: "resume-plan" });
+    expect(requests[1]?.token).toBe(requests[0]?.token);
+    await expect(stat(journalPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   test("recover inspects, confirms, rotates only the token, and stores a private mapping", async () => {
@@ -451,15 +567,18 @@ describe("configuration and transport", () => {
         version: 1,
         installationName: "home",
         profile: "personal",
+        accountId: "0123456789abcdef0123456789abcdef",
         host: "https://old.example",
         token: "root-secret",
       }),
+      { mode: 0o600 },
     );
     let request: Parameters<NonNullable<CliDependencies["deployInstallation"]>>[0] | undefined;
     const h = harness({
       home,
       planInstallation: async () => ({
         installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
         hasExistingResources: true,
         fingerprint: "plan-1",
         changes: [{ id: "Scotty-home/Worker", action: "update" }],
@@ -486,6 +605,7 @@ describe("configuration and transport", () => {
     expect(request).toEqual({
       installationName: "home",
       profile: "personal",
+      expectedAccountId: "0123456789abcdef0123456789abcdef",
       expectedPlanFingerprint: "plan-1",
     });
     expect(request).not.toHaveProperty("token");
@@ -503,14 +623,17 @@ describe("configuration and transport", () => {
         version: 1,
         installationName: "home",
         profile: "default",
+        accountId: "0123456789abcdef0123456789abcdef",
         token: "root-secret",
       }),
+      { mode: 0o600 },
     );
     let applied = false;
     const h = harness({
       home,
       planInstallation: async () => ({
         installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
         hasExistingResources: true,
         fingerprint: "plan-noop",
         changes: [],
@@ -539,13 +662,16 @@ describe("configuration and transport", () => {
         version: 1,
         installationName: "home",
         profile: "default",
+        accountId: "0123456789abcdef0123456789abcdef",
         token: "root-secret",
       }),
+      { mode: 0o600 },
     );
     const h = harness({
       home,
       planInstallation: async () => ({
         installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
         hasExistingResources: true,
         fingerprint: "plan-2",
         changes: [{ id: "Scotty-home/Worker", action: "update" }],
@@ -588,6 +714,7 @@ describe("configuration and transport", () => {
         host: "https://worker.example",
         token: "root-secret",
       }),
+      { mode: 0o600 },
     );
     let request: Parameters<NonNullable<CliDependencies["uninstallInstallation"]>>[0] | undefined;
     const h = harness({
@@ -635,6 +762,7 @@ describe("configuration and transport", () => {
         profile: "default",
         accountId: "0123456789abcdef0123456789abcdef",
       }),
+      { mode: 0o600 },
     );
     let deleteData = false;
     const h = harness({
@@ -678,10 +806,12 @@ describe("configuration and transport", () => {
         host: "https://worker.example",
         token: "root-secret",
       }),
+      { mode: 0o600 },
     );
     let authorization: string | null = null;
     const h = harness({
       home,
+      env: {},
       fetch: async (input, init) => {
         const request = new Request(input, init);
         authorization = request.headers.get("authorization");
@@ -708,9 +838,7 @@ describe("configuration and transport", () => {
         throw new Error("socket exploded with secret details");
       },
     });
-    expect(
-      await main(["ls", "--host", "https://worker.example", "--token", "secret"], network.deps),
-    ).toBe(EXIT.GENERIC);
+    expect(await main(["ls", "--host", "https://worker.example"], network.deps)).toBe(EXIT.GENERIC);
     expect(network.error()).toEqual({
       error: {
         code: "network_error",
@@ -720,20 +848,17 @@ describe("configuration and transport", () => {
     });
 
     const malformed = harness({ fetch: async () => new Response("not json", { status: 200 }) });
-    expect(
-      await main(["ls", "--host", "https://worker.example", "--token", "secret"], malformed.deps),
-    ).toBe(EXIT.GENERIC);
+    expect(await main(["ls", "--host", "https://worker.example"], malformed.deps)).toBe(
+      EXIT.GENERIC,
+    );
     expect(malformed.error().error.code).toBe("invalid_response");
 
     const malformedFailure = harness({
       fetch: async () => new Response("not json", { status: 502 }),
     });
-    expect(
-      await main(
-        ["ls", "--host", "https://worker.example", "--token", "secret"],
-        malformedFailure.deps,
-      ),
-    ).toBe(EXIT.GENERIC);
+    expect(await main(["ls", "--host", "https://worker.example"], malformedFailure.deps)).toBe(
+      EXIT.GENERIC,
+    );
     expect(malformedFailure.error()).toEqual({
       error: {
         code: "http_502",
@@ -765,9 +890,7 @@ describe("configuration and transport", () => {
       webToken: "must-not-leak",
     };
     const h = harness({ fetch: async () => Response.json([session]) });
-    expect(
-      await main(["ls", "--host", "https://worker.example", "--token", "secret"], h.deps),
-    ).toBe(EXIT.OK);
+    expect(await main(["ls", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
     expect(h.json()).toEqual([
       {
         id: "s1",
@@ -811,9 +934,7 @@ describe("configuration and transport", () => {
     };
     const h = harness({ fetch: async () => Response.json([session]) });
 
-    expect(
-      await main(["ls", "--host", "https://worker.example", "--token", "secret"], h.deps),
-    ).toBe(EXIT.OK);
+    expect(await main(["ls", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
     expect(h.json()).toEqual([
       {
         id: "s1",
@@ -836,7 +957,7 @@ describe("configuration and transport", () => {
 });
 
 describe("Pi auth commands", () => {
-  test("sync locks, decodes, resolves, uploads, and confirms the complete Pi provider map", async () => {
+  test("sync uploads only allowlisted Pi providers and fields", async () => {
     const home = await temporaryDirectory();
     const authDirectory = join(home, ".pi", "agent");
     const authPath = join(authDirectory, "auth.json");
@@ -851,6 +972,7 @@ describe("Pi auth commands", () => {
           refresh: "local-refresh",
           expires: 0,
           accountId: "local-account",
+          unknownOAuthField: "must-not-upload",
         },
         anthropic: {
           type: "oauth",
@@ -861,32 +983,48 @@ describe("Pi auth commands", () => {
       }),
       { mode: 0o600 },
     );
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "a".repeat(32),
+        workerName: "scotty-home-worker",
+        host: "https://scotty-home-worker.example.workers.dev",
+        token: "worker-token",
+      }),
+      { mode: 0o600 },
+    );
     let uploaded: string | undefined;
     const requests: Request[] = [];
+    const targets: unknown[] = [];
+    const target = {
+      accountId: "a".repeat(32),
+      workerName: "scotty-home-worker",
+      host: "https://scotty-home-worker.example.workers.dev",
+    };
     const h = harness({
       home,
-      env: {
-        SCOTTY_HOST: "https://worker.example",
-        SCOTTY_TOKEN: "worker-token",
-        CLOUDFLARE_API_TOKEN: "cloudflare-token",
-        CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
-        OPENAI_TEST_KEY: "resolved-openai-key",
+      env: { OPENAI_TEST_KEY: "resolved-openai-key" },
+      inspectPiAuthTarget: async (request) => {
+        targets.push(request);
+        return target;
+      },
+      uploadPiAuthSecret: async (request) => {
+        targets.push(request);
+        uploaded = request.json;
+        return target;
       },
       fetch: async (input, init) => {
         const request = new Request(input, init);
         requests.push(request);
-        if (new URL(request.url).hostname === "api.cloudflare.com") {
-          const body = await request.json();
-          uploaded = body.text;
-          return Response.json({ success: true });
-        }
         const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(uploaded));
         return Response.json({
           sourceDigest: Array.from(new Uint8Array(digest), (byte) =>
             byte.toString(16).padStart(2, "0"),
           ).join(""),
           providers: [
-            { id: "anthropic", type: "oauth", adapter: "unsupported" },
             { id: "openai", type: "api_key", adapter: "supported" },
             { id: "openai-codex", type: "oauth", adapter: "supported" },
           ],
@@ -895,27 +1033,99 @@ describe("Pi auth commands", () => {
     });
 
     expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.OK);
-    expect(requests[0]?.method).toBe("PUT");
-    expect(requests[0]?.headers.get("authorization")).toBe("Bearer cloudflare-token");
-    expect(requests[0]?.url).toBe(
-      `https://api.cloudflare.com/client/v4/accounts/${"a".repeat(32)}/workers/scripts/scotty-worker/secrets`,
-    );
+    expect(targets).toHaveLength(2);
+    const expectedTarget = {
+      profile: "personal",
+      expectedAccountId: "a".repeat(32),
+      expectedWorkerName: "scotty-home-worker",
+      expectedHost: "https://scotty-home-worker.example.workers.dev",
+    };
+    expect(targets[0]).toEqual(expectedTarget);
+    expect(targets[1]).toMatchObject(expectedTarget);
     const normalized = JSON.parse(uploaded ?? "{}");
     expect(normalized.openai.key).toBe("resolved-openai-key");
     expect(normalized["openai-codex"].accountId).toBe("local-account");
-    expect(normalized.anthropic.access).toBe("anthropic-access");
+    expect(normalized["openai-codex"].unknownOAuthField).toBeUndefined();
+    expect(normalized.anthropic).toBeUndefined();
     expect(h.json()).toMatchObject({
       synchronized: true,
-      worker: "scotty-worker",
+      worker: "scotty-home-worker",
       providers: [
-        { id: "anthropic", adapter: "unsupported" },
         { id: "openai", adapter: "supported" },
         { id: "openai-codex", adapter: "supported" },
       ],
     });
-    expect(requests[1]?.headers.get("authorization")).toBe("Bearer worker-token");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.headers.get("authorization")).toBe("Bearer worker-token");
     expect(JSON.stringify(h.json())).not.toContain("local-access");
     expect(JSON.stringify(h.json())).not.toContain("resolved-openai-key");
+  });
+
+  test("sync verifies the managed target before reading Pi credentials", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "a".repeat(32),
+        workerName: "scotty-home-worker",
+        host: "https://scotty-home-worker.example.workers.dev",
+        token: "worker-token",
+      }),
+      { mode: 0o600 },
+    );
+    let uploaded = false;
+    const h = harness({
+      home,
+      inspectPiAuthTarget: async () => {
+        throw new Error("wrong account");
+      },
+      uploadPiAuthSecret: async () => {
+        uploaded = true;
+        throw new Error("must not upload");
+      },
+    });
+
+    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error().error.code).toBe("pi_auth_target_failed");
+    expect(uploaded).toBe(false);
+    expect(h.stderr.join("")).not.toContain("wrong account");
+  });
+
+  test("sync rejects a symlinked Pi auth file", async () => {
+    const home = await temporaryDirectory();
+    const authDirectory = join(home, ".pi", "agent");
+    await mkdir(authDirectory, { recursive: true });
+    const targetPath = join(home, "auth-target.json");
+    await writeFile(targetPath, JSON.stringify({ openai: { type: "api_key", key: "secret" } }), {
+      mode: 0o600,
+    });
+    await symlink(targetPath, join(authDirectory, "auth.json"));
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "a".repeat(32),
+        workerName: "scotty-home-worker",
+        host: "https://scotty-home-worker.example.workers.dev",
+        token: "worker-token",
+      }),
+      { mode: 0o600 },
+    );
+    const target = {
+      accountId: "a".repeat(32),
+      workerName: "scotty-home-worker",
+      host: "https://scotty-home-worker.example.workers.dev",
+    };
+    const h = harness({ home, inspectPiAuthTarget: async () => target });
+
+    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("Pi auth.json must be a private regular file");
+    expect(h.stderr.join("")).not.toContain("secret");
   });
 
   test("reseed --all-active targets only warm Cloudflare sessions", async () => {
@@ -995,12 +1205,7 @@ describe("commands and schemas", () => {
         fetch: async () =>
           Response.json({ error: { code: errorCode, message: "failed", hint: "act" } }, { status }),
       });
-      expect(
-        await main(
-          ["resume", "s1", "--host", "https://worker.example", "--token", "secret"],
-          h.deps,
-        ),
-      ).toBe(exit);
+      expect(await main(["resume", "s1", "--host", "https://worker.example"], h.deps)).toBe(exit);
       expect(h.error()).toEqual({ error: { code: errorCode, message: "failed", hint: "act" } });
     }
   });
@@ -1022,30 +1227,23 @@ describe("commands and schemas", () => {
       [422, { error: { code: 12, message: null, hint: [] } }, EXIT.USAGE, "http_422"],
     ] as const) {
       const h = harness({ fetch: async () => Response.json(reply, { status }) });
-      expect(
-        await main(
-          ["resume", "s1", "--host", "https://worker.example", "--token", "secret"],
-          h.deps,
-        ),
-      ).toBe(exit);
+      expect(await main(["resume", "s1", "--host", "https://worker.example"], h.deps)).toBe(exit);
       expect(h.error().error.code).toBe(expected);
       expect(h.stdout.join("")).toBe("");
     }
 
     const secret = "server-echoed-token";
     const redacted = harness({
+      env: { SCOTTY_TOKEN: secret },
       fetch: async () =>
         Response.json(
           { error: { code: "custom", message: `failed ${secret}`, hint: `remove ${secret}` } },
           { status: 500 },
         ),
     });
-    expect(
-      await main(
-        ["resume", "s1", "--host", "https://worker.example", "--token", secret],
-        redacted.deps,
-      ),
-    ).toBe(EXIT.GENERIC);
+    expect(await main(["resume", "s1", "--host", "https://worker.example"], redacted.deps)).toBe(
+      EXIT.GENERIC,
+    );
     expect(redacted.stderr.join("")).not.toContain(secret);
     expect(redacted.error().error).toEqual({
       code: "custom",
@@ -1054,14 +1252,12 @@ describe("commands and schemas", () => {
     });
 
     const redactedCode = harness({
+      env: { SCOTTY_TOKEN: secret },
       fetch: async () =>
         Response.json({ error: { code: secret, message: "failed", hint: "act" } }, { status: 500 }),
     });
     expect(
-      await main(
-        ["resume", "s1", "--host", "https://worker.example", "--token", secret],
-        redactedCode.deps,
-      ),
+      await main(["resume", "s1", "--host", "https://worker.example"], redactedCode.deps),
     ).toBe(EXIT.GENERIC);
     expect(redactedCode.stderr.join("")).not.toContain(secret);
     expect(redactedCode.error().error.code).toBe("[REDACTED]");
@@ -1092,9 +1288,7 @@ describe("commands and schemas", () => {
       ],
     ] as const) {
       const h = harness({ fetch: async () => Response.json(reply) });
-      expect(
-        await main([...args, "--host", "https://worker.example", "--token", "secret"], h.deps),
-      ).toBe(EXIT.OK);
+      expect(await main([...args, "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
       expect(h.json()).toEqual(expected);
     }
   });
@@ -1113,9 +1307,7 @@ describe("commands and schemas", () => {
       ],
     ] as const) {
       const h = harness({ fetch: async () => Response.json(reply) });
-      expect(
-        await main([...args, "--host", "https://worker.example", "--token", "secret"], h.deps),
-      ).toBe(EXIT.OK);
+      expect(await main([...args, "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
       expect(h.json()).toEqual(expected);
     }
   });
@@ -1143,8 +1335,6 @@ describe("commands and schemas", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         removed.deps,
       ),
@@ -1165,8 +1355,6 @@ describe("commands and schemas", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         missingTitle.deps,
       ),
@@ -1185,8 +1373,6 @@ describe("commands and schemas", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         h.deps,
       ),
@@ -1210,8 +1396,6 @@ describe("commands and schemas", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         missingProvider.deps,
       ),
@@ -1234,8 +1418,6 @@ describe("commands and schemas", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         unsupportedProvider.deps,
       ),
@@ -1271,8 +1453,6 @@ describe("commands and schemas", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         tokenized.deps,
       ),
@@ -1312,8 +1492,6 @@ describe("commands and schemas", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         crossOrigin.deps,
       ),
@@ -1347,8 +1525,6 @@ describe("commands and schemas", () => {
           "--detach",
           "--host",
           "https://worker.example",
-          "--token",
-          "secret",
         ],
         userInfo.deps,
       ),
@@ -1365,12 +1541,9 @@ describe("commands and schemas", () => {
         return Response.json({ id: "s1", status: "gone", credential: "must-not-leak" });
       },
     });
-    expect(
-      await main(
-        ["beam", "vaporize", "s1", "--host", "https://worker.example", "--token", "secret"],
-        h.deps,
-      ),
-    ).toBe(EXIT.OK);
+    expect(await main(["beam", "vaporize", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
     expect(method).toBe("DELETE");
     expect(h.prompts()).toBe(0);
     expect(h.json()).toEqual({ id: "s1", status: "gone" });
@@ -1384,19 +1557,7 @@ describe("commands and schemas", () => {
     ]) {
       const h = harness({ fetch: async () => Response.json(reply) });
       expect(
-        await main(
-          [
-            "beam",
-            "vaporize",
-            "s1",
-            "--yes",
-            "--host",
-            "https://worker.example",
-            "--token",
-            "secret",
-          ],
-          h.deps,
-        ),
+        await main(["beam", "vaporize", "s1", "--yes", "--host", "https://worker.example"], h.deps),
       ).toBe(EXIT.GENERIC);
       expect(h.stdout.join("")).toBe("");
       expect(h.error().error.code).toBe("invalid_response");
@@ -1410,9 +1571,7 @@ describe("commands and schemas", () => {
         opened = url;
       },
     });
-    expect(
-      await main(["attach", "s1", "--host", "https://worker.example", "--token", "secret"], h.deps),
-    ).toBe(EXIT.OK);
+    expect(await main(["attach", "s1", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
     expect(opened).toBe("https://worker.example/s/s1");
     expect(h.json()).toEqual({ id: "s1", url: "https://worker.example/s/s1", opened: true });
     expect(h.stdout.join("")).not.toContain("secret");
@@ -1448,8 +1607,6 @@ describe("commands and schemas", () => {
           "cloudflare",
           "--host",
           "https://worker.example",
-          "--token",
-          "root-secret",
         ],
         h.deps,
       ),
@@ -1467,6 +1624,7 @@ describe("commands and schemas", () => {
     let opened = "";
     let request: Request | undefined;
     const h = harness({
+      env: { SCOTTY_TOKEN: rootToken },
       fetch: async (input, init) => {
         request = new Request(input, init);
         return Response.json({
@@ -1480,10 +1638,7 @@ describe("commands and schemas", () => {
     });
 
     expect(
-      await main(
-        ["owner", "recover", "--host", "https://worker.example", "--token", rootToken, "--json"],
-        h.deps,
-      ),
+      await main(["owner", "recover", "--host", "https://worker.example", "--json"], h.deps),
     ).toBe(EXIT.OK);
     expect(request?.url).toBe("https://worker.example/api/auth/recovery-grants");
     expect(request?.method).toBe("POST");
@@ -1534,24 +1689,15 @@ describe("commands and schemas", () => {
     for (const reply of replies) {
       let opened = false;
       const h = harness({
+        env: { SCOTTY_TOKEN: "protected-root-token" },
         fetch: async () => Response.json(reply),
         openBrowser: async () => {
           opened = true;
         },
       });
-      expect(
-        await main(
-          [
-            "owner",
-            "recover",
-            "--host",
-            "https://worker.example",
-            "--token",
-            "protected-root-token",
-          ],
-          h.deps,
-        ),
-      ).toBe(EXIT.GENERIC);
+      expect(await main(["owner", "recover", "--host", "https://worker.example"], h.deps)).toBe(
+        EXIT.GENERIC,
+      );
       expect(opened).toBe(false);
       expect(h.stdout.join("")).toBe("");
       expect(h.stderr.join("")).not.toContain(credential);
@@ -1630,12 +1776,9 @@ describe("beam down and embedded skill", () => {
       },
     });
 
-    expect(
-      await main(
-        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
-        h.deps,
-      ),
-    ).toBe(EXIT.OK);
+    expect(await main(["beam", "down", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
     expect(commands).toEqual([
       ["git", "fetch", "origin", "scotty/s1"],
       ["git", "rev-parse", "FETCH_HEAD"],
@@ -1673,12 +1816,9 @@ describe("beam down and embedded skill", () => {
       }),
     });
 
-    expect(
-      await main(
-        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
-        h.deps,
-      ),
-    ).toBe(EXIT.OK);
+    expect(await main(["beam", "down", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
     const result = h.json();
     expect(result).toEqual({
       branch: "scotty/s1",
@@ -1715,12 +1855,9 @@ describe("beam down and embedded skill", () => {
       }),
     });
 
-    expect(
-      await main(
-        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
-        h.deps,
-      ),
-    ).toBe(EXIT.OK);
+    expect(await main(["beam", "down", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.OK,
+    );
     expect(h.json()).toEqual({
       branch: "scotty/s1",
       sha,
@@ -1750,12 +1887,9 @@ describe("beam down and embedded skill", () => {
         return { exitCode: 0, stdout: "", stderr: "" };
       },
     });
-    expect(
-      await main(
-        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
-        h.deps,
-      ),
-    ).toBe(EXIT.GENERIC);
+    expect(await main(["beam", "down", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
     expect(ran).toBe(false);
     expect(h.error().error.code).toBe("invalid_response");
   });
@@ -1785,12 +1919,9 @@ describe("beam down and embedded skill", () => {
         return { exitCode: 0, stdout: "", stderr: "" };
       },
     });
-    expect(
-      await main(
-        ["beam", "down", "s1", "--host", "https://worker.example", "--token", "secret"],
-        h.deps,
-      ),
-    ).toBe(EXIT.GENERIC);
+    expect(await main(["beam", "down", "s1", "--host", "https://worker.example"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
     expect(ran).toBe(false);
     expect(h.error().error.code).toBe("invalid_archive");
   });

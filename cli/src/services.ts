@@ -1,8 +1,8 @@
-import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
-import type { Stats } from "node:fs";
+import { chmod, lstat, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { Context, Effect, Layer } from "effect";
+import { Context, Data, Effect, Layer } from "effect";
 import lockfile from "proper-lockfile";
 import { CliError, EXIT, type Writer } from "./core";
 
@@ -19,6 +19,7 @@ export interface CliDependencies {
   openBrowser: (url: string) => Promise<void>;
   run: (command: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
   createInstallation: (request: InstallationCreateRequest) => Promise<InstallationResult>;
+  planCreateInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
   planInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
   deployInstallation: (request: InstallationApplyRequest) => Promise<InstallationResult>;
   inspectInstallation: (request: InstallationInspectRequest) => Promise<InstallationResult>;
@@ -27,12 +28,17 @@ export interface CliDependencies {
     request: InstallationUninstallRequest,
   ) => Promise<InstallationUninstallResult>;
   upgradeCli: (request: CliUpgradeRequest) => Promise<CliUpgradeResult>;
+  inspectPiAuthTarget: (request: PiAuthTargetRequest) => Promise<PiAuthTargetResult>;
+  uploadPiAuthSecret: (request: PiAuthUploadRequest) => Promise<PiAuthTargetResult>;
 }
 
 export interface InstallationCreateRequest {
   readonly installationName: string;
   readonly profile: string;
   readonly token: string;
+  readonly expectedAccountId: string;
+  readonly expectedPlanFingerprint: string;
+  readonly mode: "fresh" | "resume";
 }
 
 export interface InstallationDeployRequest {
@@ -42,6 +48,7 @@ export interface InstallationDeployRequest {
 }
 
 export interface InstallationApplyRequest extends InstallationDeployRequest {
+  readonly expectedAccountId: string;
   readonly expectedPlanFingerprint: string;
 }
 
@@ -76,6 +83,7 @@ export interface InstallationPlanChange {
 
 export interface InstallationPlan {
   readonly installationName: string;
+  readonly accountId: string;
   readonly hasExistingResources: boolean;
   readonly fingerprint: string;
   readonly changes: ReadonlyArray<InstallationPlanChange>;
@@ -109,6 +117,23 @@ export interface CliUpgradeResult {
   readonly previousVersion: string;
   readonly version: string;
   readonly updated: boolean;
+}
+
+export interface PiAuthTargetRequest {
+  readonly profile: string;
+  readonly expectedAccountId: string;
+  readonly expectedWorkerName: string;
+  readonly expectedHost: string;
+}
+
+export interface PiAuthUploadRequest extends PiAuthTargetRequest {
+  readonly json: string;
+}
+
+export interface PiAuthTargetResult {
+  readonly accountId: string;
+  readonly workerName: string;
+  readonly host: string;
 }
 
 export interface InstallationResult {
@@ -170,7 +195,18 @@ export class BrowserLauncher extends Context.Service<BrowserLauncher, BrowserLau
   "scotty/cli/BrowserLauncher",
 ) {}
 
+interface PiAuthSecretManagerShape {
+  readonly inspect: (request: PiAuthTargetRequest) => Effect.Effect<PiAuthTargetResult, CliError>;
+  readonly upload: (request: PiAuthUploadRequest) => Effect.Effect<PiAuthTargetResult, CliError>;
+}
+
+export class PiAuthSecretManager extends Context.Service<
+  PiAuthSecretManager,
+  PiAuthSecretManagerShape
+>()("scotty/cli/PiAuthSecretManager") {}
+
 interface InstallationCreatorShape {
+  readonly plan: (request: InstallationDeployRequest) => Effect.Effect<InstallationPlan, CliError>;
   readonly create: (
     request: InstallationCreateRequest,
   ) => Effect.Effect<InstallationResult, CliError>;
@@ -226,6 +262,11 @@ export class CliUpgrader extends Context.Service<CliUpgrader, CliUpgraderShape>(
   "scotty/cli/CliUpgrader",
 ) {}
 
+export class PrivateFileError extends Data.TaggedError("PrivateFileError")<{
+  readonly path: string;
+  readonly reason: "missing" | "not_file" | "permissions" | "symlink" | "read_failed";
+}> {}
+
 interface FileSystemShape {
   readonly withLock: <A, E, R>(
     path: string,
@@ -233,6 +274,7 @@ interface FileSystemShape {
   ) => Effect.Effect<A, E | CliError, R>;
   readonly stat: (path: string) => Effect.Effect<Stats, CliError>;
   readonly readText: (path: string) => Effect.Effect<string, NodeJS.ErrnoException>;
+  readonly readPrivateText: (path: string) => Effect.Effect<string, PrivateFileError>;
   readonly readLockedText: (path: string) => Effect.Effect<string, CliError>;
   readonly remove: (path: string) => Effect.Effect<void, NodeJS.ErrnoException>;
   readonly writeExclusive: (
@@ -284,6 +326,65 @@ const withFile = <A>(
     use,
     (file) => Effect.promise(() => file.close()),
   );
+
+const privateFileFailure = (path: string, reason: PrivateFileError["reason"]): PrivateFileError =>
+  new PrivateFileError({ path, reason });
+
+const privateFileSystemFailure = (path: string, cause: unknown): PrivateFileError => {
+  const code = errno(cause).code;
+  if (code === "ENOENT") return privateFileFailure(path, "missing");
+  if (code === "ELOOP") return privateFileFailure(path, "symlink");
+  return privateFileFailure(path, "read_failed");
+};
+
+const validatePrivateMetadata = (
+  path: string,
+  metadata: Stats,
+): Effect.Effect<void, PrivateFileError> => {
+  if (metadata.isSymbolicLink()) return Effect.fail(privateFileFailure(path, "symlink"));
+  if (!metadata.isFile()) return Effect.fail(privateFileFailure(path, "not_file"));
+  if (
+    process.platform !== "win32" &&
+    ((metadata.mode & 0o077) !== 0 ||
+      (typeof process.geteuid === "function" && metadata.uid !== process.geteuid()))
+  )
+    return Effect.fail(privateFileFailure(path, "permissions"));
+  return Effect.void;
+};
+
+const readPrivateText = Effect.fnUntraced(function* (path: string) {
+  const pathMetadata = yield* Effect.tryPromise({
+    try: () => lstat(path),
+    catch: (cause) => privateFileSystemFailure(path, cause),
+  });
+  yield* validatePrivateMetadata(path, pathMetadata);
+  const flags =
+    process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
+  return yield* Effect.acquireUseRelease(
+    Effect.tryPromise({
+      try: () => open(path, flags),
+      catch: (cause) => privateFileSystemFailure(path, cause),
+    }),
+    (file) =>
+      Effect.gen(function* () {
+        const openedMetadata = yield* Effect.tryPromise({
+          try: () => file.stat(),
+          catch: (cause) => privateFileSystemFailure(path, cause),
+        });
+        yield* validatePrivateMetadata(path, openedMetadata);
+        if (
+          process.platform !== "win32" &&
+          (pathMetadata.dev !== openedMetadata.dev || pathMetadata.ino !== openedMetadata.ino)
+        )
+          return yield* privateFileFailure(path, "symlink");
+        return yield* Effect.tryPromise({
+          try: () => file.readFile("utf8"),
+          catch: (cause) => privateFileSystemFailure(path, cause),
+        });
+      }),
+    (file) => Effect.promise(() => file.close()),
+  );
+});
 
 const writeSecure = Effect.fnUntraced(function* (path: string, data: string) {
   yield* hostPromise(() => mkdir(dirname(path), { recursive: true }));
@@ -359,6 +460,10 @@ export const defaultDependencies = (): CliDependencies => ({
     const { createInstallation } = await import("./installation-deployment.ts");
     return createInstallation(request);
   },
+  planCreateInstallation: async (request) => {
+    const { planCreateInstallation } = await import("./installation-deployment.ts");
+    return planCreateInstallation(request);
+  },
   planInstallation: async (request) => {
     const { planInstallation } = await import("./installation-deployment.ts");
     return planInstallation(request);
@@ -383,6 +488,14 @@ export const defaultDependencies = (): CliDependencies => ({
     const { upgradeCli } = await import("./upgrade-host.ts");
     return upgradeCli(request);
   },
+  inspectPiAuthTarget: async (request) => {
+    const { inspectPiAuthTarget } = await import("./installation-deployment.ts");
+    return inspectPiAuthTarget(request);
+  },
+  uploadPiAuthSecret: async (request) => {
+    const { uploadPiAuthSecret } = await import("./installation-deployment.ts");
+    return uploadPiAuthSecret(request);
+  },
 });
 
 export const cliLayer = (
@@ -392,6 +505,7 @@ export const cliLayer = (
   | HttpTransport
   | ProcessRunner
   | BrowserLauncher
+  | PiAuthSecretManager
   | FileSystem
   | InstallationCreator
   | InstallationDeployer
@@ -433,7 +547,42 @@ export const cliLayer = (
           catch: unexpected,
         }),
     }),
+    Layer.succeed(PiAuthSecretManager)({
+      inspect: (request) =>
+        Effect.tryPromise({
+          try: () => dependencies.inspectPiAuthTarget(request),
+          catch: () =>
+            new CliError(
+              "pi_auth_target_failed",
+              "Could not verify the managed Pi auth destination",
+              "Check the saved Cloudflare profile, account, Worker, and origin.",
+              EXIT.GENERIC,
+            ),
+        }),
+      upload: (request) =>
+        Effect.tryPromise({
+          try: () => dependencies.uploadPiAuthSecret(request),
+          catch: () =>
+            new CliError(
+              "pi_auth_upload_failed",
+              "Could not upload PI_AUTH_JSON to the managed Worker",
+              "The upload may have succeeded. Run scotty auth status before retrying.",
+              EXIT.GENERIC,
+            ),
+        }),
+    }),
     Layer.succeed(InstallationCreator)({
+      plan: (request) =>
+        Effect.tryPromise({
+          try: () => dependencies.planCreateInstallation(request),
+          catch: () =>
+            new CliError(
+              "installation_create_plan_failed",
+              "Could not plan the Scotty installation",
+              "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
+              EXIT.GENERIC,
+            ),
+        }),
       create: (request) =>
         Effect.tryPromise({
           try: () => dependencies.createInstallation(request),
@@ -538,6 +687,7 @@ export const cliLayer = (
         ),
       stat: (path) => hostPromise(() => stat(path)),
       readText: (path) => Effect.tryPromise({ try: () => readFile(path, "utf8"), catch: errno }),
+      readPrivateText,
       readLockedText: (path) =>
         Effect.acquireUseRelease(
           hostPromise(() =>

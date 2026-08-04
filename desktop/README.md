@@ -24,6 +24,22 @@ Every slice is independently demoable with the credential-free fake sidecar.
 In the New Sandbox panel, use Tab to move fields and Command-Enter to create.
 Vaporize requires typing the exact sandbox ID.
 
+## Pair this device
+
+The desktop app uses the paired-client config at `~/.config/pi-scotty/config.json`.
+It does not use the root token.
+
+1. Finish `scotty init`, `scotty auth sync`, and `scotty doctor --json`.
+2. Run `scotty owner recover` on the browser that will own the installation.
+3. Open `/devices` in that owner browser and create a one-use pairing link.
+4. Run `pi-scotty pair ORIGIN` on the desktop device.
+5. Paste the link at the hidden prompt.
+6. Build and open the desktop app.
+
+If the config is missing, both the TUI and desktop sidecar show the pairing command and expected
+config path. Use `SCOTTY_DESKTOP_CONFIG` only when you intentionally store the paired-client config
+at another path.
+
 ## Development
 
 ```sh

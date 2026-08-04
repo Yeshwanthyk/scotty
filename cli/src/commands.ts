@@ -28,6 +28,7 @@ import {
   secureWrite,
 } from "./dependencies";
 import {
+  decodeInitJournalJson,
   decodeOperationResponse,
   decodePiAuthReseedResponse,
   decodePiAuthStatusResponse,
@@ -38,7 +39,7 @@ import {
   decodeVaporizeResponse,
   STANDARD_TOOLSET,
 } from "./schemas";
-import { readLocalPiAuth, uploadPiAuthSecret } from "./pi-auth";
+import { readLocalPiAuth } from "./pi-auth";
 import {
   browserUrl,
   durationSeconds,
@@ -65,6 +66,7 @@ import {
   InstallationDeployer,
   InstallationRecovery,
   InstallationUninstaller,
+  PiAuthSecretManager,
   ProcessRunner,
   type InstallationResult,
 } from "./services";
@@ -224,9 +226,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Override the configured Scotty Worker origin"),
       ),
-      token: Flag.string("token").pipe(
+      tokenFile: Flag.string("token-file").pipe(
         Flag.optional,
-        Flag.withDescription("Override the configured Scotty bearer token"),
+        Flag.withDescription("Read a Scotty bearer token from a private file"),
       ),
       json: Flag.boolean("json").pipe(Flag.withDescription("Emit stable machine-readable output")),
     }),
@@ -240,7 +242,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     const options: GlobalOptions = {
       json: root.json,
       ...(Option.isSome(root.host) ? { host: root.host.value } : {}),
-      ...(Option.isSome(root.token) ? { token: root.token.value } : {}),
+      ...(Option.isSome(root.tokenFile) ? { tokenFile: root.tokenFile.value } : {}),
     };
     return {
       autoJson: options.json || !runtime.stdoutIsTTY,
@@ -326,34 +328,183 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDefault("default"),
         Flag.withDescription("Alchemy Cloudflare authentication profile"),
       ),
+      yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed installation")),
       trailing: trailingArguments,
     },
-    ({ name, profile, trailing }) =>
+    ({ name, profile, trailing, yes }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
-        if (options.host || options.token)
-          return yield* usage("init does not accept --host or --token");
+        if (options.host || options.tokenFile)
+          return yield* usage("init does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("init", name);
         yield* ensureDocker();
         const fileSystem = yield* CliFileSystem;
-        const operationPath = join(runtime.home, ".scotty", `init-${installationName}`);
+        const journalPath = join(runtime.home, ".scotty", `init-${installationName}.json`);
+        const lockPath = join(runtime.home, ".scotty", "locks", `init-${installationName}`);
         yield* fileSystem.withLock(
-          operationPath,
+          lockPath,
           Effect.gen(function* () {
-            const token = rootToken();
-            if (!autoJson)
-              runtime.stdout(
-                `Creating installation ${installationName} with Cloudflare profile ${profile}...\n`,
+            const journalText = yield* fileSystem.readPrivateText(journalPath).pipe(
+              Effect.map(Option.some),
+              Effect.catch((error) =>
+                error.reason === "missing"
+                  ? Effect.succeed(Option.none<string>())
+                  : Effect.fail(
+                      new CliError(
+                        "init_journal_invalid",
+                        "The pending init journal is not a private regular file",
+                        `Repair or remove ${journalPath} after verifying Cloudflare state.`,
+                        EXIT.GENERIC,
+                      ),
+                    ),
+              ),
+            );
+            const existingJournal = Option.flatMap(journalText, decodeInitJournalJson);
+            if (Option.isSome(journalText) && Option.isNone(existingJournal))
+              return yield* new CliError(
+                "init_journal_invalid",
+                "The pending init journal is invalid",
+                `Repair or remove ${journalPath} after verifying Cloudflare state.`,
+                EXIT.GENERIC,
               );
             const creator = yield* InstallationCreator;
-            const deployed = yield* creator.create({ installationName, profile, token });
+            const plan = yield* creator.plan({ installationName, profile });
+            const topology = makeInstallationTopology(installationName);
+            const journalMatches =
+              Option.isSome(existingJournal) &&
+              existingJournal.value.installationName === installationName &&
+              existingJournal.value.profile === profile &&
+              existingJournal.value.accountId === plan.accountId &&
+              existingJournal.value.stackName === topology.stackName &&
+              existingJournal.value.workerName === topology.workerName &&
+              existingJournal.value.runnerWorkerName === topology.runnerWorkerName &&
+              existingJournal.value.containerName === topology.containerName &&
+              existingJournal.value.kvTitle === topology.kvTitle &&
+              existingJournal.value.backupBucketName === topology.backupBucketName;
+            if (Option.isSome(existingJournal) && !journalMatches)
+              return yield* new CliError(
+                "init_journal_conflict",
+                "The pending init journal targets a different installation",
+                `Use the original profile or move ${journalPath} aside after verifying Cloudflare state.`,
+                EXIT.GENERIC,
+              );
+            const freshPlanIsUnsafe =
+              plan.hasExistingResources ||
+              plan.changes.length === 0 ||
+              plan.changes.some(
+                (change) =>
+                  change.action !== "create" &&
+                  change.action !== "run" &&
+                  change.action !== "binding-create",
+              );
+            if (Option.isNone(existingJournal) && freshPlanIsUnsafe)
+              return yield* new CliError(
+                "installation_not_empty",
+                "The named Scotty installation already exists or is not empty",
+                "Use scotty recover for an existing installation.",
+                EXIT.GENERIC,
+              );
+            if (
+              Option.isSome(existingJournal) &&
+              existingJournal.value.phase === "prepared" &&
+              existingJournal.value.planFingerprint !== plan.fingerprint
+            )
+              return yield* new CliError(
+                "init_plan_changed",
+                "The installation plan changed before deployment started",
+                `Remove ${journalPath} only after confirming no Cloudflare resources were changed.`,
+                EXIT.GENERIC,
+              );
+            if (Option.isNone(existingJournal) && !yes) {
+              if (!runtime.stdinIsTTY || !runtime.stdoutIsTTY)
+                return yield* usage(
+                  "init requires --yes in non-interactive use",
+                  "Run scotty init interactively to review the account and resources, or retry with --yes.",
+                );
+              runtime.stdout(
+                [
+                  `Installation: ${installationName}`,
+                  `Profile: ${profile}`,
+                  `Account: ${plan.accountId}`,
+                  `Worker: ${topology.workerName}`,
+                  `Runner Worker: ${topology.runnerWorkerName}`,
+                  `Container: ${topology.containerName}`,
+                  `KV: ${topology.kvTitle}`,
+                  `R2: ${topology.backupBucketName}`,
+                  "",
+                ].join("\n"),
+              );
+              const answer = runtime.prompt(
+                `Create ${installationName}? Type ${installationName}: `,
+              );
+              if (answer !== installationName)
+                return yield* new CliError(
+                  "cancelled",
+                  "Installation creation cancelled",
+                  "No resources were changed.",
+                  EXIT.USAGE,
+                );
+            }
+            const token = Option.isSome(existingJournal)
+              ? existingJournal.value.token
+              : rootToken();
+            const journal = {
+              version: 1 as const,
+              operation: "init" as const,
+              phase: "prepared" as const,
+              installationName,
+              profile,
+              accountId: plan.accountId,
+              stackName: topology.stackName,
+              workerName: topology.workerName,
+              runnerWorkerName: topology.runnerWorkerName,
+              containerName: topology.containerName,
+              kvTitle: topology.kvTitle,
+              backupBucketName: topology.backupBucketName,
+              planFingerprint: plan.fingerprint,
+              token,
+            };
+            if (Option.isNone(existingJournal))
+              yield* secureWrite(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+            yield* secureWrite(
+              journalPath,
+              `${JSON.stringify({ ...journal, phase: "apply_started" }, null, 2)}\n`,
+            );
+            if (!autoJson)
+              runtime.stdout(
+                `${Option.isSome(existingJournal) ? "Resuming" : "Creating"} installation ${installationName} in account ${plan.accountId}...\n`,
+              );
+            const deployed = yield* creator.create({
+              installationName,
+              profile,
+              token,
+              expectedAccountId: plan.accountId,
+              expectedPlanFingerprint: plan.fingerprint,
+              mode: Option.isSome(existingJournal) ? "resume" : "fresh",
+            });
             const host = yield* Effect.fromResult(normalizeHost(deployed.host));
             const configPath = join(runtime.home, ".scotty.json");
             yield* secureWrite(
               configPath,
               `${JSON.stringify(managedConfig({ ...deployed, host }, token), null, 2)}\n`,
             );
+            yield* fileSystem
+              .remove(journalPath)
+              .pipe(
+                Effect.catch((error) =>
+                  error.code === "ENOENT"
+                    ? Effect.void
+                    : Effect.fail(
+                        new CliError(
+                          "init_journal_cleanup_failed",
+                          "The installation completed but its init journal could not be removed",
+                          `Remove ${journalPath} after confirming ${configPath} exists.`,
+                          EXIT.GENERIC,
+                        ),
+                      ),
+                ),
+              );
             const result = {
               configPath,
               installationName: deployed.installationName,
@@ -366,7 +517,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
-              runtime.stdout("Scotty is deployed and ready.\n");
+              runtime.stdout("Scotty is deployed. Run scotty auth sync next.\n");
             }
           }),
         );
@@ -400,8 +551,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
-        if (options.host || options.token)
-          return yield* usage("recover does not accept --host or --token");
+        if (options.host || options.tokenFile)
+          return yield* usage("recover does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("recover", name);
         const adoptionManifestPath = Option.getOrUndefined(adoptionManifest);
         const recovery = yield* InstallationRecovery;
@@ -533,8 +684,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
-        if (options.host || options.token)
-          return yield* usage("uninstall does not accept --host or --token");
+        if (options.host || options.tokenFile)
+          return yield* usage("uninstall does not accept --host or --token-file");
         const configPath = join(runtime.home, ".scotty.json");
         const config = yield* readConfig(configPath);
         if (!config.installationName || !config.profile)
@@ -629,8 +780,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Effect.gen(function* () {
       yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
-      if (options.host || options.token)
-        return yield* usage("upgrade does not accept --host or --token");
+      if (options.host || options.tokenFile)
+        return yield* usage("upgrade does not accept --host or --token-file");
       const upgrader = yield* CliUpgrader;
       const result = yield* upgrader.upgrade({
         currentVersion: VERSION,
@@ -655,10 +806,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
-        if (options.host || options.token)
-          return yield* usage("deploy does not accept --host or --token");
+        if (options.host || options.tokenFile)
+          return yield* usage("deploy does not accept --host or --token-file");
         const config = yield* readConfig(join(runtime.home, ".scotty.json"));
-        if (!config.installationName || !config.profile)
+        if (!config.installationName || !config.profile || !config.accountId)
           return yield* usage(
             "No managed Scotty installation is configured",
             "Run scotty init or scotty recover first.",
@@ -678,6 +829,13 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             : { adoptionManifestPath: config.adoptionManifestPath }),
         };
         const plan = yield* deployer.plan(request);
+        if (plan.accountId !== config.accountId)
+          return yield* new CliError(
+            "deployment_account_changed",
+            "The Cloudflare account does not match the saved installation",
+            "Select the saved Alchemy profile or recover the installation before deploying.",
+            EXIT.GENERIC,
+          );
         if (plan.changes.length === 0) {
           const result = {
             installationName: config.installationName,
@@ -696,7 +854,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Run scotty deploy interactively to review the plan, or retry with --yes.",
             );
           runtime.stdout(
-            `${plan.changes.map((change) => `${change.action.padEnd(7)} ${change.id}`).join("\n")}\n`,
+            `Account: ${plan.accountId}\n${plan.changes.map((change) => `${change.action.padEnd(7)} ${change.id}`).join("\n")}\n`,
           );
           const answer = runtime.prompt(`Deploy ${config.installationName}? [y/N]: `);
           if (answer?.trim().toLowerCase() !== "y")
@@ -710,6 +868,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (!autoJson) runtime.stdout(`Deploying ${config.installationName}...\n`);
         const deployed = yield* deployer.deploy({
           ...request,
+          expectedAccountId: plan.accountId,
           expectedPlanFingerprint: plan.fingerprint,
         });
         const host = yield* Effect.fromResult(normalizeHost(deployed.host));
@@ -934,9 +1093,38 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
+        if (options.host || options.tokenFile)
+          return yield* usage(
+            "auth sync does not accept --host or --token-file",
+            "Use the managed installation saved by scotty init or scotty recover.",
+          );
+        const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+        if (
+          !config.installationName ||
+          !config.profile ||
+          !config.accountId ||
+          !config.workerName ||
+          !config.host ||
+          !config.token ||
+          !/^[0-9a-f]{32}$/u.test(config.accountId) ||
+          !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(config.workerName)
+        )
+          return yield* usage(
+            "auth sync requires a complete managed Scotty installation",
+            "Run scotty init or scotty recover, then retry.",
+          );
+        const host = yield* Effect.fromResult(normalizeHost(config.host));
+        const targetRequest = {
+          profile: config.profile,
+          expectedAccountId: config.accountId,
+          expectedWorkerName: config.workerName,
+          expectedHost: host,
+        } as const;
+        const secretManager = yield* PiAuthSecretManager;
+        yield* secretManager.inspect(targetRequest);
         const local = yield* readLocalPiAuth(Option.getOrUndefined(authFile));
-        const workerAuth = yield* credentials(options);
-        const uploaded = yield* uploadPiAuthSecret(local.json);
+        const workerAuth = { host, token: config.token };
+        const uploaded = yield* secretManager.upload({ ...targetRequest, json: local.json });
         let remote;
         for (let attempt = 0; attempt < 10; attempt += 1) {
           const status = yield* Effect.result(readPiAuthStatus(workerAuth));
@@ -1133,9 +1321,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
-        if (options.token !== undefined)
+        if (options.tokenFile !== undefined)
           return yield* usage(
-            "runner serve does not accept --token",
+            "runner serve does not accept --token-file",
             "Set SCOTTY_RUNNER_TOKEN in the runner process environment.",
           );
         if (!RUNNER_NAME_PATTERN.test(name))

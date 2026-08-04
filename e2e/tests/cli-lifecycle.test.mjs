@@ -153,10 +153,9 @@ test("CLI preserves the stable error envelope and exit-code contract", async (t)
   assert.equal(auth.stdout, "");
   assert.equal(auth.json?.error?.code, "auth");
 
-  const network = await runCli(
-    ["ls", "--host", "http://127.0.0.1:1", "--token", "unused-e2e-token", "--json"],
-    { env },
-  );
+  const network = await runCli(["ls", "--host", "http://127.0.0.1:1", "--json"], {
+    env: { ...env, SCOTTY_TOKEN: "unused-e2e-token" },
+  });
   assert.equal(network.code, 1, network.stderr);
   assert.equal(network.stdout, "");
   assert.equal(network.json?.error?.code, "network_error");

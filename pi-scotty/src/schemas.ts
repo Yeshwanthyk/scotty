@@ -262,7 +262,7 @@ const decodeStaleCommandOption = Schema.decodeUnknownOption(PiConsoleStaleComman
 const decodeEnvelopeOption = Schema.decodeUnknownOption(PiConsoleEventEnvelopeV1Schema, {
   onExcessProperty: "error",
 });
-const decodeJsonOption = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeToolEventOption = Schema.decodeUnknownOption(ToolEventSchema);
 const decodeMessageEventOption = Schema.decodeUnknownOption(MessageEventSchema);
 const decodeMessageIdentityOption = Schema.decodeUnknownOption(MessageIdentitySchema);

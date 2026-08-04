@@ -95,6 +95,9 @@ bearer and break-glass recovery credential; it is never accepted from a cookie, 
 epoch. Other browsers are standard clients. Pairing creates standard access, ownership transfer is
 bound to one existing target browser, and root recovery revokes every browser credential before
 creating a fresh owner. Raw client, pairing, transfer, and recovery secrets are never persisted.
+For each paired device, the Auth Durable Object retains a server client ID, credential digest,
+neutral or user-supplied label, scopes, created, expiry, and last-seen times, optional user agent,
+and revocation time. The default `pi-scotty` label contains no hostname.
 
 The browser never receives container credentials. For Cloudflare sessions, the Worker authenticates
 the terminal WebSocket and attaches it to the Sandbox native PTY running Pi. Pi and Codex receive
@@ -202,10 +205,24 @@ Wrangler is not a production infrastructure or deployment path.
 ## Cloudflare deployment
 
 The standalone CLI owns installation. Run `scotty init --name NAME`; it asks Alchemy to authenticate
-the selected Cloudflare profile, deploys all namespaced resources, generates and uploads the root
-Worker secret without putting it in Alchemy state, and stores the local pointer in mode-0600
-`~/.scotty.json`. The installation name is required and is never inferred from a username, machine,
-repository, or Cloudflare account.
+the selected Cloudflare profile, shows the target account and resources, deploys only after
+confirmation, generates and uploads the root Worker secret without putting it in Alchemy state, and
+stores the local pointer in mode-0600 `~/.scotty.json`. The installation name is required and is
+never inferred from a username, machine, repository, or Cloudflare account.
+
+For a clean first run:
+
+1. Run `scotty init --name NAME` and confirm the displayed Cloudflare account and resource names.
+2. Sign in to OpenAI or OpenAI Codex with Pi, then run `scotty auth sync`.
+3. Run `scotty doctor --json`.
+4. Run `scotty owner recover` on the browser that will own the installation.
+5. Open `/devices` in that owner browser and create a one-use pairing link.
+6. On each terminal or desktop device, run `pi-scotty pair ORIGIN` and paste the link when asked.
+7. Run `pi-scotty`, or build and open the desktop app.
+
+`auth sync` uses the account, Worker name, and origin saved by `init`. It fails before reading local
+Pi credentials if Cloudflare does not match that saved installation. The pairing prompt does not
+echo its one-use credential. See [`desktop/README.md`](desktop/README.md) for the desktop build.
 
 On a replacement machine, run `scotty recover --name NAME`. Cloudflare profile ownership is the
 recovery authority. The CLI first discovers and displays the resource mapping. It rotates only the
@@ -291,7 +308,7 @@ npm run build:cli
 ./dist/scotty deploy
 ./dist/scotty doctor --json
 ./dist/scotty owner recover
-./dist/scotty beam up "fix the failing tests" --repo owner/project --provider cloudflare --json
+./dist/scotty beam up "fix the failing tests" --title "Fix tests" --repo owner/project --provider cloudflare --json
 ./dist/scotty beam down SESSION_ID --json
 ./dist/scotty beam vaporize SESSION_ID --yes --json
 ./dist/scotty upgrade

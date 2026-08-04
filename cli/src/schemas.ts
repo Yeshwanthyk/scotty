@@ -29,6 +29,24 @@ export const PendingUpSchema = Schema.Struct({
 });
 export type PendingUp = typeof PendingUpSchema.Type;
 
+export const InitJournalSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  operation: Schema.Literal("init"),
+  phase: Schema.Literals(["prepared", "apply_started"]),
+  installationName: Schema.NonEmptyString,
+  profile: Schema.NonEmptyString,
+  accountId: Schema.NonEmptyString,
+  stackName: Schema.NonEmptyString,
+  workerName: Schema.NonEmptyString,
+  runnerWorkerName: Schema.NonEmptyString,
+  containerName: Schema.NonEmptyString,
+  kvTitle: Schema.NonEmptyString,
+  backupBucketName: Schema.NonEmptyString,
+  planFingerprint: Schema.NonEmptyString,
+  token: Schema.NonEmptyString,
+});
+export type InitJournal = typeof InitJournalSchema.Type;
+
 export const ToolCategorySchema = Schema.Union([
   Schema.Literal("search-data"),
   Schema.Literal("python"),
@@ -180,6 +198,10 @@ export type SessionResponse = typeof SessionResponseSchema.Type;
 export const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 export const decodeRawConfig = Schema.decodeUnknownOption(RawConfigSchema);
 export const decodePendingUp = Schema.decodeUnknownOption(PendingUpSchema);
+export const decodeInitJournalJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(InitJournalSchema),
+  { onExcessProperty: "error" },
+);
 export const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
 export const decodeRecoveryGrantResponse = Schema.decodeUnknownOption(RecoveryGrantResponseSchema);
 export const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);

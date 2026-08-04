@@ -180,8 +180,8 @@ describe("Effect command tree", () => {
       const invocation = run([
         "--host",
         "https://worker.example",
-        "--token",
-        "owner-secret",
+        "--token-file",
+        "/private/owner-token",
         "runner",
         "serve",
         "--name",
@@ -195,7 +195,7 @@ describe("Effect command tree", () => {
       ]);
       const error = failure(yield* Effect.result(invocation.effect));
       assert.strictEqual(error.code, "bad_usage");
-      assert.strictEqual(error.message, "runner serve does not accept --token");
+      assert.strictEqual(error.message, "runner serve does not accept --token-file");
       assert.strictEqual(invocation.stdout.join(""), "");
       assert.strictEqual(invocation.stderr.join(""), "");
     }),
@@ -438,7 +438,8 @@ describe("Effect command tree", () => {
 
   it.effect("accepts shared flags around nested commands and keeps version output exact", () =>
     Effect.gen(function* () {
-      const list = run(["--host", "https://worker.example", "ls", "--token", "secret", "--json"], {
+      const list = run(["--host", "https://worker.example", "ls", "--json"], {
+        env: { SCOTTY_TOKEN: "secret" },
         fetch: async () => Response.json([]),
       });
       assert.strictEqual(yield* list.effect, EXIT.OK);

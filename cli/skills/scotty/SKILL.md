@@ -11,10 +11,10 @@ Operate Scotty as an authoritative state machine. Direct command responses own m
 ## Contract
 
 - Pass `--json` to every operational command and `--detach` to `beam up`.
-- Use Cloudflare unless the user requests a named trusted runner.
-- Label a Cloudflare URL “the live Pi worklog” and a runner URL “the runner workspace.”
+- Use Cloudflare. Runner-backed session creation is not available.
+- Label the returned URL “the live Pi worklog.”
 - Render `warm` as “ready.” Use “working” only when `agentState` is exactly `working`.
-- Use the returned `url`. Keep root tokens confined to flags, environment, or `~/.scotty.json`.
+- Use the returned `url`. Keep root tokens in a private token file, the environment, or `~/.scotty.json`.
 - Retry exits 2, 4, or 5 only after changing input, credentials, or session state.
 
 ## Launch
@@ -23,10 +23,6 @@ Operate Scotty as an authoritative state machine. Direct command responses own m
 
    ```sh
    scotty beam up "PROMPT" --title "SHORT OUTCOME" --repo OWNER/NAME --provider cloudflare --cap 4h --detach --json
-   ```
-
-   ```sh
-   scotty beam up "PROMPT" --title "SHORT OUTCOME" --repo OWNER/NAME --provider runner --runner NAME --cap 4h --detach --json
    ```
 
 2. Parse `{"id","title","url","branch","provider","status"}` from stdout.
@@ -89,7 +85,7 @@ vaporize ends at `gone`.
   checks pass.
 - `scotty uninstall` deletes compute and retains KV/R2 data by default. `--delete-data` also deletes
   that data. Both forms require confirmation and stop active sessions.
-- Credential precedence for session commands is flags, environment, then config.
+- Credential precedence for session commands is `--token-file`, `SCOTTY_TOKEN`, then config.
 - `scotty doctor --json` verifies the local installation pointer, Worker reachability, and root
   authentication without exposing the token.
 - Before runner setup, ask for a stable runner name. Never infer it from a username, hostname,
@@ -108,8 +104,9 @@ IMAGE@sha256:DIGEST --codex-auth ABSOLUTE_PATH --source-binary ABSOLUTE_PATH --j
   reports missing, broken, or version-mismatched tools and exits nonzero when any fail.
 - `scotty auth status --json` reports only provider IDs, credential types, adapter support, and the
   active `PI_AUTH_JSON` digest.
-- `scotty auth sync --json` locks and decodes `~/.pi/agent/auth.json`, resolves local API-key
-  references, uploads the write-only Worker secret, and waits for the redacted digest to match. It
+- `scotty auth sync --json` reads the private `~/.pi/agent/auth.json`, exports only supported
+  provider fields, verifies the saved Cloudflare account, Worker, bindings, and origin, uploads the
+  write-only Worker secret to that exact Worker, and waits for the redacted digest to match. It
   never changes existing sessions.
 - `scotty auth reseed ID --json` replaces one warm Cloudflare session's provider map.
   `scotty auth reseed --all-active --json` explicitly replaces every warm Cloudflare session.

@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Effect, Option, Result } from "effect";
 import { CliError, EXIT, PENDING_UP_TTL_MS, type GlobalOptions, type JsonObject } from "./core";
 import {
@@ -24,22 +24,32 @@ const unexpected = (): CliError =>
 
 export const readConfig = Effect.fnUntraced(function* (path: string) {
   const fileSystem = yield* FileSystem;
-  const text = yield* fileSystem
-    .readText(path)
-    .pipe(
-      Effect.catch((error) =>
-        error.code === "ENOENT"
-          ? Effect.succeed(undefined)
-          : Effect.fail(
-              new CliError(
-                "config_read_failed",
-                "Could not read Scotty config",
-                `Check permissions on ${path}.`,
-                EXIT.GENERIC,
-              ),
-            ),
-      ),
-    );
+  const text = yield* fileSystem.readPrivateText(path).pipe(
+    Effect.catch((error) => {
+      if (error.reason === "missing") return Effect.succeed(undefined);
+      if (
+        error.reason === "permissions" ||
+        error.reason === "not_file" ||
+        error.reason === "symlink"
+      )
+        return Effect.fail(
+          new CliError(
+            "config_permissions",
+            "Scotty config must be a private regular file",
+            `Use a non-symlinked mode-0600 file at ${path}.`,
+            EXIT.USAGE,
+          ),
+        );
+      return Effect.fail(
+        new CliError(
+          "config_read_failed",
+          "Could not read Scotty config",
+          `Check permissions on ${path}.`,
+          EXIT.GENERIC,
+        ),
+      );
+    }),
+  );
   if (text === undefined) return {};
   const json = decodeJsonValue(text);
   const raw = Option.isSome(json) ? decodeRawConfig(json.value) : Option.none();
@@ -169,8 +179,37 @@ export const clearPendingUp = Effect.fnUntraced(function* (path: string) {
 
 export const credentials = Effect.fnUntraced(function* (options: GlobalOptions) {
   const runtime = yield* CliRuntime;
+  const fileSystem = yield* FileSystem;
   let hostValue = options.host ?? runtime.env.SCOTTY_HOST;
-  let token = options.token ?? runtime.env.SCOTTY_TOKEN;
+  let token = runtime.env.SCOTTY_TOKEN;
+  if (options.tokenFile) {
+    const tokenPath = isAbsolute(options.tokenFile)
+      ? options.tokenFile
+      : resolve(runtime.cwd, options.tokenFile);
+    token = yield* fileSystem.readPrivateText(tokenPath).pipe(
+      Effect.mapError(
+        () =>
+          new CliError(
+            "token_file_invalid",
+            "Scotty token file must be a readable private regular file",
+            `Use a non-symlinked mode-0600 file at ${tokenPath}.`,
+            EXIT.USAGE,
+          ),
+      ),
+      Effect.map((value) =>
+        value.endsWith("\r\n")
+          ? value.slice(0, -2)
+          : value.endsWith("\n")
+            ? value.slice(0, -1)
+            : value,
+      ),
+    );
+    if (!token)
+      return yield* usage(
+        "Scotty token file is empty",
+        "Write the root token to the private file and retry.",
+      );
+  }
   if (!hostValue || !token) {
     const config = yield* readConfig(join(runtime.home, ".scotty.json"));
     hostValue ??= config.host;
@@ -184,7 +223,7 @@ export const credentials = Effect.fnUntraced(function* (options: GlobalOptions) 
   if (!token)
     return yield* usage(
       "Scotty token is not configured",
-      "Run scotty init or pass --token / SCOTTY_TOKEN.",
+      "Run scotty init or pass --token-file / SCOTTY_TOKEN.",
     );
   return { host: yield* Effect.fromResult(normalizeHost(hostValue)), token };
 });
