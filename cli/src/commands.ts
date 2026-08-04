@@ -1104,6 +1104,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           !config.profile ||
           !config.accountId ||
           !config.workerName ||
+          !config.runnerWorkerName ||
+          !config.containerName ||
+          !config.kvTitle ||
+          !config.backupBucketName ||
           !config.host ||
           !config.token ||
           !/^[0-9a-f]{32}$/u.test(config.accountId) ||
@@ -1118,6 +1122,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           profile: config.profile,
           expectedAccountId: config.accountId,
           expectedWorkerName: config.workerName,
+          expectedRunnerWorkerName: config.runnerWorkerName,
+          expectedContainerName: config.containerName,
+          expectedKvTitle: config.kvTitle,
+          expectedBackupBucketName: config.backupBucketName,
           expectedHost: host,
         } as const;
         const secretManager = yield* PiAuthSecretManager;

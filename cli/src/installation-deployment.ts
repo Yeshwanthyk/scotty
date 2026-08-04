@@ -542,9 +542,7 @@ export async function createInstallation(
       );
     const unsafeResumePlan = plan.changes.some(
       (change) =>
-        change.action === "delete" ||
-        change.action === "replace" ||
-        change.action === "binding-delete",
+        change.action !== "create" && change.action !== "run" && change.action !== "binding-create",
     );
     if (
       (request.mode === "fresh" && unsafeFreshPlan) ||
@@ -719,11 +717,60 @@ const piAuthTargetProgram = Effect.fnUntraced(function* (request: PiAuthTargetRe
     accountId,
     scriptName: request.expectedWorkerName,
   });
-  const bindingNames = new Set((settings.bindings ?? []).map((binding) => binding.name));
-  if (["AUTH", "SANDBOX", "SESSIONS", "BACKUP_BUCKET"].some((name) => !bindingNames.has(name)))
+  const bindings = settings.bindings ?? [];
+  const durableObjectBinding = (name: string) =>
+    bindings.filter(isDurableObjectBinding).find((binding) => binding.name === name);
+  const authBinding = durableObjectBinding("AUTH");
+  const runnerRegistryBinding = durableObjectBinding("RUNNER_REGISTRY");
+  const runnersBinding = durableObjectBinding("RUNNERS");
+  const sandboxBinding = durableObjectBinding("SANDBOX");
+  const sessionsBinding = bindings
+    .filter(isKvBinding)
+    .find((binding) => binding.name === "SESSIONS");
+  const backupBinding = bindings
+    .filter(isR2Binding)
+    .find((binding) => binding.name === "BACKUP_BUCKET");
+  if (
+    authBinding?.className !== "ScottyAuthRegistry" ||
+    runnerRegistryBinding?.className !== "ScottyRunnerRegistry" ||
+    runnersBinding?.className !== "ScottyRunner" ||
+    runnersBinding.scriptName !== request.expectedRunnerWorkerName ||
+    sandboxBinding?.className !== "ScottySandbox" ||
+    sandboxBinding.namespaceId === undefined ||
+    sessionsBinding?.namespaceId === undefined ||
+    backupBinding?.bucketName !== request.expectedBackupBucketName
+  )
     return yield* new InstallationDeploymentError({
-      message: "The saved Worker does not have the required Scotty bindings.",
+      message: "The saved Worker does not have the exact Scotty binding topology.",
     });
+  yield* Workers.getScriptScriptAndVersionSetting({
+    accountId,
+    scriptName: request.expectedRunnerWorkerName,
+  }).pipe(Effect.asVoid);
+  const applications = yield* Containers.listContainerApplications({ accountId });
+  const application = applications.find(
+    (candidate) => candidate.name === request.expectedContainerName,
+  );
+  if (
+    !application ||
+    (application.durableObjectNamespaceId ?? application.durableObjects?.namespaceId) !==
+      sandboxBinding.namespaceId
+  )
+    return yield* new InstallationDeploymentError({
+      message: "The saved Scotty Container application is not bound to this Worker.",
+    });
+  const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
+    Stream.filter((candidate) => candidate.title === request.expectedKvTitle),
+    Stream.runHead,
+  );
+  if (Option.isNone(namespace) || namespace.value.id !== sessionsBinding.namespaceId)
+    return yield* new InstallationDeploymentError({
+      message: "The saved Scotty KV namespace is not bound to this Worker.",
+    });
+  yield* R2.getBucket({
+    accountId,
+    bucketName: request.expectedBackupBucketName,
+  }).pipe(Effect.asVoid);
   const scriptSubdomain = yield* Workers.getScriptSubdomain({
     accountId,
     scriptName: request.expectedWorkerName,

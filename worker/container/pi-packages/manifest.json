@@ -14,8 +14,8 @@
       "name": "pi-subagents",
       "order": 1,
       "repository": "https://github.com/Yeshwanthyk/pi-subagents.git",
-      "commit": "441999f5e6f608bcfc1462d563708361331852fe",
-      "sourceSha256": "52444fd88e21e9097b2f84c657b0ed9b15a508f7a0fbf24738ff5379710b684e",
+      "commit": "4b6c2d885a8ccfbb927df1332e6ca01e23e56414",
+      "sourceSha256": "791e04057c69104db88830a4ce649af106945a093910f1bdd9c4f8a18f549f7f",
       "sourcePath": "worker/container/pi-packages/sources/pi-subagents",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-subagents"
     },
@@ -23,8 +23,8 @@
       "name": "pi-workflows",
       "order": 2,
       "repository": "https://github.com/Yeshwanthyk/pi-workflows.git",
-      "commit": "31375528e368e4b9028a6b2ab62915f36ea57f21",
-      "sourceSha256": "46a4ef520967b1481099ad8cbbf349727eaee6994417cbf264db8c1756618d28",
+      "commit": "6dc36c8df902e352185de181e5825b4719d8278a",
+      "sourceSha256": "69f70b617d8e0768a1d920f58303811d571047230125a9036241c3fcd75f068c",
       "sourcePath": "worker/container/pi-packages/sources/pi-workflows",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-workflows"
     },
@@ -32,8 +32,8 @@
       "name": "pi-background-terminals",
       "order": 3,
       "repository": "https://github.com/Yeshwanthyk/pi-background-terminals.git",
-      "commit": "e137c161f14c100720a30afd8f9363ca5162f472",
-      "sourceSha256": "efaeae5f973d8f958ea2aea71309de2c1b5c8a572ca5141fceb0f9d7c5833123",
+      "commit": "7b2913a9a9afd154be645405bcde3331ba78acce",
+      "sourceSha256": "d54b9903d0510e229797e2d636f58efb2fba46f33ee082e60dfa05274e056f8c",
       "sourcePath": "worker/container/pi-packages/sources/pi-background-terminals",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-background-terminals"
     },
@@ -41,8 +41,8 @@
       "name": "pi-askuser",
       "order": 4,
       "repository": "https://github.com/Yeshwanthyk/pi-askuser.git",
-      "commit": "e4ca19c18b0a36d1b021388ae720d91b103c4cf3",
-      "sourceSha256": "be90a3fa7d2d090b66bbfb4b3807d95ab2aebf1177478e39dbadf914c8b0a878",
+      "commit": "a63093201f1b845f1e8c25764f1c60595033c806",
+      "sourceSha256": "e58789adf732b3ac51b19defac0e40fca74b7d3b1d4ba4851220fe70e5d1a731",
       "sourcePath": "worker/container/pi-packages/sources/pi-askuser",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-askuser"
     },
@@ -60,8 +60,8 @@
       "name": "pi-amp-ui",
       "order": 7,
       "repository": "https://github.com/Yeshwanthyk/pi-amp-ui.git",
-      "commit": "80cc09f5ab031e42c53278c0395f7fb2751b074a",
-      "sourceSha256": "e159f922e362eb50ab8aea1d547f35663a5d62d844c2099dbe40bba9a92593f4",
+      "commit": "f2d798b4542a4faa27b0b2ce10a299ec3dc13391",
+      "sourceSha256": "69a9c0c0183c132cf5d7fdc3ad8bff2f610bfd0b864117771a3dd32f3aeacb8a",
       "sourcePath": "worker/container/pi-packages/sources/pi-amp-ui",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-amp-ui"
     }

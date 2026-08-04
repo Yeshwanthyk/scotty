@@ -123,6 +123,10 @@ export interface PiAuthTargetRequest {
   readonly profile: string;
   readonly expectedAccountId: string;
   readonly expectedWorkerName: string;
+  readonly expectedRunnerWorkerName: string;
+  readonly expectedContainerName: string;
+  readonly expectedKvTitle: string;
+  readonly expectedBackupBucketName: string;
   readonly expectedHost: string;
 }
 
@@ -372,10 +376,7 @@ const readPrivateText = Effect.fnUntraced(function* (path: string) {
           catch: (cause) => privateFileSystemFailure(path, cause),
         });
         yield* validatePrivateMetadata(path, openedMetadata);
-        if (
-          process.platform !== "win32" &&
-          (pathMetadata.dev !== openedMetadata.dev || pathMetadata.ino !== openedMetadata.ino)
-        )
+        if (pathMetadata.dev !== openedMetadata.dev || pathMetadata.ino !== openedMetadata.ino)
           return yield* privateFileFailure(path, "symlink");
         return yield* Effect.tryPromise({
           try: () => file.readFile("utf8"),

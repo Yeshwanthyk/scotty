@@ -357,7 +357,7 @@ function interactionQuestions(input: AskUserInput): InteractionQuestion[] {
   }));
 }
 
-// Headless fallback: outside the TUI (RPC and web clients),
+// Headless fallback: outside the TUI (RPC/web clients like pi-web/pican),
 // ctx.ui.custom() is unavailable, but the standard dialog methods
 // (select/input/confirm) travel over pi's extension_ui_request protocol and
 // render in any client that implements it. This is the canonical degradation
