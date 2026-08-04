@@ -1,12 +1,21 @@
 import { groupSessionsByRepository, sessionTitle } from "/session-form.js";
+import { createCommandLane } from "/terminal-command-lane.js";
+import { renderCommandReceipts } from "/terminal-command-view.js";
+import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
 import {
-  createMessageProjectionState,
-  finishMessageSnapshot,
-  projectMessageEvent,
-} from "/terminal-message-projection.js";
-import { conversationItems, appendAssistantMessageDelta } from "/terminal-timeline.js";
+  applyEvent,
+  blankProjection,
+  contentParts,
+  eventPayload,
+  firstArray,
+  firstObject,
+  firstString,
+  messageText,
+  projectionFromSnapshot,
+} from "/terminal-projection.js";
+import { conversationItems } from "/terminal-timeline.js";
 
 const CACHE_LIMIT = 6;
 const compactViewport = window.matchMedia("(max-width: 780px)");
@@ -57,35 +66,31 @@ let workspaceListSignature;
 let sessions = [];
 let disposed = false;
 let deliveryMode = "follow_up";
-let commandPending = false;
 let composing = false;
 let renderScheduled = false;
 let runtimeOptionsSignature;
+let localCommandItems = [];
 const sessionCache = new Map();
 const prefetching = new Map();
 const disclosureState = new Map();
+const consoleClient = createConsoleClient({
+  fetch: window.fetch.bind(window),
+  eventSource: (url) => new EventSource(url),
+  origin: window.location.origin,
+});
+const commandLane = createCommandLane({
+  send: (sessionId, envelope) => consoleClient.command(sessionId, envelope),
+  randomUUID: () => crypto.randomUUID(),
+  onChange: (items) => {
+    localCommandItems = items;
+    if (currentProjection) renderReceipts();
+    updateComposer();
+  },
+});
 
 function sessionIdFromLocation() {
   const match = window.location.pathname.match(/^\/s\/([^/]+)$/u);
   return match ? decodeURIComponent(match[1]) : "";
-}
-
-function blankProjection() {
-  return {
-    epoch: undefined,
-    sequence: 0,
-    messages: [],
-    messageProjection: createMessageProjectionState(),
-    tools: new Map(),
-    pendingUi: new Map(),
-    deliveredUiResponses: new Set(),
-    queue: { steer: [], followUp: [] },
-    active: false,
-    state: {},
-    capabilities: { models: [], thinkingLevels: [] },
-    activity: { tasks: [], subagents: [], workflows: [] },
-    loaded: false,
-  };
 }
 
 function cacheEntry(sessionId) {
@@ -114,331 +119,9 @@ function trimCache() {
   }
 }
 
-function rpcUrl(sessionId, operation) {
-  return `/s/${encodeURIComponent(sessionId)}/rpc/${operation}`;
-}
-
 function setConnection(state, label) {
   connectionState.dataset.state = state;
   connectionLabel.textContent = label;
-}
-
-function isObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function firstArray(...values) {
-  return values.find(Array.isArray) ?? [];
-}
-
-function firstObject(...values) {
-  return values.find(isObject) ?? {};
-}
-
-function firstString(...values) {
-  return values.find((value) => typeof value === "string" && value.length > 0);
-}
-
-function numberValue(...values) {
-  return values.find((value) => Number.isFinite(value));
-}
-
-function normalizeQueue(value) {
-  const queue = firstObject(value);
-  return {
-    steer: firstArray(queue.steer, queue.steering, queue.pendingSteer).map(normalizeQueueItem),
-    followUp: firstArray(
-      queue.followUp,
-      queue.follow_up,
-      queue.followUps,
-      queue.follow_ups,
-      queue.queued,
-    ).map(normalizeQueueItem),
-  };
-}
-
-function normalizeQueueItem(value, index) {
-  if (typeof value === "string") return { id: `${index}:${value}`, text: value };
-  return {
-    id: firstString(value?.id, value?.requestId, value?.commandId) ?? String(index),
-    text: messageText(value?.message ?? value?.text ?? value?.content),
-  };
-}
-
-function unwrapSnapshot(body) {
-  const outer = firstObject(body);
-  const snapshot = firstObject(outer.snapshot, outer.projection, outer.data, outer);
-  return { outer, snapshot };
-}
-
-function projectionFromSnapshot(body) {
-  const { outer, snapshot } = unwrapSnapshot(body);
-  const state = firstObject(snapshot.state, outer.state);
-  const projection = blankProjection();
-  projection.epoch = firstString(outer.epoch, snapshot.epoch);
-  const snapshotSequence =
-    numberValue(outer.sequence, snapshot.sequence, outer.seq, snapshot.seq) ?? 0;
-  projection.messages = firstArray(
-    snapshot.messages,
-    snapshot.entries,
-    state.messages,
-    outer.messages,
-  ).filter(isObject);
-  projection.messageProjection = createMessageProjectionState(projection.messages, true);
-  projection.active = Boolean(
-    state.active ??
-    state.isActive ??
-    state.isStreaming ??
-    snapshot.active ??
-    snapshot.running ??
-    outer.active,
-  );
-  projection.state = state;
-  const capabilities = firstObject(snapshot.capabilities, state.capabilities, outer.capabilities);
-  projection.capabilities = {
-    models: firstArray(capabilities.models).filter(isObject),
-    thinkingLevels: firstArray(
-      capabilities.thinkingLevels,
-      capabilities.thinking_levels,
-      capabilities.levels,
-    ).filter((level) => typeof level === "string"),
-  };
-  projection.queue = normalizeQueue(
-    firstObject(snapshot.queue, state.queue, snapshot.queues, state.queues),
-  );
-  projection.activity = {
-    tasks: firstArray(snapshot.tasks, state.tasks, snapshot.activity?.tasks),
-    subagents: firstArray(snapshot.subagents, state.subagents, snapshot.activity?.subagents),
-    workflows: firstArray(snapshot.workflows, state.workflows, snapshot.activity?.workflows),
-  };
-  const tools = firstArray(snapshot.tools, snapshot.toolCalls, state.tools);
-  for (const tool of tools) upsertTool(projection, tool);
-  hydrateToolsFromMessages(projection);
-  const pendingUi = firstArray(
-    snapshot.pendingUi,
-    snapshot.pending_ui,
-    state.pendingUi,
-    state.pending_ui,
-    snapshot.uiRequests,
-  );
-  for (const request of pendingUi) upsertUiRequest(projection, request);
-  const snapshotEvents = firstArray(outer.events, snapshot.events).sort(
-    (left, right) => (left?.sequence ?? 0) - (right?.sequence ?? 0),
-  );
-  if (snapshotEvents.length > 0) {
-    projection.sequence = Math.max(0, (snapshotEvents[0]?.sequence ?? 1) - 1);
-    for (const event of snapshotEvents) applyEvent(projection, event);
-  }
-  finishMessageSnapshot(projection.messageProjection);
-  projection.sequence = Math.max(projection.sequence, snapshotSequence);
-  projection.loaded = true;
-  return projection;
-}
-
-function hydrateToolsFromMessages(projection) {
-  for (const message of projection.messages) {
-    for (const part of contentParts(message)) {
-      const type = part?.type;
-      if (type === "toolCall" || type === "tool_call" || type === "tool-call") {
-        upsertTool(projection, part, "running");
-      }
-    }
-    const role = message?.role;
-    if (role === "toolResult" || role === "tool_result" || role === "tool") {
-      upsertTool(
-        projection,
-        {
-          ...message,
-          result: message.content ?? message.result,
-          error: message.isError ? (message.content ?? true) : message.error,
-        },
-        message.isError || message.error ? "error" : "done",
-      );
-    }
-  }
-}
-
-function toolId(tool) {
-  return firstString(tool?.toolCallId, tool?.tool_call_id, tool?.id, tool?.callId);
-}
-
-function upsertTool(projection, rawTool, phase) {
-  if (!isObject(rawTool)) return;
-  const id = toolId(rawTool);
-  if (!id) return;
-  const previous = projection.tools.get(id) ?? {};
-  projection.tools.set(id, {
-    ...previous,
-    ...rawTool,
-    id,
-    name: firstString(rawTool.toolName, rawTool.tool_name, rawTool.name, previous.name, "tool"),
-    arguments: rawTool.arguments ?? rawTool.args ?? rawTool.input ?? previous.arguments,
-    result:
-      rawTool.result ??
-      rawTool.partialResult ??
-      rawTool.output ??
-      rawTool.content ??
-      previous.result,
-    error: rawTool.error ?? previous.error,
-    status:
-      phase ??
-      rawTool.status ??
-      previous.status ??
-      (rawTool.error ? "error" : rawTool.result === undefined ? "running" : "done"),
-  });
-}
-
-function uiRequestId(request) {
-  return firstString(request?.requestId, request?.request_id, request?.id);
-}
-
-function upsertUiRequest(projection, request) {
-  if (!isObject(request)) return;
-  if (!["select", "confirm", "input", "editor"].includes(request.method)) return;
-  const id = uiRequestId(request);
-  if (!id) return;
-  projection.pendingUi.set(id, { ...request, id });
-}
-
-function applyExtensionSurface(projection, request) {
-  const method = request.method;
-  if (method === "setWidget") {
-    const key = String(request.widgetKey ?? "").toLowerCase();
-    const group = key.includes("subagent")
-      ? "subagents"
-      : key.includes("workflow")
-        ? "workflows"
-        : key.includes("task")
-          ? "tasks"
-          : undefined;
-    if (group)
-      projection.activity[group] = Array.isArray(request.widgetLines)
-        ? request.widgetLines.map((line, index) => ({
-            id: `${request.widgetKey}:${index}`,
-            title: messageText(line),
-            status: "active",
-          }))
-        : [];
-  } else if (method === "setStatus") {
-    const statuses = { ...firstObject(projection.state.extensionStatus) };
-    if (typeof request.statusText === "string") statuses[request.statusKey] = request.statusText;
-    else delete statuses[request.statusKey];
-    projection.state = {
-      ...projection.state,
-      extensionStatus: statuses,
-    };
-  } else if (method === "setTitle" && request.title) {
-    projection.state = { ...projection.state, extensionTitle: request.title };
-  } else if (method === "set_editor_text") {
-    projection.state = { ...projection.state, editorText: request.text ?? "" };
-  }
-}
-
-function eventPayload(payload) {
-  const outer = firstObject(payload);
-  const event = firstObject(outer.event, outer.data, outer);
-  return { outer, event };
-}
-
-function applyEvent(projection, payload) {
-  const { outer, event } = eventPayload(payload);
-  const epoch = firstString(outer.epoch, event.epoch);
-  const sequence = numberValue(outer.sequence, event.sequence, outer.seq, event.seq);
-  if (epoch && projection.epoch && epoch !== projection.epoch) return "epoch-mismatch";
-  if (sequence !== undefined && sequence <= projection.sequence) return "duplicate";
-  if (epoch) projection.epoch = epoch;
-  if (sequence !== undefined) projection.sequence = sequence;
-
-  const type = firstString(event.type, event.event);
-  if (!type) return "ignored";
-
-  if (
-    type === "snapshot" ||
-    type === "projection" ||
-    type === "scotty_replay_gap" ||
-    type === "scotty_epoch_changed"
-  )
-    return "snapshot";
-  if (type === "agent_start" || type === "turn_start") projection.active = true;
-  if (
-    type === "agent_end" ||
-    type === "agent_settled" ||
-    type === "turn_end" ||
-    type === "agent_abort" ||
-    type === "agent_aborted" ||
-    type === "turn_abort" ||
-    type === "turn_aborted" ||
-    type === "scotty_process_exit"
-  ) {
-    projection.active = false;
-    projection.pendingUi.clear();
-    projection.deliveredUiResponses.clear();
-  }
-
-  if (type === "message_start" || type === "message_end") {
-    const message = firstObject(event.message, event.data);
-    if (Object.keys(message).length > 0)
-      projectMessageEvent(projection.messages, projection.messageProjection, type, message);
-  } else if (type === "message_update") {
-    const message = firstObject(event.message);
-    if (Object.keys(message).length > 0)
-      projectMessageEvent(projection.messages, projection.messageProjection, type, message);
-    else applyMessageDelta(projection, event);
-  } else if (type === "tool_execution_start") {
-    upsertTool(projection, event, "running");
-  } else if (type === "tool_execution_update") {
-    upsertTool(projection, event, "running");
-  } else if (type === "tool_execution_end") {
-    upsertTool(projection, event, event.error || event.isError ? "error" : "done");
-  } else if (type === "queue_update") {
-    projection.queue = normalizeQueue(firstObject(event.queue, event));
-  } else if (type === "extension_ui_request") {
-    const request = firstObject(event.request, event);
-    if (["select", "confirm", "input", "editor"].includes(request.method))
-      upsertUiRequest(projection, request);
-    else applyExtensionSurface(projection, request);
-  } else if (
-    type === "extension_ui_response" ||
-    type === "extension_ui_cancelled" ||
-    type === "extension_ui_closed"
-  ) {
-    const id = uiRequestId(firstObject(event.request, event));
-    if (id) {
-      projection.pendingUi.delete(id);
-      projection.deliveredUiResponses.delete(id);
-    }
-  } else if (type === "state" || type === "state_update") {
-    projection.state = { ...projection.state, ...firstObject(event.state, event) };
-  } else if (type === "scotty_process_exit") {
-    projection.active = false;
-    projection.state = { ...projection.state, processExited: true };
-  }
-  return "applied";
-}
-
-function applyMessageDelta(projection, event) {
-  appendAssistantMessageDelta(projection.messages, event);
-}
-
-function messageText(value) {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        if (typeof item === "string") return item;
-        return firstString(item?.text, item?.content, item?.thinking, "");
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
-  if (isObject(value)) return firstString(value.text, value.content, value.message, "") ?? "";
-  return "";
-}
-
-function contentParts(message) {
-  if (Array.isArray(message?.content)) return message.content;
-  if (typeof message?.content === "string") return [{ type: "text", text: message.content }];
-  return [];
 }
 
 function textElement(tag, className, text) {
@@ -894,22 +577,12 @@ function renderAskCard(request) {
 }
 
 function renderReceipts() {
-  const fragment = document.createDocumentFragment();
-  for (const [kind, items] of [
-    ["steer", currentProjection.queue.steer],
-    ["follow_up", currentProjection.queue.followUp],
-  ]) {
-    items.forEach((item, index) => {
-      const receipt = document.createElement("div");
-      receipt.className = `receipt ${kind === "steer" ? "steer" : ""}`;
-      receipt.append(
-        textElement("strong", "", kind === "steer" ? "Steering next" : `Queued ${index + 1}`),
-        textElement("span", "", item.text),
-      );
-      fragment.append(receipt);
-    });
-  }
-  deliveryReceipts.replaceChildren(fragment);
+  renderCommandReceipts(
+    document,
+    deliveryReceipts,
+    currentProjection.queue,
+    localCommandItems.filter((item) => item.sessionId === currentSessionId),
+  );
 }
 
 function activityGroups() {
@@ -997,10 +670,11 @@ function renderRuntimeControls() {
     currentProjection?.state?.thinking_level,
   );
   const visible = hasAvailableRuntime(currentProjection);
+  const commandPaused = Boolean(commandLane.state().paused);
   runtimeControlsButton.hidden = !visible;
-  runtimeControlsButton.disabled = commandPending || !currentProjection?.loaded;
-  modelSelect.disabled = commandPending || models.length === 0;
-  thinkingSelect.disabled = commandPending || thinkingLevels.length === 0;
+  runtimeControlsButton.disabled = commandPaused || !currentProjection?.loaded;
+  modelSelect.disabled = commandPaused || models.length === 0;
+  thinkingSelect.disabled = commandPaused || thinkingLevels.length === 0;
   modelSelect.closest(".runtime-field").hidden = models.length === 0;
   thinkingSelect.closest(".runtime-field").hidden = thinkingLevels.length === 0;
   runtimeModelLabel.textContent = modelLabel(currentModel);
@@ -1053,23 +727,30 @@ function renderRuntimeControls() {
 function updateComposer() {
   const active = Boolean(currentProjection?.active);
   const runtimeAvailable = hasAvailableRuntime(currentProjection);
+  const laneState = commandLane.state();
   deliveryModeButton.hidden = !active;
   stopRunButton.hidden = !active;
+  stopRunButton.disabled = Boolean(laneState.paused);
   if (!active) setDeliveryMenu(false);
   const text = composerText(composerInput.value);
-  composerSend.disabled =
-    commandPending || !text || !currentProjection?.loaded || !runtimeAvailable;
+  composerSend.disabled = Boolean(
+    laneState.paused || !text || !currentProjection?.loaded || !runtimeAvailable,
+  );
   composerSend.textContent = active ? (deliveryMode === "steer" ? "Steer" : "Queue") : "Send";
   deliveryModeLabel.textContent = deliveryMode === "steer" ? "Steer" : "Queue";
-  composerStatus.textContent = commandPending
-    ? "Submitting…"
-    : active
-      ? "Pi is active"
-      : currentProjection?.loaded
-        ? runtimeAvailable
-          ? "Pi is ready"
-          : "Pi model unavailable"
-        : "Loading session state…";
+  composerStatus.textContent = laneState.paused
+    ? laneState.paused === "stale"
+      ? "Session changed · pending commands are held"
+      : "Command outcome unknown · pending commands are held"
+    : laneState.items.some((item) => item.state === "sending")
+      ? "Submitting…"
+      : active
+        ? "Pi is active"
+        : currentProjection?.loaded
+          ? runtimeAvailable
+            ? "Pi is ready"
+            : "Pi model unavailable"
+          : "Loading session state…";
   for (const option of deliveryMenu.querySelectorAll("[data-delivery-mode]")) {
     option.setAttribute("aria-checked", String(option.dataset.deliveryMode === deliveryMode));
   }
@@ -1098,13 +779,7 @@ function autosizeComposer() {
 }
 
 async function fetchSnapshot(sessionId, signal) {
-  const response = await fetch(rpcUrl(sessionId, "snapshot"), {
-    headers: { accept: "application/json" },
-    cache: "no-store",
-    signal,
-  });
-  if (!response.ok) throw new Error(`Could not load Pi session (${response.status})`);
-  return response.json();
+  return consoleClient.snapshot(sessionId, signal);
 }
 
 async function loadSnapshot(sessionId, { prefetched = false } = {}) {
@@ -1131,12 +806,11 @@ async function loadSnapshot(sessionId, { prefetched = false } = {}) {
 function connectEvents(sessionId) {
   eventSource?.close();
   if (disposed || sessionId !== currentSessionId) return;
-  const url = new URL(rpcUrl(sessionId, "events"), window.location.origin);
-  if (currentProjection?.epoch) url.searchParams.set("epoch", currentProjection.epoch);
-  if (currentProjection?.sequence)
-    url.searchParams.set("since", String(currentProjection.sequence));
   setConnection("connecting", "Connecting");
-  const source = new EventSource(url);
+  const source = consoleClient.events(sessionId, {
+    epoch: currentProjection?.epoch,
+    sequence: currentProjection?.sequence,
+  });
   eventSource = source;
   source.addEventListener("open", () => {
     if (source !== eventSource) return;
@@ -1195,48 +869,64 @@ function consumeSseEvent(messageEvent, source, namedType) {
   }
 }
 
-async function sendCommand(command) {
-  if (commandPending) return undefined;
-  commandPending = true;
-  updateComposer();
-  const commandId = crypto.randomUUID();
-  try {
-    const response = await fetch(rpcUrl(currentSessionId, "command"), {
-      method: "POST",
-      headers: { accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify({ commandId, command }),
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(
-        firstString(
-          body.message,
-          body.error?.message,
-          typeof body.error === "string" ? body.error : undefined,
-          body.response?.error?.message,
-          typeof body.response?.error === "string" ? body.response.error : undefined,
-          `Command failed (${response.status})`,
-        ),
-      );
-    }
-    return body;
-  } finally {
-    commandPending = false;
-    updateComposer();
-  }
+function queueCommand(intent, label) {
+  if (
+    !currentProjection?.loaded ||
+    !currentProjection.epoch ||
+    !Number.isSafeInteger(currentProjection.sessionRevision)
+  )
+    throw new Error("Refresh the session before sending a command.");
+  const sessionId = currentSessionId;
+  return {
+    ...commandLane.enqueue({
+      sessionId,
+      epoch: currentProjection.epoch,
+      expectedSessionRevision: currentProjection.sessionRevision,
+      intent,
+      label,
+    }),
+    sessionId,
+  };
+}
+
+function commandOutcomeMessage(outcome) {
+  if (outcome.status === "stale") return "The session changed. Review it and submit again.";
+  if (outcome.status === "ambiguous") return "The command outcome is unknown. It was not retried.";
+  return outcome.message ?? "Pi did not accept that command.";
+}
+
+async function sendCommand(intent, label) {
+  const submission = queueCommand(intent, label);
+  const { outcome } = submission;
+  const result = await outcome;
+  if (result.status === "stale") refreshStaleSession(submission.sessionId);
+  if (result.status !== "accepted") throw new Error(commandOutcomeMessage(result));
+  return result.receipt;
+}
+
+function refreshStaleSession(sessionId) {
+  loadSnapshot(sessionId, { prefetched: sessionId !== currentSessionId }).catch((error) => {
+    if (sessionId === currentSessionId) showLoadError(error);
+  });
 }
 
 async function submitComposer() {
   const text = composerText(composerInput.value);
   if (!text || !currentProjection?.loaded) return;
   const streamingBehavior = deliveryMode === "steer" ? "steer" : "followUp";
+  let submission;
   try {
-    await sendCommand({ type: "prompt", message: text, streamingBehavior });
+    submission = queueCommand({ type: "prompt", message: text, streamingBehavior }, text);
     composerInput.value = "";
     cacheEntry(currentSessionId).draft = "";
     autosizeComposer();
     updateComposer();
     composerInput.focus({ preventScroll: true });
+    const outcome = await submission.outcome;
+    if (outcome.status !== "accepted") {
+      if (outcome.status === "stale") refreshStaleSession(submission.sessionId);
+      showToast(commandOutcomeMessage(outcome));
+    }
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Pi did not accept that message.");
     composerInput.focus({ preventScroll: true });
@@ -1249,11 +939,14 @@ async function selectModel() {
   );
   if (!selected) return;
   try {
-    await sendCommand({
-      type: "set_model",
-      provider: selected.provider,
-      modelId: firstString(selected.id, selected.modelId, selected.model_id),
-    });
+    await sendCommand(
+      {
+        type: "set_model",
+        provider: selected.provider,
+        modelId: firstString(selected.id, selected.modelId, selected.model_id),
+      },
+      `Change model to ${modelLabel(selected)}`,
+    );
     currentProjection.state = { ...currentProjection.state, model: selected };
     setRuntimeMenu(false);
     updateComposer();
@@ -1271,7 +964,7 @@ async function selectThinkingLevel() {
   const level = thinkingSelect.value;
   if (!level) return;
   try {
-    await sendCommand({ type: "set_thinking_level", level });
+    await sendCommand({ type: "set_thinking_level", level }, `Change thinking to ${level}`);
     currentProjection.state = {
       ...currentProjection.state,
       thinkingLevel: level,
@@ -1295,7 +988,12 @@ async function sendUiResponse(requestId, value, { cancelled = false } = {}) {
       : request.method === "confirm"
         ? { type: "extension_ui_response", id: requestId, confirmed: Boolean(value) }
         : { type: "extension_ui_response", id: requestId, value: String(value) };
-    await sendCommand(command);
+    const receipt = await sendCommand(
+      command,
+      cancelled ? "Cancel Pi question" : `Answer Pi question: ${String(value)}`,
+    );
+    if (receipt.status !== "delivered")
+      throw new Error("Pi did not confirm delivery of that response.");
     currentProjection.deliveredUiResponses.add(requestId);
     disableAskCard(requestId, "Awaiting Pi continuation · outcome unconfirmed");
   } catch (error) {
@@ -1634,7 +1332,7 @@ deliveryMenu.addEventListener("click", (event) => {
 });
 stopRunButton.addEventListener("click", async () => {
   try {
-    await sendCommand({ type: "abort" });
+    await sendCommand({ type: "abort" }, "Stop Pi");
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Pi could not be stopped.");
   }

@@ -13,8 +13,8 @@ GET  /s/:id/console/v1/events?epoch=E&since=N
 POST /s/:id/console/v1/command
 ```
 
-It is separate from the legacy browser `/s/:id/rpc/*` routes. Those routes retain their existing
-start-capable behavior for browser compatibility.
+This is the only browser/server console surface. There is no compatibility route or fallback to a
+start-capable transport.
 
 The authoritative Sandbox Durable Object uses `ctx.container.getTcpPort(PI_SESSION_PORT).fetch()`
 directly for this boundary. It never uses the Sandbox SDK or Container `containerFetch()` wrappers,

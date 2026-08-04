@@ -331,7 +331,7 @@ async function ownerCookie(host, rootToken) {
 }
 
 async function fetchPiSnapshot(host, id, cookie) {
-  const response = await fetch(`${host}/s/${encodeURIComponent(id)}/rpc/snapshot`, {
+  const response = await fetch(`${host}/s/${encodeURIComponent(id)}/console/v1/snapshot`, {
     headers: { accept: "application/json", cookie },
   });
   if (response.status === 503) return undefined;
@@ -366,7 +366,14 @@ async function waitForPromptAttempt(host, id, cookie, marker, label) {
 }
 
 async function sendPrompt(host, id, cookie, marker) {
-  const response = await fetch(`${host}/s/${encodeURIComponent(id)}/rpc/command`, {
+  const snapshot = await fetchPiSnapshot(host, id, cookie);
+  if (
+    !snapshot?.epoch ||
+    !Number.isSafeInteger(snapshot.sessionRevision) ||
+    snapshot.sessionRevision < 0
+  )
+    throw new Error("Pi prompt requires a current versioned console snapshot");
+  const response = await fetch(`${host}/s/${encodeURIComponent(id)}/console/v1/command`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -375,8 +382,11 @@ async function sendPrompt(host, id, cookie, marker) {
       origin: host,
     },
     body: JSON.stringify({
+      version: 1,
+      epoch: snapshot.epoch,
       commandId: randomUUID(),
-      command: {
+      expectedSessionRevision: snapshot.sessionRevision,
+      intent: {
         type: "prompt",
         message: `Reply with exactly ${marker} and do nothing else.`,
         streamingBehavior: "followUp",

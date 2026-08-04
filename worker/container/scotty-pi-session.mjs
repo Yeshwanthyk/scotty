@@ -282,8 +282,6 @@ const snapshotAttempt = async () => {
     state: sanitizedState.value,
     messages: sanitizedMessages.value,
     overlapEvents,
-    // Compatibility alias for the existing browser reducer. New clients use overlapEvents.
-    events: overlapEvents,
     activeTools: projection.activeTools,
     queue: projection.queue,
     pendingUi: pendingUi.values(),
@@ -351,16 +349,14 @@ const quiesce = async () => {
   throw new Error("Pi RPC quiesce timed out");
 };
 
-const commandError = (versioned, status, code) => ({
+const commandError = (status, code) => ({
   status,
-  body: versioned
-    ? {
-        version: PI_CONSOLE_PROTOCOL_VERSION,
-        status: "error",
-        code,
-        retryable: false,
-      }
-    : { error: code },
+  body: {
+    version: PI_CONSOLE_PROTOCOL_VERSION,
+    status: "error",
+    code,
+    retryable: false,
+  },
 });
 
 const executeCommand = async (normalized, digest, receiptKey) => {
@@ -368,12 +364,12 @@ const executeCommand = async (normalized, digest, receiptKey) => {
     normalized.command.type === "extension_ui_response" &&
     (typeof normalized.command.id !== "string" || !pendingUi.has(normalized.command.id))
   )
-    return commandError(normalized.versioned, 409, "extension_ui_not_pending");
+    return commandError(409, "extension_ui_not_pending");
   if (
     normalized.command.type === "extension_ui_response" &&
     pendingUi.isDelivered(normalized.command.id)
   )
-    return commandError(normalized.versioned, 409, "extension_ui_response_already_delivered");
+    return commandError(409, "extension_ui_response_already_delivered");
 
   let rpcResponse;
   if (normalized.command.type === "extension_ui_response") {
@@ -411,27 +407,20 @@ const executeCommand = async (normalized, digest, receiptKey) => {
 };
 
 const handleCommand = async (body) => {
-  const versioned = body?.version !== undefined || body?.intent !== undefined;
-  if (quiescing) return commandError(versioned, 409, "pi_quiescing");
+  if (quiescing) return commandError(409, "pi_quiescing");
   const normalized = normalizeCommand(body, epoch);
   if (!normalized.ok)
-    return commandError(
-      versioned,
-      normalized.error === "scotty_epoch_changed" ? 409 : 400,
-      normalized.error,
-    );
+    return commandError(normalized.error === "scotty_epoch_changed" ? 409 : 400, normalized.error);
   const digest = await commandIntentDigest(normalized.intent);
   const receiptKey = `${epoch}:${normalized.commandId}`;
   const replay = receipts.get(receiptKey);
   if (replay) {
-    if (replay.commandDigest !== digest)
-      return commandError(normalized.versioned, 409, "command_id_conflict");
+    if (replay.commandDigest !== digest) return commandError(409, "command_id_conflict");
     return { status: 200, body: replay };
   }
   const inFlight = inFlightCommands.get(receiptKey);
   if (inFlight) {
-    if (inFlight.digest !== digest)
-      return commandError(normalized.versioned, 409, "command_id_conflict");
+    if (inFlight.digest !== digest) return commandError(409, "command_id_conflict");
     return inFlight.promise;
   }
 

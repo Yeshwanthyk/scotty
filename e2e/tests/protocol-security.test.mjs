@@ -280,6 +280,22 @@ test("terminal switcher is warm-only and cannot resume sleeping sessions", () =>
   assert.doesNotMatch(html, /Sleeping containers only appear on Home\./u);
 });
 
+test("browser console modules keep protocol, state, view, and transport boundaries explicit", () => {
+  const assets = path.join(ROOT, "worker/public");
+  const terminal = fs.readFileSync(path.join(assets, "terminal.js"), "utf8");
+  const commandLane = fs.readFileSync(path.join(assets, "terminal-command-lane.js"), "utf8");
+  const projection = fs.readFileSync(path.join(assets, "terminal-projection.js"), "utf8");
+  const commandView = fs.readFileSync(path.join(assets, "terminal-command-view.js"), "utf8");
+  const consoleClient = fs.readFileSync(path.join(assets, "terminal-console-client.js"), "utf8");
+
+  assert.doesNotMatch(terminal, /\/rpc\//u);
+  assert.match(consoleClient, /\/console\/v1\//u);
+  for (const stateModule of [commandLane, projection]) {
+    assert.doesNotMatch(stateModule, /\bdocument\b|\bwindow\b/u);
+  }
+  assert.doesNotMatch(commandView, /\bfetch\b|\bEventSource\b/u);
+});
+
 test("fake protocol matches production cap parsing, floor rounding, and backup handles", async (t) => {
   const service = await new FakeWorkerService().start();
   t.after(() => service.stop());

@@ -1043,6 +1043,10 @@ textarea:focus-visible,
   color: #d9b0a2;
 }
 
+.receipt.local {
+  border-left: 2px solid var(--accent);
+}
+
 .receipt strong {
   color: #d3e3e5;
 }

@@ -184,7 +184,7 @@ describe("Scotty Pi supervisor protocol", () => {
     );
   });
 
-  it("translates only approved slash intents and preserves legacy browser prompts", () => {
+  it("translates only approved slash intents and rejects legacy browser commands", () => {
     const slash = normalizeCommand(
       {
         version: 1,
@@ -252,12 +252,12 @@ describe("Scotty Pi supervisor protocol", () => {
       ),
       { ok: false, error: "invalid_command" },
     );
-    assert.strictEqual(
+    assert.deepStrictEqual(
       normalizeCommand(
         { commandId: "browser-command", command: { type: "prompt", message: "/help" } },
         epoch,
-      ).ok,
-      true,
+      ),
+      { ok: false, error: "invalid_command" },
     );
     assert.deepStrictEqual(
       normalizeCommand({ version: 1, epoch, commandId, intent: { type: "abort" } }, epoch),
