@@ -308,7 +308,10 @@ describe("sessions shell", () => {
       terminalScript,
       /import \{ assistantMarkdownFragment \} from "\/terminal-markdown\.js"/,
     );
-    assert.match(terminalScript, /body\.append\(renderAssistantCopy\(text\)\)/);
+    assert.match(
+      terminalScript,
+      /renderAssistantCopy\(text, `markdown:\$\{currentSessionId\}:\$\{conversation\.key\}:\$\{index\}`\)/,
+    );
     assert.match(
       terminalScript,
       /function renderUserMessage\([\s\S]*?textElement\("div", "message-copy", text\)/,

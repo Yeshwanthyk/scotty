@@ -110,6 +110,31 @@ test("streaming assistant Markdown is replaced by the structured final message",
   assert.doesNotMatch(renderedText(finalTree), /###|\*\*|\[results\]/u);
 });
 
+test("duplicate Markdown links keep stable focus identities as streaming continues", () => {
+  const focusKeyPrefix = "markdown:session-1:conversation-7:0";
+  const partialLinks = descendants(
+    assistantMarkdownTree("[docs](/docs) and [docs](/docs)", {
+      baseUrl: BASE_URL,
+      focusKeyPrefix,
+    }),
+  ).filter((node) => node.tag === "a");
+  const continuedLinks = descendants(
+    assistantMarkdownTree("[docs](/docs) and [docs](/docs)\n\nStill working.", {
+      baseUrl: BASE_URL,
+      focusKeyPrefix,
+    }),
+  ).filter((node) => node.tag === "a");
+  const partialKeys = partialLinks.map((link) => link.attributes["data-worklog-focus-key"]);
+  const continuedKeys = continuedLinks.map((link) => link.attributes["data-worklog-focus-key"]);
+
+  assert.equal(new Set(partialKeys).size, 2, "duplicate links need distinct focus identities");
+  assert.deepEqual(
+    continuedKeys,
+    partialKeys,
+    "continuing the same response must preserve existing link identities",
+  );
+});
+
 test("assistant Markdown keeps raw HTML inert and rejects dangerous link schemes", () => {
   const tree = assistantMarkdownTree(
     `<script>alert("script")</script>

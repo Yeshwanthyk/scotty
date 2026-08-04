@@ -88,6 +88,30 @@ describe("terminal worklog view", () => {
     assert.deepStrictEqual(nextSummary.focusOptions, { preventScroll: true });
   });
 
+  it("restores a focused Markdown anchor when the same assistant response is replaced", () => {
+    const document = new FakeDocument();
+    const container = new FakeDomContainer(document);
+    const anchorKey = 'markdown:session-1:conversation-7:0:link:["/docs","docs"]:1';
+    const firstAnchor = new FakeDomNode(document, "second docs link", anchorKey);
+    const firstAssistant = new FakeDomNode(document, "streaming assistant", undefined, [
+      firstAnchor,
+    ]);
+    const view = createWorklogView(container);
+    view.update([
+      { key: "assistant:conversation-7", signature: "stream-1", render: () => firstAssistant },
+    ]);
+    firstAnchor.focus();
+
+    const nextAnchor = new FakeDomNode(document, "second docs link continued", anchorKey);
+    const nextAssistant = new FakeDomNode(document, "continued assistant", undefined, [nextAnchor]);
+    view.update([
+      { key: "assistant:conversation-7", signature: "stream-2", render: () => nextAssistant },
+    ]);
+
+    assert.strictEqual(document.activeElement, nextAnchor);
+    assert.deepStrictEqual(nextAnchor.focusOptions, { preventScroll: true });
+  });
+
   it("restores selection when a keyed editable ask control is replaced", () => {
     const document = new FakeDocument();
     const container = new FakeDomContainer(document);

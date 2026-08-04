@@ -150,12 +150,13 @@ function setWorklogFocusKey(element, key) {
   return element;
 }
 
-function renderAssistantCopy(text) {
+function renderAssistantCopy(text, focusKeyPrefix) {
   const element = document.createElement("div");
   element.className = "message-copy markdown";
   element.append(
     assistantMarkdownFragment(document, text, {
       baseUrl: window.location.href,
+      focusKeyPrefix,
     }),
   );
   return element;
@@ -361,7 +362,11 @@ function renderAssistantTurn(conversation, isLatest, parts = assistantTurnParts(
   turn.append(textElement("div", "speaker-label pi", "PI"));
   const body = document.createElement("div");
   body.className = "turn-body";
-  for (const text of textParts) body.append(renderAssistantCopy(text));
+  for (const [index, text] of textParts.entries()) {
+    body.append(
+      renderAssistantCopy(text, `markdown:${currentSessionId}:${conversation.key}:${index}`),
+    );
+  }
   if (reasoningParts.length > 0 || tools.length > 0) {
     body.append(
       renderActivityFold(

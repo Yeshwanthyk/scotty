@@ -57,6 +57,14 @@ function safeLinkAttributes(href, title, baseUrl) {
   return attributes;
 }
 
+function linkFocusKey(token, options) {
+  if (!options.focusKeyPrefix) return undefined;
+  const identity = JSON.stringify([token.href, tokenText(token)]);
+  const occurrence = options.linkOccurrences.get(identity) ?? 0;
+  options.linkOccurrences.set(identity, occurrence + 1);
+  return `${options.focusKeyPrefix}:link:${identity}:${occurrence}`;
+}
+
 function inlineNodes(tokens, options) {
   return (tokens ?? []).flatMap((token) => {
     if (token.type === "text" || token.type === "escape") return tokenText(token);
@@ -70,6 +78,8 @@ function inlineNodes(tokens, options) {
     if (token.type === "link") {
       const children = inlineNodes(token.tokens, options);
       const attributes = safeLinkAttributes(token.href, token.title, options.baseUrl);
+      const focusKey = attributes ? linkFocusKey(token, options) : undefined;
+      if (focusKey) attributes["data-worklog-focus-key"] = focusKey;
       return attributes
         ? element("a", children, attributes)
         : element("span", children, { class: "markdown-link-blocked" });
@@ -144,9 +154,13 @@ function blockNodes(tokens, options, context = {}) {
   });
 }
 
-export function assistantMarkdownTree(source, { baseUrl = DEFAULT_BASE_URL } = {}) {
+export function assistantMarkdownTree(source, { baseUrl = DEFAULT_BASE_URL, focusKeyPrefix } = {}) {
   if (typeof source !== "string" || source.length === 0) return [];
-  return blockNodes(markdown.lexer(source), { baseUrl });
+  return blockNodes(markdown.lexer(source), {
+    baseUrl,
+    focusKeyPrefix,
+    linkOccurrences: new Map(),
+  });
 }
 
 function appendNode(document, parent, descriptor) {
@@ -162,9 +176,9 @@ function appendNode(document, parent, descriptor) {
   parent.append(child);
 }
 
-export function assistantMarkdownFragment(document, source, { baseUrl } = {}) {
+export function assistantMarkdownFragment(document, source, { baseUrl, focusKeyPrefix } = {}) {
   const fragment = document.createDocumentFragment();
-  for (const descriptor of assistantMarkdownTree(source, { baseUrl })) {
+  for (const descriptor of assistantMarkdownTree(source, { baseUrl, focusKeyPrefix })) {
     appendNode(document, fragment, descriptor);
   }
   return fragment;
