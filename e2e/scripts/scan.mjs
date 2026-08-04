@@ -16,7 +16,7 @@ function walk(directory) {
     if (excluded.has(entry.name)) continue;
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) walk(target);
-    else files.push(target);
+    else if (entry.isFile()) files.push(target);
   }
 }
 walk(root);
