@@ -5,6 +5,7 @@ import { renderCommandReceipts } from "/terminal-command-view.js";
 import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
+import { evictableSessions } from "/terminal-session-cache.js";
 import { markUiResponseDelivered, sendUiResponseForProjection } from "/terminal-ui-response.js";
 import {
   applyEvent,
@@ -125,9 +126,11 @@ function cacheEntry(sessionId) {
 
 function trimCache() {
   if (sessionCache.size <= CACHE_LIMIT) return;
-  const candidates = [...sessionCache.entries()]
-    .filter(([id]) => id !== currentSessionId)
-    .sort((left, right) => left[1].touchedAt - right[1].touchedAt);
+  const candidates = evictableSessions(
+    sessionCache.entries(),
+    currentSessionId,
+    (sessionId) => commandLane.state(sessionId).items.length > 0,
+  );
   while (sessionCache.size > CACHE_LIMIT && candidates.length > 0) {
     sessionCache.delete(candidates.shift()[0]);
   }
@@ -1171,8 +1174,13 @@ async function sendUiResponse(requestId, value, { cancelled = false } = {}) {
     value,
     cancelled,
     sendCommand: (intent, label) => sendCommand(intent, label, { sessionId, projection }),
-    isCurrentProjection: (targetSessionId, targetProjection) =>
-      targetSessionId === currentSessionId && targetProjection === currentProjection,
+    hasCurrentRequest: (targetSessionId, targetProjection, targetRequestId) =>
+      targetSessionId === currentSessionId &&
+      currentProjection.epoch === targetProjection.epoch &&
+      currentProjection.pendingUi.has(targetRequestId),
+    hasCurrentDelivery: (targetSessionId, targetRequestId) =>
+      targetSessionId === currentSessionId &&
+      currentProjection.deliveredUiResponses.has(targetRequestId),
     markDelivered: (targetSessionId, targetProjection, targetRequestId) =>
       markUiResponseDelivered(
         targetProjection,

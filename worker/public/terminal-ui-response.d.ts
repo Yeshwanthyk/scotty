@@ -20,7 +20,12 @@ export function sendUiResponseForProjection(options: {
     intent: Readonly<Record<string, unknown>>,
     label: string,
   ) => Promise<{ readonly status?: unknown }>;
-  readonly isCurrentProjection: (sessionId: string, projection: UiResponseProjection) => boolean;
+  readonly hasCurrentRequest: (
+    sessionId: string,
+    projection: UiResponseProjection,
+    requestId: string,
+  ) => boolean;
+  readonly hasCurrentDelivery: (sessionId: string, requestId: string) => boolean;
   readonly markDelivered: (
     sessionId: string,
     projection: UiResponseProjection,

@@ -38,8 +38,13 @@ describe("terminal UI responses", () => {
         sent.push({ intent, label });
         return command.promise;
       },
-      isCurrentProjection: (sessionId, projection) =>
-        sessionId === currentSessionId && projection === currentProjection,
+      hasCurrentRequest: (sessionId, projection, targetRequestId) =>
+        sessionId === currentSessionId &&
+        projection.epoch === currentProjection.epoch &&
+        currentProjection.pendingUi.has(targetRequestId),
+      hasCurrentDelivery: (sessionId, targetRequestId) =>
+        sessionId === currentSessionId &&
+        currentProjection.deliveredUiResponses.has(targetRequestId),
       markDelivered: (_sessionId, projection, targetRequestId) =>
         markUiResponseDelivered(projection, projection, targetRequestId),
       setCardPending: () => cardStates.push("sending"),
@@ -62,6 +67,74 @@ describe("terminal UI responses", () => {
     assert.deepStrictEqual([...projectionA.deliveredUiResponses], [requestId]);
     assert.deepStrictEqual([...projectionB.deliveredUiResponses], []);
     assert.deepStrictEqual(cardStates, ["sending"]);
+  });
+
+  it("does not apply an old response error to a replacement epoch", async () => {
+    const requestId = "request-1";
+    const original = projectionWithRequest(requestId);
+    const replacement = projectionWithRequest(requestId, "epoch-b");
+    let currentProjection = original;
+    const cardStates: string[] = [];
+    const command = deferred<{ status: string }>();
+
+    const response = sendUiResponseForProjection({
+      sessionId: "session-a",
+      projection: original,
+      requestId,
+      value: "answer",
+      sendCommand: () => command.promise,
+      hasCurrentRequest: (_sessionId, projection, targetRequestId) =>
+        projection.epoch === currentProjection.epoch &&
+        currentProjection.pendingUi.has(targetRequestId),
+      hasCurrentDelivery: () => false,
+      markDelivered: () => undefined,
+      setCardPending: () => cardStates.push("sending"),
+      setCardDelivered: () => cardStates.push("delivered"),
+      setCardRetryable: () => cardStates.push("retryable"),
+      reportError: () => cardStates.push("error"),
+    });
+
+    currentProjection = replacement;
+    command.resolve({ status: "rejected" });
+    await response;
+
+    assert.deepStrictEqual(cardStates, ["sending"]);
+  });
+
+  it("updates a replacement card after a same-epoch refresh during delivery", async () => {
+    const requestId = "request-1";
+    const original = projectionWithRequest(requestId);
+    const refreshed = projectionWithRequest(requestId);
+    const command = deferred<{ status: string }>();
+    let currentProjection = original;
+    const cardStates: string[] = [];
+
+    const response = sendUiResponseForProjection({
+      sessionId: "session-a",
+      projection: original,
+      requestId,
+      value: "answer",
+      sendCommand: () => command.promise,
+      hasCurrentRequest: (sessionId, projection, targetRequestId) =>
+        sessionId === "session-a" &&
+        projection.epoch === currentProjection.epoch &&
+        currentProjection.pendingUi.has(targetRequestId),
+      hasCurrentDelivery: (_sessionId, targetRequestId) =>
+        currentProjection.deliveredUiResponses.has(targetRequestId),
+      markDelivered: (_sessionId, projection, targetRequestId) =>
+        markUiResponseDelivered(projection, currentProjection, targetRequestId),
+      setCardPending: () => cardStates.push("sending"),
+      setCardDelivered: () => cardStates.push("delivered"),
+      setCardRetryable: () => cardStates.push("retryable"),
+      reportError: () => cardStates.push("error"),
+    });
+
+    currentProjection = refreshed;
+    command.resolve({ status: "delivered" });
+    await response;
+
+    assert.deepStrictEqual([...refreshed.deliveredUiResponses], [requestId]);
+    assert.deepStrictEqual(cardStates, ["sending", "delivered"]);
   });
 
   it("carries delivery state into a refreshed projection from the same epoch", () => {

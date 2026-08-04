@@ -15,7 +15,8 @@ export async function sendUiResponseForProjection({
   value,
   cancelled = false,
   sendCommand,
-  isCurrentProjection,
+  hasCurrentRequest,
+  hasCurrentDelivery,
   markDelivered,
   setCardPending,
   setCardDelivered,
@@ -38,9 +39,9 @@ export async function sendUiResponseForProjection({
     if (receipt.status !== "delivered")
       throw new Error("Pi did not confirm delivery of that response.");
     markDelivered(sessionId, projection, requestId);
-    if (isCurrentProjection(sessionId, projection)) setCardDelivered();
+    if (hasCurrentDelivery(sessionId, requestId)) setCardDelivered();
   } catch (error) {
-    if (!isCurrentProjection(sessionId, projection)) return;
+    if (!hasCurrentRequest(sessionId, projection, requestId)) return;
     setCardRetryable();
     reportError(error instanceof Error ? error.message : "Pi did not accept that response.");
   }
