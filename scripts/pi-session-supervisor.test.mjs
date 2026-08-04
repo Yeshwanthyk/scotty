@@ -22,13 +22,17 @@ async function unusedPort() {
   return address.port;
 }
 
-async function waitForReady(url) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+async function waitForReady(url, supervisor, readStderr) {
+  for (let attempt = 0; attempt < 250; attempt += 1) {
     const response = await fetch(`${url}/health`).catch(() => undefined);
     if (response?.status === 200) return;
+    if (supervisor.exitCode !== null)
+      throw new Error(
+        `supervisor exited with code ${supervisor.exitCode}: ${readStderr() || "no stderr"}`,
+      );
     await delay(20);
   }
-  throw new Error("supervisor did not become ready");
+  throw new Error(`supervisor did not become ready: ${readStderr() || "no stderr"}`);
 }
 
 test("Pi session supervisor hydrates, replays commands, and owns extension UI", async (t) => {
@@ -132,7 +136,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
     supervisor.kill("SIGTERM");
   });
 
-  await waitForReady(url);
+  await waitForReady(url, supervisor, () => stderr);
   assert.equal(
     await access(tokenFile).then(
       () => false,
