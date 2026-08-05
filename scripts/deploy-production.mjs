@@ -16,6 +16,7 @@ export const PRODUCTION_DEPLOY_STEPS = [
     name: "Audit current runtime inventory",
     command: "npm",
     args: ["run", "audit:containers"],
+    redact: true,
   },
   {
     name: "Prepare isolated Container context",
@@ -28,12 +29,16 @@ export const PRODUCTION_DEPLOY_STEPS = [
     args: ["--no-install", "alchemy", "deploy", "alchemy.run.ts", "--stage", "production", "--yes"],
     capture: true,
     tee: true,
+    projectOutput: true,
+    reportProgress: true,
+    explainFailure: true,
     timeoutMs: 45 * 60 * 1_000,
   },
   {
     name: "Audit deployed runtime inventory",
     command: "npm",
     args: ["run", "audit:containers"],
+    redact: true,
   },
 ];
 
@@ -53,7 +58,114 @@ const signaledChildren = new WeakSet();
 let interruptedSignal;
 
 const ANSI_ESCAPE = new RegExp(`${String.fromCodePoint(27)}\\[[0-?]*[ -/]*[@-~]`, "gu");
+const CLOUDFLARE_ACCOUNT_ID = /\b[0-9a-f]{32}\b/giu;
+const CLOUDFLARE_WORKER_URL = /https:\/\/[^\s'"`]+\.workers\.dev(?:\/[^\s'"`]*)?/giu;
+const RESOURCE_ID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
+const FAILURE_OUTPUT_TAIL_CHARACTERS = 64 * 1_024;
 const stripAnsi = (value) => value.replaceAll("\r", "\n").replaceAll(ANSI_ESCAPE, "");
+
+export function redactProductionDeploymentOutput(value, environment = {}) {
+  let redacted = String(value);
+  const confirmation = environment.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED ?? "";
+  for (const field of confirmation.split(":")) {
+    const separator = field.indexOf("=");
+    if (separator === -1) continue;
+    const key = field.slice(0, separator);
+    const resourceName = field.slice(separator + 1);
+    if (!["worker", "runnerWorker", "container", "kv", "r2"].includes(key) || !resourceName) {
+      continue;
+    }
+    redacted = redacted.replaceAll(resourceName, `[redacted-${key}]`);
+  }
+  return redacted
+    .replaceAll(CLOUDFLARE_WORKER_URL, "[redacted-worker-url]")
+    .replaceAll(CLOUDFLARE_ACCOUNT_ID, "[redacted-account-id]")
+    .replaceAll(RESOURCE_ID, "[redacted-resource-id]");
+}
+
+export function projectAlchemyDeploymentOutput(value) {
+  const line = stripAnsi(String(value)).trim();
+  const safe =
+    /^Plan: \d+ to (?:create|update|delete|noop)(?:, \d+ to (?:create|update|delete|noop))*$/u.test(
+      line,
+    ) ||
+    /^\[[A-Za-z][A-Za-z0-9/-]*\] (?:pending|create|creating|created|update|updating|updated|delete|deleting|deleted|noop|failed)$/u.test(
+      line,
+    ) ||
+    /^Done: \d+ succeeded(?:, \d+ failed)?$/u.test(line);
+  return safe ? `${line}\n` : "";
+}
+
+export function createProductionDeploymentProgressReporter(
+  report = (message) => process.stdout.write(`${message}\n`),
+) {
+  const milestones = [
+    {
+      pattern: /\[SandboxContainer\] Building container image/u,
+      message: "Deployment progress: building Container image.",
+    },
+    {
+      pattern: /\[MonolithWorker\] Uploading worker/u,
+      message: "Deployment progress: uploading Worker.",
+    },
+    {
+      pattern: /\[SandboxContainer\] Pushing container image/u,
+      message: "Deployment progress: uploading Container image.",
+    },
+    {
+      pattern: /\[SandboxContainer\] Updating container application/u,
+      message: "Deployment progress: applying Cloudflare update.",
+    },
+  ];
+  const reported = new Set();
+  let observed = "";
+  return (chunk) => {
+    observed = stripAnsi(`${observed}${chunk}`).slice(-16_384);
+    for (const milestone of milestones) {
+      if (!reported.has(milestone.message) && milestone.pattern.test(observed)) {
+        reported.add(milestone.message);
+        report(milestone.message);
+      }
+    }
+  };
+}
+
+export function productionDeploymentFailureHint({ stdout = "", stderr = "" } = {}) {
+  const output = stripAnsi(`${stdout}\n${stderr}`);
+  if (!/(?:Segmentation fault(?: \(core dumped\))?|exit (?:code:? )?139)/iu.test(output)) {
+    return "";
+  }
+  return (
+    "The linux/amd64 Container build crashed under local emulation with exit 139. " +
+    "Let this guard finish rollout settlement and the final audit. If production remains healthy, " +
+    "rerun this same guarded command once. Never retry with direct Alchemy or Wrangler commands."
+  );
+}
+
+function createBufferedOutputWriter(destination, transform) {
+  let pending = "";
+  const flushCompleteLines = () => {
+    while (true) {
+      const carriageReturn = pending.indexOf("\r");
+      const newline = pending.indexOf("\n");
+      const candidates = [carriageReturn, newline].filter((index) => index !== -1);
+      if (candidates.length === 0) return;
+      const end = Math.min(...candidates) + 1;
+      destination.write(transform(pending.slice(0, end)));
+      pending = pending.slice(end);
+    }
+  };
+  return {
+    push(chunk) {
+      pending += chunk;
+      flushCompleteLines();
+    },
+    flush() {
+      if (pending) destination.write(transform(pending));
+      pending = "";
+    },
+  };
+}
 
 export function readAlchemyContainerAction(output) {
   const actions = new Set(
@@ -106,19 +218,19 @@ export function assessContainerSettlement(before, current, containerAction, { qu
     if (containerAction === "noop") {
       return {
         status: "failed",
-        message: `Alchemy reported a Container no-op but rollout ${rollout.id} appeared.`,
+        message: "Alchemy reported a Container no-op but an unexpected rollout appeared.",
       };
     }
     if (["pending", "progressing"].includes(rollout.status)) {
       return {
         status: "waiting",
-        message: `Container rollout ${rollout.id} is ${rollout.status}.`,
+        message: `Container rollout is ${rollout.status}.`,
       };
     }
     if (rollout.status !== "completed") {
       return {
         status: "failed",
-        message: `Container rollout ${rollout.id} finished as ${rollout.status}.`,
+        message: `Container rollout finished as ${rollout.status}.`,
       };
     }
     const health = current.application.health;
@@ -147,13 +259,14 @@ export function assessContainerSettlement(before, current, containerAction, { qu
     if (!rolloutComplete) {
       return {
         status: "waiting",
-        message: `Container rollout ${rollout.id} is completed but its target version or health has not converged.`,
+        message:
+          "Container rollout is completed but its target version or health has not converged.",
       };
     }
     return {
       status: "settled",
       outcome: "rollout",
-      message: `Container rollout ${rollout.id} completed at version ${rollout.targetVersion}.`,
+      message: `Container rollout completed at version ${rollout.targetVersion}.`,
     };
   }
 
@@ -254,6 +367,9 @@ export function runCommand(
     tee = false,
     allowAfterSignal = false,
     timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+    sanitizeOutput,
+    onStdout,
+    failureHint,
   } = {},
 ) {
   if (interruptedSignal && !allowAfterSignal) {
@@ -263,28 +379,50 @@ export function runCommand(
   }
 
   return new Promise((resolve, reject) => {
+    const pipeStdout = capture || tee || Boolean(sanitizeOutput) || Boolean(onStdout);
+    const pipeStderr = Boolean(sanitizeOutput) || Boolean(failureHint);
     const child = spawn(command, args, {
       cwd: process.cwd(),
       detached: process.platform !== "win32",
       env,
-      stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
+      stdio: ["ignore", pipeStdout ? "pipe" : "inherit", pipeStderr ? "pipe" : "inherit"],
     });
     activeChildren.add(child);
     let stdout = "";
+    let stderr = "";
     let timedOut = false;
+    const transformOutput = sanitizeOutput ?? ((value) => value);
+    const stdoutWriter = pipeStdout
+      ? createBufferedOutputWriter(process.stdout, transformOutput)
+      : undefined;
+    const stderrWriter = pipeStderr
+      ? createBufferedOutputWriter(process.stderr, transformOutput)
+      : undefined;
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
       signaledChildren.add(child);
       terminateProcessTree(child, "SIGTERM");
       scheduleForcedTermination(child);
     }, timeoutMs);
-    if (capture) {
+    if (pipeStdout) {
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk) => {
-        stdout += chunk;
-        if (tee) process.stdout.write(chunk);
+        if (capture || failureHint) stdout += chunk;
+        onStdout?.(chunk);
+        if (tee || sanitizeOutput) stdoutWriter.push(chunk);
       });
     }
+    if (pipeStderr) {
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr = `${stderr}${chunk}`.slice(-FAILURE_OUTPUT_TAIL_CHARACTERS);
+        stderrWriter.push(chunk);
+      });
+    }
+    const flushOutput = () => {
+      stdoutWriter?.flush();
+      stderrWriter?.flush();
+    };
     const cleanup = () => {
       activeChildren.delete(child);
       clearTimeout(timeoutTimer);
@@ -295,10 +433,12 @@ export function runCommand(
       }
     };
     child.on("error", (error) => {
+      flushOutput();
       cleanup();
       reject(error);
     });
     child.on("close", (code, signal) => {
+      flushOutput();
       const wasSignaled = signaledChildren.has(child);
       if (wasSignaled) {
         terminateProcessTree(child, "SIGKILL");
@@ -325,7 +465,10 @@ export function runCommand(
         return;
       }
       const result = signal ? `signal ${signal}` : `exit code ${String(code)}`;
-      reject(new Error(`${command} ${args.join(" ")} failed with ${result}.`));
+      const hint = failureHint?.({ stdout, stderr, code, signal });
+      reject(
+        new Error(`${command} ${args.join(" ")} failed with ${result}.${hint ? ` ${hint}` : ""}`),
+      );
     });
   });
 }
@@ -597,6 +740,13 @@ async function runStep(step, env = process.env, options = {}) {
     capture: step.capture,
     tee: step.tee,
     timeoutMs: step.timeoutMs,
+    sanitizeOutput: step.projectOutput
+      ? projectAlchemyDeploymentOutput
+      : step.redact
+        ? (value) => redactProductionDeploymentOutput(value, env)
+        : undefined,
+    onStdout: step.reportProgress ? createProductionDeploymentProgressReporter() : undefined,
+    failureHint: step.explainFailure ? productionDeploymentFailureHint : undefined,
     ...options,
   });
 }

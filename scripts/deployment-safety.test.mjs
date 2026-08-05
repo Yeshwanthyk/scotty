@@ -12,9 +12,13 @@ import {
   assessContainerSettlement,
   assertSettledContainerBaseline,
   CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
+  createProductionDeploymentProgressReporter,
   executeProductionDeploySteps,
   PRODUCTION_DEPLOY_STEPS,
+  productionDeploymentFailureHint,
+  projectAlchemyDeploymentOutput,
   readAlchemyContainerAction,
+  redactProductionDeploymentOutput,
   resolveProductionTopology,
   runCommand,
   waitForProductionContainerRollout,
@@ -153,6 +157,11 @@ describe("production deployment ownership", () => {
       existsSync(new URL("../.github/workflows/deploy-production.yml", import.meta.url)),
       false,
     );
+    const readme = read("README.md");
+    assert.match(readme, /ARM Mac/u);
+    assert.match(readme, /exit code 139/u);
+    assert.match(readme, /rerun the same guarded command once/u);
+    assert.match(readme, /There is no automatic retry/u);
   });
 
   it("checks, audits, deploys through Alchemy, and audits again", () => {
@@ -188,12 +197,114 @@ describe("production deployment ownership", () => {
       false,
     );
     assert.equal(commands[2], `${process.execPath} scripts/prepare-container-context.mjs`);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[1].redact, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].capture, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].tee, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].projectOutput, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].reportProgress, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].explainFailure, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].redact, true);
     assert.equal(readAlchemyContainerAction("[SandboxContainer] updated\n"), "updated");
     assert.equal(
       readAlchemyContainerAction("\u001B[32m[SandboxContainer] noop\u001B[0m\n"),
       "noop",
+    );
+  });
+
+  it("redacts production identity while keeping useful deployment progress", () => {
+    const environment = {
+      SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED: [
+        "confirmed",
+        "test",
+        "worker=scotty-test-worker",
+        "runnerWorker=scotty-test-runner",
+        "container=scotty-test-sandbox",
+        "kv=scotty-test-sessions",
+        "r2=scotty-test-backups",
+      ].join(":"),
+    };
+    const privateOutput = [
+      "accountId: '0123456789abcdef0123456789abcdef'",
+      "url: 'https://scotty-test-worker.example.workers.dev/private'",
+      "application: a030af24-612c-4eb0-81cd-873740807d1d",
+      "building scotty-test-sandbox and scotty-test-backups",
+    ].join("\n");
+    const redacted = redactProductionDeploymentOutput(privateOutput, environment);
+    assert.doesNotMatch(redacted, /0123456789abcdef0123456789abcdef/u);
+    assert.doesNotMatch(redacted, /workers\.dev/u);
+    assert.doesNotMatch(redacted, /a030af24-612c-4eb0-81cd-873740807d1d/u);
+    assert.doesNotMatch(redacted, /scotty-test-(?:worker|sandbox|backups)/u);
+    assert.match(redacted, /\[redacted-account-id\]/u);
+    assert.match(redacted, /\[redacted-worker-url\]/u);
+    assert.match(redacted, /\[redacted-resource-id\]/u);
+
+    const projected = privateOutput
+      .split("\n")
+      .map((line) => projectAlchemyDeploymentOutput(`${line}\n`))
+      .join("");
+    assert.equal(projected, "");
+    assert.equal(
+      projectAlchemyDeploymentOutput("\u001B[32m[SandboxContainer] updated\u001B[0m\n"),
+      "[SandboxContainer] updated\n",
+    );
+    assert.equal(
+      projectAlchemyDeploymentOutput("Plan: 2 to update, 3 to noop\n"),
+      "Plan: 2 to update, 3 to noop\n",
+    );
+    assert.equal(projectAlchemyDeploymentOutput("Done: 2 succeeded\n"), "Done: 2 succeeded\n");
+
+    const progress = [];
+    const report = createProductionDeploymentProgressReporter((message) => progress.push(message));
+    report("[SandboxContainer] Building cont");
+    report("ainer image private\n[MonolithWorker] Uploading worker");
+    report("\n[SandboxContainer] Pushing container image private\n");
+    report("[SandboxContainer] Updating container application private\n");
+    report("[SandboxContainer] Building container image duplicate\n");
+    assert.deepEqual(progress, [
+      "Deployment progress: building Container image.",
+      "Deployment progress: uploading Worker.",
+      "Deployment progress: uploading Container image.",
+      "Deployment progress: applying Cloudflare update.",
+    ]);
+  });
+
+  it("explains transient emulated Container build crashes without adding automatic retries", async () => {
+    assert.match(
+      productionDeploymentFailureHint({
+        stderr: "npm error Segmentation fault (core dumped)\nprocess exited with code: 139",
+      }),
+      /rerun this same guarded command once/u,
+    );
+    assert.equal(productionDeploymentFailureHint({ stderr: "ordinary failure" }), "");
+    assert.doesNotMatch(read("scripts/deploy-production.mjs"), /retryProductionDeploy/u);
+
+    const rawOutput = await runCommand(
+      process.execPath,
+      [
+        "-e",
+        'process.stdout.write("accountId: 0123456789abcdef"); process.stdout.write("0123456789abcdef\\n[SandboxContainer] updated\\n")',
+      ],
+      {
+        capture: true,
+        sanitizeOutput: projectAlchemyDeploymentOutput,
+      },
+    );
+    assert.match(rawOutput, /0123456789abcdef0123456789abcdef/u);
+    assert.equal(readAlchemyContainerAction(rawOutput), "updated");
+
+    await assert.rejects(
+      runCommand(
+        process.execPath,
+        [
+          "-e",
+          'process.stderr.write("Segmentation "); process.stderr.write("fault (core dumped)\\nexit code: 139\\n"); process.exit(1)',
+        ],
+        {
+          sanitizeOutput: projectAlchemyDeploymentOutput,
+          failureHint: productionDeploymentFailureHint,
+        },
+      ),
+      /failed with exit code 1[\s\S]*rerun this same guarded command once/u,
     );
   });
 
@@ -237,6 +348,7 @@ describe("production deployment ownership", () => {
       "Wait for Container rollout",
       "Audit deployed runtime inventory",
     ]);
+    assert.equal(executed.filter((name) => name === "Deploy production through Alchemy").length, 1);
     const verificationEnv = environments.get("Check repository").env;
     assert.equal(verificationEnv.CLOUDFLARE_API_TOKEN, undefined);
     assert.equal(verificationEnv.SCOTTY_RUNNER_TOKEN, undefined);
@@ -316,7 +428,7 @@ describe("production deployment ownership", () => {
       {
         status: "settled",
         outcome: "rollout",
-        message: "Container rollout rollout-v6 completed at version 6.",
+        message: "Container rollout completed at version 6.",
       },
     );
   });
@@ -355,7 +467,7 @@ describe("production deployment ownership", () => {
     assert.deepEqual(assessContainerSettlement(before, current, "updated"), {
       status: "settled",
       outcome: "rollout",
-      message: "Container rollout rollout-v6 completed at version 6.",
+      message: "Container rollout completed at version 6.",
     });
   });
 
