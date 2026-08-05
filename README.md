@@ -295,6 +295,17 @@ not prove that the Container rollout converged or that runtime inventory remaine
 guard fails, fix the reported Git, test, audit, or rollout condition and rerun the same command; do
 not bypass it with a direct Alchemy or Wrangler deployment.
 
+On an ARM Mac, the emulated `linux/amd64` image build can rarely stop during `npm ci` with a
+segmentation fault or exit code 139. Let the guarded command finish its rollout settlement and final
+audit. If the guard proves that production remains healthy, rerun the same guarded command once.
+There is no automatic retry because a failed deployment can leave unclear provider state. If the
+second build fails, stop and diagnose the Docker VM or architecture emulation. Do not retry with a
+direct Alchemy or Wrangler command.
+
+Normal guarded output redacts Cloudflare account IDs, resource IDs, physical resource names, and Worker URLs.
+It also prints one short message when the Container image builds, artifacts upload, the Cloudflare
+update applies, the rollout settles, and the final audit runs.
+
 The current Cloudflare gate is forward-only: the full local suite and Colima-backed image build must
 pass with the pinned Pi version, then the guarded deployment and deployed canary must prove
 `beam up → Pi worklog → snapshot → resume → vaporize`.
