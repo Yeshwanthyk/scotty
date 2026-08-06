@@ -11,6 +11,7 @@ import { getCapabilities, type MarkdownTheme } from "@earendil-works/pi-tui";
 
 const BACKGROUND_KEYS = [
   "selectedBg",
+  "scrollbarThumb",
   "userMessageBg",
   "customMessageBg",
   "toolPendingBg",

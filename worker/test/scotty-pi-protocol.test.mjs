@@ -98,7 +98,7 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.deepStrictEqual(reducer.snapshot().queue, { steer: [], followUp: [] });
   });
 
-  it("tracks explicit Pi 0.83 UI timeouts and proves clear boundaries", () => {
+  it("tracks explicit Pi 0.84 UI timeouts and proves clear boundaries", () => {
     const scheduled = [];
     const cancelled = [];
     const expired = [];
@@ -131,7 +131,7 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.ok(cancelled.includes(scheduled[0]));
   });
 
-  it("normalizes exact Pi 0.83 extension UI events before replay and drops invalid dialogs", () => {
+  it("normalizes exact Pi 0.84 extension UI events before replay and drops invalid dialogs", () => {
     assert.deepStrictEqual(
       normalizeExtensionUiEvent({
         type: "extension_ui_request",

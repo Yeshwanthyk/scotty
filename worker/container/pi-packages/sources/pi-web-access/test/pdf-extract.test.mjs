@@ -27,6 +27,64 @@ test("extractPDFToMarkdown works on Node 22 without native Promise.try", () => {
   assert.match(child.stdout, /Hello PDF/);
 });
 
+test("extractPDFToMarkdown uses Gemini before loading unpdf", () => {
+  const loaderDir = mkdtempSync(join(tmpdir(), "pi-web-access-pdf-gemini-first-"));
+  const loaderPath = join(loaderDir, "block-unpdf-loader.mjs");
+  writeFileSync(loaderPath, buildBlockUnpdfLoader());
+
+  try {
+    const child = spawnSync(
+      process.execPath,
+      ["--experimental-loader", loaderPath, "--input-type=module"],
+      {
+        input: buildChildScript(extractorUrl, false, "success"),
+        encoding: "utf8",
+        maxBuffer: 2 * 1024 * 1024,
+      },
+    );
+
+    assert.equal(
+      child.status,
+      0,
+      "PDF Gemini-first assertion failed in a child process. stderr summary:\n" + errorSummary(child.stderr),
+    );
+    assert.match(child.stdout, /Gemini PDF/);
+  } finally {
+    rmSync(loaderDir, { recursive: true, force: true });
+  }
+});
+
+test("extractPDFToMarkdown falls back to unpdf when Gemini output is truncated", () => {
+  const child = spawnSync(process.execPath, ["--input-type=module"], {
+    input: buildChildScript(extractorUrl, false, "truncate"),
+    encoding: "utf8",
+    maxBuffer: 2 * 1024 * 1024,
+  });
+
+  assert.equal(
+    child.status,
+    0,
+    "PDF Gemini fallback failed in a child process. stderr summary:\n" + errorSummary(child.stderr),
+  );
+  assert.match(child.stdout, /Hello PDF/);
+});
+
+test("extractPDFToMarkdown preserves caller cancellation without local fallback", () => {
+  const child = spawnSync(process.execPath, ["--input-type=module"], {
+    input: buildChildScript(extractorUrl, false, "abort"),
+    encoding: "utf8",
+    maxBuffer: 2 * 1024 * 1024,
+  });
+
+  assert.equal(
+    child.status,
+    0,
+    "PDF cancellation assertion failed in a child process. stderr summary:\n" + errorSummary(child.stderr),
+  );
+  assert.match(child.stdout, /Aborted/);
+  assert.doesNotMatch(child.stdout, /Hello PDF/);
+});
+
 test("extractPDFToMarkdown passes PDF.js errors-only verbosity", () => {
   const loaderDir = mkdtempSync(join(tmpdir(), "pi-web-access-pdf-loader-"));
   const loaderPath = join(loaderDir, "unpdf-loader.mjs");
@@ -55,6 +113,17 @@ test("extractPDFToMarkdown passes PDF.js errors-only verbosity", () => {
     rmSync(loaderDir, { recursive: true, force: true });
   }
 });
+
+function buildBlockUnpdfLoader() {
+  return `
+    export function resolve(specifier, context, nextResolve) {
+      if (specifier === "unpdf" || specifier === "unpdf/pdfjs") {
+        throw new Error("unpdf should not load before successful Gemini PDF extraction");
+      }
+      return nextResolve(specifier, context);
+    }
+  `;
+}
 
 function buildUnpdfLoader() {
   const unpdfUrl = pathToFileURL(require.resolve("unpdf")).href;
@@ -86,7 +155,7 @@ function buildUnpdfLoader() {
   `;
 }
 
-function buildChildScript(moduleUrl, printOptions = false) {
+function buildChildScript(moduleUrl, printOptions = false, geminiMode = "none") {
   return `
     import { mkdtemp, readFile } from "node:fs/promises";
     import { tmpdir } from "node:os";
@@ -106,17 +175,57 @@ function buildChildScript(moduleUrl, printOptions = false) {
       throw new Error("Expected Promise.try to be unavailable before PDF extraction");
     }
 
+    const geminiMode = ${JSON.stringify(geminiMode)};
+    const configDir = await mkdtemp(join(tmpdir(), "pi-web-access-pdf-config-"));
+    process.env.PI_CODING_AGENT_DIR = configDir;
+
+    if (geminiMode !== "none") {
+      process.env.GEMINI_API_KEY = "synthetic-gemini-key";
+      globalThis.fetch = async (_url, init) => {
+        if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        const success = geminiMode === "success";
+        return new Response(JSON.stringify({
+          candidates: [{
+            finishReason: success ? "STOP" : "MAX_TOKENS",
+            content: { parts: [{ text: success ? "<!-- Page 1 -->\\nGemini PDF" : "<!-- Page 1 -->\\nPartial" }] },
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      };
+    } else {
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.GOOGLE_GEMINI_BASE_URL;
+      delete process.env.CLOUDFLARE_API_KEY;
+    }
+
     const { extractPDFToMarkdown } = await import(${JSON.stringify(moduleUrl)});
-
     const outputDir = await mkdtemp(join(tmpdir(), "pi-web-access-pdf-"));
-    const result = await extractPDFToMarkdown(
-      makePdf("Hello PDF"),
-      "https://example.test/hello.pdf",
-      { outputDir },
-    );
 
-    console.log(await readFile(result.outputPath, "utf8"));
-    ${printOptions ? "console.log(JSON.stringify(globalThis.__piWebAccessUnpdfOptions));" : ""}
+    if (geminiMode === "abort") {
+      const controller = new AbortController();
+      controller.abort();
+      let preservedCancellation = false;
+      try {
+        await extractPDFToMarkdown(
+          makePdf("Hello PDF"),
+          "https://example.test/hello.pdf",
+          { outputDir, signal: controller.signal },
+        );
+      } catch (error) {
+        preservedCancellation = /abort/i.test(error instanceof Error ? error.message : String(error));
+        if (!preservedCancellation) throw error;
+      }
+      if (!preservedCancellation) throw new Error("Expected PDF extraction to preserve cancellation");
+      console.log("Aborted");
+    } else {
+      const result = await extractPDFToMarkdown(
+        makePdf("Hello PDF"),
+        "https://example.test/hello.pdf",
+        { outputDir },
+      );
+
+      console.log(await readFile(result.outputPath, "utf8"));
+      ${printOptions ? "console.log(JSON.stringify(globalThis.__piWebAccessUnpdfOptions));" : ""}
+    }
 
     function makePdf(text) {
       const content = "BT /F1 24 Tf 72 720 Td (" + text + ") Tj ET";

@@ -197,7 +197,7 @@ describe("Pi console protocol v1", () => {
     }),
   );
 
-  it.effect("accepts only Pi 0.83 extension UI response shapes", () =>
+  it.effect("accepts only Pi 0.84 extension UI response shapes", () =>
     Effect.gen(function* () {
       const response = command({
         type: "extension_ui_response",

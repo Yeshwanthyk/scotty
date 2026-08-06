@@ -12,8 +12,8 @@ const root = new URL("../", import.meta.url);
 const packageJson = JSON.parse(await readFile(new URL("pi-scotty/package.json", root), "utf8"));
 const failures = [];
 
-if (packageJson.dependencies?.["@earendil-works/pi-tui"] !== "0.83.0")
-  failures.push("@earendil-works/pi-tui must be pinned exactly to 0.83.0");
+if (packageJson.dependencies?.["@earendil-works/pi-tui"] !== "0.84.0")
+  failures.push("@earendil-works/pi-tui must be pinned exactly to 0.84.0");
 if (packageJson.dependencies?.["@earendil-works/pi-coding-agent"] !== PI_CODING_AGENT_VERSION)
   failures.push(
     `@earendil-works/pi-coding-agent must be pinned exactly to ${PI_CODING_AGENT_VERSION}`,
@@ -76,7 +76,7 @@ for (const entry of await readdir(sourceDirectory, { withFileTypes: true })) {
 }
 
 const mainSource = sources.get("main.ts") ?? "";
-if (!/new TUI\(terminal, false, stateDirectory\)/u.test(mainSource))
+if (!/new TuiMainScreen\(terminal, false, stateDirectory\)/u.test(mainSource))
   failures.push("main.ts: pi-tui must receive Scotty's explicit XDG state/log directory");
 if (!/process\.env\.PI_TUI_WRITE_LOG = ""/u.test(mainSource))
   failures.push("main.ts: inherited pi-tui terminal logging must be disabled");

@@ -5,8 +5,8 @@
       "name": "pi-tasks",
       "order": 0,
       "repository": "https://github.com/Yeshwanthyk/pi-tasks.git",
-      "commit": "e7c515bb48326ff2aee831d6cf6214445e1c5c8c",
-      "sourceSha256": "6ea3cdab187a35270f6cde60d0d8e52942a45c96385e6cba78fbbf9d071de646",
+      "commit": "cf188268ff758f56e5f911d799c2b43d0ae85dad",
+      "sourceSha256": "9b2a4d96c4977f5b3da650f480ed6903f450470075a83056fd03595b30b81d2b",
       "sourcePath": "worker/container/pi-packages/sources/pi-tasks",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-tasks"
     },
@@ -23,8 +23,8 @@
       "name": "pi-workflows",
       "order": 2,
       "repository": "https://github.com/Yeshwanthyk/pi-workflows.git",
-      "commit": "6dc36c8df902e352185de181e5825b4719d8278a",
-      "sourceSha256": "69f70b617d8e0768a1d920f58303811d571047230125a9036241c3fcd75f068c",
+      "commit": "ee05d0d2cc0666b61b440746020b81f5967cf40c",
+      "sourceSha256": "1375f97df915e3bc3c59f34a56b471eb3e65f9378f8fc346b6efb3e9d2a98ccc",
       "sourcePath": "worker/container/pi-packages/sources/pi-workflows",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-workflows"
     },
@@ -50,8 +50,8 @@
       "name": "pi-web-access",
       "order": 5,
       "repository": "https://github.com/nicobailon/pi-web-access.git",
-      "commit": "b537183632d555d1b2e61cb8f6bdf585766f2380",
-      "sourceSha256": "90116d96408d7c094c2b8669e62bfeea2566d34dac3b50c5e40a93d69a3e2880",
+      "commit": "d84ef67073d14aeaf3644a8aabe2b1cf784719fd",
+      "sourceSha256": "e735b15d5ea88ab81c20d59d6ae8f9a04a9f05fe841b572300acce1d55cccaff",
       "sourcePath": "worker/container/pi-packages/sources/pi-web-access",
       "lockPath": "worker/container/pi-packages/locks/pi-web-access/package-lock.json",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-web-access"
@@ -70,8 +70,8 @@
     {
       "name": "@ogulcancelik/pi-codex-compaction",
       "order": 6,
-      "version": "0.1.2",
-      "integrity": "sha512-mtHAxK0H+AONGRpHSptyM8ind7bARQkZ1JW3vcq6gZunPhPSv+Yg81Za6aobdz6lTD35lZos0QeNAXOBkZ8kPA==",
+      "version": "0.1.3",
+      "integrity": "sha512-1cI0D7TBlXe6aGI1EZePeo/ogST1rPx3zX0xblUjdUTiiHeeIRHyCkWIe5eRjg1FYi1rdfG5wB5YD0AKnKFHZA==",
       "imagePath": "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction"
     }
   ]

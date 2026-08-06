@@ -10,8 +10,8 @@ import {
   resolvePiCodingAgentPackage,
 } from "./pi-scotty-theme-assets.mjs";
 
-test("packages exact coding-agent v0.83.0 theme assets beside the binary", async () => {
-  assert.equal(PI_CODING_AGENT_VERSION, "0.83.0");
+test("packages exact coding-agent v0.84.0 theme assets beside the binary", async () => {
+  assert.equal(PI_CODING_AGENT_VERSION, "0.84.0");
   const work = await mkdtemp(join(tmpdir(), "pi-scotty-theme-test-"));
   try {
     const { themeDirectory } = await resolvePiCodingAgentPackage();

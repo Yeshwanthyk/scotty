@@ -1,6 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { generateCuratorPage } from "./curator-page.ts";
 import type { SummaryMeta } from "./summary-review.ts";
+import { resolveCuratorNetworkConfig } from "./utils.ts";
 
 const STALE_THRESHOLD_MS = 30000;
 const WATCHDOG_INTERVAL_MS = 1000;
@@ -12,7 +13,7 @@ export interface CuratorServerOptions {
 	queries: string[];
 	sessionToken: string;
 	timeout: number;
-	availableProviders: { all: boolean; openai: boolean; brave: boolean; parallel: boolean; tinyfish: boolean; tavily: boolean; serpdive: boolean; searxng: boolean; perplexity: boolean; exa: boolean; gemini: boolean; anysearch: boolean };
+	availableProviders: { all: boolean; openai: boolean; brave: boolean; parallel: boolean; tinyfish: boolean; search1api: boolean; searchinfinity: boolean; querit: boolean; tavily: boolean; jina: boolean; serpdive: boolean; kagi: boolean; ollama: boolean; searxng: boolean; perplexity: boolean; exa: boolean; gemini: boolean; anysearch: boolean; xai: boolean; brightdata: boolean; serpbase: boolean };
 	defaultProvider: string;
 	searchProvider: string;
 	summaryModels: Array<{ value: string; label: string }>;
@@ -269,13 +270,22 @@ export function startCuratorServer(
 		if (provider === "brave") return availableProviders.brave;
 		if (provider === "parallel") return availableProviders.parallel;
 		if (provider === "tinyfish") return availableProviders.tinyfish;
+		if (provider === "search1api") return availableProviders.search1api;
+		if (provider === "searchinfinity") return availableProviders.searchinfinity;
+		if (provider === "querit") return availableProviders.querit;
 		if (provider === "tavily") return availableProviders.tavily;
+		if (provider === "jina") return availableProviders.jina;
 		if (provider === "serpdive") return availableProviders.serpdive;
+		if (provider === "kagi") return availableProviders.kagi;
+		if (provider === "ollama") return availableProviders.ollama;
 		if (provider === "searxng") return availableProviders.searxng;
 		if (provider === "perplexity") return availableProviders.perplexity;
 		if (provider === "exa") return availableProviders.exa;
 		if (provider === "gemini") return availableProviders.gemini;
 		if (provider === "anysearch") return availableProviders.anysearch;
+		if (provider === "xai") return availableProviders.xai;
+		if (provider === "brightdata") return availableProviders.brightdata;
+		if (provider === "serpbase") return availableProviders.serpbase;
 		return false;
 	}
 
@@ -629,15 +639,17 @@ export function startCuratorServer(
 			reject(new Error(`Curator server failed to start: ${err.message}`));
 		};
 
+		const networkConfig = resolveCuratorNetworkConfig();
+
 		server.once("error", onError);
-		server.listen(0, "127.0.0.1", () => {
+		server.listen(0, networkConfig.bind, () => {
 			server.off("error", onError);
 			const addr = server.address();
 			if (!addr || typeof addr === "string") {
 				reject(new Error("Curator server: invalid address"));
 				return;
 			}
-			const url = `http://localhost:${addr.port}/?session=${sessionToken}`;
+			const url = `http://${networkConfig.host}:${addr.port}/?session=${sessionToken}`;
 
 			watchdog = setInterval(() => {
 				if (completed) return;

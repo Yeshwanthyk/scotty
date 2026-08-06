@@ -22,6 +22,7 @@ const boundedString = (maxBytes: number) =>
     }),
   );
 const ShortStringSchema = boundedString(4 * 1024);
+const StreamingStringSchema = boundedString(256 * 1024);
 export const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/u));
 const ClientCredentialSchema = Schema.String.check(
   Schema.isPattern(/^scotty_client\.[0-9a-f]{12}\.[A-Za-z0-9_-]{32,128}$/u),
@@ -115,9 +116,54 @@ export const ToolEventSchema = Schema.Struct({
 });
 export type ToolEvent = typeof ToolEventSchema.Type;
 
+const ContentIndexSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1024 }));
+const AssistantMessageEventSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("text_start"), contentIndex: ContentIndexSchema }),
+  Schema.Struct({
+    type: Schema.Literal("text_delta"),
+    contentIndex: ContentIndexSchema,
+    delta: StreamingStringSchema,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("text_end"),
+    contentIndex: ContentIndexSchema,
+    content: StreamingStringSchema,
+  }),
+  Schema.Struct({ type: Schema.Literal("thinking_start"), contentIndex: ContentIndexSchema }),
+  Schema.Struct({
+    type: Schema.Literal("thinking_delta"),
+    contentIndex: ContentIndexSchema,
+    delta: StreamingStringSchema,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thinking_end"),
+    contentIndex: ContentIndexSchema,
+    content: StreamingStringSchema,
+  }),
+  Schema.Struct({ type: Schema.Literal("toolcall_start"), contentIndex: ContentIndexSchema }),
+  Schema.Struct({
+    type: Schema.Literal("toolcall_delta"),
+    contentIndex: ContentIndexSchema,
+    delta: StreamingStringSchema,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("toolcall_end"),
+    contentIndex: ContentIndexSchema,
+    toolCall: Schema.Struct({
+      type: Schema.Literal("toolCall"),
+      id: ShortStringSchema,
+      name: ShortStringSchema,
+      arguments: Schema.Record(Schema.String, Schema.Json),
+      thoughtSignature: Schema.optionalKey(StreamingStringSchema),
+    }),
+  }),
+]);
+export type AssistantMessageEvent = typeof AssistantMessageEventSchema.Type;
+
 export const MessageEventSchema = Schema.Struct({
   type: Schema.Literals(["message_start", "message_update", "message_end"]),
   message: Schema.optionalKey(Schema.Json),
+  assistantMessageEvent: Schema.optionalKey(AssistantMessageEventSchema),
 });
 export type MessageEvent = typeof MessageEventSchema.Type;
 

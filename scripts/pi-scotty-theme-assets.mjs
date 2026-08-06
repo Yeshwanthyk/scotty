@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-export const PI_CODING_AGENT_VERSION = "0.83.0";
+export const PI_CODING_AGENT_VERSION = "0.84.0";
 export const PI_THEME_FILES = ["dark.json", "light.json"];
 
 export const resolvePiCodingAgentPackage = async () => {

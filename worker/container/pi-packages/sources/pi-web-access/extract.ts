@@ -1,18 +1,25 @@
 import { Readability } from "@mozilla/readability";
+import { resizeImage } from "@earendil-works/pi-coding-agent";
 import { parseHTML } from "linkedom";
 import TurndownService from "turndown";
 import pLimit from "p-limit";
 import { activityMonitor } from "./activity.ts";
 import { extractRSCContent } from "./rsc-extract.ts";
-import { extractPDFToMarkdown, isPDF } from "./pdf-extract.ts";
+import { extractPDFToMarkdown, isPDF, loadPDFConfig } from "./pdf-extract.ts";
 import { extractGitHub } from "./github-extract.ts";
 import { isYouTubeURL, isYouTubeEnabled, extractYouTube, extractYouTubeFrame, extractYouTubeFrames, getYouTubeStreamInfo } from "./youtube-extract.ts";
 import { CredentialResolutionError } from "./credential-source.ts";
 import { extractWithUrlContext, extractWithGeminiWeb } from "./gemini-url-context.ts";
 import { extractWithParallel, isParallelAvailable } from "./parallel.ts";
 import { extractWithTinyFish, isTinyFishAvailable } from "./tinyfish.ts";
+import { extractWithSearch1API, isSearch1APIAvailable } from "./search1api.ts";
+import { extractWithQuerit, isQueritAvailable } from "./querit.ts";
+import { extractWithKagi, isKagiExtractAvailable } from "./kagi.ts";
+import { extractWithOllama, isOllamaFetchAvailable } from "./ollama.ts";
 import { extractWithFirecrawl, isFirecrawlAvailable } from "./firecrawl.ts";
+import { extractWithBrightDataUnlocker, isBrightDataUnlockerAvailable } from "./brightdata-unlocker.ts";
 import { isVideoFile, extractVideo, extractVideoFrame, getLocalVideoDuration } from "./video-extract.ts";
+import { appendDeclaredWebLinks, discoverDeclaredWebLinks, type DeclaredWebLink } from "./declared-web-links.ts";
 import { fetchRemoteUrl, loadFetchContentDomainPolicy, loadSsrfConfig, validateRemoteUrl, type Lookup } from "./ssrf-protection.ts";
 import { formatSeconds, getWebSearchConfigPath } from "./utils.ts";
 
@@ -21,6 +28,7 @@ const CONCURRENT_LIMIT = 3;
 
 const NON_RECOVERABLE_ERRORS = ["Unsupported content type", "Response too large"];
 const MIN_USEFUL_CONTENT = 500;
+const SUPPORTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const WEB_SEARCH_CONFIG_PATH = getWebSearchConfigPath();
 
 export { loadSsrfConfig } from "./ssrf-protection.ts";
@@ -69,7 +77,11 @@ export interface ExtractedContent {
 	thumbnail?: { data: string; mimeType: string };
 	frames?: VideoFrame[];
 	duration?: number;
+	mimeType?: string;
+	status?: number;
 }
+
+type HttpExtractedContent = ExtractedContent & { declaredLinks?: DeclaredWebLink[] };
 
 export interface ExtractOptions {
 	timeoutMs?: number;
@@ -78,6 +90,8 @@ export interface ExtractOptions {
 	timestamp?: string;
 	frames?: number;
 	model?: string;
+	mode?: "readable" | "raw" | "answer";
+	answerModel?: string;
 	/** Custom DNS resolver used for SSRF validation. Primarily a test seam. */
 	lookup?: Lookup;
 }
@@ -256,6 +270,10 @@ export async function extractContent(
 		} catch (err) {
 			return { url, title: "", content: "", error: errorMessage(err) };
 		}
+	}
+
+	if (options?.mode === "raw") {
+		return extractViaHttp(url, signal, options);
 	}
 
 	if (options?.frames && !options.timestamp) {
@@ -452,7 +470,11 @@ export async function extractContent(
 
 	if (signal?.aborted) return abortedResult(url);
 
-	const httpResult = await extractViaHttp(url, signal, options);
+	const { declaredLinks = [], ...httpResult } = await extractViaHttp(url, signal, options);
+	const withDeclaredLinks = (result: ExtractedContent): ExtractedContent => ({
+		...result,
+		content: appendDeclaredWebLinks(result.content, declaredLinks),
+	});
 
 	if (signal?.aborted) return abortedResult(url);
 	if (!httpResult.error) return httpResult;
@@ -467,7 +489,7 @@ export async function extractContent(
 				...(options?.lookup ? { lookup: options.lookup } : {}),
 				ssrf,
 			});
-			if (firecrawlResult) return firecrawlResult;
+			if (firecrawlResult) return withDeclaredLinks(firecrawlResult);
 		}
 	} catch (err) {
 		if (isAbortError(err)) return abortedResult(url);
@@ -477,14 +499,14 @@ export async function extractContent(
 	if (signal?.aborted) return abortedResult(url);
 
 	const jinaResult = await extractWithJinaReader(url, signal, options?.lookup);
-	if (jinaResult) return jinaResult;
+	if (jinaResult) return withDeclaredLinks(jinaResult);
 	if (signal?.aborted) return abortedResult(url);
 
 	let tinyfishError: string | null = null;
 	try {
 		if (isTinyFishAvailable()) {
 			const tinyfishResult = await extractWithTinyFish(url, signal, options);
-			if (tinyfishResult) return tinyfishResult;
+			if (tinyfishResult) return withDeclaredLinks(tinyfishResult);
 		}
 	} catch (err) {
 		if (isAbortError(err)) return abortedResult(url);
@@ -495,17 +517,107 @@ export async function extractContent(
 	}
 	if (signal?.aborted) return abortedResult(url);
 
+	let search1apiError: string | null = null;
+	try {
+		if (isSearch1APIAvailable()) {
+			const search1apiResult = await extractWithSearch1API(url, signal, options);
+			if (search1apiResult) return withDeclaredLinks(search1apiResult);
+		}
+	} catch (err) {
+		if (isAbortError(err)) return abortedResult(url);
+		search1apiError = errorMessage(err);
+		if (isConfigParseError(err)) {
+			return { ...httpResult, error: search1apiError };
+		}
+	}
+	if (signal?.aborted) return abortedResult(url);
+
+	let queritError: string | null = null;
+	try {
+		if (isQueritAvailable()) {
+			const queritResult = await extractWithQuerit(url, signal, options);
+			if (queritResult) return withDeclaredLinks(queritResult);
+		}
+	} catch (err) {
+		if (isAbortError(err)) return abortedResult(url);
+		queritError = errorMessage(err);
+		if (isConfigParseError(err)) {
+			return { ...httpResult, error: queritError };
+		}
+	}
+	if (signal?.aborted) return abortedResult(url);
+
+	let kagiError: string | null = null;
+	try {
+		if (isKagiExtractAvailable()) {
+			const ssrf = loadSsrfConfig();
+			const kagiResult = await extractWithKagi(url, signal, {
+				timeoutMs: options?.timeoutMs,
+				...(options?.lookup ? { lookup: options.lookup } : {}),
+				ssrf,
+			});
+			if (kagiResult) return withDeclaredLinks(kagiResult);
+		}
+	} catch (err) {
+		if (isAbortError(err)) return abortedResult(url);
+		kagiError = errorMessage(err);
+		if (isConfigParseError(err)) {
+			return { ...httpResult, error: kagiError };
+		}
+	}
+	if (signal?.aborted) return abortedResult(url);
+
+	let ollamaError: string | null = null;
+	try {
+		if (isOllamaFetchAvailable()) {
+			const ssrf = loadSsrfConfig();
+			const ollamaResult = await extractWithOllama(url, signal, {
+				timeoutMs: options?.timeoutMs,
+				...(options?.lookup ? { lookup: options.lookup } : {}),
+				ssrf,
+			});
+			if (ollamaResult) return withDeclaredLinks(ollamaResult);
+		}
+	} catch (err) {
+		if (isAbortError(err)) return abortedResult(url);
+		ollamaError = errorMessage(err);
+		if (isConfigParseError(err)) {
+			return { ...httpResult, error: ollamaError };
+		}
+	}
+	if (signal?.aborted) return abortedResult(url);
+
 	let parallelError: string | null = null;
 	try {
 		if (isParallelAvailable()) {
 			const parallelResult = await extractWithParallel(url, signal, options);
-			if (parallelResult) return parallelResult;
+			if (parallelResult) return withDeclaredLinks(parallelResult);
 		}
 	} catch (err) {
 		if (isAbortError(err)) return abortedResult(url);
 		parallelError = errorMessage(err);
 		if (isConfigParseError(err)) {
 			return { ...httpResult, error: parallelError };
+		}
+	}
+	if (signal?.aborted) return abortedResult(url);
+
+	let brightdataError: string | null = null;
+	try {
+		if (isBrightDataUnlockerAvailable()) {
+			const ssrf = loadSsrfConfig();
+			const brightdataResult = await extractWithBrightDataUnlocker(url, signal, {
+				timeoutMs: options?.timeoutMs,
+				...(options?.lookup ? { lookup: options.lookup } : {}),
+				ssrf,
+			});
+			if (brightdataResult) return withDeclaredLinks(brightdataResult);
+		}
+	} catch (err) {
+		if (isAbortError(err)) return abortedResult(url);
+		brightdataError = errorMessage(err);
+		if (isConfigParseError(err)) {
+			return { ...httpResult, error: brightdataError };
 		}
 	}
 	if (signal?.aborted) return abortedResult(url);
@@ -521,19 +633,30 @@ export async function extractContent(
 		}
 	}
 
-	if (geminiResult) return geminiResult;
+	if (geminiResult) return withDeclaredLinks(geminiResult);
 	if (signal?.aborted) return abortedResult(url);
+	if (declaredLinks.length > 0) return { ...httpResult, error: null };
 
 	const guidance = [
 		httpResult.error,
 		...(firecrawlError ? [`Firecrawl fallback failed: ${firecrawlError}`] : []),
 		...(tinyfishError ? [`TinyFish fallback failed: ${tinyfishError}`] : []),
+		...(search1apiError ? [`Search1API fallback failed: ${search1apiError}`] : []),
+		...(queritError ? [`Querit fallback failed: ${queritError}`] : []),
+		...(kagiError ? [`Kagi fallback failed: ${kagiError}`] : []),
+		...(ollamaError ? [`Ollama fallback failed: ${ollamaError}`] : []),
 		...(parallelError ? [`Parallel fallback failed: ${parallelError}`] : []),
+		...(brightdataError ? [`Bright Data fallback failed: ${brightdataError}`] : []),
 		"",
 		"Fallback options:",
 		`  \u2022 Set firecrawlBaseUrl in ${WEB_SEARCH_CONFIG_PATH} to a self-hosted Firecrawl instance`,
-		`  \u2022 Set tinyfishApiKey in ${WEB_SEARCH_CONFIG_PATH} or TINYFISH_API_KEY`,
-		`  \u2022 Set parallelApiKey in ${WEB_SEARCH_CONFIG_PATH} or PARALLEL_API_KEY`,
+		`  • Set tinyfishApiKey in ${WEB_SEARCH_CONFIG_PATH} or TINYFISH_API_KEY`,
+		`  • Set search1apiApiKey in ${WEB_SEARCH_CONFIG_PATH} or SEARCH1API_KEY`,
+		`  • Set queritApiKey in ${WEB_SEARCH_CONFIG_PATH} or QUERIT_API_KEY`,
+		`  • Set kagiApiKey in ${WEB_SEARCH_CONFIG_PATH} or KAGI_API_KEY`,
+		`  • Set ollamaApiKey in ${WEB_SEARCH_CONFIG_PATH} or OLLAMA_API_KEY`,
+		`  • Set parallelApiKey in ${WEB_SEARCH_CONFIG_PATH} or PARALLEL_API_KEY`,
+		`  • Set brightdataApiKey and brightdataUnlockerZone in ${WEB_SEARCH_CONFIG_PATH} or BRIGHTDATA_API_KEY and BRIGHTDATA_UNLOCKER_ZONE`,
 		`  \u2022 Set GEMINI_API_KEY in ${WEB_SEARCH_CONFIG_PATH}`,
 		"  \u2022 Sign into gemini.google.com in Chrome",
 		"  \u2022 Use web_search to find content about this topic",
@@ -563,11 +686,86 @@ function isLikelyJSRendered(html: string): boolean {
 	return textContent.length < 500 && scriptCount > 3;
 }
 
+export async function readPDFResponseBuffer(response: Response, maxSizeMB: number): Promise<ArrayBuffer> {
+	const maxBytes = maxSizeMB * 1024 * 1024;
+	return readResponseBufferWithLimit(response, maxBytes, () => pdfSizeLimitError(maxSizeMB));
+}
+
+async function readTextResponseWithLimit(response: Response, maxBytes: number): Promise<string> {
+	const buffer = await readResponseBufferWithLimit(response, maxBytes, () => responseSizeLimitError(maxBytes));
+	const charset = response.headers.get("content-type")?.match(/charset\s*=\s*["']?([^;"'\s]+)/i)?.[1];
+	try {
+		return new TextDecoder(charset || "utf-8").decode(buffer);
+	} catch {
+		return new TextDecoder("utf-8").decode(buffer);
+	}
+}
+
+function isTextContentType(contentType: string): boolean {
+	const mimeType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+	return mimeType.startsWith("text/") ||
+		mimeType === "application/json" ||
+		mimeType === "application/ld+json" ||
+		mimeType === "application/xml" ||
+		mimeType === "application/xhtml+xml" ||
+		mimeType === "application/javascript" ||
+		mimeType === "application/x-javascript" ||
+		mimeType.endsWith("+json") ||
+		mimeType.endsWith("+xml");
+}
+
+async function readResponseBufferWithLimit(
+	response: Response,
+	maxBytes: number,
+	buildError: () => Error,
+): Promise<ArrayBuffer> {
+	const reader = response.body?.getReader();
+	if (!reader) {
+		const buffer = await response.arrayBuffer();
+		if (buffer.byteLength > maxBytes) throw buildError();
+		return buffer;
+	}
+
+	const chunks: Uint8Array[] = [];
+	let totalBytes = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			totalBytes += value.byteLength;
+			if (totalBytes > maxBytes) {
+				await reader.cancel();
+				throw buildError();
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+
+	const combined = new Uint8Array(totalBytes);
+	let offset = 0;
+	for (const chunk of chunks) {
+		combined.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return combined.buffer;
+}
+
+function pdfSizeLimitError(maxSizeMB: number): Error {
+	return new Error(`PDF exceeds configured pdf.maxSizeMB limit (${maxSizeMB} MB)`);
+}
+
+function responseSizeLimitError(maxBytes: number): Error {
+	return new Error(`Response too large (${Math.round(maxBytes / 1024 / 1024)}MB)`);
+}
+
 async function extractViaHttp(
 	url: string,
 	signal?: AbortSignal,
 	options?: ExtractOptions,
-): Promise<ExtractedContent> {
+): Promise<HttpExtractedContent> {
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const activityId = activityMonitor.logStart({ type: "fetch", url });
 
@@ -604,37 +802,76 @@ async function extractViaHttp(
 			},
 		);
 
-		if (!response.ok) {
+		if (!response.ok && options?.mode !== "raw") {
 			activityMonitor.logComplete(activityId, response.status);
 			return {
 				url,
 				title: "",
 				content: "",
 				error: `HTTP ${response.status}: ${response.statusText}`,
+				status: response.status,
 			};
 		}
 
 		const contentLengthHeader = response.headers.get("content-length");
 		const contentType = response.headers.get("content-type") || "";
+		const mimeType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
 		const isPDFContent = isPDF(url, contentType);
-		const maxResponseSize = isPDFContent ? 20 * 1024 * 1024 : 5 * 1024 * 1024;
+		const pdfConfig = isPDFContent ? loadPDFConfig() : null;
+		const maxResponseSize = (pdfConfig?.maxSizeMB ?? 5) * 1024 * 1024;
 		if (contentLengthHeader) {
-			const contentLength = parseInt(contentLengthHeader, 10);
-			if (contentLength > maxResponseSize) {
+			const contentLength = Number.parseInt(contentLengthHeader, 10);
+			if (Number.isFinite(contentLength) && contentLength > maxResponseSize) {
 				activityMonitor.logComplete(activityId, response.status);
 				return {
 					url,
 					title: "",
 					content: "",
-					error: `Response too large (${Math.round(contentLength / 1024 / 1024)}MB)`,
+					error: pdfConfig
+						? pdfSizeLimitError(pdfConfig.maxSizeMB).message
+						: `Response too large (${Math.round(contentLength / 1024 / 1024)}MB)`,
 				};
 			}
 		}
 
-		if (isPDFContent) {
+		if (options?.mode === "raw") {
+			if (!isTextContentType(contentType)) {
+				activityMonitor.logComplete(activityId, response.status);
+				return { url, title: "", content: "", error: `Unsupported content type in raw mode: ${mimeType || "missing"}`, mimeType, status: response.status };
+			}
+			const text = await readTextResponseWithLimit(response, maxResponseSize);
+			activityMonitor.logComplete(activityId, response.status);
+			return { url, title: extractTextTitle(text, url), content: text, error: null, mimeType, status: response.status };
+		}
+
+		if (SUPPORTED_IMAGE_TYPES.has(mimeType)) {
 			try {
-				const buffer = await response.arrayBuffer();
-				const result = await extractPDFToMarkdown(buffer, url);
+				const buffer = await readResponseBufferWithLimit(response, maxResponseSize, () => responseSizeLimitError(maxResponseSize));
+				const resized = await resizeImage(new Uint8Array(buffer), mimeType, { maxWidth: 2000, maxHeight: 2000 });
+				activityMonitor.logComplete(activityId, response.status);
+				if (!resized) return { url, title: "", content: "", error: `Could not decode image: ${mimeType}`, mimeType, status: response.status };
+				const title = new URL(response.url || url).pathname.split("/").pop() || url;
+				return {
+					url,
+					title,
+					content: `Image fetched (${resized.width}×${resized.height}, ${resized.mimeType})`,
+					error: null,
+					thumbnail: { data: resized.data, mimeType: resized.mimeType },
+					mimeType: resized.mimeType,
+					status: response.status,
+				};
+			} catch (err) {
+				const message = errorMessage(err);
+				activityMonitor.logError(activityId, message);
+				return { url, title: "", content: "", error: message, mimeType, status: response.status };
+			}
+		}
+
+		if (isPDFContent && pdfConfig) {
+			try {
+				const buffer = await readPDFResponseBuffer(response, pdfConfig.maxSizeMB);
+				if (signal?.aborted) return abortedResult(url);
+				const result = await extractPDFToMarkdown(buffer, url, { signal });
 				activityMonitor.logComplete(activityId, response.status);
 				return {
 					url,
@@ -645,6 +882,12 @@ async function extractViaHttp(
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				activityMonitor.logError(activityId, message);
+				if (message.startsWith("PDF exceeds configured pdf.maxSizeMB limit")) {
+					return { url, title: "", content: "", error: message };
+				}
+				if (err instanceof CredentialResolutionError || isConfigParseError(err)) {
+					return { url, title: "", content: "", error: message };
+				}
 				return { url, title: "", content: "", error: `PDF extraction failed: ${message}` };
 			}
 		}
@@ -663,7 +906,7 @@ async function extractViaHttp(
 			};
 		}
 
-		const text = await response.text();
+		const text = await readTextResponseWithLimit(response, maxResponseSize);
 		const isHTML = contentType.includes("text/html") || contentType.includes("application/xhtml+xml");
 
 		if (!isHTML) {
@@ -673,6 +916,12 @@ async function extractViaHttp(
 		}
 
 		const { document } = parseHTML(text);
+		const documentTitle = document.title?.trim() ?? "";
+		const declaredLinks = discoverDeclaredWebLinks(
+			document as unknown as Document,
+			response.headers.get("link"),
+			response.url || url,
+		);
 		const reader = new Readability(document as unknown as Document);
 		const article = reader.parse();
 
@@ -680,12 +929,16 @@ async function extractViaHttp(
 			const rscResult = extractRSCContent(text);
 			if (rscResult) {
 				activityMonitor.logComplete(activityId, response.status);
-				return { url, title: rscResult.title, content: rscResult.content, error: null };
+				return {
+					url,
+					title: rscResult.title,
+					content: appendDeclaredWebLinks(rscResult.content, declaredLinks),
+					error: null,
+					declaredLinks,
+				};
 			}
 
 			activityMonitor.logComplete(activityId, response.status);
-
-			// Provide more specific error message
 			const jsRendered = isLikelyJSRendered(text);
 			const errorMsg = jsRendered
 				? "Page appears to be JavaScript-rendered (content loads dynamically)"
@@ -693,9 +946,10 @@ async function extractViaHttp(
 
 			return {
 				url,
-				title: "",
-				content: "",
+				title: documentTitle,
+				content: appendDeclaredWebLinks("", declaredLinks),
 				error: errorMsg,
+				declaredLinks,
 			};
 		}
 
@@ -708,15 +962,22 @@ async function extractViaHttp(
 		if (markdown.length < MIN_USEFUL_CONTENT) {
 			return {
 				url,
-				title: article.title || "",
-				content: markdown,
+				title: article.title || documentTitle,
+				content: appendDeclaredWebLinks(markdown, declaredLinks),
 				error: isLikelyJSRendered(text)
 					? "Page appears to be JavaScript-rendered (content loads dynamically)"
 					: "Extracted content appears incomplete",
+				declaredLinks,
 			};
 		}
 
-		return { url, title: article.title || "", content: markdown, error: null };
+		return {
+			url,
+			title: article.title || documentTitle,
+			content: appendDeclaredWebLinks(markdown, declaredLinks),
+			error: null,
+			declaredLinks,
+		};
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		if (message.toLowerCase().includes("abort")) {

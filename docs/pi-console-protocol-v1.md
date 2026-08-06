@@ -1,7 +1,7 @@
 # Scotty passive Pi console protocol v1
 
 The standalone fleet console uses a Scotty-owned protocol. It does not use unpublished Pi client,
-protocol, or server packages. Pi remains pinned to `0.83.0` and runs only inside the sandbox.
+protocol, or server packages. Pi remains pinned to `0.84.0` and runs only inside the sandbox.
 
 ## Boundary
 
@@ -84,13 +84,19 @@ an overlap only when it is the complete contiguous range `baseSequence + 1 ... s
 it retries collection and returns a typed snapshot failure after bounded attempts. SSE is only a
 tail after a valid snapshot.
 
+Pi 0.84 emits delta-only `message_update.assistantMessageEvent` records on its JSON/RPC wire.
+`message_start.message` initializes the live projection, clients assemble text, thinking, and tool
+call content by `contentIndex`, and `message_end.message` is the authoritative final replacement.
+Scotty relays these bounded records without introducing a Pi-owned public transport. The standalone
+client remains compatible with the cumulative `message_update.message` records emitted by Pi 0.83.
+
 The volatile reducer bounds and sanitizes active tools, steering/follow-up queues, extension status,
 string widgets, title, blocking UI, capabilities, transcript count, string size, object depth, and
 event replay. ANSI, OSC, terminal-unsafe C0 controls, DEL/C1 controls, known credential forms, and
 Scotty sentinel forms are removed before serialization. TAB/LF/CR remain available to multiline
 transcript renderers; single-line console chrome normalizes them to spaces before terminal output.
 
-Pi 0.83 emits explicit dialog timeouts but emits no event for signal-driven cancellation. The
+Pi 0.84 emits explicit dialog timeouts but emits no event for signal-driven cancellation. The
 supervisor proves cleanup for explicit timeout, observable Pi response/close events, abort, quiesce,
 settle, process exit, epoch replacement, and bounded overflow. A successful stdin write for an
 `extension_ui_response` produces a `delivered` receipt with an `unconfirmed` outcome and leaves the
@@ -105,7 +111,8 @@ request pending. Snapshots therefore report the remaining platform gap as:
 }
 ```
 
-No client may treat `pendingUi` as complete while that state is present.
+No client may treat `pendingUi` as complete while that state is present. The reason literal is a
+historical protocol-v1 identifier introduced for Pi 0.83 and remains unchanged for compatibility.
 
 ## Commands
 

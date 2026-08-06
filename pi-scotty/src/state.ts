@@ -18,6 +18,7 @@ import {
   decodeQueueEvent,
   decodeStreaming,
   decodeToolEvent,
+  type AssistantMessageEvent,
   type FleetSession,
   type SelectedSession,
 } from "./schemas.ts";
@@ -39,8 +40,13 @@ export interface ConsoleNotification {
   readonly type: "info" | "warning" | "error";
 }
 
+interface PendingMessageProjection {
+  index: number;
+  message: unknown;
+}
+
 interface MessageProjectionState {
-  readonly pending: Array<{ index: number; message: unknown }>;
+  readonly pending: Array<PendingMessageProjection>;
   readonly overlap: Array<{ index: number; signature: string }>;
 }
 
@@ -92,6 +98,9 @@ export type EventReduction = "applied" | "duplicate" | "resnapshot";
 
 const toolId = (event: ReturnType<typeof decodeToolEvent>): string | undefined =>
   event?.toolCallId ?? event?.tool_call_id ?? event?.id;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 
 const messageSignature = (message: unknown): string => JSON.stringify(message) ?? "null";
 const messageId = (message: unknown): string | undefined => {
@@ -174,6 +183,67 @@ const projectMessageEvent = (
   )
     messages[messages.length - 1] = message;
   else messages.push(message);
+};
+
+const projectAssistantMessageEvent = (
+  messages: unknown[],
+  projection: MessageProjectionState,
+  event: AssistantMessageEvent,
+): void => {
+  let pending = projection.pending.findLast(
+    (candidate) => decodeMessageIdentity(candidate.message)?.role === "assistant",
+  );
+  if (pending === undefined) {
+    const index = messages.findLastIndex(
+      (candidate) =>
+        decodeMessageIdentity(candidate)?.role === "assistant" &&
+        isRecord(candidate) &&
+        Array.isArray(candidate.content),
+    );
+    const message = messages[index];
+    if (index < 0 || message === undefined) return;
+    pending = { index, message };
+    projection.pending.push(pending);
+  }
+  if (!isRecord(pending.message)) return;
+  const sourceContent = pending.message.content;
+  if (!Array.isArray(sourceContent) || event.contentIndex > sourceContent.length) return;
+  if (event.type === "toolcall_start" || event.type === "toolcall_delta") return;
+
+  const content = [...sourceContent];
+  if (event.type === "toolcall_end") content[event.contentIndex] = event.toolCall;
+  else if (event.type === "text_start") content[event.contentIndex] = { type: "text", text: "" };
+  else if (event.type === "text_delta") {
+    const part = content[event.contentIndex];
+    const text =
+      isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "";
+    content[event.contentIndex] = {
+      type: "text",
+      text: redactRemoteString(`${text}${event.delta}`),
+    };
+  } else if (event.type === "text_end")
+    content[event.contentIndex] = { type: "text", text: redactRemoteString(event.content) };
+  else if (event.type === "thinking_start")
+    content[event.contentIndex] = { type: "thinking", thinking: "" };
+  else if (event.type === "thinking_delta") {
+    const part = content[event.contentIndex];
+    const thinking =
+      isRecord(part) && part.type === "thinking" && typeof part.thinking === "string"
+        ? part.thinking
+        : "";
+    content[event.contentIndex] = {
+      type: "thinking",
+      thinking: redactRemoteString(`${thinking}${event.delta}`),
+    };
+  } else
+    content[event.contentIndex] = {
+      type: "thinking",
+      thinking: redactRemoteString(event.content),
+    };
+
+  const message = { ...pending.message, content };
+  pending.message = message;
+  messages[pending.index] = message;
 };
 
 const boundMessages = (messages: unknown[], projection: MessageProjectionState): void => {
@@ -317,10 +387,14 @@ const reduceEvent = (
     overlap: current.messageProjection.overlap.map((overlap) => ({ ...overlap })),
   };
   const messageEvent = decodeMessageEvent(event);
-  if (messageEvent?.message !== undefined) {
+  if (messageEvent?.message !== undefined)
     projectMessageEvent(messages, messageProjection, messageEvent.type, messageEvent.message);
-    boundMessages(messages, messageProjection);
-  }
+  else if (
+    messageEvent?.type === "message_update" &&
+    messageEvent.assistantMessageEvent !== undefined
+  )
+    projectAssistantMessageEvent(messages, messageProjection, messageEvent.assistantMessageEvent);
+  if (messageEvent !== undefined) boundMessages(messages, messageProjection);
 
   const recentEvents = [...current.recentEvents, event];
   if (recentEvents.length > MAX_RECENT_EVENTS)

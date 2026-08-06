@@ -6,7 +6,7 @@ import { detectPiThemeName, loadPiPresentationTheme } from "../src/theme.ts";
 const entry = new URL(import.meta.resolve("@earendil-works/pi-coding-agent"));
 const themeDirectory = join(dirname(fileURLToPath(entry)), "modes", "interactive", "theme");
 
-describe("exact Pi 0.83 presentation theme", () => {
+describe("exact Pi 0.84 presentation theme", () => {
   it("preserves semantic colors in the published dark and light assets", () => {
     const dark = loadPiPresentationTheme("dark", themeDirectory, "truecolor");
     const light = loadPiPresentationTheme("light", themeDirectory, "truecolor");
@@ -23,7 +23,7 @@ describe("exact Pi 0.83 presentation theme", () => {
     expect(light.getFgAnsi("muted")).toBe("\u001b[38;2;108;108;108m");
   });
 
-  it("matches Pi 0.83 COLORFGBG light and dark selection", () => {
+  it("matches Pi 0.84 COLORFGBG light and dark selection", () => {
     expect(detectPiThemeName({ COLORFGBG: "15;0" })).toBe("dark");
     expect(detectPiThemeName({ COLORFGBG: "0;15" })).toBe("light");
     expect(detectPiThemeName({})).toBe("dark");

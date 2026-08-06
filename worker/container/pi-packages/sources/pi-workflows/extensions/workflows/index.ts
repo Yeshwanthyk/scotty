@@ -36,6 +36,10 @@ import { Type, type Static } from "typebox";
 import { formatActivityStatus } from "../shared/activity-status.ts";
 import { createWorkflowPersistence, persistWorkflowJson } from "./artifacts.ts";
 import {
+  cancelActiveWorkflowRun,
+  type ActiveWorkflowRun,
+} from "./cancellation.ts";
+import {
   reconcileWorkflowStatus,
   RunController,
   WorkflowTerminationError,
@@ -45,9 +49,18 @@ import {
   sessionWorkflowRunIds,
   showWorkflowDashboard,
 } from "./dashboard.ts";
+import {
+  assertWorkflowDraftApproved,
+  assertWorkflowDraftArtifactMatches,
+  createWorkflowDraft,
+  loadWorkflowDraft,
+  type WorkflowDraft,
+} from "./drafts.ts";
+import { showWorkflowDraftReview } from "./draft-review.ts";
 import { CapacityPool, hostCapacity, resolveWorkflowLimits } from "./limits.ts";
 import {
   extractMeta,
+  formatWorkflowScriptParseError,
   prepareWorkflowScript,
   type WorkflowMeta,
 } from "./meta.ts";
@@ -73,7 +86,7 @@ import {
 import {
   buildBackgroundWorkflowFollowUp,
   buildBackgroundWorkflowLaunchResult,
-  buildWorkflowAgentPrompt,
+  buildWorkflowDraftMessage,
   buildWorkflowResultMessage,
   WORKFLOW_PARAMETER_DESCRIPTIONS,
   WORKFLOW_PROMPT_GUIDELINES,
@@ -109,23 +122,71 @@ interface AgentCallOptions {
   effort?: unknown;
 }
 
-const WorkflowParams = Type.Object({
-  script: Type.String({
-    description: WORKFLOW_PARAMETER_DESCRIPTIONS.script,
-  }),
-  args: Type.Optional(
-    Type.String({
-      description: WORKFLOW_PARAMETER_DESCRIPTIONS.args,
-    }),
+const WorkflowParams = Type.Union([
+  Type.Object(
+    {
+      preview: Type.String({
+        minLength: 1,
+        description: WORKFLOW_PARAMETER_DESCRIPTIONS.preview,
+      }),
+      script: Type.String({
+        description: WORKFLOW_PARAMETER_DESCRIPTIONS.script,
+      }),
+      args: Type.Optional(
+        Type.String({
+          description: WORKFLOW_PARAMETER_DESCRIPTIONS.args,
+        }),
+      ),
+      background: Type.Optional(
+        Type.Boolean({
+          description: WORKFLOW_PARAMETER_DESCRIPTIONS.background,
+        }),
+      ),
+    },
+    { additionalProperties: false },
   ),
-  background: Type.Optional(
-    Type.Boolean({
-      description: WORKFLOW_PARAMETER_DESCRIPTIONS.background,
-    }),
+  Type.Object(
+    {
+      draftId: Type.String({
+        description: WORKFLOW_PARAMETER_DESCRIPTIONS.draftId,
+      }),
+    },
+    { additionalProperties: false },
   ),
-});
+]);
+
+const WorkflowCancelParams = Type.Object(
+  {
+    runId: Type.String({
+      description: WORKFLOW_PARAMETER_DESCRIPTIONS.runId,
+    }),
+  },
+  { additionalProperties: false },
+);
 
 type WorkflowInput = Static<typeof WorkflowParams>;
+
+interface WorkflowDraftToolDetails {
+  kind: "draft";
+  draftId: string;
+  name?: string;
+  preview: string;
+  script: string;
+  artifactPath: string;
+  background: boolean;
+  phases: WorkflowMeta["phases"];
+  limits?: WorkflowMeta["limits"];
+}
+
+function isWorkflowDraftToolDetails(
+  value: unknown,
+): value is WorkflowDraftToolDetails {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    (value as { kind?: unknown }).kind === "draft"
+  );
+}
 
 function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(
@@ -234,15 +295,15 @@ export default function workflows(pi: ExtensionAPI) {
   /** One extension-owned process-global pool shared by every run. */
   const sharedCapacity = new CapacityPool(hostCapacity());
 
+  /** Process-memory authority prevents artifact edits from changing approval. */
+  const pendingDrafts = new Map<string, WorkflowDraft>();
+  let userInputRevision = 0;
+  pi.on("input", (event) => {
+    if (event.source !== "extension") userInputRevision += 1;
+  });
+
   /** Live background runs, for /workflows and shutdown cleanup. */
-  const activeRuns = new Map<
-    string,
-    {
-      details: WorkflowDetails;
-      controller: RunController;
-      completion?: Promise<void>;
-    }
-  >();
+  const activeRuns = new Map<string, ActiveWorkflowRun>();
   const activeDetails = () =>
     new Map(
       [...activeRuns].map(([runId, run]) => [runId, run.details] as const),
@@ -316,6 +377,75 @@ export default function workflows(pi: ExtensionAPI) {
     lastUi = undefined;
   });
 
+  pi.registerCommand("workflow-draft", {
+    description: "Review a pending workflow draft and its exact source",
+    getArgumentCompletions: (prefix) => {
+      const matches = [...pendingDrafts.values()]
+        .filter((draft) => draft.draftId.startsWith(prefix))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((draft) => ({
+          value: draft.draftId,
+          label: draft.draftId,
+          description: draft.preview.split("\n", 1)[0],
+        }));
+      return matches.length > 0 ? matches : null;
+    },
+    handler: async (rawArgs, ctx) => {
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify(
+          "Workflow draft review requires interactive mode.",
+          "warning",
+        );
+        return;
+      }
+      const query = rawArgs.trim();
+      const available = [...pendingDrafts.values()]
+        .filter(
+          (draft) =>
+            draft.sessionId === ctx.sessionManager.getSessionId() &&
+            draft.cwd === ctx.cwd,
+        )
+        .sort((a, b) => b.createdAt - a.createdAt);
+      const matches = query
+        ? available.filter(
+            (draft) => draft.draftId === query || draft.draftId.endsWith(query),
+          )
+        : available.slice(0, 1);
+      if (matches.length === 0) {
+        ctx.ui.notify(
+          query
+            ? `No pending workflow draft matching "${query}".`
+            : "No pending workflow drafts in this session.",
+          "warning",
+        );
+        return;
+      }
+      if (matches.length > 1) {
+        ctx.ui.notify(`Multiple pending drafts match "${query}".`, "warning");
+        return;
+      }
+      const draft = matches[0]!;
+      let prepared: ReturnType<typeof prepareWorkflowScript>;
+      try {
+        prepared = prepareWorkflowScript(draft.script);
+      } catch (error) {
+        ctx.ui.notify(
+          formatWorkflowScriptParseError(draft.script, error),
+          "error",
+        );
+        return;
+      }
+      const artifactPath = path.join(
+        getAgentDir(),
+        "workflows",
+        "drafts",
+        draft.draftId,
+        "draft.json",
+      );
+      await showWorkflowDraftReview(ctx, draft, prepared.meta, artifactPath);
+    },
+  });
+
   pi.registerCommand("workflows", {
     description:
       "List workflow runs (`/workflows <runId>` for one run's detail)",
@@ -366,6 +496,26 @@ export default function workflows(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "workflow_cancel",
+    label: "Cancel Workflow",
+    description:
+      "Cancel one exact active workflow run cleanly through its controller, wait for its agents and sandbox to settle, and report the persisted terminal status.",
+    parameters: WorkflowCancelParams,
+
+    async execute(_toolCallId, params) {
+      const details = await cancelActiveWorkflowRun(activeRuns, params.runId);
+      const message =
+        details.status === "aborted"
+          ? `Workflow ${params.runId} aborted cleanly.`
+          : `Workflow ${params.runId} settled as ${details.status}${details.error ? `: ${details.error}` : "."}`;
+      return {
+        content: [{ type: "text", text: message }],
+        details: compactToolDetails(details),
+      };
+    },
+  });
+
+  pi.registerTool({
     name: "workflow",
     label: "Workflow",
     description: WORKFLOW_TOOL_DESCRIPTION,
@@ -374,19 +524,81 @@ export default function workflows(pi: ExtensionAPI) {
     parameters: WorkflowParams,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const workflowsDir = path.join(getAgentDir(), "workflows");
+      if ("script" in params) {
+        let prepared: ReturnType<typeof prepareWorkflowScript>;
+        try {
+          prepared = prepareWorkflowScript(params.script);
+        } catch (error) {
+          throw new Error(formatWorkflowScriptParseError(params.script, error));
+        }
+        const draft = createWorkflowDraft(workflowsDir, {
+          sessionId: ctx.sessionManager.getSessionId(),
+          cwd: ctx.cwd,
+          preparedAtUserInput: userInputRevision,
+          preview: params.preview,
+          script: params.script,
+          ...(params.args !== undefined ? { args: params.args } : {}),
+          background: params.background ?? false,
+        });
+        pendingDrafts.set(draft.draftId, draft);
+        const directory = path.join(workflowsDir, "drafts", draft.draftId);
+        const artifactPath = path.join(directory, "draft.json");
+        const draftDetails: WorkflowDraftToolDetails = {
+          kind: "draft",
+          draftId: draft.draftId,
+          ...(prepared.meta.name ? { name: prepared.meta.name } : {}),
+          preview: draft.preview,
+          script: draft.script,
+          artifactPath,
+          background: draft.background,
+          phases: prepared.meta.phases,
+          ...(prepared.meta.limits ? { limits: prepared.meta.limits } : {}),
+        };
+        return {
+          content: [
+            {
+              type: "text",
+              text: buildWorkflowDraftMessage({
+                draftId: draft.draftId,
+                preview: draft.preview,
+                meta: prepared.meta,
+                artifactPath,
+              }),
+            },
+          ],
+          details: draftDetails,
+        };
+      }
+
+      const draft = pendingDrafts.get(params.draftId);
+      if (!draft) {
+        throw new Error(
+          `Workflow draft ${params.draftId} is not pending in this session; prepare it again`,
+        );
+      }
+      const artifact = loadWorkflowDraft(workflowsDir, params.draftId);
+      assertWorkflowDraftArtifactMatches(draft, artifact);
+      assertWorkflowDraftApproved(draft, {
+        sessionId: ctx.sessionManager.getSessionId(),
+        cwd: ctx.cwd,
+        userInput: userInputRevision,
+      });
+      const script = draft.script;
+      const argsText = draft.args;
       let prepared: ReturnType<typeof prepareWorkflowScript>;
       try {
-        prepared = prepareWorkflowScript(params.script);
+        prepared = prepareWorkflowScript(script);
       } catch (error) {
-        throw new Error(`Workflow script failed to parse: ${errorText(error)}`);
+        throw new Error(formatWorkflowScriptParseError(script, error));
       }
 
       let args: unknown;
-      if (params.args !== undefined) {
+      if (argsText !== undefined) {
         try {
-          args = JSON.parse(params.args);
+          args = JSON.parse(argsText);
         } catch {
-          args = params.args;
+          args = argsText;
         }
       }
 
@@ -396,8 +608,8 @@ export default function workflows(pi: ExtensionAPI) {
         sharedCapacity.capacity,
       );
       const runId = `wf_${randomBytes(6).toString("hex")}`;
-      const runDir = path.join(getAgentDir(), "workflows", runId);
-      const background = (params.background ?? false) && ctx.hasUI;
+      const runDir = path.join(workflowsDir, runId);
+      const background = draft.background && ctx.hasUI;
 
       const details: WorkflowDetails = {
         runId,
@@ -432,9 +644,8 @@ export default function workflows(pi: ExtensionAPI) {
         details.termination = controller.terminationRecord;
       };
 
-      writeRunFile(runDir, "script.js", params.script);
-      if (params.args !== undefined)
-        writeRunFile(runDir, "args.json", params.args);
+      writeRunFile(runDir, "script.js", script);
+      if (argsText !== undefined) writeRunFile(runDir, "args.json", argsText);
       persistWorkflowJson(runDir, details);
       const persistence = createWorkflowPersistence(runDir, details);
 
@@ -529,11 +740,10 @@ export default function workflows(pi: ExtensionAPI) {
           return { ok: false, output: "", error };
         };
 
-        const prompt = buildWorkflowAgentPrompt(
+        const prompt =
           typeof promptValue === "string"
             ? promptValue
-            : String(promptValue ?? ""),
-        );
+            : String(promptValue ?? "");
         if (!prompt.trim())
           return fail("agent() requires a non-empty prompt string");
         if (controller.signal.aborted)
@@ -733,11 +943,7 @@ export default function workflows(pi: ExtensionAPI) {
 
       // Registered for /workflows visibility and session_shutdown abort;
       // blocking runs are watchable live from the dashboard too.
-      const activeRun = { details, controller } as {
-        details: WorkflowDetails;
-        controller: RunController;
-        completion?: Promise<void>;
-      };
+      const activeRun: ActiveWorkflowRun = { details, controller };
       activeRuns.set(runId, activeRun);
       const completion = runScript();
       activeRun.completion = completion;
@@ -806,15 +1012,49 @@ export default function workflows(pi: ExtensionAPI) {
       };
     },
 
-    renderCall(args: Partial<WorkflowInput>, theme) {
+    renderCall(args: Partial<WorkflowInput>, theme, context) {
+      const component =
+        (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      if ("draftId" in args && typeof args.draftId === "string") {
+        component.setText(
+          theme.fg("toolTitle", theme.bold("workflow execute ")) +
+            theme.fg("accent", args.draftId),
+        );
+        return component;
+      }
+      const script = "script" in args ? args.script : undefined;
       const meta =
-        typeof args.script === "string"
-          ? extractMeta(args.script)
-          : { phases: [] };
+        typeof script === "string" ? extractMeta(script) : { phases: [] };
       let text =
-        theme.fg("toolTitle", theme.bold("workflow ")) +
-        theme.fg("accent", (meta as WorkflowMeta).name ?? "(script)");
-      if (args.background) text += theme.fg("dim", " (background)");
+        theme.fg("toolTitle", theme.bold("workflow draft ")) +
+        theme.fg(
+          "accent",
+          (meta as WorkflowMeta).name ??
+            (context.argsComplete ? "(script)" : "preparing…"),
+        );
+      if ("background" in args && args.background) {
+        text += theme.fg("dim", " (background)");
+      }
+      if (!context.argsComplete) {
+        const received =
+          typeof script === "string"
+            ? ` · ${script.length.toLocaleString("en-US")} chars received`
+            : "";
+        text += `\n  ${theme.fg("muted", "Preparing immutable script")}${theme.fg(
+          "dim",
+          `${received} · draft saves when complete`,
+        )}`;
+        const preview =
+          "preview" in args && typeof args.preview === "string"
+            ? args.preview.trim()
+            : "";
+        if (preview) {
+          text += `\n\n${theme.fg("muted", theme.bold("Preview"))}\n${theme.fg(
+            "toolOutput",
+            preview,
+          )}`;
+        }
+      }
       const description = (meta as WorkflowMeta).description;
       if (description) text += `\n  ${theme.fg("dim", description)}`;
       for (const phase of meta.phases.slice(0, 8)) {
@@ -822,11 +1062,93 @@ export default function workflows(pi: ExtensionAPI) {
           phase.detail ? theme.fg("dim", ` — ${phase.detail}`) : ""
         }`;
       }
-      return new Text(text, 0, 0);
+      component.setText(text);
+      return component;
     },
 
     renderResult(result, { expanded }, theme) {
-      const details = result.details as WorkflowDetails | undefined;
+      const rawDetails = result.details as unknown;
+      if (isWorkflowDraftToolDetails(rawDetails)) {
+        const details = rawDetails;
+        const label = details.name ?? details.draftId;
+        const header =
+          `${theme.fg("success", SQUARE)} ${theme.fg("toolTitle", theme.bold("workflow draft "))}` +
+          `${theme.fg("accent", label)} ${theme.fg("success", "ready")}` +
+          (details.background ? theme.fg("dim", " (background)") : "");
+
+        if (!expanded) {
+          return new Text(
+            `${header}\n  ${theme.fg("dim", `${details.draftId} · no agents started`)}\n` +
+              theme.fg(
+                "muted",
+                `  /workflow-draft ${details.draftId} · inspect plan and exact source`,
+              ),
+            0,
+            0,
+          );
+        }
+
+        const container = new Container();
+        container.addChild(new Text(header, 0, 0));
+        container.addChild(
+          new Text(
+            theme.fg(
+              "dim",
+              `Draft: ${details.draftId}\nArtifact: ${details.artifactPath}\nNo agents started. Approve only after review.`,
+            ),
+            0,
+            0,
+          ),
+        );
+        container.addChild(new Spacer(1));
+        container.addChild(
+          new Text(theme.fg("muted", theme.bold("Preview")), 0, 0),
+        );
+        container.addChild(
+          new Markdown(details.preview, 0, 0, getMarkdownTheme()),
+        );
+        if (details.phases.length > 0) {
+          container.addChild(new Spacer(1));
+          container.addChild(
+            new Text(theme.fg("muted", theme.bold("Phases")), 0, 0),
+          );
+          for (const phase of details.phases) {
+            container.addChild(
+              new Text(
+                `  ${theme.fg("accent", phase.title)}${phase.detail ? theme.fg("dim", ` — ${phase.detail}`) : ""}`,
+                0,
+                0,
+              ),
+            );
+          }
+        }
+        container.addChild(
+          new Text(
+            theme.fg(
+              "dim",
+              `Configured limits: ${details.limits ? JSON.stringify(details.limits) : "unbounded"}`,
+            ),
+            0,
+            0,
+          ),
+        );
+        container.addChild(new Spacer(1));
+        container.addChild(
+          new Text(
+            `${theme.fg("muted", theme.bold("Review inspector"))}\n` +
+              `  /workflow-draft ${details.draftId}\n` +
+              theme.fg(
+                "dim",
+                "  Opens the plan and exact immutable source side by side.",
+              ),
+            0,
+            0,
+          ),
+        );
+        return container;
+      }
+
+      const details = rawDetails as WorkflowDetails | undefined;
       if (!details) {
         const first = result.content[0];
         return new Text(

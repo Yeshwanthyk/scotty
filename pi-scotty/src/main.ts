@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { mkdir } from "node:fs/promises";
 
-import { ProcessTerminal, TUI } from "@earendil-works/pi-tui";
+import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { defaultConfigPath, defaultStateDirectory, loadConfig, saveConfig } from "./config.ts";
 import { FleetConsoleController } from "./controller.ts";
 import { PiScottyError, safeErrorMessage } from "./errors.ts";
@@ -78,7 +78,7 @@ const runConsole = async (configPath: string): Promise<void> => {
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   process.env.PI_TUI_WRITE_LOG = "";
   const terminal = new ProcessTerminal();
-  const tui = new TUI(terminal, false, stateDirectory);
+  const tui = new TuiMainScreen(terminal, false, stateDirectory);
   const transport = new HttpConsoleTransport(config, {
     onCredential: async (credential) => {
       config = { ...config, credential };
