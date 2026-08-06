@@ -79,6 +79,7 @@ export interface HarnessOptions {
   readonly runnerFetch?: (request: Request) => Promise<Response>;
   readonly initialProjections?: Readonly<Record<string, unknown>>;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
+  readonly piSessionRunning?: boolean;
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
@@ -330,7 +331,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const rawPiRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
-  let piSessionRunning = false;
+  let piSessionRunning = options.piSessionRunning ?? false;
   let rawPiContainerRunning = false;
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
@@ -720,20 +721,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     containerFetch: {
       value: async (request: Request, port: number) => {
         piRequests.push(request.clone());
-        events.push(`host:pi:fetch:${port}:${new URL(request.url).pathname}`);
-        return Response.json({ status: "quiesced" });
-      },
-    },
-    deleteSession: {
-      value: async (sessionId: string) => {
-        events.push(`host:pi:delete:${sessionId}`);
-        if (failures.has("terminalStop"))
-          throw injectedHarnessFailure("injected Pi terminal stop failure");
-        return {
-          success: true,
-          sessionId,
-          timestamp: lifecycleWallClock.nowIso(),
-        };
+        const pathname = new URL(request.url).pathname;
+        events.push(`host:pi:fetch:${port}:${pathname}`);
+        return failures.has("terminalStop") && pathname === "/quiesce"
+          ? Response.json({ error: "injected Pi quiesce failure" }, { status: 502 })
+          : Response.json({ status: "quiesced" });
       },
     },
     stop: {

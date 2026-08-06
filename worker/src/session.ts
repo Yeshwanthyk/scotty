@@ -185,7 +185,7 @@ class SessionCreateUncertain extends Data.TaggedError("SessionCreateUncertain")<
 }> {}
 
 class PiRuntimeStopFailure extends Data.TaggedError("PiRuntimeStopFailure")<{
-  readonly stage: "quiesce" | "process" | "terminal_lease";
+  readonly stage: "quiesce" | "process";
   readonly cause: unknown;
 }> {}
 
@@ -1794,10 +1794,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* containerAuth
           .stopPiSession()
           .pipe(Effect.mapError((cause) => new PiRuntimeStopFailure({ stage: "process", cause })));
-        yield* Effect.tryPromise({
-          try: () => this.deleteSession(record.id),
-          catch: (cause) => new PiRuntimeStopFailure({ stage: "terminal_lease", cause }),
-        });
         yield* runtime.execChecked("sync", { timeout: 30_000 });
         const now = yield* Clock.currentTimeMillis;
         const backup = yield* backups.create({
