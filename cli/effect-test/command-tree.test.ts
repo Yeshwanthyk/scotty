@@ -56,6 +56,8 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "upgrade");
         assert.include(rootHelp, "uninstall");
         assert.include(rootHelp, "beam");
+        assert.include(rootHelp, "inspect");
+        assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
         assert.include(rootHelp, "runner");

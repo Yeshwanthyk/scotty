@@ -106,13 +106,24 @@ SCOTTY_E2E_CONFIRM_DESTRUCTIVE="destroy:$stage:disposable" \
 node e2e/scripts/run.mjs --deployed
 ```
 
-The test performs the real sequence
+The test performs the real lifecycle sequence
 `up → root recovery on the disposable stage → Pi worklog/RPC boundary → snapshot → scheduled
-hard-cap sleep → resume → down → vaporize`.
-Its canary-only authenticated probe verifies DO reconstruction, credential persistence,
+hard-cap sleep → resume → down → vaporize`, then runs isolated local and peer inspect/steer proofs.
+The root-authenticated local CLI first steers a same-repository target and verifies its exact
+response through passive inspect. The disposable Container application permits a lingering
+lifecycle host plus two concurrent warm peer instances, so the peer proof then creates a separate
+source session and invokes a root-bearer- and
+stage-authenticated canary RPC that runs the built `/usr/local/bin/scotty inspect TARGET --json`
+and `steer TARGET MESSAGE --json` inside that authoritative source container. The RPC supplies
+`SCOTTY_SESSION_ID` only through exec env. It requires inspect success and an accepted steer, then
+polls the ordinary root CLI inspect path until the target finishes an exact unique-marker response.
+Both peer sessions are vaporized on success or failure.
+
+The canary-only authenticated probes also verify DO reconstruction, credential persistence,
 sentinel-only container state, non-secret KV, default-deny egress, restored backups,
-and complete runtime/KV/R2/credential/schedule cleanup. After it passes, prove a second plan
-is a no-op, then destroy the entire stage:
+and complete runtime/KV/R2/credential/schedule cleanup. Every `__e2e` route requires the exact
+random canary stage header and root bearer. After it passes, prove a second plan is a no-op, then
+destroy the entire stage:
 
 ```sh
 npx alchemy plan spikes/infra/full-stack-canary.run.ts --stage "$stage"

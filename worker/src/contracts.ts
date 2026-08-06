@@ -1,5 +1,6 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Option, Schema } from "effect";
+import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
 import { PiCredentialSchema } from "../../protocol/pi-auth";
 
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
@@ -30,6 +31,33 @@ const RepositoryIdentitySchema = Schema.String.check(
 const ShortHexIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u));
 const IdempotencyKeySchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{16,128}$/u));
 const decodeSessionId = Schema.decodeUnknownOption(SessionIdSchema);
+const ContainerSteerMessageSchema = Schema.String.check(
+  Schema.makeFilter(
+    (message) =>
+      message.trim().length > 0 &&
+      !message.trimStart().startsWith("/") &&
+      new TextEncoder().encode(message).byteLength <= PI_CONSOLE_MAX_STRING_BYTES,
+    { expected: "a bounded non-command steering message" },
+  ),
+);
+export const ContainerSessionRequestSchema = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    action: Schema.Literal("inspect"),
+    targetId: SessionIdSchema,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    action: Schema.Literal("steer"),
+    targetId: SessionIdSchema,
+    message: ContainerSteerMessageSchema,
+  }),
+]);
+export type ContainerSessionRequest = typeof ContainerSessionRequestSchema.Type;
+export const decodeContainerSessionRequest = Schema.decodeUnknownOption(
+  ContainerSessionRequestSchema,
+  { onExcessProperty: "error" },
+);
 const decodeShortHexId = Schema.decodeUnknownOption(ShortHexIdSchema);
 const decodeIdempotencyKey = Schema.decodeUnknownOption(IdempotencyKeySchema);
 const decodeProvider = Schema.decodeUnknownOption(ProviderSchema);
@@ -560,6 +588,29 @@ const RawRenameSessionInputSchema = Schema.Struct({
   title: Schema.optionalKey(Schema.Unknown),
 });
 const decodeRawRenameSessionInput = Schema.decodeUnknownOption(RawRenameSessionInputSchema);
+const RawSteerInputSchema = Schema.Struct({
+  message: Schema.optionalKey(Schema.Unknown),
+});
+const decodeRawSteerInput = Schema.decodeUnknownOption(RawSteerInputSchema, {
+  onExcessProperty: "error",
+});
+
+export function parseSteerInput(value: unknown): string {
+  const decoded = decodeRawSteerInput(value);
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+  if (Option.isNone(decoded)) throw badRequest("Request body must contain only message");
+  const message = decoded.value.message;
+  if (typeof message !== "string" || message.trim().length === 0)
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+    throw badRequest("message must be a non-empty string");
+  if (new TextEncoder().encode(message).byteLength > PI_CONSOLE_MAX_STRING_BYTES)
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+    throw badRequest(`message must be at most ${PI_CONSOLE_MAX_STRING_BYTES} UTF-8 bytes`);
+  if (message.trimStart().startsWith("/"))
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+    throw badRequest("message must be a prompt, not a slash command");
+  return message;
+}
 
 export function parseRenameSessionInput(value: unknown): string {
   const decoded = decodeRawRenameSessionInput(value);

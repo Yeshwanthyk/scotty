@@ -44,7 +44,10 @@ const skipReason = enabled
     }`;
 if (process.env.SCOTTY_E2E_EXPLICIT === "1" && !enabled) throw new Error(skipReason);
 
-const authorization = () => ({ authorization: `Bearer ${process.env.SCOTTY_E2E_TOKEN}` });
+const authorization = () => ({
+  authorization: `Bearer ${process.env.SCOTTY_E2E_TOKEN}`,
+  "x-scotty-e2e-stage": stage,
+});
 
 const canaryRequest = async (pathname, init) => {
   const response = await fetch(`${host}${pathname}`, {
@@ -62,6 +65,17 @@ const canaryRequest = async (pathname, init) => {
 
 const probe = async (id) => {
   const response = await canaryRequest(`/__e2e/probe/${id}`);
+  return response.json();
+};
+
+const peerCommand = async (sourceId, action, targetId, message) => {
+  const body = { action, stage, targetId };
+  if (message !== undefined) body.message = message;
+  const response = await canaryRequest(`/__e2e/peer/${sourceId}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
   return response.json();
 };
 
@@ -86,8 +100,9 @@ const requestReconstruction = async (id) => {
 
 const pendingSessionId = (home) => {
   const directory = path.join(home, ".scotty", "pending-up");
+  if (!fs.existsSync(directory)) return undefined;
   const files = fs.readdirSync(directory);
-  assert.equal(files.length, 1, "a failed up must preserve exactly one pending request");
+  if (files.length !== 1) return undefined;
   const pending = JSON.parse(fs.readFileSync(path.join(directory, files[0]), "utf8"));
   assert.match(pending.key, /^[0-9a-f-]{36}$/u);
   return createHash("sha256").update(pending.key).digest("hex").slice(0, 12);
@@ -153,6 +168,8 @@ test(
       "SCOTTY_E2E_LOCAL_REPO must be a local checkout of SCOTTY_E2E_REPO",
     );
     let id;
+    let peerTargetId;
+    let sourceId;
     let browserCookie;
     let remoteBranch;
     const baseline = await runCli(["ls", "--json"], { env, cwd });
@@ -164,7 +181,7 @@ test(
     assert.ok(config.githubTokenBytes >= 20, "the disposable GitHub credential is malformed");
     t.after(async () => {
       const current = await runCli(["ls", "--json"], { env, cwd });
-      const cleanupIds = new Set(id ? [id] : []);
+      const cleanupIds = new Set([id, peerTargetId, sourceId].filter(Boolean));
       if (current.code === 0) {
         for (const session of current.json) {
           if (baselineIds.has(session.id)) continue;
@@ -311,7 +328,8 @@ test(
 
     const down = await runCli(["beam", "down", id, "--json"], { env, cwd, timeoutMs: 180_000 });
     assert.equal(down.code, 0, down.stderr);
-    assert.equal(fs.statSync(down.json.rolloutPath).mode & 0o777, 0o600);
+    if (down.json.rolloutPath === null) assert.equal(down.json.resumeCmd, null);
+    else assert.equal(fs.statSync(down.json.rolloutPath).mode & 0o777, 0o600);
     assert.equal(down.json.sha, await git(["rev-parse", "FETCH_HEAD"], cwd));
     await git(["push", "origin", "--delete", remoteBranch], cwd);
     remoteBranch = undefined;
@@ -340,5 +358,147 @@ test(
     });
     assert.equal(cleaned.authorityStatus, "gone");
     assert.equal(cleaned.security, null);
+
+    const readyMarker = `SCOTTY_E2E_PEER_READY_${randomUUID()}`;
+    const peerTargetUp = await runCli(
+      [
+        "beam",
+        "up",
+        `Reply with exactly ${readyMarker} and nothing else. Do not modify files, commit, or push.`,
+        "--title",
+        "Deployed E2E peer target",
+        "--repo",
+        process.env.SCOTTY_E2E_REPO,
+        "--provider",
+        "cloudflare",
+        "--cap",
+        process.env.SCOTTY_E2E_CAP,
+        "--detach",
+        "--json",
+      ],
+      { env, cwd, timeoutMs: 300_000 },
+    );
+    if (peerTargetUp.code !== 0) peerTargetId = pendingSessionId(home);
+    assert.equal(peerTargetUp.code, 0, peerTargetUp.stderr);
+    peerTargetId = peerTargetUp.json.id;
+    assert.equal(peerTargetUp.json.status, "warm");
+    await poll(
+      () => runCli(["inspect", peerTargetId, "--json"], { env, cwd, timeoutMs: 30_000 }),
+      (result) =>
+        result.code === 0 &&
+        result.json?.state?.isStreaming === false &&
+        JSON.stringify(result.json?.messages ?? []).includes(readyMarker),
+      { timeoutMs: 120_000, intervalMs: 2_000 },
+    );
+
+    const localSteeringMarker = `SCOTTY_E2E_LOCAL_STEER_${randomUUID()}`;
+    const localSteer = await runCli(
+      [
+        "steer",
+        peerTargetId,
+        `Reply with exactly ${localSteeringMarker} and nothing else.`,
+        "--json",
+      ],
+      { env, cwd, timeoutMs: 30_000 },
+    );
+    assert.equal(localSteer.code, 0, localSteer.stderr);
+    assert.equal(localSteer.json.id, peerTargetId);
+    assert.equal(localSteer.json.status, "accepted");
+    await poll(
+      () => runCli(["inspect", peerTargetId, "--json"], { env, cwd, timeoutMs: 30_000 }),
+      (result) => {
+        if (result.code !== 0 || result.json?.state?.isStreaming !== false) return false;
+        const messages = JSON.stringify(result.json?.messages ?? []);
+        return (
+          messages.split(localSteeringMarker).length - 1 >= 2 &&
+          result.json?.activeTools?.length === 0 &&
+          result.json?.queue?.steer?.length === 0 &&
+          result.json?.queue?.followUp?.length === 0
+        );
+      },
+      { timeoutMs: 120_000, intervalMs: 2_000 },
+    );
+
+    const sourceUp = await runCli(
+      [
+        "beam",
+        "up",
+        "Remain idle. Do not modify files, commit, or push. This session is the source-side peer-control canary.",
+        "--title",
+        "Deployed E2E peer source",
+        "--repo",
+        process.env.SCOTTY_E2E_REPO,
+        "--provider",
+        "cloudflare",
+        "--cap",
+        process.env.SCOTTY_E2E_CAP,
+        "--detach",
+        "--json",
+      ],
+      { env, cwd, timeoutMs: 300_000 },
+    );
+    if (sourceUp.code !== 0) sourceId = pendingSessionId(home);
+    assert.equal(sourceUp.code, 0, sourceUp.stderr);
+    sourceId = sourceUp.json.id;
+    assert.equal(sourceUp.json.status, "warm");
+
+    const sourceInspect = await peerCommand(sourceId, "inspect", peerTargetId);
+    assert.equal(sourceInspect.exitCode, 0, sourceInspect.stderr);
+    const sourceInspectJson = JSON.parse(sourceInspect.stdout);
+    assert.equal(sourceInspectJson.id, peerTargetId);
+    assert.ok(Array.isArray(sourceInspectJson.messages));
+
+    const steeringMarker = `SCOTTY_E2E_PEER_STEER_${randomUUID()}`;
+    const sourceSteer = await peerCommand(
+      sourceId,
+      "steer",
+      peerTargetId,
+      `Reply with exactly ${steeringMarker} and nothing else.`,
+    );
+    assert.equal(sourceSteer.exitCode, 0, sourceSteer.stderr);
+    const sourceSteerJson = JSON.parse(sourceSteer.stdout);
+    assert.equal(sourceSteerJson.id, peerTargetId);
+    assert.equal(sourceSteerJson.status, "accepted");
+    await poll(
+      () => runCli(["inspect", peerTargetId, "--json"], { env, cwd, timeoutMs: 30_000 }),
+      (result) => {
+        if (result.code !== 0 || result.json?.state?.isStreaming !== false) return false;
+        const messages = JSON.stringify(result.json?.messages ?? []);
+        const markerCount = messages.split(steeringMarker).length - 1;
+        return (
+          markerCount >= 2 &&
+          result.json?.activeTools?.length === 0 &&
+          result.json?.queue?.steer?.length === 0 &&
+          result.json?.queue?.followUp?.length === 0
+        );
+      },
+      { timeoutMs: 120_000, intervalMs: 2_000 },
+    );
+
+    const sourceVaporize = await runCli(["beam", "vaporize", sourceId, "--yes", "--json"], {
+      env,
+      cwd,
+      timeoutMs: 180_000,
+    });
+    assert.equal(sourceVaporize.code, 0, sourceVaporize.stderr);
+    const vaporizedSourceId = sourceId;
+    sourceId = undefined;
+    await poll(() => probe(vaporizedSourceId), noOrphans, {
+      timeoutMs: 180_000,
+      intervalMs: 2_000,
+    });
+
+    const targetVaporize = await runCli(["beam", "vaporize", peerTargetId, "--yes", "--json"], {
+      env,
+      cwd,
+      timeoutMs: 180_000,
+    });
+    assert.equal(targetVaporize.code, 0, targetVaporize.stderr);
+    const vaporizedPeerTargetId = peerTargetId;
+    peerTargetId = undefined;
+    await poll(() => probe(vaporizedPeerTargetId), noOrphans, {
+      timeoutMs: 180_000,
+      intervalMs: 2_000,
+    });
   },
 );

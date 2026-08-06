@@ -4,6 +4,7 @@ import { GITHUB_SENTINEL_PREFIX, PI_SENTINEL_PREFIX } from "../../protocol/pi-co
 import { Context, Data, Effect, Layer, Option, Result } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import type { Bindings } from "./bindings";
+import { handleContainerSessionEgress, SCOTTY_INTERNAL_HOST } from "./container-session-egress";
 import {
   decodeCredentialPatchOption,
   decodeCredentialRefreshLeaseOption,
@@ -41,6 +42,7 @@ export const ALLOWED_HOSTS = [
   "crates.io",
   "static.crates.io",
   "index.crates.io",
+  SCOTTY_INTERNAL_HOST,
 ] as const;
 
 export type { CredentialPatch, CredentialRefreshLease, StoredCredential } from "./contracts";
@@ -382,6 +384,8 @@ export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
     run(proxyGitHubProgram(request), env, context);
   const passThrough = (request: Request, env: Bindings, context: EgressContext) =>
     run(passThroughProgram(request), env, context);
+  const containerSession = (request: Request, env: Bindings, context: EgressContext) =>
+    handleContainerSessionEgress(request, env, context);
   return {
     "api.openai.com": openAI,
     "chatgpt.com": chatGpt,
@@ -400,6 +404,7 @@ export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
     "crates.io": passThrough,
     "static.crates.io": passThrough,
     "index.crates.io": passThrough,
+    [SCOTTY_INTERNAL_HOST]: containerSession,
   };
 }
 

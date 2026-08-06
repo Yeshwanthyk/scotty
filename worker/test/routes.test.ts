@@ -58,6 +58,7 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
 
 import app from "../src/index";
 import type { Bindings } from "../src/bindings";
+import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
 import { conflict } from "../src/contracts";
 import {
   createSessionHarness,
@@ -1022,6 +1023,315 @@ describe("real Hono boundary", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual(entry.output);
     }
+  });
+
+  it("serves a sessions:read client a passive Pi snapshot without forwarding credentials or waking Pi", async () => {
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, scopes: ["sessions:read"] },
+        renewed: false,
+      },
+    });
+    const snapshot = {
+      version: 1,
+      epoch: "epoch-1",
+      baseSequence: 1,
+      sequence: 1,
+      sessionRevision: 7,
+      state: { isStreaming: false },
+      messages: [{ role: "assistant", content: "done" }],
+      overlapEvents: [],
+      activeTools: [],
+      queue: { steer: [], followUp: [] },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [] },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: false, values: false },
+    };
+    sandbox.fetch.mockImplementationOnce(async (request: Request) => {
+      expect(new URL(request.url).pathname).toBe("/_scotty/pi-console/v1/snapshot");
+      expect(request.method).toBe("GET");
+      expect(request.headers.get("accept")).toBe("application/json");
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      return Response.json(snapshot, { headers: { "cache-control": "no-store" } });
+    });
+
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/inspect",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual(snapshot);
+    expect(sandbox.fetch).toHaveBeenCalledOnce();
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("submits authenticated steer through a fresh passive snapshot without forwarding credentials", async () => {
+    const snapshot = {
+      version: 1,
+      epoch: "epoch-1",
+      baseSequence: 3,
+      sequence: 3,
+      sessionRevision: 7,
+      state: { isStreaming: true },
+      messages: [],
+      overlapEvents: [],
+      activeTools: [],
+      queue: { steer: [], followUp: [] },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [] },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: false, values: false },
+    };
+    const forwarded: Request[] = [];
+    sandbox.fetch.mockImplementation(async (request: Request) => {
+      forwarded.push(request.clone());
+      if (forwarded.length === 1) return Response.json(snapshot);
+      const command = await decodePiConsoleCommandV1Promise(await request.clone().json());
+      return Response.json(
+        {
+          version: 1,
+          epoch: command.epoch,
+          commandId: command.commandId,
+          commandDigest: await commandIntentDigest(command.intent),
+          status: "accepted",
+          response: { success: true },
+        },
+        { status: 202 },
+      );
+    });
+
+    const response = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/steer",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ message: "check the focused tests" }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: "a0b1c2d3e4f5",
+      status: "accepted",
+      epoch: "epoch-1",
+      sessionRevision: 7,
+    });
+    expect(forwarded).toHaveLength(2);
+    expect(new URL(forwarded[0].url).pathname).toBe("/_scotty/pi-console/v1/snapshot");
+    expect(forwarded[0].method).toBe("GET");
+    expect(new URL(forwarded[1].url).pathname).toBe("/_scotty/pi-console/v1/command");
+    expect(forwarded[1].method).toBe("POST");
+    expect(await forwarded[1].json()).toMatchObject({
+      version: 1,
+      epoch: "epoch-1",
+      expectedSessionRevision: 7,
+      intent: {
+        type: "prompt",
+        message: "check the focused tests",
+        streamingBehavior: "steer",
+      },
+    });
+    for (const request of forwarded) {
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+    }
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("surfaces stale, unavailable, and ambiguous steer outcomes without retrying", async () => {
+    const snapshot = {
+      version: 1,
+      epoch: "epoch-1",
+      baseSequence: 0,
+      sequence: 0,
+      sessionRevision: 7,
+      state: { isStreaming: false },
+      messages: [],
+      overlapEvents: [],
+      activeTools: [],
+      queue: { steer: [], followUp: [] },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [] },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: false, values: false },
+    };
+    const cases = [
+      {
+        command: Response.json(
+          {
+            version: 1,
+            status: "stale",
+            expectedSessionRevision: 7,
+            sessionRevision: 8,
+            retryable: false,
+          },
+          { status: 409 },
+        ),
+        expected: {
+          status: "stale",
+          reason: "session_revision_changed",
+          expectedSessionRevision: 7,
+          sessionRevision: 8,
+          retryable: false,
+        },
+      },
+      {
+        snapshot: Response.json(
+          {
+            version: 1,
+            status: "unavailable",
+            reason: "session_operation_active",
+            retryable: false,
+          },
+          { status: 409 },
+        ),
+        expected: {
+          status: "unavailable",
+          reason: "session_operation_active",
+          retryable: false,
+        },
+      },
+      {
+        command: Response.json({ accepted: true }, { status: 202 }),
+        expected: { status: "ambiguous", reason: "command_receipt_mismatch" },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      sandbox.fetch.mockReset();
+      if ("snapshot" in testCase) sandbox.fetch.mockResolvedValueOnce(testCase.snapshot);
+      else {
+        sandbox.fetch.mockResolvedValueOnce(Response.json(snapshot));
+        sandbox.fetch.mockResolvedValueOnce(testCase.command);
+      }
+      const response = await app.request(
+        "/api/sessions/a0b1c2d3e4f5/steer",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ message: "continue" }),
+        },
+        env(),
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        id: "a0b1c2d3e4f5",
+        ...testCase.expected,
+      });
+      expect(sandbox.fetch).toHaveBeenCalledTimes("snapshot" in testCase ? 1 : 2);
+    }
+  });
+
+  it("requires sessions:write and strictly bounds steer input before passive access", async () => {
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, scopes: ["sessions:read"] },
+        renewed: false,
+      },
+    });
+    const forbidden = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/steer",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ message: "continue" }),
+      },
+      env(),
+    );
+    expect(forbidden.status).toBe(401);
+    expect(sandbox.fetch).not.toHaveBeenCalled();
+
+    for (const body of [{ message: "  " }, { message: "/help" }, { message: "ok", extra: true }]) {
+      const response = await app.request(
+        "/api/sessions/a0b1c2d3e4f5/steer",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+        },
+        env(),
+      );
+      expect(response.status).toBe(400);
+    }
+    const oversized = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/steer",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ message: "é".repeat(8_193) }),
+      },
+      env(),
+    );
+    expect(oversized.status).toBe(400);
+    expect(sandbox.fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps passive inspect failures in the public Worker error envelope", async () => {
+    for (const [status, code, message] of [
+      [409, "wrong_state", "Session is not available for inspection"],
+      [503, "upstream", "Pi snapshot is unavailable"],
+    ] as const) {
+      sandbox.fetch.mockResolvedValueOnce(
+        Response.json({ version: 1, status: "unavailable", retryable: false }, { status }),
+      );
+      const response = await app.request(
+        "/api/sessions/a0b1c2d3e4f5/inspect",
+        { headers: { authorization: `Bearer ${TOKEN}` } },
+        env(),
+      );
+      expect(response.status).toBe(status === 409 ? 409 : 502);
+      await expect(response.json()).resolves.toMatchObject({ error: { code, message } });
+    }
+    sandbox.fetch.mockRejectedValueOnce(new TypeError("passive target unavailable"));
+    const unavailable = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/inspect",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(unavailable.status).toBe(502);
+    await expect(unavailable.json()).resolves.toMatchObject({
+      error: { code: "upstream", message: "Pi snapshot is unavailable" },
+    });
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
   });
 
   it("renames a session through the authenticated JSON boundary", async () => {
