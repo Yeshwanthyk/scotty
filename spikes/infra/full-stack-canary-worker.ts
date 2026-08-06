@@ -1,5 +1,6 @@
 import { getSandbox } from "@cloudflare/sandbox";
 import { Option, Schema } from "effect";
+import { supportedPiProvider } from "../../protocol/pi-auth";
 import {
   PI_CONSOLE_MAX_RESPONSE_BYTES,
   PI_CONSOLE_MAX_STRING_BYTES,
@@ -228,9 +229,9 @@ export class ScottySandbox extends Sandbox {
       defaultDeny: /(?:403|520)\s*$/u.test(surface.stdout.trim()),
       kvNonSecret: projection !== null && !containsRealSecret(projection),
       sentinelsOnly:
-        Object.values(credential.providers).every((provider) =>
-          serializedSurface.includes(provider.sentinel),
-        ) &&
+        Object.entries(credential.providers)
+          .filter(([providerId]) => supportedPiProvider(providerId))
+          .every(([, provider]) => serializedSurface.includes(provider.sentinel)) &&
         serializedSurface.includes(credential.githubSentinel) &&
         !containsRealSecret(serializedSurface),
     };
