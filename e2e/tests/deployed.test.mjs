@@ -279,7 +279,7 @@ test(
       sourceId,
       "steer",
       id,
-      `Acknowledge this unique deployed peer-control marker: ${steeringMarker}`,
+      `Reply with exactly ${steeringMarker} and nothing else.`,
     );
     assert.equal(sourceSteer.exitCode, 0, sourceSteer.stderr);
     const sourceSteerJson = JSON.parse(sourceSteer.stdout);
@@ -287,10 +287,27 @@ test(
     assert.equal(sourceSteerJson.status, "accepted");
     await poll(
       () => runCli(["inspect", id, "--json"], { env, cwd, timeoutMs: 30_000 }),
-      (result) =>
-        result.code === 0 && JSON.stringify(result.json?.messages ?? []).includes(steeringMarker),
+      (result) => {
+        if (result.code !== 0 || result.json?.state?.isStreaming !== false) return false;
+        const messages = JSON.stringify(result.json?.messages ?? []);
+        const markerCount = messages.split(steeringMarker).length - 1;
+        return (
+          markerCount >= 2 &&
+          result.json?.activeTools?.length === 0 &&
+          result.json?.queue?.steer?.length === 0 &&
+          result.json?.queue?.followUp?.length === 0
+        );
+      },
       { timeoutMs: 120_000, intervalMs: 2_000 },
     );
+
+    const sourceVaporize = await runCli(["beam", "vaporize", sourceId, "--yes", "--json"], {
+      env,
+      cwd,
+      timeoutMs: 180_000,
+    });
+    assert.equal(sourceVaporize.code, 0, sourceVaporize.stderr);
+    sourceId = undefined;
 
     await poll(
       () => git(["ls-remote", "origin", `refs/heads/${remoteBranch}`], cwd),
@@ -306,14 +323,6 @@ test(
     assert.equal(snapshot.code, 0, snapshot.stderr);
     const wrongResume = await runCli(["resume", id, "--json"], { env, cwd });
     assert.equal(wrongResume.code, 5, wrongResume.stderr);
-
-    const sourceVaporize = await runCli(["beam", "vaporize", sourceId, "--yes", "--json"], {
-      env,
-      cwd,
-      timeoutMs: 180_000,
-    });
-    assert.equal(sourceVaporize.code, 0, sourceVaporize.stderr);
-    sourceId = undefined;
 
     const beforeReconstruction = await poll(
       () => probe(id),
