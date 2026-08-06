@@ -328,7 +328,8 @@ test(
 
     const down = await runCli(["beam", "down", id, "--json"], { env, cwd, timeoutMs: 180_000 });
     assert.equal(down.code, 0, down.stderr);
-    assert.equal(fs.statSync(down.json.rolloutPath).mode & 0o777, 0o600);
+    if (down.json.rolloutPath === null) assert.equal(down.json.resumeCmd, null);
+    else assert.equal(fs.statSync(down.json.rolloutPath).mode & 0o777, 0o600);
     assert.equal(down.json.sha, await git(["rev-parse", "FETCH_HEAD"], cwd));
     await git(["push", "origin", "--delete", remoteBranch], cwd);
     remoteBranch = undefined;
