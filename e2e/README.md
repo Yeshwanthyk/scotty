@@ -106,16 +106,16 @@ SCOTTY_E2E_CONFIRM_DESTRUCTIVE="destroy:$stage:disposable" \
 node e2e/scripts/run.mjs --deployed
 ```
 
-The test performs the real sequence
-`up → root recovery on the disposable stage → Pi worklog/RPC boundary → peer inspect/steer →
-snapshot → scheduled hard-cap sleep → resume → down → vaporize`.
+The test performs the real lifecycle sequence
+`up → root recovery on the disposable stage → Pi worklog/RPC boundary → snapshot → scheduled
+hard-cap sleep → resume → down → vaporize`, then runs an isolated peer inspect/steer proof.
 The disposable Container application permits two concurrent warm instances. The peer proof creates
-a second same-repository source session, invokes a root-bearer- and stage-authenticated canary RPC
-that runs the built `/usr/local/bin/scotty inspect TARGET --json` and `steer TARGET MESSAGE --json`
-inside that authoritative source container, and supplies `SCOTTY_SESSION_ID` only through exec env.
-It requires inspect success and an accepted steer, then polls the ordinary root CLI inspect path
-until the unique steering marker appears in the target's bounded message snapshot. Both sessions are
-vaporized on success or failure.
+separate same-repository target and source sessions, invokes a root-bearer- and stage-authenticated
+canary RPC that runs the built `/usr/local/bin/scotty inspect TARGET --json` and
+`steer TARGET MESSAGE --json` inside that authoritative source container, and supplies
+`SCOTTY_SESSION_ID` only through exec env. It requires inspect success and an accepted steer, then
+polls the ordinary root CLI inspect path until the target finishes an exact unique-marker response.
+Both peer sessions are vaporized on success or failure.
 
 The canary-only authenticated probes also verify DO reconstruction, credential persistence,
 sentinel-only container state, non-secret KV, default-deny egress, restored backups,
