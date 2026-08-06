@@ -153,7 +153,7 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
     context: ".",
     dockerfile: "worker/container/Dockerfile",
     instanceType: "standard-2",
-    maxInstances: 1,
+    maxInstances: 2,
     observability: { logs: { enabled: false } },
   }).pipe(removalPolicy);
 

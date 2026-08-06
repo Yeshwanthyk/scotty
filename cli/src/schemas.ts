@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
@@ -136,6 +137,57 @@ export const SessionResponseSchema = Schema.Struct({
   failure: Schema.optionalKey(Schema.Unknown),
 });
 export const SessionsResponseSchema = Schema.Array(SessionResponseSchema);
+export const InspectResponseSchema = PiConsoleSnapshotV1Schema;
+export type InspectResponse = typeof InspectResponseSchema.Type;
+const SteerAcceptedResponseSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.Literal("accepted"),
+  commandId: Schema.NonEmptyString,
+  epoch: Schema.NonEmptyString,
+  sessionRevision: Schema.Int,
+});
+const SteerStaleResponseSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.Literal("stale"),
+  reason: Schema.Literals(["session_revision_changed", "epoch_changed"]),
+  expectedSessionRevision: Schema.Int,
+  sessionRevision: Schema.optionalKey(Schema.Int),
+  retryable: Schema.Literal(false),
+});
+const SteerUnavailableResponseSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.Literal("unavailable"),
+  reason: Schema.Literals([
+    "provider_passive_relay_unavailable",
+    "session_authority_unavailable",
+    "session_not_warm",
+    "session_operation_active",
+    "provider_unsupported",
+    "command_id_conflict",
+    "extension_ui_not_pending",
+    "extension_ui_response_already_delivered",
+    "invalid_command",
+    "pi_quiescing",
+    "command_rejected",
+  ]),
+  retryable: Schema.Boolean,
+});
+const SteerAmbiguousResponseSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.Literal("ambiguous"),
+  reason: Schema.Literals([
+    "command_transport_failed",
+    "command_response_invalid",
+    "command_receipt_mismatch",
+  ]),
+});
+export const SteerResponseSchema = Schema.Union([
+  SteerAcceptedResponseSchema,
+  SteerStaleResponseSchema,
+  SteerUnavailableResponseSchema,
+  SteerAmbiguousResponseSchema,
+]);
+export type SteerResponse = typeof SteerResponseSchema.Type;
 export const ErrorEnvelopeSchema = Schema.Struct({ error: Schema.optionalKey(Schema.Unknown) });
 export const ErrorFieldsSchema = Schema.Struct({
   code: Schema.optionalKey(Schema.Unknown),
@@ -207,6 +259,12 @@ export const decodeRecoveryGrantResponse = Schema.decodeUnknownOption(RecoveryGr
 export const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
 export const decodeRawSessionFailure = Schema.decodeUnknownOption(RawSessionFailureSchema);
 export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema);
+export const decodeInspectResponse = Schema.decodeUnknownOption(InspectResponseSchema, {
+  onExcessProperty: "ignore",
+});
+export const decodeSteerResponse = Schema.decodeUnknownOption(SteerResponseSchema, {
+  onExcessProperty: "error",
+});
 export const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchema);
 export const decodeErrorFields = Schema.decodeUnknownOption(ErrorFieldsSchema);
 export const decodeDownMetadata = Schema.decodeUnknownOption(DownMetadataSchema);

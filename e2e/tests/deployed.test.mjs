@@ -44,7 +44,10 @@ const skipReason = enabled
     }`;
 if (process.env.SCOTTY_E2E_EXPLICIT === "1" && !enabled) throw new Error(skipReason);
 
-const authorization = () => ({ authorization: `Bearer ${process.env.SCOTTY_E2E_TOKEN}` });
+const authorization = () => ({
+  authorization: `Bearer ${process.env.SCOTTY_E2E_TOKEN}`,
+  "x-scotty-e2e-stage": stage,
+});
 
 const canaryRequest = async (pathname, init) => {
   const response = await fetch(`${host}${pathname}`, {
@@ -62,6 +65,17 @@ const canaryRequest = async (pathname, init) => {
 
 const probe = async (id) => {
   const response = await canaryRequest(`/__e2e/probe/${id}`);
+  return response.json();
+};
+
+const peerCommand = async (sourceId, action, targetId, message) => {
+  const body = { action, stage, targetId };
+  if (message !== undefined) body.message = message;
+  const response = await canaryRequest(`/__e2e/peer/${sourceId}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
   return response.json();
 };
 
@@ -153,6 +167,7 @@ test(
       "SCOTTY_E2E_LOCAL_REPO must be a local checkout of SCOTTY_E2E_REPO",
     );
     let id;
+    let sourceId;
     let browserCookie;
     let remoteBranch;
     const baseline = await runCli(["ls", "--json"], { env, cwd });
@@ -164,7 +179,7 @@ test(
     assert.ok(config.githubTokenBytes >= 20, "the disposable GitHub credential is malformed");
     t.after(async () => {
       const current = await runCli(["ls", "--json"], { env, cwd });
-      const cleanupIds = new Set(id ? [id] : []);
+      const cleanupIds = new Set([id, sourceId].filter(Boolean));
       if (current.code === 0) {
         for (const session of current.json) {
           if (baselineIds.has(session.id)) continue;
@@ -230,6 +245,53 @@ test(
     });
     assert.equal(terminalWithoutUpgrade.status, 426);
 
+    const sourceUp = await runCli(
+      [
+        "beam",
+        "up",
+        "Remain idle. Do not modify files, commit, or push. This session is the source-side peer-control canary.",
+        "--title",
+        "Deployed E2E peer source",
+        "--repo",
+        process.env.SCOTTY_E2E_REPO,
+        "--provider",
+        "cloudflare",
+        "--cap",
+        process.env.SCOTTY_E2E_CAP,
+        "--detach",
+        "--json",
+      ],
+      { env, cwd, timeoutMs: 300_000 },
+    );
+    if (sourceUp.code !== 0) sourceId = pendingSessionId(home);
+    assert.equal(sourceUp.code, 0, sourceUp.stderr);
+    sourceId = sourceUp.json.id;
+    assert.equal(sourceUp.json.status, "warm");
+
+    const sourceInspect = await peerCommand(sourceId, "inspect", id);
+    assert.equal(sourceInspect.exitCode, 0, sourceInspect.stderr);
+    const sourceInspectJson = JSON.parse(sourceInspect.stdout);
+    assert.equal(sourceInspectJson.id, id);
+    assert.ok(Array.isArray(sourceInspectJson.messages));
+
+    const steeringMarker = `SCOTTY_E2E_PEER_STEER_${randomUUID()}`;
+    const sourceSteer = await peerCommand(
+      sourceId,
+      "steer",
+      id,
+      `Acknowledge this unique deployed peer-control marker: ${steeringMarker}`,
+    );
+    assert.equal(sourceSteer.exitCode, 0, sourceSteer.stderr);
+    const sourceSteerJson = JSON.parse(sourceSteer.stdout);
+    assert.equal(sourceSteerJson.id, id);
+    assert.equal(sourceSteerJson.status, "accepted");
+    await poll(
+      () => runCli(["inspect", id, "--json"], { env, cwd, timeoutMs: 30_000 }),
+      (result) =>
+        result.code === 0 && JSON.stringify(result.json?.messages ?? []).includes(steeringMarker),
+      { timeoutMs: 120_000, intervalMs: 2_000 },
+    );
+
     await poll(
       () => git(["ls-remote", "origin", `refs/heads/${remoteBranch}`], cwd),
       (value) => value.endsWith(`refs/heads/${remoteBranch}`),
@@ -244,6 +306,14 @@ test(
     assert.equal(snapshot.code, 0, snapshot.stderr);
     const wrongResume = await runCli(["resume", id, "--json"], { env, cwd });
     assert.equal(wrongResume.code, 5, wrongResume.stderr);
+
+    const sourceVaporize = await runCli(["beam", "vaporize", sourceId, "--yes", "--json"], {
+      env,
+      cwd,
+      timeoutMs: 180_000,
+    });
+    assert.equal(sourceVaporize.code, 0, sourceVaporize.stderr);
+    sourceId = undefined;
 
     const beforeReconstruction = await poll(
       () => probe(id),

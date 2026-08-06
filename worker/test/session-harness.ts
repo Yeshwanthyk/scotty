@@ -88,6 +88,7 @@ export interface HarnessOptions {
     memory: InMemoryFaultInjectableFake,
   ) => void | Promise<void>;
   readonly r2Objects?: ReadonlyArray<string>;
+  readonly sandboxNamespace?: Bindings["SANDBOX"];
   readonly stopCallsOnStop?: boolean;
   readonly transactionFailureCountdown?: number;
 }
@@ -534,7 +535,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         control: async () => undefined,
       }),
     },
-    SANDBOX: undefined as never,
+    SANDBOX: options.sandboxNamespace ?? (undefined as never),
     SESSIONS: sessions,
     BACKUP_BUCKET: {
       list: async (listOptions?: { readonly prefix?: string }) => {

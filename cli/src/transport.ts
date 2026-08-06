@@ -51,8 +51,12 @@ export const readLimited = Effect.fnUntraced(function* (response: Response) {
   return bytes;
 });
 
+export type ApiRequestTarget =
+  | { readonly host: string; readonly token: string }
+  | { readonly host: "https://scotty.internal"; readonly token?: never };
+
 export const apiRequest = Effect.fnUntraced(function* (
-  auth: { host: string; token: string },
+  target: ApiRequestTarget,
   path: string,
   init: RequestInit = {},
 ) {
@@ -63,13 +67,13 @@ export const apiRequest = Effect.fnUntraced(function* (
       ? DEFAULT_REQUEST_TIMEOUT_MS
       : MUTATION_REQUEST_TIMEOUT_MS;
   const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${auth.token}`);
+  if (target.token !== undefined) headers.set("authorization", `Bearer ${target.token}`);
   headers.set("accept", "application/json, application/x-tar, application/octet-stream");
   if (init.body) headers.set("content-type", "application/json");
   if (method !== "GET" && !headers.has("idempotency-key"))
     headers.set("idempotency-key", crypto.randomUUID());
   const responseOption = yield* transport
-    .fetch(`${auth.host}${path}`, { ...init, headers })
+    .fetch(`${target.host}${path}`, { ...init, headers })
     .pipe(Effect.timeoutOption(timeout));
   if (Option.isNone(responseOption)) return yield* timeoutError();
   const response = responseOption.value;
@@ -93,9 +97,9 @@ export const apiRequest = Effect.fnUntraced(function* (
         ? Option.getOrUndefined(decodeString(fields.value.hint))
         : undefined) ?? "Check the session state and Worker logs.";
     return yield* new CliError(
-      redact(code, [auth.token]),
-      redact(message, [auth.token]),
-      redact(hint, [auth.token]),
+      redact(code, target.token === undefined ? [] : [target.token]),
+      redact(message, target.token === undefined ? [] : [target.token]),
+      redact(hint, target.token === undefined ? [] : [target.token]),
       statusExit(response.status, code),
     );
   }
@@ -109,10 +113,10 @@ export const decodeJson = Effect.fnUntraced(function* (bytes: Uint8Array) {
 });
 
 export const requestJson = Effect.fnUntraced(function* (
-  auth: { host: string; token: string },
+  target: ApiRequestTarget,
   path: string,
   init?: RequestInit,
 ) {
-  const { bytes } = yield* apiRequest(auth, path, init);
+  const { bytes } = yield* apiRequest(target, path, init);
   return yield* decodeJson(bytes);
 });

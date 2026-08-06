@@ -40,8 +40,10 @@ import {
   credentialVaultLayer,
   durableObjectCredentialVaultStorage,
 } from "./credential-vault";
+import { readBoundedUtf8Body } from "./bounded-http";
 import {
   conflict,
+  decodeContainerSessionRequest,
   decodeJsonValue,
   notFound,
   ScottyError,
@@ -67,6 +69,7 @@ import {
   type CredentialRefreshLease,
   type StoredCredential,
 } from "./egress";
+import { inspectPassiveSession, scottyErrorResponse, steerPassiveSession } from "./passive-session";
 import {
   durableObjectSessionRecordStorage,
   makeSessionControlGate,
@@ -109,35 +112,6 @@ const copyBoundedPassivePiConsoleHeaders = (source: Headers): Headers => {
       headers.set(name, value);
   }
   return headers;
-};
-
-const readBoundedUtf8Body = async (
-  message: Request | Response,
-  maxBytes: number,
-): Promise<string | undefined> => {
-  const declaredLength = Number(message.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return undefined;
-  if (message.body === null) return "";
-  const reader = message.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for (;;) {
-    const next = await reader.read();
-    if (next.done) break;
-    length += next.value.byteLength;
-    if (length > maxBytes) {
-      await reader.cancel();
-      return undefined;
-    }
-    chunks.push(next.value);
-  }
-  const body = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(body);
 };
 
 export const decodeSandboxFileStream = (
@@ -1475,16 +1449,82 @@ export class Sandbox extends BaseSandbox<Bindings> {
       { status, headers: { "cache-control": "no-store" } },
     );
 
+  private readonly readSessionControlAuthority = () =>
+    this.#run(
+      Effect.result(SessionStore.pipe(Effect.flatMap((store) => store.readControlAuthority))),
+    );
+
   private readonly readPassiveConsoleAuthority = async (): Promise<
     SessionControlAuthority | Response
   > => {
-    const read = await this.#run(
-      Effect.result(SessionStore.pipe(Effect.flatMap((store) => store.readControlAuthority))),
-    );
+    const read = await this.readSessionControlAuthority();
     if (Result.isFailure(read))
       return this.passiveConsoleUnavailable("session_authority_unavailable", 503);
     return read.success;
   };
+
+  async containerSessionRequest(input: unknown): Promise<Response> {
+    const decoded = decodeContainerSessionRequest(input);
+    if (Option.isNone(decoded))
+      return scottyErrorResponse(
+        new ScottyError("bad_request", "Container session request is invalid", {
+          httpStatus: 400,
+          exitCode: 2,
+        }),
+      );
+
+    return this.sessionControlGate.run(async () => {
+      const sourceAuthority = await this.readSessionControlAuthority();
+      if (Result.isFailure(sourceAuthority))
+        return scottyErrorResponse(
+          new ScottyError("internal", "Source session authority is unavailable", {
+            httpStatus: 500,
+            exitCode: 1,
+          }),
+        );
+      const source = sourceAuthority.success.record;
+      if (source.status !== "warm" || source.operation !== null)
+        return scottyErrorResponse(
+          new ScottyError("wrong_state", "Source session is not available for orchestration", {
+            httpStatus: 409,
+            exitCode: 5,
+            hint: "The source session must be warm with no active lifecycle operation.",
+          }),
+        );
+      if (source.provider !== "cloudflare" || source.execution.provider !== "cloudflare")
+        return scottyErrorResponse(
+          new ScottyError("wrong_state", "Source session provider cannot orchestrate sessions", {
+            httpStatus: 409,
+            exitCode: 5,
+          }),
+        );
+      if (decoded.value.targetId === source.id)
+        return scottyErrorResponse(
+          new ScottyError("auth", "Container session access denied", {
+            httpStatus: 401,
+            exitCode: 4,
+          }),
+        );
+
+      const target = this.env.SANDBOX.get(this.env.SANDBOX.idFromName(decoded.value.targetId));
+      const targetSession = await Promise.resolve()
+        .then(() => target.getScottySession())
+        .then(Result.succeed, () => Result.fail(undefined));
+      if (Result.isFailure(targetSession))
+        return scottyErrorResponse(notFound(decoded.value.targetId));
+      if (targetSession.success.repo !== source.repo)
+        return scottyErrorResponse(
+          new ScottyError("auth", "Container session access denied", {
+            httpStatus: 401,
+            exitCode: 4,
+          }),
+        );
+
+      return decoded.value.action === "inspect"
+        ? inspectPassiveSession(target)
+        : steerPassiveSession(target, decoded.value.targetId, decoded.value.message);
+    });
+  }
 
   private readonly validatePassiveConsoleAuthority = (
     authority: SessionControlAuthority,

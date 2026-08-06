@@ -40,6 +40,15 @@ reaches its polling limit. Every completion path ends with one final response.
 
 Observation is complete when the final record and its stopping reason are known.
 
+## Inspect and steer peers
+
+- Inspect a warm session without waking it with `scotty inspect ID --json`.
+- Send a bounded prompt (not a slash command) with `scotty steer ID "MESSAGE" --json`.
+- Inside a Scotty sandbox, these commands automatically use `https://scotty.internal`; do not pass
+  credentials or source identity. Outside a sandbox, they use the configured authenticated Worker.
+- Treat `stale` and `unavailable` as wrong-state results. Treat `ambiguous` as non-retryable unless
+  the session is inspected first.
+
 ## Final response
 
 Final response is complete only when it matches one of these shapes:

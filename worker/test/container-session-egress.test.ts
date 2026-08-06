@@ -1,0 +1,484 @@
+import { assert, describe, it } from "@effect/vitest";
+import type { OutboundHandlerContext } from "@cloudflare/containers";
+import { ContainerProxy as SandboxContainerProxy } from "@cloudflare/sandbox";
+import { vi } from "vitest";
+import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
+import type { Bindings } from "../src/bindings";
+import { ContainerProxy, SCOTTY_INTERNAL_HOST } from "../src/container-session-egress";
+import { ALLOWED_HOSTS, makeOutboundByHost } from "../src/egress";
+import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "./session-harness";
+import { makeSessionRecord } from "./support";
+
+const TARGET_ID = "b0b1c2d3e4f5";
+const SOURCE_CONTAINER_ID = "a".repeat(64);
+
+const snapshot = () => ({
+  version: 1 as const,
+  epoch: "epoch-1",
+  baseSequence: 0,
+  sequence: 0,
+  sessionRevision: 0,
+  state: { isStreaming: false },
+  messages: [],
+  overlapEvents: [],
+  activeTools: [],
+  queue: { steer: [], followUp: [] },
+  pendingUi: [],
+  pendingUiAuthority: {
+    status: "partial" as const,
+    reason: "pi_0_83_signal_cancellation_unobservable" as const,
+  },
+  extensionSurface: { statuses: {}, widgets: [] },
+  capabilities: { models: [], thinkingLevels: [], commands: [] },
+  truncated: { messages: false, values: false },
+});
+
+interface NamedDurableObjectId extends DurableObjectId {
+  readonly name: string;
+}
+
+function durableObjectId(name: string): NamedDurableObjectId {
+  return {
+    name,
+    toString: () => name,
+    equals: (other) => other.toString() === name,
+  };
+}
+
+function sandboxNamespace(options: {
+  readonly fromName?: (name: string) => object;
+  readonly fromString?: (id: string) => object;
+  readonly onName?: (name: string) => void;
+  readonly onString?: (id: string) => void;
+}): Bindings["SANDBOX"] {
+  return {
+    idFromName: (name) => {
+      options.onName?.(name);
+      return durableObjectId(name);
+    },
+    idFromString: (id) => {
+      options.onString?.(id);
+      return durableObjectId(id);
+    },
+    get: (id) => {
+      const named = id as NamedDurableObjectId;
+      const resolved =
+        named.name === SOURCE_CONTAINER_ID
+          ? (options.fromString?.(named.name) ?? options.fromName?.(named.name))
+          : (options.fromName?.(named.name) ?? options.fromString?.(named.name));
+      return resolved as never;
+    },
+    getByName: (name) => (options.fromName?.(name) ?? options.fromString?.(name)) as never,
+    newUniqueId: () => durableObjectId("unique"),
+    jurisdiction: () => sandboxNamespace(options),
+  } as Bindings["SANDBOX"];
+}
+
+function bindings(namespace: Bindings["SANDBOX"]): Bindings {
+  return {
+    AUTH: undefined as never,
+    RUNNER_REGISTRY: undefined as never,
+    RUNNERS: undefined as never,
+    SANDBOX: namespace,
+    SESSIONS: undefined as never,
+    BACKUP_BUCKET: undefined as never,
+    ASSETS: undefined as never,
+    SCOTTY_TOKEN: "unused",
+    PI_AUTH_JSON: "unused",
+    GH_TOKEN: "unused",
+  };
+}
+
+const context = (containerId = SOURCE_CONTAINER_ID): OutboundHandlerContext<unknown> => ({
+  containerId,
+  className: "ScottySandbox",
+});
+
+function errorCode(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || !("error" in value)) return undefined;
+  const error = value.error;
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+describe("container-only session egress", () => {
+  it("maps the exact reserved host to the source selected only by context.containerId", async () => {
+    let nativeFetchCalls = 0;
+    const operations: unknown[] = [];
+    const selectedContainerIds: string[] = [];
+    const source = {
+      containerSessionRequest: async (operation: unknown) => {
+        operations.push(operation);
+        return Response.json(snapshot());
+      },
+    };
+    const namespace = sandboxNamespace({
+      fromString: () => source,
+      onString: (id) => selectedContainerIds.push(id),
+    });
+    const handlers = makeOutboundByHost(() => {
+      nativeFetchCalls += 1;
+      return Promise.resolve(new Response("native fallback"));
+    });
+
+    assert.deepStrictEqual(Object.keys(handlers), [...ALLOWED_HOSTS]);
+    const handler = handlers[SCOTTY_INTERNAL_HOST];
+    assert.isFunction(handler);
+    const response = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`, {
+        headers: {
+          "scotty-session-id": SESSION_ID,
+        },
+      }),
+      bindings(namespace),
+      context(),
+    );
+
+    assert.strictEqual(response.status, 401);
+    assert.deepStrictEqual(selectedContainerIds, []);
+    assert.deepStrictEqual(operations, []);
+    assert.strictEqual(nativeFetchCalls, 0);
+
+    const accepted = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`),
+      bindings(namespace),
+      context(),
+    );
+    assert.strictEqual(accepted.status, 200);
+    assert.deepStrictEqual(selectedContainerIds, [SOURCE_CONTAINER_ID]);
+    assert.deepStrictEqual(operations, [{ version: 1, action: "inspect", targetId: TARGET_ID }]);
+    assert.strictEqual(nativeFetchCalls, 0);
+  });
+
+  it("dispatches the reserved host in the exported proxy without reaching native fallback", async () => {
+    const operations: unknown[] = [];
+    const source = {
+      containerSessionRequest: async (operation: unknown) => {
+        operations.push(operation);
+        return Response.json(snapshot());
+      },
+    };
+    const env = bindings(sandboxNamespace({ fromString: () => source }));
+    const proxy: ContainerProxy = Object.create(ContainerProxy.prototype);
+    Reflect.set(proxy, "env", env);
+    Reflect.set(proxy, "ctx", {
+      props: { containerId: SOURCE_CONTAINER_ID, className: "ScottySandbox" },
+    });
+    const fallback = vi.spyOn(SandboxContainerProxy.prototype, "fetch");
+
+    const response = await proxy.fetch(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`),
+    );
+
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(operations, [{ version: 1, action: "inspect", targetId: TARGET_ID }]);
+    assert.strictEqual(fallback.mock.calls.length, 0);
+    fallback.mockRestore();
+  });
+
+  it("fails closed for missing context and ambient credential, proxy, or spoof headers", async () => {
+    let sourceCalls = 0;
+    const source = {
+      containerSessionRequest: async () => {
+        sourceCalls += 1;
+        return Response.json(snapshot());
+      },
+    };
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const namespace = sandboxNamespace({ fromString: () => source });
+
+    const missing = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`),
+      bindings(namespace),
+      context(""),
+    );
+    assert.strictEqual(missing.status, 401);
+
+    for (const [name, value] of [
+      ["authorization", "Bearer ambient"],
+      ["cookie", "session=ambient"],
+      ["forwarded", "for=203.0.113.10"],
+      ["x-container-id", SOURCE_CONTAINER_ID],
+      ["x-sandbox-name", SESSION_ID],
+      ["x-scotty-session-id", SESSION_ID],
+      ["x-source-session-id", SESSION_ID],
+    ]) {
+      const rejected = await handler(
+        new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`, {
+          headers: { [name]: value },
+        }),
+        bindings(namespace),
+        context(),
+      );
+      assert.strictEqual(rejected.status, 401);
+      assert.strictEqual(errorCode(await rejected.json()), "auth");
+    }
+    assert.strictEqual(sourceCalls, 0);
+  });
+
+  it("strictly bounds the internal routes and passes only decoded target intent", async () => {
+    const operations: unknown[] = [];
+    const source = {
+      containerSessionRequest: async (operation: unknown) => {
+        operations.push(operation);
+        return Response.json({ id: TARGET_ID, status: "unavailable", retryable: false });
+      },
+    };
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(sandboxNamespace({ fromString: () => source }));
+
+    for (const request of [
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect?source=x`),
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`, {
+        method: "POST",
+      }),
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/steer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "continue", sourceSessionId: SESSION_ID }),
+      }),
+    ]) {
+      const response = await handler(request, env, context());
+      assert.strictEqual(response.status, 400);
+    }
+
+    const response = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/steer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "continue" }),
+      }),
+      env,
+      context(),
+    );
+    assert.strictEqual(response.status, 502);
+    assert.deepStrictEqual(operations, [
+      { version: 1, action: "steer", targetId: TARGET_ID, message: "continue" },
+    ]);
+
+    for (const upstream of [
+      Response.json({ unexpected: true }),
+      new Response("{}", { headers: { "content-length": String(2 * 1024 * 1024 + 1) } }),
+    ]) {
+      const invalidHandler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+        SCOTTY_INTERNAL_HOST
+      ];
+      assert.isFunction(invalidHandler);
+      const invalid = await invalidHandler(
+        new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`),
+        bindings(
+          sandboxNamespace({
+            fromString: () => ({ containerSessionRequest: async () => upstream }),
+          }),
+        ),
+        context(),
+      );
+      assert.strictEqual(invalid.status, 502);
+    }
+  });
+});
+
+describe("source Sandbox orchestration authority", () => {
+  it("requires an authoritative warm Cloudflare source with no operation", async () => {
+    for (const record of [
+      makeSessionRecord({ status: "sleeping" }),
+      makeSessionRecord({
+        operation: {
+          kind: "snapshot",
+          nonce: "operation-1",
+          startedAt: "2026-01-01T00:00:02.000Z",
+        },
+      }),
+      makeSessionRecord({
+        provider: "runner",
+        runner: "garage",
+        execution: { provider: "runner", runner: "garage", runtimeId: "runtime-1" },
+      }),
+    ]) {
+      let targetSelections = 0;
+      const source = await createSessionHarness({
+        initialEntries: { [sessionHarnessKeys.record]: record },
+        sandboxNamespace: sandboxNamespace({
+          fromName: () => {
+            targetSelections += 1;
+            return {};
+          },
+        }),
+      });
+
+      const response = await source.sandbox.containerSessionRequest({
+        version: 1,
+        action: "inspect",
+        targetId: TARGET_ID,
+      });
+      assert.strictEqual(response.status, 409);
+      assert.strictEqual(errorCode(await response.json()), "wrong_state");
+      assert.strictEqual(targetSelections, 0);
+    }
+  });
+
+  it("rejects self-targeting and exact-case cross-repo targeting", async () => {
+    let targetSelections = 0;
+    const self = await createSessionHarness({
+      initialEntries: { [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }) },
+      sandboxNamespace: sandboxNamespace({
+        fromName: () => {
+          targetSelections += 1;
+          return {};
+        },
+      }),
+    });
+    const selfResponse = await self.sandbox.containerSessionRequest({
+      version: 1,
+      action: "inspect",
+      targetId: SESSION_ID,
+    });
+    assert.strictEqual(selfResponse.status, 401);
+    assert.strictEqual(targetSelections, 0);
+
+    let relayCalls = 0;
+    const target = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: TARGET_ID,
+          repo: "Owner/project",
+        }),
+      },
+      passivePiConsoleRelay: {
+        fetch: async () => {
+          relayCalls += 1;
+          return Response.json(snapshot());
+        },
+      },
+    });
+    const source = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          repo: "owner/project",
+        }),
+      },
+      sandboxNamespace: sandboxNamespace({ fromName: () => target.sandbox }),
+    });
+    const crossRepo = await source.sandbox.containerSessionRequest({
+      version: 1,
+      action: "inspect",
+      targetId: TARGET_ID,
+    });
+    assert.strictEqual(crossRepo.status, 401);
+    assert.strictEqual(errorCode(await crossRepo.json()), "auth");
+    assert.strictEqual(relayCalls, 0);
+  });
+
+  it("delegates same-repo inspect and steer through context.containerId without credentials or wake", async () => {
+    const relayed: Request[] = [];
+    const target = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: TARGET_ID,
+          repo: "owner/project",
+        }),
+      },
+      passivePiConsoleRelay: {
+        fetch: async ({ request }) => {
+          relayed.push(request.clone());
+          if (new URL(request.url).pathname.endsWith("/snapshot")) {
+            const { sessionRevision: _sessionRevision, ...relaySnapshot } = snapshot();
+            return Response.json(relaySnapshot);
+          }
+          const command = await decodePiConsoleCommandV1Promise(await request.clone().json());
+          return Response.json(
+            {
+              version: 1,
+              epoch: command.epoch,
+              commandId: command.commandId,
+              commandDigest: await commandIntentDigest(command.intent),
+              status: "accepted",
+              response: { success: true },
+            },
+            { status: 202 },
+          );
+        },
+      },
+    });
+    let sourceStub: {
+      containerSessionRequest(input: unknown): Promise<Response>;
+    } = {
+      containerSessionRequest: async () => Response.json({}, { status: 500 }),
+    };
+    const namespace = sandboxNamespace({
+      fromName: () => target.sandbox,
+      fromString: () => sourceStub,
+    });
+    const source = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          repo: "owner/project",
+        }),
+      },
+      sandboxNamespace: namespace,
+    });
+    sourceStub = source.sandbox;
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+
+    const inspected = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`),
+      bindings(namespace),
+      context(),
+    );
+    assert.strictEqual(inspected.status, 200);
+    assert.deepStrictEqual(await inspected.json(), snapshot());
+
+    const steered = await handler(
+      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/steer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "continue the focused tests" }),
+      }),
+      bindings(namespace),
+      context(),
+    );
+    assert.strictEqual(steered.status, 200);
+    const outcome = await steered.text();
+    assert.include(outcome, `"id":"${TARGET_ID}"`);
+    assert.include(outcome, '"status":"accepted"');
+    assert.strictEqual(relayed.length, 3);
+    for (const request of relayed) {
+      assert.strictEqual(request.headers.get("authorization"), null);
+      assert.strictEqual(request.headers.get("cookie"), null);
+      assert.strictEqual(request.headers.get("x-api-key"), null);
+      assert.strictEqual(request.headers.get("x-scotty-session-id"), null);
+    }
+    assert.isFalse(target.events.some((event) => event.startsWith("host:container:")));
+    assert.deepStrictEqual(target.rawPiRequests, []);
+  });
+
+  it("fails closed when the target authority is unavailable", async () => {
+    const unavailable = {
+      getScottySession: () => Promise.reject(new TypeError("target unavailable")),
+      fetch: () => Promise.resolve(Response.json({ unexpected: true })),
+    };
+    const source = await createSessionHarness({
+      initialEntries: { [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }) },
+      sandboxNamespace: sandboxNamespace({ fromName: () => unavailable }),
+    });
+
+    const response = await source.sandbox.containerSessionRequest({
+      version: 1,
+      action: "inspect",
+      targetId: TARGET_ID,
+    });
+    assert.strictEqual(response.status, 404);
+    assert.strictEqual(errorCode(await response.json()), "not_found");
+  });
+});

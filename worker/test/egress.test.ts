@@ -11,6 +11,7 @@ import {
   type CredentialRefreshLease,
   type StoredCredential,
 } from "../src/contracts";
+import { SCOTTY_INTERNAL_HOST } from "../src/container-session-egress";
 import {
   ALLOWED_HOSTS,
   denyOutbound,
@@ -326,6 +327,7 @@ describe("pass-through policy", () => {
             "auth.openai.com",
             "github.com",
             "api.github.com",
+            SCOTTY_INTERNAL_HOST,
           ].includes(host),
       );
       assert.deepEqual(passThroughHosts, [
