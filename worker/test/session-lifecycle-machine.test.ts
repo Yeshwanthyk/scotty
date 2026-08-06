@@ -344,7 +344,11 @@ describe("Sandbox lifecycle machine", () => {
     Effect.gen(function* () {
       const record = makeSessionRecord();
       const harness = yield* createTestHarness({
-        initialEntries: { [sessionHarnessKeys.record]: record },
+        initialEntries: {
+          [sessionHarnessKeys.record]: record,
+          [sessionHarnessKeys.credential]: makeStoredCredential(),
+        },
+        piSessionRunning: true,
         stopCallsOnStop: true,
       });
 
@@ -355,8 +359,7 @@ describe("Sandbox lifecycle machine", () => {
       assert.strictEqual(sleeping?.operation, null);
       assert.strictEqual(sleeping?.backup?.current.id, "backup-1");
       assert.ok(
-        harness.events.indexOf(`host:pi:delete:${SESSION_ID}`) <
-          harness.events.indexOf("host:createBackup"),
+        harness.events.indexOf("host:pi:kill") < harness.events.indexOf("host:createBackup"),
       );
       assert.ok(harness.events.includes("host:createBackup"));
       assert.ok(harness.events.includes("host:stop"));
@@ -446,11 +449,12 @@ describe("Sandbox lifecycle machine", () => {
           [sessionHarnessKeys.record]: record,
           [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
+        piSessionRunning: true,
       });
 
       yield* Effect.promise(() => harness.sandbox.snapshotScottySession());
 
-      const stopIndex = harness.events.indexOf(`host:pi:delete:${SESSION_ID}`);
+      const stopIndex = harness.events.indexOf("host:pi:kill");
       const backupIndex = harness.events.indexOf("host:createBackup");
       assert.ok(stopIndex >= 0);
       assert.ok(stopIndex < backupIndex);
@@ -467,6 +471,7 @@ describe("Sandbox lifecycle machine", () => {
           [sessionHarnessKeys.record]: makeSessionRecord(),
           [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
+        piSessionRunning: true,
       });
       harness.injectFailure("checkpointSync");
 
@@ -490,6 +495,7 @@ describe("Sandbox lifecycle machine", () => {
           [sessionHarnessKeys.record]: makeSessionRecord(),
           [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
+        piSessionRunning: true,
       });
       harness.injectFailure("checkpointSync");
 
@@ -511,6 +517,7 @@ describe("Sandbox lifecycle machine", () => {
           [sessionHarnessKeys.record]: makeSessionRecord(),
           [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
+        piSessionRunning: true,
       });
 
       const error = yield* Effect.promise(() => rejection(harness.sandbox.snapshotScottySession()));
@@ -521,7 +528,8 @@ describe("Sandbox lifecycle machine", () => {
       assert.strictEqual(record?.status, "warm");
       assert.strictEqual(record?.operation, null);
       assert.strictEqual(record?.backup, undefined);
-      assert.ok(harness.events.includes(`host:pi:delete:${SESSION_ID}`));
+      assert.ok(harness.events.includes(`host:pi:fetch:43117:/quiesce`));
+      assert.ok(!harness.events.includes("host:pi:kill"));
       assert.ok(!harness.events.includes("host:createBackup"));
     }),
   );
@@ -534,6 +542,7 @@ describe("Sandbox lifecycle machine", () => {
           [sessionHarnessKeys.record]: makeSessionRecord(),
           [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
+        piSessionRunning: true,
       });
 
       const defect = yield* Effect.promise(() =>
@@ -541,7 +550,7 @@ describe("Sandbox lifecycle machine", () => {
       );
 
       assert.notStrictEqual(defect, undefined);
-      assert.ok(harness.events.includes(`host:pi:delete:${SESSION_ID}`));
+      assert.ok(harness.events.includes("host:pi:kill"));
       assert.strictEqual(harness.readRecord()?.status, "warm");
       assert.strictEqual(harness.readRecord()?.operation?.kind, "snapshot");
     }),

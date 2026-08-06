@@ -29,6 +29,7 @@ import {
 } from "./dependencies";
 import {
   decodeInitJournalJson,
+  decodeInspectResponse,
   decodeOperationResponse,
   decodePiAuthReseedResponse,
   decodePiAuthStatusResponse,
@@ -36,6 +37,7 @@ import {
   decodeRunnerRemovalResponse,
   decodeRunnerStatusesResponse,
   decodeSessionsResponse,
+  decodeSteerResponse,
   decodeVaporizeResponse,
   STANDARD_TOOLSET,
 } from "./schemas";
@@ -44,8 +46,10 @@ import {
   browserUrl,
   durationSeconds,
   EMBEDDED_SKILL,
+  humanInspect,
   humanResult,
   humanSession,
+  humanSteer,
   invalidResponse,
   normalizeHost,
   optionalString,
@@ -75,8 +79,10 @@ import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
 import { requestJson } from "./transport";
 import { makeInstallationTopology, parseInstallationName } from "../../infra/installation.ts";
+import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const SANDBOX_PEER_HOST = "https://scotty.internal";
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const RUNNER_IMAGE_PATTERN = /^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*@)?sha256:[a-f0-9]{64}$/;
@@ -249,6 +255,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       options,
       runtime,
     };
+  });
+
+  const peerControlTarget = Effect.fnUntraced(function* (options: GlobalOptions) {
+    const runtime = yield* CliRuntime;
+    if (runtime.env.SCOTTY_SESSION_ID !== undefined) return { host: SANDBOX_PEER_HOST } as const;
+    return yield* credentials(options);
   });
 
   const requireInstallationName = Effect.fnUntraced(function* (
@@ -980,6 +992,72 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     }),
   ).pipe(Command.withDescription("List sessions"));
 
+  const inspect = Command.make(
+    "inspect",
+    {
+      id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
+      trailing: trailingArguments,
+    },
+    ({ id, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, options, runtime } = yield* commandContext();
+        const sessionId = yield* validateSessionId(id);
+        const target = yield* peerControlTarget(options);
+        const decoded = decodeInspectResponse(
+          yield* requestJson(target, `/api/sessions/${encodeURIComponent(sessionId)}/inspect`, {
+            cache: "no-store",
+            redirect: "manual",
+          }),
+        );
+        if (Option.isNone(decoded))
+          return yield* invalidResponse("Server returned an invalid Pi snapshot");
+        if (autoJson) outputJson(runtime.stdout, { id: sessionId, ...decoded.value });
+        else runtime.stdout(humanInspect(sessionId, decoded.value));
+      }),
+  ).pipe(Command.withDescription("Inspect a warm session or sandbox peer without waking it"));
+
+  const steer = Command.make(
+    "steer",
+    {
+      id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
+      message: Argument.string("message").pipe(
+        Argument.withDescription("Prompt or steering message"),
+      ),
+      trailing: trailingArguments,
+    },
+    ({ id, message, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        if (!message.trim()) return yield* usage("Message must not be empty");
+        if (new TextEncoder().encode(message).byteLength > PI_CONSOLE_MAX_STRING_BYTES)
+          return yield* usage(`Message must be at most ${PI_CONSOLE_MAX_STRING_BYTES} UTF-8 bytes`);
+        if (message.trimStart().startsWith("/"))
+          return yield* usage("Message must be a prompt, not a slash command");
+        const { autoJson, options, runtime } = yield* commandContext();
+        const sessionId = yield* validateSessionId(id);
+        const target = yield* peerControlTarget(options);
+        const decoded = decodeSteerResponse(
+          yield* requestJson(target, `/api/sessions/${encodeURIComponent(sessionId)}/steer`, {
+            method: "POST",
+            body: JSON.stringify({ message }),
+            cache: "no-store",
+            redirect: "manual",
+          }),
+        );
+        if (Option.isNone(decoded))
+          return yield* invalidResponse("Server returned an invalid steer outcome");
+        const result = decoded.value;
+        if (result.status === "stale" || result.status === "unavailable")
+          yield* setExitCode(EXIT.WRONG_STATE);
+        else if (result.status === "ambiguous") yield* setExitCode(EXIT.GENERIC);
+        if (autoJson) outputJson(runtime.stdout, result);
+        else runtime.stdout(humanSteer(result));
+      }),
+  ).pipe(
+    Command.withDescription("Prompt or steer a warm session or sandbox peer without waking it"),
+  );
+
   const doctor = Command.make("doctor", { trailing: trailingArguments }, ({ trailing }) =>
     Effect.gen(function* () {
       yield* rejectTrailingArguments(trailing);
@@ -1707,6 +1785,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       uninstall,
       beam,
       list,
+      inspect,
+      steer,
       doctor,
       attach,
       auth,

@@ -322,6 +322,8 @@ npm run build:cli
 ./dist/scotty beam up "fix the failing tests" --title "Fix tests" --repo owner/project --provider cloudflare --json
 ./dist/scotty beam down SESSION_ID --json
 ./dist/scotty beam vaporize SESSION_ID --yes --json
+./dist/scotty inspect SESSION_ID --json
+./dist/scotty steer SESSION_ID "check the focused tests" --json
 ./dist/scotty upgrade
 ./dist/scotty uninstall
 ./dist/scotty skills
@@ -338,6 +340,20 @@ Then run the repeatable user-service setup:
   --codex-auth /home/runner/.codex/auth.json \
   --source-binary /absolute/path/to/dist/scotty
 ```
+
+`inspect` passively reads a warm session without starting or waking its container. `steer` takes a
+fresh passive snapshot and submits one bounded prompt against that exact epoch and session revision;
+stale or ambiguous outcomes are never retried automatically. On a local machine these commands use
+the configured Worker and root bearer token. Inside a Scotty sandbox they instead use the exact
+`https://scotty.internal` origin without loading or forwarding root credentials or source identity.
+The source Sandbox Durable Object derives authority only from the Cloudflare container context and
+allows a different target only when both authoritative session records have exactly the same
+repository identity. This coordination is request-scoped; it has no mailbox or persisted
+coordination state.
+
+The installed `cloudflare/sandbox:0.12.3` HTTPS interceptor's trust of the reserved origin cannot be
+proven by local tests. A deployed same-repository inspect/steer canary remains a production gate; the
+local suite is not production proof.
 
 The command uses the installation in `~/.scotty.json`, registers the required name with the
 control plane, receives a one-time runner credential, imports the current GitHub CLI login,

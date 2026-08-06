@@ -1,4 +1,4 @@
-import { ContainerProxy, getSandbox } from "@cloudflare/sandbox";
+import { getSandbox } from "@cloudflare/sandbox";
 import {
   decodePiConsoleCommandV1Promise,
   PI_CONSOLE_MAX_COMMAND_BYTES,
@@ -9,6 +9,8 @@ import { parsePiAuthJsonOption, piProviderMetadata } from "../../protocol/pi-aut
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
+import { readBoundedUtf8Body } from "./bounded-http";
+import { ContainerProxy } from "./container-session-egress";
 import {
   badRequest,
   decodeJsonValue,
@@ -19,6 +21,7 @@ import {
   parseRenameSessionInput,
   parseRepo,
   parseSessionId,
+  parseSteerInput,
   ScottyError,
   wrongState,
   type CreateSessionInput,
@@ -71,6 +74,7 @@ import {
   type RunnerRegistryRpcResult,
   type ScottyRunnerRegistryStub,
 } from "./runner-registry-object";
+import { inspectPassiveSession, steerPassiveSession } from "./passive-session";
 import { Sandbox as ScottySandbox } from "./session";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
@@ -91,7 +95,6 @@ const RunnerRegistrationInputSchema = Schema.Struct({
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
   onExcessProperty: "error",
 });
-
 app.onError((error, c) => {
   const normalized = normalizeError(error);
   return c.json(
@@ -503,6 +506,24 @@ app.get("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).getScottySession());
 });
 
+app.get("/api/sessions/:id/inspect", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  return inspectPassiveSession(sessionSandbox(c.env, id));
+});
+
+app.post("/api/sessions/:id/steer", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  requireJsonContentType(c.req.raw);
+  const id = parseSessionId(c.req.param("id"));
+  const bodyText = await readBoundedUtf8Body(c.req.raw, PI_CONSOLE_MAX_COMMAND_BYTES);
+  if (bodyText === undefined) throw badRequest("Steer request body is too large");
+  const body = decodeJsonValue(bodyText);
+  if (Option.isNone(body)) throw badRequest("Request body must be valid JSON");
+  const message = parseSteerInput(body.value);
+  return steerPassiveSession(sessionSandbox(c.env, id), id, message);
+});
+
 app.patch("/api/sessions/:id", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
@@ -841,35 +862,6 @@ function unwrapRunnerRegistryRpc<A>(result: RunnerRegistryRpcResult<A>): A {
     httpStatus: 500,
     exitCode: 1,
   });
-}
-
-async function readBoundedUtf8Body(
-  request: Request,
-  maxBytes: number,
-): Promise<string | undefined> {
-  const declaredLength = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return undefined;
-  if (request.body === null) return "";
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for (;;) {
-    const next = await reader.read();
-    if (next.done) break;
-    length += next.value.byteLength;
-    if (length > maxBytes) {
-      await reader.cancel();
-      return undefined;
-    }
-    chunks.push(next.value);
-  }
-  const body = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(body);
 }
 
 async function readJsonBody(request: Request): Promise<unknown> {

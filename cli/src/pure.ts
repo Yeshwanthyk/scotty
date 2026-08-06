@@ -8,7 +8,9 @@ import {
   decodeRecoveryGrantResponse,
   decodeString,
   decodeUpResponse,
+  type InspectResponse,
   type SessionResponse,
+  type SteerResponse,
 } from "./schemas";
 
 export const EMBEDDED_SKILL = scottySkill;
@@ -208,6 +210,34 @@ export function stableSession(record: SessionResponse): JsonObject {
     };
   }
   return result;
+}
+
+export function humanInspect(id: string, snapshot: InspectResponse): string {
+  const queued = snapshot.queue.steer.length + snapshot.queue.followUp.length;
+  const truncated = snapshot.truncated.messages || snapshot.truncated.values ? "yes" : "no";
+  return (
+    [
+      `Session ${id}`,
+      `Epoch: ${snapshot.epoch}`,
+      `Sequence: ${snapshot.sequence} (base ${snapshot.baseSequence})`,
+      `Revision: ${snapshot.sessionRevision}`,
+      `Messages: ${snapshot.messages.length}`,
+      `Active tools: ${snapshot.activeTools.length}`,
+      `Queued: ${queued}`,
+      `Pending UI: ${snapshot.pendingUi.length}`,
+      `Truncated: ${truncated}`,
+    ].join("\n") + "\n"
+  );
+}
+
+export function humanSteer(result: SteerResponse): string {
+  if (result.status === "accepted")
+    return `Steer accepted for ${result.id} at revision ${result.sessionRevision}.\n`;
+  if (result.status === "stale")
+    return `Steer was stale for ${result.id}; no command was retried.\n`;
+  if (result.status === "unavailable")
+    return `Steer unavailable for ${result.id}: ${result.reason}.\n`;
+  return `Steer outcome is ambiguous for ${result.id}: ${result.reason}; do not retry automatically.\n`;
 }
 
 export function humanSession(record: JsonObject): string {

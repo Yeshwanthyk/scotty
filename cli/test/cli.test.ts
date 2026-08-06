@@ -1279,6 +1279,336 @@ describe("commands and schemas", () => {
     expect(redactedCode.error().error.code).toBe("[REDACTED]");
   });
 
+  test("inspect emits stable bounded JSON and human summaries from the passive snapshot", async () => {
+    const snapshot = {
+      version: 1,
+      epoch: "epoch-1",
+      baseSequence: 5,
+      sequence: 5,
+      sessionRevision: 7,
+      state: { isStreaming: false },
+      messages: [
+        { role: "user", content: "fix it" },
+        { role: "assistant", content: "working" },
+      ],
+      overlapEvents: [],
+      activeTools: [{ id: "tool-1", name: "bash", status: "running" }],
+      queue: {
+        steer: [{ id: "steer-1", text: "check tests" }],
+        followUp: [{ id: "follow-1", text: "summarize" }],
+      },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [] },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: false, values: true },
+    } as const;
+    const requests: Request[] = [];
+    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(new Request(input, init));
+      return Response.json({ ...snapshot, ignored: true });
+    };
+
+    const json = harness({ fetch, stdoutIsTTY: true });
+    expect(
+      await main(["inspect", "s1", "--json", "--host", "https://worker.example"], json.deps),
+    ).toBe(EXIT.OK);
+    expect(json.json()).toEqual({ id: "s1", ...snapshot });
+
+    const human = harness({ fetch, stdoutIsTTY: true });
+    expect(await main(["inspect", "s1", "--host", "https://worker.example"], human.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(human.stdout.join("")).toBe(
+      "Session s1\n" +
+        "Epoch: epoch-1\n" +
+        "Sequence: 5 (base 5)\n" +
+        "Revision: 7\n" +
+        "Messages: 2\n" +
+        "Active tools: 1\n" +
+        "Queued: 2\n" +
+        "Pending UI: 0\n" +
+        "Truncated: yes\n",
+    );
+    expect(requests.every((request) => request.redirect === "manual")).toBe(true);
+    expect(requests.every((request) => request.cache === "no-store")).toBe(true);
+    expect(
+      requests.map((request) => ({
+        authorization: request.headers.get("authorization"),
+        method: request.method,
+        pathname: new URL(request.url).pathname,
+      })),
+    ).toEqual([
+      {
+        authorization: "Bearer secret",
+        method: "GET",
+        pathname: "/api/sessions/s1/inspect",
+      },
+      {
+        authorization: "Bearer secret",
+        method: "GET",
+        pathname: "/api/sessions/s1/inspect",
+      },
+    ]);
+  });
+
+  test("sandbox inspect and steer use only the exact internal peer-control transport", async () => {
+    const home = await temporaryDirectory();
+    await mkdir(join(home, ".scotty.json"));
+    const sourceMarker = "source-session-must-not-leave-the-container";
+    const requests: Request[] = [];
+    const snapshot = {
+      version: 1,
+      epoch: "epoch-1",
+      baseSequence: 1,
+      sequence: 1,
+      sessionRevision: 2,
+      state: { isStreaming: false },
+      messages: [],
+      overlapEvents: [],
+      activeTools: [],
+      queue: { steer: [], followUp: [] },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [] },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: false, values: false },
+    } as const;
+    const accepted = {
+      id: "peer-1",
+      status: "accepted",
+      commandId: "123e4567-e89b-42d3-a456-426614174000",
+      epoch: "epoch-1",
+      sessionRevision: 2,
+    } as const;
+    const h = harness({
+      home,
+      env: {
+        SCOTTY_SESSION_ID: sourceMarker,
+        SCOTTY_HOST: "https://must-not-be-used.example",
+        SCOTTY_TOKEN: "must-not-be-sent",
+      },
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        return request.method === "GET" ? Response.json(snapshot) : Response.json(accepted);
+      },
+    });
+    const ignoredOptions = [
+      "--host",
+      "https://also-must-not-be-used.example",
+      "--token-file",
+      join(home, "missing-token"),
+      "--json",
+    ];
+
+    expect(await main(["inspect", "peer-1", ...ignoredOptions], h.deps)).toBe(EXIT.OK);
+    expect(await main(["steer", "peer-1", "continue", ...ignoredOptions], h.deps)).toBe(EXIT.OK);
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://scotty.internal/api/sessions/peer-1/inspect",
+      "https://scotty.internal/api/sessions/peer-1/steer",
+    ]);
+    for (const request of requests) {
+      expect(request.redirect).toBe("manual");
+      expect(request.cache).toBe("no-store");
+      expect(new URL(request.url).search).toBe("");
+      for (const header of [
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "x-api-key",
+        "x-auth-token",
+        "scotty-session-id",
+        "session-id",
+        "source-session-id",
+        "x-session-id",
+        "x-source-session-id",
+      ]) {
+        expect(request.headers.has(header)).toBe(false);
+      }
+      expect([...request.headers.keys()].some((name) => name.startsWith("x-scotty-"))).toBe(false);
+      expect([...request.headers].map((entry) => entry.join(":")).join("\n")).not.toContain(
+        sourceMarker,
+      );
+    }
+    expect(requests[0]?.body).toBeNull();
+    expect(await requests[1]?.json()).toEqual({ message: "continue" });
+  });
+
+  test("sandbox peer-control preserves invalid and Worker error exits", async () => {
+    const invalid = harness({
+      env: { SCOTTY_SESSION_ID: "source" },
+      fetch: async () => Response.json({}),
+    });
+    expect(await main(["inspect", "peer-1", "--json"], invalid.deps)).toBe(EXIT.GENERIC);
+    expect(invalid.error().error.code).toBe("invalid_response");
+
+    const missing = harness({
+      env: { SCOTTY_SESSION_ID: "source" },
+      fetch: async () =>
+        Response.json(
+          {
+            error: {
+              code: "not_found",
+              message: "Session not found",
+              hint: "Check the target session ID.",
+            },
+          },
+          { status: 404 },
+        ),
+    });
+    expect(await main(["inspect", "peer-1", "--json"], missing.deps)).toBe(EXIT.NOT_FOUND);
+    expect(missing.error()).toEqual({
+      error: {
+        code: "not_found",
+        message: "Session not found",
+        hint: "Check the target session ID.",
+      },
+    });
+  });
+
+  test("steer emits stable accepted JSON and human output using one authenticated mutation", async () => {
+    const accepted = {
+      id: "s1",
+      status: "accepted",
+      commandId: "123e4567-e89b-42d3-a456-426614174000",
+      epoch: "epoch-1",
+      sessionRevision: 7,
+    } as const;
+    const requests: Request[] = [];
+    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(new Request(input, init));
+      return Response.json(accepted);
+    };
+
+    const json = harness({ fetch, stdoutIsTTY: true });
+    expect(
+      await main(
+        ["steer", "s1", "check the tests", "--json", "--host", "https://worker.example"],
+        json.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(json.json()).toEqual(accepted);
+
+    const human = harness({ fetch, stdoutIsTTY: true });
+    expect(
+      await main(
+        ["steer", "s1", "check the tests", "--host", "https://worker.example"],
+        human.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(human.stdout.join("")).toBe("Steer accepted for s1 at revision 7.\n");
+    expect(requests.every((request) => request.redirect === "manual")).toBe(true);
+    expect(requests.every((request) => request.cache === "no-store")).toBe(true);
+    expect(
+      await Promise.all(
+        requests.map(async (request) => ({
+          authorization: request.headers.get("authorization"),
+          body: await request.json(),
+          method: request.method,
+          pathname: new URL(request.url).pathname,
+        })),
+      ),
+    ).toEqual([
+      {
+        authorization: "Bearer secret",
+        body: { message: "check the tests" },
+        method: "POST",
+        pathname: "/api/sessions/s1/steer",
+      },
+      {
+        authorization: "Bearer secret",
+        body: { message: "check the tests" },
+        method: "POST",
+        pathname: "/api/sessions/s1/steer",
+      },
+    ]);
+  });
+
+  test("steer surfaces stale, unavailable, and ambiguous outcomes once with bounded output", async () => {
+    for (const [reply, exitCode, humanOutput] of [
+      [
+        {
+          id: "s1",
+          status: "stale",
+          reason: "session_revision_changed",
+          expectedSessionRevision: 7,
+          sessionRevision: 8,
+          retryable: false,
+        },
+        EXIT.WRONG_STATE,
+        "Steer was stale for s1; no command was retried.\n",
+      ],
+      [
+        {
+          id: "s1",
+          status: "unavailable",
+          reason: "session_not_warm",
+          retryable: false,
+        },
+        EXIT.WRONG_STATE,
+        "Steer unavailable for s1: session_not_warm.\n",
+      ],
+      [
+        { id: "s1", status: "ambiguous", reason: "command_transport_failed" },
+        EXIT.GENERIC,
+        "Steer outcome is ambiguous for s1: command_transport_failed; do not retry automatically.\n",
+      ],
+    ] as const) {
+      let calls = 0;
+      const human = harness({
+        stdoutIsTTY: true,
+        fetch: async () => {
+          calls++;
+          return Response.json(reply);
+        },
+      });
+      expect(
+        await main(["steer", "s1", "continue", "--host", "https://worker.example"], human.deps),
+      ).toBe(exitCode);
+      expect(human.stdout.join("")).toBe(humanOutput);
+      expect(calls).toBe(1);
+
+      const json = harness({
+        stdoutIsTTY: true,
+        fetch: async () => Response.json(reply),
+      });
+      expect(
+        await main(
+          ["steer", "s1", "continue", "--json", "--host", "https://worker.example"],
+          json.deps,
+        ),
+      ).toBe(exitCode);
+      expect(json.json()).toEqual(reply);
+    }
+  });
+
+  test("steer rejects empty, slash-command, oversized, and trailing input before fetching", async () => {
+    let calls = 0;
+    const h = harness({
+      fetch: async () => {
+        calls++;
+        return Response.json({});
+      },
+    });
+    for (const args of [
+      ["steer", "s1", "  "],
+      ["steer", "s1", "/help"],
+      ["steer", "s1", "é".repeat(8_193)],
+      ["steer", "s1", "continue", "extra"],
+    ]) {
+      expect(await main([...args, "--host", "https://worker.example"], h.deps)).toBe(EXIT.USAGE);
+    }
+    expect(calls).toBe(0);
+  });
+
   test("snapshot and resume emit minimal stable schemas", async () => {
     for (const [args, reply, expected] of [
       [
