@@ -389,6 +389,34 @@ test(
       { timeoutMs: 120_000, intervalMs: 2_000 },
     );
 
+    const localSteeringMarker = `SCOTTY_E2E_LOCAL_STEER_${randomUUID()}`;
+    const localSteer = await runCli(
+      [
+        "steer",
+        peerTargetId,
+        `Reply with exactly ${localSteeringMarker} and nothing else.`,
+        "--json",
+      ],
+      { env, cwd, timeoutMs: 30_000 },
+    );
+    assert.equal(localSteer.code, 0, localSteer.stderr);
+    assert.equal(localSteer.json.id, peerTargetId);
+    assert.equal(localSteer.json.status, "accepted");
+    await poll(
+      () => runCli(["inspect", peerTargetId, "--json"], { env, cwd, timeoutMs: 30_000 }),
+      (result) => {
+        if (result.code !== 0 || result.json?.state?.isStreaming !== false) return false;
+        const messages = JSON.stringify(result.json?.messages ?? []);
+        return (
+          messages.split(localSteeringMarker).length - 1 >= 2 &&
+          result.json?.activeTools?.length === 0 &&
+          result.json?.queue?.steer?.length === 0 &&
+          result.json?.queue?.followUp?.length === 0
+        );
+      },
+      { timeoutMs: 120_000, intervalMs: 2_000 },
+    );
+
     const sourceUp = await runCli(
       [
         "beam",
