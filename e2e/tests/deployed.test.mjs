@@ -245,6 +245,12 @@ test(
     });
     assert.equal(terminalWithoutUpgrade.status, 426);
 
+    await poll(
+      () => git(["ls-remote", "origin", `refs/heads/${remoteBranch}`], cwd),
+      (value) => value.endsWith(`refs/heads/${remoteBranch}`),
+      { timeoutMs: 180_000, intervalMs: 2_000 },
+    );
+
     const sourceUp = await runCli(
       [
         "beam",
@@ -308,12 +314,6 @@ test(
     });
     assert.equal(sourceVaporize.code, 0, sourceVaporize.stderr);
     sourceId = undefined;
-
-    await poll(
-      () => git(["ls-remote", "origin", `refs/heads/${remoteBranch}`], cwd),
-      (value) => value.endsWith(`refs/heads/${remoteBranch}`),
-      { timeoutMs: 180_000, intervalMs: 2_000 },
-    );
 
     const snapshot = await runCli(["snapshot", id, "--json"], {
       env,
