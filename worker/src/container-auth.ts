@@ -1,8 +1,13 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schedule } from "effect";
 import type { SessionRecord } from "./contracts";
 import { sha256Hex } from "./digest";
 import { piAuthJson, type StoredCredential } from "./egress";
-import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
+import {
+  SandboxRuntime,
+  SandboxRuntimeFailure,
+  shellQuote,
+  type SandboxProcess,
+} from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
 export const PI_PACKAGES = [
@@ -22,6 +27,13 @@ export const PI_SESSION_TOKEN_HEADER = "x-scotty-pi-session";
 
 const piSessionTokenPath = (id: SessionRecord["id"]): string =>
   `${sessionRoot(id)}/.pi-agent/scotty-pi-session.token`;
+
+const piSessionProcessRunning = (process: SandboxProcess | null): process is SandboxProcess =>
+  process !== null &&
+  process.status !== "completed" &&
+  process.status !== "failed" &&
+  process.status !== "killed" &&
+  process.status !== "error";
 
 export const piSessionTransportToken = (
   id: SessionRecord["id"],
@@ -261,16 +273,16 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       }),
       stopPiSession: Effect.fnUntraced(function* () {
         const process = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
-        if (
-          process === null ||
-          process.status === "completed" ||
-          process.status === "failed" ||
-          process.status === "killed" ||
-          process.status === "error"
-        )
-          return;
+        if (!piSessionProcessRunning(process)) return;
         yield* process.kill("SIGTERM");
-        yield* process.waitForExit(10_000);
+        yield* Effect.gen(function* () {
+          const current = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+          if (piSessionProcessRunning(current))
+            return yield* new SandboxRuntimeFailure({
+              reason: "nonzero_exit",
+              message: "Pi session process did not stop",
+            });
+        }).pipe(Effect.retry({ times: 39, schedule: Schedule.spaced("250 millis") }));
       }),
       refreshPiAuth,
     });
