@@ -3,6 +3,6 @@
   "version": "0.0.0",
   "private": true,
   "dependencies": {
-    "@ogulcancelik/pi-codex-compaction": "0.1.2"
+    "@ogulcancelik/pi-codex-compaction": "0.1.3"
   }
 }

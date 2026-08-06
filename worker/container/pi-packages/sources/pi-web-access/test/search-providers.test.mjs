@@ -22,7 +22,11 @@ function runChild(script, env) {
 		"BRAVE_API_KEY",
 		"PARALLEL_API_KEY",
 		"TINYFISH_API_KEY",
+		"SEARCH1API_KEY",
+		"SEARCHINFINITY_API_KEY",
+		"QUERIT_API_KEY",
 		"TAVILY_API_KEY",
+		"JINA_API_KEY",
 		"SEARXNG_BASE_URL",
 		"EXA_API_KEY",
 		"PERPLEXITY_API_KEY",
@@ -199,6 +203,112 @@ test("SearXNG search is SSRF-guarded and preferred first when configured", async
 	assert.equal(output.auto.provider, "searxng");
 });
 
+test("SearXNG search merges configured custom headers", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-web-access-searxng-headers-"));
+	const child = runChild(`
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(${JSON.stringify(home)} + "/web-search.json", JSON.stringify({
+			searxngBaseUrl: "http://127.0.0.1:8443/",
+			searxngHeaders: {
+				"CF-Access-Client-Id": "client-id.access",
+				"CF-Access-Client-Secret": "client-secret",
+				"X-Empty-Skip": 123,
+				"X-Bad-Value": "bad\\r\\nvalue",
+				"Bad Name": "nope",
+			},
+			ssrf: { allowRanges: ["127.0.0.1"] },
+		}));
+		let capturedHeaders = null;
+		globalThis.fetch = async (_url, init = {}) => {
+			capturedHeaders = init.headers ?? null;
+			return new Response(JSON.stringify({
+				results: [{ title: "Allowed", url: "https://docs.example.com/a", content: "allowed" }],
+			}), { status: 200, headers: { "content-type": "application/json" } });
+		};
+		const { searchWithSearXNG } = await import(${JSON.stringify(searxngModuleUrl)});
+		await searchWithSearXNG("headers");
+		console.log(JSON.stringify({ capturedHeaders }));
+	`, {
+		HOME: home,
+		USERPROFILE: home,
+		PI_CODING_AGENT_DIR: home,
+	});
+
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.deepEqual(output.capturedHeaders, {
+		Accept: "application/json",
+		"CF-Access-Client-Id": "client-id.access",
+		"CF-Access-Client-Secret": "client-secret",
+	});
+
+	const overrideHome = await mkdtemp(join(tmpdir(), "pi-web-access-searxng-headers-override-"));
+	const overrideChild = runChild(`
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(${JSON.stringify(overrideHome)} + "/web-search.json", JSON.stringify({
+			searxngBaseUrl: "http://127.0.0.1:8443/",
+			searxngHeaders: { accept: "application/custom-json" },
+			ssrf: { allowRanges: ["127.0.0.1"] },
+		}));
+		let capturedHeaders = null;
+		globalThis.fetch = async (_url, init = {}) => {
+			capturedHeaders = init.headers ?? null;
+			return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } });
+		};
+		const { searchWithSearXNG } = await import(${JSON.stringify(searxngModuleUrl)});
+		await searchWithSearXNG("headers");
+		console.log(JSON.stringify({ capturedHeaders }));
+	`, {
+		HOME: overrideHome,
+		USERPROFILE: overrideHome,
+		PI_CODING_AGENT_DIR: overrideHome,
+	});
+
+	assert.equal(overrideChild.status, 0, overrideChild.stderr);
+	assert.deepEqual(JSON.parse(overrideChild.stdout.trim()).capturedHeaders, { accept: "application/custom-json" });
+});
+
+test("SearXNG search strips configured headers on cross-origin redirects", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-web-access-searxng-headers-redirect-"));
+	const child = runChild(`
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(${JSON.stringify(home)} + "/web-search.json", JSON.stringify({
+			searxngBaseUrl: "http://127.0.0.1:8443/",
+			searxngHeaders: {
+				"CF-Access-Client-Id": "client-id.access",
+				"CF-Access-Client-Secret": "client-secret",
+			},
+			ssrf: { allowRanges: ["127.0.0.1"] },
+		}));
+		const calls = [];
+		globalThis.fetch = async (url, init = {}) => {
+			calls.push({ url: String(url), headers: init.headers ?? null });
+			if (calls.length === 1) {
+				return new Response(null, { status: 302, headers: { location: "http://127.0.0.1:8444/search" } });
+			}
+			return new Response(JSON.stringify({
+				results: [{ title: "Allowed", url: "https://docs.example.com/a", content: "allowed" }],
+			}), { status: 200, headers: { "content-type": "application/json" } });
+		};
+		const { searchWithSearXNG } = await import(${JSON.stringify(searxngModuleUrl)});
+		await searchWithSearXNG("headers redirect");
+		console.log(JSON.stringify({ calls }));
+	`, {
+		HOME: home,
+		USERPROFILE: home,
+		PI_CODING_AGENT_DIR: home,
+	});
+
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.deepEqual(output.calls[0].headers, {
+		Accept: "application/json",
+		"CF-Access-Client-Id": "client-id.access",
+		"CF-Access-Client-Secret": "client-secret",
+	});
+	assert.deepEqual(output.calls[1].headers, { Accept: "application/json" });
+});
+
 test("SearXNG redirect validation rejects an unapproved private target", async () => {
 	const home = await mkdtemp(join(tmpdir(), "pi-web-access-searxng-redirect-"));
 	const child = runChild(`
@@ -268,7 +378,7 @@ test("auto provider falls through to Tavily after unavailable earlier providers"
 		globalThis.fetch = async (url, init = {}) => {
 			const urlText = String(url);
 			calls.push(urlText);
-			if (urlText === "https://mcp.exa.ai/mcp") {
+			if (urlText.startsWith("https://mcp.exa.ai/mcp")) {
 				return new Response("Exa unavailable", { status: 503 });
 			}
 			if (urlText === "https://api.tavily.com/search") {
@@ -291,7 +401,7 @@ test("auto provider falls through to Tavily after unavailable earlier providers"
 
 	assert.equal(child.status, 0, child.stderr);
 	const output = JSON.parse(child.stdout.trim());
-	assert.ok(output.calls.includes("https://mcp.exa.ai/mcp"));
+	assert.ok(output.calls.some((call) => call.startsWith("https://mcp.exa.ai/mcp")));
 	assert.ok(output.calls.includes("https://api.tavily.com/search"));
 	assert.equal(output.result.provider, "tavily");
 	assert.equal(output.result.answer, "Auto Tavily answer");
@@ -307,9 +417,11 @@ test("Exa direct API key ignores full legacy usage counter", async () => {
 
 		let capturedUrl = "";
 		let capturedHeaders = null;
+		let capturedBody = null;
 		globalThis.fetch = async (url, init) => {
 			capturedUrl = String(url);
 			capturedHeaders = init.headers;
+			capturedBody = JSON.parse(init.body);
 			return new Response(JSON.stringify({
 				answer: "Paid Exa answer",
 				citations: [{ title: "Exa Docs", url: "https://exa.ai/docs" }],
@@ -323,7 +435,9 @@ test("Exa direct API key ignores full legacy usage counter", async () => {
 		console.log(JSON.stringify({
 			available,
 			capturedUrl,
+			capturedBody,
 			apiKey: capturedHeaders["x-api-key"],
+			integration: capturedHeaders["x-exa-integration"],
 			result,
 			usage,
 		}));
@@ -337,7 +451,9 @@ test("Exa direct API key ignores full legacy usage counter", async () => {
 	const output = JSON.parse(child.stdout.trim());
 	assert.equal(output.available, true);
 	assert.equal(output.capturedUrl, "https://api.exa.ai/answer");
+	assert.deepEqual(output.capturedBody, { query: "paid exa query" });
 	assert.equal(output.apiKey, "exa-paid-key");
+	assert.equal(output.integration, "pi-web-access");
 	assert.equal(output.result.answer, "Paid Exa answer");
 	assert.deepEqual(output.result.results, [{ title: "Exa Docs", url: "https://exa.ai/docs", snippet: "" }]);
 	assert.equal(output.usage.count, 1000);
@@ -440,6 +556,104 @@ test("Exa provider errors redact the resolved credential", async () => {
 	const { message } = JSON.parse(child.stdout.trim());
 	assert.equal(message.includes(secret), false);
 	assert.equal(message.includes("[redacted]"), true);
+});
+
+test("keyless Exa search sends filters to the advanced MCP tool as parameters", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-web-access-exa-mcp-advanced-"));
+	const child = runChild(`
+		let captured = null;
+		globalThis.fetch = async (url, init) => {
+			captured = { url: String(url), body: JSON.parse(init.body) };
+			return new Response(JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				result: { content: [{ type: "text", text: JSON.stringify({ results: [{
+					title: "Advanced result",
+					url: "https://docs.example.com/advanced",
+					text: "full page text",
+					highlights: ["relevant highlight"],
+				}] }) }] },
+			}), { status: 200 });
+		};
+
+		const { searchWithExa } = await import(${JSON.stringify(exaModuleUrl)});
+		const result = await searchWithExa("semantic query", {
+			numResults: 3,
+			recencyFilter: "week",
+			domainFilter: ["docs.example.com", "-spam.example.net"],
+			includeContent: true,
+		});
+		console.log(JSON.stringify({ captured, result }));
+	`, {
+		HOME: home,
+		USERPROFILE: home,
+		PI_CODING_AGENT_DIR: home,
+	});
+
+	assert.equal(child.status, 0, child.stderr);
+	const { captured, result } = JSON.parse(child.stdout.trim());
+	assert.equal(captured.url, "https://mcp.exa.ai/mcp?tools=web_search_advanced_exa");
+	assert.equal(captured.body.params.name, "web_search_advanced_exa");
+
+	const { startPublishedDate, ...args } = captured.body.params.arguments;
+	assert.ok(startPublishedDate);
+	assert.deepEqual(args, {
+		query: "semantic query",
+		type: "auto",
+		numResults: 3,
+		includeDomains: ["docs.example.com"],
+		excludeDomains: ["spam.example.net"],
+		enableHighlights: true,
+		textMaxCharacters: 50000,
+	});
+
+	assert.deepEqual(result.results, [{ title: "Advanced result", url: "https://docs.example.com/advanced", snippet: "" }]);
+	assert.match(result.answer, /relevant highlight/);
+	assert.deepEqual(result.inlineContent, [{
+		url: "https://docs.example.com/advanced",
+		title: "Advanced result",
+		content: "full page text",
+		error: null,
+	}]);
+});
+
+test("keyless Exa search falls back to the default MCP tool when the advanced tool is missing", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-web-access-exa-mcp-fallback-"));
+	const child = runChild(`
+		const tools = [];
+		globalThis.fetch = async (url, init) => {
+			const target = String(url);
+			tools.push(JSON.parse(init.body).params.name);
+			if (target.includes("web_search_advanced_exa")) {
+				return new Response(JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					error: { code: -32602, message: "Tool web_search_advanced_exa not found" },
+				}), { status: 200 });
+			}
+			return new Response(JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				result: { content: [{
+					type: "text",
+					text: "Title: Basic result\\nURL: https://example.com/basic\\nText: basic text\\n---",
+				}] },
+			}), { status: 200 });
+		};
+
+		const { searchWithExa } = await import(${JSON.stringify(exaModuleUrl)});
+		const result = await searchWithExa("fallback query", { domainFilter: ["example.com"] });
+		console.log(JSON.stringify({ tools, result }));
+	`, {
+		HOME: home,
+		USERPROFILE: home,
+		PI_CODING_AGENT_DIR: home,
+	});
+
+	assert.equal(child.status, 0, child.stderr);
+	const { tools, result } = JSON.parse(child.stdout.trim());
+	assert.deepEqual(tools, ["web_search_advanced_exa", "web_search_exa"]);
+	assert.deepEqual(result.results, [{ title: "Basic result", url: "https://example.com/basic", snippet: "" }]);
 });
 
 test("failed Gemini command source is redacted and blocks browser fallback", async () => {
@@ -579,6 +793,78 @@ test("OpenAI search uses configured Responses endpoint", async () => {
 	assert.equal(output.answer, "gateway answer");
 });
 
+test("OpenAI search falls back to API key when model registry cannot enumerate", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-web-access-openai-partial-registry-"));
+	const child = runChild(`
+		let capturedBody = null;
+		globalThis.fetch = async (url, init) => {
+			capturedBody = JSON.parse(init.body);
+			return new Response(JSON.stringify({
+				output: [{ type: "message", content: [{ type: "output_text", text: "fallback answer" }] }],
+			}), { status: 200, headers: { "content-type": "application/json" } });
+		};
+
+		const { searchWithOpenAI } = await import(${JSON.stringify(openaiModuleUrl)});
+		const result = await searchWithOpenAI("fallback docs", { numResults: 1 }, { modelRegistry: {} });
+		console.log(JSON.stringify({ answer: result.answer, model: capturedBody.model }));
+	`, {
+		HOME: home,
+		USERPROFILE: home,
+		OPENAI_API_KEY: "sk-test-key",
+	});
+
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.equal(output.answer, "fallback answer");
+	assert.equal(output.model, "gpt-5.6-terra");
+});
+
+test("OpenAI search uses configured model with selected registry auth", async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-web-access-openai-model-"));
+	await writeFile(join(home, "web-search.json"), JSON.stringify({
+		openaiSearchModel: "gateway-search-model",
+	}) + "\n");
+	const child = runChild(`
+		let capturedBody = null;
+		let selectedModel = null;
+		globalThis.fetch = async (url, init) => {
+			capturedBody = JSON.parse(init.body);
+			return new Response(JSON.stringify({
+				output: [{ type: "message", content: [{ type: "output_text", text: "registry answer" }] }],
+			}), { status: 200, headers: { "content-type": "application/json" } });
+		};
+
+		const models = [
+			{ provider: "openai", id: "gpt-5.9" },
+			{ provider: "openai", id: "gpt-5.10-pro" },
+			{ provider: "openai", id: "gpt-5.10" },
+		];
+		const ctx = {
+			modelRegistry: {
+				getAll: () => models,
+				getApiKeyAndHeaders: async (model) => {
+					selectedModel = model.id;
+					return { ok: true, apiKey: "registry-key", headers: { "X-Registry": "yes" } };
+				},
+			},
+		};
+
+		const { searchWithOpenAI } = await import(${JSON.stringify(openaiModuleUrl)});
+		const result = await searchWithOpenAI("registry docs", { numResults: 1 }, ctx);
+		console.log(JSON.stringify({ answer: result.answer, requestModel: capturedBody.model, selectedModel }));
+	`, {
+		HOME: home,
+		USERPROFILE: home,
+		PI_CODING_AGENT_DIR: home,
+	});
+
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.equal(output.answer, "registry answer");
+	assert.equal(output.requestModel, "gateway-search-model");
+	assert.equal(output.selectedModel, "gpt-5.10");
+});
+
 test("Gemini API search uses its search-only default model", async () => {
 	const home = await mkdtemp(join(tmpdir(), "pi-web-access-gemini-default-"));
 	const child = runChild(`
@@ -606,7 +892,7 @@ test("Gemini API search uses its search-only default model", async () => {
 
 	assert.equal(child.status, 0, child.stderr);
 	const output = JSON.parse(child.stdout.trim());
-	assert.equal(output.capturedUrl, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent");
+	assert.equal(output.capturedUrl, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent");
 	assert.equal(output.capturedHeaders["x-goog-api-key"], "gemini-test-key");
 	assert.deepEqual(output.capturedBody.tools, [{ google_search: {} }]);
 	assert.equal(output.provider, "gemini");

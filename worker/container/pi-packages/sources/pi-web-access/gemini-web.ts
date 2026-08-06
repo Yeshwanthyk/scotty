@@ -15,8 +15,9 @@ const USER_AGENT =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const MODEL_HEADER_NAME = "x-goog-ext-525001261-jspb";
+export const DEFAULT_GEMINI_WEB_MODEL = "gemini-3.1-pro";
 const MODEL_HEADERS: Record<string, string> = {
-	"gemini-3-pro": '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4]]',
+	[DEFAULT_GEMINI_WEB_MODEL]: '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4]]',
 	"gemini-2.5-pro": '[1,null,null,null,"4af6c7f5da75d65d",null,null,0,[4]]',
 	"gemini-2.5-flash": '[1,null,null,null,"9ec249fc9ad08861",null,null,0,[4]]',
 };
@@ -80,7 +81,10 @@ export async function queryWithCookies(
 	cookieMap: CookieMap,
 	options: GeminiWebOptions = {},
 ): Promise<string> {
-	const model = options.model && MODEL_HEADERS[options.model] ? options.model : "gemini-2.5-flash";
+	const model = options.model ?? DEFAULT_GEMINI_WEB_MODEL;
+	if (!MODEL_HEADERS[model]) {
+		throw new Error(`Gemini Web does not support model ${model}; configure Gemini API or choose a supported Gemini Web model.`);
+	}
 	const timeoutMs = options.timeoutMs ?? 120000;
 
 	let fullPrompt = prompt;
@@ -89,13 +93,6 @@ export async function queryWithCookies(
 	}
 
 	const result = await runGeminiWebOnce(fullPrompt, cookieMap, model, options.files, timeoutMs, options.signal);
-
-	if (isModelUnavailable(result.errorCode) && model !== "gemini-2.5-flash") {
-		const fallback = await runGeminiWebOnce(fullPrompt, cookieMap, "gemini-2.5-flash", options.files, timeoutMs, options.signal);
-		if (fallback.errorMessage) throw new Error(fallback.errorMessage);
-		if (!fallback.text) throw new Error("Gemini Web returned empty response (fallback model)");
-		return fallback.text;
-	}
 
 	if (result.errorMessage) throw new Error(result.errorMessage);
 	if (!result.text) throw new Error("Gemini Web returned empty response");
@@ -372,10 +369,6 @@ function trimJsonEnvelope(text: string): string {
 function extractErrorCode(responseJson: unknown): number | undefined {
 	const code = getNestedValue(responseJson, [0, 5, 2, 0, 1, 0]);
 	return typeof code === "number" && code >= 0 ? code : undefined;
-}
-
-function isModelUnavailable(errorCode: number | undefined): boolean {
-	return errorCode === 1052;
 }
 
 function extractCandidateText(candidate: unknown): string {

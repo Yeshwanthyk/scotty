@@ -517,6 +517,16 @@ test("runAgent recovers once when the model returns plain JSON instead of struct
   assert.equal(outcome.ok, true);
   assert.deepEqual(outcome.structured, { value: "recovered" });
   assert.equal(prompts.length, 2);
+  assert.equal(
+    prompts[0]?.match(/workflow already owns decomposition and coordination/gi)
+      ?.length,
+    1,
+    "shared child guidance is applied exactly once",
+  );
+  assert.match(
+    prompts[0] ?? "",
+    /Assigned workflow step:\nreturn structured output/,
+  );
   assert.equal(turnStarts, 3);
   assert.ok(activities >= 6, "setup and prompt boundaries emit activity");
   assert.equal(outcome.usage.turns, 2);

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync, realpathSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { extname, join, resolve as resolvePath, sep as pathSep } from "node:path";
 import { activityMonitor } from "./activity.ts";
 import type { ExtractedContent } from "./extract.ts";
@@ -63,10 +63,24 @@ function normalizePositiveNumber(value: unknown, fallback: number): number {
 	return value > 0 ? value : fallback;
 }
 
+function expandPath(value: string): string {
+	let expanded = value;
+	// Expand ~ at the start of the path
+	if (expanded.startsWith("~/") || expanded === "~") {
+		expanded = expanded.replace(/^~/, process.env.HOME || process.env.USERPROFILE || "");
+	}
+	// Expand environment variables like $HOME, $USER, etc.
+	expanded = expanded.replace(/\$([A-Z_][A-Z0-9_]*)/gi, (match, varName) => {
+		return process.env[varName] ?? match;
+	});
+	return expanded;
+}
+
 function normalizeClonePath(value: unknown, fallback: string): string {
 	if (typeof value !== "string") return fallback;
 	const normalized = value.trim();
-	return normalized.length > 0 ? normalized : fallback;
+	if (normalized.length === 0) return fallback;
+	return expandPath(normalized);
 }
 
 function loadGitHubConfig(): GitHubCloneConfig {
@@ -172,10 +186,58 @@ function cloneDir(config: GitHubCloneConfig, owner: string, repo: string, ref?: 
 	return join(config.clonePath, owner, dirName);
 }
 
+const PROCESS_KILL_GRACE_MS = 3000;
+
+function terminateProcessTree(child: ChildProcess): void {
+	const pid = child.pid;
+	if (!pid) return;
+
+	if (process.platform === "win32") {
+		const killer = execFile(
+			"taskkill",
+			["/pid", String(pid), "/T", "/F"],
+			{ windowsHide: true },
+			(err) => {
+				if (err) child.kill();
+			},
+		);
+		killer.unref();
+		return;
+	}
+
+	try {
+		// Clone commands run in their own process group so git/gh helpers cannot
+		// survive a timeout or cancellation and keep reading from the host TTY.
+		process.kill(-pid, "SIGTERM");
+	} catch {
+		child.kill();
+	}
+
+	// A credential helper may handle or ignore SIGTERM. Escalate against the
+	// entire process group so neither git nor any descendant can block forever.
+	const forceKill = setTimeout(() => {
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {
+			child.kill("SIGKILL");
+		}
+	}, PROCESS_KILL_GRACE_MS);
+	forceKill.unref();
+}
+
 function execClone(args: string[], localPath: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
 	return new Promise((resolve) => {
-		const child = execFile(args[0], args.slice(1), { timeout: timeoutMs }, (err) => {
-			if (err) {
+		let settled = false;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let onAbort: (() => void) | undefined;
+
+		const finish = (success: boolean) => {
+			if (settled) return;
+			settled = true;
+			if (timeout) clearTimeout(timeout);
+			if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+
+			if (!success) {
 				try {
 					rmSync(localPath, { recursive: true, force: true });
 				} catch {
@@ -184,12 +246,33 @@ function execClone(args: string[], localPath: string, timeoutMs: number, signal?
 				return;
 			}
 			resolve(localPath);
+		};
+
+		const child = spawn(args[0], args.slice(1), {
+			detached: process.platform !== "win32",
+			env: {
+				...process.env,
+				GIT_TERMINAL_PROMPT: "0",
+				GCM_INTERACTIVE: "Never",
+				GH_PROMPT_DISABLED: "1",
+			},
+			stdio: "ignore",
+			windowsHide: true,
 		});
 
+		child.once("error", () => finish(false));
+		child.once("close", (code) => finish(code === 0));
+
+		timeout = setTimeout(() => terminateProcessTree(child), timeoutMs);
+		timeout.unref();
+
 		if (signal) {
-			const onAbort = () => child.kill();
-			signal.addEventListener("abort", onAbort, { once: true });
-			child.on("exit", () => signal.removeEventListener("abort", onAbort));
+			onAbort = () => {
+				if (timeout) clearTimeout(timeout);
+				terminateProcessTree(child);
+			};
+			if (signal.aborted) onAbort();
+			else signal.addEventListener("abort", onAbort, { once: true });
 		}
 	});
 }

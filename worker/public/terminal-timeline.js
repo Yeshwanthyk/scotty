@@ -42,6 +42,18 @@ export function replaceTimelineMessage(messages, message) {
   }
 }
 
+const redactAssembledString = (value) =>
+  value
+    // oxlint-disable-next-line eslint/no-control-regex -- streamed remote content must remain terminal-safe after assembly
+    .replaceAll(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+    // oxlint-disable-next-line eslint/no-control-regex -- streamed remote content must remain terminal-safe after assembly
+    .replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replaceAll(/(?:scotty-pi-|scotty-github-)[A-Za-z0-9_-]+/gu, "[sentinel]")
+    .replaceAll(/(?:ghp_|github_pat_)[A-Za-z0-9_]+/gu, "[credential]")
+    // oxlint-disable-next-line eslint/no-control-regex -- streamed remote content excludes terminal control bytes
+    .replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, "")
+    .slice(0, 16 * 1024);
+
 export function appendAssistantMessageDelta(messages, event) {
   let message = messages.at(-1);
   if (!message || message.role !== "assistant") {
@@ -52,14 +64,34 @@ export function appendAssistantMessageDelta(messages, event) {
   const deltaEvent = firstObject(event.assistantMessageEvent, event.delta, event.update, event);
   const type = firstString(deltaEvent.type, event.updateType);
   const index = numberValue(deltaEvent.contentIndex, deltaEvent.content_index) ?? 0;
-  const delta = firstString(deltaEvent.delta, deltaEvent.text, deltaEvent.content) ?? "";
-  const contentType = type?.includes("thinking") ? "thinking" : "text";
-  while (message.content.length <= index) message.content.push({ type: contentType, text: "" });
+  if (!Number.isInteger(index) || index < 0 || index > 500 || index > message.content.length)
+    return;
+
+  if (type === "toolcall_start" || type === "toolcall_delta") return;
+  if (type === "toolcall_end") {
+    const toolCall = firstObject(deltaEvent.toolCall);
+    if (Object.keys(toolCall).length > 0) message.content[index] = toolCall;
+    return;
+  }
+
+  const thinking = type?.startsWith("thinking_") ?? false;
+  const contentType = thinking ? "thinking" : "text";
+  const field = thinking ? "thinking" : "text";
+  if (type?.endsWith("_start")) {
+    message.content[index] = { type: contentType, [field]: "" };
+    return;
+  }
+  const value = firstString(deltaEvent.delta, deltaEvent.text, deltaEvent.content) ?? "";
+  if (type?.endsWith("_end")) {
+    message.content[index] = { type: contentType, [field]: redactAssembledString(value) };
+    return;
+  }
   const part = firstObject(message.content[index], { type: contentType });
+  const previous = firstString(part[field], "") ?? "";
   message.content[index] = {
     ...part,
-    type: firstString(part.type, contentType),
-    text: `${firstString(part.text, part.thinking, "") ?? ""}${delta}`,
+    type: contentType,
+    [field]: redactAssembledString(`${previous}${value}`),
   };
 }
 

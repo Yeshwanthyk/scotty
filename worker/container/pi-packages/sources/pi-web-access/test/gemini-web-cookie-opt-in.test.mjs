@@ -61,8 +61,25 @@ test("Gemini Web generation rejects automatic redirects", async () => {
 
 		const { queryWithCookies } = await import(geminiWebUrl);
 		await assert.rejects(
-			queryWithCookies("search", { "__Secure-1PSID": "cookie" }),
+			queryWithCookies("search", { "__Secure-1PSID": "cookie" }, { model: "gemini-3.1-pro" }),
 			/generation transport reached/,
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("Gemini Web rejects unsupported models instead of falling back to 2.5 Flash", async () => {
+	const originalFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = async () => {
+			throw new Error("transport should not be reached");
+		};
+
+		const { queryWithCookies } = await import(geminiWebUrl);
+		await assert.rejects(
+			queryWithCookies("search", { "__Secure-1PSID": "cookie" }, { model: "gemini-3.6-flash" }),
+			/Gemini Web does not support model gemini-3\.6-flash/,
 		);
 	} finally {
 		globalThis.fetch = originalFetch;
@@ -88,7 +105,7 @@ test("Gemini Web file uploads read the file and reject automatic redirects", asy
 
 		const { queryWithCookies } = await import(geminiWebUrl);
 		await assert.rejects(
-			queryWithCookies("inspect file", { "__Secure-1PSID": "cookie" }, { files: [filePath] }),
+			queryWithCookies("inspect file", { "__Secure-1PSID": "cookie" }, { files: [filePath], model: "gemini-3.1-pro" }),
 			/upload transport reached/,
 		);
 	} finally {

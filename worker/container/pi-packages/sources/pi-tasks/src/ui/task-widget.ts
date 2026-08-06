@@ -35,7 +35,6 @@ const SPINNER = ["✳", "✴", "✵", "✶", "✷", "✸", "✹", "✺", "✻", 
 const MAX_VISIBLE_TASKS = 10;
 const MANUAL_TASK_STALE_AFTER_MS = 10 * 60 * 1000;
 const RECENT_COMPLETED_TTL_MS = 30 * 1000;
-const TERMINAL_WRAP_GUARD_COLUMNS = 1;
 
 /** Per-task runtime metrics (elapsed time, token usage). */
 export interface TaskMetrics {
@@ -187,10 +186,7 @@ export class TaskWidget {
   private renderWidget(tui: any, theme: Theme): string[] {
     const tasks = this.store.list();
     this.observeCompletionTransitions(tasks);
-    // Keep the cursor out of the terminal's final column. Some terminal
-    // emulators enter pending-wrap state there, which desynchronizes Pi's
-    // differential renderer and turns later spinner frames into scrollback.
-    const w = Math.max(1, tui.terminal.columns - TERMINAL_WRAP_GUARD_COLUMNS);
+    const w = tui.terminal.columns;
     const truncate = (line: string) => truncateToWidth(line, w);
 
     if (tasks.length === 0) return [];

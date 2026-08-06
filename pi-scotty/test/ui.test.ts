@@ -1,4 +1,4 @@
-import { TUI, type Terminal } from "@earendil-works/pi-tui";
+import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { PiConsoleCommandV1, PiConsoleEventEnvelopeV1 } from "../../protocol/pi-console.ts";
 import { commandIntentDigest } from "../../protocol/pi-console-shared.mjs";
@@ -91,7 +91,7 @@ class UiTransport implements ConsoleTransport {
 
 const componentFixture = (selected = false) => {
   const terminal = new FakeTerminal();
-  const tui = new TUI(terminal, false, "/tmp/pi-scotty-test-state");
+  const tui = new TuiMainScreen(terminal, false, "/tmp/pi-scotty-test-state");
   const transport = new UiTransport();
   const state = new FleetConsoleState();
   state.setFleet([session(SESSION_A)]);

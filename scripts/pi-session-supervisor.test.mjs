@@ -7,6 +7,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createLfRecordParser } from "../worker/container/scotty-jsonl.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const supervisorPath = path.join(root, "worker/container/scotty-pi-session.mjs");
@@ -21,6 +22,20 @@ async function unusedPort() {
   );
   return address.port;
 }
+
+test("LF record parser preserves JSON Unicode separators and chunk boundaries", () => {
+  const records = [];
+  const parser = createLfRecordParser((record) => records.push(record.toString("utf8")));
+  const unicodeSeparators = `${String.fromCodePoint(0x2028)}${String.fromCodePoint(0x2029)}`;
+  const first = `{"first":"line${unicodeSeparators}safe"}`;
+  const input = Buffer.from(`${first}\n{"second":2}\r\n{"final":true}`);
+  parser.push(input.subarray(0, 7));
+  parser.push(input.subarray(7, input.length - 5));
+  parser.push(input.subarray(input.length - 5));
+  parser.end();
+
+  assert.deepEqual(records, [first, '{"second":2}', '{"final":true}']);
+});
 
 async function waitForReady(url, supervisor, readStderr) {
   for (let attempt = 0; attempt < 250; attempt += 1) {
@@ -52,11 +67,12 @@ const messages = [];
 let model = { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" };
 let thinkingLevel = "high";
 const output = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+process.stdout.write("{malformed}\\n");
 createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line) => {
   const command = JSON.parse(line);
   if (command.type === "get_state")
     output({ id: command.id, type: "response", command: command.type, success: true, data: {
-      sessionId: "pi-session-1", isStreaming: false, steeringMode: "one-at-a-time",
+      sessionId: "pi-session-1" + String.fromCodePoint(0x2028) + "safe", isStreaming: false, steeringMode: "one-at-a-time",
       followUpMode: "one-at-a-time", messageCount: messages.length, pendingMessageCount: 0,
       model, thinkingLevel
     }});
@@ -152,7 +168,12 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   assert.equal((await fetch(`${url}/snapshot`)).status, 401);
   const transportHeaders = { "x-scotty-pi-session": transportToken };
   const snapshot = await (await fetch(`${url}/snapshot`, { headers: transportHeaders })).json();
-  assert.equal(snapshot.state.sessionId, "pi-session-1");
+  assert.equal(snapshot.state.sessionId, `pi-session-1${String.fromCodePoint(0x2028)}safe`);
+  const eventResponse = await fetch(`${url}/events?since=0`, { headers: transportHeaders });
+  const eventReader = eventResponse.body.getReader();
+  const eventChunk = await eventReader.read();
+  await eventReader.cancel();
+  assert.match(new TextDecoder().decode(eventChunk.value), /scotty_protocol_error/u);
   assert.equal(snapshot.messages.length, 1);
   assert.equal(snapshot.messages[0].role, "user");
   assert.equal(snapshot.messages[0].content, "Start the task");

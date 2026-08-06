@@ -48,7 +48,7 @@ function normalizeEnabled(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
 }
 
-const defaults: YouTubeConfig = { enabled: true, preferredModel: "gemini-3-flash-preview" };
+const defaults: YouTubeConfig = { enabled: true, preferredModel: "gemini-3.6-flash" };
 let cachedConfig: YouTubeConfig | null = null;
 
 function loadYouTubeConfig(): YouTubeConfig {
@@ -239,7 +239,7 @@ async function tryGeminiWeb(
 
 		const text = await queryWithCookies(prompt, cookies, {
 			youtubeUrl: url,
-			model,
+			...(model !== "gemini-3.6-flash" ? { model } : {}),
 			signal,
 			timeoutMs: 120000,
 		});

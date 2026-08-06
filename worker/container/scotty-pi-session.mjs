@@ -5,7 +5,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { access, readFile, rename, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
-import { createInterface } from "node:readline";
+import { createLfRecordParser } from "./scotty-jsonl.mjs";
 import {
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_MAX_EVENTS,
@@ -192,16 +192,18 @@ const handlePiMessage = (message) => {
   appendEvent(normalizedMessage);
 };
 
-createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => {
-  const trimmed = line.trim();
-  if (!trimmed) return;
+const stdoutRecords = createLfRecordParser((record) => {
+  const text = record.toString("utf8");
+  if (!text.trim()) return;
   try {
-    handlePiMessage(JSON.parse(trimmed));
+    handlePiMessage(JSON.parse(text));
   } catch {
-    stdoutBuffer = `${stdoutBuffer}${trimmed}\n`.slice(-8_192);
+    stdoutBuffer = `${stdoutBuffer}${text}\n`.slice(-8_192);
     appendEvent({ type: "scotty_protocol_error", stream: "stdout" });
   }
 });
+child.stdout.on("data", (chunk) => stdoutRecords.push(chunk));
+child.stdout.on("end", () => stdoutRecords.end());
 
 child.stderr.on("data", (chunk) => {
   stderrTail = `${stderrTail}${chunk.toString("utf8")}`.slice(-8_192);

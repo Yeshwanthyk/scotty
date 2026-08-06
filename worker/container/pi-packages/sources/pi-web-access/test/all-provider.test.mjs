@@ -17,8 +17,12 @@ function runChild(script, env = {}) {
 		"BRAVE_API_KEY",
 		"PARALLEL_API_KEY",
 		"TINYFISH_API_KEY",
+		"SEARCH1API_KEY",
+		"SEARCHINFINITY_API_KEY",
+		"QUERIT_API_KEY",
 		"TAVILY_API_KEY",
-		"SERPDIVE_API_KEY",
+		"JINA_API_KEY",
+		"SERPDIVE_API_KEY", "KAGI_API_KEY", "OLLAMA_API_KEY", "SERPBASE_API_KEY",
 		"ANYSEARCH_API_KEY",
 		"SEARXNG_BASE_URL",
 		"EXA_API_KEY",
@@ -42,7 +46,7 @@ test('provider "all" starts every eligible provider together, excludes AnySearch
 	const home = await mkdtemp(join(tmpdir(), "pi-web-access-all-"));
 	const child = runChild(`
 		const started = [];
-		const expected = new Set(["exa", "brave", "tinyfish"]);
+		const expected = new Set(["exa", "brave", "tinyfish", "search1api"]);
 		let releaseGate;
 		const gate = new Promise((resolve) => { releaseGate = resolve; });
 
@@ -59,7 +63,7 @@ test('provider "all" starts every eligible provider together, excludes AnySearch
 			if (target.startsWith("https://api.anysearch.com/")) {
 				throw new Error("AnySearch must not run for provider all");
 			}
-			if (target === "https://mcp.exa.ai/mcp") {
+			if (target.startsWith("https://mcp.exa.ai/mcp")) {
 				await waitForPeers("exa");
 				return new Response(JSON.stringify({
 					jsonrpc: "2.0",
@@ -87,6 +91,13 @@ test('provider "all" starts every eligible provider together, excludes AnySearch
 					page: 0,
 				}), { status: 200 });
 			}
+			if (target === "https://api.search1api.com/search") {
+				await waitForPeers("search1api");
+				return new Response(JSON.stringify({
+					searchParameters: { query: "combined" },
+					results: [{ title: "Search1API result", link: "https://example.com/search1api", snippet: "Search1API answer" }],
+				}), { status: 200 });
+			}
 			throw new Error("Unexpected fetch " + target);
 		};
 
@@ -99,21 +110,113 @@ test('provider "all" starts every eligible provider together, excludes AnySearch
 		PI_CODING_AGENT_DIR: home,
 		BRAVE_API_KEY: "brave-test-key",
 		TINYFISH_API_KEY: "tinyfish-test-key",
+		SEARCH1API_KEY: "search1api-test-key",
 	});
 
 	assert.equal(child.status, 0, child.stderr || child.error?.message);
 	const output = JSON.parse(child.stdout.trim());
-	assert.deepEqual([...output.started].sort(), ["brave", "exa", "tinyfish"]);
+	assert.deepEqual([...output.started].sort(), ["brave", "exa", "search1api", "tinyfish"]);
 	assert.equal(output.result.provider, "all");
-	assert.deepEqual(output.result.providerResponses.map((result) => result.provider), ["exa", "brave", "tinyfish"]);
+	assert.deepEqual(output.result.providerResponses.map((result) => result.provider), ["exa", "brave", "tinyfish", "search1api"]);
 	assert.deepEqual(output.result.results.map((result) => result.url), [
 		"https://example.com/shared",
 		"https://example.com/tinyfish",
+		"https://example.com/search1api",
 	]);
 	assert.match(output.result.answer, /## Exa/);
 	assert.match(output.result.answer, /## Brave/);
 	assert.match(output.result.answer, /## TinyFish/);
+	assert.match(output.result.answer, /## Search1API/);
 	assert.doesNotMatch(output.result.answer, /AnySearch/);
+});
+
+test('provider array searches only the selected providers concurrently and preserves their order', async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-web-access-selected-"));
+	const child = runChild(`
+		const started = [];
+		let releaseGate;
+		const gate = new Promise((resolve) => { releaseGate = resolve; });
+
+		async function waitForPeer(provider) {
+			started.push(provider);
+			if (started.length === 2) releaseGate();
+			await gate;
+		}
+
+		globalThis.fetch = async (url) => {
+			const target = String(url);
+			if (target.startsWith("https://mcp.exa.ai/mcp")) {
+				await waitForPeer("exa");
+				return new Response(JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					result: { content: [{ type: "text", text: "Title: Exa result\\nURL: https://example.com/exa\\nText: Exa answer\\n---" }] },
+				}), { status: 200 });
+			}
+			if (target.startsWith("https://api.search.brave.com/")) {
+				await waitForPeer("brave");
+				return new Response(JSON.stringify({
+					web: { results: [{ title: "Brave result", url: "https://example.com/brave", description: "Brave answer" }] },
+				}), { status: 200 });
+			}
+			if (target.startsWith("https://api.search.tinyfish.ai")) {
+				throw new Error("Unselected TinyFish provider must not run");
+			}
+			throw new Error("Unexpected fetch " + target);
+		};
+
+		const { search } = await import(${JSON.stringify(searchModuleUrl)});
+		const result = await search("selected", { provider: ["brave", "exa"] });
+		console.log(JSON.stringify({ started, result }));
+	`, {
+		HOME: home,
+		USERPROFILE: home,
+		PI_CODING_AGENT_DIR: home,
+		BRAVE_API_KEY: "brave-test-key",
+		TINYFISH_API_KEY: "tinyfish-test-key",
+	});
+
+	assert.equal(child.status, 0, child.stderr || child.error?.message);
+	const output = JSON.parse(child.stdout.trim());
+	assert.deepEqual([...output.started].sort(), ["brave", "exa"]);
+	assert.deepEqual(output.result.providerResponses.map((result) => result.provider), ["brave", "exa"]);
+	assert.deepEqual(output.result.results.map((result) => result.url), [
+		"https://example.com/brave",
+		"https://example.com/exa",
+	]);
+});
+
+test('provider array reports an unavailable selection without discarding successful providers', async () => {
+	const home = await mkdtemp(join(tmpdir(), "pi-web-access-selected-unavailable-"));
+	const child = runChild(`
+		globalThis.fetch = async (url) => {
+			const target = String(url);
+			if (target.startsWith("https://mcp.exa.ai/mcp")) {
+				return new Response(JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					result: { content: [{ type: "text", text: "Title: Exa result\\nURL: https://example.com/exa\\nText: Exa answer\\n---" }] },
+				}), { status: 200 });
+			}
+			throw new Error("Unexpected fetch " + target);
+		};
+
+		const { search } = await import(${JSON.stringify(searchModuleUrl)});
+		const result = await search("partial selection", { provider: ["brave", "exa"] });
+		console.log(JSON.stringify(result));
+	`, {
+		HOME: home,
+		USERPROFILE: home,
+		PI_CODING_AGENT_DIR: home,
+	});
+
+	assert.equal(child.status, 0, child.stderr || child.error?.message);
+	const output = JSON.parse(child.stdout.trim());
+	assert.deepEqual(output.providerResponses.map((result) => result.provider), ["exa"]);
+	assert.equal(output.providerErrors.length, 1);
+	assert.equal(output.providerErrors[0].provider, "brave");
+	assert.match(output.providerErrors[0].error, /Brave Search API key not found/);
+	assert.match(output.answer, /\*\*Brave:\*\* Brave Search API key not found/);
 });
 
 test('provider "all" uses Gemini API without falling back to Gemini Web', async () => {
@@ -121,7 +224,7 @@ test('provider "all" uses Gemini API without falling back to Gemini Web', async 
 	const child = runChild(`
 		globalThis.fetch = async (url) => {
 			const target = String(url);
-			if (target === "https://mcp.exa.ai/mcp") {
+			if (target.startsWith("https://mcp.exa.ai/mcp")) {
 				return new Response(JSON.stringify({
 					jsonrpc: "2.0",
 					id: 1,
@@ -164,7 +267,7 @@ test('provider "all" keeps successful providers when another available provider 
 	const child = runChild(`
 		globalThis.fetch = async (url) => {
 			const target = String(url);
-			if (target === "https://mcp.exa.ai/mcp") {
+			if (target.startsWith("https://mcp.exa.ai/mcp")) {
 				return new Response(JSON.stringify({
 					jsonrpc: "2.0",
 					id: 1,
@@ -204,6 +307,14 @@ test('provider "all" keeps successful providers when another available provider 
 	assert.match(output.answer, /\*\*Brave:\*\* Brave Search API error 503/);
 });
 
+test('provider arrays reject empty, duplicate, and aggregate entries', async () => {
+	const { normalizeSearchProviderSelection } = await import(searchModuleUrl);
+	assert.deepEqual(normalizeSearchProviderSelection([" Brave ", "EXA"]), ["brave", "exa"]);
+	assert.throws(() => normalizeSearchProviderSelection([]), /must be a non-empty array/);
+	assert.throws(() => normalizeSearchProviderSelection(["exa", "exa"]), /must not contain duplicates: exa/);
+	assert.throws(() => normalizeSearchProviderSelection(["all"]), /contains an invalid provider: all/);
+});
+
 test('"all" is a Curator provider but remains invalid inside sequential searchRouting', async () => {
 	const { generateCuratorPage } = await import(curatorPageModuleUrl);
 	const page = generateCuratorPage(
@@ -216,6 +327,9 @@ test('"all" is a Curator provider but remains invalid inside sequential searchRo
 			brave: true,
 			parallel: false,
 			tinyfish: true,
+			search1api: false,
+			searchinfinity: false,
+			querit: false,
 			tavily: false,
 			serpdive: false,
 			searxng: false,
@@ -247,6 +361,9 @@ test('"all" is a Curator provider but remains invalid inside sequential searchRo
 			brave: false,
 			parallel: false,
 			tinyfish: false,
+			search1api: false,
+			searchinfinity: false,
+			querit: false,
 			tavily: false,
 			serpdive: false,
 			searxng: false,
