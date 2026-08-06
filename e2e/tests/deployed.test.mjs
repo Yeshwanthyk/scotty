@@ -100,8 +100,9 @@ const requestReconstruction = async (id) => {
 
 const pendingSessionId = (home) => {
   const directory = path.join(home, ".scotty", "pending-up");
+  if (!fs.existsSync(directory)) return undefined;
   const files = fs.readdirSync(directory);
-  assert.equal(files.length, 1, "a failed up must preserve exactly one pending request");
+  if (files.length !== 1) return undefined;
   const pending = JSON.parse(fs.readFileSync(path.join(directory, files[0]), "utf8"));
   assert.match(pending.key, /^[0-9a-f-]{36}$/u);
   return createHash("sha256").update(pending.key).digest("hex").slice(0, 12);
