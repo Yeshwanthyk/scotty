@@ -110,8 +110,9 @@ The test performs the real lifecycle sequence
 `up → root recovery on the disposable stage → Pi worklog/RPC boundary → snapshot → scheduled
 hard-cap sleep → resume → down → vaporize`, then runs isolated local and peer inspect/steer proofs.
 The root-authenticated local CLI first steers a same-repository target and verifies its exact
-response through passive inspect. The disposable Container application permits two concurrent warm
-instances, so the peer proof then creates a separate source session and invokes a root-bearer- and
+response through passive inspect. The disposable Container application permits a lingering
+lifecycle host plus two concurrent warm peer instances, so the peer proof then creates a separate
+source session and invokes a root-bearer- and
 stage-authenticated canary RPC that runs the built `/usr/local/bin/scotty inspect TARGET --json`
 and `steer TARGET MESSAGE --json` inside that authoritative source container. The RPC supplies
 `SCOTTY_SESSION_ID` only through exec env. It requires inspect success and an accepted steer, then
