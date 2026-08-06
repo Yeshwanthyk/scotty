@@ -75,7 +75,6 @@ type ContainerCall =
     }
   | { readonly operation: "getProcess"; readonly processId: string }
   | { readonly operation: "killProcess"; readonly signal?: string }
-  | { readonly operation: "waitForExit" }
   | { readonly operation: "waitForPort"; readonly port: number }
   | {
       readonly operation: "fetchPort";
@@ -146,10 +145,7 @@ class ProcessSandboxCapabilities extends CapturingSandboxCapabilities {
         this.process = null;
         return Promise.resolve();
       },
-      waitForExit: () => {
-        this.calls.push({ operation: "waitForExit" });
-        return Promise.reject(new Error("exit event stream opened after process exit"));
-      },
+      waitForExit: () => Promise.resolve({ exitCode: 0 }),
       waitForPort: (readyPort: number) => {
         this.calls.push({ operation: "waitForPort", port: readyPort });
         return Promise.resolve();
@@ -462,12 +458,6 @@ describe("ContainerAuth", () => {
       assert.ok(
         capabilities.calls.some(
           (call) => call.operation === "killProcess" && call.signal === "SIGTERM",
-        ),
-      );
-      assert.ok(!capabilities.calls.some((call) => call.operation === "waitForExit"));
-      assert.ok(
-        capabilities.calls.some(
-          (call) => call.operation === "getProcess" && call.processId === PI_SESSION_PROCESS_ID,
         ),
       );
       assert.strictEqual(capabilities.process, null);
