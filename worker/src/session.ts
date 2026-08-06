@@ -185,6 +185,7 @@ class SessionCreateUncertain extends Data.TaggedError("SessionCreateUncertain")<
 }> {}
 
 class PiRuntimeStopFailure extends Data.TaggedError("PiRuntimeStopFailure")<{
+  readonly stage: "quiesce" | "process" | "terminal_lease";
   readonly cause: unknown;
 }> {}
 
@@ -1786,14 +1787,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
           const credential = yield* vault.require;
           yield* containerAuth
             .quiescePiSession(record.id, credential)
-            .pipe(Effect.mapError((cause) => new PiRuntimeStopFailure({ cause })));
+            .pipe(
+              Effect.mapError((cause) => new PiRuntimeStopFailure({ stage: "quiesce", cause })),
+            );
         }
         yield* containerAuth
           .stopPiSession()
-          .pipe(Effect.mapError((cause) => new PiRuntimeStopFailure({ cause })));
+          .pipe(Effect.mapError((cause) => new PiRuntimeStopFailure({ stage: "process", cause })));
         yield* Effect.tryPromise({
           try: () => this.deleteSession(record.id),
-          catch: (cause) => new PiRuntimeStopFailure({ cause }),
+          catch: (cause) => new PiRuntimeStopFailure({ stage: "terminal_lease", cause }),
         });
         yield* runtime.execChecked("sync", { timeout: 30_000 });
         const now = yield* Clock.currentTimeMillis;
@@ -2020,7 +2023,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private upstreamError(message: string, error: unknown, sessionId?: string): ScottyError {
-    console.error(message, { sessionId, error: errorName(error) });
+    console.error(message, {
+      sessionId,
+      error: errorName(error),
+      stage: piRuntimeStopStage(error),
+      cause: nestedSandboxRuntimeFailure(error),
+    });
     return new ScottyError("upstream", message, {
       httpStatus: 502,
       exitCode: 1,
@@ -2031,6 +2039,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
 Sandbox.outboundByHost = makeOutboundByHost(fetch);
 Sandbox.outbound = denyOutbound;
+
+function piRuntimeStopStage(error: unknown): string | undefined {
+  if (!Predicate.isTagged("PiRuntimeStopFailure")(error)) return undefined;
+  const stage = Reflect.get(error, "stage");
+  return typeof stage === "string" ? stage : undefined;
+}
+
+function nestedSandboxRuntimeFailure(
+  error: unknown,
+): { readonly reason: string; readonly message: string } | undefined {
+  if (!Predicate.isTagged("PiRuntimeStopFailure")(error)) return undefined;
+  const cause = Reflect.get(error, "cause");
+  if (!Predicate.isTagged("SandboxRuntimeFailure")(cause)) return undefined;
+  const reason = Reflect.get(cause, "reason");
+  const message = Reflect.get(cause, "message");
+  return typeof reason === "string" && typeof message === "string"
+    ? { reason, message }
+    : undefined;
+}
 
 function randomToken(bytes: number): string {
   const data = new Uint8Array(bytes);
