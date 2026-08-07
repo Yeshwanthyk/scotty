@@ -1,6 +1,7 @@
 import type {
   BrowserContext,
   BrowserWorker,
+  CDPSession,
   Locator,
   Page,
   Request as PlaywrightRequest,
@@ -10,6 +11,7 @@ import type {
 } from "@cloudflare/playwright";
 import { Context, Effect, Exit, Schema } from "effect";
 import {
+  EVIDENCE_MAX_FRAME_BYTES,
   EvidenceKitesurfOperationSchema,
   EvidenceKitesurfReasonSchema,
   type EvidenceLocator,
@@ -21,6 +23,7 @@ export const KITESURF_SCREENSHOT_TIMEOUT_MILLIS = 15_000;
 export const KITESURF_RESOURCE_TIMEOUT_MILLIS = 15_000;
 const KITESURF_MAX_SAME_ORIGIN_REDIRECTS = 10;
 const KITESURF_MAX_CSS_SELECTOR_LENGTH = 512;
+const KITESURF_MAX_SCREENSHOT_BASE64_LENGTH = Math.ceil(EVIDENCE_MAX_FRAME_BYTES / 3) * 4;
 const PLAYWRIGHT_SELECTOR_ENGINE_PATTERN =
   /^(?:css|xpath|text|id|data-testid|data-test-id|data-test|role|_react|_vue|internal:[a-z-]+)=/iu;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -90,12 +93,19 @@ interface KitesurfRuntimePage {
   readonly getByTestId: (value: string) => KitesurfRuntimeLocator;
   readonly goto: Page["goto"];
   readonly locator: (value: string) => KitesurfRuntimeLocator;
-  readonly screenshot: Page["screenshot"];
   readonly url: Page["url"];
+}
+
+interface KitesurfCaptureSession extends Pick<CDPSession, "detach"> {
+  readonly send: (
+    method: "Page.captureScreenshot",
+    params: { readonly format: "png"; readonly captureBeyondViewport: false },
+  ) => Promise<unknown>;
 }
 
 interface KitesurfRuntimeContext {
   readonly addCookies: BrowserContext["addCookies"];
+  newCDPSession(page: KitesurfRuntimePage): Promise<KitesurfCaptureSession>;
   readonly pages: () => ReadonlyArray<KitesurfRuntimePage>;
   readonly route?: BrowserContext["route"];
   readonly routeWebSocket?: BrowserContext["routeWebSocket"];
@@ -111,9 +121,39 @@ interface KitesurfRuntimeBrowser {
 
 export type KitesurfRuntimeLauncher = (binding: BrowserWorker) => Promise<KitesurfRuntimeBrowser>;
 
+const runtimePage = (page: Page): KitesurfRuntimePage => {
+  const context = page.context();
+  let ownedPage: KitesurfRuntimePage;
+  const ownedContext: KitesurfRuntimeContext = {
+    addCookies: context.addCookies.bind(context),
+    newCDPSession: () => context.newCDPSession(page),
+    pages: () => {
+      const pages = context.pages();
+      return pages.length === 1 && pages[0] === page ? [ownedPage] : [];
+    },
+    route: context.route.bind(context),
+    routeWebSocket: context.routeWebSocket.bind(context),
+  };
+  ownedPage = {
+    close: page.close.bind(page),
+    context: () => ownedContext,
+    evaluate: page.evaluate.bind(page),
+    getByTestId: page.getByTestId.bind(page),
+    goto: page.goto.bind(page),
+    locator: page.locator.bind(page),
+    url: page.url.bind(page),
+  };
+  return ownedPage;
+};
+
 const launchRuntimeKitesurf: KitesurfRuntimeLauncher = async (binding) => {
   const { launch } = await import("@cloudflare/playwright");
-  return launch(binding, { browser: "kitesurf" });
+  const browser = await launch(binding, { browser: "kitesurf" });
+  return {
+    close: browser.close.bind(browser),
+    newPage: (options) => browser.newPage(options).then(runtimePage),
+    sessionId: browser.sessionId.bind(browser),
+  };
 };
 
 const nativePromiseTimeout = <A>(
@@ -294,6 +334,130 @@ const singlePage = (
     ),
   );
 
+const screenshotFailure = (): KitesurfClientError =>
+  new KitesurfClientError({ operation: "screenshot", reason: "ambiguous" });
+
+const CaptureScreenshotResultSchema = Schema.Struct({ data: Schema.String });
+const decodeCaptureScreenshotResult = Schema.decodeUnknownEffect(CaptureScreenshotResultSchema);
+
+const base64Value = (code: number): number | undefined => {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return undefined;
+};
+
+const validBase64Payload = (data: string, payloadLength: number): boolean => {
+  for (let index = 0; index < payloadLength; index += 1) {
+    if (base64Value(data.charCodeAt(index)) === undefined) return false;
+  }
+  return true;
+};
+
+const hasCanonicalBase64Padding = (data: string, padding: number): boolean => {
+  if (padding === 0) return true;
+  const lastValue = base64Value(data.charCodeAt(data.length - padding - 1));
+  if (lastValue === undefined) return false;
+  return padding === 1 ? (lastValue & 0b11) === 0 : (lastValue & 0b1111) === 0;
+};
+
+const decodeScreenshot = (data: unknown): Effect.Effect<Uint8Array, KitesurfClientError> => {
+  if (
+    typeof data !== "string" ||
+    data.length === 0 ||
+    data.length > KITESURF_MAX_SCREENSHOT_BASE64_LENGTH ||
+    data.length % 4 !== 0
+  )
+    return Effect.fail(screenshotFailure());
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  if (!validBase64Payload(data, data.length - padding) || !hasCanonicalBase64Padding(data, padding))
+    return Effect.fail(screenshotFailure());
+  const decodedByteLength = (data.length / 4) * 3 - padding;
+  if (decodedByteLength === 0 || decodedByteLength > EVIDENCE_MAX_FRAME_BYTES)
+    return Effect.fail(screenshotFailure());
+  return Effect.try({
+    try: () => atob(data),
+    catch: screenshotFailure,
+  }).pipe(
+    Effect.flatMap((binary) =>
+      binary.length === decodedByteLength
+        ? Effect.try({
+            try: () => Uint8Array.from(binary, (character) => character.charCodeAt(0)),
+            catch: screenshotFailure,
+          })
+        : Effect.fail(screenshotFailure()),
+    ),
+  );
+};
+
+const decodeScreenshotResult = (result: unknown): Effect.Effect<Uint8Array, KitesurfClientError> =>
+  decodeCaptureScreenshotResult(result).pipe(
+    Effect.mapError(screenshotFailure),
+    Effect.flatMap(({ data }) => decodeScreenshot(data)),
+  );
+
+const releaseScreenshotSession = (
+  session: KitesurfCaptureSession,
+  useExit: Exit.Exit<unknown, unknown>,
+): Effect.Effect<void, KitesurfClientError> => {
+  const release = boundedRuntimeEffect(
+    "screenshot",
+    "ambiguous",
+    () => session.detach(),
+    KITESURF_OPERATION_TIMEOUT_MILLIS,
+  );
+  if (Exit.isSuccess(useExit)) return release;
+  return release.pipe(
+    Effect.catch((error) =>
+      Effect.sync(() =>
+        console.error("Kitesurf cleanup failed after an earlier evidence failure", {
+          operation: error.operation,
+          reason: error.reason,
+        }),
+      ),
+    ),
+  );
+};
+
+const captureScreenshot = (
+  context: KitesurfRuntimeContext,
+  page: KitesurfRuntimePage,
+): Effect.Effect<Uint8Array, KitesurfClientError> =>
+  singlePage(context, page).pipe(
+    Effect.andThen(
+      Effect.acquireUseRelease(
+        boundedRuntimeEffect(
+          "screenshot",
+          "ambiguous",
+          () => context.newCDPSession(page),
+          KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
+          (session) =>
+            nativePromiseTimeout(
+              "screenshot",
+              "ambiguous",
+              () => session.detach(),
+              KITESURF_OPERATION_TIMEOUT_MILLIS,
+            ),
+        ),
+        (session) =>
+          boundedRuntimeEffect(
+            "screenshot",
+            "ambiguous",
+            () =>
+              session.send("Page.captureScreenshot", {
+                format: "png",
+                captureBeyondViewport: false,
+              }),
+            KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
+          ).pipe(Effect.flatMap(decodeScreenshotResult)),
+        releaseScreenshotSession,
+      ),
+    ),
+    Effect.tap(() => singlePage(context, page)),
+  );
+
 const makePage = (
   origin: string,
   context: KitesurfRuntimeContext,
@@ -367,16 +531,7 @@ const makePage = (
           : singlePage(context, page).pipe(Effect.as(`${url.pathname}${url.search}`));
       }),
     ),
-    screenshot: boundedRuntimeEffect(
-      "screenshot",
-      "ambiguous",
-      () =>
-        page.screenshot({
-          type: "png",
-          timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
-        }),
-      KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
-    ).pipe(Effect.tap(() => singlePage(context, page))),
+    screenshot: captureScreenshot(context, page),
   };
 };
 

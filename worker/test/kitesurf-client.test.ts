@@ -13,21 +13,39 @@ import { vi } from "vitest";
 const playwright = vi.hoisted(() => ({ launch: vi.fn() }));
 vi.mock("@cloudflare/playwright", () => playwright);
 
+import { EVIDENCE_MAX_FRAME_BYTES } from "../src/evidence-contracts";
 import { EVIDENCE_PREVIEW_COOKIE } from "../src/evidence-preview";
 import {
   KITESURF_OPERATION_TIMEOUT_MILLIS,
+  KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
   makeKitesurfClient,
   type KitesurfRuntimeLauncher,
 } from "../src/kitesurf-client";
 
 const binding: BrowserWorker = { fetch: globalThis.fetch };
 const PNG = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const PNG_BASE64 = "iVBORw0KGgo=";
+
+interface CaptureSession {
+  readonly detach: () => Promise<void>;
+  readonly send: (
+    method: "Page.captureScreenshot",
+    params: { readonly format: "png"; readonly captureBeyondViewport: false },
+  ) => Promise<unknown>;
+}
+
+const captureSession = (
+  send: CaptureSession["send"] = async () => ({ data: PNG_BASE64 }),
+  detach: CaptureSession["detach"] = async () => undefined,
+): CaptureSession => ({ detach, send });
 
 interface RuntimeState {
   readonly events: Array<string>;
   readonly cookies: Array<Parameters<BrowserContext["addCookies"]>[0][number]>;
   pageOptions: unknown;
-  screenshotOptions: unknown;
+  cdpTargetIsOwnedPage: boolean | undefined;
+  cdpMethod: string | undefined;
+  cdpParams: unknown;
   requestHandler: Parameters<BrowserContext["route"]>[1] | undefined;
   webSocketHandler: Parameters<BrowserContext["routeWebSocket"]>[1] | undefined;
 }
@@ -38,6 +56,8 @@ const makeRuntime = (
     readonly cssSelectorValidator?: (value: string) => boolean;
     readonly routeSupported?: boolean;
     readonly webSocketRouteSupported?: boolean;
+    readonly acquireCdpSession?: () => Promise<CaptureSession>;
+    readonly pageCount?: () => number;
   } = {},
 ): KitesurfRuntimeLauncher => {
   const locator = {
@@ -78,11 +98,6 @@ const makeRuntime = (
       state.events.push(`page:locator:${value}`);
       return locator;
     },
-    screenshot: async (callOptions?: { readonly timeout?: number; readonly type?: string }) => {
-      state.events.push("page:screenshot");
-      state.screenshotOptions = callOptions;
-      return PNG;
-    },
     url: () => "https://preview.scotty.example/ready?mode=test",
   };
   const route: BrowserContext["route"] = async (_url, handler) => {
@@ -101,9 +116,23 @@ const makeRuntime = (
     close: async () => {
       state.events.push("context:close");
     },
+    newCDPSession: async (target: object) => {
+      state.events.push("context:new-cdp-session");
+      state.cdpTargetIsOwnedPage = target === page;
+      if (options.acquireCdpSession !== undefined) return options.acquireCdpSession();
+      return captureSession(
+        async (method, params) => {
+          state.events.push("cdp:send");
+          state.cdpMethod = method;
+          state.cdpParams = params;
+          return { data: PNG_BASE64 };
+        },
+        async () => void state.events.push("cdp:detach"),
+      );
+    },
     pages: () => {
       state.events.push("context:pages");
-      return [page];
+      return Array.from({ length: options.pageCount?.() ?? 1 }, () => page);
     },
     ...(options.routeSupported === false ? {} : { route }),
     ...(options.webSocketRouteSupported === false ? {} : { routeWebSocket }),
@@ -128,7 +157,9 @@ const runtimeState = (): RuntimeState => ({
   events: [],
   cookies: [],
   pageOptions: undefined,
-  screenshotOptions: undefined,
+  cdpTargetIsOwnedPage: undefined,
+  cdpMethod: undefined,
+  cdpParams: undefined,
   requestHandler: undefined,
   webSocketHandler: undefined,
 });
@@ -148,6 +179,12 @@ const deferredPromise = <A>() => {
 const failureOf = <A, E>(result: Result.Result<A, E>): E => {
   assert.ok(Result.isFailure(result));
   return result.failure;
+};
+
+const base64ZeroBytes = (decodedBytes: number): string => {
+  const completeGroups = Math.floor(decodedBytes / 3);
+  const remainder = decodedBytes % 3;
+  return `${"AAAA".repeat(completeGroups)}${remainder === 1 ? "AA==" : remainder === 2 ? "AAA=" : ""}`;
 };
 
 const apiResponse = (status: number, headers: Readonly<Record<string, string>> = {}): APIResponse =>
@@ -226,13 +263,25 @@ describe("Kitesurf client", () => {
           value: secret,
         },
       ]);
-      assert.deepStrictEqual(state.screenshotOptions, {
-        type: "png",
-        timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
+      assert.isTrue(state.cdpTargetIsOwnedPage);
+      assert.strictEqual(state.cdpMethod, "Page.captureScreenshot");
+      assert.deepStrictEqual(state.cdpParams, {
+        format: "png",
+        captureBeyondViewport: false,
       });
       assert.include(state.events, "browser:sessionless");
       assert.include(state.events, `locator:click:${KITESURF_OPERATION_TIMEOUT_MILLIS}`);
-      assert.include(state.events, "page:screenshot");
+      assert.notInclude(state.events, "page:screenshot");
+      const captureEvents = state.events.slice(
+        state.events.lastIndexOf("context:new-cdp-session") - 1,
+      );
+      assert.deepStrictEqual(captureEvents.slice(0, 5), [
+        "context:pages",
+        "context:new-cdp-session",
+        "cdp:send",
+        "cdp:detach",
+        "context:pages",
+      ]);
       assert.notInclude(state.events, "page:close");
       assert.notInclude(state.events, "context:close");
       assert.strictEqual(state.events.at(-1), "browser:close");
@@ -289,6 +338,378 @@ describe("Kitesurf client", () => {
       );
       assert.isTrue(webSocketClosed);
     }),
+  );
+
+  it.effect("decodes a screenshot at the exact byte budget before detaching", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const data = base64ZeroBytes(EVIDENCE_MAX_FRAME_BYTES);
+      const client = makeKitesurfClient(
+        binding,
+        makeRuntime(state, {
+          acquireCdpSession: async () =>
+            captureSession(
+              async () => {
+                state.events.push("cdp:max-send");
+                return { data };
+              },
+              async () => void state.events.push("cdp:max-detach"),
+            ),
+        }),
+      );
+
+      const bytes = yield* client.withPage(
+        {
+          origin: "https://preview.scotty.example",
+          cookieSecret: "private-cookie-secret",
+        },
+        (page) => page.screenshot,
+      );
+
+      assert.strictEqual(bytes.byteLength, EVIDENCE_MAX_FRAME_BYTES);
+      assert.strictEqual(bytes[0], 0);
+      assert.strictEqual(bytes.at(-1), 0);
+      assert.isBelow(state.events.indexOf("cdp:max-send"), state.events.indexOf("cdp:max-detach"));
+    }),
+  );
+
+  it.effect("rejects empty, oversized, and malformed base64 before retaining protocol output", () =>
+    Effect.gen(function* () {
+      const cases = [
+        { label: "empty", data: "" },
+        { label: "oversized", data: base64ZeroBytes(EVIDENCE_MAX_FRAME_BYTES + 1) },
+        { label: "malformed", data: "private-protocol-base64%" },
+        { label: "noncanonical-one-byte", data: "AB==" },
+        { label: "noncanonical-two-bytes", data: "AAB=" },
+      ];
+      for (const testCase of cases) {
+        const state = runtimeState();
+        const client = makeKitesurfClient(
+          binding,
+          makeRuntime(state, {
+            acquireCdpSession: async () =>
+              captureSession(
+                async () => ({ data: testCase.data }),
+                async () => void state.events.push(`cdp:${testCase.label}:detach`),
+              ),
+          }),
+        );
+        const result = yield* client
+          .withPage(
+            {
+              origin: "https://preview.scotty.example",
+              cookieSecret: "private-cookie-secret",
+            },
+            (page) => page.screenshot,
+          )
+          .pipe(Effect.result);
+
+        const failure = failureOf(result);
+        assert.deepInclude(failure, {
+          operation: "screenshot",
+          reason: "ambiguous",
+        });
+        assert.notProperty(failure, "data");
+        assert.include(state.events, `cdp:${testCase.label}:detach`);
+      }
+    }),
+  );
+
+  it.effect("rejects a malformed CDP result as a safe typed failure", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const result = yield* makeKitesurfClient(
+        binding,
+        makeRuntime(state, {
+          acquireCdpSession: async () =>
+            captureSession(
+              async () => ({ privateScreenshotData: "private-protocol-output" }),
+              async () => void state.events.push("cdp:malformed-result-detach"),
+            ),
+        }),
+      )
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          (page) => page.screenshot,
+        )
+        .pipe(Effect.result);
+
+      assert.deepInclude(failureOf(result), {
+        operation: "screenshot",
+        reason: "ambiguous",
+      });
+      assert.include(state.events, "cdp:malformed-result-detach");
+      assert.notInclude(JSON.stringify(result), "private-protocol-output");
+    }),
+  );
+
+  it.effect("enforces the single owned page immediately before and after CDP capture", () =>
+    Effect.gen(function* () {
+      let preCheckCalls = 0;
+      const preState = runtimeState();
+      const preClient = makeKitesurfClient(
+        binding,
+        makeRuntime(preState, {
+          pageCount: () => (++preCheckCalls === 2 ? 2 : 1),
+        }),
+      );
+      const preResult = yield* preClient
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          (page) => page.screenshot,
+        )
+        .pipe(Effect.result);
+
+      assert.deepInclude(failureOf(preResult), {
+        operation: "create_page",
+        reason: "unsupported",
+      });
+      assert.notInclude(preState.events, "context:new-cdp-session");
+
+      let postCheckCalls = 0;
+      const postState = runtimeState();
+      const postClient = makeKitesurfClient(
+        binding,
+        makeRuntime(postState, {
+          pageCount: () => (++postCheckCalls === 3 ? 2 : 1),
+        }),
+      );
+      const postResult = yield* postClient
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          (page) => page.screenshot,
+        )
+        .pipe(Effect.result);
+
+      assert.deepInclude(failureOf(postResult), {
+        operation: "create_page",
+        reason: "unsupported",
+      });
+      assert.isBelow(postState.events.indexOf("cdp:send"), postState.events.indexOf("cdp:detach"));
+      assert.isBelow(
+        postState.events.indexOf("cdp:detach"),
+        postState.events.lastIndexOf("context:pages"),
+      );
+    }),
+  );
+
+  it.effect("sanitizes CDP session acquisition, send, and detach failures", () =>
+    Effect.gen(function* () {
+      const acquisitionState = runtimeState();
+      const acquisitionResult = yield* makeKitesurfClient(
+        binding,
+        makeRuntime(acquisitionState, {
+          acquireCdpSession: async () =>
+            Promise.reject(new Error("private CDP acquisition failure")),
+        }),
+      )
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          (page) => page.screenshot,
+        )
+        .pipe(Effect.result);
+      assert.deepInclude(failureOf(acquisitionResult), {
+        operation: "screenshot",
+        reason: "ambiguous",
+      });
+      assert.notInclude(JSON.stringify(acquisitionResult), "private CDP acquisition failure");
+
+      const sendState = runtimeState();
+      const sendResult = yield* makeKitesurfClient(
+        binding,
+        makeRuntime(sendState, {
+          acquireCdpSession: async () =>
+            captureSession(
+              async () => Promise.reject(new Error("private CDP send failure")),
+              async () => void sendState.events.push("cdp:failed-send-detach"),
+            ),
+        }),
+      )
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          (page) => page.screenshot,
+        )
+        .pipe(Effect.result);
+      assert.deepInclude(failureOf(sendResult), {
+        operation: "screenshot",
+        reason: "ambiguous",
+      });
+      assert.include(sendState.events, "cdp:failed-send-detach");
+      assert.notInclude(JSON.stringify(sendResult), "private CDP send failure");
+
+      const detachState = runtimeState();
+      const detachResult = yield* makeKitesurfClient(
+        binding,
+        makeRuntime(detachState, {
+          acquireCdpSession: async () =>
+            captureSession(undefined, async () =>
+              Promise.reject(new Error("private CDP detach failure")),
+            ),
+        }),
+      )
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          (page) => page.screenshot,
+        )
+        .pipe(Effect.result);
+      assert.deepInclude(failureOf(detachResult), {
+        operation: "screenshot",
+        reason: "ambiguous",
+      });
+      assert.notInclude(JSON.stringify(detachResult), "private CDP detach failure");
+    }),
+  );
+
+  it.effect("times out a pending CDP capture and detaches before browser cleanup", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),
+      () =>
+        Effect.gen(function* () {
+          const state = runtimeState();
+          const client = makeKitesurfClient(
+            binding,
+            makeRuntime(state, {
+              acquireCdpSession: async () =>
+                captureSession(
+                  async () => new Promise<{ readonly data: string }>(() => undefined),
+                  async () => void state.events.push("cdp:timeout-detach"),
+                ),
+            }),
+          );
+          const fiber = yield* client
+            .withPage(
+              {
+                origin: "https://preview.scotty.example",
+                cookieSecret: "private-cookie-secret",
+              },
+              (page) => page.screenshot,
+            )
+            .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+
+          yield* Effect.promise(() =>
+            vi.advanceTimersByTimeAsync(KITESURF_SCREENSHOT_TIMEOUT_MILLIS),
+          );
+          const result = yield* Fiber.join(fiber);
+
+          assert.deepInclude(failureOf(result), {
+            operation: "screenshot",
+            reason: "ambiguous",
+          });
+          assert.isBelow(
+            state.events.indexOf("cdp:timeout-detach"),
+            state.events.indexOf("browser:close"),
+          );
+        }),
+      () => Effect.sync(() => vi.useRealTimers()),
+    ),
+  );
+
+  it.effect("bounds a pending CDP detach before browser cleanup", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),
+      () =>
+        Effect.gen(function* () {
+          const state = runtimeState();
+          const client = makeKitesurfClient(
+            binding,
+            makeRuntime(state, {
+              acquireCdpSession: async () =>
+                captureSession(
+                  async () => ({ data: PNG_BASE64 }),
+                  async () => {
+                    state.events.push("cdp:pending-detach");
+                    return new Promise<void>(() => undefined);
+                  },
+                ),
+            }),
+          );
+          const fiber = yield* client
+            .withPage(
+              {
+                origin: "https://preview.scotty.example",
+                cookieSecret: "private-cookie-secret",
+              },
+              (page) => page.screenshot,
+            )
+            .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+
+          yield* Effect.promise(() =>
+            vi.advanceTimersByTimeAsync(KITESURF_OPERATION_TIMEOUT_MILLIS),
+          );
+          const result = yield* Fiber.join(fiber);
+
+          assert.deepInclude(failureOf(result), {
+            operation: "screenshot",
+            reason: "ambiguous",
+          });
+          assert.isBelow(
+            state.events.indexOf("cdp:pending-detach"),
+            state.events.indexOf("browser:close"),
+          );
+        }),
+      () => Effect.sync(() => vi.useRealTimers()),
+    ),
+  );
+
+  it.effect("preserves the primary capture failure when detach also fails", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.spyOn(console, "error").mockImplementation(() => undefined)),
+      (cleanupLog) =>
+        Effect.gen(function* () {
+          const state = runtimeState();
+          const result = yield* makeKitesurfClient(
+            binding,
+            makeRuntime(state, {
+              acquireCdpSession: async () =>
+                captureSession(
+                  async () => Promise.reject(new Error("private primary capture failure")),
+                  async () => Promise.reject(new Error("private secondary detach failure")),
+                ),
+            }),
+          )
+            .withPage(
+              {
+                origin: "https://preview.scotty.example",
+                cookieSecret: "private-cookie-secret",
+              },
+              (page) => page.screenshot,
+            )
+            .pipe(Effect.result);
+
+          assert.deepInclude(failureOf(result), {
+            operation: "screenshot",
+            reason: "ambiguous",
+          });
+          assert.deepStrictEqual(cleanupLog.mock.calls, [
+            [
+              "Kitesurf cleanup failed after an earlier evidence failure",
+              { operation: "screenshot", reason: "ambiguous" },
+            ],
+          ]);
+          const serialized = JSON.stringify({ logs: cleanupLog.mock.calls, result });
+          assert.notInclude(serialized, "private primary capture failure");
+          assert.notInclude(serialized, "private secondary detach failure");
+        }),
+      (cleanupLog) => Effect.sync(() => cleanupLog.mockRestore()),
+    ),
   );
 
   it.effect("rejects Playwright engines before page.locator", () =>
@@ -494,6 +915,7 @@ describe("Kitesurf client", () => {
           };
           const context: RuntimeContext = {
             addCookies: async () => undefined,
+            newCDPSession: async () => captureSession(),
             pages: () => [page],
             route: async () => undefined,
             routeWebSocket: async () => undefined,
@@ -508,7 +930,6 @@ describe("Kitesurf client", () => {
             getByTestId: () => locator,
             goto: async () => null,
             locator: () => locator,
-            screenshot: async () => PNG,
             url: () => "https://preview.scotty.example/",
           };
           latePage.resolve(page);
@@ -536,6 +957,10 @@ describe("Kitesurf client", () => {
           };
           const context: RuntimeContext = {
             addCookies: async () => undefined,
+            newCDPSession: async () =>
+              captureSession(async () =>
+                Promise.reject(new Error("private screenshot protocol failure")),
+              ),
             pages: () => [page],
             route: async () => undefined,
             routeWebSocket: async () => undefined,
@@ -547,7 +972,6 @@ describe("Kitesurf client", () => {
             getByTestId: () => locator,
             goto: async () => null,
             locator: () => locator,
-            screenshot: async () => Promise.reject(new Error("private screenshot failure")),
             url: () => "https://preview.scotty.example/",
           };
           const client = makeKitesurfClient(
@@ -578,7 +1002,7 @@ describe("Kitesurf client", () => {
             operation: "screenshot",
             reason: "ambiguous",
           });
-          assert.notInclude(JSON.stringify(result), "private screenshot failure");
+          assert.notInclude(JSON.stringify(result), "private screenshot protocol failure");
           assert.deepStrictEqual(events, ["browser:close"]);
           browserClose.resolve();
         }),
@@ -604,6 +1028,7 @@ describe("Kitesurf client", () => {
           const context = {
             addCookies: async () => undefined,
             close: async () => void events.push("context:close"),
+            newCDPSession: async () => captureSession(),
             pages: () => [page],
             route: async () => undefined,
             routeWebSocket: async () => undefined,
@@ -615,7 +1040,6 @@ describe("Kitesurf client", () => {
             getByTestId: () => locator,
             goto: async () => null,
             locator: () => locator,
-            screenshot: async () => PNG,
             url: () => "https://preview.scotty.example/",
           };
           const client = makeKitesurfClient(
