@@ -6,6 +6,7 @@ import {
   EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
   EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
   decodeBrowserEvidenceJob,
+  decodeBrowserEvidenceToolResult,
   decodeEvidenceStateResult,
   decodeStoredEvidenceStateResult,
   emptyEvidencePreviewAccounting,
@@ -71,6 +72,28 @@ describe("evidence contracts", () => {
       { version: 1, port: 4_173, steps: Array.from({ length: 13 }, () => step) },
     ]) {
       assert.ok(Option.isNone(decodeBrowserEvidenceJob(input)));
+    }
+  });
+
+  it("bounds the container tool result to safe metadata and one authenticated summary path", () => {
+    const result = {
+      version: 1,
+      jobId: "job-abcd1234",
+      status: "failed",
+      summaryUrl: "/s/abcdef123456/evidence/job-abcd1234",
+      completedSteps: 1,
+      frameCount: 1,
+      failure: { code: "assertion_mismatch", step: 0 },
+    };
+    assert.ok(Option.isSome(decodeBrowserEvidenceToolResult(result)));
+    for (const invalid of [
+      { ...result, summaryUrl: "https://example.com/evidence/job-abcd1234" },
+      { ...result, summaryUrl: "/s/abcdef123456/evidence/different-job" },
+      { ...result, frameCount: 13 },
+      { ...result, previewUrl: "https://preview.example" },
+      { ...result, cookie: "secret" },
+    ]) {
+      assert.ok(Option.isNone(decodeBrowserEvidenceToolResult(invalid)));
     }
   });
 

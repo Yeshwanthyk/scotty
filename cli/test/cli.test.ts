@@ -2551,6 +2551,7 @@ describe("beam down and embedded skill", () => {
     expect(toolNames).not.toContain("Chromium");
     expect(toolNames).toContain("build-essential");
     expect(toolNames).toContain("pkg-config");
+    expect(toolNames).toContain("scotty-browser-test");
     expect(fetched).toBe(false);
   });
 

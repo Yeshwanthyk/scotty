@@ -25,4 +25,5 @@ export interface Bindings {
   BACKUP_BUCKET_NAME?: string;
   SCOTTY_PREVIEW_BASE?: string;
   SCOTTY_EVIDENCE_ENABLED?: string;
+  SCOTTY_BROWSER_TEST_ENABLED?: string;
 }

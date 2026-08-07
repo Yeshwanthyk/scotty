@@ -3,6 +3,7 @@ import { Option, Result, Schema } from "effect";
 export const EVIDENCE_STATE_VERSION = 1 as const;
 export const EVIDENCE_MAX_STEPS = 12;
 export const EVIDENCE_MAX_ASSERTIONS_PER_STEP = 4;
+export const EVIDENCE_TOOL_MAX_PROTOCOL_BYTES = 64 * 1_024;
 export const EVIDENCE_MAX_FRAME_BYTES = 5 * 1024 * 1024;
 export const EVIDENCE_MAX_JOB_BYTES = 40 * 1024 * 1024;
 export const EVIDENCE_MAX_RETAINED_JOBS = 100;
@@ -521,6 +522,35 @@ export const BrowserEvidenceResultV1Schema = Schema.Struct({
   failure: Schema.optionalKey(EvidenceFailureSchema),
 });
 export type BrowserEvidenceResultV1 = typeof BrowserEvidenceResultV1Schema.Type;
+
+const EvidenceSummaryPathSchema = Schema.String.check(
+  Schema.isMaxLength(512),
+  Schema.isPattern(/^\/s\/[0-9a-f]{12}\/evidence\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u),
+);
+
+export const BrowserEvidenceToolResultV1Schema = Schema.Struct({
+  ...BrowserEvidenceResultV1Schema.fields,
+  summaryUrl: EvidenceSummaryPathSchema,
+  completedSteps: NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(EVIDENCE_MAX_STEPS)),
+  frameCount: NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(EVIDENCE_MAX_STEPS)),
+  failure: Schema.optionalKey(
+    Schema.Struct({
+      code: EvidenceFailureCodeSchema,
+      step: Schema.optionalKey(
+        NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(EVIDENCE_MAX_STEPS - 1)),
+      ),
+    }),
+  ),
+}).check(
+  Schema.makeFilter((result) => result.summaryUrl.endsWith(`/evidence/${result.jobId}`), {
+    expected: "an authenticated summary path for the returned evidence job",
+  }),
+);
+export type BrowserEvidenceToolResultV1 = typeof BrowserEvidenceToolResultV1Schema.Type;
+export const decodeBrowserEvidenceToolResult = Schema.decodeUnknownOption(
+  BrowserEvidenceToolResultV1Schema,
+  { onExcessProperty: "error" },
+);
 
 const PublicEvidenceAssertionResultSchema = Schema.Struct({
   kind: EvidenceAssertionKindSchema,

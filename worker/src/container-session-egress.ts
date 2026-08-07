@@ -9,6 +9,7 @@ import {
 import type { Bindings } from "./bindings";
 import { readBoundedJson, readBoundedUtf8Body } from "./bounded-http";
 import {
+  ApiErrorCodeSchema,
   badRequest,
   decodeJsonValue,
   parseSessionId,
@@ -16,12 +17,20 @@ import {
   ScottyError,
   type ContainerSessionRequest,
 } from "./contracts";
+import {
+  decodeBrowserEvidenceJob,
+  decodeBrowserEvidenceToolResult,
+  EVIDENCE_TOOL_MAX_PROTOCOL_BYTES,
+  EvidenceStateError,
+} from "./evidence-contracts";
 import { scottyErrorResponse } from "./passive-session";
 
 // Deployed-canary gate: cloudflare/sandbox:0.12.3 must prove that its TLS trust store
 // accepts the SDK interception certificate for this reserved host.
 export const SCOTTY_INTERNAL_HOST = "scotty.internal";
+export const SCOTTY_EVIDENCE_JOB_ROUTE = "/api/evidence/jobs";
 
+const SOURCE_SANDBOX_CLASS = "ScottySandbox";
 const CREDENTIAL_HEADERS = new Set([
   "authorization",
   "cookie",
@@ -110,6 +119,17 @@ const decodeSteerResponse = Schema.decodeUnknownOption(
   Schema.Union([SteerResponseSchema, ErrorEnvelopeSchema]),
   { onExcessProperty: "error" },
 );
+const decodeScottyError = Schema.decodeUnknownOption(
+  Schema.Struct({
+    _tag: Schema.Literal("ScottyError"),
+    code: ApiErrorCodeSchema,
+    message: Schema.NonEmptyString.check(Schema.isMaxLength(512)),
+    httpStatus: Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 })),
+    exitCode: Schema.Literals([1, 2, 3, 4, 5]),
+    hint: Schema.optionalKey(Schema.NonEmptyString.check(Schema.isMaxLength(512))),
+  }),
+);
+const decodeEvidenceStateError = Schema.decodeUnknownOption(EvidenceStateError);
 
 type EgressContext = OutboundHandlerContext<unknown>;
 interface ContainerProxyProps {
@@ -177,6 +197,106 @@ async function sanitizeResponse(
   });
 }
 
+const evidenceUnavailable = (): Response =>
+  scottyErrorResponse(
+    new ScottyError("wrong_state", "Scotty browser evidence is unavailable", {
+      httpStatus: 409,
+      exitCode: 5,
+    }),
+  );
+
+function evidenceFailureResponse(error: unknown): Response {
+  const scotty = decodeScottyError(error);
+  if (Option.isSome(scotty))
+    return scottyErrorResponse(
+      new ScottyError(scotty.value.code, scotty.value.message, {
+        httpStatus: scotty.value.httpStatus,
+        exitCode: scotty.value.exitCode,
+        ...(scotty.value.hint === undefined ? {} : { hint: scotty.value.hint }),
+      }),
+    );
+  if (Option.isSome(decodeEvidenceStateError(error))) return evidenceUnavailable();
+  return scottyErrorResponse(
+    new ScottyError("internal", "Scotty browser evidence request failed", {
+      httpStatus: 500,
+      exitCode: 1,
+    }),
+  );
+}
+
+function sanitizeEvidenceResult(value: unknown): Response {
+  const decoded = decodeBrowserEvidenceToolResult(value);
+  if (Option.isNone(decoded))
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty browser evidence result is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  const body = JSON.stringify(decoded.value);
+  if (new TextEncoder().encode(body).byteLength > EVIDENCE_TOOL_MAX_PROTOCOL_BYTES)
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty browser evidence result is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  return new Response(body, {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
+
+async function handleEvidenceJobEgress(
+  request: Request,
+  env: Bindings,
+  context: EgressContext,
+): Promise<Response> {
+  if (
+    request.method !== "POST" ||
+    mediaType(request.headers.get("content-type")) !== "application/json"
+  )
+    return rejectedRequest("Evidence jobs require a JSON POST request");
+  if (
+    typeof context.containerId !== "string" ||
+    context.containerId.length === 0 ||
+    context.className !== SOURCE_SANDBOX_CLASS
+  )
+    return scottyErrorResponse(
+      new ScottyError("auth", "Container evidence source is unavailable", {
+        httpStatus: 401,
+        exitCode: 4,
+      }),
+    );
+  // The container tool is installed by the image, so omission is the default-on state; any
+  // explicit value other than true is an emergency runtime kill switch.
+  if (env.SCOTTY_BROWSER_TEST_ENABLED !== undefined && env.SCOTTY_BROWSER_TEST_ENABLED !== "true")
+    return evidenceUnavailable();
+  const bodyText = await readBoundedUtf8Body(request, EVIDENCE_TOOL_MAX_PROTOCOL_BYTES);
+  if (bodyText === undefined) return rejectedRequest("Evidence job request body is too large");
+  const body = decodeJsonValue(bodyText);
+  if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
+  const job = decodeBrowserEvidenceJob(body.value);
+  if (Option.isNone(job)) return rejectedRequest("Evidence job is invalid");
+
+  const source = Result.try(() => env.SANDBOX.get(env.SANDBOX.idFromString(context.containerId)));
+  if (Result.isFailure(source))
+    return scottyErrorResponse(
+      new ScottyError("auth", "Container evidence source is unavailable", {
+        httpStatus: 401,
+        exitCode: 4,
+      }),
+    );
+  const executed = await Promise.resolve()
+    .then(() => source.success.runScottyEvidenceJob(job.value))
+    .then(Result.succeed, (error) => Result.fail(error));
+  return Result.isFailure(executed)
+    ? evidenceFailureResponse(executed.failure)
+    : sanitizeEvidenceResult(executed.success);
+}
+
 export async function handleContainerSessionEgress(
   request: Request,
   env: Bindings,
@@ -200,6 +320,9 @@ export async function handleContainerSessionEgress(
         exitCode: 4,
       }),
     );
+
+  if (url.pathname === SCOTTY_EVIDENCE_JOB_ROUTE)
+    return handleEvidenceJobEgress(request, env, context);
 
   const matched = CONTAINER_SESSION_ROUTE.exec(url.pathname);
   if (matched === null) return rejectedRequest("Invalid container session route");
