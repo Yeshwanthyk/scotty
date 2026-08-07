@@ -547,9 +547,10 @@ export const BrowserEvidenceToolResultV1Schema = Schema.Struct({
   }),
 );
 export type BrowserEvidenceToolResultV1 = typeof BrowserEvidenceToolResultV1Schema.Type;
+// Cloudflare RPC may attach transport-only fields to a returned object. Decode and project the
+// allow-listed tool result instead of letting harmless transport metadata hide a committed job.
 export const decodeBrowserEvidenceToolResult = Schema.decodeUnknownOption(
   BrowserEvidenceToolResultV1Schema,
-  { onExcessProperty: "error" },
 );
 
 const PublicEvidenceAssertionResultSchema = Schema.Struct({

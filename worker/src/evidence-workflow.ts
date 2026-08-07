@@ -13,6 +13,7 @@ import {
   type ExposedEvidencePreviewV1,
 } from "./evidence-contracts";
 import {
+  KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
   KitesurfClient,
   type KitesurfClientError,
   type KitesurfClientShape,
@@ -278,7 +279,12 @@ const executeStep = Effect.fnUntraced(function* (
   const capture = input.job.capture?.screenshots === "after-each-step";
   const screenshot = capture
     ? yield* Effect.result(
-        boundedClientEffect(page.screenshot, "screenshot", index, EVIDENCE_ACTION_TIMEOUT_MILLIS),
+        boundedClientEffect(
+          page.screenshot,
+          "screenshot",
+          index,
+          KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
+        ),
       )
     : Result.succeed<Uint8Array | undefined>(undefined);
   const completedAtMillis = yield* Clock.currentTimeMillis;

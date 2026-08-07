@@ -16,6 +16,7 @@ vi.mock("@cloudflare/playwright", () => playwright);
 import { EVIDENCE_PREVIEW_COOKIE } from "../src/evidence-preview";
 import {
   KITESURF_OPERATION_TIMEOUT_MILLIS,
+  KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
   makeKitesurfClient,
   type KitesurfRuntimeLauncher,
 } from "../src/kitesurf-client";
@@ -73,7 +74,10 @@ const makeRuntime = (
       state.events.push(`page:locator:${value}`);
       return locator;
     },
-    screenshot: async () => PNG,
+    screenshot: async (callOptions?: { readonly timeout?: number }) => {
+      state.events.push(`page:screenshot:${callOptions?.timeout ?? 0}`);
+      return PNG;
+    },
     url: () => "https://preview.scotty.example/ready?mode=test",
   };
   const route: BrowserContext["route"] = async (_url, handler) => {
@@ -216,6 +220,7 @@ describe("Kitesurf client", () => {
       ]);
       assert.include(state.events, "browser:sessionless");
       assert.include(state.events, `locator:click:${KITESURF_OPERATION_TIMEOUT_MILLIS}`);
+      assert.include(state.events, `page:screenshot:${KITESURF_SCREENSHOT_TIMEOUT_MILLIS}`);
       assert.isBelow(state.events.indexOf("page:close"), state.events.indexOf("context:close"));
       assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("browser:close"));
       assert.isFalse(state.events.some((event) => event.includes(secret)));
