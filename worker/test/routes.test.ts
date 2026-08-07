@@ -2408,7 +2408,7 @@ describe("real Hono boundary", () => {
     const summaryBody: unknown = await summary.json();
     expect(summaryBody).toMatchObject({
       status: "failed",
-      frameCount: 2,
+      frameCount: 1,
       failure: { code: "assertion_mismatch", step: 1 },
     });
     const serializedSummary = JSON.stringify(summaryBody);
@@ -2416,10 +2416,7 @@ describe("real Hono boundary", () => {
     expect(serializedSummary).not.toContain("private-fill-value");
     expect(serializedSummary).not.toContain("undeclared page text");
     expect(serializedSummary).not.toContain('"actual"');
-    expect(orderedReplayFrames(summaryBody).map((frame) => frame.frameId)).toEqual([
-      "frame-1",
-      "frame-2",
-    ]);
+    expect(orderedReplayFrames(summaryBody).map((frame) => frame.frameId)).toEqual(["frame-1"]);
 
     const missingJob = await app.request(
       `/api/sessions/${SESSION_ID}/evidence/not-owned`,

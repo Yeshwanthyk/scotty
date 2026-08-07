@@ -57,7 +57,8 @@ export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
 
 export type HarnessFailureStage =
   | "artifactDelete"
-  | "artifactPut"
+  | "artifactDeleteAmbiguous"
+  | "artifactPutAmbiguous"
   | "backupDelete"
   | "backupList"
   | "checkpointDefect"
@@ -613,8 +614,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     } as never,
     ARTIFACT_BUCKET: {
       put: async (key: string, value: unknown, putOptions?: R2PutOptions) => {
-        if (failures.has("artifactPut"))
-          throw injectedHarnessFailure("injected artifact put failure");
         if (!(value instanceof Uint8Array))
           throw injectedHarnessFailure("artifact value was not bytes");
         const contentType =
@@ -627,9 +626,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           customMetadata: putOptions?.customMetadata ?? {},
         });
         events.push(`artifact:put:${key}`);
+        if (failures.has("artifactPutAmbiguous"))
+          throw injectedHarnessFailure("injected ambiguous artifact put failure");
         return {};
       },
       head: async (key: string) => {
+        if (failures.has("artifactPutAmbiguous"))
+          throw injectedHarnessFailure("injected artifact head failure after ambiguous put");
         const object = artifactObjects.get(key);
         return object === undefined
           ? null
@@ -662,6 +665,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           throw injectedHarnessFailure("injected artifact delete failure");
         artifactObjects.delete(key);
         artifactDeletedKeys.push(key);
+        if (failures.has("artifactDeleteAmbiguous"))
+          throw injectedHarnessFailure("injected ambiguous artifact delete failure");
       },
     } as never,
     BROWSER: undefined as never,

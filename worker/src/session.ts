@@ -308,18 +308,19 @@ interface BoundedHostPromise<A> {
   readonly reconciliation: Promise<void>;
 }
 
+interface InFlightPreviewExposure {
+  readonly reconciliation: Promise<void>;
+  background: Promise<void> | undefined;
+}
+
 const boundedHostPromise = <A>(
-  operation: HostOperation,
   evaluate: () => Promise<A>,
   timeoutMillis: number,
   signal?: AbortSignal,
-  compensateLateSuccess?: (value: A) => Promise<void>,
 ): BoundedHostPromise<A> => {
   let resolveReconciliation = (): void => undefined;
-  let rejectReconciliation = (_cause: unknown): void => undefined;
-  const reconciliation = new Promise<void>((resolve, reject) => {
+  const reconciliation = new Promise<void>((resolve) => {
     resolveReconciliation = resolve;
-    rejectReconciliation = reject;
   });
   const result = new Promise<A>((resolve, reject) => {
     let waiting = true;
@@ -332,7 +333,7 @@ const boundedHostPromise = <A>(
       if (!waiting) return;
       finishWaiting();
       // oxlint-disable-next-line scotty/no-promise-reject -- boundary: native Sandbox timeout or abort must settle before Effect can reconcile the late host mutation
-      reject(new HostOperationFailure({ operation, cause }));
+      reject(cause);
     };
     const abort = (): void => stopWaiting("interrupted");
     // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native Sandbox preview mutations need a real host timeout and late reconciliation outside Effect interruption
@@ -349,11 +350,7 @@ const boundedHostPromise = <A>(
             resolveReconciliation();
             return;
           }
-          if (compensateLateSuccess === undefined) {
-            resolveReconciliation();
-            return;
-          }
-          void compensateLateSuccess(value).then(resolveReconciliation, rejectReconciliation);
+          resolveReconciliation();
         },
         (cause) => {
           if (waiting) {
@@ -368,11 +365,8 @@ const boundedHostPromise = <A>(
   return { result, reconciliation };
 };
 
-const boundedHostResult = <A>(
-  operation: HostOperation,
-  evaluate: () => Promise<A>,
-  timeoutMillis: number,
-): Promise<A> => boundedHostPromise(operation, evaluate, timeoutMillis).result;
+const boundedHostResult = <A>(evaluate: () => Promise<A>, timeoutMillis: number): Promise<A> =>
+  boundedHostPromise(evaluate, timeoutMillis).result;
 
 const decodeEvidenceArtifactError = Schema.decodeUnknownOption(EvidenceArtifactError);
 const decodeEvidenceStateError = Schema.decodeUnknownOption(EvidenceStateError);
@@ -441,7 +435,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
   private createInFlight: InFlightCreate | undefined;
-  private readonly previewExposureReconciliations = new Map<string, Promise<void>>();
+  private readonly previewExposureReconciliations = new Map<string, InFlightPreviewExposure>();
   private readonly previewRequests = new Map<string, InFlightPreviewRequest>();
 
   constructor(ctx: DurableObjectState<{}>, env: Bindings, options: SandboxEffectOptions = {}) {
@@ -641,6 +635,57 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
   }
 
+  private readonly reconcileLateEvidenceExposureProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+    port: number,
+    deadlineAt: string,
+  ) {
+    const evidence = yield* EvidenceStore;
+    const reconciled = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        yield* hostEffect("unexpose", () =>
+          boundedHostResult(() => this.unexposePort(port), this.evidencePreviewHostTimeoutMillis),
+        );
+        yield* evidence.closePreview(nonce);
+      }),
+    );
+    if (Result.isSuccess(reconciled)) return;
+    const scheduled = yield* Effect.result(
+      hostEffect("schedule", () =>
+        this.schedule(EVIDENCE_CLEANUP_RETRY_SECONDS, "expireEvidenceJob", {
+          nonce,
+          deadlineAt,
+        } satisfies EvidenceDeadlinePayload),
+      ),
+    );
+    yield* Effect.sync(() =>
+      console.error("Late evidence exposure cleanup remains authoritative and pending", {
+        error: errorName(reconciled.failure),
+        retryScheduled: Result.isSuccess(scheduled),
+      }),
+    );
+  });
+
+  private startLateEvidenceExposureReconciliation(
+    nonce: string,
+    exposure: InFlightPreviewExposure,
+    port: number,
+    deadlineAt: string,
+  ): void {
+    if (exposure.background !== undefined) return;
+    const background = exposure.reconciliation.then(() =>
+      this.#run(this.reconcileLateEvidenceExposureProgram(nonce, port, deadlineAt)),
+    );
+    exposure.background = background;
+    this.ctx.waitUntil(background);
+    const forget = (): void => {
+      if (this.previewExposureReconciliations.get(nonce) === exposure)
+        this.previewExposureReconciliations.delete(nonce);
+    };
+    void background.then(forget, forget);
+  }
+
   private readonly cleanupEvidencePreviewProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     nonce: string,
@@ -649,13 +694,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const evidence = yield* EvidenceStore;
     const revoked = yield* evidence.revokePreview(nonce, interruptionReason);
     yield* Effect.sync(() => this.abortPreviewRequests(nonce));
-    const exposureReconciliation = this.previewExposureReconciliations.get(nonce);
-    if (exposureReconciliation !== undefined)
-      yield* hostEffect("expose", () => exposureReconciliation);
+    const exposure = this.previewExposureReconciliations.get(nonce);
+    if (exposure !== undefined) {
+      yield* Effect.sync(() =>
+        this.startLateEvidenceExposureReconciliation(
+          nonce,
+          exposure,
+          revoked.port,
+          revoked.deadlineAt,
+        ),
+      );
+      return yield* new HostOperationFailure({
+        operation: "expose",
+        cause: "reconciliation_pending",
+      });
+    }
     if (revoked.exposure === "unexpose_pending") {
       yield* hostEffect("unexpose", () =>
         boundedHostResult(
-          "unexpose",
           () => this.unexposePort(revoked.port),
           this.evidencePreviewHostTimeoutMillis,
         ),
@@ -703,11 +759,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
       0,
       Math.min(this.evidencePreviewHostTimeoutMillis, remainingMillis),
     );
+    let pendingExposure: InFlightPreviewExposure | undefined;
     const exposed = yield* Effect.result(
       Effect.tryPromise({
         try: (signal) => {
-          const exposure = boundedHostPromise(
-            "expose",
+          const bounded = boundedHostPromise(
             () =>
               this.exposePort(active.port, {
                 hostname: previewBase,
@@ -716,28 +772,23 @@ export class Sandbox extends BaseSandbox<Bindings> {
               }),
             exposureTimeoutMillis,
             signal,
-            () =>
-              boundedHostResult(
-                "unexpose",
-                () => this.unexposePort(active.port),
-                this.evidencePreviewHostTimeoutMillis,
-              ),
           );
-          this.previewExposureReconciliations.set(nonce, exposure.reconciliation);
-          const forget = (): void => {
-            if (this.previewExposureReconciliations.get(nonce) === exposure.reconciliation)
-              this.previewExposureReconciliations.delete(nonce);
-          };
-          void exposure.reconciliation.then(forget, forget);
-          return exposure.result;
+          pendingExposure = { reconciliation: bounded.reconciliation, background: undefined };
+          this.previewExposureReconciliations.set(nonce, pendingExposure);
+          return bounded.result;
         },
         catch: (cause) => new HostOperationFailure({ operation: "expose", cause }),
       }),
     );
     if (Result.isFailure(exposed)) {
       yield* Effect.result(this.cleanupEvidencePreviewProgram(nonce, "interrupted"));
-      return yield* this.upstreamError("Evidence preview exposure failed", exposed.failure);
+      return yield* Effect.fail(exposed.failure);
     }
+    if (
+      pendingExposure !== undefined &&
+      this.previewExposureReconciliations.get(nonce) === pendingExposure
+    )
+      this.previewExposureReconciliations.delete(nonce);
     const exposedOrigin = yield* Effect.result(
       Effect.try({
         try: () => new URL(exposed.success.url).origin,
@@ -916,19 +967,46 @@ export class Sandbox extends BaseSandbox<Bindings> {
             capturedAt: frame.capturedAt,
             offsetMillis: frame.offsetMillis,
           };
-    const artifactResult =
+    const attemptResult =
       frameInput === undefined
-        ? Result.succeed<EvidenceArtifactV1 | undefined>(undefined)
-        : yield* Effect.result(artifactStore.putFrame(frameInput));
-    if (Result.isFailure(artifactResult)) {
-      if (!failedAssertion) return yield* artifactResult.failure;
-      if (
-        frameInput !== undefined &&
-        (artifactResult.failure.operation === "put" || artifactResult.failure.operation === "head")
-      )
-        yield* artifactStore.discardFrame(frameInput);
+        ? Result.succeed(undefined)
+        : yield* Effect.result(artifactStore.putFrameAttempt(frameInput));
+    if (Result.isFailure(attemptResult) && !failedAssertion) return yield* attemptResult.failure;
+    const failedPut =
+      Result.isSuccess(attemptResult) &&
+      attemptResult.success !== undefined &&
+      Result.isFailure(attemptResult.success.stored)
+        ? {
+            artifact: attemptResult.success.artifact,
+            failure: attemptResult.success.stored.failure,
+          }
+        : undefined;
+    if (failedPut !== undefined && !failedAssertion) return yield* failedPut.failure;
+    const abandonedArtifact =
+      failedAssertion && Result.isSuccess(attemptResult)
+        ? attemptResult.success?.artifact
+        : undefined;
+    if (abandonedArtifact !== undefined) {
+      const pending = yield* evidence.requestVerifiedDelete(abandonedArtifact, "abandoned");
+      if (pending !== undefined) {
+        const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
+        if (Result.isFailure(deleted))
+          yield* Effect.sync(() =>
+            console.error("Failed assertion frame deletion remains authoritative and pending", {
+              jobId: active.jobId,
+              frameId: pending.frameId,
+              error: errorName(deleted.failure),
+            }),
+          );
+      }
     }
-    const artifact = Result.isSuccess(artifactResult) ? artifactResult.success : undefined;
+    const artifact =
+      !failedAssertion &&
+      Result.isSuccess(attemptResult) &&
+      attemptResult.success !== undefined &&
+      Result.isSuccess(attemptResult.success.stored)
+        ? attemptResult.success.artifact
+        : undefined;
     const publication = {
       index: input.index,
       startedAt: input.startedAt,

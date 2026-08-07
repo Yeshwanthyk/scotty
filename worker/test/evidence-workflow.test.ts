@@ -147,7 +147,8 @@ const makeControl = (
   EvidenceWorkflowControl.of({
     expose: () =>
       options.exposeFailsAtDeadline === true
-        ? Effect.sleep(60_000).pipe(
+        ? Effect.sync(() => state.events.push("preview:expose:start")).pipe(
+            Effect.andThen(Effect.sleep(60_000)),
             Effect.andThen(
               Effect.fail(
                 new EvidenceWorkflowControlError({
@@ -463,7 +464,7 @@ describe("Kitesurf evidence workflow", () => {
         const fiber = yield* execute(defaultJob, makePage(), state, {
           exposeFailsAtDeadline: true,
         }).pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Effect.yieldNow;
+        while (!state.events.includes("preview:expose:start")) yield* Effect.yieldNow;
         yield* TestClock.adjust(60_000);
         const result = yield* Fiber.join(fiber);
 

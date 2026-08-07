@@ -46,11 +46,6 @@ export interface PutEvidenceFrameInput {
   readonly offsetMillis: number;
 }
 
-export type DiscardEvidenceFrameInput = Pick<
-  PutEvidenceFrameInput,
-  "sessionId" | "jobId" | "frameId"
->;
-
 export interface OpenEvidenceFrame {
   readonly body: ReadableStream<Uint8Array>;
   readonly bytes: number;
@@ -58,13 +53,18 @@ export interface OpenEvidenceFrame {
   readonly sha256: string;
 }
 
+interface PutEvidenceFrameAttempt {
+  readonly artifact: EvidenceArtifactV1;
+  readonly stored: Result.Result<void, EvidenceArtifactError>;
+}
+
 interface ArtifactStoreShape {
   readonly putFrame: (
     input: PutEvidenceFrameInput,
   ) => Effect.Effect<EvidenceArtifactV1, EvidenceArtifactError>;
-  readonly discardFrame: (
-    input: DiscardEvidenceFrameInput,
-  ) => Effect.Effect<void, EvidenceArtifactError>;
+  readonly putFrameAttempt: (
+    input: PutEvidenceFrameInput,
+  ) => Effect.Effect<PutEvidenceFrameAttempt, EvidenceArtifactError>;
   readonly openFrame: (
     artifact: EvidenceArtifactV1,
   ) => Effect.Effect<OpenEvidenceFrame, EvidenceArtifactError>;
@@ -130,8 +130,8 @@ export const artifactStoreLayer = (
   capabilities: ArtifactStoreCapabilities,
 ): Layer.Layer<ArtifactStore> => Layer.succeed(ArtifactStore)(makeArtifactStore(capabilities));
 
-const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactStoreShape => ({
-  putFrame: Effect.fnUntraced(function* (input) {
+const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactStoreShape => {
+  const putFrameAttempt = Effect.fnUntraced(function* (input: PutEvidenceFrameInput) {
     if (!validPublicationInput(input))
       return yield* new EvidenceArtifactError({ operation: "validate", reason: "invalid_state" });
     if (!validPng(input.bytes))
@@ -168,31 +168,7 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
           new EvidenceArtifactError({ operation: "head", reason: "upstream", cause }),
       }),
     );
-    const expected = {
-      key,
-      bytes: input.bytes.byteLength,
-      sha256,
-      sessionId: input.sessionId,
-      jobId: input.jobId,
-      frameId: input.frameId,
-    };
-    if (Result.isFailure(headResult)) {
-      if (Result.isFailure(putResult)) return yield* putResult.failure;
-      return yield* new EvidenceArtifactError({
-        operation: "head",
-        reason: "put_unknown",
-        cause: headResult.failure,
-      });
-    }
-    if (!metadataMatches(headResult.success, expected)) {
-      if (Result.isFailure(putResult)) return yield* putResult.failure;
-      return yield* new EvidenceArtifactError({
-        operation: "head",
-        reason: headResult.success === undefined ? "put_unknown" : "metadata_mismatch",
-      });
-    }
-    const capturedAtMillis = Date.parse(input.capturedAt);
-    return {
+    const artifact: EvidenceArtifactV1 = {
       version: 1,
       sessionId: input.sessionId,
       jobId: input.jobId,
@@ -203,78 +179,103 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       bytes: input.bytes.byteLength,
       capturedAt: input.capturedAt,
       offsetMillis: input.offsetMillis,
-      expiresAt: artifactExpiry(capturedAtMillis),
+      expiresAt: artifactExpiry(Date.parse(input.capturedAt)),
       status: "available",
     };
-  }),
-  discardFrame: Effect.fnUntraced(function* (input) {
-    if (
-      Option.isNone(decodeEvidenceIdentifier(input.sessionId)) ||
-      Option.isNone(decodeEvidenceIdentifier(input.jobId)) ||
-      Option.isNone(decodeEvidenceIdentifier(input.frameId))
-    )
-      return yield* new EvidenceArtifactError({ operation: "validate", reason: "invalid_state" });
-    const key = evidenceArtifactObjectKey(input);
-    yield* Effect.tryPromise({
-      try: () => capabilities.delete(key),
-      catch: (cause) =>
-        new EvidenceArtifactError({ operation: "delete", reason: "upstream", cause }),
-    });
-    const remaining = yield* Effect.tryPromise({
-      try: () => capabilities.head(key),
-      catch: (cause) => new EvidenceArtifactError({ operation: "head", reason: "upstream", cause }),
-    });
-    if (remaining !== undefined)
-      return yield* new EvidenceArtifactError({ operation: "delete", reason: "upstream" });
-  }),
-  openFrame: Effect.fnUntraced(function* (artifact) {
-    if (artifact.status !== "available" || !canonicalArtifact(artifact))
-      return yield* new EvidenceArtifactError({ operation: "open", reason: "invalid_state" });
-    const key = evidenceArtifactObjectKey(artifact);
-    const body = yield* Effect.tryPromise({
-      try: () => capabilities.get(key),
-      catch: (cause) => new EvidenceArtifactError({ operation: "open", reason: "upstream", cause }),
-    });
-    if (body === undefined)
-      return yield* new EvidenceArtifactError({ operation: "open", reason: "missing" });
-    if (
-      !metadataMatches(body, {
-        key,
-        bytes: artifact.bytes,
-        sha256: artifact.sha256,
-        sessionId: artifact.sessionId,
-        jobId: artifact.jobId,
-        frameId: artifact.frameId,
-      })
-    )
-      return yield* new EvidenceArtifactError({
-        operation: "open",
-        reason: "metadata_mismatch",
-      });
-    return {
-      body: body.body,
-      bytes: body.size,
-      mediaType: ARTIFACT_MEDIA_TYPE,
-      sha256: artifact.sha256,
+    const expected = {
+      key,
+      bytes: artifact.bytes,
+      sha256,
+      sessionId: input.sessionId,
+      jobId: input.jobId,
+      frameId: input.frameId,
     };
-  }),
-  deleteFrame: Effect.fnUntraced(function* (artifact) {
-    if (artifact.status !== "delete_pending" || !canonicalArtifact(artifact))
-      return yield* new EvidenceArtifactError({ operation: "delete", reason: "invalid_state" });
-    const key = evidenceArtifactObjectKey(artifact);
-    yield* Effect.tryPromise({
-      try: () => capabilities.delete(key),
-      catch: (cause) =>
-        new EvidenceArtifactError({ operation: "delete", reason: "upstream", cause }),
-    });
-    const remaining = yield* Effect.tryPromise({
-      try: () => capabilities.head(key),
-      catch: (cause) => new EvidenceArtifactError({ operation: "head", reason: "upstream", cause }),
-    });
-    if (remaining !== undefined)
-      return yield* new EvidenceArtifactError({ operation: "delete", reason: "upstream" });
-  }),
-});
+    if (Result.isFailure(headResult))
+      return {
+        artifact,
+        stored: Result.fail(
+          Result.isFailure(putResult)
+            ? putResult.failure
+            : new EvidenceArtifactError({
+                operation: "head",
+                reason: "put_unknown",
+                cause: headResult.failure,
+              }),
+        ),
+      };
+    if (!metadataMatches(headResult.success, expected))
+      return {
+        artifact,
+        stored: Result.fail(
+          Result.isFailure(putResult)
+            ? putResult.failure
+            : new EvidenceArtifactError({
+                operation: "head",
+                reason: headResult.success === undefined ? "put_unknown" : "metadata_mismatch",
+              }),
+        ),
+      };
+    return { artifact, stored: Result.succeed(undefined) };
+  });
+
+  return {
+    putFrame: Effect.fnUntraced(function* (input) {
+      const attempt = yield* putFrameAttempt(input);
+      if (Result.isFailure(attempt.stored)) return yield* attempt.stored.failure;
+      return attempt.artifact;
+    }),
+    putFrameAttempt,
+    openFrame: Effect.fnUntraced(function* (artifact) {
+      if (artifact.status !== "available" || !canonicalArtifact(artifact))
+        return yield* new EvidenceArtifactError({ operation: "open", reason: "invalid_state" });
+      const key = evidenceArtifactObjectKey(artifact);
+      const body = yield* Effect.tryPromise({
+        try: () => capabilities.get(key),
+        catch: (cause) =>
+          new EvidenceArtifactError({ operation: "open", reason: "upstream", cause }),
+      });
+      if (body === undefined)
+        return yield* new EvidenceArtifactError({ operation: "open", reason: "missing" });
+      if (
+        !metadataMatches(body, {
+          key,
+          bytes: artifact.bytes,
+          sha256: artifact.sha256,
+          sessionId: artifact.sessionId,
+          jobId: artifact.jobId,
+          frameId: artifact.frameId,
+        })
+      )
+        return yield* new EvidenceArtifactError({
+          operation: "open",
+          reason: "metadata_mismatch",
+        });
+      return {
+        body: body.body,
+        bytes: body.size,
+        mediaType: ARTIFACT_MEDIA_TYPE,
+        sha256: artifact.sha256,
+      };
+    }),
+    deleteFrame: Effect.fnUntraced(function* (artifact) {
+      if (artifact.status !== "delete_pending" || !canonicalArtifact(artifact))
+        return yield* new EvidenceArtifactError({ operation: "delete", reason: "invalid_state" });
+      const key = evidenceArtifactObjectKey(artifact);
+      yield* Effect.tryPromise({
+        try: () => capabilities.delete(key),
+        catch: (cause) =>
+          new EvidenceArtifactError({ operation: "delete", reason: "upstream", cause }),
+      });
+      const remaining = yield* Effect.tryPromise({
+        try: () => capabilities.head(key),
+        catch: (cause) =>
+          new EvidenceArtifactError({ operation: "head", reason: "upstream", cause }),
+      });
+      if (remaining !== undefined)
+        return yield* new EvidenceArtifactError({ operation: "delete", reason: "upstream" });
+    }),
+  };
+};
 
 const r2Metadata = (object: R2Object): ArtifactObjectMetadata => ({
   key: object.key,
