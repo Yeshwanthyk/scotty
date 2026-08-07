@@ -177,7 +177,7 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("publishes an assertion failure without a frame when failure capture is invalid", () =>
+  it.effect("preserves assertion_mismatch when failed-frame retention arming fails", () =>
     Effect.gen(function* () {
       let assertionAttempts = 0;
       const kitesurfClient = KitesurfClient.of({
@@ -194,10 +194,11 @@ describe("evidence session lifecycle", () => {
               assertionAttempts += 1;
               return "/not-ready";
             }),
-            screenshot: Effect.succeed(Uint8Array.from([0, 1, 2, 3])),
+            screenshot: Effect.succeed(PNG),
           }),
       });
       const harness = yield* createHarness({
+        failureStage: "evidenceRetentionSchedule",
         kitesurfClient,
         previewBase: "preview.scotty.example",
       });
@@ -226,7 +227,7 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("publishes a failed assertion without retaining a valid screenshot", () =>
+  it.effect("publishes a verified failed-assertion screenshot in Replay", () =>
     Effect.gen(function* () {
       let assertionAttempts = 0;
       const kitesurfClient = KitesurfClient.of({
@@ -265,8 +266,16 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(result.status, "failed");
       assert.deepStrictEqual(result.failure, { code: "assertion_mismatch", step: 0 });
       assert.strictEqual(result.completedSteps, 1);
-      assert.strictEqual(result.frameCount, 0);
-      assert.deepStrictEqual(harness.artifactKeys(), []);
+      assert.strictEqual(result.frameCount, 1);
+      assert.lengthOf(harness.artifactKeys(), 1);
+      const summary = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0];
+      assert.deepInclude(summary, {
+        status: "failed",
+        completedSteps: 1,
+        frameCount: 1,
+      });
+      assert.deepInclude(summary?.steps[0], { status: "failed" });
+      assert.strictEqual(summary?.steps[0]?.frame?.frameId, "frame-1");
     }),
   );
 
@@ -437,6 +446,190 @@ describe("evidence session lifecycle", () => {
         failure: { code: "deadline" },
       });
       assert.strictEqual(harness.readRecord()?.operation, null);
+      assert.isFalse(
+        harness.schedules.some(({ callback }) => callback === "expireRetainedEvidence"),
+      );
+    }),
+  );
+
+  it.effect("arms seven-day retention and deletes only after verified R2 absence", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      yield* Effect.promise(() =>
+        harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
+          index: 0,
+          startedAt: "2026-08-06T12:00:00.100Z",
+          completedAt: "2026-08-06T12:00:01.000Z",
+          offsetMillis: 1_000,
+          assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
+          frame: {
+            frameId: "frame-1",
+            bytes: PNG,
+            capturedAt: "2026-08-06T12:00:01.000Z",
+            offsetMillis: 1_000,
+          },
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "succeeded"),
+      );
+      const expiresAt = "2026-08-13T12:00:01.000Z";
+      assert.deepInclude(
+        harness.schedules.find(({ callback }) => callback === "expireRetainedEvidence"),
+        {
+          when: new Date(expiresAt),
+          callback: "expireRetainedEvidence",
+          payload: { expiresAt },
+        },
+      );
+
+      yield* TestClock.setTime(Date.parse(expiresAt));
+      yield* Effect.promise(() => harness.sandbox.expireRetainedEvidence({ expiresAt }));
+
+      const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      assert.deepStrictEqual(state?.artifacts, []);
+      assert.deepStrictEqual(state?.pendingDeletes, []);
+      assert.strictEqual(state?.retainedBytes, 0);
+      assert.deepStrictEqual(harness.artifactKeys(), []);
+      assert.lengthOf(harness.artifactDeletedKeys, 1);
+    }),
+  );
+
+  it.effect("does not release retained evidence when callback arming fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const publication = {
+        index: 0,
+        startedAt: "2026-08-06T12:00:00.100Z",
+        completedAt: "2026-08-06T12:00:01.000Z",
+        offsetMillis: 1_000,
+        assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
+        frame: {
+          frameId: "frame-1",
+          bytes: PNG,
+          capturedAt: "2026-08-06T12:00:01.000Z",
+          offsetMillis: 1_000,
+        },
+      } as const;
+      harness.injectFailure("evidenceRetentionSchedule");
+
+      const failed = yield* Effect.result(
+        Effect.tryPromise({
+          try: () =>
+            harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, publication),
+          catch: (cause) => cause,
+        }),
+      );
+
+      assert.ok(Result.isFailure(failed));
+      assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
+      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+        operationNonce: accepted.operationNonce,
+        frameCount: 0,
+      });
+      assert.deepStrictEqual(harness.artifactKeys(), []);
+      harness.clearFailure("evidenceRetentionSchedule");
+      yield* Effect.promise(() =>
+        harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, publication),
+      );
+      const finalized = yield* Effect.promise(() =>
+        harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "succeeded"),
+      );
+      assert.strictEqual(finalized.status, "succeeded");
+      assert.strictEqual(harness.readRecord()?.operation, null);
+    }),
+  );
+
+  it.effect("retries ambiguous retention deletes without dropping durable authority", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      yield* Effect.promise(() =>
+        harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
+          index: 0,
+          startedAt: "2026-08-06T12:00:00.100Z",
+          completedAt: "2026-08-06T12:00:01.000Z",
+          offsetMillis: 1_000,
+          assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
+          frame: {
+            frameId: "frame-1",
+            bytes: PNG,
+            capturedAt: "2026-08-06T12:00:01.000Z",
+            offsetMillis: 1_000,
+          },
+        }),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "succeeded"),
+      );
+      const expiresAt = "2026-08-13T12:00:01.000Z";
+      yield* TestClock.setTime(Date.parse(expiresAt));
+      harness.injectFailure("artifactDeleteAmbiguous");
+
+      yield* Effect.promise(() => harness.sandbox.expireRetainedEvidence({ expiresAt }));
+
+      const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      assert.deepInclude(pending?.artifacts[0], { status: "delete_pending" });
+      assert.deepInclude(pending?.pendingDeletes[0], { reason: "expired" });
+      assert.deepStrictEqual(harness.artifactKeys(), []);
+      const retryAt = "2026-08-13T12:00:06.000Z";
+      assert.deepInclude(harness.schedules.at(-1), {
+        when: new Date(retryAt),
+        callback: "expireRetainedEvidence",
+        payload: { expiresAt: retryAt },
+      });
+
+      harness.clearFailure("artifactDeleteAmbiguous");
+      yield* TestClock.setTime(Date.parse(retryAt));
+      yield* Effect.promise(() => harness.sandbox.expireRetainedEvidence({ expiresAt: retryAt }));
+      const reconciled = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      assert.deepStrictEqual(reconciled?.artifacts, []);
+      assert.deepStrictEqual(reconciled?.pendingDeletes, []);
+    }),
+  );
+
+  it.effect("arms retained evidence before hard-cap interruption releases its lease", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness({ stopCallsOnStop: true });
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      yield* Effect.promise(() =>
+        harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
+          index: 0,
+          startedAt: "2026-08-06T12:00:00.100Z",
+          completedAt: "2026-08-06T12:00:01.000Z",
+          offsetMillis: 1_000,
+          assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
+          frame: {
+            frameId: "frame-1",
+            bytes: PNG,
+            capturedAt: "2026-08-06T12:00:01.000Z",
+            offsetMillis: 1_000,
+          },
+        }),
+      );
+
+      yield* Effect.promise(() =>
+        harness.sandbox.enforceHardCap({ hardCapAt: "2026-08-06T13:00:00.000Z" }),
+      );
+
+      assert.deepInclude(
+        harness.schedules.find(({ callback }) => callback === "expireRetainedEvidence"),
+        {
+          when: new Date("2026-08-13T12:00:01.000Z"),
+          callback: "expireRetainedEvidence",
+        },
+      );
+      assert.notInclude(harness.deletedSchedules, "expireRetainedEvidence");
+      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
+        status: "interrupted",
+        frameCount: 1,
+      });
     }),
   );
 
@@ -513,6 +706,7 @@ describe("evidence session lifecycle", () => {
       assert.deepStrictEqual(gone, { id: SESSION_ID, status: "gone" });
       assert.strictEqual(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence), undefined);
       assert.include(harness.deletedSchedules, "expireEvidenceJob");
+      assert.include(harness.deletedSchedules, "expireRetainedEvidence");
       assert.isBelow(
         cleanupEvents.indexOf(`storage:put:${sessionHarnessKeys.evidence}`),
         cleanupEvents.indexOf(`host:preview:unexpose:${job.port}`),

@@ -14,6 +14,9 @@ import { EVIDENCE_PREVIEW_COOKIE } from "./evidence-preview";
 
 export const KITESURF_OPERATION_TIMEOUT_MILLIS = 5_000;
 const KITESURF_MAX_SAME_ORIGIN_REDIRECTS = 10;
+const KITESURF_MAX_CSS_SELECTOR_LENGTH = 512;
+const PLAYWRIGHT_SELECTOR_ENGINE_PATTERN =
+  /^(?:css|xpath|text|id|data-testid|data-test-id|data-test|role|_react|_vue|internal:[a-z-]+)=/iu;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export class KitesurfClientError extends Schema.TaggedErrorClass<KitesurfClientError>()(
@@ -85,8 +88,17 @@ type KitesurfRuntimeLocator = Pick<
   "click" | "count" | "fill" | "isVisible" | "press" | "textContent"
 >;
 
+interface KitesurfCssDocument {
+  readonly createDocumentFragment: () => {
+    readonly querySelector: (value: string) => unknown;
+  };
+}
+
+declare const document: KitesurfCssDocument;
+
 interface KitesurfRuntimePage {
   readonly close: Page["close"];
+  readonly evaluate: Page["evaluate"];
   readonly getByTestId: (value: string) => KitesurfRuntimeLocator;
   readonly goto: Page["goto"];
   readonly locator: (value: string) => KitesurfRuntimeLocator;
@@ -180,8 +192,45 @@ const boundedRuntimeEffect = <A>(
     nativePromiseTimeout(operation, reason, evaluate, timeoutMillis, compensateLateSuccess),
   );
 
-const locatorFor = (page: KitesurfRuntimePage, locator: EvidenceLocator): KitesurfRuntimeLocator =>
-  locator.kind === "testId" ? page.getByTestId(locator.value) : page.locator(locator.value);
+const browserAcceptsCssSelector = (value: string): boolean => {
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: querySelector is the browser's CSS parser and reports malformed selectors only by throwing a DOMException
+  try {
+    document.createDocumentFragment().querySelector(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const locatorFor = (
+  page: KitesurfRuntimePage,
+  locator: EvidenceLocator,
+  operation: KitesurfClientError["operation"],
+): Effect.Effect<KitesurfRuntimeLocator, KitesurfClientError> => {
+  if (locator.kind === "testId")
+    return Effect.try({
+      try: () => page.getByTestId(locator.value),
+      catch: () => new KitesurfClientError({ operation, reason: "unsupported" }),
+    });
+  if (
+    locator.value.length === 0 ||
+    locator.value.length > KITESURF_MAX_CSS_SELECTOR_LENGTH ||
+    PLAYWRIGHT_SELECTOR_ENGINE_PATTERN.test(locator.value)
+  )
+    return Effect.fail(new KitesurfClientError({ operation, reason: "unsupported" }));
+  return runtimeEffect(operation, "unsupported", () =>
+    page.evaluate(browserAcceptsCssSelector, locator.value),
+  ).pipe(
+    Effect.flatMap((valid) =>
+      valid
+        ? Effect.try({
+            try: () => page.locator(locator.value),
+            catch: () => new KitesurfClientError({ operation, reason: "unsupported" }),
+          })
+        : Effect.fail(new KitesurfClientError({ operation, reason: "unsupported" })),
+    ),
+  );
+};
 
 const exactOrigin = (value: string): string | undefined => {
   if (!URL.canParse(value)) return undefined;
@@ -248,6 +297,14 @@ const makePage = (
     runtimeEffect(operation, "ambiguous", evaluate).pipe(
       Effect.tap(() => singlePage(context, page)),
     );
+  const checkedLocator = <A>(
+    operation: KitesurfClientError["operation"],
+    locator: EvidenceLocator,
+    evaluate: (runtimeLocator: KitesurfRuntimeLocator) => Promise<A>,
+  ): Effect.Effect<A, KitesurfClientError> =>
+    locatorFor(page, locator, operation).pipe(
+      Effect.flatMap((runtimeLocator) => checked(operation, () => evaluate(runtimeLocator))),
+    );
 
   return {
     goto: (path) => {
@@ -261,29 +318,31 @@ const makePage = (
           );
     },
     click: (locator) =>
-      checked("click", () =>
-        locatorFor(page, locator).click({ timeout: KITESURF_OPERATION_TIMEOUT_MILLIS }),
+      checkedLocator("click", locator, (runtimeLocator) =>
+        runtimeLocator.click({ timeout: KITESURF_OPERATION_TIMEOUT_MILLIS }),
       ),
     fill: (locator, value) =>
-      checked("fill", () =>
-        locatorFor(page, locator).fill(value, {
+      checkedLocator("fill", locator, (runtimeLocator) =>
+        runtimeLocator.fill(value, {
           timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
         }),
       ),
     press: (locator, key) =>
-      checked("press", () =>
-        locatorFor(page, locator).press(key, {
+      checkedLocator("press", locator, (runtimeLocator) =>
+        runtimeLocator.press(key, {
           timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
         }),
       ),
-    isVisible: (locator) => checked("visible", () => locatorFor(page, locator).isVisible()),
+    isVisible: (locator) =>
+      checkedLocator("visible", locator, (runtimeLocator) => runtimeLocator.isVisible()),
     textContent: (locator) =>
-      checked("text_exact", () =>
-        locatorFor(page, locator).textContent({
+      checkedLocator("text_exact", locator, (runtimeLocator) =>
+        runtimeLocator.textContent({
           timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
         }),
       ),
-    count: (locator) => checked("count", () => locatorFor(page, locator).count()),
+    count: (locator) =>
+      checkedLocator("count", locator, (runtimeLocator) => runtimeLocator.count()),
     urlPath: Effect.try({
       try: () => page.url(),
       catch: () => new KitesurfClientError({ operation: "url_path", reason: "ambiguous" }),

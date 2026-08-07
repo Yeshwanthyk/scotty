@@ -804,7 +804,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "uninstall",
     {
       deleteData: Flag.boolean("delete-data").pipe(
-        Flag.withDescription("Also delete the retained KV session index and R2 backups"),
+        Flag.withDescription(
+          "Also delete the retained KV session index, R2 backups, and evidence artifacts",
+        ),
       ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm installation removal")),
       trailing: trailingArguments,
@@ -849,7 +851,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             );
           runtime.stdout(
             deleteData
-              ? "This stops every session and deletes Scotty compute, the KV session index, and every R2 backup.\n"
+              ? "This stops every session and deletes Scotty compute, the KV session index, every R2 backup, and every evidence artifact.\n"
               : "This stops every session and deletes Scotty compute. KV and R2 data stay in Cloudflare.\n",
           );
           const answer = runtime.prompt(

@@ -68,6 +68,7 @@ export type HarnessFailureStage =
   | "downSha"
   | "downTar"
   | "downWriteManifest"
+  | "evidenceRetentionSchedule"
   | "hardCapSchedule"
   | "previewExpose"
   | "previewUnexpose"
@@ -913,6 +914,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         payload: unknown,
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
+        if (failures.has("evidenceRetentionSchedule") && callback === "expireRetainedEvidence")
+          throw injectedHarnessFailure("injected evidence retention schedule failure");
         if (failures.has("hardCapSchedule") && callback === "enforceHardCap") {
           throw injectedHarnessFailure("injected hard-cap schedule failure");
         }

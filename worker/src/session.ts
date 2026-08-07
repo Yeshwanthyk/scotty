@@ -227,6 +227,12 @@ interface EvidenceDeadlinePayload {
   readonly deadlineAt: string;
 }
 
+const EvidenceRetentionPayloadSchema = Schema.Struct({ expiresAt: Schema.String });
+type EvidenceRetentionPayload = typeof EvidenceRetentionPayloadSchema.Type;
+const decodeEvidenceRetentionPayload = Schema.decodeUnknownOption(EvidenceRetentionPayloadSchema, {
+  onExcessProperty: "error",
+});
+
 export interface PassivePiConsoleRelay {
   readonly fetch: (input: {
     readonly sessionId: SessionRecord["id"];
@@ -935,6 +941,63 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   });
 
+  private readonly scheduleEvidenceArtifactRetentionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    artifact: EvidenceArtifactV1,
+  ) {
+    yield* hostEffect("schedule", () =>
+      this.schedule(new Date(artifact.expiresAt), "expireRetainedEvidence", {
+        expiresAt: artifact.expiresAt,
+      } satisfies EvidenceRetentionPayload),
+    ).pipe(
+      Effect.mapError(
+        (cause) => new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
+      ),
+    );
+  });
+
+  private readonly armEvidenceRetentionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const evidence = yield* EvidenceStore;
+    const state = yield* evidence.read;
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const nextAtMillis = state.artifacts.some((artifact) => artifact.status === "delete_pending")
+      ? nowMillis + EVIDENCE_CLEANUP_RETRY_SECONDS * 1_000
+      : Math.min(
+          ...state.artifacts
+            .filter((artifact) => artifact.status === "available")
+            .map((artifact) => Date.parse(artifact.expiresAt)),
+        );
+    if (!Number.isFinite(nextAtMillis)) return;
+    const expiresAt = new Date(Math.max(nowMillis, nextAtMillis)).toISOString();
+    yield* hostEffect("schedule", () =>
+      this.schedule(new Date(expiresAt), "expireRetainedEvidence", {
+        expiresAt,
+      } satisfies EvidenceRetentionPayload),
+    );
+  });
+
+  private readonly expireRetainedEvidenceProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: unknown,
+  ) {
+    const decoded = decodeEvidenceRetentionPayload(payload);
+    if (Option.isNone(decoded) || !Number.isFinite(Date.parse(decoded.value.expiresAt))) return;
+    const evidence = yield* EvidenceStore;
+    const reconciled = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        yield* evidence.prepareExpiredDeletes;
+        yield* this.reconcileEvidenceDeletesProgram();
+      }),
+    );
+    if (Result.isFailure(reconciled))
+      yield* Effect.sync(() =>
+        console.error("Evidence retention reconciliation remains authoritative and pending", {
+          error: errorName(reconciled.failure),
+        }),
+      );
+    yield* this.armEvidenceRetentionProgram();
+  });
+
   private readonly completeScottyEvidenceStepProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     nonce: string,
@@ -981,18 +1044,26 @@ export class Sandbox extends BaseSandbox<Bindings> {
             failure: attemptResult.success.stored.failure,
           }
         : undefined;
-    if (failedPut !== undefined && !failedAssertion) return yield* failedPut.failure;
-    const abandonedArtifact =
-      failedAssertion && Result.isSuccess(attemptResult)
-        ? attemptResult.success?.artifact
+    const verifiedArtifact =
+      Result.isSuccess(attemptResult) &&
+      attemptResult.success !== undefined &&
+      Result.isSuccess(attemptResult.success.stored)
+        ? attemptResult.success.artifact
         : undefined;
+    const retention =
+      verifiedArtifact === undefined
+        ? Result.succeed(undefined)
+        : yield* Effect.result(this.scheduleEvidenceArtifactRetentionProgram(verifiedArtifact));
+    const retentionFailure = Result.isFailure(retention) ? retention.failure : undefined;
+    const abandonedArtifact =
+      failedPut?.artifact ?? (retentionFailure === undefined ? undefined : verifiedArtifact);
     if (abandonedArtifact !== undefined) {
       const pending = yield* evidence.requestVerifiedDelete(abandonedArtifact, "abandoned");
       if (pending !== undefined) {
         const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
         if (Result.isFailure(deleted))
           yield* Effect.sync(() =>
-            console.error("Failed assertion frame deletion remains authoritative and pending", {
+            console.error("Unpublished evidence frame deletion remains authoritative and pending", {
               jobId: active.jobId,
               frameId: pending.frameId,
               error: errorName(deleted.failure),
@@ -1000,13 +1071,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
           );
       }
     }
-    const artifact =
-      !failedAssertion &&
-      Result.isSuccess(attemptResult) &&
-      attemptResult.success !== undefined &&
-      Result.isSuccess(attemptResult.success.stored)
-        ? attemptResult.success.artifact
-        : undefined;
+    const artifactFailure = failedPut?.failure ?? retentionFailure;
+    if (artifactFailure !== undefined && !failedAssertion) return yield* artifactFailure;
+    const artifact = retentionFailure === undefined ? verifiedArtifact : undefined;
     const publication = {
       index: input.index,
       startedAt: input.startedAt,
@@ -2601,6 +2668,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async expireEvidenceJob(payload: EvidenceDeadlinePayload): Promise<void> {
     return this.#run(this.expireEvidenceJobProgram(payload));
+  }
+
+  async expireRetainedEvidence(payload: unknown): Promise<void> {
+    return this.#run(this.expireRetainedEvidenceProgram(payload));
   }
 
   async reseedPiAuth() {

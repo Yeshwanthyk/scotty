@@ -781,7 +781,11 @@ export async function uninstallInstallation(
                 scriptName: installation.workerName,
               }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
 
-              const retainedData = [installation.kvTitle, installation.backupBucketName];
+              const retainedBuckets = [
+                installation.backupBucketName,
+                installation.artifactBucketName,
+              ];
+              const retainedData = [installation.kvTitle, ...retainedBuckets];
               const deletedData: string[] = [];
               if (request.deleteData) {
                 const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
@@ -796,13 +800,8 @@ export async function uninstallInstallation(
                   deletedData.push(installation.kvTitle);
                 }
 
-                yield* R2.listObjects
-                  .items({
-                    accountId,
-                    bucketName: installation.backupBucketName,
-                    perPage: 1000,
-                  })
-                  .pipe(
+                for (const bucketName of retainedBuckets) {
+                  yield* R2.listObjects.items({ accountId, bucketName, perPage: 1000 }).pipe(
                     Stream.filter(
                       (object): object is typeof object & { key: string } =>
                         typeof object.key === "string" && object.key.length > 0,
@@ -811,17 +810,17 @@ export async function uninstallInstallation(
                     Stream.runForEachArray((keys) =>
                       R2.deleteObjects({
                         accountId,
-                        bucketName: installation.backupBucketName,
+                        bucketName,
                         body: [...keys],
                       }),
                     ),
                     Effect.catchTag("NoSuchBucket", () => Effect.void),
                   );
-                yield* R2.deleteBucket({
-                  accountId,
-                  bucketName: installation.backupBucketName,
-                }).pipe(Effect.catchTag("NoSuchBucket", () => Effect.void));
-                deletedData.push(installation.backupBucketName);
+                  yield* R2.deleteBucket({ accountId, bucketName }).pipe(
+                    Effect.catchTag("NoSuchBucket", () => Effect.void),
+                  );
+                  deletedData.push(bucketName);
+                }
               }
 
               // Retained resources stay in Alchemy state until every direct deletion succeeds.

@@ -152,38 +152,45 @@ const evidencePng = Uint8Array.from([
 ]);
 
 const evidenceArtifactBucket = (jobId: string, sha256: string): R2Bucket => {
-  const object = {
-    key: `evidence/v1/a0b1c2d3e4f5/${jobId}/frame-1.png`,
-    version: "1",
-    size: evidencePng.byteLength,
-    etag: "frame-etag",
-    httpEtag: '"frame-etag"',
-    checksums: { toJSON: () => ({}) },
-    uploaded: new Date("2026-08-06T12:00:01.000Z"),
-    httpMetadata: { contentType: "image/png" },
-    customMetadata: {
-      owner: "a0b1c2d3e4f5",
-      job: jobId,
-      frame: "frame-1",
-      sha256,
-    },
-    storageClass: "Standard",
-    writeHttpMetadata: () => undefined,
-    body: new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(evidencePng);
-        controller.close();
+  const objectFor = (key: string) => {
+    const prefix = `evidence/v1/a0b1c2d3e4f5/${jobId}/`;
+    const frameId = key.startsWith(prefix) ? key.slice(prefix.length, -".png".length) : "";
+    if (!key.endsWith(".png") || (frameId !== "frame-1" && frameId !== "frame-2")) {
+      return null;
+    }
+    return {
+      key,
+      version: "1",
+      size: evidencePng.byteLength,
+      etag: "frame-etag",
+      httpEtag: '"frame-etag"',
+      checksums: { toJSON: () => ({}) },
+      uploaded: new Date("2026-08-06T12:00:01.000Z"),
+      httpMetadata: { contentType: "image/png" },
+      customMetadata: {
+        owner: "a0b1c2d3e4f5",
+        job: jobId,
+        frame: frameId,
+        sha256,
       },
-    }),
-    bodyUsed: false,
-    arrayBuffer: () => Promise.resolve(evidencePng.buffer.slice(0)),
-    bytes: () => Promise.resolve(Uint8Array.from(evidencePng)),
-    text: () => Promise.resolve(""),
-    json: <T>() => Promise.resolve({} as T),
-    blob: () => Promise.resolve(new Blob([evidencePng], { type: "image/png" })),
+      storageClass: "Standard",
+      writeHttpMetadata: () => undefined,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(evidencePng);
+          controller.close();
+        },
+      }),
+      bodyUsed: false,
+      arrayBuffer: () => Promise.resolve(evidencePng.buffer.slice(0)),
+      bytes: () => Promise.resolve(Uint8Array.from(evidencePng)),
+      text: () => Promise.resolve(""),
+      json: <T>() => Promise.resolve({} as T),
+      blob: () => Promise.resolve(new Blob([evidencePng], { type: "image/png" })),
+    };
   };
   const bucket = {
-    get: async (key: string) => (key === object.key ? object : null),
+    get: async (key: string) => objectFor(key),
   };
   return bucket as R2Bucket;
 };
@@ -2408,7 +2415,7 @@ describe("real Hono boundary", () => {
     const summaryBody: unknown = await summary.json();
     expect(summaryBody).toMatchObject({
       status: "failed",
-      frameCount: 1,
+      frameCount: 2,
       failure: { code: "assertion_mismatch", step: 1 },
     });
     const serializedSummary = JSON.stringify(summaryBody);
@@ -2416,7 +2423,10 @@ describe("real Hono boundary", () => {
     expect(serializedSummary).not.toContain("private-fill-value");
     expect(serializedSummary).not.toContain("undeclared page text");
     expect(serializedSummary).not.toContain('"actual"');
-    expect(orderedReplayFrames(summaryBody).map((frame) => frame.frameId)).toEqual(["frame-1"]);
+    expect(orderedReplayFrames(summaryBody).map((frame) => frame.frameId)).toEqual([
+      "frame-1",
+      "frame-2",
+    ]);
 
     const missingJob = await app.request(
       `/api/sessions/${SESSION_ID}/evidence/not-owned`,
@@ -2455,6 +2465,16 @@ describe("real Hono boundary", () => {
     expect(frame.headers.get("content-type")).toBe("image/png");
     expect(frame.headers.get("cache-control")).toBe("private, no-store");
     expect(new Uint8Array(await frame.arrayBuffer())).toEqual(evidencePng);
+
+    const failedFrame = await app.request(
+      `/s/${SESSION_ID}/evidence/${accepted.jobId}/frames/frame-2.png`,
+      { headers },
+      testEnv,
+    );
+    expect(failedFrame.status).toBe(200);
+    expect(failedFrame.headers.get("content-type")).toBe("image/png");
+    expect(failedFrame.headers.get("cache-control")).toBe("private, no-store");
+    expect(new Uint8Array(await failedFrame.arrayBuffer())).toEqual(evidencePng);
   });
 
   it("returns non-warm Cloudflare session pages to Home for explicit resume", async () => {

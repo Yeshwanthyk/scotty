@@ -93,7 +93,8 @@ vaporize ends at `gone`.
 - `scotty upgrade` installs a newer GitHub Release only after Ed25519 manifest and SHA-256 asset
   checks pass.
 - `scotty uninstall` deletes compute and retains KV/R2 data by default. `--delete-data` also deletes
-  that data. Both forms require confirmation and stop active sessions.
+  the KV session index, every backup and evidence artifact object, and both R2 buckets. Both forms
+  require confirmation and stop active sessions.
 - Credential precedence for session commands is `--token-file`, `SCOTTY_TOKEN`, then config.
 - `scotty doctor --json` verifies the local installation pointer, Worker reachability, and root
   authentication without exposing the token.

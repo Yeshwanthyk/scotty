@@ -34,6 +34,7 @@ interface RuntimeState {
 const makeRuntime = (
   state: RuntimeState,
   options: {
+    readonly cssSelectorValidator?: (value: string) => boolean;
     readonly routeSupported?: boolean;
     readonly webSocketRouteSupported?: boolean;
   } = {},
@@ -56,12 +57,22 @@ const makeRuntime = (
     close: async () => {
       state.events.push("page:close");
     },
-    getByTestId: () => locator,
+    evaluate: async (_pageFunction: unknown, value: string) => {
+      state.events.push(`page:evaluate-css:${value}`);
+      return options.cssSelectorValidator?.(value) ?? true;
+    },
+    getByTestId: (value: string) => {
+      state.events.push(`page:test-id:${value}`);
+      return locator;
+    },
     goto: async (url: string) => {
       state.events.push(`page:goto:${url}`);
       return null;
     },
-    locator: () => locator,
+    locator: (value: string) => {
+      state.events.push(`page:locator:${value}`);
+      return locator;
+    },
     screenshot: async () => PNG,
     url: () => "https://preview.scotty.example/ready?mode=test",
   };
@@ -248,6 +259,88 @@ describe("Kitesurf client", () => {
     }),
   );
 
+  it.effect("rejects Playwright engines before page.locator", () =>
+    Effect.gen(function* () {
+      for (const value of [
+        "css=main",
+        "xpath=//main",
+        "text=Continue",
+        "role=button[name=Continue]",
+      ]) {
+        const state = runtimeState();
+        const client = makeKitesurfClient(binding, makeRuntime(state));
+        const result = yield* client
+          .withPage(
+            {
+              origin: "https://preview.scotty.example",
+              cookieSecret: "private-cookie-secret",
+            },
+            (page) => page.click({ kind: "css", value }),
+          )
+          .pipe(Effect.result);
+
+        assert.deepInclude(failureOf(result), { operation: "click", reason: "unsupported" });
+        assert.isFalse(state.events.some((event) => event.startsWith("page:locator:")));
+        assert.isFalse(state.events.some((event) => event.startsWith("page:evaluate-css:")));
+      }
+    }),
+  );
+
+  it.effect("rejects malformed CSS before page.locator", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const value = "[data-ready";
+      const client = makeKitesurfClient(
+        binding,
+        makeRuntime(state, { cssSelectorValidator: () => false }),
+      );
+      const result = yield* client
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          (page) => page.click({ kind: "css", value }),
+        )
+        .pipe(Effect.result);
+
+      assert.deepInclude(failureOf(result), { operation: "click", reason: "unsupported" });
+      assert.include(state.events, `page:evaluate-css:${value}`);
+      assert.isFalse(state.events.some((event) => event.startsWith("page:locator:")));
+    }),
+  );
+
+  it.effect("accepts normal CSS while preserving testId locators", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const css = "main > [data-state='ready']:not([hidden])";
+      const client = makeKitesurfClient(
+        binding,
+        makeRuntime(state, { cssSelectorValidator: (value) => value === css }),
+      );
+
+      yield* client.withPage(
+        {
+          origin: "https://preview.scotty.example",
+          cookieSecret: "private-cookie-secret",
+        },
+        (page) =>
+          Effect.gen(function* () {
+            yield* page.click({ kind: "css", value: css });
+            yield* page.click({ kind: "testId", value: "continue" });
+          }),
+      );
+
+      assert.include(state.events, `page:evaluate-css:${css}`);
+      assert.include(state.events, `page:locator:${css}`);
+      assert.include(state.events, "page:test-id:continue");
+      assert.strictEqual(
+        state.events.filter((event) => event.startsWith("page:evaluate-css:")).length,
+        1,
+      );
+    }),
+  );
+
   it.effect("never fetches a cross-origin redirect hop", () =>
     Effect.gen(function* () {
       const state = runtimeState();
@@ -428,6 +521,7 @@ describe("Kitesurf client", () => {
           };
           const page: RuntimePage = {
             close: () => pageClose.promise,
+            evaluate: async () => true,
             getByTestId: () => locator,
             goto: async () => null,
             locator: () => locator,

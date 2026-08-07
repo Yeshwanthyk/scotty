@@ -299,6 +299,28 @@ describe("Cloudflare stack source contract", () => {
     assert.notMatch(uninstallSource, /listRoutes|listRecords/u);
   });
 
+  it("retains or exhaustively deletes both backup and artifact buckets on uninstall", () => {
+    const uninstallSource = installationDeploymentSource.slice(
+      installationDeploymentSource.indexOf("export async function uninstallInstallation"),
+      installationDeploymentSource.indexOf("const piAuthTargetProgram"),
+    );
+    assert.match(
+      uninstallSource,
+      /const retainedBuckets = \[\s*installation\.backupBucketName,\s*installation\.artifactBucketName,\s*\]/u,
+    );
+    assert.match(
+      uninstallSource,
+      /const retainedData = \[installation\.kvTitle, \.\.\.retainedBuckets\]/u,
+    );
+    assert.match(uninstallSource, /for \(const bucketName of retainedBuckets\)/u);
+    assert.match(uninstallSource, /R2\.listObjects[\s\S]*R2\.deleteObjects/u);
+    assert.match(uninstallSource, /R2\.deleteBucket\(\{ accountId, bucketName \}\)/u);
+    assert.isAbove(
+      uninstallSource.indexOf("yield* Apply.apply(destroyPlan)"),
+      uninstallSource.indexOf("deletedData.push(bucketName)"),
+    );
+  });
+
   it("fails closed when preview identifiers are not present in Alchemy deletion state", () => {
     const preview = enabledPreviewInstallation.preview;
     assert.isDefined(preview);

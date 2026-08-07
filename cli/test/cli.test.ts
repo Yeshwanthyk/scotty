@@ -928,7 +928,7 @@ describe("configuration and transport", () => {
         return {
           installationName: input.installationName,
           deletedCompute: ["scotty-home-sandbox", "scotty-home-runner", "scotty-home-worker"],
-          retainedData: ["scotty-home-sessions", "scotty-home-backups"],
+          retainedData: ["scotty-home-sessions", "scotty-home-backups", "scotty-home-artifacts"],
           deletedData: [],
         };
       },
@@ -950,7 +950,7 @@ describe("configuration and transport", () => {
     expect(h.json()).toEqual({
       installationName: "home",
       deletedCompute: ["scotty-home-sandbox", "scotty-home-runner", "scotty-home-worker"],
-      retainedData: ["scotty-home-sessions", "scotty-home-backups"],
+      retainedData: ["scotty-home-sessions", "scotty-home-backups", "scotty-home-artifacts"],
       deletedData: [],
       configRemoved: true,
     });
@@ -1013,14 +1013,18 @@ describe("configuration and transport", () => {
           installationName: input.installationName,
           deletedCompute: [],
           retainedData: [],
-          deletedData: ["scotty-home-sessions", "scotty-home-backups"],
+          deletedData: ["scotty-home-sessions", "scotty-home-backups", "scotty-home-artifacts"],
         };
       },
     });
 
     expect(await main(["uninstall", "--delete-data", "--yes"], h.deps)).toBe(EXIT.OK);
     expect(deleteData).toBe(true);
-    expect(h.json().deletedData).toEqual(["scotty-home-sessions", "scotty-home-backups"]);
+    expect(h.json().deletedData).toEqual([
+      "scotty-home-sessions",
+      "scotty-home-backups",
+      "scotty-home-artifacts",
+    ]);
   });
 
   test("init never infers an installation name in a non-interactive shell", async () => {

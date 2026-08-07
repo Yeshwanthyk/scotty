@@ -29,6 +29,7 @@ describe("session lifecycle invariants", () => {
     assert.deepStrictEqual(SESSION_SCHEDULE_CALLBACKS, [
       "enforceHardCap",
       "expireEvidenceJob",
+      "expireRetainedEvidence",
       "finalizeManagedStop",
       "retryHardCapDestroy",
       "retryVaporizeSession",
@@ -36,6 +37,7 @@ describe("session lifecycle invariants", () => {
     assert.deepStrictEqual(VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS, [
       "enforceHardCap",
       "expireEvidenceJob",
+      "expireRetainedEvidence",
       "finalizeManagedStop",
       "retryHardCapDestroy",
     ]);
