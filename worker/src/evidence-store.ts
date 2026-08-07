@@ -30,14 +30,34 @@ import {
   type EvidenceStepResult,
   type EvidenceTerminalStatus,
 } from "./evidence-contracts";
+import { constantTimeStringEqual } from "./digest";
 import type { SessionEvidenceTransaction, SessionRecordStorage } from "./session-store";
 
 export interface AcceptEvidenceJobInput {
   readonly jobId: string;
   readonly operationNonce: string;
   readonly runtimeEpoch: string;
+  readonly routeNonce: string;
   readonly deadlineAt: string;
   readonly job: BrowserEvidenceJobV1;
+}
+
+export interface BeginEvidencePreviewInput {
+  readonly runtimeEpoch: string;
+  readonly runtimeRunning: boolean;
+}
+
+export interface PublishEvidencePreviewInput extends BeginEvidencePreviewInput {
+  readonly cookieDigest: string;
+}
+
+export interface AuthorizeEvidencePreviewInput {
+  readonly sessionId: string;
+  readonly port: number;
+  readonly routeNonce: string;
+  readonly runtimeEpoch: string;
+  readonly cookieDigest: string;
+  readonly runtimeRunning: boolean;
 }
 
 export interface CompleteEvidenceStepInput {
@@ -66,6 +86,22 @@ interface EvidenceStoreShape {
     nonce: string,
     status: Extract<EvidenceJobStatus, "exposing" | "running" | "finalizing">,
   ) => Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
+  readonly beginPreviewExposure: (
+    nonce: string,
+    input: BeginEvidencePreviewInput,
+  ) => Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
+  readonly publishPreviewExposure: (
+    nonce: string,
+    input: PublishEvidencePreviewInput,
+  ) => Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
+  readonly authorizePreview: (
+    input: AuthorizeEvidencePreviewInput,
+  ) => Effect.Effect<boolean, EvidenceStateError>;
+  readonly revokePreview: (
+    nonce: string,
+    interruptionReason?: "deadline" | "interrupted",
+  ) => Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
+  readonly closePreview: (nonce: string) => Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
   readonly completeStep: (
     nonce: string,
     input: CompleteEvidenceStepInput,
@@ -259,6 +295,11 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         return Result.fail(new EvidenceStateError({ reason: "lease_changed" }));
       const active = requireActive(state.success, nonce);
       if (Result.isFailure(active)) return Result.fail(active.failure);
+      if (
+        active.success.previewCookieDigest !== null ||
+        (active.success.exposure !== "closed" && active.success.exposure !== "not_exposed")
+      )
+        return Result.fail(new EvidenceStateError({ reason: "preview_cleanup_pending" }));
       const terminal = terminalFailure(active.success, requestedStatus, interruptionReason);
       const summary: EvidenceJobSummaryV1 = {
         ...evidenceSummaryProjection(active.success),
@@ -327,9 +368,10 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
       const acceptedAtMillis = yield* Clock.currentTimeMillis;
       const acceptedAt = new Date(acceptedAtMillis).toISOString();
       return yield* transact(async (transaction) => {
-        const [storedSession, storedEvidence] = await Promise.all([
+        const [storedSession, storedEvidence, runtimeEpoch] = await Promise.all([
           transaction.getRecord(),
           transaction.getEvidence(),
+          transaction.getRuntimeEpoch(),
         ]);
         const session = decodeSession(storedSession);
         const state = decodeState(storedEvidence);
@@ -355,6 +397,8 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
           return Result.fail(new EvidenceStateError({ reason: "invalid" }));
         if (state.success.activeJob !== undefined)
           return Result.fail(conflict("Session already has an active evidence job"));
+        if (runtimeEpoch !== input.runtimeEpoch)
+          return Result.fail(new EvidenceStateError({ reason: "preview_unavailable" }));
         const active: EvidenceActiveJobV1 = {
           version: 1,
           sequence: state.success.nextSequence,
@@ -369,6 +413,9 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
           operationNonce: input.operationNonce,
           port: input.job.port,
           runtimeEpoch: input.runtimeEpoch,
+          routeNonce: input.routeNonce,
+          previewCookieDigest: null,
+          exposure: "not_exposed",
           deadlineAt: input.deadlineAt,
           stepPlan: [
             evidenceStepPlan(input.job.steps[0]),
@@ -401,6 +448,151 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
           startedAt:
             status === "running" ? (active.startedAt ?? active.acceptedAt) : active.startedAt,
         };
+        return Result.succeed({ active: next, state: { ...state, activeJob: next } });
+      }),
+    beginPreviewExposure: Effect.fnUntraced(function* (nonce, input) {
+      const nowMillis = yield* Clock.currentTimeMillis;
+      return yield* transact(async (transaction) => {
+        const [storedSession, storedEvidence, storedRuntimeEpoch] = await Promise.all([
+          transaction.getRecord(),
+          transaction.getEvidence(),
+          transaction.getRuntimeEpoch(),
+        ]);
+        const session = decodeSession(storedSession);
+        const state = decodeState(storedEvidence);
+        if (Result.isFailure(session)) return Result.fail(session.failure);
+        if (Result.isFailure(state)) return Result.fail(state.failure);
+        const active = requireActive(state.success, nonce);
+        if (Result.isFailure(active)) return Result.fail(active.failure);
+        const deadlineMillis = Date.parse(active.success.deadlineAt);
+        const hardCapMillis = Date.parse(session.success.hardCapAt);
+        if (
+          session.success.status !== "warm" ||
+          session.success.execution.provider !== "cloudflare" ||
+          session.success.operation?.kind !== "evidence" ||
+          session.success.operation.nonce !== nonce ||
+          active.success.status !== "accepted" ||
+          active.success.exposure !== "not_exposed" ||
+          active.success.previewCookieDigest !== null ||
+          active.success.runtimeEpoch !== input.runtimeEpoch ||
+          storedRuntimeEpoch !== input.runtimeEpoch ||
+          !input.runtimeRunning ||
+          !Number.isFinite(deadlineMillis) ||
+          !Number.isFinite(hardCapMillis) ||
+          nowMillis >= deadlineMillis ||
+          nowMillis >= hardCapMillis ||
+          deadlineMillis > hardCapMillis
+        )
+          return Result.fail(new EvidenceStateError({ reason: "preview_unavailable" }));
+        const next: EvidenceActiveJobV1 = {
+          ...active.success,
+          status: "exposing",
+          exposure: "unexpose_pending",
+        };
+        await transaction.putEvidence({ ...state.success, activeJob: next });
+        return Result.succeed(next);
+      }) as Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
+    }),
+    publishPreviewExposure: Effect.fnUntraced(function* (nonce, input) {
+      const nowMillis = yield* Clock.currentTimeMillis;
+      return yield* transact(async (transaction) => {
+        const [storedSession, storedEvidence, storedRuntimeEpoch] = await Promise.all([
+          transaction.getRecord(),
+          transaction.getEvidence(),
+          transaction.getRuntimeEpoch(),
+        ]);
+        const session = decodeSession(storedSession);
+        const state = decodeState(storedEvidence);
+        if (Result.isFailure(session)) return Result.fail(session.failure);
+        if (Result.isFailure(state)) return Result.fail(state.failure);
+        const active = requireActive(state.success, nonce);
+        if (Result.isFailure(active)) return Result.fail(active.failure);
+        const deadlineMillis = Date.parse(active.success.deadlineAt);
+        const hardCapMillis = Date.parse(session.success.hardCapAt);
+        if (
+          session.success.status !== "warm" ||
+          session.success.execution.provider !== "cloudflare" ||
+          session.success.operation?.kind !== "evidence" ||
+          session.success.operation.nonce !== nonce ||
+          active.success.status !== "exposing" ||
+          active.success.exposure !== "unexpose_pending" ||
+          active.success.previewCookieDigest !== null ||
+          active.success.runtimeEpoch !== input.runtimeEpoch ||
+          storedRuntimeEpoch !== input.runtimeEpoch ||
+          !input.runtimeRunning ||
+          !Number.isFinite(deadlineMillis) ||
+          !Number.isFinite(hardCapMillis) ||
+          nowMillis >= deadlineMillis ||
+          nowMillis >= hardCapMillis ||
+          deadlineMillis > hardCapMillis
+        )
+          return Result.fail(new EvidenceStateError({ reason: "preview_unavailable" }));
+        const next: EvidenceActiveJobV1 = {
+          ...active.success,
+          exposure: "active",
+          previewCookieDigest: input.cookieDigest,
+        };
+        await transaction.putEvidence({ ...state.success, activeJob: next });
+        return Result.succeed(next);
+      }) as Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
+    }),
+    authorizePreview: Effect.fnUntraced(function* (input) {
+      const nowMillis = yield* Clock.currentTimeMillis;
+      return yield* transact(async (transaction) => {
+        const [storedSession, storedEvidence, storedRuntimeEpoch] = await Promise.all([
+          transaction.getRecord(),
+          transaction.getEvidence(),
+          transaction.getRuntimeEpoch(),
+        ]);
+        const session = decodeSession(storedSession);
+        const state = decodeState(storedEvidence);
+        if (Result.isFailure(session)) return Result.fail(session.failure);
+        if (Result.isFailure(state)) return Result.fail(state.failure);
+        const active = state.success.activeJob;
+        const deadlineMillis = active === undefined ? Number.NaN : Date.parse(active.deadlineAt);
+        const hardCapMillis = Date.parse(session.success.hardCapAt);
+        const digestMatches =
+          active?.previewCookieDigest !== null && active?.previewCookieDigest !== undefined
+            ? await constantTimeStringEqual(active.previewCookieDigest, input.cookieDigest)
+            : false;
+        return Result.succeed(
+          session.success.id === input.sessionId &&
+            session.success.status === "warm" &&
+            session.success.execution.provider === "cloudflare" &&
+            session.success.operation?.kind === "evidence" &&
+            session.success.operation.nonce === active?.operationNonce &&
+            active?.port === input.port &&
+            active?.routeNonce === input.routeNonce &&
+            active?.runtimeEpoch === input.runtimeEpoch &&
+            storedRuntimeEpoch === input.runtimeEpoch &&
+            active?.exposure === "active" &&
+            digestMatches &&
+            input.runtimeRunning &&
+            Number.isFinite(deadlineMillis) &&
+            Number.isFinite(hardCapMillis) &&
+            nowMillis < deadlineMillis &&
+            nowMillis < hardCapMillis &&
+            deadlineMillis <= hardCapMillis,
+        );
+      }) as Effect.Effect<boolean, EvidenceStateError>;
+    }),
+    revokePreview: (nonce, interruptionReason) =>
+      updateActive(nonce, (active, state) => {
+        const hasExposure = active.exposure === "active" || active.exposure === "unexpose_pending";
+        const next: EvidenceActiveJobV1 = {
+          ...active,
+          status: interruptionReason === undefined ? "finalizing" : "interrupted",
+          exposure: hasExposure ? "unexpose_pending" : "closed",
+          previewCookieDigest: null,
+          ...(interruptionReason === undefined ? {} : { failure: { code: interruptionReason } }),
+        };
+        return Result.succeed({ active: next, state: { ...state, activeJob: next } });
+      }),
+    closePreview: (nonce) =>
+      updateActive(nonce, (active, state) => {
+        if (active.previewCookieDigest !== null)
+          return Result.fail(new EvidenceStateError({ reason: "preview_cleanup_pending" }));
+        const next: EvidenceActiveJobV1 = { ...active, exposure: "closed" };
         return Result.succeed({ active: next, state: { ...state, activeJob: next } });
       }),
     completeStep: Effect.fnUntraced(function* (nonce, input) {

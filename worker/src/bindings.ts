@@ -23,4 +23,6 @@ export interface Bindings {
   R2_SECRET_ACCESS_KEY?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   BACKUP_BUCKET_NAME?: string;
+  SCOTTY_PREVIEW_BASE?: string;
+  SCOTTY_EVIDENCE_ENABLED?: string;
 }

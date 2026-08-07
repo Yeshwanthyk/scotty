@@ -6,7 +6,7 @@ export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
 
 export const ConfigSchema = Schema.Struct({
-  version: Schema.optionalKey(Schema.Literal(1)),
+  version: Schema.optionalKey(Schema.Literals([1, 2])),
   installationName: Schema.optionalKey(Schema.String),
   profile: Schema.optionalKey(Schema.String),
   stackName: Schema.optionalKey(Schema.String),
@@ -17,6 +17,8 @@ export const ConfigSchema = Schema.Struct({
   containerName: Schema.optionalKey(Schema.String),
   kvTitle: Schema.optionalKey(Schema.String),
   backupBucketName: Schema.optionalKey(Schema.String),
+  previewBase: Schema.optionalKey(Schema.String),
+  previewZoneId: Schema.optionalKey(Schema.String),
   adoptionManifestPath: Schema.optionalKey(Schema.String),
   host: Schema.optionalKey(Schema.String),
   token: Schema.optionalKey(Schema.String),
@@ -31,7 +33,7 @@ export const PendingUpSchema = Schema.Struct({
 export type PendingUp = typeof PendingUpSchema.Type;
 
 export const InitJournalSchema = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literals([1, 2]),
   operation: Schema.Literal("init"),
   phase: Schema.Literals(["prepared", "apply_started"]),
   installationName: Schema.NonEmptyString,
@@ -43,6 +45,8 @@ export const InitJournalSchema = Schema.Struct({
   containerName: Schema.NonEmptyString,
   kvTitle: Schema.NonEmptyString,
   backupBucketName: Schema.NonEmptyString,
+  previewBase: Schema.optionalKey(Schema.NonEmptyString),
+  previewZoneId: Schema.optionalKey(Schema.NonEmptyString),
   planFingerprint: Schema.NonEmptyString,
   token: Schema.NonEmptyString,
 });
@@ -89,6 +93,8 @@ export const RawConfigSchema = Schema.Struct({
   containerName: Schema.optionalKey(Schema.Unknown),
   kvTitle: Schema.optionalKey(Schema.Unknown),
   backupBucketName: Schema.optionalKey(Schema.Unknown),
+  previewBase: Schema.optionalKey(Schema.Unknown),
+  previewZoneId: Schema.optionalKey(Schema.Unknown),
   adoptionManifestPath: Schema.optionalKey(Schema.Unknown),
   host: Schema.optionalKey(Schema.Unknown),
   token: Schema.optionalKey(Schema.Unknown),

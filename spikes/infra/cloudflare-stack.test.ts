@@ -26,8 +26,24 @@ const runnerWorkerSource = readFileSync(
   new URL("../../worker/src/runner-worker.ts", import.meta.url),
   "utf8",
 );
+const installationDeploymentSource = readFileSync(
+  new URL("../../cli/src/installation-deployment.ts", import.meta.url),
+  "utf8",
+);
 const installation = makeInstallationTopology("home");
-
+const previewInstallation = makeInstallationTopology("home", undefined, {
+  base: "preview.scotty.example",
+  zoneId: "0123456789abcdef0123456789abcdef",
+});
+const enabledPreviewInstallation = makeInstallationTopology(
+  "home",
+  undefined,
+  {
+    base: "preview.scotty.example",
+    zoneId: "0123456789abcdef0123456789abcdef",
+  },
+  true,
+);
 const approvedConfig = (): CloudflareStackConfig => ({
   stage: "production",
   telemetryDisabled: true,
@@ -56,6 +72,50 @@ describe("Cloudflare stack guard", () => {
         "r2=scotty-home-backups",
         "artifacts=scotty-home-artifacts",
       ].join(":"),
+    );
+  });
+
+  it("includes the exact user-supplied preview topology in deployment confirmation", () => {
+    assert.strictEqual(
+      expectedCloudflareResourceConfirmation(previewInstallation),
+      [
+        "confirmed",
+        "home",
+        "worker=scotty-home-worker",
+        "runnerWorker=scotty-home-runner",
+        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner",
+        "container=scotty-home-sandbox",
+        "kv=scotty-home-sessions",
+        "r2=scotty-home-backups",
+        "artifacts=scotty-home-artifacts",
+        "previewBase=preview.scotty.example",
+        "previewZone=0123456789abcdef0123456789abcdef",
+      ].join(":"),
+    );
+    assert.doesNotThrow(() =>
+      assertCloudflareStackConfig({
+        ...approvedConfig(),
+        installation: previewInstallation,
+        resourceConfirmation: expectedCloudflareResourceConfirmation(previewInstallation),
+        approval: expectedCloudflareStackApproval(previewInstallation),
+      }),
+    );
+  });
+
+  it("requires explicit preview authority when evidence is enabled", () => {
+    const enabledWithoutPreview = makeInstallationTopology("home", undefined, undefined, true);
+    assert.throws(
+      () =>
+        assertCloudflareStackConfig({
+          ...approvedConfig(),
+          installation: enabledWithoutPreview,
+          resourceConfirmation: expectedCloudflareResourceConfirmation(enabledWithoutPreview),
+        }),
+      /explicit preview topology/u,
+    );
+    assert.include(
+      expectedCloudflareResourceConfirmation(enabledPreviewInstallation),
+      "evidence=enabled",
     );
   });
 
@@ -111,6 +171,38 @@ describe("Cloudflare stack topology", () => {
       BACKUP_BUCKET_NAME: "scotty-home-backups",
     });
     assert.deepEqual(topology.outputKeys, ["url", "accountId", "workerName"]);
+  });
+
+  it("uses only explicit preview base and zone configuration", () => {
+    const topology = makeCloudflareStackTopology(previewInstallation);
+    assert.deepEqual(topology.preview, {
+      base: "preview.scotty.example",
+      zoneId: "0123456789abcdef0123456789abcdef",
+      dns: {
+        logicalId: "EvidencePreviewWildcardDns",
+        name: "*.preview.scotty.example",
+        type: "AAAA",
+        content: "100::",
+        proxied: true,
+      },
+      route: {
+        logicalId: "EvidencePreviewWorkerRoute",
+        pattern: "*.preview.scotty.example/*",
+      },
+    });
+    assert.deepEqual(topology.vars, {
+      SANDBOX_TRANSPORT: "rpc",
+      BACKUP_BUCKET_NAME: "scotty-home-backups",
+      SCOTTY_PREVIEW_BASE: "preview.scotty.example",
+    });
+    assert.notProperty(topology.vars, "SCOTTY_PREVIEW_ZONE_ID");
+    assert.notProperty(topology.vars, "SCOTTY_EVIDENCE_ENABLED");
+    assert.notProperty(topology.vars, "CLOUDFLARE_ACCOUNT_ID");
+  });
+
+  it("enables evidence only through the explicit runtime gate", () => {
+    const topology = makeCloudflareStackTopology(enabledPreviewInstallation);
+    assert.strictEqual(topology.vars.SCOTTY_EVIDENCE_ENABLED, "true");
   });
 
   it("supports private legacy adoption without committed production identity", () => {
@@ -170,9 +262,32 @@ describe("Cloudflare stack source contract", () => {
     assert.match(source, /const removalPolicy = RemovalPolicy\.retain\(\)/u);
     assert.strictEqual(
       source.match(/(?:\.pipe\(removalPolicy\)|^\s+removalPolicy,$)/gmu)?.length,
-      6,
+      8,
     );
     assert.notMatch(source, /RemovalPolicy\.destroy|lifecycleRules/u);
+  });
+
+  it("uses Alchemy public wildcard DNS and WorkerRoute resources without a parallel reconciler", () => {
+    assert.match(source, /Cloudflare\.DNS\.Record\(topology\.preview\.dns\.logicalId/u);
+    assert.match(source, /Cloudflare\.Workers\.WorkerRoute\(topology\.preview\.route\.logicalId/u);
+    assert.match(source, /name: topology\.preview\.dns\.name/u);
+    assert.match(source, /pattern: topology\.preview\.route\.pattern/u);
+    assert.match(source, /script: worker\.workerName/u);
+    assert.notMatch(source, /wrangler|cloudflare\.com\/client\/v4/u);
+  });
+
+  it("reconciles retained preview ownership before uninstalling the Worker", () => {
+    const routeDelete = installationDeploymentSource.indexOf("Workers.deleteRoute({");
+    const dnsDelete = installationDeploymentSource.indexOf("DNS.deleteRecord({");
+    const workerDelete = installationDeploymentSource.indexOf(
+      "scriptName: installation.workerName",
+      Math.max(routeDelete, dnsDelete),
+    );
+    assert.isAtLeast(routeDelete, 0);
+    assert.isAtLeast(dnsDelete, 0);
+    assert.isAbove(workerDelete, routeDelete);
+    assert.isAbove(workerDelete, dnsDelete);
+    assert.match(installationDeploymentSource, /\.\.\.deletedPreviewResources/u);
   });
 
   it("keeps credentials out of Alchemy props and state", () => {

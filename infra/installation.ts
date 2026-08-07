@@ -15,6 +15,28 @@ const ResourceNameSchema = Schema.String.pipe(
   Schema.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u)),
 );
 
+export const PreviewBaseSchema = Schema.String.pipe(
+  Schema.check(
+    Schema.isPattern(
+      /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u,
+      { expected: "a lowercase DNS preview base without a wildcard or scheme" },
+    ),
+  ),
+);
+const CloudflareZoneIdSchema = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^[0-9a-f]{32}$/u)),
+);
+
+export const InstallationPreviewConfigurationSchema = Schema.Struct({
+  base: PreviewBaseSchema,
+  zoneId: CloudflareZoneIdSchema,
+});
+export type InstallationPreviewConfiguration = typeof InstallationPreviewConfigurationSchema.Type;
+export const decodeInstallationPreviewConfiguration = Schema.decodeUnknownOption(
+  InstallationPreviewConfigurationSchema,
+  { onExcessProperty: "error" },
+);
+
 export const AdoptionManifestSchema = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   installationName: InstallationNameSchema,
@@ -34,6 +56,7 @@ export const AdoptionManifestSchema = Schema.Struct({
       worker: Schema.optionalKey(Schema.NonEmptyString),
     }),
   ),
+  preview: Schema.optionalKey(InstallationPreviewConfigurationSchema),
 });
 export type AdoptionManifest = typeof AdoptionManifestSchema.Type;
 
@@ -48,6 +71,8 @@ export interface InstallationTopology {
   readonly backupBucketName: string;
   readonly artifactBucketName: string;
   readonly workerLogicalId: string;
+  readonly preview?: InstallationPreviewConfiguration;
+  readonly evidenceEnabled?: true;
 }
 
 export const decodeAdoptionManifest = Schema.decodeUnknownOption(AdoptionManifestSchema);
@@ -58,6 +83,8 @@ export const decodeAdoptionManifestJson = Schema.decodeUnknownOption(
 export function makeInstallationTopology(
   installationName: string,
   adoption?: AdoptionManifest,
+  preview: InstallationPreviewConfiguration | undefined = adoption?.preview,
+  evidenceEnabled = false,
 ): InstallationTopology {
   const prefix = `scotty-${installationName}`;
   const resources = adoption?.resources;
@@ -72,6 +99,8 @@ export function makeInstallationTopology(
     backupBucketName: resources?.backupBucketName ?? `${prefix}-backups`,
     artifactBucketName: resources?.artifactBucketName ?? `${prefix}-artifacts`,
     workerLogicalId: adoption?.logicalIds?.worker ?? "Worker",
+    ...(preview === undefined ? {} : { preview }),
+    ...(evidenceEnabled ? { evidenceEnabled: true as const } : {}),
   };
 }
 

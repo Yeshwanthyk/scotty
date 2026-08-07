@@ -448,6 +448,89 @@ describe("configuration and transport", () => {
     });
   });
 
+  test("init persists explicit preview topology without changing its public JSON contract", async () => {
+    const home = await temporaryDirectory();
+    let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
+    const h = harness({
+      home,
+      planCreateInstallation: async (input) => {
+        expect(input).toMatchObject({
+          previewBase: "preview.scotty.example",
+          previewZoneId: "0123456789abcdef0123456789abcdef",
+        });
+        return {
+          installationName: "home",
+          accountId: "0123456789abcdef0123456789abcdef",
+          hasExistingResources: false,
+          fingerprint: "preview-create-plan",
+          changes: [{ id: "Scotty-home/EvidencePreviewWorkerRoute", action: "create" }],
+        };
+      },
+      createInstallation: async (input) => {
+        request = input;
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          host: "https://scotty-home-worker.example.workers.dev",
+          previewBase: input.previewBase,
+          previewZoneId: input.previewZoneId,
+        };
+      },
+    });
+
+    expect(
+      await main(
+        [
+          "init",
+          "--name",
+          "home",
+          "--preview-base",
+          "preview.scotty.example",
+          "--preview-zone-id",
+          "0123456789abcdef0123456789abcdef",
+          "--yes",
+        ],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(request).toMatchObject({
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+    });
+    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect(config).toMatchObject({
+      version: 2,
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+    });
+    expect(h.json()).toEqual({
+      configPath: join(home, ".scotty.json"),
+      installationName: "home",
+      profile: "default",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "scotty-home-worker",
+      host: "https://scotty-home-worker.example.workers.dev",
+      rootTokenRotated: true,
+    });
+
+    const invalid = harness({ home: await temporaryDirectory() });
+    expect(
+      await main(
+        ["init", "--name", "home", "--preview-base", "preview.scotty.example", "--yes"],
+        invalid.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(invalid.error().error.message).toContain("must both provide");
+  });
+
   test("init resumes an apply-started journal with the same token", async () => {
     const home = await temporaryDirectory();
     const requests: Array<Parameters<NonNullable<CliDependencies["createInstallation"]>>[0]> = [];

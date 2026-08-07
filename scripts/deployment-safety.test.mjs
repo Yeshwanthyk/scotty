@@ -212,6 +212,71 @@ describe("production deployment ownership", () => {
     );
   });
 
+  it("requires an explicit complete preview topology and never derives account identity", () => {
+    assert.deepEqual(
+      resolveProductionTopology({
+        ...INSTALLATION_ENVIRONMENT,
+        SCOTTY_PREVIEW_BASE: "preview.scotty.example",
+        SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
+      }),
+      {
+        installationName: "test",
+        adoptionPath: undefined,
+        workerName: "scotty-test-worker",
+        runnerWorkerName: "scotty-test-runner",
+        containerName: "scotty-test-sandbox",
+        kvTitle: "scotty-test-sessions",
+        backupBucketName: "scotty-test-backups",
+        artifactBucketName: "scotty-test-artifacts",
+        previewBase: "preview.scotty.example",
+        previewZoneId: "0123456789abcdef0123456789abcdef",
+      },
+    );
+    assert.deepEqual(
+      resolveProductionTopology({
+        ...INSTALLATION_ENVIRONMENT,
+        SCOTTY_PREVIEW_BASE: "preview.scotty.example",
+        SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
+        SCOTTY_EVIDENCE_ENABLED: "true",
+      }),
+      {
+        installationName: "test",
+        adoptionPath: undefined,
+        workerName: "scotty-test-worker",
+        runnerWorkerName: "scotty-test-runner",
+        containerName: "scotty-test-sandbox",
+        kvTitle: "scotty-test-sessions",
+        backupBucketName: "scotty-test-backups",
+        artifactBucketName: "scotty-test-artifacts",
+        previewBase: "preview.scotty.example",
+        previewZoneId: "0123456789abcdef0123456789abcdef",
+        evidenceEnabled: true,
+      },
+    );
+    assert.throws(
+      () =>
+        resolveProductionTopology({
+          ...INSTALLATION_ENVIRONMENT,
+          SCOTTY_EVIDENCE_ENABLED: "true",
+        }),
+      /requires the explicit preview topology/u,
+    );
+    for (const environment of [
+      { ...INSTALLATION_ENVIRONMENT, SCOTTY_PREVIEW_BASE: "preview.scotty.example" },
+      {
+        ...INSTALLATION_ENVIRONMENT,
+        SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
+      },
+      {
+        ...INSTALLATION_ENVIRONMENT,
+        SCOTTY_PREVIEW_BASE: "PREVIEW.scotty.example",
+        SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
+      },
+    ]) {
+      assert.throws(() => resolveProductionTopology(environment), /explicit preview topology/u);
+    }
+  });
+
   it("redacts production identity while keeping useful deployment progress", () => {
     const environment = {
       SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED: [

@@ -12,6 +12,7 @@ import type { Bindings } from "./bindings";
 import { readBoundedUtf8Body } from "./bounded-http";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
 import { decodeEvidenceIdentifier } from "./evidence-contracts";
+import { handleEvidencePreviewRequest } from "./evidence-preview";
 import { ContainerProxy } from "./container-session-egress";
 import {
   badRequest,
@@ -81,7 +82,7 @@ import { Sandbox as ScottySandbox } from "./session";
 
 export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
 
-const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
+export const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
 const PUBLIC_AUTH_MUTATIONS = new Set([
   "POST /api/auth/owner-transfers/accept",
   "POST /api/auth/pairings/consume",
@@ -785,7 +786,16 @@ app.all("/api/*", (c) => c.json({ error: { code: "not_found", message: "Route no
 
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default app;
+export const workerFetch = async (
+  request: Request,
+  env: Bindings,
+  executionContext: ExecutionContext,
+): Promise<Response> => {
+  const preview = await handleEvidencePreviewRequest(request, env);
+  return preview ?? app.fetch(request, env, executionContext);
+};
+
+export default { fetch: workerFetch };
 
 const PairingConsumeInputSchema = Schema.Struct({
   token: Schema.NonEmptyString,

@@ -24,7 +24,15 @@ export const EvidenceObjectKeySchema = Schema.String.check(
 export const decodeEvidenceObjectKey = Schema.decodeUnknownOption(EvidenceObjectKeySchema);
 const Sha256Schema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-const PositivePortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1_024, maximum: 65_535 }));
+export const EVIDENCE_RESERVED_PORTS = new Set([3_000, 43_117]);
+const PositivePortSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 1_024, maximum: 65_535 }),
+  Schema.makeFilter((port) => !EVIDENCE_RESERVED_PORTS.has(port), {
+    expected: "an evidence app port that is not reserved by Scotty or Sandbox",
+  }),
+);
+export const EvidenceRouteNonceSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9_]{16}$/u));
+const PreviewCookieSecretSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const RelativePathSchema = Schema.String.check(
   Schema.makeFilter(
     (value) => value.startsWith("/") && !value.startsWith("//") && value.length <= 2_048,
@@ -287,12 +295,33 @@ export const EvidenceActiveJobV1Schema = Schema.Struct({
   operationNonce: IdentifierSchema,
   port: PositivePortSchema,
   runtimeEpoch: IdentifierSchema,
+  routeNonce: EvidenceRouteNonceSchema,
+  previewCookieDigest: Schema.NullOr(Sha256Schema),
+  exposure: Schema.Literals(["not_exposed", "active", "unexpose_pending", "closed"]),
   deadlineAt: Schema.String,
   stepPlan: Schema.NonEmptyArray(EvidenceStepPlanSchema).check(
     Schema.isMaxLength(EVIDENCE_MAX_STEPS),
   ),
 });
 export type EvidenceActiveJobV1 = typeof EvidenceActiveJobV1Schema.Type;
+
+export const EvidencePreviewAuthorizationV1Schema = Schema.Struct({
+  sessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u)),
+  port: PositivePortSchema,
+  routeNonce: EvidenceRouteNonceSchema,
+  cookieSecret: PreviewCookieSecretSchema,
+});
+export type EvidencePreviewAuthorizationV1 = typeof EvidencePreviewAuthorizationV1Schema.Type;
+export const decodeEvidencePreviewAuthorization = Schema.decodeUnknownOption(
+  EvidencePreviewAuthorizationV1Schema,
+  { onExcessProperty: "error" },
+);
+
+export interface ExposedEvidencePreviewV1 {
+  readonly origin: string;
+  readonly cookieSecret: string;
+  readonly expiresAt: string;
+}
 
 export const EvidenceStateV1Schema = Schema.Struct({
   version: Schema.Literal(EVIDENCE_STATE_VERSION),
@@ -377,6 +406,8 @@ export class EvidenceStateError extends Schema.TaggedErrorClass<EvidenceStateErr
       "step_out_of_order",
       "storage",
       "over_budget",
+      "preview_unavailable",
+      "preview_cleanup_pending",
     ]),
   },
 ) {}

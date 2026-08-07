@@ -87,6 +87,7 @@ const makeAuthorityStorage = (initialEvidence?: EvidenceStateV1) => {
     hardCapAt: "2026-08-06T13:00:00.000Z",
   });
   let evidence: unknown | undefined = structuredClone(initialEvidence);
+  const runtimeEpoch = "runtime-1";
   const storage: SessionRecordStorage = {
     get: async () => structuredClone(record),
     put: async (next) => {
@@ -106,6 +107,7 @@ const makeAuthorityStorage = (initialEvidence?: EvidenceStateV1) => {
       return result;
     },
     getEvidence: async () => structuredClone(evidence),
+    getRuntimeEpoch: async () => runtimeEpoch,
     evidenceTransaction: async <A>(
       operation: (transaction: SessionEvidenceTransaction) => Promise<A>,
     ): Promise<A> => {
@@ -114,6 +116,7 @@ const makeAuthorityStorage = (initialEvidence?: EvidenceStateV1) => {
       const result = await operation({
         getRecord: async () => structuredClone(stagedRecord),
         getEvidence: async () => structuredClone(stagedEvidence),
+        getRuntimeEpoch: async () => runtimeEpoch,
         putRecord: async (next) => {
           stagedRecord = structuredClone(next);
         },
@@ -154,6 +157,7 @@ const accept = (testLayers: Layer.Layer<SessionStore | EvidenceStore | ArtifactS
       jobId: "job-1",
       operationNonce: "evidence-nonce",
       runtimeEpoch: "runtime-1",
+      routeNonce: "0123456789abcdef",
       deadlineAt: "2026-08-06T12:05:00.000Z",
       job: JOB,
     }),
@@ -293,6 +297,7 @@ describe("EvidenceStore", () => {
             jobId: "job-1",
             operationNonce: "evidence-nonce",
             runtimeEpoch: "runtime-1",
+            routeNonce: "0123456789abcdef",
             deadlineAt: "2026-08-06T14:00:00.000Z",
             job: JOB,
           }),

@@ -11,7 +11,7 @@ import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import { Sandbox, type PassivePiConsoleRelay, type SandboxEffectOptions } from "../src/session";
-import { EVIDENCE_RECORD_KEY } from "../src/session-store";
+import { EVIDENCE_RECORD_KEY, RUNTIME_EPOCH_KEY } from "../src/session-store";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
@@ -59,7 +59,11 @@ export type HarnessFailureStage =
   | "downTar"
   | "downWriteManifest"
   | "hardCapSchedule"
+  | "previewExpose"
+  | "previewUnexpose"
   | "projectionDelete"
+  | "runtimeEpochDelete"
+  | "runtimeEpochPut"
   | "restoreBackup"
   | "terminalStop"
   | "vaporizeDestroy"
@@ -71,6 +75,7 @@ export interface HarnessOptions {
   readonly commandStdout?: (command: string) => string | undefined;
   readonly crashAfterInitialRecordCommit?: boolean;
   readonly destroyBehavior?: "pending" | "reject" | "success";
+  readonly evidenceEnabled?: boolean;
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
   readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
@@ -82,9 +87,11 @@ export interface HarnessOptions {
   readonly initialProjections?: Readonly<Record<string, unknown>>;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly piSessionRunning?: boolean;
+  readonly previewBase?: string;
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
+  readonly rotateEpochAfterPreviewExpose?: boolean;
   readonly onStorageGet?: (
     key: string,
     count: number,
@@ -120,6 +127,9 @@ export interface SessionHarness {
   readonly r2DeletedKeys: ReadonlyArray<ReadonlyArray<string>>;
   readonly artifactDeletedKeys: ReadonlyArray<string>;
   readonly artifactKeys: () => ReadonlyArray<string>;
+  readonly exposedPreviewPorts: () => ReadonlyArray<number>;
+  readonly startRuntime: () => Promise<void>;
+  readonly stopRuntime: () => Promise<void>;
   readonly memory: InMemoryFaultInjectableFake;
   readonly injectFailure: (stage: HarnessFailureStage) => void;
   readonly clearFailure: (stage?: HarnessFailureStage) => void;
@@ -185,11 +195,15 @@ class HarnessStorage {
   put = async <A>(key: string, value: A): Promise<void> => {
     this.memory.values.set(key, structuredClone(value));
     this.recordMutation(key, value);
+    if (key === RUNTIME_EPOCH_KEY && this.failures.has("runtimeEpochPut"))
+      throw injectedHarnessFailure("injected ambiguous runtime epoch put failure");
   };
 
   delete = async (key: string): Promise<boolean> => {
     const deleted = this.memory.values.delete(key);
     this.events.push(`storage:delete:${key}`);
+    if (key === RUNTIME_EPOCH_KEY && this.failures.has("runtimeEpochDelete"))
+      throw injectedHarnessFailure("injected ambiguous runtime epoch delete failure");
     return deleted;
   };
 
@@ -336,6 +350,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
   const artifactDeletedKeys: string[] = [];
+  const exposedPreviewPorts = new Set<number>();
   const artifactObjects = new Map<
     string,
     {
@@ -636,6 +651,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     }),
     GH_TOKEN: "seed-github-token",
+    ...(options.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
+    ...(options.previewBase === undefined ? {} : { SCOTTY_PREVIEW_BASE: options.previewBase }),
   };
 
   const sandbox = new Sandbox(ctx, env, {
@@ -712,6 +729,37 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           configured ??
           (stage === "workspace" ? "main\n" : stage === "downSha" ? "deadbeef\n" : "");
         return successfulExec(command, stdout);
+      },
+    },
+    exposePort: {
+      value: async (
+        port: number,
+        exposeOptions: {
+          readonly hostname: string;
+          readonly token?: string;
+          readonly name?: string;
+        },
+      ) => {
+        events.push(`host:preview:expose:${port}`);
+        const token = exposeOptions.token ?? "generated_token";
+        exposedPreviewPorts.add(port);
+        if (failures.has("previewExpose"))
+          throw injectedHarnessFailure("injected ambiguous preview exposure failure");
+        if (options.rotateEpochAfterPreviewExpose)
+          storage.kv.put(RUNTIME_EPOCH_KEY, "runtime-epoch-rotated-after-expose");
+        return {
+          url: `https://${port}-${SESSION_ID}-${token}.${exposeOptions.hostname}/`,
+          port,
+          name: exposeOptions.name,
+        };
+      },
+    },
+    unexposePort: {
+      value: async (port: number): Promise<void> => {
+        events.push(`host:preview:unexpose:${port}`);
+        if (failures.has("previewUnexpose"))
+          throw injectedHarnessFailure("injected preview unexpose failure");
+        exposedPreviewPorts.delete(port);
       },
     },
     createBackup: {
@@ -847,6 +895,15 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     r2DeletedKeys,
     artifactDeletedKeys,
     artifactKeys: () => [...artifactObjects.keys()],
+    exposedPreviewPorts: () => [...exposedPreviewPorts],
+    startRuntime: async () => {
+      rawPiContainerRunning = true;
+      await sandbox.onStart();
+    },
+    stopRuntime: async () => {
+      rawPiContainerRunning = false;
+      await sandbox.onStop();
+    },
     memory: storage.memory,
     injectFailure: (stage) => {
       failures.add(stage);
@@ -865,4 +922,5 @@ export const sessionHarnessKeys = {
   createIdempotency: CREATE_IDEMPOTENCY_KEY,
   evidence: EVIDENCE_RECORD_KEY,
   record: RECORD_KEY,
+  runtimeEpoch: RUNTIME_EPOCH_KEY,
 } as const;

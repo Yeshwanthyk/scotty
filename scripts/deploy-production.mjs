@@ -72,7 +72,19 @@ export function redactProductionDeploymentOutput(value, environment = {}) {
     if (separator === -1) continue;
     const key = field.slice(0, separator);
     const resourceName = field.slice(separator + 1);
-    if (!["worker", "runnerWorker", "container", "kv", "r2"].includes(key) || !resourceName) {
+    if (
+      ![
+        "worker",
+        "runnerWorker",
+        "container",
+        "kv",
+        "r2",
+        "artifacts",
+        "previewBase",
+        "previewZone",
+      ].includes(key) ||
+      !resourceName
+    ) {
       continue;
     }
     redacted = redacted.replaceAll(resourceName, `[redacted-${key}]`);
@@ -699,6 +711,30 @@ export function resolveProductionTopology(environment = process.env) {
   if (adoption && adoption.installationName !== installationName) {
     throw new Error("SCOTTY_ADOPTION_MANIFEST names a different installation.");
   }
+  const environmentPreviewBase = environment.SCOTTY_PREVIEW_BASE?.trim();
+  const environmentPreviewZoneId = environment.SCOTTY_PREVIEW_ZONE_ID?.trim();
+  const hasEnvironmentPreview =
+    environmentPreviewBase !== undefined || environmentPreviewZoneId !== undefined;
+  const previewBase = hasEnvironmentPreview ? environmentPreviewBase : adoption?.preview?.base;
+  const previewZoneId = hasEnvironmentPreview
+    ? environmentPreviewZoneId
+    : adoption?.preview?.zoneId;
+  const evidenceEnabled = environment.SCOTTY_EVIDENCE_ENABLED === "true";
+  if (
+    (previewBase === undefined) !== (previewZoneId === undefined) ||
+    (previewBase !== undefined &&
+      !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(
+        previewBase,
+      )) ||
+    (previewZoneId !== undefined && !/^[0-9a-f]{32}$/u.test(previewZoneId))
+  ) {
+    throw new Error(
+      "SCOTTY_PREVIEW_BASE and SCOTTY_PREVIEW_ZONE_ID must both name the explicit preview topology.",
+    );
+  }
+  if (evidenceEnabled && previewBase === undefined) {
+    throw new Error("SCOTTY_EVIDENCE_ENABLED requires the explicit preview topology.");
+  }
   return {
     installationName,
     adoptionPath,
@@ -708,6 +744,8 @@ export function resolveProductionTopology(environment = process.env) {
     kvTitle: adoption?.resources?.kvTitle ?? `${prefix}-sessions`,
     backupBucketName: adoption?.resources?.backupBucketName ?? `${prefix}-backups`,
     artifactBucketName: adoption?.resources?.artifactBucketName ?? `${prefix}-artifacts`,
+    ...(previewBase === undefined ? {} : { previewBase, previewZoneId }),
+    ...(evidenceEnabled ? { evidenceEnabled: true } : {}),
   };
 }
 
@@ -723,12 +761,23 @@ function productionEnvironment(environment = process.env) {
     `kv=${topology.kvTitle}`,
     `r2=${topology.backupBucketName}`,
     `artifacts=${topology.artifactBucketName}`,
+    ...(topology.previewBase === undefined
+      ? []
+      : [`previewBase=${topology.previewBase}`, `previewZone=${topology.previewZoneId}`]),
+    ...(topology.evidenceEnabled === true ? ["evidence=enabled"] : []),
   ].join(":");
   return {
     ...sanitizedLocalEnvironment(environment),
     ALCHEMY_TELEMETRY_DISABLED: "1",
     SCOTTY_INSTALLATION_NAME: topology.installationName,
     ...(topology.adoptionPath ? { SCOTTY_ADOPTION_MANIFEST: topology.adoptionPath } : {}),
+    ...(topology.previewBase === undefined
+      ? {}
+      : {
+          SCOTTY_PREVIEW_BASE: topology.previewBase,
+          SCOTTY_PREVIEW_ZONE_ID: topology.previewZoneId,
+        }),
+    ...(topology.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
     SCOTTY_CONTAINER_APPLICATION_NAME: topology.containerName,
     SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED: resourceConfirmation,
     SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL: `deploy:${topology.installationName}:${topology.workerName}`,

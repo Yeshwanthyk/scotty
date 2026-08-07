@@ -45,6 +45,8 @@ export interface InstallationDeployRequest {
   readonly installationName: string;
   readonly profile: string;
   readonly adoptionManifestPath?: string;
+  readonly previewBase?: string;
+  readonly previewZoneId?: string;
 }
 
 export interface InstallationApplyRequest extends InstallationDeployRequest {
@@ -56,6 +58,8 @@ export interface InstallationInspectRequest {
   readonly installationName: string;
   readonly profile: string;
   readonly adoptionManifestPath?: string;
+  readonly previewBase?: string;
+  readonly previewZoneId?: string;
 }
 
 export interface InstallationRecoverRequest extends InstallationInspectRequest {
@@ -66,6 +70,8 @@ export interface InstallationRecoverRequest extends InstallationInspectRequest {
   readonly expectedContainerName: string;
   readonly expectedKvTitle: string;
   readonly expectedBackupBucketName: string;
+  readonly expectedPreviewBase?: string;
+  readonly expectedPreviewZoneId?: string;
 }
 
 export interface InstallationPlanChange {
@@ -97,6 +103,8 @@ export interface InstallationUninstallRequest extends InstallationInspectRequest
   readonly expectedContainerName: string;
   readonly expectedKvTitle: string;
   readonly expectedBackupBucketName: string;
+  readonly expectedPreviewBase?: string;
+  readonly expectedPreviewZoneId?: string;
 }
 
 export interface InstallationUninstallResult {
@@ -151,6 +159,8 @@ export interface InstallationResult {
   readonly containerName: string;
   readonly kvTitle: string;
   readonly backupBucketName: string;
+  readonly previewBase?: string;
+  readonly previewZoneId?: string;
   readonly host: string;
 }
 

@@ -78,7 +78,11 @@ import { runRunnerSupervisor } from "./runner-link";
 import { RunnerRuntime, runnerRuntimeLayer } from "./runner-runtime";
 import { setupRunner } from "./runner-setup";
 import { requestJson } from "./transport";
-import { makeInstallationTopology, parseInstallationName } from "../../infra/installation.ts";
+import {
+  decodeInstallationPreviewConfiguration,
+  makeInstallationTopology,
+  parseInstallationName,
+} from "../../infra/installation.ts";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -277,6 +281,22 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     return installationName;
   });
 
+  const optionalPreviewConfiguration = Effect.fnUntraced(function* (
+    previewBase: Option.Option<string>,
+    previewZoneId: Option.Option<string>,
+  ) {
+    if (Option.isNone(previewBase) && Option.isNone(previewZoneId)) return undefined;
+    const decoded = decodeInstallationPreviewConfiguration({
+      base: Option.getOrUndefined(previewBase)?.trim(),
+      zoneId: Option.getOrUndefined(previewZoneId)?.trim(),
+    });
+    if (Option.isNone(decoded))
+      return yield* usage(
+        "--preview-base and --preview-zone-id must both provide a valid explicit Cloudflare preview topology",
+      );
+    return decoded.value;
+  });
+
   const ensureDocker = Effect.fnUntraced(function* () {
     const runtime = yield* CliRuntime;
     const processRunner = yield* ProcessRunner;
@@ -313,7 +333,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     token: string,
     adoptionManifestPath?: string,
   ) => ({
-    version: 1 as const,
+    version: deployed.previewBase === undefined ? (1 as const) : (2 as const),
     installationName: deployed.installationName,
     profile: deployed.profile,
     stackName: deployed.stackName,
@@ -324,6 +344,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     containerName: deployed.containerName,
     kvTitle: deployed.kvTitle,
     backupBucketName: deployed.backupBucketName,
+    ...(deployed.previewBase === undefined || deployed.previewZoneId === undefined
+      ? {}
+      : { previewBase: deployed.previewBase, previewZoneId: deployed.previewZoneId }),
     ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
     host: deployed.host,
     token,
@@ -340,16 +363,25 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDefault("default"),
         Flag.withDescription("Alchemy Cloudflare authentication profile"),
       ),
+      previewBase: Flag.string("preview-base").pipe(
+        Flag.optional,
+        Flag.withDescription("Explicit installation preview DNS base"),
+      ),
+      previewZoneId: Flag.string("preview-zone-id").pipe(
+        Flag.optional,
+        Flag.withDescription("Explicit Cloudflare zone ID owning the preview base"),
+      ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed installation")),
       trailing: trailingArguments,
     },
-    ({ name, profile, trailing, yes }) =>
+    ({ name, previewBase, previewZoneId, profile, trailing, yes }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("init does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("init", name);
+        const preview = yield* optionalPreviewConfiguration(previewBase, previewZoneId);
         yield* ensureDocker();
         const fileSystem = yield* CliFileSystem;
         const journalPath = join(runtime.home, ".scotty", `init-${installationName}.json`);
@@ -381,8 +413,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 EXIT.GENERIC,
               );
             const creator = yield* InstallationCreator;
-            const plan = yield* creator.plan({ installationName, profile });
-            const topology = makeInstallationTopology(installationName);
+            const deploymentTarget = {
+              installationName,
+              profile,
+              ...(preview === undefined
+                ? {}
+                : { previewBase: preview.base, previewZoneId: preview.zoneId }),
+            };
+            const plan = yield* creator.plan(deploymentTarget);
+            const topology = makeInstallationTopology(installationName, undefined, preview);
             const journalMatches =
               Option.isSome(existingJournal) &&
               existingJournal.value.installationName === installationName &&
@@ -393,7 +432,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               existingJournal.value.runnerWorkerName === topology.runnerWorkerName &&
               existingJournal.value.containerName === topology.containerName &&
               existingJournal.value.kvTitle === topology.kvTitle &&
-              existingJournal.value.backupBucketName === topology.backupBucketName;
+              existingJournal.value.backupBucketName === topology.backupBucketName &&
+              existingJournal.value.previewBase === topology.preview?.base &&
+              existingJournal.value.previewZoneId === topology.preview?.zoneId;
             if (Option.isSome(existingJournal) && !journalMatches)
               return yield* new CliError(
                 "init_journal_conflict",
@@ -444,6 +485,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                   `Container: ${topology.containerName}`,
                   `KV: ${topology.kvTitle}`,
                   `R2: ${topology.backupBucketName}`,
+                  ...(topology.preview === undefined
+                    ? []
+                    : [
+                        `Preview base: ${topology.preview.base}`,
+                        `Preview zone: ${topology.preview.zoneId}`,
+                      ]),
                   "",
                 ].join("\n"),
               );
@@ -462,7 +509,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               ? existingJournal.value.token
               : rootToken();
             const journal = {
-              version: 1 as const,
+              version: preview === undefined ? (1 as const) : (2 as const),
               operation: "init" as const,
               phase: "prepared" as const,
               installationName,
@@ -474,6 +521,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               containerName: topology.containerName,
               kvTitle: topology.kvTitle,
               backupBucketName: topology.backupBucketName,
+              ...(preview === undefined
+                ? {}
+                : { previewBase: preview.base, previewZoneId: preview.zoneId }),
               planFingerprint: plan.fingerprint,
               token,
             };
@@ -488,8 +538,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 `${Option.isSome(existingJournal) ? "Resuming" : "Creating"} installation ${installationName} in account ${plan.accountId}...\n`,
               );
             const deployed = yield* creator.create({
-              installationName,
-              profile,
+              ...deploymentTarget,
               token,
               expectedAccountId: plan.accountId,
               expectedPlanFingerprint: plan.fingerprint,
@@ -556,23 +605,36 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Private legacy resource-name mapping"),
       ),
+      previewBase: Flag.string("preview-base").pipe(
+        Flag.optional,
+        Flag.withDescription("Explicit installation preview DNS base"),
+      ),
+      previewZoneId: Flag.string("preview-zone-id").pipe(
+        Flag.optional,
+        Flag.withDescription("Explicit Cloudflare zone ID owning the preview base"),
+      ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed resource mapping")),
       trailing: trailingArguments,
     },
-    ({ adoptionManifest, name, profile, trailing, yes }) =>
+    ({ adoptionManifest, name, previewBase, previewZoneId, profile, trailing, yes }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("recover does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("recover", name);
+        const preview = yield* optionalPreviewConfiguration(previewBase, previewZoneId);
         const adoptionManifestPath = Option.getOrUndefined(adoptionManifest);
         const recovery = yield* InstallationRecovery;
-        const inspected = yield* recovery.inspect({
+        const deploymentTarget = {
           installationName,
           profile,
           ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
-        });
+          ...(preview === undefined
+            ? {}
+            : { previewBase: preview.base, previewZoneId: preview.zoneId }),
+        };
+        const inspected = yield* recovery.inspect(deploymentTarget);
         if (!yes) {
           if (!runtime.stdinIsTTY || !runtime.stdoutIsTTY)
             return yield* usage(
@@ -588,6 +650,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               `Container: ${inspected.containerName}`,
               `KV: ${inspected.kvTitle}`,
               `R2: ${inspected.backupBucketName}`,
+              ...(inspected.previewBase === undefined
+                ? []
+                : [
+                    `Preview base: ${inspected.previewBase}`,
+                    `Preview zone: ${inspected.previewZoneId}`,
+                  ]),
               `Host: ${inspected.host}`,
               "",
             ].join("\n"),
@@ -620,6 +688,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               existingJournal.containerName === inspected.containerName &&
               existingJournal.kvTitle === inspected.kvTitle &&
               existingJournal.backupBucketName === inspected.backupBucketName &&
+              existingJournal.previewBase === inspected.previewBase &&
+              existingJournal.previewZoneId === inspected.previewZoneId &&
               existingJournal.adoptionManifestPath === adoptionManifestPath;
             const token =
               journalMatchesTarget && existingJournal.token ? existingJournal.token : rootToken();
@@ -628,8 +698,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               `${JSON.stringify(managedConfig(inspected, token, adoptionManifestPath), null, 2)}\n`,
             );
             const recovered = yield* recovery.recover({
-              installationName,
-              profile,
+              ...deploymentTarget,
               token,
               expectedAccountId: inspected.accountId,
               expectedWorkerName: inspected.workerName,
@@ -637,7 +706,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               expectedContainerName: inspected.containerName,
               expectedKvTitle: inspected.kvTitle,
               expectedBackupBucketName: inspected.backupBucketName,
-              ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
+              ...(inspected.previewBase === undefined || inspected.previewZoneId === undefined
+                ? {}
+                : {
+                    expectedPreviewBase: inspected.previewBase,
+                    expectedPreviewZoneId: inspected.previewZoneId,
+                  }),
             });
             const host = yield* Effect.fromResult(normalizeHost(recovered.host));
             yield* secureWrite(
@@ -757,6 +831,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           expectedContainerName: containerName,
           expectedKvTitle: kvTitle,
           expectedBackupBucketName: backupBucketName,
+          ...(config.previewBase === undefined || config.previewZoneId === undefined
+            ? {}
+            : {
+                previewBase: config.previewBase,
+                previewZoneId: config.previewZoneId,
+                expectedPreviewBase: config.previewBase,
+                expectedPreviewZoneId: config.previewZoneId,
+              }),
           ...(config.adoptionManifestPath === undefined
             ? {}
             : { adoptionManifestPath: config.adoptionManifestPath }),
@@ -839,6 +921,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           ...(config.adoptionManifestPath === undefined
             ? {}
             : { adoptionManifestPath: config.adoptionManifestPath }),
+          ...(config.previewBase === undefined || config.previewZoneId === undefined
+            ? {}
+            : { previewBase: config.previewBase, previewZoneId: config.previewZoneId }),
         };
         const plan = yield* deployer.plan(request);
         if (plan.accountId !== config.accountId)

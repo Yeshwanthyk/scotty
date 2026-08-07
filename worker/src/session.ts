@@ -34,15 +34,19 @@ import {
   decodeBrowserEvidenceJobEffect,
   decodeCompleteEvidenceStepPublication,
   decodeEvidenceIdentifier,
+  decodeEvidencePreviewAuthorization,
   publicEvidenceSummaryProjection,
   type EvidenceActiveJobV1,
   type EvidenceArtifactV1,
   type EvidenceJobSummaryV1,
+  type EvidencePreviewAuthorizationV1,
   type EvidenceStepResult,
   type EvidenceTerminalStatus,
+  type ExposedEvidencePreviewV1,
   type PublicEvidenceJobSummaryV1,
 } from "./evidence-contracts";
 import type { Bindings } from "./bindings";
+import { sha256Hex } from "./digest";
 import {
   ContainerAuth,
   containerAuthLayer,
@@ -94,6 +98,7 @@ import {
   sessionStoreLayer,
   type SessionControlAuthority,
   type SessionControlGate,
+  type SessionRecordStorage,
 } from "./session-store";
 import {
   SESSION_SCHEDULE_CALLBACKS,
@@ -119,6 +124,9 @@ const DESTROY_DEADLINE_MS = 30_000;
 const DESTROY_RETRY_SECONDS = 35;
 const PASSIVE_PI_CONSOLE_MAX_HEADER_BYTES = 8 * 1024;
 const PASSIVE_PI_CONSOLE_REQUEST_HEADERS = ["accept", "content-type", "last-event-id"] as const;
+const EVIDENCE_PREVIEW_BASE_PATTERN =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+const EVIDENCE_CLEANUP_RETRY_SECONDS = 5;
 
 const copyBoundedPassivePiConsoleHeaders = (source: Headers): Headers => {
   const headers = new Headers();
@@ -226,7 +234,7 @@ export class CheckpointRuntimeUnavailable extends Data.TaggedError("CheckpointRu
   readonly relaunchCause: unknown;
 }> {}
 
-type HostOperation = "destroy" | "schedule" | "stop";
+type HostOperation = "destroy" | "expose" | "schedule" | "stop" | "unexpose";
 
 class HostOperationFailure extends Data.TaggedError("HostOperationFailure")<{
   readonly operation: HostOperation;
@@ -291,6 +299,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly passivePiConsoleRelay: PassivePiConsoleRelay;
   private readonly rawContainer: DurableObjectState["container"];
   private readonly sessionControlGate: SessionControlGate;
+  private readonly authoritativeStorage: SessionRecordStorage;
+  private readonly evidenceEnabled: boolean;
+  private readonly previewBase: string | undefined;
+  private runtimeEpochReady = false;
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
   private createInFlight: InFlightCreate | undefined;
@@ -299,6 +311,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     super(ctx, env);
     this.clock = options.clock;
     this.rawContainer = ctx.container;
+    this.evidenceEnabled = env.SCOTTY_EVIDENCE_ENABLED === "true";
+    this.previewBase =
+      env.SCOTTY_PREVIEW_BASE !== undefined &&
+      EVIDENCE_PREVIEW_BASE_PATTERN.test(env.SCOTTY_PREVIEW_BASE)
+        ? env.SCOTTY_PREVIEW_BASE
+        : undefined;
     this.passivePiConsoleRelay = options.passivePiConsoleRelay ?? {
       fetch: (input) => this.fetchNativePassivePiConsole(input),
     };
@@ -309,6 +327,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ctx.storage,
       this.sessionControlGate,
     );
+    this.authoritativeStorage = authoritativeStorage;
     const store = sessionStoreLayer(authoritativeStorage);
     const evidence = evidenceStoreLayer(authoritativeStorage);
     const artifacts = artifactStoreLayer(r2ArtifactStoreCapabilities(env.ARTIFACT_BUCKET));
@@ -376,17 +395,64 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return Option.getOrUndefined(yield* store.read);
   });
 
+  private readonly deleteRuntimeEpochProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const deleteRuntimeEpoch = this.authoritativeStorage.deleteRuntimeEpoch;
+    if (deleteRuntimeEpoch === undefined)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    yield* Effect.tryPromise({
+      try: deleteRuntimeEpoch,
+      catch: () => new EvidenceStateError({ reason: "storage" }),
+    });
+  });
+
+  private readonly putRuntimeEpochProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    runtimeEpoch: string,
+  ) {
+    const putRuntimeEpoch = this.authoritativeStorage.putRuntimeEpoch;
+    if (putRuntimeEpoch === undefined)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    yield* Effect.tryPromise({
+      try: () => putRuntimeEpoch(runtimeEpoch),
+      catch: () => new EvidenceStateError({ reason: "storage" }),
+    });
+  });
+
+  private readonly currentRuntimeEpochProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    if (!this.runtimeEpochReady)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    const getRuntimeEpoch = this.authoritativeStorage.getRuntimeEpoch;
+    if (getRuntimeEpoch === undefined)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    const stored = yield* Effect.tryPromise({
+      try: getRuntimeEpoch,
+      catch: () => new EvidenceStateError({ reason: "storage" }),
+    });
+    const decoded = decodeEvidenceIdentifier(stored);
+    if (Option.isNone(decoded))
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    return decoded.value;
+  });
+
   private readonly acceptScottyEvidenceJobProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     value: unknown,
-    runtimeEpoch: string,
   ) {
-    const decodedEpoch = decodeEvidenceIdentifier(runtimeEpoch);
-    if (Option.isNone(decodedEpoch)) return yield* badRequest("Evidence runtime epoch is invalid");
+    if (!this.evidenceEnabled)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
     const job = yield* decodeBrowserEvidenceJobEffect(value).pipe(
       Effect.mapError(() => badRequest("Evidence job is invalid")),
     );
     const record = yield* this.requireRecordProgram();
+    if (record.status !== "warm" || record.execution.provider !== "cloudflare")
+      return yield* wrongState(
+        record.status,
+        "evidence",
+        "Evidence requires a warm Cloudflare session",
+      );
+    if (this.rawContainer?.running !== true)
+      return yield* wrongState(record.status, "evidence", "The Sandbox runtime is not running");
+    const runtimeEpoch = yield* this.currentRuntimeEpochProgram();
     const now = yield* Clock.currentTimeMillis;
     const deadlineMillis = Math.min(
       now + EVIDENCE_JOB_TIMEOUT_MILLIS,
@@ -400,7 +466,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const accepted = yield* evidence.accept({
       jobId: `job-${randomToken(8)}`,
       operationNonce,
-      runtimeEpoch: decodedEpoch.value,
+      runtimeEpoch,
+      routeNonce: randomToken(8),
       deadlineAt,
       job,
     });
@@ -417,7 +484,128 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return yield* this.upstreamError("Evidence deadline scheduling failed", scheduled.failure);
   });
 
+  private readonly cleanupEvidencePreviewProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+    interruptionReason?: "deadline" | "interrupted",
+  ) {
+    const evidence = yield* EvidenceStore;
+    const revoked = yield* evidence.revokePreview(nonce, interruptionReason);
+    if (revoked.exposure === "unexpose_pending") {
+      yield* hostEffect("unexpose", () => this.unexposePort(revoked.port));
+      return yield* evidence.closePreview(nonce);
+    }
+    return revoked;
+  });
+
+  private readonly exposeScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+  ) {
+    if (Option.isNone(decodeEvidenceIdentifier(nonce)))
+      return yield* badRequest("Evidence operation nonce is invalid");
+    if (!this.evidenceEnabled)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    const previewBase = this.previewBase;
+    if (previewBase === undefined)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    const evidence = yield* EvidenceStore;
+    const state = yield* evidence.read;
+    const active = state.activeJob;
+    if (active?.operationNonce !== nonce)
+      return yield* new EvidenceStateError({ reason: "lease_changed" });
+    if (this.rawContainer?.running !== true)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    const runtimeEpoch = yield* this.currentRuntimeEpochProgram();
+    if (runtimeEpoch !== active.runtimeEpoch)
+      return yield* new EvidenceStateError({ reason: "preview_unavailable" });
+    const record = yield* this.requireRecordProgram();
+    const canonicalOrigin = `https://${active.port}-${record.id}-${active.routeNonce}.${previewBase}`;
+    yield* evidence.beginPreviewExposure(nonce, {
+      runtimeEpoch,
+      runtimeRunning: this.rawContainer?.running === true,
+    });
+    const cookieSecret = randomToken(32);
+    const cookieDigest = yield* Effect.tryPromise({
+      try: () => sha256Hex(cookieSecret),
+      catch: () => new EvidenceStateError({ reason: "preview_unavailable" }),
+    });
+    const exposed = yield* Effect.result(
+      hostEffect("expose", () =>
+        this.exposePort(active.port, {
+          hostname: previewBase,
+          token: active.routeNonce,
+          name: `evidence-${active.jobId}`,
+        }),
+      ),
+    );
+    if (Result.isFailure(exposed)) {
+      const cleaned = yield* Effect.result(
+        this.cleanupEvidencePreviewProgram(nonce, "interrupted"),
+      );
+      if (Result.isSuccess(cleaned)) yield* evidence.interrupt(nonce, "interrupted");
+      return yield* this.upstreamError("Evidence preview exposure failed", exposed.failure);
+    }
+    const exposedOrigin = yield* Effect.result(
+      Effect.try({
+        try: () => new URL(exposed.success.url).origin,
+        catch: () => new EvidenceStateError({ reason: "preview_unavailable" }),
+      }),
+    );
+    const published =
+      Result.isSuccess(exposedOrigin) && exposedOrigin.success === canonicalOrigin
+        ? yield* Effect.result(
+            evidence.publishPreviewExposure(nonce, {
+              runtimeEpoch,
+              cookieDigest,
+              runtimeRunning: this.rawContainer?.running === true,
+            }),
+          )
+        : Result.fail(new EvidenceStateError({ reason: "preview_unavailable" }));
+    if (Result.isFailure(published)) {
+      const cleaned = yield* Effect.result(
+        this.cleanupEvidencePreviewProgram(nonce, "interrupted"),
+      );
+      if (Result.isSuccess(cleaned)) yield* evidence.interrupt(nonce, "interrupted");
+      return yield* published.failure;
+    }
+    return {
+      origin: canonicalOrigin,
+      cookieSecret,
+      expiresAt: published.success.deadlineAt,
+    } satisfies ExposedEvidencePreviewV1;
+  });
+
+  private readonly authorizeScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    value: unknown,
+  ) {
+    const decoded = decodeEvidencePreviewAuthorization(value);
+    if (!this.evidenceEnabled || Option.isNone(decoded) || this.rawContainer?.running !== true)
+      return false;
+    const runtimeEpoch = yield* Effect.result(this.currentRuntimeEpochProgram());
+    if (Result.isFailure(runtimeEpoch)) return false;
+    const cookieDigest = yield* Effect.result(
+      Effect.tryPromise({
+        try: () => sha256Hex(decoded.value.cookieSecret),
+        catch: () => new EvidenceStateError({ reason: "preview_unavailable" }),
+      }),
+    );
+    if (Result.isFailure(cookieDigest)) return false;
+    return yield* Effect.flatMap(EvidenceStore, (store) =>
+      store.authorizePreview({
+        sessionId: decoded.value.sessionId,
+        port: decoded.value.port,
+        routeNonce: decoded.value.routeNonce,
+        runtimeEpoch: runtimeEpoch.success,
+        cookieDigest: cookieDigest.success,
+        runtimeRunning: this.rawContainer?.running === true,
+      }),
+    ).pipe(Effect.catch(() => Effect.succeed(false)));
+  });
+
   private readonly expireEvidenceJobProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
     payload: EvidenceDeadlinePayload,
   ) {
     const evidence = yield* EvidenceStore;
@@ -427,6 +615,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
       state.activeJob.deadlineAt !== payload.deadlineAt
     )
       return;
+    const cleaned = yield* Effect.result(
+      this.cleanupEvidencePreviewProgram(payload.nonce, "deadline"),
+    );
+    if (Result.isFailure(cleaned)) {
+      yield* hostEffect("schedule", () =>
+        this.schedule(EVIDENCE_CLEANUP_RETRY_SECONDS, "expireEvidenceJob", payload),
+      );
+      return;
+    }
     yield* evidence.interrupt(payload.nonce, "deadline");
   });
 
@@ -505,6 +702,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     status: EvidenceTerminalStatus,
   ) {
     const evidence = yield* EvidenceStore;
+    yield* this.cleanupEvidencePreviewProgram(nonce);
     const summary = yield* evidence.finalize(nonce, status);
     const reconciled = yield* Effect.result(this.reconcileEvidenceDeletesProgram());
     if (Result.isFailure(reconciled))
@@ -1195,6 +1393,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
     if (existing.operation?.kind === "evidence") {
       const evidence = yield* EvidenceStore;
+      yield* this.cleanupEvidencePreviewProgram(existing.operation.nonce, "interrupted");
       yield* evidence.interrupt(existing.operation.nonce, "interrupted");
       existing = yield* this.requireRecordProgram();
     }
@@ -1397,6 +1596,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
       if (record.operation.kind === "vaporize") return;
       if (record.operation.kind === "evidence") {
         const evidence = yield* EvidenceStore;
+        const cleaned = yield* Effect.result(
+          this.cleanupEvidencePreviewProgram(record.operation.nonce, "deadline"),
+        );
+        if (Result.isFailure(cleaned)) {
+          yield* hostEffect("schedule", () =>
+            this.schedule(EVIDENCE_CLEANUP_RETRY_SECONDS, "enforceHardCap", payload),
+          );
+          return;
+        }
         const interrupted = yield* Effect.result(
           evidence.interrupt(record.operation.nonce, "deadline"),
         );
@@ -1530,6 +1738,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   });
 
+  private readonly interruptEvidenceForRuntimeStopProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      const evidence = yield* EvidenceStore;
+      const state = yield* evidence.read;
+      const active = state.activeJob;
+      if (active === undefined) return;
+      yield* this.cleanupEvidencePreviewProgram(active.operationNonce, "interrupted");
+      yield* evidence.interrupt(active.operationNonce, "interrupted");
+    },
+  );
+
   private readonly onStopProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const store = yield* SessionStore;
     const next = yield* store.recordRuntimeStop;
@@ -1632,11 +1851,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.getScottySessionProgram());
   }
 
-  async acceptScottyEvidenceJob(
-    value: unknown,
-    runtimeEpoch: string,
-  ): Promise<EvidenceActiveJobV1> {
-    return this.#run(this.acceptScottyEvidenceJobProgram(value, runtimeEpoch));
+  async acceptScottyEvidenceJob(value: unknown): Promise<EvidenceActiveJobV1> {
+    return this.#run(this.acceptScottyEvidenceJobProgram(value));
+  }
+
+  async exposeScottyEvidencePreview(nonce: string): Promise<ExposedEvidencePreviewV1> {
+    return this.#run(this.exposeScottyEvidencePreviewProgram(nonce));
+  }
+
+  async authorizeScottyEvidencePreview(input: EvidencePreviewAuthorizationV1): Promise<boolean> {
+    return this.#run(this.authorizeScottyEvidencePreviewProgram(input));
   }
 
   async completeScottyEvidenceStep(nonce: string, input: unknown): Promise<EvidenceStepResult> {
@@ -1998,9 +2222,37 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.onActivityExpiredProgram());
   }
 
+  override async onStart(): Promise<void> {
+    this.runtimeEpochReady = false;
+    const staleEvidence = await this.#run(
+      Effect.result(this.interruptEvidenceForRuntimeStopProgram()),
+    );
+    if (Result.isFailure(staleEvidence)) return this.#run(Effect.fail(staleEvidence.failure));
+    await this.#run(this.deleteRuntimeEpochProgram());
+    await super.onStart();
+    const runtimeEpoch = randomToken(16);
+    const stored = await this.#run(Effect.result(this.putRuntimeEpochProgram(runtimeEpoch)));
+    if (Result.isFailure(stored)) {
+      await this.#run(Effect.result(this.deleteRuntimeEpochProgram()));
+      return this.#run(Effect.fail(stored.failure));
+    }
+    this.runtimeEpochReady = true;
+  }
+
   override async onStop(): Promise<void> {
+    this.runtimeEpochReady = false;
+    const cleanup = await this.#run(Effect.result(this.interruptEvidenceForRuntimeStopProgram()));
+    if (Result.isFailure(cleanup))
+      console.error("Evidence runtime-stop cleanup remains pending", {
+        error: errorName(cleanup.failure),
+      });
+    const deletedEpoch = await this.#run(Effect.result(this.deleteRuntimeEpochProgram()));
+    if (Result.isFailure(deletedEpoch))
+      console.error("Runtime epoch cleanup failed", { error: errorName(deletedEpoch.failure) });
     await super.onStop();
-    return this.#run(this.onStopProgram());
+    await this.#run(this.onStopProgram());
+    if (Result.isFailure(cleanup)) return this.#run(Effect.fail(cleanup.failure));
+    if (Result.isFailure(deletedEpoch)) return this.#run(Effect.fail(deletedEpoch.failure));
   }
 
   async finalizeManagedStop(payload: ManagedStopPayload): Promise<void> {

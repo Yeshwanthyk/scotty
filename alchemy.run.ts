@@ -11,9 +11,11 @@ import {
 import {
   adoptionMatchesInstallation,
   decodeAdoptionManifestJson,
+  decodeInstallationPreviewConfiguration,
   makeInstallationTopology,
   parseInstallationName,
   type AdoptionManifest,
+  type InstallationPreviewConfiguration,
 } from "./infra/installation.ts";
 
 const required = (name: string): string => {
@@ -42,7 +44,30 @@ if (adoptionPath) {
   adoption = decoded.value;
 }
 
-const installation = makeInstallationTopology(installationName, adoption);
+const previewBase = process.env.SCOTTY_PREVIEW_BASE?.trim();
+const previewZoneId = process.env.SCOTTY_PREVIEW_ZONE_ID?.trim();
+let preview: InstallationPreviewConfiguration | undefined;
+if (previewBase !== undefined || previewZoneId !== undefined) {
+  const decoded = decodeInstallationPreviewConfiguration({
+    base: previewBase,
+    zoneId: previewZoneId,
+  });
+  if (Option.isNone(decoded)) {
+    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects partial or malformed explicit preview topology
+    throw new Error(
+      "SCOTTY_PREVIEW_BASE and SCOTTY_PREVIEW_ZONE_ID must both name the explicit preview topology.",
+    );
+  }
+  preview = decoded.value;
+}
+
+const evidenceEnabled = process.env.SCOTTY_EVIDENCE_ENABLED === "true";
+if (evidenceEnabled && preview === undefined) {
+  // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects an enabled bridge without explicit preview authority
+  throw new Error("SCOTTY_EVIDENCE_ENABLED requires the explicit preview topology.");
+}
+
+const installation = makeInstallationTopology(installationName, adoption, preview, evidenceEnabled);
 
 export default Alchemy.Stack(
   installation.stackName,

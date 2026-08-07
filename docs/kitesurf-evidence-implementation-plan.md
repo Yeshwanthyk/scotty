@@ -391,7 +391,7 @@ Primary pricing references: [Browser Run](https://developers.cloudflare.com/brow
 
 ## Rollout
 
-1. Add an installation-scoped `EVIDENCE_ENABLED` gate defaulting off.
+1. Add an installation-scoped `SCOTTY_EVIDENCE_ENABLED` gate defaulting off.
 2. Deploy binding and synthetic canary only; confirm Kitesurf package behavior.
 3. Deploy state/artifact/summary behind owner-only test access.
 4. Enable the private bridge only after wildcard DNS, route, and TLS proof.
@@ -399,6 +399,8 @@ Primary pricing references: [Browser Run](https://developers.cloudflare.com/brow
 6. Enable the Pi tool for one installation.
 7. Observe launch failures, unsupported classifications, job duration, screenshot bytes, R2 reconciliation, unexpose retries, and cleanup age by IDs/counts only.
 8. Expand availability only while no-orphans and credential scans remain green.
+
+Existing v1 installation pointers remain valid and preview-free. Enabling evidence for one of those installations is a deployment gate: first migrate its local pointer/topology to the optional v2 preview fields through a separately designed, reviewed migration path, then prove the configured wildcard domain and TLS, and only then set the gate. This bridge-only slice intentionally does not add a v1-to-v2 migration command.
 
 ## Residual risks
 

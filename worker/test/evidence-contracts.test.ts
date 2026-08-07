@@ -28,6 +28,8 @@ describe("evidence contracts", () => {
   it("rejects invalid ports, arbitrary paths, excess fields, and oversized graphs", () => {
     for (const input of [
       { version: 1, port: 80, steps: [step] },
+      { version: 1, port: 3_000, steps: [step] },
+      { version: 1, port: 43_117, steps: [step] },
       {
         version: 1,
         port: 4_173,

@@ -61,7 +61,7 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   getSandbox: vi.fn(() => sandboxTarget.current),
 }));
 
-import app from "../src/index";
+import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
 import { conflict } from "../src/contracts";
@@ -2296,6 +2296,7 @@ describe("real Hono boundary", () => {
 
   it("shows fake-backed failed evidence frames through authenticated polling and Replay", async () => {
     const harness = await createSessionHarness({
+      evidenceEnabled: true,
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
@@ -2303,36 +2304,34 @@ describe("real Hono boundary", () => {
         }),
       },
     });
-    const accepted = await harness.sandbox.acceptScottyEvidenceJob(
-      {
-        version: 1,
-        port: 4_173,
-        capture: { screenshots: "after-each-step", replay: true },
-        steps: [
-          {
-            name: "Open the app",
-            action: { kind: "goto", path: "/" },
-            expect: [{ kind: "urlPath", expected: "/" }],
+    await harness.startRuntime();
+    const accepted = await harness.sandbox.acceptScottyEvidenceJob({
+      version: 1,
+      port: 4_173,
+      capture: { screenshots: "after-each-step", replay: true },
+      steps: [
+        {
+          name: "Open the app",
+          action: { kind: "goto", path: "/" },
+          expect: [{ kind: "urlPath", expected: "/" }],
+        },
+        {
+          name: "Shows the ready state",
+          action: {
+            kind: "fill",
+            locator: { kind: "testId", value: "status" },
+            value: "private-fill-value",
           },
-          {
-            name: "Shows the ready state",
-            action: {
-              kind: "fill",
+          expect: [
+            {
+              kind: "textExact",
               locator: { kind: "testId", value: "status" },
-              value: "private-fill-value",
+              expected: "Ready",
             },
-            expect: [
-              {
-                kind: "textExact",
-                locator: { kind: "testId", value: "status" },
-                expected: "Ready",
-              },
-            ],
-          },
-        ],
-      },
-      "runtime-1",
-    );
+          ],
+        },
+      ],
+    });
     await harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
       index: 0,
       startedAt: "2026-08-06T12:00:00.100Z",
