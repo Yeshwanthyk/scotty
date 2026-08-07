@@ -5,6 +5,7 @@ import type { EvidenceStateV1 } from "../src/evidence-contracts";
 import { sha256Hex } from "../src/digest";
 import {
   createSessionHarness,
+  injectedHarnessFailure,
   SESSION_ID,
   sessionHarnessKeys,
   type HarnessOptions,
@@ -77,6 +78,52 @@ describe("evidence session lifecycle", () => {
           }),
         ),
       );
+    }),
+  );
+
+  it.effect("preserves the pre-evidence lifecycle exactly when the gate is disabled", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const clock = yield* Clock.Clock;
+      const malformedEvidence = { version: 1, activeJob: "malformed" };
+      const malformedRuntimeEpoch = { epoch: "malformed" };
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          evidenceEnabled: false,
+          failureStage: "runtimeEpochPut",
+          clock,
+          initialEntries: {
+            [sessionHarnessKeys.record]: makeSessionRecord({
+              id: SESSION_ID,
+              hardCapAt: "2026-08-06T13:00:00.000Z",
+            }),
+            [sessionHarnessKeys.evidence]: malformedEvidence,
+            [sessionHarnessKeys.runtimeEpoch]: malformedRuntimeEpoch,
+          },
+          onStorageGet: (key) => {
+            if (key === sessionHarnessKeys.evidence || key === sessionHarnessKeys.runtimeEpoch)
+              throw injectedHarnessFailure(`disabled lifecycle read ${key}`);
+          },
+        }),
+      );
+      harness.injectFailure("runtimeEpochDelete");
+
+      yield* Effect.promise(() => harness.startRuntime());
+      yield* Effect.promise(() => harness.stopRuntime());
+
+      assert.deepStrictEqual(harness.read(sessionHarnessKeys.evidence), malformedEvidence);
+      assert.deepStrictEqual(harness.read(sessionHarnessKeys.runtimeEpoch), malformedRuntimeEpoch);
+      assert.deepInclude(harness.readRecord(), {
+        status: "failed",
+        failure: {
+          code: "runtime_stopped",
+          message: "Sandbox runtime stopped before a managed checkpoint",
+          recoverable: false,
+        },
+      });
+      assert.notInclude(harness.events, `storage:delete:${sessionHarnessKeys.runtimeEpoch}`);
+      assert.notInclude(harness.events, `storage:put:${sessionHarnessKeys.runtimeEpoch}`);
+      assert.notInclude(harness.events, `storage:put:${sessionHarnessKeys.evidence}`);
     }),
   );
 
@@ -187,6 +234,30 @@ describe("evidence session lifecycle", () => {
       const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
       assert.strictEqual(accepted.runtimeEpoch, runtimeEpoch);
       assert.strictEqual(accepted.previewCookieDigest, null);
+    }),
+  );
+
+  it.effect("recovers a persisted running epoch in a replacement DO instance", () =>
+    Effect.gen(function* () {
+      const original = yield* createHarness();
+      yield* Effect.promise(() => original.startRuntime());
+      const runtimeEpoch = original.read<string>(sessionHarnessKeys.runtimeEpoch);
+      assert.match(runtimeEpoch ?? "", /^[0-9a-f]{32}$/u);
+      const clock = yield* Clock.Clock;
+      const replacement = yield* Effect.promise(() =>
+        createSessionHarness({
+          evidenceEnabled: true,
+          clock,
+          rawPiContainerRunning: true,
+          sharedMemory: original.memory,
+        }),
+      );
+
+      const accepted = yield* Effect.promise(() =>
+        replacement.sandbox.acceptScottyEvidenceJob(job),
+      );
+      assert.strictEqual(accepted.runtimeEpoch, runtimeEpoch);
+      assert.strictEqual(replacement.read<string>(sessionHarnessKeys.runtimeEpoch), runtimeEpoch);
     }),
   );
 
@@ -408,6 +479,35 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
+  it.effect("destroys compute and fails the callback when cleanup retry scheduling fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness({ previewBase: "preview.scotty.example" });
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      yield* Effect.promise(() =>
+        harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
+      );
+      harness.injectFailure("previewUnexpose");
+      harness.injectFailure("hardCapSchedule");
+
+      const enforced = yield* Effect.result(
+        Effect.tryPromise({
+          try: () => harness.sandbox.enforceHardCap({ hardCapAt: "2026-08-06T13:00:00.000Z" }),
+          catch: (cause) => cause,
+        }),
+      );
+      assert.ok(Result.isFailure(enforced));
+      assert.include(harness.events, "host:destroy");
+      assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
+      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+        status: "interrupted",
+        exposure: "unexpose_pending",
+        previewCookieDigest: null,
+      });
+      assert.deepStrictEqual(harness.exposedPreviewPorts(), [job.port]);
+    }),
+  );
+
   it.effect("fails closed when runtime epoch start or stop persistence is ambiguous", () =>
     Effect.gen(function* () {
       const failedStart = yield* createHarness({ failureStage: "runtimeEpochPut" });
@@ -458,7 +558,7 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("blocks vaporize and hard-cap progress while preview cleanup is ambiguous", () =>
+  it.effect("keeps vaporize fail-closed but hard cap destroys compute with cleanup pending", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness({ previewBase: "preview.scotty.example" });
       yield* Effect.promise(() => harness.startRuntime());
@@ -481,8 +581,16 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(pending?.previewCookieDigest, null);
       assert.strictEqual(pending?.exposure, "unexpose_pending");
 
+      const hardCapStart = harness.events.length;
       yield* Effect.promise(() =>
         harness.sandbox.enforceHardCap({ hardCapAt: "2026-08-06T13:00:00.000Z" }),
+      );
+      const hardCapEvents = harness.events.slice(hardCapStart);
+      assert.include(hardCapEvents, `storage:put:${sessionHarnessKeys.evidence}`);
+      assert.include(hardCapEvents, "host:destroy");
+      assert.isBelow(
+        hardCapEvents.indexOf(`storage:put:${sessionHarnessKeys.evidence}`),
+        hardCapEvents.indexOf("host:destroy"),
       );
       assert.deepInclude(
         harness.schedules.find(({ callback }) => callback === "enforceHardCap"),
@@ -492,6 +600,12 @@ describe("evidence session lifecycle", () => {
         },
       );
       assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
+      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+        status: "interrupted",
+        exposure: "unexpose_pending",
+        previewCookieDigest: null,
+      });
+      assert.deepStrictEqual(harness.exposedPreviewPorts(), [job.port]);
 
       harness.clearFailure("previewUnexpose");
       const gone = yield* Effect.promise(() => harness.sandbox.vaporizeScottySession());

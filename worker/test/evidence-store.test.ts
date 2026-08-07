@@ -9,6 +9,7 @@ import {
   type ArtifactStoreCapabilities,
 } from "../src/artifact-store";
 import {
+  EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
   type BrowserEvidenceJobV1,
   type EvidenceArtifactV1,
   type EvidenceJobSummaryV1,
@@ -48,6 +49,32 @@ const JOB: BrowserEvidenceJobV1 = {
   ],
 };
 
+const LEGACY_ACTIVE_STATE = {
+  version: 1,
+  nextSequence: 1,
+  activeJob: {
+    version: 1,
+    sequence: 0,
+    jobId: "legacy-job",
+    status: "accepted",
+    acceptedAt: "2026-08-06T12:00:00.000Z",
+    totalSteps: 1,
+    completedSteps: 0,
+    replay: false,
+    steps: [],
+    frameCount: 0,
+    operationNonce: "legacy-operation",
+    port: 4_173,
+    runtimeEpoch: "runtime-1",
+    deadlineAt: "2026-08-06T12:05:00.000Z",
+    stepPlan: [{ name: "Shows the ready state", action: "goto", assertions: ["textExact"] }],
+  },
+  jobs: [],
+  artifacts: [],
+  pendingDeletes: [],
+  retainedBytes: 0,
+};
+
 const makeArtifactCapabilities = () => {
   const objects = new Map<string, ArtifactObjectMetadata & { readonly bytes: Uint8Array }>();
   const capabilities: ArtifactStoreCapabilities = {
@@ -81,7 +108,7 @@ const makeArtifactCapabilities = () => {
   return { capabilities, objects };
 };
 
-const makeAuthorityStorage = (initialEvidence?: EvidenceStateV1) => {
+const makeAuthorityStorage = (initialEvidence?: unknown) => {
   let record: unknown = makeSessionRecord({
     id: SESSION_ID,
     hardCapAt: "2026-08-06T13:00:00.000Z",
@@ -283,6 +310,34 @@ describe("EvidenceStore", () => {
       ).pipe(Effect.provide(testLayers));
       assert.strictEqual(artifacts.objects.size, 0);
       assert.strictEqual(authority.readEvidence(), undefined);
+    }),
+  );
+
+  it.effect("reads legacy active state as closed and refuses to expose it", () =>
+    Effect.gen(function* () {
+      const authority = makeAuthorityStorage(LEGACY_ACTIVE_STATE);
+      const artifacts = makeArtifactCapabilities();
+      const testLayers = layers(authority.storage, artifacts.capabilities);
+      yield* TestClock.setTime(NOW);
+
+      const state = yield* Effect.flatMap(EvidenceStore, (store) => store.read).pipe(
+        Effect.provide(testLayers),
+      );
+      assert.deepInclude(state.activeJob, {
+        routeNonce: EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
+        previewCookieDigest: null,
+        exposure: "closed",
+      });
+      const exposure = yield* Effect.result(
+        Effect.flatMap(EvidenceStore, (store) =>
+          store.beginPreviewExposure("legacy-operation", {
+            runtimeEpoch: "runtime-1",
+            runtimeRunning: true,
+          }),
+        ).pipe(Effect.provide(testLayers)),
+      );
+      assert.deepInclude(failure(exposure), { reason: "preview_unavailable" });
+      assert.notProperty(authority.readEvidence()?.activeJob, "routeNonce");
     }),
   );
 

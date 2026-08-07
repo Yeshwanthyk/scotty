@@ -302,7 +302,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly authoritativeStorage: SessionRecordStorage;
   private readonly evidenceEnabled: boolean;
   private readonly previewBase: string | undefined;
-  private runtimeEpochReady = false;
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
   private createInFlight: InFlightCreate | undefined;
@@ -419,7 +418,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly currentRuntimeEpochProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    if (!this.runtimeEpochReady)
+    if (this.rawContainer?.running !== true)
       return yield* new EvidenceStateError({ reason: "preview_unavailable" });
     const getRuntimeEpoch = this.authoritativeStorage.getRuntimeEpoch;
     if (getRuntimeEpoch === undefined)
@@ -1600,9 +1599,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
           this.cleanupEvidencePreviewProgram(record.operation.nonce, "deadline"),
         );
         if (Result.isFailure(cleaned)) {
-          yield* hostEffect("schedule", () =>
-            this.schedule(EVIDENCE_CLEANUP_RETRY_SECONDS, "enforceHardCap", payload),
+          const rescheduled = yield* Effect.result(
+            hostEffect("schedule", () =>
+              this.schedule(EVIDENCE_CLEANUP_RETRY_SECONDS, "enforceHardCap", payload),
+            ),
           );
+          const destroyed = yield* Effect.result(this.destroyFailedRuntimeProgram(record.id));
+          if (Result.isFailure(destroyed)) return yield* destroyed.failure;
+          if (Result.isFailure(rescheduled)) return yield* rescheduled.failure;
           return;
         }
         const interrupted = yield* Effect.result(
@@ -2223,12 +2227,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   override async onStart(): Promise<void> {
-    this.runtimeEpochReady = false;
+    if (!this.evidenceEnabled) return super.onStart();
     const staleEvidence = await this.#run(
       Effect.result(this.interruptEvidenceForRuntimeStopProgram()),
     );
     if (Result.isFailure(staleEvidence)) return this.#run(Effect.fail(staleEvidence.failure));
-    await this.#run(this.deleteRuntimeEpochProgram());
     await super.onStart();
     const runtimeEpoch = randomToken(16);
     const stored = await this.#run(Effect.result(this.putRuntimeEpochProgram(runtimeEpoch)));
@@ -2236,11 +2239,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
       await this.#run(Effect.result(this.deleteRuntimeEpochProgram()));
       return this.#run(Effect.fail(stored.failure));
     }
-    this.runtimeEpochReady = true;
   }
 
   override async onStop(): Promise<void> {
-    this.runtimeEpochReady = false;
+    if (!this.evidenceEnabled) {
+      await super.onStop();
+      return this.#run(this.onStopProgram());
+    }
     const cleanup = await this.#run(Effect.result(this.interruptEvidenceForRuntimeStopProgram()));
     if (Result.isFailure(cleanup))
       console.error("Evidence runtime-stop cleanup remains pending", {

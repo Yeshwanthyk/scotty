@@ -14,7 +14,7 @@ import {
   EvidenceStateError,
   artifactExpiry,
   decodeEvidenceObjectKey,
-  decodeEvidenceStateResult,
+  decodeStoredEvidenceStateResult,
   emptyEvidenceState,
   evidenceArtifactObjectKey,
   evidenceSummaryProjection,
@@ -145,7 +145,7 @@ const decodeState = (
   value === undefined
     ? Result.succeed(emptyEvidenceState())
     : Result.mapError(
-        decodeEvidenceStateResult(value),
+        decodeStoredEvidenceStateResult(value),
         () => new EvidenceStateError({ reason: "invalid" }),
       );
 

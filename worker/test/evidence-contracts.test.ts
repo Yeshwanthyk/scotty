@@ -1,8 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Option, Result } from "effect";
 import {
+  EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
   decodeBrowserEvidenceJob,
   decodeEvidenceStateResult,
+  decodeStoredEvidenceStateResult,
   emptyEvidenceState,
 } from "../src/evidence-contracts";
 
@@ -11,6 +13,32 @@ const step = {
   action: { kind: "goto", path: "/" },
   expect: [{ kind: "urlPath", expected: "/" }],
 } as const;
+
+const legacyActiveState = {
+  version: 1,
+  nextSequence: 1,
+  activeJob: {
+    version: 1,
+    sequence: 0,
+    jobId: "legacy-job",
+    status: "accepted",
+    acceptedAt: "2026-08-06T12:00:00.000Z",
+    totalSteps: 1,
+    completedSteps: 0,
+    replay: false,
+    steps: [],
+    frameCount: 0,
+    operationNonce: "legacy-operation",
+    port: 4_173,
+    runtimeEpoch: "legacy-runtime",
+    deadlineAt: "2026-08-06T12:05:00.000Z",
+    stepPlan: [{ name: "Open the app", action: "goto", assertions: ["urlPath"] }],
+  },
+  jobs: [],
+  artifacts: [],
+  pendingDeletes: [],
+  retainedBytes: 0,
+};
 
 describe("evidence contracts", () => {
   it("decodes the bounded declarative job without retaining excess input", () => {
@@ -48,6 +76,26 @@ describe("evidence contracts", () => {
     assert.ok(
       Result.isFailure(
         decodeEvidenceStateResult({ ...empty, retainedBytes: -1, previewCookie: "secret" }),
+      ),
+    );
+  });
+
+  it("normalizes only the legacy active storage shape into closed preview authority", () => {
+    assert.ok(Result.isFailure(decodeEvidenceStateResult(legacyActiveState)));
+    const stored = decodeStoredEvidenceStateResult(legacyActiveState);
+    assert.ok(Result.isSuccess(stored));
+    assert.deepInclude(stored.success.activeJob, {
+      routeNonce: EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
+      previewCookieDigest: null,
+      exposure: "closed",
+    });
+    assert.ok(Result.isSuccess(decodeEvidenceStateResult(stored.success)));
+    assert.ok(
+      Result.isFailure(
+        decodeStoredEvidenceStateResult({
+          ...legacyActiveState,
+          activeJob: { ...legacyActiveState.activeJob, routeNonce: "partially_migrated" },
+        }),
       ),
     );
   });

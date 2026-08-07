@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect";
+import { Option, Result, Schema } from "effect";
 
 export const EVIDENCE_STATE_VERSION = 1 as const;
 export const EVIDENCE_MAX_STEPS = 12;
@@ -290,18 +290,22 @@ const EvidenceStepPlanSchema = Schema.Struct({
   ),
 });
 
-export const EvidenceActiveJobV1Schema = Schema.Struct({
+const LegacyEvidenceActiveJobV1Schema = Schema.Struct({
   ...EvidenceJobSummaryV1Schema.fields,
   operationNonce: IdentifierSchema,
   port: PositivePortSchema,
   runtimeEpoch: IdentifierSchema,
-  routeNonce: EvidenceRouteNonceSchema,
-  previewCookieDigest: Schema.NullOr(Sha256Schema),
-  exposure: Schema.Literals(["not_exposed", "active", "unexpose_pending", "closed"]),
   deadlineAt: Schema.String,
   stepPlan: Schema.NonEmptyArray(EvidenceStepPlanSchema).check(
     Schema.isMaxLength(EVIDENCE_MAX_STEPS),
   ),
+});
+
+export const EvidenceActiveJobV1Schema = Schema.Struct({
+  ...LegacyEvidenceActiveJobV1Schema.fields,
+  routeNonce: EvidenceRouteNonceSchema,
+  previewCookieDigest: Schema.NullOr(Sha256Schema),
+  exposure: Schema.Literals(["not_exposed", "active", "unexpose_pending", "closed"]),
 });
 export type EvidenceActiveJobV1 = typeof EvidenceActiveJobV1Schema.Type;
 
@@ -323,16 +327,25 @@ export interface ExposedEvidencePreviewV1 {
   readonly expiresAt: string;
 }
 
-export const EvidenceStateV1Schema = Schema.Struct({
+const EvidenceStateV1CommonFields = {
   version: Schema.Literal(EVIDENCE_STATE_VERSION),
   nextSequence: NonNegativeIntSchema,
-  activeJob: Schema.optionalKey(EvidenceActiveJobV1Schema),
   jobs: Schema.Array(EvidenceJobSummaryV1Schema).check(
     Schema.isMaxLength(EVIDENCE_MAX_RETAINED_JOBS),
   ),
   artifacts: Schema.Array(EvidenceArtifactV1Schema).check(Schema.isMaxLength(1_200)),
   pendingDeletes: Schema.Array(EvidenceDeleteV1Schema).check(Schema.isMaxLength(1_200)),
   retainedBytes: NonNegativeIntSchema,
+};
+
+const LegacyEvidenceStateV1Schema = Schema.Struct({
+  ...EvidenceStateV1CommonFields,
+  activeJob: Schema.optionalKey(LegacyEvidenceActiveJobV1Schema),
+});
+
+export const EvidenceStateV1Schema = Schema.Struct({
+  ...EvidenceStateV1CommonFields,
+  activeJob: Schema.optionalKey(EvidenceActiveJobV1Schema),
 });
 export type EvidenceStateV1 = typeof EvidenceStateV1Schema.Type;
 
@@ -348,6 +361,31 @@ export const emptyEvidenceState = (): EvidenceStateV1 => ({
 export const decodeEvidenceStateResult = Schema.decodeUnknownResult(EvidenceStateV1Schema, {
   onExcessProperty: "error",
 });
+
+const decodeLegacyEvidenceStateResult = Schema.decodeUnknownResult(LegacyEvidenceStateV1Schema, {
+  onExcessProperty: "error",
+});
+
+export const EVIDENCE_COMPATIBILITY_ROUTE_NONCE = "legacy_closed_v1";
+
+export const decodeStoredEvidenceStateResult = (value: unknown) => {
+  const current = decodeEvidenceStateResult(value);
+  if (Result.isSuccess(current)) return current;
+  return Result.map(decodeLegacyEvidenceStateResult(value), (legacy): EvidenceStateV1 => {
+    const { activeJob, ...state } = legacy;
+    return activeJob === undefined
+      ? state
+      : {
+          ...state,
+          activeJob: {
+            ...activeJob,
+            routeNonce: EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
+            previewCookieDigest: null,
+            exposure: "closed",
+          },
+        };
+  });
+};
 
 export const BrowserEvidenceResultV1Schema = Schema.Struct({
   version: Schema.Literal(1),

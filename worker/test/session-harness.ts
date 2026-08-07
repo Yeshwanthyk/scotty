@@ -92,6 +92,7 @@ export interface HarnessOptions {
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
   readonly rotateEpochAfterPreviewExpose?: boolean;
+  readonly sharedMemory?: InMemoryFaultInjectableFake;
   readonly onStorageGet?: (
     key: string,
     count: number,
@@ -138,7 +139,7 @@ export interface SessionHarness {
 }
 
 class HarnessStorage {
-  readonly memory = new InMemoryFaultInjectableFake();
+  readonly memory: InMemoryFaultInjectableFake;
   private alarm: number | null = null;
   private failNextGet = false;
   private readonly getCounts = new Map<string, number>();
@@ -151,7 +152,9 @@ class HarnessStorage {
     private readonly crashAfterInitialRecordCommit: boolean,
     private readonly onStorageGet?: HarnessOptions["onStorageGet"],
     transactionFailureCountdown?: number,
+    sharedMemory?: InMemoryFaultInjectableFake,
   ) {
+    this.memory = sharedMemory ?? new InMemoryFaultInjectableFake();
     for (const [key, value] of Object.entries(initialEntries)) {
       this.memory.values.set(key, structuredClone(value));
     }
@@ -370,6 +373,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     options.crashAfterInitialRecordCommit ?? false,
     options.onStorageGet,
     options.transactionFailureCountdown,
+    options.sharedMemory,
   );
   const constructorWork: Promise<unknown>[] = [];
 
