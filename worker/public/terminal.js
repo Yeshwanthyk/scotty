@@ -4,6 +4,11 @@ import { createComposerDrafts } from "/terminal-draft.js";
 import { renderCommandReceipts } from "/terminal-command-view.js";
 import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
+import {
+  browserEvidenceAttachment,
+  browserEvidenceStatusLabel,
+  browserEvidenceSummary,
+} from "/terminal-evidence-attachment.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
 import { evictableSessions, hasBlockingCommands } from "/terminal-session-cache.js";
 import {
@@ -454,7 +459,12 @@ function renderTool(tool, disclosureKey) {
   const details = document.createElement("details");
   details.className = "tool-row";
   const status = tool.error || tool.status === "error" ? "error" : (tool.status ?? "done");
-  applyDisclosureState(details, `tool:${disclosureKey}`, status === "error");
+  const evidence = browserEvidenceAttachment(tool, currentSessionId);
+  applyDisclosureState(
+    details,
+    `tool:${disclosureKey}`,
+    status === "error" || evidence !== undefined,
+  );
   const summary = document.createElement("summary");
   setWorklogFocusKey(summary, `tool:${disclosureKey}`);
   summary.append(
@@ -478,7 +488,125 @@ function renderTool(tool, disclosureKey) {
     const body = textElement("div", "tool-body", toolBody(tool));
     details.append(body);
   }
+  if (evidence !== undefined) details.append(renderBrowserEvidenceAttachment(evidence));
   return details;
+}
+
+function renderBrowserEvidenceAttachment(evidence) {
+  const attachment = document.createElement("section");
+  attachment.className = "browser-evidence";
+  attachment.setAttribute("aria-label", "Browser test evidence");
+  if (evidence.kind !== "evidence") {
+    attachment.dataset.state = "unavailable";
+    attachment.append(
+      textElement("strong", "browser-evidence-title", "Evidence unavailable"),
+      textElement(
+        "p",
+        "browser-evidence-unavailable",
+        "This tool result could not be safely matched to this session.",
+      ),
+    );
+    return attachment;
+  }
+
+  renderBrowserEvidenceLoading(attachment, evidence);
+  void loadBrowserEvidenceSummary(attachment, evidence);
+  return attachment;
+}
+
+function evidenceHeader(status, passedAssertions, totalAssertions) {
+  const header = document.createElement("header");
+  header.className = "browser-evidence-header";
+  const title = document.createElement("span");
+  title.className = "browser-evidence-title";
+  title.append(
+    textElement("i", "browser-evidence-dot", ""),
+    document.createTextNode(browserEvidenceStatusLabel(status)),
+  );
+  const assertionCopy =
+    totalAssertions === undefined
+      ? "Loading assertions…"
+      : `${passedAssertions}/${totalAssertions} assertions passed`;
+  header.append(title, textElement("span", "browser-evidence-assertions", assertionCopy));
+  return header;
+}
+
+function replayLink(evidence) {
+  const link = textElement("a", "browser-evidence-link", "Open Replay");
+  link.href = evidence.paths.replay;
+  link.setAttribute("data-worklog-focus-key", `evidence:${evidence.jobId}:replay`);
+  return link;
+}
+
+function renderBrowserEvidenceLoading(attachment, evidence) {
+  attachment.dataset.status = evidence.status;
+  attachment.replaceChildren(evidenceHeader(evidence.status), replayLink(evidence));
+  if (evidence.status === "failed" && evidence.frameCount === 0) {
+    attachment.append(
+      textElement(
+        "p",
+        "browser-evidence-no-frame",
+        "The run failed before a screenshot was available.",
+      ),
+    );
+  }
+}
+
+async function loadBrowserEvidenceSummary(attachment, evidence) {
+  let summary;
+  try {
+    const response = await fetch(evidence.paths.summary, {
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) throw new Error("Evidence summary unavailable");
+    summary = browserEvidenceSummary(await response.json(), evidence);
+  } catch {
+    summary = undefined;
+  }
+  if (!summary) {
+    attachment.dataset.state = "unavailable";
+    attachment.replaceChildren(
+      textElement("strong", "browser-evidence-title", "Evidence unavailable"),
+      textElement(
+        "p",
+        "browser-evidence-unavailable",
+        "The authenticated evidence summary is not available.",
+      ),
+      replayLink(evidence),
+    );
+    return;
+  }
+
+  attachment.dataset.status = summary.status;
+  attachment.replaceChildren(
+    evidenceHeader(summary.status, summary.passedAssertions, summary.totalAssertions),
+  );
+  if (summary.frames.length > 0) {
+    const frames = document.createElement("div");
+    frames.className = "browser-evidence-frames";
+    frames.setAttribute("aria-label", "Verified screenshots");
+    for (const frame of summary.frames) {
+      const path = evidence.paths.frame(frame.frameId);
+      if (!path) continue;
+      const image = document.createElement("img");
+      image.src = path;
+      image.alt = `Screenshot for step ${frame.stepIndex + 1}: ${frame.stepName}`;
+      image.loading = "lazy";
+      image.decoding = "async";
+      frames.append(image);
+    }
+    attachment.append(frames);
+  } else if (summary.status === "failed") {
+    attachment.append(
+      textElement(
+        "p",
+        "browser-evidence-no-frame",
+        "The run failed before a screenshot was available.",
+      ),
+    );
+  }
+  attachment.append(replayLink(evidence));
 }
 
 function secondaryActivityTool(tool) {
