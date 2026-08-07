@@ -131,7 +131,8 @@ function bindings(namespace: Bindings["SANDBOX"]): Bindings {
 
 const context = (containerId = SOURCE_CONTAINER_ID): OutboundHandlerContext<unknown> => ({
   containerId,
-  className: "ScottySandbox",
+  // @cloudflare/containers passes the TypeScript constructor name, not the deployed binding name.
+  className: "Sandbox",
 });
 
 function errorCode(value: unknown): string | undefined {
@@ -190,28 +191,26 @@ describe("container-only session egress", () => {
     assert.strictEqual(nativeFetchCalls, 0);
   });
 
-  it("dispatches the reserved host in the exported proxy without reaching native fallback", async () => {
-    const operations: unknown[] = [];
+  it("dispatches evidence with the SDK runtime class in the exported proxy", async () => {
+    const jobs: unknown[] = [];
     const source = {
-      containerSessionRequest: async (operation: unknown) => {
-        operations.push(operation);
-        return Response.json(snapshot());
+      runScottyEvidenceJob: async (job: unknown) => {
+        jobs.push(job);
+        return evidenceResult();
       },
     };
     const env = bindings(sandboxNamespace({ fromString: () => source }));
     const proxy: ContainerProxy = Object.create(ContainerProxy.prototype);
     Reflect.set(proxy, "env", env);
     Reflect.set(proxy, "ctx", {
-      props: { containerId: SOURCE_CONTAINER_ID, className: "ScottySandbox" },
+      props: { containerId: SOURCE_CONTAINER_ID, className: "Sandbox" },
     });
     const fallback = vi.spyOn(SandboxContainerProxy.prototype, "fetch");
 
-    const response = await proxy.fetch(
-      new Request(`https://${SCOTTY_INTERNAL_HOST}/api/sessions/${TARGET_ID}/inspect`),
-    );
+    const response = await proxy.fetch(evidenceRequest());
 
     assert.strictEqual(response.status, 200);
-    assert.deepStrictEqual(operations, [{ version: 1, action: "inspect", targetId: TARGET_ID }]);
+    assert.deepStrictEqual(jobs, [evidenceJob()]);
     assert.strictEqual(fallback.mock.calls.length, 0);
     fallback.mockRestore();
   });
@@ -359,7 +358,7 @@ describe("container-only session egress", () => {
     assert.strictEqual(response.headers.get("cache-control"), "no-store");
   });
 
-  it("rejects evidence caller authority, source mismatches, invalid routes, and a disabled gate", async () => {
+  it("rejects evidence caller authority, missing source identity, invalid routes, and a disabled gate", async () => {
     let sourceCalls = 0;
     const source = {
       runScottyEvidenceJob: async () => {
@@ -391,11 +390,14 @@ describe("container-only session egress", () => {
 
     const noIdentity = await handler(evidenceRequest(), env, context(""));
     assert.strictEqual(noIdentity.status, 401);
-    const wrongClass = await handler(evidenceRequest(), env, {
-      containerId: SOURCE_CONTAINER_ID,
-      className: "CallerSelectedSandbox",
-    });
-    assert.strictEqual(wrongClass.status, 401);
+    for (const className of ["ScottySandbox", "ContainerProxy", "CallerSelectedSandbox"]) {
+      const wrongClass = await handler(evidenceRequest(), env, {
+        containerId: SOURCE_CONTAINER_ID,
+        className,
+      });
+      assert.strictEqual(wrongClass.status, 401);
+      assert.strictEqual(errorCode(await wrongClass.json()), "auth");
+    }
     const disabled = await handler(
       evidenceRequest(),
       { ...env, SCOTTY_BROWSER_TEST_ENABLED: "false" },
