@@ -5,6 +5,7 @@ import {
   resolveKeyedItems,
   semanticSignature,
 } from "../public/terminal-worklog-view.js";
+import evidenceAttachmentSource from "../public/terminal-evidence-attachment.js?raw";
 import terminalHtml from "../public/terminal.html?raw";
 import terminalSource from "../public/terminal.js?raw";
 import worklogViewSource from "../public/terminal-worklog-view.js?raw";
@@ -186,7 +187,23 @@ describe("terminal worklog view", () => {
     assert.include(terminalSource, "`ask:${request.id}:cancel`");
   });
 
-  it("uses a dedicated live region and the keyed module without innerHTML", () => {
+  it("renders browser evidence inside its keyed tool without changing generic tools", () => {
+    assert.include(terminalSource, 'from "/terminal-evidence-attachment.js"');
+    assert.include(terminalSource, "browserEvidenceAttachment(tool, currentSessionId)");
+    assert.include(terminalSource, "details.append(renderBrowserEvidenceAttachment(evidence))");
+    assert.include(terminalSource, 'image.loading = "lazy"');
+    assert.include(terminalSource, 'cache: "no-store"');
+    assert.include(terminalSource, 'credentials: "same-origin"');
+    assert.include(terminalSource, '"Open Replay"');
+    assert.include(terminalSource, "browserEvidenceNoFrameCopy(summary.status)");
+    assert.include(evidenceAttachmentSource, "The run failed before a screenshot was available.");
+    assert.include(terminalSource, "Evidence unavailable");
+    assert.include(evidenceAttachmentSource, "value.summaryUrl !== paths.replay");
+    assert.notInclude(evidenceAttachmentSource, "base64");
+    assert.notInclude(evidenceAttachmentSource, "objectKey");
+  });
+
+  it("uses a dedicated live region and the keyed modules without innerHTML", () => {
     const feedTag = terminalHtml.match(/<div id="worklog-feed"[^>]*>/u)?.[0];
     assert.ok(feedTag);
     assert.notInclude(feedTag, "aria-live");
@@ -197,7 +214,9 @@ describe("terminal worklog view", () => {
     assert.include(terminalSource, 'from "/terminal-worklog-view.js"');
     assert.include(terminalSource, "worklogView.update(entries)");
     assert.include(terminalSource, "data-worklog-focus-key");
+    assert.notInclude(terminalSource, "innerHTML");
     assert.notInclude(worklogViewSource, "innerHTML");
+    assert.notInclude(evidenceAttachmentSource, "innerHTML");
   });
 });
 
