@@ -85,6 +85,7 @@ declare const document: KitesurfCssDocument;
 
 interface KitesurfRuntimePage {
   readonly close: Page["close"];
+  readonly context: () => KitesurfRuntimeContext;
   readonly evaluate: Page["evaluate"];
   readonly getByTestId: (value: string) => KitesurfRuntimeLocator;
   readonly goto: Page["goto"];
@@ -95,8 +96,6 @@ interface KitesurfRuntimePage {
 
 interface KitesurfRuntimeContext {
   readonly addCookies: BrowserContext["addCookies"];
-  readonly close: BrowserContext["close"];
-  readonly newPage: () => Promise<KitesurfRuntimePage>;
   readonly pages: () => ReadonlyArray<KitesurfRuntimePage>;
   readonly route?: BrowserContext["route"];
   readonly routeWebSocket?: BrowserContext["routeWebSocket"];
@@ -104,9 +103,9 @@ interface KitesurfRuntimeContext {
 
 interface KitesurfRuntimeBrowser {
   readonly close: SessionlessBrowser["close"];
-  readonly newContext: (
-    options: Parameters<SessionlessBrowser["newContext"]>[0],
-  ) => Promise<KitesurfRuntimeContext>;
+  readonly newPage: (
+    options: Parameters<SessionlessBrowser["newPage"]>[0],
+  ) => Promise<KitesurfRuntimePage>;
   readonly sessionId: () => string | undefined;
 }
 
@@ -371,7 +370,11 @@ const makePage = (
     screenshot: boundedRuntimeEffect(
       "screenshot",
       "ambiguous",
-      () => page.screenshot(),
+      () =>
+        page.screenshot({
+          type: "png",
+          timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
+        }),
       KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
     ).pipe(Effect.tap(() => singlePage(context, page))),
   };
@@ -495,54 +498,26 @@ export const makeKitesurfClient = (
                 operation: "verify_sessionless",
                 reason: "unsupported",
               });
-            return yield* Effect.acquireUseRelease(
-              boundedRuntimeEffect(
-                "create_context",
-                "ambiguous",
-                () =>
-                  browser.newContext({
-                    serviceWorkers: "block",
-                    ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
-                  }),
-                resourceTimeoutMillis,
-                (context) =>
-                  compensateLateResource(
-                    "close_context",
-                    () => context.close(),
-                    resourceTimeoutMillis,
-                  ),
-              ),
-              (context) =>
-                installContextPolicy(context, origin, options.cookieSecret).pipe(
-                  Effect.andThen(
-                    boundedRuntimeEffect(
-                      "create_page",
-                      "ambiguous",
-                      () => context.newPage(),
-                      resourceTimeoutMillis,
-                      (page) =>
-                        compensateLateResource(
-                          "close_page",
-                          () => page.close(),
-                          resourceTimeoutMillis,
-                        ),
-                    ).pipe(
-                      Effect.flatMap((page) =>
-                        singlePage(context, page).pipe(
-                          Effect.andThen(use(makePage(origin, context, page))),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              (context, exit) =>
-                releaseResource(
-                  "close_context",
-                  () => context.close(),
-                  resourceTimeoutMillis,
-                  exit,
-                ),
+            const page = yield* boundedRuntimeEffect(
+              "create_page",
+              "ambiguous",
+              () =>
+                browser.newPage({
+                  serviceWorkers: "block",
+                  ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
+                }),
+              resourceTimeoutMillis,
+              (page) =>
+                compensateLateResource("close_page", () => page.close(), resourceTimeoutMillis),
             );
+            const context = yield* Effect.try({
+              try: () => page.context(),
+              catch: () =>
+                new KitesurfClientError({ operation: "create_page", reason: "unsupported" }),
+            });
+            yield* installContextPolicy(context, origin, options.cookieSecret);
+            yield* singlePage(context, page);
+            return yield* use(makePage(origin, context, page));
           }),
         (browser, exit) =>
           releaseResource("close_browser", () => browser.close(), resourceTimeoutMillis, exit),
