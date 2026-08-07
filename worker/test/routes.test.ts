@@ -65,6 +65,7 @@ import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
 import { conflict } from "../src/contracts";
+import type { EvidenceStateV1 } from "../src/evidence-contracts";
 import { orderedReplayFrames } from "../public/evidence-view.js";
 import evidenceHtml from "../public/evidence.html?raw";
 import evidenceScript from "../public/evidence.js?raw";
@@ -2376,6 +2377,25 @@ describe("real Hono boundary", () => {
       accepted.operationNonce,
       "succeeded",
     );
+    const internalState = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+    expect(internalState).toBeDefined();
+    if (internalState === undefined) return;
+    harness.memory.values.set(sessionHarnessKeys.evidence, {
+      ...internalState,
+      jobs: internalState.jobs.map((summary) =>
+        summary.jobId === failedSummary.jobId
+          ? {
+              ...summary,
+              diagnostic: {
+                operation: "screenshot",
+                reason: "ambiguous",
+                step: 1,
+                kitesurf: { operation: "screenshot", reason: "ambiguous" },
+              },
+            }
+          : summary,
+      ),
+    } satisfies EvidenceStateV1);
     useRealSandbox(harness);
     const firstFrame = failedSummary.steps[0]?.frame;
     expect(firstFrame).toBeDefined();
@@ -2423,6 +2443,8 @@ describe("real Hono boundary", () => {
     expect(serializedSummary).not.toContain("private-fill-value");
     expect(serializedSummary).not.toContain("undeclared page text");
     expect(serializedSummary).not.toContain('"actual"');
+    expect(serializedSummary).not.toContain("diagnostic");
+    expect(serializedSummary).not.toContain("kitesurf");
     expect(orderedReplayFrames(summaryBody).map((frame) => frame.frameId)).toEqual([
       "frame-1",
       "frame-2",

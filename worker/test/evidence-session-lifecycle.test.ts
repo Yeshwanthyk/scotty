@@ -223,34 +223,55 @@ describe("evidence session lifecycle", () => {
       }),
   );
 
-  it.effect("does not complete a passed step when required screenshot capture fails", () =>
+  it.effect("persists screenshot ambiguity before cleanup and retains it internally", () =>
     Effect.gen(function* () {
+      let inspectPersistedBeforeCleanup = (): void => undefined;
+      let diagnosticObservedBeforeCleanup = false;
       const kitesurfClient = KitesurfClient.of({
         withPage: (_options, use) =>
-          use({
-            goto: () => Effect.void,
-            click: () => Effect.void,
-            fill: () => Effect.void,
-            press: () => Effect.void,
-            isVisible: () => Effect.succeed(true),
-            textContent: () => Effect.succeed("Ready"),
-            count: () => Effect.succeed(1),
-            urlPath: Effect.succeed("/"),
-            screenshot: Effect.fail(
-              new KitesurfClientError({ operation: "screenshot", reason: "ambiguous" }),
-            ),
-          }),
+          Effect.acquireUseRelease(
+            Effect.void,
+            () =>
+              use({
+                goto: () => Effect.void,
+                click: () => Effect.void,
+                fill: () => Effect.void,
+                press: () => Effect.void,
+                isVisible: () => Effect.succeed(true),
+                textContent: () => Effect.succeed("Ready"),
+                count: () => Effect.succeed(1),
+                urlPath: Effect.succeed("/"),
+                screenshot: Effect.fail(
+                  new KitesurfClientError({ operation: "screenshot", reason: "ambiguous" }),
+                ),
+              }),
+            () => Effect.sync(inspectPersistedBeforeCleanup),
+          ),
       });
       const harness = yield* createHarness({
         kitesurfClient,
         previewBase: "preview.scotty.example",
       });
+      inspectPersistedBeforeCleanup = () => {
+        assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+          failure: { code: "interrupted", step: 0 },
+          diagnostic: {
+            operation: "screenshot",
+            reason: "ambiguous",
+            step: 0,
+            kitesurf: { operation: "screenshot", reason: "ambiguous" },
+          },
+        });
+        diagnosticObservedBeforeCleanup = true;
+      };
       yield* Effect.promise(() => harness.startRuntime());
 
       const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
 
+      assert.isTrue(diagnosticObservedBeforeCleanup);
       assert.strictEqual(result.status, "interrupted");
       assert.deepStrictEqual(result.failure, { code: "interrupted", step: 0 });
+      assert.notProperty(result, "diagnostic");
       assert.strictEqual(result.completedSteps, 0);
       assert.strictEqual(result.frameCount, 0);
       assert.deepStrictEqual(harness.artifactKeys(), []);
@@ -260,6 +281,12 @@ describe("evidence session lifecycle", () => {
         completedSteps: 0,
         frameCount: 0,
         failure: { code: "interrupted", step: 0 },
+        diagnostic: {
+          operation: "screenshot",
+          reason: "ambiguous",
+          step: 0,
+          kitesurf: { operation: "screenshot", reason: "ambiguous" },
+        },
       });
       assert.strictEqual(harness.readRecord()?.operation, null);
     }),

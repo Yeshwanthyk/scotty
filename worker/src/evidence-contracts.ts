@@ -191,6 +191,66 @@ export const EvidenceFailureSchema = Schema.Struct({
 });
 export type EvidenceFailure = typeof EvidenceFailureSchema.Type;
 
+export const EvidenceWorkflowOperationSchema = Schema.Literals([
+  "validate",
+  "preview",
+  "phase",
+  "browser",
+  "action",
+  "assertion",
+  "screenshot",
+  "publish",
+  "finalize",
+]);
+export const EvidenceWorkflowReasonSchema = Schema.Literals([
+  "invalid",
+  "unsupported",
+  "ambiguous",
+  "assertion",
+  "deadline",
+  "cleanup",
+  "state",
+  "upstream",
+]);
+export const EvidenceKitesurfOperationSchema = Schema.Literals([
+  "launch",
+  "verify_sessionless",
+  "create_context",
+  "install_network_guard",
+  "install_cookie",
+  "create_page",
+  "goto",
+  "click",
+  "fill",
+  "press",
+  "visible",
+  "text_exact",
+  "count",
+  "url_path",
+  "screenshot",
+  "close_page",
+  "close_context",
+  "close_browser",
+]);
+export const EvidenceKitesurfReasonSchema = Schema.Literals([
+  "ambiguous",
+  "cleanup",
+  "unsupported",
+]);
+export const EvidenceKitesurfDiagnosticSchema = Schema.Struct({
+  operation: EvidenceKitesurfOperationSchema,
+  reason: EvidenceKitesurfReasonSchema,
+});
+export const EvidenceDiagnosticSchema = Schema.Struct({
+  operation: EvidenceWorkflowOperationSchema,
+  reason: EvidenceWorkflowReasonSchema,
+  step: Schema.optionalKey(
+    NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(EVIDENCE_MAX_STEPS - 1)),
+  ),
+  kitesurf: Schema.optionalKey(EvidenceKitesurfDiagnosticSchema),
+});
+export type EvidenceDiagnostic = typeof EvidenceDiagnosticSchema.Type;
+
 export const EvidenceAssertionResultSchema = Schema.Struct({
   kind: EvidenceAssertionKindSchema,
   passed: Schema.Boolean,
@@ -289,6 +349,7 @@ export const EvidenceJobSummaryV1Schema = Schema.Struct({
   steps: Schema.Array(EvidenceStepResultSchema).check(Schema.isMaxLength(EVIDENCE_MAX_STEPS)),
   frameCount: NonNegativeIntSchema,
   failure: Schema.optionalKey(EvidenceFailureSchema),
+  diagnostic: Schema.optionalKey(EvidenceDiagnosticSchema),
 });
 export type EvidenceJobSummaryV1 = typeof EvidenceJobSummaryV1Schema.Type;
 
@@ -645,12 +706,22 @@ export const evidenceSummaryProjection = (
   steps: job.steps,
   frameCount: job.frameCount,
   ...(job.failure === undefined ? {} : { failure: job.failure }),
+  ...(job.diagnostic === undefined ? {} : { diagnostic: job.diagnostic }),
 });
 
 export const publicEvidenceSummaryProjection = (
   job: EvidenceActiveJobV1 | EvidenceJobSummaryV1,
 ): PublicEvidenceJobSummaryV1 => ({
-  ...evidenceSummaryProjection(job),
+  version: 1,
+  sequence: job.sequence,
+  jobId: job.jobId,
+  status: job.status,
+  acceptedAt: job.acceptedAt,
+  ...(job.startedAt === undefined ? {} : { startedAt: job.startedAt }),
+  ...(job.completedAt === undefined ? {} : { completedAt: job.completedAt }),
+  totalSteps: job.totalSteps,
+  completedSteps: job.completedSteps,
+  replay: job.replay,
   steps: job.steps.map((step) => ({
     ...step,
     assertions: [
@@ -664,6 +735,9 @@ export const publicEvidenceSummaryProjection = (
       })),
     ],
   })),
+  frameCount: job.frameCount,
+  ...(job.failure === undefined ? {} : { failure: job.failure }),
+  // Internal diagnostics are durable but never part of the public summary contract.
 });
 
 export const findEvidenceJob = (

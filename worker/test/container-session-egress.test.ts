@@ -333,7 +333,15 @@ describe("container-only session egress", () => {
       },
       runScottyEvidenceJob: async (job: unknown) => {
         jobs.push(job);
-        return evidenceResult();
+        return {
+          ...evidenceResult(),
+          diagnostic: {
+            operation: "screenshot",
+            reason: "ambiguous",
+            step: 0,
+            kitesurf: { operation: "screenshot", reason: "ambiguous" },
+          },
+        };
       },
     };
     const namespace = sandboxNamespace({
