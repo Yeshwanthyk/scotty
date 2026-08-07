@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -14,6 +14,8 @@ import {
   CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
   createProductionDeploymentProgressReporter,
   executeProductionDeploySteps,
+  persistProductionDeploymentFailureDiagnostic,
+  PRODUCTION_DEPLOY_DIAGNOSTIC_PATH,
   PRODUCTION_DEPLOY_STEPS,
   productionDeploymentFailureHint,
   projectAlchemyDeploymentOutput,
@@ -21,6 +23,7 @@ import {
   redactProductionDeploymentOutput,
   resolveProductionTopology,
   runCommand,
+  runProductionDeployStep,
   waitForProductionContainerRollout,
 } from "./deploy-production.mjs";
 import { dedupeBindings, diffBindings, stripEffects } from "../node_modules/alchemy/lib/Diff.js";
@@ -204,6 +207,8 @@ describe("production deployment ownership", () => {
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].projectOutput, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].reportProgress, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].explainFailure, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].failureDiagnostic, true);
+    assert.match(PRODUCTION_DEPLOY_DIAGNOSTIC_PATH, /scotty-production-deploy-failure\.log$/u);
     assert.equal(PRODUCTION_DEPLOY_STEPS[4].redact, true);
     assert.equal(readAlchemyContainerAction("[SandboxContainer] updated\n"), "updated");
     assert.equal(
@@ -363,6 +368,95 @@ describe("production deployment ownership", () => {
       "Deployment progress: uploading Container image.",
       "Deployment progress: applying Cloudflare update.",
     ]);
+  });
+
+  it("persists only a redacted mode-0600 diagnostic for failed Alchemy deploys", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "scotty-deploy-diagnostic-"));
+    const diagnosticPath = join(directory, "failure.log");
+    const environment = {
+      SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED:
+        "confirmed:test:worker=scotty-test-worker:container=scotty-test-sandbox",
+      CLOUDFLARE_API_TOKEN: "synthetic-environment-secret",
+    };
+    const successStep = {
+      name: "Synthetic successful Alchemy deploy",
+      command: process.execPath,
+      args: ["-e", 'process.stdout.write("[SandboxContainer] noop\\n")'],
+      capture: true,
+      projectOutput: true,
+      failureDiagnostic: true,
+    };
+    const failureStep = {
+      ...successStep,
+      name: "Synthetic failed Alchemy deploy",
+      args: [
+        "-e",
+        [
+          'process.stdout.write("image push failed for scotty-test-worker account 0123456789abcdef0123456789abcdef\\n")',
+          'process.stderr.write("{\\\"authorization\\\":\\\"Bearer synthetic-bearer-secret\\\"}\\n")',
+          'process.stderr.write("SCOTTY_GITHUB_TOKEN=synthetic-namespaced-secret\\n")',
+          'process.stderr.write("CLOUDFLARE_API_TOKEN=synthetic-environment-secret\\n")',
+          'process.stderr.write("resource a030af24-612c-4eb0-81cd-873740807d1d\\n")',
+          "process.exit(1)",
+        ].join(";"),
+      ],
+    };
+
+    try {
+      await writeFile(diagnosticPath, "stale", { mode: 0o644 });
+      await runProductionDeployStep(successStep, environment, {
+        failureDiagnosticPath: diagnosticPath,
+      });
+      assert.equal(existsSync(diagnosticPath), false);
+
+      await assert.rejects(
+        runProductionDeployStep(failureStep, environment, {
+          failureDiagnosticPath: diagnosticPath,
+        }),
+        (error) => {
+          assert.match(error.message, /failed with exit code 1/u);
+          assert.match(error.message, /Diagnostic:/u);
+          assert.match(error.message, new RegExp(diagnosticPath.replaceAll("/", "\\/"), "u"));
+          return true;
+        },
+      );
+      const diagnostic = await readFile(diagnosticPath, "utf8");
+      assert.equal((await stat(diagnosticPath)).mode & 0o777, 0o600);
+      assert.match(diagnostic, /stdout \(captured tail\)/u);
+      assert.match(diagnostic, /stderr \(captured tail\)/u);
+      assert.match(diagnostic, /image push failed/u);
+      assert.doesNotMatch(diagnostic, /scotty-test-worker/u);
+      assert.doesNotMatch(diagnostic, /0123456789abcdef0123456789abcdef/u);
+      assert.doesNotMatch(diagnostic, /synthetic-(?:bearer|environment|namespaced)-secret/u);
+      assert.doesNotMatch(diagnostic, /a030af24-612c-4eb0-81cd-873740807d1d/u);
+      assert.match(diagnostic, /\[redacted-worker\]/u);
+      assert.match(diagnostic, /\[redacted-account-id\]/u);
+      assert.match(diagnostic, /\[redacted-secret\]/u);
+      assert.match(diagnostic, /\[redacted-resource-id\]/u);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds each persisted failure stream to the captured tail limit", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "scotty-deploy-diagnostic-tail-"));
+    const diagnosticPath = join(directory, "failure.log");
+    try {
+      await persistProductionDeploymentFailureDiagnostic(
+        {
+          stdout: `${"discarded".repeat(10_000)}stdout-tail`,
+          stderr: `${"discarded".repeat(10_000)}stderr-tail`,
+        },
+        {},
+        diagnosticPath,
+      );
+      const diagnostic = await readFile(diagnosticPath, "utf8");
+      assert.match(diagnostic, /stdout-tail/u);
+      assert.match(diagnostic, /stderr-tail/u);
+      assert.ok(diagnostic.length < 132_000);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("explains transient emulated Container build crashes without adding automatic retries", async () => {
