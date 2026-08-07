@@ -84,14 +84,18 @@ describe("evidence contracts", () => {
       completedSteps: 1,
       frameCount: 1,
       failure: { code: "assertion_mismatch", step: 0 },
-    };
+    } as const;
     assert.ok(Option.isSome(decodeBrowserEvidenceToolResult(result)));
+    const transported = decodeBrowserEvidenceToolResult({
+      ...result,
+      rpcMetadata: "transport-only",
+      cookie: "must-not-cross-boundary",
+    });
+    assert.deepStrictEqual(Option.getOrThrow(transported), result);
     for (const invalid of [
       { ...result, summaryUrl: "https://example.com/evidence/job-abcd1234" },
       { ...result, summaryUrl: "/s/abcdef123456/evidence/different-job" },
       { ...result, frameCount: 13 },
-      { ...result, previewUrl: "https://preview.example" },
-      { ...result, cookie: "secret" },
     ]) {
       assert.ok(Option.isNone(decodeBrowserEvidenceToolResult(invalid)));
     }

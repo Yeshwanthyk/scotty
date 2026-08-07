@@ -13,6 +13,8 @@ import type { EvidenceLocator } from "./evidence-contracts";
 import { EVIDENCE_PREVIEW_COOKIE } from "./evidence-preview";
 
 export const KITESURF_OPERATION_TIMEOUT_MILLIS = 5_000;
+export const KITESURF_SCREENSHOT_TIMEOUT_MILLIS = 15_000;
+export const KITESURF_RESOURCE_TIMEOUT_MILLIS = 15_000;
 const KITESURF_MAX_SAME_ORIGIN_REDIRECTS = 10;
 const KITESURF_MAX_CSS_SELECTOR_LENGTH = 512;
 const PLAYWRIGHT_SELECTOR_ENGINE_PATTERN =
@@ -361,7 +363,7 @@ const makePage = (
     screenshot: checked("screenshot", () =>
       page.screenshot({
         fullPage: false,
-        timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
+        timeout: KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
         type: "png",
       }),
     ),
@@ -453,7 +455,7 @@ const installContextPolicy = (
 export const makeKitesurfClient = (
   binding: BrowserWorker,
   launchBrowser: KitesurfRuntimeLauncher = launchRuntimeKitesurf,
-  resourceTimeoutMillis = KITESURF_OPERATION_TIMEOUT_MILLIS,
+  resourceTimeoutMillis = KITESURF_RESOURCE_TIMEOUT_MILLIS,
 ): KitesurfClientShape =>
   KitesurfClient.of({
     withPage: (options, use) => {
