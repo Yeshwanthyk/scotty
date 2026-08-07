@@ -181,6 +181,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
       SANDBOX: durableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,
+      BROWSER: Cloudflare.Browser("BROWSER"),
       ...topology.vars,
     },
   }).pipe(removalPolicy);

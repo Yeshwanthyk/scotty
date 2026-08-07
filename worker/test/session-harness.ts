@@ -559,6 +559,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         events.push(`r2:delete:${deleted.join(",")}`);
       },
     } as never,
+    BROWSER: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
     PI_AUTH_JSON: JSON.stringify({

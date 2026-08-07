@@ -26,6 +26,7 @@ describe("pinned Task 4 contracts", () => {
     });
     expect(workerPackage.dependencies).toEqual({
       "@cloudflare/containers": "0.3.5",
+      "@cloudflare/playwright": "1.3.5",
       "@cloudflare/sandbox": "0.12.3",
       effect: "4.0.0-beta.103",
       hono: "4.12.31",

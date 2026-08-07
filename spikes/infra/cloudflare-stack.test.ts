@@ -12,6 +12,11 @@ import {
 import { makeInstallationTopology, type AdoptionManifest } from "../../infra/installation.ts";
 
 const source = readFileSync(new URL("../../infra/cloudflare-stack.ts", import.meta.url), "utf8");
+const workerPackageSource = readFileSync(
+  new URL("../../worker/package.json", import.meta.url),
+  "utf8",
+);
+const packageLockSource = readFileSync(new URL("../../package-lock.json", import.meta.url), "utf8");
 const entrypointSource = readFileSync(new URL("../../alchemy.run.ts", import.meta.url), "utf8");
 const externalWorkerSource = readFileSync(
   new URL("../../worker/src/index.ts", import.meta.url),
@@ -130,6 +135,15 @@ describe("Cloudflare stack topology", () => {
 });
 
 describe("Cloudflare stack source contract", () => {
+  it("pins the exact Kitesurf client and declares the native browser binding", () => {
+    assert.match(workerPackageSource, /"@cloudflare\/playwright": "1\.3\.5"/u);
+    assert.match(
+      packageLockSource,
+      /"node_modules\/@cloudflare\/playwright": \{[\s\S]*?"version": "1\.3\.5"/u,
+    );
+    assert.match(source, /BROWSER: Cloudflare\.Browser\("BROWSER"\)/u);
+  });
+
   it("has no committed account, hostname, container UUID, or runner instance name", () => {
     const combined = `${source}\n${entrypointSource}`;
     assert.notMatch(combined, /workers\.dev|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f-]{27}/u);

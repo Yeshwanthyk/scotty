@@ -128,6 +128,7 @@ function env(): Bindings {
     SANDBOX: {} as DurableObjectNamespace<import("../src/session").Sandbox>,
     SESSIONS: emptySessionsNamespace(),
     BACKUP_BUCKET: {} as R2Bucket,
+    BROWSER: undefined as never,
   };
 }
 

@@ -1,3 +1,4 @@
+import type { BrowserWorker } from "@cloudflare/playwright";
 import type { ScottyAuthRegistryNamespace } from "./auth-object";
 import type { ScottyRunnerNamespace } from "./runner-object";
 import type { ScottyRunnerRegistryNamespace } from "./runner-registry-object";
@@ -10,6 +11,7 @@ export interface Bindings {
   SANDBOX: DurableObjectNamespace<Sandbox>;
   SESSIONS: KVNamespace;
   BACKUP_BUCKET: R2Bucket;
+  BROWSER: BrowserWorker;
   ASSETS: Fetcher;
   SCOTTY_TOKEN: string;
   PI_AUTH_JSON: string;

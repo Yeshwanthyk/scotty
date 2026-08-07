@@ -137,6 +137,7 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
       SANDBOX: durableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,
+      BROWSER: Cloudflare.Browser("BROWSER"),
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: names.backups,
       SCOTTY_E2E_CANARY_STAGE: config.stage,
