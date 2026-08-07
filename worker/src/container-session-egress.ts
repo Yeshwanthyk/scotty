@@ -30,7 +30,9 @@ import { scottyErrorResponse } from "./passive-session";
 export const SCOTTY_INTERNAL_HOST = "scotty.internal";
 export const SCOTTY_EVIDENCE_JOB_ROUTE = "/api/evidence/jobs";
 
-const SOURCE_SANDBOX_CLASS = "ScottySandbox";
+// @cloudflare/containers passes the TypeScript constructor name. The Worker exports this class
+// under the separate deployed binding name "ScottySandbox".
+const SOURCE_SANDBOX_CLASS = "Sandbox";
 const CREDENTIAL_HEADERS = new Set([
   "authorization",
   "cookie",
