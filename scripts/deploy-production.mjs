@@ -32,6 +32,7 @@ export const PRODUCTION_DEPLOY_STEPS = [
     projectOutput: true,
     reportProgress: true,
     explainFailure: true,
+    failureDiagnostic: true,
     timeoutMs: 45 * 60 * 1_000,
   },
   {
@@ -47,6 +48,10 @@ const PRODUCTION_AUTH_CLASS_NAME = "ScottyAuthRegistry";
 const PRODUCTION_RUNNER_REGISTRY_CLASS_NAME = "ScottyRunnerRegistry";
 const PRODUCTION_RUNNER_CLASS_NAME = "ScottyRunner";
 const DEPLOY_LOCK_PATH = join(tmpdir(), "scotty-production-deploy.lock");
+export const PRODUCTION_DEPLOY_DIAGNOSTIC_PATH = join(
+  tmpdir(),
+  "scotty-production-deploy-failure.log",
+);
 const DEFAULT_COMMAND_TIMEOUT_MS = 15 * 60 * 1_000;
 const CONTAINER_ROLLOUT_TIMEOUT_MS = 10 * 60 * 1_000;
 const CONTAINER_ROLLOUT_POLL_MS = 5_000;
@@ -61,6 +66,10 @@ const ANSI_ESCAPE = new RegExp(`${String.fromCodePoint(27)}\\[[0-?]*[ -/]*[@-~]`
 const CLOUDFLARE_ACCOUNT_ID = /\b[0-9a-f]{32}\b/giu;
 const CLOUDFLARE_WORKER_URL = /https:\/\/[^\s'"`]+\.workers\.dev(?:\/[^\s'"`]*)?/giu;
 const RESOURCE_ID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
+const AUTHORIZATION_VALUE =
+  /(["']?\b(?:authorization|cf-aig-authorization)\b["']?\s*[:=]\s*)["']?(?:Bearer|Basic)\s+[^\s"',}\]]+["']?/giu;
+const CREDENTIAL_VALUE =
+  /(["']?\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|api[_-]?token|access[_-]?key|access[_-]?token|auth|key|password|refresh[_-]?token|secret(?:[_-]?access)?[_-]?key|token)\b["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}[\]]+)/giu;
 const FAILURE_OUTPUT_TAIL_CHARACTERS = 64 * 1_024;
 const stripAnsi = (value) => value.replaceAll("\r", "\n").replaceAll(ANSI_ESCAPE, "");
 
@@ -89,10 +98,43 @@ export function redactProductionDeploymentOutput(value, environment = {}) {
     }
     redacted = redacted.replaceAll(resourceName, `[redacted-${key}]`);
   }
+  for (const [key, secret] of Object.entries(environment)) {
+    if (
+      /(?:AUTH|KEY|PASSWORD|SECRET|TOKEN)/u.test(key) &&
+      typeof secret === "string" &&
+      secret.length > 0
+    ) {
+      redacted = redacted.replaceAll(secret, "[redacted-secret]");
+    }
+  }
   return redacted
+    .replaceAll(AUTHORIZATION_VALUE, "$1[redacted-secret]")
+    .replaceAll(CREDENTIAL_VALUE, "$1[redacted-secret]")
     .replaceAll(CLOUDFLARE_WORKER_URL, "[redacted-worker-url]")
     .replaceAll(CLOUDFLARE_ACCOUNT_ID, "[redacted-account-id]")
     .replaceAll(RESOURCE_ID, "[redacted-resource-id]");
+}
+
+export async function persistProductionDeploymentFailureDiagnostic(
+  { stdout = "", stderr = "" } = {},
+  environment = {},
+  path = PRODUCTION_DEPLOY_DIAGNOSTIC_PATH,
+) {
+  const diagnostic = [
+    "Alchemy production deployment failed.",
+    "--- stdout (captured tail) ---",
+    String(stdout).slice(-FAILURE_OUTPUT_TAIL_CHARACTERS),
+    "--- stderr (captured tail) ---",
+    String(stderr).slice(-FAILURE_OUTPUT_TAIL_CHARACTERS),
+    "",
+  ].join("\n");
+  await rm(path, { force: true });
+  await writeFile(path, redactProductionDeploymentOutput(diagnostic, environment), {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  return path;
 }
 
 export function projectAlchemyDeploymentOutput(value) {
@@ -382,6 +424,7 @@ export function runCommand(
     sanitizeOutput,
     onStdout,
     failureHint,
+    onFailureOutput,
   } = {},
 ) {
   if (interruptedSignal && !allowAfterSignal) {
@@ -391,8 +434,9 @@ export function runCommand(
   }
 
   return new Promise((resolve, reject) => {
-    const pipeStdout = capture || tee || Boolean(sanitizeOutput) || Boolean(onStdout);
-    const pipeStderr = Boolean(sanitizeOutput) || Boolean(failureHint);
+    const pipeStdout =
+      capture || tee || Boolean(sanitizeOutput) || Boolean(onStdout) || Boolean(onFailureOutput);
+    const pipeStderr = Boolean(sanitizeOutput) || Boolean(failureHint) || Boolean(onFailureOutput);
     const child = spawn(command, args, {
       cwd: process.cwd(),
       detached: process.platform !== "win32",
@@ -419,7 +463,9 @@ export function runCommand(
     if (pipeStdout) {
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk) => {
-        if (capture || failureHint) stdout += chunk;
+        if (capture || failureHint || onFailureOutput) {
+          stdout = `${stdout}${chunk}`.slice(-FAILURE_OUTPUT_TAIL_CHARACTERS);
+        }
         onStdout?.(chunk);
         if (tee || sanitizeOutput) stdoutWriter.push(chunk);
       });
@@ -449,17 +495,28 @@ export function runCommand(
       cleanup();
       reject(error);
     });
-    child.on("close", (code, signal) => {
+    child.on("close", async (code, signal) => {
       flushOutput();
       const wasSignaled = signaledChildren.has(child);
       if (wasSignaled) {
         terminateProcessTree(child, "SIGKILL");
       }
       cleanup();
+      if (code === 0 && !timedOut && !wasSignaled) {
+        resolve(stdout.trim());
+        return;
+      }
+      let diagnosticReport = "";
+      try {
+        const diagnosticPath = await onFailureOutput?.({ stdout, stderr, code, signal });
+        if (diagnosticPath) diagnosticReport = ` Diagnostic: ${diagnosticPath}.`;
+      } catch (error) {
+        diagnosticReport = ` Could not write the redacted deployment diagnostic: ${error.message}.`;
+      }
       if (timedOut) {
         reject(
           new Error(
-            `${command} ${args.join(" ")} timed out after ${Math.ceil(timeoutMs / 60_000)} minutes.`,
+            `${command} ${args.join(" ")} timed out after ${Math.ceil(timeoutMs / 60_000)} minutes.${diagnosticReport}`,
           ),
         );
         return;
@@ -467,19 +524,17 @@ export function runCommand(
       if (wasSignaled) {
         reject(
           new Error(
-            `${command} ${args.join(" ")} was interrupted by ${interruptedSignal ?? "termination"}.`,
+            `${command} ${args.join(" ")} was interrupted by ${interruptedSignal ?? "termination"}.${diagnosticReport}`,
           ),
         );
-        return;
-      }
-      if (code === 0) {
-        resolve(stdout.trim());
         return;
       }
       const result = signal ? `signal ${signal}` : `exit code ${String(code)}`;
       const hint = failureHint?.({ stdout, stderr, code, signal });
       reject(
-        new Error(`${command} ${args.join(" ")} failed with ${result}.${hint ? ` ${hint}` : ""}`),
+        new Error(
+          `${command} ${args.join(" ")} failed with ${result}.${hint ? ` ${hint}` : ""}${diagnosticReport}`,
+        ),
       );
     });
   });
@@ -788,8 +843,10 @@ function productionEnvironment(environment = process.env) {
   };
 }
 
-async function runStep(step, env = process.env, options = {}) {
+export async function runProductionDeployStep(step, env = process.env, options = {}) {
   process.stdout.write(`\n==> ${step.name}\n`);
+  const { failureDiagnosticPath = PRODUCTION_DEPLOY_DIAGNOSTIC_PATH, ...commandOptions } = options;
+  if (step.failureDiagnostic) await rm(failureDiagnosticPath, { force: true });
   return runCommand(step.command, step.args, {
     env,
     capture: step.capture,
@@ -802,12 +859,15 @@ async function runStep(step, env = process.env, options = {}) {
         : undefined,
     onStdout: step.reportProgress ? createProductionDeploymentProgressReporter() : undefined,
     failureHint: step.explainFailure ? productionDeploymentFailureHint : undefined,
-    ...options,
+    onFailureOutput: step.failureDiagnostic
+      ? (output) => persistProductionDeploymentFailureDiagnostic(output, env, failureDiagnosticPath)
+      : undefined,
+    ...commandOptions,
   });
 }
 
 export async function executeProductionDeploySteps(
-  execute = runStep,
+  execute = runProductionDeployStep,
   revalidate = assertLocalReleaseState,
   {
     readControlPlane = readProductionContainerControlPlane,
@@ -865,7 +925,9 @@ export async function deployProduction() {
     await acquireDeployLock();
     lockAcquired = true;
     const verifiedHead = await assertLocalReleaseState();
-    await executeProductionDeploySteps(runStep, () => assertLocalReleaseState(verifiedHead));
+    await executeProductionDeploySteps(runProductionDeployStep, () =>
+      assertLocalReleaseState(verifiedHead),
+    );
   } finally {
     try {
       if (lockAcquired) {
