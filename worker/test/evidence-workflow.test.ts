@@ -370,6 +370,38 @@ describe("Kitesurf evidence workflow", () => {
     }),
   );
 
+  it.effect("reports a screenshot failure stage without exposing page data", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.spyOn(console, "error").mockImplementation(() => undefined)),
+      (errorLog) =>
+        Effect.gen(function* () {
+          yield* TestClock.setTime(NOW);
+          const state = emptyState();
+          const result = yield* execute(
+            defaultJob,
+            makePage({
+              screenshot: Effect.fail(
+                new KitesurfClientError({ operation: "screenshot", reason: "ambiguous" }),
+              ),
+            }),
+            state,
+          );
+
+          assert.strictEqual(result.status, "interrupted");
+          assert.deepStrictEqual(result.failure, { code: "interrupted", step: 0 });
+          assert.lengthOf(state.publications, 0);
+          assert.strictEqual(errorLog.mock.calls[0]?.[0], "Evidence workflow failed");
+          assert.deepStrictEqual(errorLog.mock.calls[0]?.[1], {
+            jobId: "job-test",
+            operation: "screenshot",
+            reason: "ambiguous",
+            step: 0,
+          });
+        }),
+      (errorLog) => Effect.sync(() => errorLog.mockRestore()),
+    ),
+  );
+
   it.effect("classifies unsupported actions and never publishes a step", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);

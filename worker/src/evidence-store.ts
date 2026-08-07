@@ -270,11 +270,10 @@ const terminalFailure = (
       status: "failed",
       failure: { code: "assertion_mismatch", step: failedStep.index },
     };
+  if (active.failure !== undefined) return { status: requested, failure: active.failure };
   if (requested === "interrupted")
     return { status: requested, failure: { code: interruptionReason ?? "interrupted" } };
-  return active.failure === undefined
-    ? { status: requested }
-    : { status: requested, failure: active.failure };
+  return { status: requested };
 };
 
 const reservedPermitBytes = (permit: EvidencePreviewAccountingV1["permits"][number]): number =>

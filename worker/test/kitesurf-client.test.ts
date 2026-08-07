@@ -509,6 +509,69 @@ describe("Kitesurf client", () => {
     ),
   );
 
+  it.effect("preserves a screenshot failure when later cleanup also times out", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),
+      () =>
+        Effect.gen(function* () {
+          const pageClose = deferredPromise<void>();
+          const locator = {
+            click: async () => undefined,
+            count: async () => 1,
+            fill: async () => undefined,
+            isVisible: async () => true,
+            press: async () => undefined,
+            textContent: async () => "Ready",
+          };
+          const page: RuntimePage = {
+            close: () => pageClose.promise,
+            evaluate: async () => true,
+            getByTestId: () => locator,
+            goto: async () => null,
+            locator: () => locator,
+            screenshot: async () => Promise.reject(new Error("private screenshot failure")),
+            url: () => "https://preview.scotty.example/",
+          };
+          const context: RuntimeContext = {
+            addCookies: async () => undefined,
+            close: async () => undefined,
+            newPage: async () => page,
+            pages: () => [page],
+            route: async () => undefined,
+            routeWebSocket: async () => undefined,
+          };
+          const client = makeKitesurfClient(
+            binding,
+            async () => ({
+              close: async () => undefined,
+              newContext: async () => context,
+              sessionId: () => undefined,
+            }),
+            0,
+          );
+          const fiber = yield* client
+            .withPage(
+              {
+                origin: "https://preview.scotty.example",
+                cookieSecret: "private-cookie-secret",
+              },
+              (runtimePage) => runtimePage.screenshot,
+            )
+            .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
+          const result = yield* Fiber.join(fiber);
+
+          assert.deepInclude(failureOf(result), {
+            operation: "screenshot",
+            reason: "ambiguous",
+          });
+          assert.notInclude(JSON.stringify(result), "private screenshot failure");
+          pageClose.resolve();
+        }),
+      () => Effect.sync(() => vi.useRealTimers()),
+    ),
+  );
+
   it.effect("reports cleanup timeout and still runs enclosing cleanup", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),

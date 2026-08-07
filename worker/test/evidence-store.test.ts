@@ -580,6 +580,31 @@ describe("EvidenceStore", () => {
     }),
   );
 
+  it.effect("preserves a recorded step failure when finalizing as interrupted", () =>
+    Effect.gen(function* () {
+      const authority = makeAuthorityStorage();
+      const artifacts = makeArtifactCapabilities();
+      const testLayers = layers(authority.storage, artifacts.capabilities);
+      yield* TestClock.setTime(NOW);
+      yield* accept(testLayers);
+      yield* Effect.flatMap(EvidenceStore, (store) =>
+        store.recordFailure("evidence-nonce", { code: "interrupted", step: 0 }),
+      ).pipe(Effect.provide(testLayers));
+
+      const summary = yield* Effect.flatMap(EvidenceStore, (store) =>
+        store.finalize("evidence-nonce", "interrupted"),
+      ).pipe(Effect.provide(testLayers));
+
+      assert.deepInclude(summary, {
+        status: "interrupted",
+        completedSteps: 0,
+        frameCount: 0,
+        failure: { code: "interrupted", step: 0 },
+      });
+      assert.deepInclude(authority.readRecord(), { operation: null });
+    }),
+  );
+
   it.effect("interrupts only the matching evidence nonce and releases its lease", () =>
     Effect.gen(function* () {
       const authority = makeAuthorityStorage();

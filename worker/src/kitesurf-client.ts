@@ -8,7 +8,7 @@ import type {
   SessionlessBrowser,
   WebSocketRoute,
 } from "@cloudflare/playwright";
-import { Context, Effect, Schema } from "effect";
+import { Context, Effect, Exit, Schema } from "effect";
 import type { EvidenceLocator } from "./evidence-contracts";
 import { EVIDENCE_PREVIEW_COOKIE } from "./evidence-preview";
 
@@ -272,6 +272,29 @@ const compensateLateResource = (
   timeoutMillis: number,
 ): Promise<void> => nativePromiseTimeout(operation, "cleanup", close, timeoutMillis);
 
+const releaseResource = (
+  operation: Extract<
+    KitesurfClientError["operation"],
+    "close_browser" | "close_context" | "close_page"
+  >,
+  close: () => Promise<void>,
+  timeoutMillis: number,
+  useExit: Exit.Exit<unknown, unknown>,
+): Effect.Effect<void, KitesurfClientError> => {
+  const release = closeEffect(operation, close, timeoutMillis);
+  if (Exit.isSuccess(useExit)) return release;
+  return release.pipe(
+    Effect.catch((error) =>
+      Effect.sync(() =>
+        console.error("Kitesurf cleanup failed after an earlier evidence failure", {
+          operation: error.operation,
+          reason: error.reason,
+        }),
+      ),
+    ),
+  );
+};
+
 const singlePage = (
   context: KitesurfRuntimeContext,
   page: KitesurfRuntimePage,
@@ -525,16 +548,27 @@ export const makeKitesurfClient = (
                         singlePage(context, page).pipe(
                           Effect.andThen(use(makePage(origin, context, page))),
                         ),
-                      (page) =>
-                        closeEffect("close_page", () => page.close(), resourceTimeoutMillis),
+                      (page, exit) =>
+                        releaseResource(
+                          "close_page",
+                          () => page.close(),
+                          resourceTimeoutMillis,
+                          exit,
+                        ),
                     ),
                   ),
                 ),
-              (context) =>
-                closeEffect("close_context", () => context.close(), resourceTimeoutMillis),
+              (context, exit) =>
+                releaseResource(
+                  "close_context",
+                  () => context.close(),
+                  resourceTimeoutMillis,
+                  exit,
+                ),
             );
           }),
-        (browser) => closeEffect("close_browser", () => browser.close(), resourceTimeoutMillis),
+        (browser, exit) =>
+          releaseResource("close_browser", () => browser.close(), resourceTimeoutMillis, exit),
       );
     },
   });
