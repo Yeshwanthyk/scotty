@@ -707,6 +707,7 @@ export function resolveProductionTopology(environment = process.env) {
     containerName: adoption?.resources?.containerName ?? `${prefix}-sandbox`,
     kvTitle: adoption?.resources?.kvTitle ?? `${prefix}-sessions`,
     backupBucketName: adoption?.resources?.backupBucketName ?? `${prefix}-backups`,
+    artifactBucketName: adoption?.resources?.artifactBucketName ?? `${prefix}-artifacts`,
   };
 }
 
@@ -721,6 +722,7 @@ function productionEnvironment(environment = process.env) {
     `container=${topology.containerName}`,
     `kv=${topology.kvTitle}`,
     `r2=${topology.backupBucketName}`,
+    `artifacts=${topology.artifactBucketName}`,
   ].join(":");
   return {
     ...sanitizedLocalEnvironment(environment),

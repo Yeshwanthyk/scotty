@@ -2,6 +2,7 @@ import type { SessionRecord } from "./contracts";
 
 export const SESSION_SCHEDULE_CALLBACKS = [
   "enforceHardCap",
+  "expireEvidenceJob",
   "finalizeManagedStop",
   "retryHardCapDestroy",
   "retryVaporizeSession",

@@ -26,6 +26,7 @@ export const AdoptionManifestSchema = Schema.Struct({
       containerName: Schema.optionalKey(Schema.NonEmptyString),
       kvTitle: Schema.optionalKey(Schema.NonEmptyString),
       backupBucketName: Schema.optionalKey(Schema.NonEmptyString),
+      artifactBucketName: Schema.optionalKey(Schema.NonEmptyString),
     }),
   ),
   logicalIds: Schema.optionalKey(
@@ -45,6 +46,7 @@ export interface InstallationTopology {
   readonly containerName: string;
   readonly kvTitle: string;
   readonly backupBucketName: string;
+  readonly artifactBucketName: string;
   readonly workerLogicalId: string;
 }
 
@@ -68,6 +70,7 @@ export function makeInstallationTopology(
     containerName: resources?.containerName ?? `${prefix}-sandbox`,
     kvTitle: resources?.kvTitle ?? `${prefix}-sessions`,
     backupBucketName: resources?.backupBucketName ?? `${prefix}-backups`,
+    artifactBucketName: resources?.artifactBucketName ?? `${prefix}-artifacts`,
     workerLogicalId: adoption?.logicalIds?.worker ?? "Worker",
   };
 }

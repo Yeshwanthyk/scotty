@@ -173,6 +173,7 @@ describe("production deployment ownership", () => {
       containerName: "scotty-test-sandbox",
       kvTitle: "scotty-test-sessions",
       backupBucketName: "scotty-test-backups",
+      artifactBucketName: "scotty-test-artifacts",
     });
     assert.deepEqual(
       PRODUCTION_DEPLOY_STEPS.map(({ name }) => name),
@@ -221,6 +222,7 @@ describe("production deployment ownership", () => {
         "container=scotty-test-sandbox",
         "kv=scotty-test-sessions",
         "r2=scotty-test-backups",
+        "artifacts=scotty-test-artifacts",
       ].join(":"),
     };
     const privateOutput = [
@@ -233,7 +235,7 @@ describe("production deployment ownership", () => {
     assert.doesNotMatch(redacted, /0123456789abcdef0123456789abcdef/u);
     assert.doesNotMatch(redacted, /workers\.dev/u);
     assert.doesNotMatch(redacted, /a030af24-612c-4eb0-81cd-873740807d1d/u);
-    assert.doesNotMatch(redacted, /scotty-test-(?:worker|sandbox|backups)/u);
+    assert.doesNotMatch(redacted, /scotty-test-(?:worker|sandbox|backups|artifacts)/u);
     assert.match(redacted, /\[redacted-account-id\]/u);
     assert.match(redacted, /\[redacted-worker-url\]/u);
     assert.match(redacted, /\[redacted-resource-id\]/u);
@@ -380,6 +382,7 @@ describe("production deployment ownership", () => {
           `container=${CONTAINER_APPLICATION_NAME}`,
           "kv=scotty-test-sessions",
           "r2=scotty-test-backups",
+          "artifacts=scotty-test-artifacts",
         ].join(":"),
       );
       assert.equal(env.SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL, "deploy:test:scotty-test-worker");

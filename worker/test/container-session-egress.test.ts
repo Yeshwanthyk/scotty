@@ -82,6 +82,7 @@ function bindings(namespace: Bindings["SANDBOX"]): Bindings {
     SANDBOX: namespace,
     SESSIONS: undefined as never,
     BACKUP_BUCKET: undefined as never,
+    ARTIFACT_BUCKET: undefined as never,
     BROWSER: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "unused",

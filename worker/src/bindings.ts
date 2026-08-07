@@ -11,6 +11,7 @@ export interface Bindings {
   SANDBOX: DurableObjectNamespace<Sandbox>;
   SESSIONS: KVNamespace;
   BACKUP_BUCKET: R2Bucket;
+  ARTIFACT_BUCKET: R2Bucket;
   BROWSER: BrowserWorker;
   ASSETS: Fetcher;
   SCOTTY_TOKEN: string;

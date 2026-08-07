@@ -47,6 +47,8 @@
         "infra/**/*.ts",
         "protocol/**/*.ts",
         "pi-scotty/src/desktop-protocol.ts",
+        "worker/src/artifact-store.ts",
+        "worker/src/evidence-store.ts",
         "worker/src/**/*.ts",
         "alchemy.run.ts",
         "spikes/infra/account-secrets-store-canary.run.ts",

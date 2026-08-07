@@ -26,6 +26,22 @@ import {
   Schedule,
 } from "effect";
 import { BackupStore, backupStoreLayer } from "./backup-store";
+import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
+import { EvidenceStore, evidenceStoreLayer } from "./evidence-store";
+import {
+  EVIDENCE_JOB_TIMEOUT_MILLIS,
+  EvidenceStateError,
+  decodeBrowserEvidenceJobEffect,
+  decodeCompleteEvidenceStepPublication,
+  decodeEvidenceIdentifier,
+  publicEvidenceSummaryProjection,
+  type EvidenceActiveJobV1,
+  type EvidenceArtifactV1,
+  type EvidenceJobSummaryV1,
+  type EvidenceStepResult,
+  type EvidenceTerminalStatus,
+  type PublicEvidenceJobSummaryV1,
+} from "./evidence-contracts";
 import type { Bindings } from "./bindings";
 import {
   ContainerAuth,
@@ -42,6 +58,7 @@ import {
 } from "./credential-vault";
 import { readBoundedUtf8Body } from "./bounded-http";
 import {
+  badRequest,
   conflict,
   decodeContainerSessionRequest,
   decodeJsonValue,
@@ -139,9 +156,11 @@ export const decodeSandboxFileStream = (
 };
 
 type SandboxServices =
+  | ArtifactStore
   | BackupStore
   | ContainerAuth
   | CredentialVault
+  | EvidenceStore
   | RolloutDiscovery
   | SandboxRuntime
   | SessionProjection
@@ -160,6 +179,11 @@ interface ManagedStopPayload {
 interface VaporizeRetryPayload {
   id: string;
   nonce: string;
+}
+
+interface EvidenceDeadlinePayload {
+  readonly nonce: string;
+  readonly deadlineAt: string;
 }
 
 export interface PassivePiConsoleRelay {
@@ -280,10 +304,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     };
     this.sessionControlGate = makeSessionControlGate();
 
-    const store = sessionStoreLayer(
-      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning SessionStore adapter
-      durableObjectSessionRecordStorage(ctx.storage, this.sessionControlGate),
+    const authoritativeStorage = durableObjectSessionRecordStorage(
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning authoritative state adapters
+      ctx.storage,
+      this.sessionControlGate,
     );
+    const store = sessionStoreLayer(authoritativeStorage);
+    const evidence = evidenceStoreLayer(authoritativeStorage);
+    const artifacts = artifactStoreLayer(r2ArtifactStoreCapabilities(env.ARTIFACT_BUCKET));
     const runtimeAccess = this.assertRuntimeAccessProgram().pipe(
       Effect.asVoid,
       Effect.provide(store),
@@ -327,6 +355,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
     this.layer = Layer.mergeAll(
       store,
+      evidence,
+      artifacts,
       sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS)),
       backup,
       runtimeAndVault,
@@ -344,6 +374,147 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly readRecordProgram = Effect.fnUntraced(function* () {
     const store = yield* SessionStore;
     return Option.getOrUndefined(yield* store.read);
+  });
+
+  private readonly acceptScottyEvidenceJobProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    value: unknown,
+    runtimeEpoch: string,
+  ) {
+    const decodedEpoch = decodeEvidenceIdentifier(runtimeEpoch);
+    if (Option.isNone(decodedEpoch)) return yield* badRequest("Evidence runtime epoch is invalid");
+    const job = yield* decodeBrowserEvidenceJobEffect(value).pipe(
+      Effect.mapError(() => badRequest("Evidence job is invalid")),
+    );
+    const record = yield* this.requireRecordProgram();
+    const now = yield* Clock.currentTimeMillis;
+    const deadlineMillis = Math.min(
+      now + EVIDENCE_JOB_TIMEOUT_MILLIS,
+      Date.parse(record.hardCapAt),
+    );
+    if (!Number.isFinite(deadlineMillis) || deadlineMillis <= now)
+      return yield* wrongState(record.status, "evidence", "The session hard cap has elapsed");
+    const deadlineAt = new Date(deadlineMillis).toISOString();
+    const operationNonce = randomToken(12);
+    const evidence = yield* EvidenceStore;
+    const accepted = yield* evidence.accept({
+      jobId: `job-${randomToken(8)}`,
+      operationNonce,
+      runtimeEpoch: decodedEpoch.value,
+      deadlineAt,
+      job,
+    });
+    const scheduled = yield* Effect.result(
+      hostEffect("schedule", () =>
+        this.schedule(new Date(deadlineAt), "expireEvidenceJob", {
+          nonce: operationNonce,
+          deadlineAt,
+        } satisfies EvidenceDeadlinePayload),
+      ),
+    );
+    if (Result.isSuccess(scheduled)) return accepted;
+    yield* evidence.interrupt(operationNonce, "interrupted");
+    return yield* this.upstreamError("Evidence deadline scheduling failed", scheduled.failure);
+  });
+
+  private readonly expireEvidenceJobProgram = Effect.fnUntraced(function* (
+    payload: EvidenceDeadlinePayload,
+  ) {
+    const evidence = yield* EvidenceStore;
+    const state = yield* evidence.read;
+    if (
+      state.activeJob?.operationNonce !== payload.nonce ||
+      state.activeJob.deadlineAt !== payload.deadlineAt
+    )
+      return;
+    yield* evidence.interrupt(payload.nonce, "deadline");
+  });
+
+  private readonly deleteEvidenceArtifactsProgram = Effect.fnUntraced(function* (
+    artifacts: ReadonlyArray<EvidenceArtifactV1>,
+  ) {
+    const evidence = yield* EvidenceStore;
+    const artifactStore = yield* ArtifactStore;
+    for (const artifact of artifacts) {
+      yield* artifactStore.deleteFrame(artifact);
+      yield* evidence.confirmDelete(artifact.objectKey);
+    }
+  });
+
+  private readonly reconcileEvidenceDeletesProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const evidence = yield* EvidenceStore;
+    const state = yield* evidence.read;
+    yield* this.deleteEvidenceArtifactsProgram(
+      state.artifacts.filter((artifact) => artifact.status === "delete_pending"),
+    );
+  });
+
+  private readonly completeScottyEvidenceStepProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+    value: unknown,
+  ) {
+    if (Option.isNone(decodeEvidenceIdentifier(nonce)))
+      return yield* badRequest("Evidence operation nonce is invalid");
+    const input = yield* decodeCompleteEvidenceStepPublication(value).pipe(
+      Effect.mapError(() => badRequest("Evidence step publication is invalid")),
+    );
+    const evidence = yield* EvidenceStore;
+    const state = yield* evidence.read;
+    const active = state.activeJob;
+    if (active?.operationNonce !== nonce)
+      return yield* new EvidenceStateError({ reason: "lease_changed" });
+    const record = yield* this.requireRecordProgram();
+    if (record.operation?.kind !== "evidence" || record.operation.nonce !== nonce)
+      return yield* new EvidenceStateError({ reason: "lease_changed" });
+    const frame = input.frame;
+    const artifact =
+      frame === undefined
+        ? undefined
+        : yield* Effect.flatMap(ArtifactStore, (store) =>
+            store.putFrame({
+              sessionId: record.id,
+              jobId: active.jobId,
+              frameId: frame.frameId,
+              bytes: frame.bytes,
+              capturedAt: frame.capturedAt,
+              offsetMillis: frame.offsetMillis,
+            }),
+          );
+    const completed = yield* Effect.result(
+      evidence.completeStep(nonce, {
+        index: input.index,
+        startedAt: input.startedAt,
+        completedAt: input.completedAt,
+        offsetMillis: input.offsetMillis,
+        assertions: input.assertions,
+        ...(artifact === undefined ? {} : { artifact }),
+      }),
+    );
+    if (Result.isSuccess(completed)) return completed.success;
+    if (artifact !== undefined) {
+      const pending = yield* evidence.requestVerifiedDelete(artifact, "abandoned");
+      if (pending !== undefined) yield* this.deleteEvidenceArtifactsProgram([pending]);
+    }
+    return yield* completed.failure;
+  });
+
+  private readonly finalizeScottyEvidenceJobProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+    status: EvidenceTerminalStatus,
+  ) {
+    const evidence = yield* EvidenceStore;
+    const summary = yield* evidence.finalize(nonce, status);
+    const reconciled = yield* Effect.result(this.reconcileEvidenceDeletesProgram());
+    if (Result.isFailure(reconciled))
+      yield* Effect.sync(() =>
+        console.error("Evidence artifact reconciliation remains pending", {
+          jobId: summary.jobId,
+          error: errorName(reconciled.failure),
+        }),
+      );
+    return summary;
   });
 
   private readonly assertRuntimeAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -976,6 +1147,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
 
     for (const backupId of new Set(current.ownedBackupIds)) yield* backups.delete(backupId);
+    const evidence = yield* EvidenceStore;
+    const evidenceState = yield* evidence.read;
+    const hasEvidenceAuthority =
+      evidenceState.activeJob !== undefined ||
+      evidenceState.jobs.length > 0 ||
+      evidenceState.artifacts.length > 0 ||
+      evidenceState.pendingDeletes.length > 0;
+    if (hasEvidenceAuthority) {
+      const pending = yield* evidence.prepareVaporizeDeletes(payload.nonce);
+      yield* this.deleteEvidenceArtifactsProgram(pending);
+      yield* evidence.clearForVaporize(payload.nonce);
+    }
     yield* vault.delete;
     yield* store.clearCreateIdempotency;
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
@@ -998,7 +1181,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly vaporizeScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const existing = yield* this.readRecordProgram();
+    let existing = yield* this.readRecordProgram();
     if (!existing) return yield* notFound("unknown");
     if (existing.status === "gone") {
       const repaired = yield* Effect.result(this.repairGoneSessionProgram(existing));
@@ -1009,6 +1192,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         repaired.failure,
         existing.id,
       );
+    }
+    if (existing.operation?.kind === "evidence") {
+      const evidence = yield* EvidenceStore;
+      yield* evidence.interrupt(existing.operation.nonce, "interrupted");
+      existing = yield* this.requireRecordProgram();
     }
     const operation =
       existing.operation?.kind === "vaporize"
@@ -1207,17 +1395,33 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
     if (record.operation) {
       if (record.operation.kind === "vaporize") return;
-      const operationAge =
-        (yield* Clock.currentTimeMillis) - Date.parse(record.operation.startedAt);
-      if (operationAge < HARD_CAP_GRACE_MS) {
-        yield* hostEffect("schedule", () => this.schedule(5, "enforceHardCap", payload));
+      if (record.operation.kind === "evidence") {
+        const evidence = yield* EvidenceStore;
+        const interrupted = yield* Effect.result(
+          evidence.interrupt(record.operation.nonce, "deadline"),
+        );
+        if (Result.isFailure(interrupted)) {
+          yield* Effect.sync(() =>
+            console.error("Evidence hard-cap interruption failed", {
+              sessionId: record.id,
+              error: errorName(interrupted.failure),
+            }),
+          );
+          return;
+        }
+      } else {
+        const operationAge =
+          (yield* Clock.currentTimeMillis) - Date.parse(record.operation.startedAt);
+        if (operationAge < HARD_CAP_GRACE_MS) {
+          yield* hostEffect("schedule", () => this.schedule(5, "enforceHardCap", payload));
+          return;
+        }
+        yield* this.markHardCapFailureProgram(
+          record,
+          "A session operation exceeded the hard-cap grace period",
+        );
         return;
       }
-      yield* this.markHardCapFailureProgram(
-        record,
-        "A session operation exceeded the hard-cap grace period",
-      );
-      return;
     }
 
     if (record.execution.provider === "runner") {
@@ -1426,6 +1630,50 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async getScottySession(): Promise<SessionView> {
     return this.#run(this.getScottySessionProgram());
+  }
+
+  async acceptScottyEvidenceJob(
+    value: unknown,
+    runtimeEpoch: string,
+  ): Promise<EvidenceActiveJobV1> {
+    return this.#run(this.acceptScottyEvidenceJobProgram(value, runtimeEpoch));
+  }
+
+  async completeScottyEvidenceStep(nonce: string, input: unknown): Promise<EvidenceStepResult> {
+    return this.#run(this.completeScottyEvidenceStepProgram(nonce, input));
+  }
+
+  async finalizeScottyEvidenceJob(
+    nonce: string,
+    status: EvidenceTerminalStatus,
+  ): Promise<EvidenceJobSummaryV1> {
+    return this.#run(this.finalizeScottyEvidenceJobProgram(nonce, status));
+  }
+
+  async listScottyEvidence(): Promise<ReadonlyArray<PublicEvidenceJobSummaryV1>> {
+    return this.#run(
+      Effect.map(
+        Effect.flatMap(EvidenceStore, (store) => store.list),
+        (jobs) => jobs.map(publicEvidenceSummaryProjection),
+      ),
+    );
+  }
+
+  async getScottyEvidence(jobId: string): Promise<PublicEvidenceJobSummaryV1> {
+    return this.#run(
+      Effect.map(
+        Effect.flatMap(EvidenceStore, (store) => store.getJob(jobId)),
+        publicEvidenceSummaryProjection,
+      ),
+    );
+  }
+
+  async getScottyEvidenceArtifact(jobId: string, frameId: string): Promise<EvidenceArtifactV1> {
+    return this.#run(Effect.flatMap(EvidenceStore, (store) => store.getArtifact(jobId, frameId)));
+  }
+
+  async expireEvidenceJob(payload: EvidenceDeadlinePayload): Promise<void> {
+    return this.#run(this.expireEvidenceJobProgram(payload));
   }
 
   async reseedPiAuth() {

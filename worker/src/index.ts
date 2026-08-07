@@ -10,6 +10,8 @@ import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
 import { readBoundedUtf8Body } from "./bounded-http";
+import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
+import { decodeEvidenceIdentifier } from "./evidence-contracts";
 import { ContainerProxy } from "./container-session-egress";
 import {
   badRequest,
@@ -118,7 +120,10 @@ app.use("/api/auth/*", async (c, next) => {
 });
 
 app.use("*", async (c, next) => {
-  if (new URL(c.req.url).searchParams.has("t")) c.header("cache-control", "no-store");
+  const incomingUrl = new URL(c.req.url);
+  if (incomingUrl.searchParams.has("t")) c.header("cache-control", "no-store");
+  else if (/^\/(?:api\/sessions|s)\/[^/]+\/evidence(?:\/|$)/u.test(incomingUrl.pathname))
+    c.header("cache-control", "private, no-store");
   rejectRootQuery(c.req.raw);
   await next();
 });
@@ -165,6 +170,21 @@ app.get("/api/runners/:name/connect", async (c) => {
     if (value !== undefined) headers.set(name, value);
   }
   return c.env.RUNNERS.getByName(name).fetch(new Request(c.req.url, { method: "GET", headers }));
+});
+
+app.get("/api/sessions/:id/evidence", async (c) => {
+  const principal = await requireEvidenceBrowser(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).listScottyEvidence());
+});
+
+app.get("/api/sessions/:id/evidence/:jobId", async (c) => {
+  const principal = await requireEvidenceBrowser(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const id = parseSessionId(c.req.param("id"));
+  const jobId = parseEvidenceIdentifier(c.req.param("jobId"));
+  return c.json(await sessionSandbox(c.env, id).getScottyEvidence(jobId));
 });
 
 app.use("/api/*", async (c, next) => {
@@ -579,6 +599,56 @@ app.delete("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).vaporizeScottySession());
 });
 
+app.get("/s/:id/evidence", async (c) => {
+  const principal = await requireEvidenceBrowser(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const id = parseSessionId(c.req.param("id"));
+  await sessionSandbox(c.env, id).listScottyEvidence();
+  return evidenceAsset(c.env, c.req.raw);
+});
+
+app.get("/s/:id/evidence/:jobId", async (c) => {
+  const principal = await requireEvidenceBrowser(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const id = parseSessionId(c.req.param("id"));
+  const jobId = parseEvidenceIdentifier(c.req.param("jobId"));
+  await sessionSandbox(c.env, id).getScottyEvidence(jobId);
+  return evidenceAsset(c.env, c.req.raw);
+});
+
+app.get("/s/:id/evidence/:jobId/frames/:frame", async (c) => {
+  const principal = await requireEvidenceBrowser(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const id = parseSessionId(c.req.param("id"));
+  const jobId = parseEvidenceIdentifier(c.req.param("jobId"));
+  const frame = c.req.param("frame");
+  const frameId = parseEvidenceIdentifier(frame.endsWith(".png") ? frame.slice(0, -4) : "");
+  const artifact = await sessionSandbox(c.env, id).getScottyEvidenceArtifact(jobId, frameId);
+  const opened = await Effect.runPromise(
+    Effect.flatMap(ArtifactStore, (store) => store.openFrame(artifact)).pipe(
+      Effect.provide(artifactStoreLayer(r2ArtifactStoreCapabilities(c.env.ARTIFACT_BUCKET))),
+      Effect.result,
+    ),
+  );
+  return Result.match(opened, {
+    onFailure: () => {
+      throw new ScottyError("internal", "Evidence frame is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    },
+    onSuccess: (frame) =>
+      new Response(frame.body, {
+        headers: {
+          "cache-control": "private, no-store",
+          "content-length": String(frame.bytes),
+          "content-type": frame.mediaType,
+          "x-content-type-options": "nosniff",
+        },
+      }),
+  });
+});
+
 app.all("/s/:id/terminal", async (c) => {
   const id = parseSessionId(c.req.param("id"));
   rejectRootQuery(c.req.raw);
@@ -778,6 +848,26 @@ function parseRunnerControlAction(value: unknown): RunnerControlAction {
     httpStatus: 404,
     exitCode: 3,
   });
+}
+
+function parseEvidenceIdentifier(value: string): string {
+  const decoded = decodeEvidenceIdentifier(value);
+  if (Option.isSome(decoded)) return decoded.value;
+  throw new ScottyError("not_found", "Evidence was not found", {
+    httpStatus: 404,
+    exitCode: 3,
+  });
+}
+
+async function requireEvidenceBrowser(request: Request, env: Bindings): Promise<AuthPrincipal> {
+  if (request.headers.has("authorization"))
+    throw new ScottyError("auth", "Evidence review requires a registered browser", {
+      httpStatus: 401,
+      exitCode: 4,
+    });
+  const principal = await requireClientCookieRequest(request, env);
+  requireAuthScope(principal, "sessions:read");
+  return principal;
 }
 
 function requireRootPrincipal(principal: AuthPrincipal): void {
@@ -1135,6 +1225,13 @@ async function secureAsset(env: Bindings, request: Request, pathname: string): P
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "DENY");
+  return new Response(asset.body, { status: asset.status, headers });
+}
+
+async function evidenceAsset(env: Bindings, request: Request): Promise<Response> {
+  const asset = await authAsset(env, request, "/evidence.html");
+  const headers = new Headers(asset.headers);
+  headers.set("cache-control", "private, no-store");
   return new Response(asset.body, { status: asset.status, headers });
 }
 

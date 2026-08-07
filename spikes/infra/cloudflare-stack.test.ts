@@ -54,6 +54,7 @@ describe("Cloudflare stack guard", () => {
         "container=scotty-home-sandbox",
         "kv=scotty-home-sessions",
         "r2=scotty-home-backups",
+        "artifacts=scotty-home-artifacts",
       ].join(":"),
     );
   });
@@ -90,6 +91,7 @@ describe("Cloudflare stack topology", () => {
       containerName: "scotty-home-sandbox",
       kvTitle: "scotty-home-sessions",
       backupBucketName: "scotty-home-backups",
+      artifactBucketName: "scotty-home-artifacts",
       workerLogicalId: "Worker",
     });
     assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["GH_TOKEN", "PI_AUTH_JSON", "SCOTTY_TOKEN"]);
@@ -99,6 +101,11 @@ describe("Cloudflare stack topology", () => {
     assert.strictEqual(topology.container.name, "scotty-home-sandbox");
     assert.strictEqual(topology.kv.title, "scotty-home-sessions");
     assert.strictEqual(topology.r2.name, "scotty-home-backups");
+    assert.deepEqual(topology.artifactR2, {
+      logicalId: "ArtifactBucket",
+      bindingName: "ARTIFACT_BUCKET",
+      name: "scotty-home-artifacts",
+    });
     assert.deepEqual(topology.vars, {
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: "scotty-home-backups",
@@ -117,6 +124,7 @@ describe("Cloudflare stack topology", () => {
         containerName: "legacy-container-generated-name",
         kvTitle: "legacy-sessions",
         backupBucketName: "legacy-backups",
+        artifactBucketName: "legacy-artifacts",
       },
       logicalIds: { worker: "LegacyWorker" },
     } satisfies AdoptionManifest;
@@ -129,6 +137,7 @@ describe("Cloudflare stack topology", () => {
       containerName: "legacy-container-generated-name",
       kvTitle: "legacy-sessions",
       backupBucketName: "legacy-backups",
+      artifactBucketName: "legacy-artifacts",
       workerLogicalId: "LegacyWorker",
     });
   });
@@ -142,6 +151,7 @@ describe("Cloudflare stack source contract", () => {
       /"node_modules\/@cloudflare\/playwright": \{[\s\S]*?"version": "1\.3\.5"/u,
     );
     assert.match(source, /BROWSER: Cloudflare\.Browser\("BROWSER"\)/u);
+    assert.match(source, /ARTIFACT_BUCKET: artifacts/u);
   });
 
   it("has no committed account, hostname, container UUID, or runner instance name", () => {
@@ -160,7 +170,7 @@ describe("Cloudflare stack source contract", () => {
     assert.match(source, /const removalPolicy = RemovalPolicy\.retain\(\)/u);
     assert.strictEqual(
       source.match(/(?:\.pipe\(removalPolicy\)|^\s+removalPolicy,$)/gmu)?.length,
-      5,
+      6,
     );
     assert.notMatch(source, /RemovalPolicy\.destroy|lifecycleRules/u);
   });

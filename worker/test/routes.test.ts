@@ -3,6 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   getScottySession: vi.fn(),
+  completeScottyEvidenceStep: vi.fn(),
+  finalizeScottyEvidenceJob: vi.fn(),
+  listScottyEvidence: vi.fn(),
+  getScottyEvidence: vi.fn(),
+  getScottyEvidenceArtifact: vi.fn(),
   renameScottySession: vi.fn(),
   snapshotScottySession: vi.fn(),
   sleepScottySession: vi.fn(),
@@ -60,6 +65,9 @@ import app from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
 import { conflict } from "../src/contracts";
+import { orderedReplayFrames } from "../public/evidence-view.js";
+import evidenceHtml from "../public/evidence.html?raw";
+import evidenceScript from "../public/evidence.js?raw";
 import {
   createSessionHarness,
   makeResumeBackup,
@@ -106,8 +114,10 @@ function emptySessionsNamespace(): KVNamespace {
   } as KVNamespace;
 }
 
-function env(): Bindings {
-  const assets: Fetcher = {
+function env(
+  options: { readonly assets?: Fetcher; readonly artifactBucket?: R2Bucket } = {},
+): Bindings {
+  const assets: Fetcher = options.assets ?? {
     fetch: async () =>
       new Response("<!doctype html><title>Scotty</title>", {
         headers: { "content-type": "text/html" },
@@ -128,6 +138,7 @@ function env(): Bindings {
     SANDBOX: {} as DurableObjectNamespace<import("../src/session").Sandbox>,
     SESSIONS: emptySessionsNamespace(),
     BACKUP_BUCKET: {} as R2Bucket,
+    ARTIFACT_BUCKET: options.artifactBucket ?? ({} as R2Bucket),
     BROWSER: undefined as never,
   };
 }
@@ -135,6 +146,60 @@ function env(): Bindings {
 function useRealSandbox(harness: SessionHarness): void {
   sandboxTarget.current = harness.sandbox;
 }
+
+const evidencePng = Uint8Array.from([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+]);
+
+const evidenceArtifactBucket = (jobId: string, sha256: string): R2Bucket => {
+  const object = {
+    key: `evidence/v1/a0b1c2d3e4f5/${jobId}/frame-1.png`,
+    version: "1",
+    size: evidencePng.byteLength,
+    etag: "frame-etag",
+    httpEtag: '"frame-etag"',
+    checksums: { toJSON: () => ({}) },
+    uploaded: new Date("2026-08-06T12:00:01.000Z"),
+    httpMetadata: { contentType: "image/png" },
+    customMetadata: {
+      owner: "a0b1c2d3e4f5",
+      job: jobId,
+      frame: "frame-1",
+      sha256,
+    },
+    storageClass: "Standard",
+    writeHttpMetadata: () => undefined,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(evidencePng);
+        controller.close();
+      },
+    }),
+    bodyUsed: false,
+    arrayBuffer: () => Promise.resolve(evidencePng.buffer.slice(0)),
+    bytes: () => Promise.resolve(Uint8Array.from(evidencePng)),
+    text: () => Promise.resolve(""),
+    json: <T>() => Promise.resolve({} as T),
+    blob: () => Promise.resolve(new Blob([evidencePng], { type: "image/png" })),
+  };
+  const bucket = {
+    get: async (key: string) => (key === object.key ? object : null),
+  };
+  return bucket as R2Bucket;
+};
+
+const evidenceAssets = (): Fetcher => ({
+  fetch: async (input) => {
+    const pathname = new URL(new Request(input).url).pathname;
+    return new Response(pathname === "/evidence.html" ? evidenceHtml : "not found", {
+      status: pathname === "/evidence.html" ? 200 : 404,
+      headers: { "content-type": "text/html" },
+    });
+  },
+  connect: () => {
+    throw new Error("evidence asset tests do not use connect");
+  },
+});
 
 const projection = {
   version: 1,
@@ -163,6 +228,20 @@ describe("real Hono boundary", () => {
     sandbox.containerFetch.mockResolvedValue(
       Response.json({ epoch: "epoch-1", sequence: 0, messages: [] }),
     );
+    sandbox.listScottyEvidence.mockResolvedValue([]);
+    sandbox.getScottyEvidence.mockResolvedValue({
+      version: 1,
+      sequence: 0,
+      jobId: "job-1",
+      status: "succeeded",
+      acceptedAt: "2026-07-22T12:00:00.000Z",
+      completedAt: "2026-07-22T12:00:01.000Z",
+      totalSteps: 1,
+      completedSteps: 1,
+      replay: true,
+      steps: [],
+      frameCount: 0,
+    });
     sandbox.getScottySession.mockResolvedValue({
       id: "a0b1c2d3e4f5",
       title: "Test session",
@@ -2213,6 +2292,173 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(sessionRootBearer.status).toBe(401);
+  });
+
+  it("shows fake-backed failed evidence frames through authenticated polling and Replay", async () => {
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          hardCapAt: "2099-08-06T13:00:00.000Z",
+        }),
+      },
+    });
+    const accepted = await harness.sandbox.acceptScottyEvidenceJob(
+      {
+        version: 1,
+        port: 4_173,
+        capture: { screenshots: "after-each-step", replay: true },
+        steps: [
+          {
+            name: "Open the app",
+            action: { kind: "goto", path: "/" },
+            expect: [{ kind: "urlPath", expected: "/" }],
+          },
+          {
+            name: "Shows the ready state",
+            action: {
+              kind: "fill",
+              locator: { kind: "testId", value: "status" },
+              value: "private-fill-value",
+            },
+            expect: [
+              {
+                kind: "textExact",
+                locator: { kind: "testId", value: "status" },
+                expected: "Ready",
+              },
+            ],
+          },
+        ],
+      },
+      "runtime-1",
+    );
+    await harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
+      index: 0,
+      startedAt: "2026-08-06T12:00:00.100Z",
+      completedAt: "2026-08-06T12:00:01.000Z",
+      offsetMillis: 1_000,
+      assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
+      frame: {
+        frameId: "frame-1",
+        bytes: evidencePng,
+        capturedAt: "2026-08-06T12:00:01.000Z",
+        offsetMillis: 1_000,
+      },
+    });
+    await harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
+      index: 1,
+      startedAt: "2026-08-06T12:00:01.100Z",
+      completedAt: "2026-08-06T12:00:02.000Z",
+      offsetMillis: 2_000,
+      assertions: [
+        {
+          kind: "textExact",
+          passed: false,
+          expected: "Ready",
+          actual: "undeclared page text",
+        },
+      ],
+      frame: {
+        frameId: "frame-2",
+        bytes: evidencePng,
+        capturedAt: "2026-08-06T12:00:02.000Z",
+        offsetMillis: 2_000,
+      },
+    });
+    const failedSummary = await harness.sandbox.finalizeScottyEvidenceJob(
+      accepted.operationNonce,
+      "succeeded",
+    );
+    useRealSandbox(harness);
+    const firstFrame = failedSummary.steps[0]?.frame;
+    expect(firstFrame).toBeDefined();
+    const testEnv = env({
+      assets: evidenceAssets(),
+      artifactBucket: evidenceArtifactBucket(accepted.jobId, firstFrame?.sha256 ?? ""),
+    });
+    const headers = { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` };
+
+    const denied = await app.request(
+      `/api/sessions/${SESSION_ID}/evidence/${accepted.jobId}`,
+      undefined,
+      testEnv,
+    );
+    expect(denied.status).toBe(401);
+    expect(denied.headers.get("cache-control")).toBe("private, no-store");
+
+    const rootBearer = await app.request(
+      `/api/sessions/${SESSION_ID}/evidence/${accepted.jobId}`,
+      { headers: { ...headers, authorization: `Bearer ${TOKEN}` } },
+      testEnv,
+    );
+    expect(rootBearer.status).toBe(401);
+
+    const list = await app.request("/api/sessions/a0b1c2d3e4f5/evidence", { headers }, testEnv);
+    expect(list.status).toBe(200);
+    const listBody: unknown = await list.json();
+    expect(listBody).toMatchObject([{ jobId: accepted.jobId, status: "failed" }]);
+
+    const summary = await app.request(
+      `/api/sessions/${SESSION_ID}/evidence/${accepted.jobId}`,
+      { headers },
+      testEnv,
+    );
+    expect(summary.status).toBe(200);
+    expect(summary.headers.get("cache-control")).toBe("private, no-store");
+    const summaryBody: unknown = await summary.json();
+    expect(summaryBody).toMatchObject({
+      status: "failed",
+      frameCount: 2,
+      failure: { code: "assertion_mismatch", step: 1 },
+    });
+    const serializedSummary = JSON.stringify(summaryBody);
+    expect(serializedSummary).not.toContain("objectKey");
+    expect(serializedSummary).not.toContain("private-fill-value");
+    expect(serializedSummary).not.toContain("undeclared page text");
+    expect(serializedSummary).not.toContain('"actual"');
+    expect(orderedReplayFrames(summaryBody).map((frame) => frame.frameId)).toEqual([
+      "frame-1",
+      "frame-2",
+    ]);
+
+    const missingJob = await app.request(
+      `/api/sessions/${SESSION_ID}/evidence/not-owned`,
+      { headers },
+      testEnv,
+    );
+    expect(missingJob.status).toBe(404);
+    expect(missingJob.headers.get("cache-control")).toBe("private, no-store");
+
+    const shell = await app.request(
+      `/s/${SESSION_ID}/evidence/${accepted.jobId}`,
+      { headers },
+      testEnv,
+    );
+    expect(shell.status).toBe(200);
+    expect(shell.headers.get("cache-control")).toBe("private, no-store");
+    expect(await shell.text()).toContain("<title>Scotty evidence</title>");
+    expect(evidenceScript).toContain('setAttribute("aria-label", "Screenshot replay")');
+    expect(evidenceScript).toContain("setTimeout(() => void refresh(), POLL_INTERVAL)");
+    expect(evidenceScript).toContain("orderedReplayFrames(summary)");
+
+    const missingFrame = await app.request(
+      `/s/${SESSION_ID}/evidence/${accepted.jobId}/frames/not-owned.png`,
+      { headers },
+      testEnv,
+    );
+    expect(missingFrame.status).toBe(404);
+    expect(missingFrame.headers.get("cache-control")).toBe("private, no-store");
+
+    const frame = await app.request(
+      `/s/${SESSION_ID}/evidence/${accepted.jobId}/frames/frame-1.png`,
+      { headers },
+      testEnv,
+    );
+    expect(frame.status).toBe(200);
+    expect(frame.headers.get("content-type")).toBe("image/png");
+    expect(frame.headers.get("cache-control")).toBe("private, no-store");
+    expect(new Uint8Array(await frame.arrayBuffer())).toEqual(evidencePng);
   });
 
   it("returns non-warm Cloudflare session pages to Home for explicit resume", async () => {

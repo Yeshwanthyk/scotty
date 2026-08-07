@@ -11,6 +11,7 @@ import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import { Sandbox, type PassivePiConsoleRelay, type SandboxEffectOptions } from "../src/session";
+import { EVIDENCE_RECORD_KEY } from "../src/session-store";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
@@ -47,6 +48,7 @@ export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
 };
 
 export type HarnessFailureStage =
+  | "artifactDelete"
   | "backupDelete"
   | "backupList"
   | "checkpointDefect"
@@ -116,6 +118,8 @@ export interface SessionHarness {
     readonly content: string;
   }>;
   readonly r2DeletedKeys: ReadonlyArray<ReadonlyArray<string>>;
+  readonly artifactDeletedKeys: ReadonlyArray<string>;
+  readonly artifactKeys: () => ReadonlyArray<string>;
   readonly memory: InMemoryFaultInjectableFake;
   readonly injectFailure: (stage: HarnessFailureStage) => void;
   readonly clearFailure: (stage?: HarnessFailureStage) => void;
@@ -331,6 +335,15 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const rawPiRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
+  const artifactDeletedKeys: string[] = [];
+  const artifactObjects = new Map<
+    string,
+    {
+      readonly bytes: Uint8Array;
+      readonly contentType: string | undefined;
+      readonly customMetadata: Readonly<Record<string, string>>;
+    }
+  >();
   let piSessionRunning = options.piSessionRunning ?? false;
   let rawPiContainerRunning = false;
   const failures = new Set<HarnessFailureStage>();
@@ -559,6 +572,57 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         events.push(`r2:delete:${deleted.join(",")}`);
       },
     } as never,
+    ARTIFACT_BUCKET: {
+      put: async (key: string, value: unknown, putOptions?: R2PutOptions) => {
+        if (!(value instanceof Uint8Array))
+          throw injectedHarnessFailure("artifact value was not bytes");
+        const contentType =
+          putOptions?.httpMetadata instanceof Headers
+            ? (putOptions.httpMetadata.get("content-type") ?? undefined)
+            : putOptions?.httpMetadata?.contentType;
+        artifactObjects.set(key, {
+          bytes: Uint8Array.from(value),
+          contentType,
+          customMetadata: putOptions?.customMetadata ?? {},
+        });
+        events.push(`artifact:put:${key}`);
+        return {};
+      },
+      head: async (key: string) => {
+        const object = artifactObjects.get(key);
+        return object === undefined
+          ? null
+          : {
+              key,
+              size: object.bytes.byteLength,
+              httpMetadata: { contentType: object.contentType },
+              customMetadata: object.customMetadata,
+            };
+      },
+      get: async (key: string) => {
+        const object = artifactObjects.get(key);
+        if (object === undefined) return null;
+        return {
+          key,
+          size: object.bytes.byteLength,
+          httpMetadata: { contentType: object.contentType },
+          customMetadata: object.customMetadata,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(object.bytes);
+              controller.close();
+            },
+          }),
+        };
+      },
+      delete: async (key: string) => {
+        events.push(`artifact:delete:${key}`);
+        if (failures.has("artifactDelete"))
+          throw injectedHarnessFailure("injected artifact delete failure");
+        artifactObjects.delete(key);
+        artifactDeletedKeys.push(key);
+      },
+    } as never,
     BROWSER: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
@@ -781,6 +845,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     rawPiRequests,
     writtenFiles,
     r2DeletedKeys,
+    artifactDeletedKeys,
+    artifactKeys: () => [...artifactObjects.keys()],
     memory: storage.memory,
     injectFailure: (stage) => {
       failures.add(stage);
@@ -797,5 +863,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 export const sessionHarnessKeys = {
   credential: CREDENTIAL_KEY,
   createIdempotency: CREATE_IDEMPOTENCY_KEY,
+  evidence: EVIDENCE_RECORD_KEY,
   record: RECORD_KEY,
 } as const;

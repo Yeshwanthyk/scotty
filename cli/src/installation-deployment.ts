@@ -381,6 +381,7 @@ const inspectWithProfile = async (
           "SANDBOX",
           "SESSIONS",
           "BACKUP_BUCKET",
+          "ARTIFACT_BUCKET",
         ];
         const sandboxBinding = bindings
           .filter(isDurableObjectBinding)
@@ -391,11 +392,15 @@ const inspectWithProfile = async (
         const backupBinding = bindings
           .filter(isR2Binding)
           .find((binding) => binding.name === "BACKUP_BUCKET");
+        const artifactBinding = bindings
+          .filter(isR2Binding)
+          .find((binding) => binding.name === "ARTIFACT_BUCKET");
         if (
           requiredBindings.some((name) => !bindingNames.has(name)) ||
           sandboxBinding?.namespaceId === undefined ||
           sessionsBinding?.namespaceId === undefined ||
-          backupBinding?.bucketName !== installation.backupBucketName
+          backupBinding?.bucketName !== installation.backupBucketName ||
+          artifactBinding?.bucketName !== installation.artifactBucketName
         )
           return yield* new InstallationDeploymentError({
             message: "The named Worker does not have the required Scotty bindings.",
@@ -427,6 +432,10 @@ const inspectWithProfile = async (
         yield* R2.getBucket({
           accountId,
           bucketName: installation.backupBucketName,
+        }).pipe(Effect.asVoid);
+        yield* R2.getBucket({
+          accountId,
+          bucketName: installation.artifactBucketName,
         }).pipe(Effect.asVoid);
         const scriptSubdomain = yield* Workers.getScriptSubdomain({
           accountId,
