@@ -383,13 +383,12 @@ const makePage = (
           : singlePage(context, page).pipe(Effect.as(`${url.pathname}${url.search}`));
       }),
     ),
-    screenshot: checked("screenshot", () =>
-      page.screenshot({
-        fullPage: false,
-        timeout: KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
-        type: "png",
-      }),
-    ),
+    screenshot: boundedRuntimeEffect(
+      "screenshot",
+      "ambiguous",
+      () => page.screenshot(),
+      KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
+    ).pipe(Effect.tap(() => singlePage(context, page))),
   };
 };
 
@@ -531,30 +530,23 @@ export const makeKitesurfClient = (
               (context) =>
                 installContextPolicy(context, origin, options.cookieSecret).pipe(
                   Effect.andThen(
-                    Effect.acquireUseRelease(
-                      boundedRuntimeEffect(
-                        "create_page",
-                        "ambiguous",
-                        () => context.newPage(),
-                        resourceTimeoutMillis,
-                        (page) =>
-                          compensateLateResource(
-                            "close_page",
-                            () => page.close(),
-                            resourceTimeoutMillis,
-                          ),
-                      ),
+                    boundedRuntimeEffect(
+                      "create_page",
+                      "ambiguous",
+                      () => context.newPage(),
+                      resourceTimeoutMillis,
                       (page) =>
-                        singlePage(context, page).pipe(
-                          Effect.andThen(use(makePage(origin, context, page))),
-                        ),
-                      (page, exit) =>
-                        releaseResource(
+                        compensateLateResource(
                           "close_page",
                           () => page.close(),
                           resourceTimeoutMillis,
-                          exit,
                         ),
+                    ).pipe(
+                      Effect.flatMap((page) =>
+                        singlePage(context, page).pipe(
+                          Effect.andThen(use(makePage(origin, context, page))),
+                        ),
+                      ),
                     ),
                   ),
                 ),

@@ -16,7 +16,6 @@ vi.mock("@cloudflare/playwright", () => playwright);
 import { EVIDENCE_PREVIEW_COOKIE } from "../src/evidence-preview";
 import {
   KITESURF_OPERATION_TIMEOUT_MILLIS,
-  KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
   makeKitesurfClient,
   type KitesurfRuntimeLauncher,
 } from "../src/kitesurf-client";
@@ -75,7 +74,9 @@ const makeRuntime = (
       return locator;
     },
     screenshot: async (callOptions?: { readonly timeout?: number }) => {
-      state.events.push(`page:screenshot:${callOptions?.timeout ?? 0}`);
+      state.events.push(
+        callOptions === undefined ? "page:screenshot:no-options" : "page:screenshot:options",
+      );
       return PNG;
     },
     url: () => "https://preview.scotty.example/ready?mode=test",
@@ -220,8 +221,8 @@ describe("Kitesurf client", () => {
       ]);
       assert.include(state.events, "browser:sessionless");
       assert.include(state.events, `locator:click:${KITESURF_OPERATION_TIMEOUT_MILLIS}`);
-      assert.include(state.events, `page:screenshot:${KITESURF_SCREENSHOT_TIMEOUT_MILLIS}`);
-      assert.isBelow(state.events.indexOf("page:close"), state.events.indexOf("context:close"));
+      assert.include(state.events, "page:screenshot:no-options");
+      assert.notInclude(state.events, "page:close");
       assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("browser:close"));
       assert.isFalse(state.events.some((event) => event.includes(secret)));
 
@@ -514,7 +515,7 @@ describe("Kitesurf client", () => {
       Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),
       () =>
         Effect.gen(function* () {
-          const pageClose = deferredPromise<void>();
+          const contextClose = deferredPromise<void>();
           const locator = {
             click: async () => undefined,
             count: async () => 1,
@@ -524,7 +525,7 @@ describe("Kitesurf client", () => {
             textContent: async () => "Ready",
           };
           const page: RuntimePage = {
-            close: () => pageClose.promise,
+            close: async () => undefined,
             evaluate: async () => true,
             getByTestId: () => locator,
             goto: async () => null,
@@ -534,7 +535,7 @@ describe("Kitesurf client", () => {
           };
           const context: RuntimeContext = {
             addCookies: async () => undefined,
-            close: async () => undefined,
+            close: () => contextClose.promise,
             newPage: async () => page,
             pages: () => [page],
             route: async () => undefined,
@@ -566,7 +567,7 @@ describe("Kitesurf client", () => {
             reason: "ambiguous",
           });
           assert.notInclude(JSON.stringify(result), "private screenshot failure");
-          pageClose.resolve();
+          contextClose.resolve();
         }),
       () => Effect.sync(() => vi.useRealTimers()),
     ),
@@ -578,7 +579,7 @@ describe("Kitesurf client", () => {
       () =>
         Effect.gen(function* () {
           const events: string[] = [];
-          const pageClose = deferredPromise<void>();
+          const contextClose = deferredPromise<void>();
           const locator = {
             click: async () => undefined,
             count: async () => 1,
@@ -588,7 +589,7 @@ describe("Kitesurf client", () => {
             textContent: async () => "Ready",
           };
           const page: RuntimePage = {
-            close: () => pageClose.promise,
+            close: async () => void events.push("page:close"),
             evaluate: async () => true,
             getByTestId: () => locator,
             goto: async () => null,
@@ -598,7 +599,10 @@ describe("Kitesurf client", () => {
           };
           const context: RuntimeContext = {
             addCookies: async () => undefined,
-            close: async () => void events.push("context:close"),
+            close: () => {
+              events.push("context:close");
+              return contextClose.promise;
+            },
             newPage: async () => page,
             pages: () => [page],
             route: async () => undefined,
@@ -626,11 +630,11 @@ describe("Kitesurf client", () => {
           const result = yield* Fiber.join(fiber);
 
           assert.deepInclude(failureOf(result), {
-            operation: "close_page",
+            operation: "close_context",
             reason: "cleanup",
           });
           assert.deepStrictEqual(events, ["context:close", "browser:close"]);
-          pageClose.resolve();
+          contextClose.resolve();
         }),
       () => Effect.sync(() => vi.useRealTimers()),
     ),
