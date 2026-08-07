@@ -31,7 +31,7 @@ interface CaptureSession {
   readonly send: (
     method: "Page.captureScreenshot",
     params: { readonly format: "png"; readonly captureBeyondViewport: false },
-  ) => Promise<{ readonly data: string }>;
+  ) => Promise<unknown>;
 }
 
 const captureSession = (
@@ -379,6 +379,8 @@ describe("Kitesurf client", () => {
         { label: "empty", data: "" },
         { label: "oversized", data: base64ZeroBytes(EVIDENCE_MAX_FRAME_BYTES + 1) },
         { label: "malformed", data: "private-protocol-base64%" },
+        { label: "noncanonical-one-byte", data: "AB==" },
+        { label: "noncanonical-two-bytes", data: "AAB=" },
       ];
       for (const testCase of cases) {
         const state = runtimeState();
@@ -410,6 +412,37 @@ describe("Kitesurf client", () => {
         assert.notProperty(failure, "data");
         assert.include(state.events, `cdp:${testCase.label}:detach`);
       }
+    }),
+  );
+
+  it.effect("rejects a malformed CDP result as a safe typed failure", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const result = yield* makeKitesurfClient(
+        binding,
+        makeRuntime(state, {
+          acquireCdpSession: async () =>
+            captureSession(
+              async () => ({ privateScreenshotData: "private-protocol-output" }),
+              async () => void state.events.push("cdp:malformed-result-detach"),
+            ),
+        }),
+      )
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          (page) => page.screenshot,
+        )
+        .pipe(Effect.result);
+
+      assert.deepInclude(failureOf(result), {
+        operation: "screenshot",
+        reason: "ambiguous",
+      });
+      assert.include(state.events, "cdp:malformed-result-detach");
+      assert.notInclude(JSON.stringify(result), "private-protocol-output");
     }),
   );
 

@@ -100,7 +100,7 @@ interface KitesurfCaptureSession extends Pick<CDPSession, "detach"> {
   readonly send: (
     method: "Page.captureScreenshot",
     params: { readonly format: "png"; readonly captureBeyondViewport: false },
-  ) => Promise<{ readonly data: string }>;
+  ) => Promise<unknown>;
 }
 
 interface KitesurfRuntimeContext {
@@ -337,21 +337,30 @@ const singlePage = (
 const screenshotFailure = (): KitesurfClientError =>
   new KitesurfClientError({ operation: "screenshot", reason: "ambiguous" });
 
+const CaptureScreenshotResultSchema = Schema.Struct({ data: Schema.String });
+const decodeCaptureScreenshotResult = Schema.decodeUnknownEffect(CaptureScreenshotResultSchema);
+
+const base64Value = (code: number): number | undefined => {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return undefined;
+};
+
 const validBase64Payload = (data: string, payloadLength: number): boolean => {
   for (let index = 0; index < payloadLength; index += 1) {
-    const code = data.charCodeAt(index);
-    if (
-      !(
-        (code >= 65 && code <= 90) ||
-        (code >= 97 && code <= 122) ||
-        (code >= 48 && code <= 57) ||
-        code === 43 ||
-        code === 47
-      )
-    )
-      return false;
+    if (base64Value(data.charCodeAt(index)) === undefined) return false;
   }
   return true;
+};
+
+const hasCanonicalBase64Padding = (data: string, padding: number): boolean => {
+  if (padding === 0) return true;
+  const lastValue = base64Value(data.charCodeAt(data.length - padding - 1));
+  if (lastValue === undefined) return false;
+  return padding === 1 ? (lastValue & 0b11) === 0 : (lastValue & 0b1111) === 0;
 };
 
 const decodeScreenshot = (data: unknown): Effect.Effect<Uint8Array, KitesurfClientError> => {
@@ -363,7 +372,8 @@ const decodeScreenshot = (data: unknown): Effect.Effect<Uint8Array, KitesurfClie
   )
     return Effect.fail(screenshotFailure());
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-  if (!validBase64Payload(data, data.length - padding)) return Effect.fail(screenshotFailure());
+  if (!validBase64Payload(data, data.length - padding) || !hasCanonicalBase64Padding(data, padding))
+    return Effect.fail(screenshotFailure());
   const decodedByteLength = (data.length / 4) * 3 - padding;
   if (decodedByteLength === 0 || decodedByteLength > EVIDENCE_MAX_FRAME_BYTES)
     return Effect.fail(screenshotFailure());
@@ -381,6 +391,12 @@ const decodeScreenshot = (data: unknown): Effect.Effect<Uint8Array, KitesurfClie
     ),
   );
 };
+
+const decodeScreenshotResult = (result: unknown): Effect.Effect<Uint8Array, KitesurfClientError> =>
+  decodeCaptureScreenshotResult(result).pipe(
+    Effect.mapError(screenshotFailure),
+    Effect.flatMap(({ data }) => decodeScreenshot(data)),
+  );
 
 const releaseScreenshotSession = (
   session: KitesurfCaptureSession,
@@ -435,7 +451,7 @@ const captureScreenshot = (
                 captureBeyondViewport: false,
               }),
             KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
-          ).pipe(Effect.flatMap(({ data }) => decodeScreenshot(data))),
+          ).pipe(Effect.flatMap(decodeScreenshotResult)),
         releaseScreenshotSession,
       ),
     ),
