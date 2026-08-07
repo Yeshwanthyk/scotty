@@ -941,22 +941,29 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   });
 
+  private readonly scheduleEvidenceRetentionAtProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    expiresAt: string,
+  ) {
+    yield* hostEffect("schedule", () =>
+      this.schedule(new Date(expiresAt), "expireRetainedEvidence", {
+        expiresAt,
+      } satisfies EvidenceRetentionPayload),
+    );
+  });
+
   private readonly scheduleEvidenceArtifactRetentionProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     artifact: EvidenceArtifactV1,
   ) {
-    yield* hostEffect("schedule", () =>
-      this.schedule(new Date(artifact.expiresAt), "expireRetainedEvidence", {
-        expiresAt: artifact.expiresAt,
-      } satisfies EvidenceRetentionPayload),
-    ).pipe(
+    yield* this.scheduleEvidenceRetentionAtProgram(artifact.expiresAt).pipe(
       Effect.mapError(
         (cause) => new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
       ),
     );
   });
 
-  private readonly armEvidenceRetentionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+  private readonly nextEvidenceRetentionAtProgram = Effect.fnUntraced(function* () {
     const evidence = yield* EvidenceStore;
     const state = yield* evidence.read;
     const nowMillis = yield* Clock.currentTimeMillis;
@@ -967,14 +974,51 @@ export class Sandbox extends BaseSandbox<Bindings> {
             .filter((artifact) => artifact.status === "available")
             .map((artifact) => Date.parse(artifact.expiresAt)),
         );
-    if (!Number.isFinite(nextAtMillis)) return;
-    const expiresAt = new Date(Math.max(nowMillis, nextAtMillis)).toISOString();
-    yield* hostEffect("schedule", () =>
-      this.schedule(new Date(expiresAt), "expireRetainedEvidence", {
-        expiresAt,
-      } satisfies EvidenceRetentionPayload),
-    );
+    return Number.isFinite(nextAtMillis)
+      ? new Date(Math.max(nowMillis, nextAtMillis)).toISOString()
+      : undefined;
   });
+
+  private readonly armEvidenceRetentionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const expiresAt = yield* this.nextEvidenceRetentionAtProgram();
+    if (expiresAt === undefined) return;
+    yield* this.scheduleEvidenceRetentionAtProgram(expiresAt);
+  });
+
+  private readonly hasScheduledEvidenceRetentionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    expiresAt: string,
+  ) {
+    return yield* Effect.try({
+      // Containers 0.3.7 inserts this row before scheduleNextAlarm; preserve that exact future retry.
+      try: () =>
+        [
+          // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: reconcile the pinned Container host's SDK-owned schedule row after scheduleNextAlarm fails
+          ...this.ctx.storage.sql.exec<{ readonly id: string }>(
+            "SELECT id FROM container_schedules WHERE callback = ? AND time = ? LIMIT 1",
+            "expireRetainedEvidence",
+            Math.floor(Date.parse(expiresAt) / 1_000),
+          ),
+        ].length > 0,
+      catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
+    });
+  });
+
+  private readonly armEvidenceRetentionFailClosedProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      yield* Effect.gen({ self: this }, function* () {
+        const expiresAt = yield* this.nextEvidenceRetentionAtProgram();
+        if (expiresAt === undefined) return;
+        yield* this.scheduleEvidenceRetentionAtProgram(expiresAt).pipe(
+          Effect.catch((failure) =>
+            this.hasScheduledEvidenceRetentionProgram(expiresAt).pipe(
+              Effect.flatMap((scheduled) => (scheduled ? Effect.void : Effect.fail(failure))),
+            ),
+          ),
+        );
+      }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }));
+    },
+  );
 
   private readonly expireRetainedEvidenceProgram = Effect.fnUntraced(function* (
     this: Sandbox,
@@ -995,7 +1039,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           error: errorName(reconciled.failure),
         }),
       );
-    yield* this.armEvidenceRetentionProgram();
+    yield* this.armEvidenceRetentionFailClosedProgram();
   });
 
   private readonly completeScottyEvidenceStepProgram = Effect.fnUntraced(function* (

@@ -68,7 +68,9 @@ export type HarnessFailureStage =
   | "downSha"
   | "downTar"
   | "downWriteManifest"
-  | "evidenceRetentionSchedule"
+  | "evidenceRetentionSchedulePostInsert"
+  | "evidenceRetentionSchedulePreInsert"
+  | "evidenceRetentionSchedulePreInsertOnce"
   | "hardCapSchedule"
   | "previewExpose"
   | "previewUnexpose"
@@ -169,6 +171,7 @@ class HarnessStorage {
 
   constructor(
     private readonly events: string[],
+    private readonly schedules: ReadonlyArray<RecordedSchedule>,
     initialEntries: Readonly<Record<string, unknown>>,
     private readonly failures: ReadonlySet<HarnessFailureStage>,
     private readonly crashAfterInitialRecordCommit: boolean,
@@ -199,7 +202,18 @@ class HarnessStorage {
   };
 
   readonly sql = {
-    exec: (): ReadonlyArray<never> => [],
+    exec: (query: string, ...bindings: ReadonlyArray<unknown>) => {
+      if (query !== "SELECT id FROM container_schedules WHERE callback = ? AND time = ? LIMIT 1")
+        return [];
+      const [callback, time] = bindings;
+      return this.schedules.flatMap((schedule, index) =>
+        schedule.callback === callback &&
+        schedule.when instanceof Date &&
+        Math.floor(schedule.when.getTime() / 1_000) === time
+          ? [{ id: `schedule-${index}` }]
+          : [],
+      );
+    },
     databaseSize: 0,
     Cursor: class {},
     Statement: class {},
@@ -390,6 +404,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   if (options.failureStage !== undefined) failures.add(options.failureStage);
   const storage = new HarnessStorage(
     events,
+    schedules,
     options.initialEntries ?? {},
     failures,
     options.crashAfterInitialRecordCommit ?? false,
@@ -914,8 +929,12 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         payload: unknown,
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
-        if (failures.has("evidenceRetentionSchedule") && callback === "expireRetainedEvidence")
-          throw injectedHarnessFailure("injected evidence retention schedule failure");
+        if (
+          callback === "expireRetainedEvidence" &&
+          (failures.has("evidenceRetentionSchedulePreInsert") ||
+            failures.delete("evidenceRetentionSchedulePreInsertOnce"))
+        )
+          throw injectedHarnessFailure("injected pre-insert evidence retention schedule failure");
         if (failures.has("hardCapSchedule") && callback === "enforceHardCap") {
           throw injectedHarnessFailure("injected hard-cap schedule failure");
         }
@@ -923,6 +942,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           throw injectedHarnessFailure("injected vaporize retry schedule failure");
         const scheduled = { when, callback, payload };
         schedules.push(scheduled);
+        if (
+          failures.has("evidenceRetentionSchedulePostInsert") &&
+          callback === "expireRetainedEvidence"
+        )
+          throw injectedHarnessFailure("injected post-insert evidence retention schedule failure");
         return scheduled;
       },
     },
