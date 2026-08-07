@@ -6,6 +6,7 @@ export const EVIDENCE_MAX_ASSERTIONS_PER_STEP = 4;
 export const EVIDENCE_MAX_FRAME_BYTES = 5 * 1024 * 1024;
 export const EVIDENCE_MAX_JOB_BYTES = 40 * 1024 * 1024;
 export const EVIDENCE_MAX_RETAINED_JOBS = 100;
+export const EVIDENCE_MAX_RETAINED_ARTIFACTS = EVIDENCE_MAX_RETAINED_JOBS * EVIDENCE_MAX_STEPS;
 export const EVIDENCE_JOB_TIMEOUT_MILLIS = 5 * 60 * 1_000;
 export const EVIDENCE_RETENTION_MILLIS = 7 * 24 * 60 * 60 * 1_000;
 export const EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS = 4;
@@ -416,8 +417,12 @@ const EvidenceStateV1CommonFields = {
   jobs: Schema.Array(EvidenceJobSummaryV1Schema).check(
     Schema.isMaxLength(EVIDENCE_MAX_RETAINED_JOBS),
   ),
-  artifacts: Schema.Array(EvidenceArtifactV1Schema).check(Schema.isMaxLength(1_200)),
-  pendingDeletes: Schema.Array(EvidenceDeleteV1Schema).check(Schema.isMaxLength(1_200)),
+  artifacts: Schema.Array(EvidenceArtifactV1Schema).check(
+    Schema.isMaxLength(EVIDENCE_MAX_RETAINED_ARTIFACTS),
+  ),
+  pendingDeletes: Schema.Array(EvidenceDeleteV1Schema).check(
+    Schema.isMaxLength(EVIDENCE_MAX_RETAINED_ARTIFACTS),
+  ),
   retainedBytes: NonNegativeIntSchema,
 };
 

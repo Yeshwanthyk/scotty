@@ -127,9 +127,9 @@ const makeR2Capabilities = () => {
   };
 };
 
-const putFrame = (capabilities: ArtifactStoreCapabilities, bytes = PNG) =>
+const prepareFrame = (capabilities: ArtifactStoreCapabilities, bytes = PNG) =>
   Effect.flatMap(ArtifactStore, (store) =>
-    store.putFrame({
+    store.prepareFrame({
       sessionId: "a0b1c2d3e4f5",
       jobId: "job-1",
       frameId: "frame-1",
@@ -138,6 +138,20 @@ const putFrame = (capabilities: ArtifactStoreCapabilities, bytes = PNG) =>
       offsetMillis: 1_000,
     }),
   ).pipe(Effect.provide(artifactStoreLayer(capabilities)));
+
+const putFrame = (capabilities: ArtifactStoreCapabilities, bytes = PNG) =>
+  Effect.gen(function* () {
+    const store = yield* ArtifactStore;
+    const prepared = yield* store.prepareFrame({
+      sessionId: "a0b1c2d3e4f5",
+      jobId: "job-1",
+      frameId: "frame-1",
+      bytes,
+      capturedAt: "2026-08-06T12:00:01.000Z",
+      offsetMillis: 1_000,
+    });
+    return yield* store.writeFrame(prepared);
+  }).pipe(Effect.provide(artifactStoreLayer(capabilities)));
 
 const failure = <A>(result: Result.Result<A, unknown>): unknown => {
   assert.ok(Result.isFailure(result));
@@ -196,12 +210,27 @@ describe("ArtifactStore", () => {
     }),
   );
 
+  it.effect("rejects bytes changed after manifest hashing before storage", () =>
+    Effect.gen(function* () {
+      const test = makeMemoryCapabilities();
+      const prepared = yield* prepareFrame(test.capabilities);
+      prepared.bytes[0] = 0;
+      const result = yield* Effect.result(
+        Effect.flatMap(ArtifactStore, (store) => store.writeFrame(prepared)).pipe(
+          Effect.provide(artifactStoreLayer(test.capabilities)),
+        ),
+      );
+      assert.deepInclude(failure(result), { operation: "validate", reason: "invalid_state" });
+      assert.strictEqual(test.putCalls(), 0);
+    }),
+  );
+
   it.effect("rejects non-canonical ownership identifiers before storage", () =>
     Effect.gen(function* () {
       const test = makeMemoryCapabilities();
       const result = yield* Effect.result(
         Effect.flatMap(ArtifactStore, (store) =>
-          store.putFrame({
+          store.prepareFrame({
             sessionId: "../other-session",
             jobId: "job-1",
             frameId: "frame-1",
@@ -219,7 +248,9 @@ describe("ArtifactStore", () => {
   it.effect("rejects invalid screenshot bytes before storage", () =>
     Effect.gen(function* () {
       const test = makeMemoryCapabilities();
-      const result = yield* Effect.result(putFrame(test.capabilities, Uint8Array.from([1, 2, 3])));
+      const result = yield* Effect.result(
+        prepareFrame(test.capabilities, Uint8Array.from([1, 2, 3])),
+      );
       assert.deepInclude(failure(result), { operation: "validate", reason: "invalid_png" });
       assert.strictEqual(test.putCalls(), 0);
       assert.strictEqual(test.objects.size, 0);

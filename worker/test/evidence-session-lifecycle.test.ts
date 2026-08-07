@@ -3,9 +3,14 @@ import { Clock, Effect, Fiber, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import {
+  EVIDENCE_MAX_RETAINED_ARTIFACTS,
+  EVIDENCE_MAX_RETAINED_JOBS,
+  EVIDENCE_MAX_STEPS,
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
   EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
   EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+  type EvidenceArtifactV1,
+  type EvidenceJobSummaryV1,
   type EvidenceStateV1,
 } from "../src/evidence-contracts";
 import { sha256Hex } from "../src/digest";
@@ -50,6 +55,29 @@ const createHarness = (options: Omit<HarnessOptions, "clock" | "initialEntries">
     );
   });
 
+const createFullHistoryHarness = Effect.fnUntraced(function* () {
+  yield* TestClock.setTime(NOW);
+  const clock = yield* Clock.Clock;
+  const history = fullHistory();
+  assert.lengthOf(history.artifacts, EVIDENCE_MAX_RETAINED_ARTIFACTS);
+  const harness = yield* Effect.promise(() =>
+    createSessionHarness({
+      evidenceEnabled: true,
+      clock,
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          hardCapAt: "2026-08-06T13:00:00.000Z",
+        }),
+        [sessionHarnessKeys.evidence]: history.state,
+      },
+      initialArtifactObjects: history.artifacts,
+    }),
+  );
+  yield* Effect.promise(() => harness.startRuntime());
+  return harness;
+});
+
 const previewForwardingRequest = (
   requestId: string,
   routeNonce: string,
@@ -67,6 +95,58 @@ const previewForwardingRequest = (
     },
     signal,
   });
+
+const fullHistory = (): {
+  readonly state: EvidenceStateV1;
+  readonly artifacts: ReadonlyArray<EvidenceArtifactV1>;
+} => {
+  const jobs: EvidenceJobSummaryV1[] = [];
+  const artifacts: EvidenceArtifactV1[] = [];
+  for (let jobIndex = EVIDENCE_MAX_RETAINED_JOBS - 1; jobIndex >= 0; jobIndex -= 1) {
+    const jobId = `retained-${jobIndex}`;
+    jobs.push({
+      version: 1,
+      sequence: jobIndex,
+      jobId,
+      status: "succeeded",
+      acceptedAt: "2026-08-05T12:00:00.000Z",
+      completedAt: "2026-08-05T12:00:01.000Z",
+      totalSteps: EVIDENCE_MAX_STEPS,
+      completedSteps: EVIDENCE_MAX_STEPS,
+      replay: true,
+      steps: [],
+      frameCount: EVIDENCE_MAX_STEPS,
+    });
+    for (let frameIndex = 0; frameIndex < EVIDENCE_MAX_STEPS; frameIndex += 1) {
+      const frameId = `frame-${frameIndex}`;
+      artifacts.push({
+        version: 1,
+        sessionId: SESSION_ID,
+        jobId,
+        frameId,
+        objectKey: `evidence/v1/${SESSION_ID}/${jobId}/${frameId}.png`,
+        mediaType: "image/png",
+        sha256: jobIndex.toString(16).padStart(2, "0").repeat(32),
+        bytes: PNG.byteLength,
+        capturedAt: "2026-08-05T12:00:01.000Z",
+        offsetMillis: frameIndex,
+        expiresAt: "2026-08-12T12:00:01.000Z",
+        status: "available",
+      });
+    }
+  }
+  return {
+    artifacts,
+    state: {
+      version: 1,
+      nextSequence: EVIDENCE_MAX_RETAINED_JOBS,
+      jobs,
+      artifacts,
+      pendingDeletes: [],
+      retainedBytes: artifacts.length * PNG.byteLength,
+    },
+  };
+};
 
 const job = {
   version: 1,
@@ -452,6 +532,55 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
+  it.effect("evicts 12 artifacts at the 100x12 boundary before acceptance", () =>
+    Effect.gen(function* () {
+      const harness = yield* createFullHistoryHarness();
+
+      yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+
+      const accepted = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      assert.ok(accepted?.activeJob !== undefined);
+      assert.lengthOf(accepted.jobs, EVIDENCE_MAX_RETAINED_JOBS - 1);
+      assert.lengthOf(accepted.artifacts, EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_STEPS);
+      assert.deepStrictEqual(accepted.pendingDeletes, []);
+    }),
+  );
+
+  it.effect("blocks boundary acceptance until an ambiguous eviction is confirmed", () =>
+    Effect.gen(function* () {
+      const harness = yield* createFullHistoryHarness();
+      harness.injectFailure("artifactDeleteAmbiguous");
+
+      const firstAcceptance = yield* Effect.result(
+        Effect.tryPromise({
+          try: () => harness.sandbox.acceptScottyEvidenceJob(job),
+          catch: (cause) => cause,
+        }),
+      );
+
+      assert.ok(Result.isFailure(firstAcceptance));
+      const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      assert.strictEqual(pending?.activeJob, undefined);
+      assert.lengthOf(pending?.jobs ?? [], EVIDENCE_MAX_RETAINED_JOBS - 1);
+      assert.lengthOf(pending?.artifacts ?? [], EVIDENCE_MAX_RETAINED_ARTIFACTS);
+      assert.lengthOf(pending?.pendingDeletes ?? [], EVIDENCE_MAX_STEPS);
+      assert.isTrue(pending?.pendingDeletes.every(({ reason }) => reason === "history_evicted"));
+      assert.strictEqual(harness.readRecord()?.operation, null);
+      assert.lengthOf(
+        harness.schedules.filter(({ callback }) => callback === "expireRetainedEvidence"),
+        1,
+      );
+
+      harness.clearFailure("artifactDeleteAmbiguous");
+      yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const accepted = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      assert.ok(accepted?.activeJob !== undefined);
+      assert.lengthOf(accepted.jobs, EVIDENCE_MAX_RETAINED_JOBS - 1);
+      assert.lengthOf(accepted.artifacts, EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_STEPS);
+      assert.deepStrictEqual(accepted.pendingDeletes, []);
+    }),
+  );
+
   it.effect("arms seven-day retention and deletes only after verified R2 absence", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness();
@@ -494,6 +623,45 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(state?.retainedBytes, 0);
       assert.deepStrictEqual(harness.artifactKeys(), []);
       assert.lengthOf(harness.artifactDeletedKeys, 1);
+    }),
+  );
+
+  it.effect("keeps one earliest retention callback across staggered frames", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() =>
+        harness.sandbox.acceptScottyEvidenceJob({
+          ...job,
+          steps: [job.steps[0], { ...job.steps[0], name: "Open the app again" }],
+        }),
+      );
+      for (let index = 0; index < 2; index += 1) {
+        const capturedAt = `2026-08-06T12:00:0${index + 1}.000Z`;
+        yield* Effect.promise(() =>
+          harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
+            index,
+            startedAt: "2026-08-06T12:00:00.100Z",
+            completedAt: capturedAt,
+            offsetMillis: (index + 1) * 1_000,
+            assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
+            frame: {
+              frameId: `frame-${index + 1}`,
+              bytes: PNG,
+              capturedAt,
+              offsetMillis: (index + 1) * 1_000,
+            },
+          }),
+        );
+        const retention = harness.schedules.filter(
+          ({ callback }) => callback === "expireRetainedEvidence",
+        );
+        assert.lengthOf(retention, 1);
+        assert.deepInclude(retention[0], {
+          when: new Date("2026-08-13T12:00:01.000Z"),
+          payload: { expiresAt: "2026-08-13T12:00:01.000Z" },
+        });
+      }
     }),
   );
 
@@ -644,7 +812,11 @@ describe("evidence session lifecycle", () => {
           callback: "expireRetainedEvidence",
         },
       );
-      assert.notInclude(harness.deletedSchedules, "expireRetainedEvidence");
+      assert.include(harness.deletedSchedules, "expireRetainedEvidence");
+      assert.lengthOf(
+        harness.schedules.filter(({ callback }) => callback === "expireRetainedEvidence"),
+        1,
+      );
       assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
         status: "interrupted",
         frameCount: 1,

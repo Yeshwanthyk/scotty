@@ -602,6 +602,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const deadlineAt = new Date(deadlineMillis).toISOString();
     const operationNonce = randomToken(12);
     const evidence = yield* EvidenceStore;
+    const capacityDeletes = yield* evidence.prepareJobCapacity;
+    if (capacityDeletes.length > 0) {
+      yield* this.armEvidenceRetentionFailClosedProgram();
+      yield* this.deleteEvidenceArtifactsProgram(capacityDeletes);
+      yield* this.armEvidenceRetentionFailClosedProgram();
+    }
     const accepted = yield* evidence.accept({
       jobId: `job-${randomToken(8)}`,
       operationNonce,
@@ -945,43 +951,57 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     expiresAt: string,
   ) {
-    yield* hostEffect("schedule", () =>
-      this.schedule(new Date(expiresAt), "expireRetainedEvidence", {
-        expiresAt,
-      } satisfies EvidenceRetentionPayload),
-    );
-  });
-
-  private readonly scheduleEvidenceArtifactRetentionProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    artifact: EvidenceArtifactV1,
-  ) {
-    yield* this.scheduleEvidenceRetentionAtProgram(artifact.expiresAt).pipe(
-      Effect.mapError(
-        (cause) => new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
+    yield* Effect.try({
+      try: () => this.deleteSchedules("expireRetainedEvidence"),
+      catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
+    });
+    const scheduled = yield* Effect.result(
+      hostEffect("schedule", () =>
+        this.schedule(new Date(expiresAt), "expireRetainedEvidence", {
+          expiresAt,
+        } satisfies EvidenceRetentionPayload),
       ),
     );
+    if (Result.isSuccess(scheduled)) return;
+    const inserted = yield* this.hasScheduledEvidenceRetentionProgram(expiresAt);
+    if (!inserted) return yield* scheduled.failure;
   });
 
-  private readonly nextEvidenceRetentionAtProgram = Effect.fnUntraced(function* () {
+  private readonly nextEvidenceRetentionAtProgram = Effect.fnUntraced(function* (
+    promoting?: EvidenceArtifactV1,
+  ) {
     const evidence = yield* EvidenceStore;
     const state = yield* evidence.read;
     const nowMillis = yield* Clock.currentTimeMillis;
-    const nextAtMillis = state.artifacts.some((artifact) => artifact.status === "delete_pending")
+    const hasPending = state.artifacts.some(
+      (artifact) =>
+        artifact.status === "delete_pending" && artifact.objectKey !== promoting?.objectKey,
+    );
+    const nextAtMillis = hasPending
       ? nowMillis + EVIDENCE_CLEANUP_RETRY_SECONDS * 1_000
       : Math.min(
           ...state.artifacts
             .filter((artifact) => artifact.status === "available")
             .map((artifact) => Date.parse(artifact.expiresAt)),
+          ...(promoting === undefined ? [] : [Date.parse(promoting.expiresAt)]),
         );
     return Number.isFinite(nextAtMillis)
       ? new Date(Math.max(nowMillis, nextAtMillis)).toISOString()
       : undefined;
   });
 
-  private readonly armEvidenceRetentionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const expiresAt = yield* this.nextEvidenceRetentionAtProgram();
-    if (expiresAt === undefined) return;
+  private readonly armEvidenceRetentionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    promoting?: EvidenceArtifactV1,
+  ) {
+    const expiresAt = yield* this.nextEvidenceRetentionAtProgram(promoting);
+    if (expiresAt === undefined) {
+      yield* Effect.try({
+        try: () => this.deleteSchedules("expireRetainedEvidence"),
+        catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
+      });
+      return;
+    }
     yield* this.scheduleEvidenceRetentionAtProgram(expiresAt);
   });
 
@@ -1006,17 +1026,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly armEvidenceRetentionFailClosedProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
-      yield* Effect.gen({ self: this }, function* () {
-        const expiresAt = yield* this.nextEvidenceRetentionAtProgram();
-        if (expiresAt === undefined) return;
-        yield* this.scheduleEvidenceRetentionAtProgram(expiresAt).pipe(
-          Effect.catch((failure) =>
-            this.hasScheduledEvidenceRetentionProgram(expiresAt).pipe(
-              Effect.flatMap((scheduled) => (scheduled ? Effect.void : Effect.fail(failure))),
-            ),
-          ),
-        );
-      }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }));
+      yield* this.armEvidenceRetentionProgram().pipe(
+        Effect.retry({ schedule: Schedule.spaced("1 second") }),
+      );
     },
   );
 
@@ -1074,35 +1086,48 @@ export class Sandbox extends BaseSandbox<Bindings> {
             capturedAt: frame.capturedAt,
             offsetMillis: frame.offsetMillis,
           };
-    const attemptResult =
+    const preparedResult =
       frameInput === undefined
         ? Result.succeed(undefined)
-        : yield* Effect.result(artifactStore.putFrameAttempt(frameInput));
-    if (Result.isFailure(attemptResult) && !failedAssertion) return yield* attemptResult.failure;
-    const failedPut =
-      Result.isSuccess(attemptResult) &&
-      attemptResult.success !== undefined &&
-      Result.isFailure(attemptResult.success.stored)
-        ? {
-            artifact: attemptResult.success.artifact,
-            failure: attemptResult.success.stored.failure,
-          }
-        : undefined;
-    const verifiedArtifact =
-      Result.isSuccess(attemptResult) &&
-      attemptResult.success !== undefined &&
-      Result.isSuccess(attemptResult.success.stored)
-        ? attemptResult.success.artifact
-        : undefined;
-    const retention =
-      verifiedArtifact === undefined
-        ? Result.succeed(undefined)
-        : yield* Effect.result(this.scheduleEvidenceArtifactRetentionProgram(verifiedArtifact));
-    const retentionFailure = Result.isFailure(retention) ? retention.failure : undefined;
-    const abandonedArtifact =
-      failedPut?.artifact ?? (retentionFailure === undefined ? undefined : verifiedArtifact);
-    if (abandonedArtifact !== undefined) {
-      const pending = yield* evidence.requestVerifiedDelete(abandonedArtifact, "abandoned");
+        : yield* Effect.result(artifactStore.prepareFrame(frameInput));
+    if (Result.isFailure(preparedResult) && !failedAssertion) return yield* preparedResult.failure;
+    const prepared = Result.isSuccess(preparedResult) ? preparedResult.success : undefined;
+    let artifact: EvidenceArtifactV1 | undefined;
+    let artifactFailure: EvidenceArtifactError | undefined = Result.isFailure(preparedResult)
+      ? preparedResult.failure
+      : undefined;
+    if (prepared !== undefined) {
+      yield* evidence.prepareArtifactUpload(nonce, input.index, prepared.artifact);
+      const pendingRetention = yield* Effect.result(
+        this.armEvidenceRetentionProgram().pipe(
+          Effect.mapError(
+            (cause) =>
+              new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
+          ),
+        ),
+      );
+      if (Result.isFailure(pendingRetention)) {
+        artifactFailure = pendingRetention.failure;
+      } else {
+        const written = yield* Effect.result(artifactStore.writeFrame(prepared));
+        if (Result.isFailure(written)) {
+          artifactFailure = written.failure;
+        } else {
+          const availableRetention = yield* Effect.result(
+            this.armEvidenceRetentionProgram(written.success).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
+              ),
+            ),
+          );
+          if (Result.isFailure(availableRetention)) artifactFailure = availableRetention.failure;
+          else artifact = written.success;
+        }
+      }
+    }
+    if (artifactFailure !== undefined && prepared !== undefined) {
+      const pending = yield* evidence.requestVerifiedDelete(prepared.artifact, "abandoned");
       if (pending !== undefined) {
         const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
         if (Result.isFailure(deleted))
@@ -1114,10 +1139,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
             }),
           );
       }
+      yield* this.armEvidenceRetentionFailClosedProgram();
     }
-    const artifactFailure = failedPut?.failure ?? retentionFailure;
     if (artifactFailure !== undefined && !failedAssertion) return yield* artifactFailure;
-    const artifact = retentionFailure === undefined ? verifiedArtifact : undefined;
     const publication = {
       index: input.index,
       startedAt: input.startedAt,
@@ -1145,6 +1169,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             }),
           );
       }
+      yield* this.armEvidenceRetentionFailClosedProgram();
       if (failedAssertion) return yield* evidence.completeStep(nonce, publication);
     }
     return yield* completed.failure;
@@ -1166,6 +1191,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           error: errorName(reconciled.failure),
         }),
       );
+    yield* this.armEvidenceRetentionFailClosedProgram();
     return summary;
   });
 

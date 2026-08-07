@@ -251,7 +251,7 @@ const retainedArtifact = (jobId: string): EvidenceArtifactV1 => ({
 });
 
 describe("EvidenceStore", () => {
-  it.effect("publishes bytes through ArtifactStore before authoritative append", () =>
+  it.effect("owns the deterministic manifest across every upload seam", () =>
     Effect.gen(function* () {
       const authority = makeAuthorityStorage();
       const artifacts = makeArtifactCapabilities();
@@ -277,8 +277,8 @@ describe("EvidenceStore", () => {
         message: "Session is already running evidence",
       });
 
-      const artifact = yield* Effect.flatMap(ArtifactStore, (store) =>
-        store.putFrame({
+      const prepared = yield* Effect.flatMap(ArtifactStore, (store) =>
+        store.prepareFrame({
           sessionId: SESSION_ID,
           jobId: accepted.jobId,
           frameId: "frame-1",
@@ -286,6 +286,21 @@ describe("EvidenceStore", () => {
           capturedAt: "2026-08-06T12:00:01.000Z",
           offsetMillis: 1_000,
         }),
+      ).pipe(Effect.provide(testLayers));
+      assert.strictEqual(artifacts.objects.size, 0);
+      yield* Effect.flatMap(EvidenceStore, (store) =>
+        store.prepareArtifactUpload("evidence-nonce", 0, prepared.artifact),
+      ).pipe(Effect.provide(testLayers));
+      assert.deepInclude(authority.readEvidence()?.artifacts[0], {
+        objectKey: `evidence/v1/${SESSION_ID}/job-1/frame-1.png`,
+        status: "delete_pending",
+      });
+      assert.deepInclude(authority.readEvidence()?.pendingDeletes[0], {
+        objectKey: `evidence/v1/${SESSION_ID}/job-1/frame-1.png`,
+        reason: "abandoned",
+      });
+      const artifact = yield* Effect.flatMap(ArtifactStore, (store) =>
+        store.writeFrame(prepared),
       ).pipe(Effect.provide(testLayers));
       assert.strictEqual(artifact.objectKey, `evidence/v1/${SESSION_ID}/job-1/frame-1.png`);
       assert.strictEqual(artifacts.objects.size, 1);
@@ -302,6 +317,11 @@ describe("EvidenceStore", () => {
       ).pipe(Effect.provide(testLayers));
       assert.strictEqual(step.status, "failed");
       assert.strictEqual(step.frame?.frameId, "frame-1");
+      assert.deepInclude(authority.readEvidence()?.artifacts[0], {
+        objectKey: artifact.objectKey,
+        status: "available",
+      });
+      assert.deepStrictEqual(authority.readEvidence()?.pendingDeletes, []);
 
       yield* TestClock.setTime(NOW + 2_000);
       const summary = yield* Effect.flatMap(EvidenceStore, (store) =>
@@ -620,7 +640,7 @@ describe("EvidenceStore", () => {
     }),
   );
 
-  it.effect("keeps delete authority when bounded history evicts an artifact-owning job", () =>
+  it.effect("evicts and confirms bounded-history artifacts before accepting a new job", () =>
     Effect.gen(function* () {
       const jobs = Array.from({ length: 100 }, (_, index) => retainedSummary(index));
       const artifact = retainedArtifact("retained-99");
@@ -635,6 +655,21 @@ describe("EvidenceStore", () => {
       const artifacts = makeArtifactCapabilities();
       const testLayers = layers(authority.storage, artifacts.capabilities);
       yield* TestClock.setTime(NOW);
+      const pending = yield* Effect.flatMap(
+        EvidenceStore,
+        (store) => store.prepareJobCapacity,
+      ).pipe(Effect.provide(testLayers));
+      assert.deepInclude(pending[0], { objectKey: artifact.objectKey, status: "delete_pending" });
+      assert.deepInclude(authority.readEvidence()?.pendingDeletes[0], {
+        objectKey: artifact.objectKey,
+        reason: "history_evicted",
+      });
+      yield* Effect.flatMap(ArtifactStore, (store) => store.deleteFrame(pending[0])).pipe(
+        Effect.provide(testLayers),
+      );
+      yield* Effect.flatMap(EvidenceStore, (store) => store.confirmDelete(artifact.objectKey)).pipe(
+        Effect.provide(testLayers),
+      );
       yield* accept(testLayers);
       yield* Effect.flatMap(EvidenceStore, (store) =>
         store.finalize("evidence-nonce", "succeeded"),
@@ -644,11 +679,8 @@ describe("EvidenceStore", () => {
       assert.ok(state !== undefined);
       assert.strictEqual(state.jobs.length, 100);
       assert.isFalse(state.jobs.some((job) => job.jobId === artifact.jobId));
-      assert.deepInclude(state.artifacts[0], { status: "delete_pending" });
-      assert.deepInclude(state.pendingDeletes[0], {
-        objectKey: artifact.objectKey,
-        reason: "history_evicted",
-      });
+      assert.deepStrictEqual(state.artifacts, []);
+      assert.deepStrictEqual(state.pendingDeletes, []);
     }),
   );
 });

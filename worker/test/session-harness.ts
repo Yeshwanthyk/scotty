@@ -10,6 +10,7 @@ import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
+import type { EvidenceArtifactV1 } from "../src/evidence-contracts";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
   SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
@@ -92,6 +93,7 @@ export interface HarnessOptions {
   readonly evidencePreviewHostTimeoutMillis?: number;
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
+  readonly initialArtifactObjects?: ReadonlyArray<EvidenceArtifactV1>;
   readonly kitesurfClient?: SandboxEffectOptions["kitesurfClient"];
   readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
     ? Stub extends { dispatch: infer Dispatch }
@@ -398,6 +400,18 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       readonly customMetadata: Readonly<Record<string, string>>;
     }
   >();
+  for (const artifact of options.initialArtifactObjects ?? []) {
+    artifactObjects.set(artifact.objectKey, {
+      bytes: new Uint8Array(artifact.bytes),
+      contentType: artifact.mediaType,
+      customMetadata: {
+        owner: artifact.sessionId,
+        job: artifact.jobId,
+        frame: artifact.frameId,
+        sha256: artifact.sha256,
+      },
+    });
+  }
   let piSessionRunning = options.piSessionRunning ?? false;
   let rawPiContainerRunning = false;
   const failures = new Set<HarnessFailureStage>();
@@ -953,6 +967,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     deleteSchedules: {
       value: (callback: string): void => {
         deletedSchedules.push(callback);
+        if (callback === "expireRetainedEvidence") {
+          for (let index = schedules.length - 1; index >= 0; index -= 1) {
+            if (schedules[index]?.callback === callback) schedules.splice(index, 1);
+          }
+        }
         events.push(`schedule:delete:${callback}`);
       },
     },
