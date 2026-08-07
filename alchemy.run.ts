@@ -61,7 +61,12 @@ if (previewBase !== undefined || previewZoneId !== undefined) {
   preview = decoded.value;
 }
 
-const evidenceEnabled = process.env.SCOTTY_EVIDENCE_ENABLED === "true";
+const evidenceGate = process.env.SCOTTY_EVIDENCE_ENABLED?.trim();
+if (evidenceGate !== undefined && evidenceGate !== "true" && evidenceGate !== "false") {
+  // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects an ambiguous deployment feature gate
+  throw new Error("SCOTTY_EVIDENCE_ENABLED must be exactly true or false when set.");
+}
+const evidenceEnabled = evidenceGate === "true";
 if (evidenceEnabled && preview === undefined) {
   // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects an enabled bridge without explicit preview authority
   throw new Error("SCOTTY_EVIDENCE_ENABLED requires the explicit preview topology.");

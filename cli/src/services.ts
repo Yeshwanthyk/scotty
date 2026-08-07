@@ -2,8 +2,9 @@ import { chmod, lstat, mkdir, open, readFile, rename, stat, unlink } from "node:
 import { constants, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { Context, Data, Effect, Layer } from "effect";
+import { Context, Data, Effect, Layer, Option } from "effect";
 import lockfile from "proper-lockfile";
+import { decodePreviewCleanupOwnershipError } from "../../infra/preview-ownership.ts";
 import { CliError, EXIT, type Writer } from "./core";
 
 export interface CliDependencies {
@@ -32,21 +33,20 @@ export interface CliDependencies {
   uploadPiAuthSecret: (request: PiAuthUploadRequest) => Promise<PiAuthTargetResult>;
 }
 
-export interface InstallationCreateRequest {
-  readonly installationName: string;
-  readonly profile: string;
-  readonly token: string;
-  readonly expectedAccountId: string;
-  readonly expectedPlanFingerprint: string;
-  readonly mode: "fresh" | "resume";
-}
-
 export interface InstallationDeployRequest {
   readonly installationName: string;
   readonly profile: string;
   readonly adoptionManifestPath?: string;
   readonly previewBase?: string;
   readonly previewZoneId?: string;
+  readonly evidenceEnabled?: true;
+}
+
+export interface InstallationCreateRequest extends InstallationDeployRequest {
+  readonly token: string;
+  readonly expectedAccountId: string;
+  readonly expectedPlanFingerprint: string;
+  readonly mode: "fresh" | "resume";
 }
 
 export interface InstallationApplyRequest extends InstallationDeployRequest {
@@ -60,6 +60,7 @@ export interface InstallationInspectRequest {
   readonly adoptionManifestPath?: string;
   readonly previewBase?: string;
   readonly previewZoneId?: string;
+  readonly evidenceEnabled?: true;
 }
 
 export interface InstallationRecoverRequest extends InstallationInspectRequest {
@@ -161,6 +162,7 @@ export interface InstallationResult {
   readonly backupBucketName: string;
   readonly previewBase?: string;
   readonly previewZoneId?: string;
+  readonly evidenceEnabled?: true;
   readonly host: string;
 }
 
@@ -647,13 +649,22 @@ export const cliLayer = (
       uninstall: (request) =>
         Effect.tryPromise({
           try: () => dependencies.uninstallInstallation(request),
-          catch: () =>
-            new CliError(
-              "installation_uninstall_failed",
-              "Could not fully uninstall the Scotty installation",
-              "Inspect Cloudflare resources, then rerun scotty uninstall with the same options.",
-              EXIT.GENERIC,
-            ),
+          catch: (cause) => {
+            const previewCleanup = decodePreviewCleanupOwnershipError(cause);
+            return Option.isSome(previewCleanup)
+              ? new CliError(
+                  "preview_cleanup_manual",
+                  previewCleanup.value.message,
+                  previewCleanup.value.hint,
+                  EXIT.GENERIC,
+                )
+              : new CliError(
+                  "installation_uninstall_failed",
+                  "Could not fully uninstall the Scotty installation",
+                  "Inspect Cloudflare resources, then rerun scotty uninstall with the same options.",
+                  EXIT.GENERIC,
+                );
+          },
         }),
     }),
     Layer.succeed(InstallationRecovery)({

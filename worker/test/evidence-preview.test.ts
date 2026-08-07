@@ -285,6 +285,25 @@ describe("evidence preview host adapter", () => {
     expect(proxy).not.toHaveBeenCalled();
   });
 
+  it("preserves ordinary static assets when every request runs the Worker first", async () => {
+    const assets = vi.fn(async () => new Response("asset", { headers: { "x-source": "assets" } }));
+    const assetFetcher: Fetcher = {
+      fetch: assets,
+      connect() {
+        throw new Error("ASSETS.connect is not used by this test");
+      },
+    };
+    const response = await workerFetch(
+      new Request("https://control.example.test/app.js"),
+      { ...env, ASSETS: assetFetcher },
+      {} as ExecutionContext,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-source")).toBe("assets");
+    expect(await response.text()).toBe("asset");
+    expect(assets).toHaveBeenCalledOnce();
+  });
+
   it("returns null only when the host is outside the configured preview suffix", async () => {
     expect(
       await handleEvidencePreviewRequest(

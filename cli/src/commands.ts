@@ -333,7 +333,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     token: string,
     adoptionManifestPath?: string,
   ) => ({
-    version: deployed.previewBase === undefined ? (1 as const) : (2 as const),
+    version:
+      deployed.evidenceEnabled === true
+        ? (3 as const)
+        : deployed.previewBase === undefined
+          ? (1 as const)
+          : (2 as const),
     installationName: deployed.installationName,
     profile: deployed.profile,
     stackName: deployed.stackName,
@@ -347,6 +352,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ...(deployed.previewBase === undefined || deployed.previewZoneId === undefined
       ? {}
       : { previewBase: deployed.previewBase, previewZoneId: deployed.previewZoneId }),
+    ...(deployed.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
     ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
     host: deployed.host,
     token,
@@ -371,10 +377,13 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Explicit Cloudflare zone ID owning the preview base"),
       ),
+      enableEvidence: Flag.boolean("enable-evidence").pipe(
+        Flag.withDescription("Explicitly enable the preview-backed evidence deployment gate"),
+      ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed installation")),
       trailing: trailingArguments,
     },
-    ({ name, previewBase, previewZoneId, profile, trailing, yes }) =>
+    ({ enableEvidence, name, previewBase, previewZoneId, profile, trailing, yes }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
@@ -382,6 +391,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           return yield* usage("init does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("init", name);
         const preview = yield* optionalPreviewConfiguration(previewBase, previewZoneId);
+        if (enableEvidence && preview === undefined)
+          return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
+        const evidenceEnabled = enableEvidence ? (true as const) : undefined;
         yield* ensureDocker();
         const fileSystem = yield* CliFileSystem;
         const journalPath = join(runtime.home, ".scotty", `init-${installationName}.json`);
@@ -419,9 +431,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               ...(preview === undefined
                 ? {}
                 : { previewBase: preview.base, previewZoneId: preview.zoneId }),
+              ...(evidenceEnabled === true ? { evidenceEnabled } : {}),
             };
             const plan = yield* creator.plan(deploymentTarget);
-            const topology = makeInstallationTopology(installationName, undefined, preview);
+            const topology = makeInstallationTopology(
+              installationName,
+              undefined,
+              preview,
+              evidenceEnabled === true,
+            );
             const journalMatches =
               Option.isSome(existingJournal) &&
               existingJournal.value.installationName === installationName &&
@@ -434,7 +452,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               existingJournal.value.kvTitle === topology.kvTitle &&
               existingJournal.value.backupBucketName === topology.backupBucketName &&
               existingJournal.value.previewBase === topology.preview?.base &&
-              existingJournal.value.previewZoneId === topology.preview?.zoneId;
+              existingJournal.value.previewZoneId === topology.preview?.zoneId &&
+              existingJournal.value.evidenceEnabled === topology.evidenceEnabled;
             if (Option.isSome(existingJournal) && !journalMatches)
               return yield* new CliError(
                 "init_journal_conflict",
@@ -491,6 +510,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                         `Preview base: ${topology.preview.base}`,
                         `Preview zone: ${topology.preview.zoneId}`,
                       ]),
+                  ...(topology.evidenceEnabled === true ? ["Evidence gate: enabled"] : []),
                   "",
                 ].join("\n"),
               );
@@ -509,7 +529,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               ? existingJournal.value.token
               : rootToken();
             const journal = {
-              version: preview === undefined ? (1 as const) : (2 as const),
+              version:
+                evidenceEnabled === true
+                  ? (3 as const)
+                  : preview === undefined
+                    ? (1 as const)
+                    : (2 as const),
               operation: "init" as const,
               phase: "prepared" as const,
               installationName,
@@ -524,6 +549,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               ...(preview === undefined
                 ? {}
                 : { previewBase: preview.base, previewZoneId: preview.zoneId }),
+              ...(evidenceEnabled === true ? { evidenceEnabled } : {}),
               planFingerprint: plan.fingerprint,
               token,
             };
@@ -613,10 +639,22 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Explicit Cloudflare zone ID owning the preview base"),
       ),
+      enableEvidence: Flag.boolean("enable-evidence").pipe(
+        Flag.withDescription("Explicitly preserve an enabled preview-backed evidence gate"),
+      ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed resource mapping")),
       trailing: trailingArguments,
     },
-    ({ adoptionManifest, name, previewBase, previewZoneId, profile, trailing, yes }) =>
+    ({
+      adoptionManifest,
+      enableEvidence,
+      name,
+      previewBase,
+      previewZoneId,
+      profile,
+      trailing,
+      yes,
+    }) =>
       Effect.gen(function* () {
         yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
@@ -624,6 +662,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           return yield* usage("recover does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("recover", name);
         const preview = yield* optionalPreviewConfiguration(previewBase, previewZoneId);
+        if (enableEvidence && preview === undefined)
+          return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
+        const evidenceEnabled = enableEvidence ? (true as const) : undefined;
         const adoptionManifestPath = Option.getOrUndefined(adoptionManifest);
         const recovery = yield* InstallationRecovery;
         const deploymentTarget = {
@@ -633,6 +674,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           ...(preview === undefined
             ? {}
             : { previewBase: preview.base, previewZoneId: preview.zoneId }),
+          ...(evidenceEnabled === true ? { evidenceEnabled } : {}),
         };
         const inspected = yield* recovery.inspect(deploymentTarget);
         if (!yes) {
@@ -690,6 +732,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               existingJournal.backupBucketName === inspected.backupBucketName &&
               existingJournal.previewBase === inspected.previewBase &&
               existingJournal.previewZoneId === inspected.previewZoneId &&
+              existingJournal.evidenceEnabled === inspected.evidenceEnabled &&
               existingJournal.adoptionManifestPath === adoptionManifestPath;
             const token =
               journalMatchesTarget && existingJournal.token ? existingJournal.token : rootToken();
@@ -839,6 +882,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 expectedPreviewBase: config.previewBase,
                 expectedPreviewZoneId: config.previewZoneId,
               }),
+          ...(config.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
           ...(config.adoptionManifestPath === undefined
             ? {}
             : { adoptionManifestPath: config.adoptionManifestPath }),
@@ -924,6 +968,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           ...(config.previewBase === undefined || config.previewZoneId === undefined
             ? {}
             : { previewBase: config.previewBase, previewZoneId: config.previewZoneId }),
+          ...(config.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
         };
         const plan = yield* deployer.plan(request);
         if (plan.accountId !== config.accountId)

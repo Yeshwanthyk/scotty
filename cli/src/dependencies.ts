@@ -7,6 +7,7 @@ import {
   decodePendingUp,
   decodeRawConfig,
   decodeString,
+  decodeTrue,
   type Config,
   type PendingUp,
 } from "./schemas";
@@ -75,24 +76,34 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
   const backupBucketName = Option.getOrUndefined(decodeString(raw.value.backupBucketName));
   const previewBase = Option.getOrUndefined(decodeString(raw.value.previewBase));
   const previewZoneId = Option.getOrUndefined(decodeString(raw.value.previewZoneId));
+  const evidenceEnabled = Option.getOrUndefined(decodeTrue(raw.value.evidenceEnabled));
   const adoptionManifestPath = Option.getOrUndefined(decodeString(raw.value.adoptionManifestPath));
   const hasPreviewInput =
     raw.value.previewBase !== undefined || raw.value.previewZoneId !== undefined;
+  const hasEvidenceInput = raw.value.evidenceEnabled !== undefined;
   const preview = hasPreviewInput
     ? decodeInstallationPreviewConfiguration({ base: previewBase, zoneId: previewZoneId })
     : Option.none();
   if (
-    (raw.value.version !== undefined && raw.value.version !== 1 && raw.value.version !== 2) ||
-    (hasPreviewInput && (raw.value.version !== 2 || Option.isNone(preview)))
+    (raw.value.version !== undefined &&
+      raw.value.version !== 1 &&
+      raw.value.version !== 2 &&
+      raw.value.version !== 3) ||
+    (hasPreviewInput &&
+      ((raw.value.version !== 2 && raw.value.version !== 3) || Option.isNone(preview))) ||
+    (raw.value.version === 3 && (Option.isNone(preview) || evidenceEnabled !== true)) ||
+    (hasEvidenceInput && (raw.value.version !== 3 || evidenceEnabled !== true))
   )
     return yield* new CliError(
       "invalid_config",
-      "Scotty config has an invalid versioned preview topology",
+      "Scotty config has an invalid versioned preview or evidence configuration",
       `Fix or rerun scotty recover for ${path}.`,
       EXIT.USAGE,
     );
   return {
-    ...(raw.value.version === 1 || raw.value.version === 2 ? { version: raw.value.version } : {}),
+    ...(raw.value.version === 1 || raw.value.version === 2 || raw.value.version === 3
+      ? { version: raw.value.version }
+      : {}),
     ...(installationName === undefined ? {} : { installationName }),
     ...(profile === undefined ? {} : { profile }),
     ...(stackName === undefined ? {} : { stackName }),
@@ -106,6 +117,7 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
     ...(Option.isNone(preview)
       ? {}
       : { previewBase: preview.value.base, previewZoneId: preview.value.zoneId }),
+    ...(evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
     ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
     ...(host === undefined ? {} : { host }),
     ...(token === undefined ? {} : { token }),

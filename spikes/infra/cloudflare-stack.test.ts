@@ -10,6 +10,7 @@ import {
   type CloudflareStackConfig,
 } from "../../infra/cloudflare-stack.ts";
 import { makeInstallationTopology, type AdoptionManifest } from "../../infra/installation.ts";
+import { readOwnedPreviewTopologyDeletion } from "../../infra/preview-ownership.ts";
 
 const source = readFileSync(new URL("../../infra/cloudflare-stack.ts", import.meta.url), "utf8");
 const workerPackageSource = readFileSync(
@@ -170,6 +171,7 @@ describe("Cloudflare stack topology", () => {
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: "scotty-home-backups",
     });
+    assert.strictEqual(topology.assets.runWorkerFirst, true);
     assert.deepEqual(topology.outputKeys, ["url", "accountId", "workerName"]);
   });
 
@@ -254,7 +256,7 @@ describe("Cloudflare stack source contract", () => {
     assert.match(entrypointSource, /SCOTTY_ADOPTION_MANIFEST/u);
   });
 
-  it("guards before every Resource Effect and retains all resources", () => {
+  it("guards before every Resource Effect and retains stateful and compute resources", () => {
     const guard = source.indexOf("assertCloudflareStackConfig(config)");
     const resource = source.indexOf("Cloudflare.KV.Namespace");
     assert.isAtLeast(guard, 0);
@@ -262,9 +264,10 @@ describe("Cloudflare stack source contract", () => {
     assert.match(source, /const removalPolicy = RemovalPolicy\.retain\(\)/u);
     assert.strictEqual(
       source.match(/(?:\.pipe\(removalPolicy\)|^\s+removalPolicy,$)/gmu)?.length,
-      8,
+      6,
     );
-    assert.notMatch(source, /RemovalPolicy\.destroy|lifecycleRules/u);
+    assert.strictEqual(source.match(/\.pipe\(RemovalPolicy\.destroy\(\)\)/gu)?.length, 2);
+    assert.notMatch(source, /lifecycleRules/u);
   });
 
   it("uses Alchemy public wildcard DNS and WorkerRoute resources without a parallel reconciler", () => {
@@ -276,10 +279,14 @@ describe("Cloudflare stack source contract", () => {
     assert.notMatch(source, /wrangler|cloudflare\.com\/client\/v4/u);
   });
 
-  it("reconciles retained preview ownership before uninstalling the Worker", () => {
-    const routeDelete = installationDeploymentSource.indexOf("Workers.deleteRoute({");
-    const dnsDelete = installationDeploymentSource.indexOf("DNS.deleteRecord({");
-    const workerDelete = installationDeploymentSource.indexOf(
+  it("deletes preview topology only by identifiers proved by Alchemy state", () => {
+    const uninstallSource = installationDeploymentSource.slice(
+      installationDeploymentSource.indexOf("export async function uninstallInstallation"),
+      installationDeploymentSource.indexOf("const piAuthTargetProgram"),
+    );
+    const routeDelete = uninstallSource.indexOf("Workers.deleteRoute({");
+    const dnsDelete = uninstallSource.indexOf("DNS.deleteRecord({");
+    const workerDelete = uninstallSource.indexOf(
       "scriptName: installation.workerName",
       Math.max(routeDelete, dnsDelete),
     );
@@ -287,7 +294,80 @@ describe("Cloudflare stack source contract", () => {
     assert.isAtLeast(dnsDelete, 0);
     assert.isAbove(workerDelete, routeDelete);
     assert.isAbove(workerDelete, dnsDelete);
-    assert.match(installationDeploymentSource, /\.\.\.deletedPreviewResources/u);
+    assert.match(uninstallSource, /ownedPreviewDeletion\.routeId/u);
+    assert.match(uninstallSource, /ownedPreviewDeletion\.dnsRecordId/u);
+    assert.notMatch(uninstallSource, /listRoutes|listRecords/u);
+  });
+
+  it("fails closed when preview identifiers are not present in Alchemy deletion state", () => {
+    const preview = enabledPreviewInstallation.preview;
+    assert.isDefined(preview);
+    const route = {
+      resource: { Type: "Cloudflare.Workers.Route" },
+      state: {
+        resourceType: "Cloudflare.Workers.Route",
+        logicalId: "EvidencePreviewWorkerRoute",
+        props: {
+          zoneId: preview.zoneId,
+          pattern: `*.${preview.base}/*`,
+          script: enabledPreviewInstallation.workerName,
+        },
+        attr: {
+          routeId: "alchemy-route-id",
+          zoneId: preview.zoneId,
+          pattern: `*.${preview.base}/*`,
+          script: enabledPreviewInstallation.workerName,
+        },
+      },
+    };
+    const dns = {
+      resource: { Type: "Cloudflare.DNS.Record" },
+      state: {
+        resourceType: "Cloudflare.DNS.Record",
+        logicalId: "EvidencePreviewWildcardDns",
+        props: {
+          zoneId: preview.zoneId,
+          name: `*.${preview.base}`,
+          type: "AAAA",
+          content: "100::",
+          proxied: true,
+        },
+        attr: {
+          recordId: "alchemy-dns-id",
+          zoneId: preview.zoneId,
+          name: `*.${preview.base}`,
+          type: "AAAA",
+          content: "100::",
+          proxied: true,
+        },
+      },
+    };
+
+    assert.deepEqual(
+      readOwnedPreviewTopologyDeletion(
+        [route, dns],
+        preview,
+        enabledPreviewInstallation.workerName,
+      ),
+      { routeId: "alchemy-route-id", dnsRecordId: "alchemy-dns-id" },
+    );
+    assert.isUndefined(
+      readOwnedPreviewTopologyDeletion(
+        [route, { ...dns, state: { ...dns.state, attr: { ...dns.state.attr, recordId: "" } } }],
+        preview,
+        enabledPreviewInstallation.workerName,
+      ),
+    );
+    assert.isUndefined(
+      readOwnedPreviewTopologyDeletion(
+        [
+          { id: "matching-live-route", pattern: `*.${preview.base}/*` },
+          { id: "matching-live-dns", name: `*.${preview.base}` },
+        ],
+        preview,
+        enabledPreviewInstallation.workerName,
+      ),
+    );
   });
 
   it("keeps credentials out of Alchemy props and state", () => {

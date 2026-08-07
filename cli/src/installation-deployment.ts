@@ -36,6 +36,10 @@ import {
   type AdoptionManifest,
   type InstallationPreviewConfiguration,
 } from "../../infra/installation.ts";
+import {
+  PreviewCleanupOwnershipError,
+  readOwnedPreviewTopologyDeletion,
+} from "../../infra/preview-ownership.ts";
 import { CONTAINER_INPUTS, DEPLOYMENT_INPUTS } from "./deployment-inputs.ts";
 import type {
   InstallationApplyRequest,
@@ -215,6 +219,7 @@ const makeStack = (request: InstallationDeployRequest, adoption: AdoptionManifes
     request.installationName,
     adoption,
     previewConfiguration(request),
+    request.evidenceEnabled === true,
   );
   const stack = Alchemy.Stack(
     installation.stackName,
@@ -376,6 +381,7 @@ const deployWithProfile = async (
                     previewBase: installation.preview.base,
                     previewZoneId: installation.preview.zoneId,
                   }),
+              ...(installation.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
               host: output.url,
             } satisfies InstallationResult;
           }),
@@ -395,6 +401,7 @@ const inspectWithProfile = async (
     request.installationName,
     adoption,
     previewConfiguration(request),
+    request.evidenceEnabled === true,
   );
   return runWithProfile(request.profile, sourceRoot(), () =>
     provideAlchemy(
@@ -435,6 +442,9 @@ const inspectWithProfile = async (
         const previewBaseBinding = bindings
           .filter(isPlainTextBinding)
           .find((binding) => binding.name === "SCOTTY_PREVIEW_BASE");
+        const evidenceEnabledBinding = bindings
+          .filter(isPlainTextBinding)
+          .find((binding) => binding.name === "SCOTTY_EVIDENCE_ENABLED");
         if (
           requiredBindings.some((name) => !bindingNames.has(name)) ||
           sandboxBinding?.namespaceId === undefined ||
@@ -443,7 +453,10 @@ const inspectWithProfile = async (
           artifactBinding?.bucketName !== installation.artifactBucketName ||
           (installation.preview === undefined
             ? previewBaseBinding !== undefined
-            : previewBaseBinding?.text !== installation.preview.base)
+            : previewBaseBinding?.text !== installation.preview.base) ||
+          (installation.evidenceEnabled === true
+            ? evidenceEnabledBinding?.text !== "true"
+            : evidenceEnabledBinding !== undefined)
         )
           return yield* new InstallationDeploymentError({
             message: "The named Worker does not have the required Scotty bindings.",
@@ -543,6 +556,7 @@ const inspectWithProfile = async (
                 previewBase: installation.preview.base,
                 previewZoneId: installation.preview.zoneId,
               }),
+          ...(installation.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
           host: `https://${installation.workerName}.${subdomain}.workers.dev`,
         } satisfies InstallationResult;
       }).pipe(Effect.provide(cloudflareApiLive())),
@@ -607,6 +621,10 @@ export async function createInstallation(
     const deployRequest = {
       installationName: request.installationName,
       profile: request.profile,
+      ...(request.previewBase === undefined || request.previewZoneId === undefined
+        ? {}
+        : { previewBase: request.previewBase, previewZoneId: request.previewZoneId }),
+      ...(request.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
     };
     const plan = await planWithProfile(deployRequest, deployment.root, undefined);
     if (
@@ -675,6 +693,7 @@ export async function uninstallInstallation(
       request.installationName,
       adoption,
       previewConfiguration(request),
+      request.evidenceEnabled === true,
     );
     const { stack } = makeStack(request, adoption);
     return await runWithProfile(request.profile, deployment.root, () =>
@@ -713,6 +732,20 @@ export async function uninstallInstallation(
                 return yield* new InstallationDeploymentError({
                   message: "Alchemy state does not prove ownership of every installation resource.",
                 });
+              const ownedPreviewDeletion =
+                installation.preview === undefined
+                  ? undefined
+                  : readOwnedPreviewTopologyDeletion(
+                      Object.values(destroyPlan.deletions),
+                      installation.preview,
+                      installation.workerName,
+                    );
+              if (installation.preview !== undefined && ownedPreviewDeletion === undefined)
+                return yield* new PreviewCleanupOwnershipError({
+                  message:
+                    "Alchemy state does not prove ownership of the evidence preview route and DNS record",
+                  hint: "No preview resource was deleted. Verify Alchemy state ownership, then remove the wildcard route and DNS record manually or rerun uninstall after restoring ownership proof.",
+                });
 
               const applications = yield* Containers.listContainerApplications({ accountId });
               const application = applications.find(
@@ -725,47 +758,17 @@ export async function uninstallInstallation(
                 }).pipe(Effect.catchTag("ContainerApplicationNotFound", () => Effect.void));
 
               const deletedPreviewResources: string[] = [];
-              if (installation.preview !== undefined) {
+              if (installation.preview !== undefined && ownedPreviewDeletion !== undefined) {
                 const previewDnsName = `*.${installation.preview.base}`;
                 const previewRoutePattern = `${previewDnsName}/*`;
-                const records = Array.from(
-                  yield* DNS.listRecords
-                    .items({
-                      zoneId: installation.preview.zoneId,
-                      name: { exact: previewDnsName },
-                      type: "AAAA",
-                    })
-                    .pipe(Stream.runCollect),
-                );
-                const routes = Array.from(
-                  yield* Workers.listRoutes.items({ zoneId: installation.preview.zoneId }).pipe(
-                    Stream.filter((route) => route.pattern === previewRoutePattern),
-                    Stream.runCollect,
-                  ),
-                );
-                if (
-                  records.length > 1 ||
-                  routes.length > 1 ||
-                  (records[0] !== undefined &&
-                    (records[0].name !== previewDnsName ||
-                      records[0].type !== "AAAA" ||
-                      records[0].content !== "100::" ||
-                      records[0].proxied !== true)) ||
-                  (routes[0] !== undefined && routes[0].script !== installation.workerName)
-                )
-                  return yield* new InstallationDeploymentError({
-                    message: "The evidence preview DNS or Worker Route has drifted.",
-                  });
-                if (routes[0] !== undefined)
-                  yield* Workers.deleteRoute({
-                    zoneId: installation.preview.zoneId,
-                    routeId: routes[0].id,
-                  }).pipe(Effect.catchTag("RouteNotFound", () => Effect.void));
-                if (records[0] !== undefined)
-                  yield* DNS.deleteRecord({
-                    zoneId: installation.preview.zoneId,
-                    dnsRecordId: records[0].id,
-                  });
+                yield* Workers.deleteRoute({
+                  zoneId: installation.preview.zoneId,
+                  routeId: ownedPreviewDeletion.routeId,
+                }).pipe(Effect.catchTag("RouteNotFound", () => Effect.void));
+                yield* DNS.deleteRecord({
+                  zoneId: installation.preview.zoneId,
+                  dnsRecordId: ownedPreviewDeletion.dnsRecordId,
+                });
                 deletedPreviewResources.push(previewRoutePattern, previewDnsName);
               }
 
@@ -980,6 +983,7 @@ export async function recoverInstallation(
     request.installationName,
     adoption,
     previewConfiguration(request),
+    request.evidenceEnabled === true,
   );
   if (
     installation.workerName !== request.expectedWorkerName ||

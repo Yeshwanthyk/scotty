@@ -27,7 +27,7 @@ export const makeCloudflareStackTopology = (installation: InstallationTopology) 
     assets: {
       directory: "worker/public",
       binding: "ASSETS",
-      runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/providers", "/devices", "/pair", "/health"],
+      runWorkerFirst: true,
       htmlHandling: "none",
       notFoundHandling: "404-page",
     },
@@ -199,7 +199,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   const assetConfig = {
     directory: topology.assets.directory,
     binding: topology.assets.binding,
-    runWorkerFirst: [...topology.assets.runWorkerFirst],
+    runWorkerFirst: topology.assets.runWorkerFirst,
     htmlHandling: topology.assets.htmlHandling,
     notFoundHandling: topology.assets.notFoundHandling,
   };
@@ -245,12 +245,12 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
       type: topology.preview.dns.type,
       content: topology.preview.dns.content,
       proxied: topology.preview.dns.proxied,
-    }).pipe(removalPolicy);
+    }).pipe(RemovalPolicy.destroy());
     yield* Cloudflare.Workers.WorkerRoute(topology.preview.route.logicalId, {
       zoneId: topology.preview.zoneId,
       pattern: topology.preview.route.pattern,
       script: worker.workerName,
-    }).pipe(removalPolicy);
+    }).pipe(RemovalPolicy.destroy());
   }
 
   return { url: worker.url, accountId, workerName: topology.worker.name };

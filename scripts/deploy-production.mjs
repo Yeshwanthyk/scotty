@@ -719,7 +719,11 @@ export function resolveProductionTopology(environment = process.env) {
   const previewZoneId = hasEnvironmentPreview
     ? environmentPreviewZoneId
     : adoption?.preview?.zoneId;
-  const evidenceEnabled = environment.SCOTTY_EVIDENCE_ENABLED === "true";
+  const evidenceGate = environment.SCOTTY_EVIDENCE_ENABLED?.trim();
+  if (evidenceGate !== undefined && evidenceGate !== "true" && evidenceGate !== "false") {
+    throw new Error("SCOTTY_EVIDENCE_ENABLED must be exactly true or false when set.");
+  }
+  const evidenceEnabled = evidenceGate === "true";
   if (
     (previewBase === undefined) !== (previewZoneId === undefined) ||
     (previewBase !== undefined &&
