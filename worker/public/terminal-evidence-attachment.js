@@ -29,7 +29,11 @@ function isObject(value) {
 }
 
 function isBoundedInteger(value, maximum) {
-  return Number.isInteger(value) && value >= 0 && value <= maximum;
+  return Number.isSafeInteger(value) && value >= 0 && value <= maximum;
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
 function exactKeys(value, required, optional = []) {
@@ -40,12 +44,14 @@ function exactKeys(value, required, optional = []) {
   );
 }
 
-function validFailure(value) {
+function validFailure(value, maximumStep) {
   return (
     isObject(value) &&
     exactKeys(value, ["code"], ["step"]) &&
     FAILURE_CODES.has(value.code) &&
-    (value.step === undefined || isBoundedInteger(value.step, MAX_STEPS - 1))
+    (value.step === undefined ||
+      (isNonNegativeInteger(value.step) &&
+        (maximumStep === undefined || value.step <= maximumStep)))
   );
 }
 
@@ -86,7 +92,7 @@ export function browserEvidenceAttachment(tool, sessionId) {
     !RESULT_STATUSES.has(value.status) ||
     !isBoundedInteger(value.completedSteps, MAX_STEPS) ||
     !isBoundedInteger(value.frameCount, MAX_STEPS) ||
-    (value.failure !== undefined && !validFailure(value.failure))
+    (value.failure !== undefined && !validFailure(value.failure, MAX_STEPS - 1))
   ) {
     return { kind: "unavailable" };
   }
@@ -130,7 +136,7 @@ function normalizeStep(value) {
       ],
       ["frame"],
     ) ||
-    !isBoundedInteger(value.index, MAX_STEPS - 1) ||
+    !isNonNegativeInteger(value.index) ||
     typeof value.name !== "string" ||
     value.name.length < 1 ||
     value.name.length > 120 ||
@@ -202,11 +208,11 @@ export function browserEvidenceSummary(value, attachment) {
     !Number.isInteger(value.totalSteps) ||
     value.totalSteps < 1 ||
     value.totalSteps > MAX_STEPS ||
-    !isBoundedInteger(value.completedSteps, MAX_STEPS) ||
+    !isNonNegativeInteger(value.completedSteps) ||
     typeof value.replay !== "boolean" ||
     !Array.isArray(value.steps) ||
     value.steps.length > MAX_STEPS ||
-    !isBoundedInteger(value.frameCount, MAX_STEPS) ||
+    !isNonNegativeInteger(value.frameCount) ||
     (value.failure !== undefined && !validFailure(value.failure))
   )
     return undefined;
@@ -240,5 +246,16 @@ export function browserEvidenceStatusLabel(status) {
       interrupted: "Interrupted",
       unsupported: "Unsupported",
     }[status] ?? "Unavailable"
+  );
+}
+
+export function browserEvidenceNoFrameCopy(status) {
+  return (
+    {
+      succeeded: "The run passed, but no screenshots were published.",
+      failed: "The run failed before a screenshot was available.",
+      interrupted: "The run ended before a screenshot was available.",
+      unsupported: "This browser could not publish a screenshot for the run.",
+    }[status] ?? "No screenshots were published."
   );
 }

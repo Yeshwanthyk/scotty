@@ -46,3 +46,5 @@ export function browserEvidenceSummary(
 ): BrowserEvidenceSummary | undefined;
 
 export function browserEvidenceStatusLabel(status: string): string;
+
+export function browserEvidenceNoFrameCopy(status: string): string;

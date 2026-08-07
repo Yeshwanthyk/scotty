@@ -1,6 +1,7 @@
 import { assert, describe, it } from "vitest";
 import {
   browserEvidenceAttachment,
+  browserEvidenceNoFrameCopy,
   browserEvidencePaths,
   browserEvidenceSummary,
 } from "../public/terminal-evidence-attachment.js";
@@ -148,6 +149,42 @@ describe("terminal browser evidence attachment adapter", () => {
       totalAssertions: 3,
       frames: [{ frameId: "frame-1", stepIndex: 0, stepName: "Open home" }],
     });
+  });
+
+  it("accepts the public contract's unbounded non-negative counters and indexes", () => {
+    const attachment = browserEvidenceAttachment(
+      { name: "scotty_browser_test", result: { details: details() } },
+      SESSION_ID,
+    );
+    const contractEdge = summary();
+    contractEdge.completedSteps = 20;
+    contractEdge.frameCount = 1;
+    contractEdge.failure = { code: "assertion_mismatch", step: 19 };
+    contractEdge.steps[0].index = 19;
+
+    assert.deepInclude(browserEvidenceSummary(contractEdge, attachment), {
+      status: "failed",
+      frames: [{ frameId: "frame-1", stepIndex: 19, stepName: "Open home" }],
+    });
+  });
+
+  it("provides explicit zero-frame copy for every terminal status", () => {
+    assert.strictEqual(
+      browserEvidenceNoFrameCopy("succeeded"),
+      "The run passed, but no screenshots were published.",
+    );
+    assert.strictEqual(
+      browserEvidenceNoFrameCopy("failed"),
+      "The run failed before a screenshot was available.",
+    );
+    assert.strictEqual(
+      browserEvidenceNoFrameCopy("interrupted"),
+      "The run ended before a screenshot was available.",
+    );
+    assert.strictEqual(
+      browserEvidenceNoFrameCopy("unsupported"),
+      "This browser could not publish a screenshot for the run.",
+    );
   });
 
   it("rejects summaries for another job, malformed frames, or inconsistent frame counts", () => {

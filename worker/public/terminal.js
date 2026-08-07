@@ -6,6 +6,7 @@ import { createConsoleClient } from "/terminal-console-client.js";
 import { composerText, hasAvailableRuntime } from "/terminal-input.js";
 import {
   browserEvidenceAttachment,
+  browserEvidenceNoFrameCopy,
   browserEvidenceStatusLabel,
   browserEvidenceSummary,
 } from "/terminal-evidence-attachment.js";
@@ -541,21 +542,17 @@ function replayLink(evidence) {
 function renderBrowserEvidenceLoading(attachment, evidence) {
   attachment.dataset.status = evidence.status;
   attachment.replaceChildren(evidenceHeader(evidence.status), replayLink(evidence));
-  if (evidence.status === "failed" && evidence.frameCount === 0) {
+  if (evidence.frameCount === 0)
     attachment.append(
-      textElement(
-        "p",
-        "browser-evidence-no-frame",
-        "The run failed before a screenshot was available.",
-      ),
+      textElement("p", "browser-evidence-no-frame", browserEvidenceNoFrameCopy(evidence.status)),
     );
-  }
 }
 
 async function loadBrowserEvidenceSummary(attachment, evidence) {
   let summary;
   try {
     const response = await fetch(evidence.paths.summary, {
+      cache: "no-store",
       credentials: "same-origin",
       headers: { accept: "application/json" },
     });
@@ -597,13 +594,9 @@ async function loadBrowserEvidenceSummary(attachment, evidence) {
       frames.append(image);
     }
     attachment.append(frames);
-  } else if (summary.status === "failed") {
+  } else {
     attachment.append(
-      textElement(
-        "p",
-        "browser-evidence-no-frame",
-        "The run failed before a screenshot was available.",
-      ),
+      textElement("p", "browser-evidence-no-frame", browserEvidenceNoFrameCopy(summary.status)),
     );
   }
   attachment.append(replayLink(evidence));
