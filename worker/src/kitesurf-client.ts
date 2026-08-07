@@ -9,7 +9,11 @@ import type {
   WebSocketRoute,
 } from "@cloudflare/playwright";
 import { Context, Effect, Exit, Schema } from "effect";
-import type { EvidenceLocator } from "./evidence-contracts";
+import {
+  EvidenceKitesurfOperationSchema,
+  EvidenceKitesurfReasonSchema,
+  type EvidenceLocator,
+} from "./evidence-contracts";
 import { EVIDENCE_PREVIEW_COOKIE } from "./evidence-preview";
 
 export const KITESURF_OPERATION_TIMEOUT_MILLIS = 5_000;
@@ -24,27 +28,8 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 export class KitesurfClientError extends Schema.TaggedErrorClass<KitesurfClientError>()(
   "KitesurfClientError",
   {
-    operation: Schema.Literals([
-      "launch",
-      "verify_sessionless",
-      "create_context",
-      "install_network_guard",
-      "install_cookie",
-      "create_page",
-      "goto",
-      "click",
-      "fill",
-      "press",
-      "visible",
-      "text_exact",
-      "count",
-      "url_path",
-      "screenshot",
-      "close_page",
-      "close_context",
-      "close_browser",
-    ]),
-    reason: Schema.Literals(["ambiguous", "cleanup", "unsupported"]),
+    operation: EvidenceKitesurfOperationSchema,
+    reason: EvidenceKitesurfReasonSchema,
   },
 ) {}
 

@@ -1263,9 +1263,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ),
           Effect.provide(this.layer),
         ),
-      recordFailure: (active, failure) =>
+      recordFailure: (active, failure, diagnostic) =>
         Effect.flatMap(EvidenceStore, (store) =>
-          store.recordFailure(active.operationNonce, failure),
+          store.recordFailure(active.operationNonce, failure, diagnostic),
         ).pipe(
           Effect.asVoid,
           Effect.mapError(

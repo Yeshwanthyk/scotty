@@ -32,6 +32,7 @@ import {
   type EvidenceActiveJobV1,
   type EvidenceArtifactV1,
   type EvidenceDeleteV1,
+  type EvidenceDiagnostic,
   type EvidenceFailure,
   type EvidenceJobStatus,
   type EvidenceJobSummaryV1,
@@ -155,6 +156,7 @@ interface EvidenceStoreShape {
   readonly recordFailure: (
     nonce: string,
     failure: EvidenceFailure,
+    diagnostic?: EvidenceDiagnostic,
   ) => Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
   readonly finalize: (
     nonce: string,
@@ -965,7 +967,9 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
           exposure: hasExposure ? "unexpose_pending" : "closed",
           previewCookieDigest: null,
           previewAccounting: revokePermitAccounting(active.previewAccounting),
-          ...(interruptionReason === undefined ? {} : { failure: { code: interruptionReason } }),
+          ...(interruptionReason === undefined || active.failure !== undefined
+            ? {}
+            : { failure: { code: interruptionReason } }),
         };
         return Result.succeed({ active: next, state: { ...state, activeJob: next } });
       }),
@@ -1100,9 +1104,14 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         return yield* new EvidenceStateError({ reason: "step_out_of_order" });
       return completed;
     }),
-    recordFailure: (nonce, failure) =>
+    recordFailure: (nonce, failure, diagnostic) =>
       updateActive(nonce, (active, state) => {
-        const next: EvidenceActiveJobV1 = { ...active, failure };
+        if (active.failure !== undefined) return Result.succeed({ active, state });
+        const next: EvidenceActiveJobV1 = {
+          ...active,
+          failure,
+          ...(diagnostic === undefined ? {} : { diagnostic }),
+        };
         return Result.succeed({ active: next, state: { ...state, activeJob: next } });
       }),
     finalize,

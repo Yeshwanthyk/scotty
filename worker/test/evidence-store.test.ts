@@ -36,6 +36,13 @@ const SESSION_ID = "a0b1c2d3e4f5";
 const PNG = Uint8Array.from([
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
 ]);
+const DIAGNOSTIC = {
+  operation: "screenshot",
+  reason: "ambiguous",
+  step: 0,
+  kitesurf: { operation: "screenshot", reason: "ambiguous" },
+} as const;
+
 const JOB: BrowserEvidenceJobV1 = {
   version: 1,
   port: 4_173,
@@ -580,29 +587,43 @@ describe("EvidenceStore", () => {
     }),
   );
 
-  it.effect("preserves a recorded step failure when finalizing as interrupted", () =>
-    Effect.gen(function* () {
-      const authority = makeAuthorityStorage();
-      const artifacts = makeArtifactCapabilities();
-      const testLayers = layers(authority.storage, artifacts.capabilities);
-      yield* TestClock.setTime(NOW);
-      yield* accept(testLayers);
-      yield* Effect.flatMap(EvidenceStore, (store) =>
-        store.recordFailure("evidence-nonce", { code: "interrupted", step: 0 }),
-      ).pipe(Effect.provide(testLayers));
+  it.effect(
+    "preserves the first specific failure and diagnostic through generic interruption",
+    () =>
+      Effect.gen(function* () {
+        const authority = makeAuthorityStorage();
+        const artifacts = makeArtifactCapabilities();
+        const testLayers = layers(authority.storage, artifacts.capabilities);
+        yield* TestClock.setTime(NOW);
+        yield* accept(testLayers);
+        const store = yield* Effect.provide(EvidenceStore, testLayers);
+        yield* store
+          .recordFailure("evidence-nonce", { code: "interrupted", step: 0 }, DIAGNOSTIC)
+          .pipe(Effect.provide(testLayers));
+        yield* store
+          .recordFailure("evidence-nonce", { code: "interrupted" })
+          .pipe(Effect.provide(testLayers));
+        yield* store
+          .revokePreview("evidence-nonce", "interrupted")
+          .pipe(Effect.provide(testLayers));
 
-      const summary = yield* Effect.flatMap(EvidenceStore, (store) =>
-        store.finalize("evidence-nonce", "interrupted"),
-      ).pipe(Effect.provide(testLayers));
+        const summary = yield* store
+          .finalize("evidence-nonce", "interrupted")
+          .pipe(Effect.provide(testLayers));
 
-      assert.deepInclude(summary, {
-        status: "interrupted",
-        completedSteps: 0,
-        frameCount: 0,
-        failure: { code: "interrupted", step: 0 },
-      });
-      assert.deepInclude(authority.readRecord(), { operation: null });
-    }),
+        assert.deepInclude(summary, {
+          status: "interrupted",
+          completedSteps: 0,
+          frameCount: 0,
+          failure: { code: "interrupted", step: 0 },
+          diagnostic: DIAGNOSTIC,
+        });
+        assert.deepInclude(authority.readEvidence()?.jobs[0], {
+          failure: { code: "interrupted", step: 0 },
+          diagnostic: DIAGNOSTIC,
+        });
+        assert.deepInclude(authority.readRecord(), { operation: null });
+      }),
   );
 
   it.effect("interrupts only the matching evidence nonce and releases its lease", () =>

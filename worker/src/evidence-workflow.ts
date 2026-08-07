@@ -5,7 +5,11 @@ import {
   type CompleteEvidenceStepPublicationV1,
   type EvidenceActiveJobV1,
   type EvidenceAssertion,
+  EvidenceKitesurfDiagnosticSchema,
+  EvidenceWorkflowOperationSchema,
+  EvidenceWorkflowReasonSchema,
   type EvidenceAssertionResult,
+  type EvidenceDiagnostic,
   type EvidenceFailure,
   type EvidenceFailureCode,
   type EvidenceJobSummaryV1,
@@ -28,27 +32,8 @@ export const EVIDENCE_STEP_TIMEOUT_MILLIS = 30_000;
 export class EvidenceWorkflowError extends Schema.TaggedErrorClass<EvidenceWorkflowError>()(
   "EvidenceWorkflowError",
   {
-    operation: Schema.Literals([
-      "validate",
-      "preview",
-      "phase",
-      "browser",
-      "action",
-      "assertion",
-      "screenshot",
-      "publish",
-      "finalize",
-    ]),
-    reason: Schema.Literals([
-      "invalid",
-      "unsupported",
-      "ambiguous",
-      "assertion",
-      "deadline",
-      "cleanup",
-      "state",
-      "upstream",
-    ]),
+    operation: EvidenceWorkflowOperationSchema,
+    reason: EvidenceWorkflowReasonSchema,
     failureCode: Schema.optionalKey(
       Schema.Literals([
         "assertion_mismatch",
@@ -61,6 +46,7 @@ export class EvidenceWorkflowError extends Schema.TaggedErrorClass<EvidenceWorkf
       ]),
     ),
     step: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    kitesurf: Schema.optionalKey(EvidenceKitesurfDiagnosticSchema),
   },
 ) {}
 
@@ -100,6 +86,7 @@ export interface EvidenceWorkflowControlShape {
   readonly recordFailure: (
     active: EvidenceActiveJobV1,
     failure: EvidenceFailure,
+    diagnostic?: EvidenceDiagnostic,
   ) => Effect.Effect<void, EvidenceWorkflowControlError>;
   readonly finalize: (
     active: EvidenceActiveJobV1,
@@ -124,6 +111,7 @@ const workflowError = (
   options: {
     readonly failureCode?: EvidenceFailureCode;
     readonly step?: number;
+    readonly kitesurf?: EvidenceDiagnostic["kitesurf"];
   } = {},
 ): EvidenceWorkflowError =>
   new EvidenceWorkflowError({
@@ -131,6 +119,7 @@ const workflowError = (
     reason,
     ...(options.failureCode === undefined ? {} : { failureCode: options.failureCode }),
     ...(options.step === undefined ? {} : { step: options.step }),
+    ...(options.kitesurf === undefined ? {} : { kitesurf: options.kitesurf }),
   });
 
 const mapClientError = (
@@ -141,6 +130,7 @@ const mapClientError = (
   workflowError(error.reason === "cleanup" ? "browser" : operation, error.reason, {
     failureCode: error.reason === "unsupported" ? "unsupported" : "interrupted",
     ...(step === undefined ? {} : { step }),
+    kitesurf: { operation: error.operation, reason: error.reason },
   });
 
 const mapControlError = (
@@ -152,6 +142,24 @@ const mapControlError = (
     failureCode: error.failureCode,
     ...(step === undefined ? {} : { step }),
   });
+
+const failureFor = (error: EvidenceWorkflowError): EvidenceFailure => ({
+  code:
+    error.failureCode ??
+    (error.reason === "unsupported"
+      ? "unsupported"
+      : error.reason === "deadline"
+        ? "deadline"
+        : "interrupted"),
+  ...(error.step === undefined ? {} : { step: error.step }),
+});
+
+const diagnosticFor = (error: EvidenceWorkflowError): EvidenceDiagnostic => ({
+  operation: error.operation,
+  reason: error.reason,
+  ...(error.step === undefined ? {} : { step: error.step }),
+  ...(error.kitesurf === undefined ? {} : { kitesurf: error.kitesurf }),
+});
 
 const boundedClientEffect = <A>(
   effect: Effect.Effect<A, KitesurfClientError>,
@@ -287,7 +295,13 @@ const executeStep = Effect.fnUntraced(function* (
         ),
       )
     : Result.succeed<Uint8Array | undefined>(undefined);
-  if (passed && Result.isFailure(screenshot)) return yield* screenshot.failure;
+  if (passed && Result.isFailure(screenshot)) {
+    const failure = failureFor(screenshot.failure);
+    yield* control
+      .recordFailure(input.active, failure, diagnosticFor(screenshot.failure))
+      .pipe(Effect.mapError((error) => mapControlError(error, "finalize", index)));
+    return yield* screenshot.failure;
+  }
   const completedAtMillis = yield* Clock.currentTimeMillis;
   const completedAt = new Date(completedAtMillis).toISOString();
   const offsetMillis = Math.max(0, completedAtMillis - jobStartedAtMillis);
@@ -378,17 +392,6 @@ const executeJob = Effect.fnUntraced(function* (
   );
 });
 
-const failureFor = (error: EvidenceWorkflowError): EvidenceFailure => ({
-  code:
-    error.failureCode ??
-    (error.reason === "unsupported"
-      ? "unsupported"
-      : error.reason === "deadline"
-        ? "deadline"
-        : "interrupted"),
-  ...(error.step === undefined ? {} : { step: error.step }),
-});
-
 const terminalStatus = (
   result: Result.Result<void, EvidenceWorkflowError>,
 ): EvidenceTerminalStatus =>
@@ -433,20 +436,19 @@ export const runEvidenceWorkflow = Effect.fnUntraced(function* (input: RunEviden
     const execution = yield* Effect.result(executeJob(client, control, input));
     const status = terminalStatus(execution);
     const failure = Result.isFailure(execution) ? failureFor(execution.failure) : undefined;
-    if (Result.isFailure(execution))
+    const diagnostic = Result.isFailure(execution) ? diagnosticFor(execution.failure) : undefined;
+    if (diagnostic !== undefined)
       yield* Effect.sync(() =>
         console.error("Evidence workflow failed", {
           jobId: input.active.jobId,
-          operation: execution.failure.operation,
-          reason: execution.failure.reason,
-          ...(execution.failure.step === undefined ? {} : { step: execution.failure.step }),
+          ...diagnostic,
         }),
       );
     yield* Ref.set(requestedStatus, status);
     yield* Ref.set(requestedFailure, failure);
     if (failure !== undefined)
       yield* control
-        .recordFailure(input.active, failure)
+        .recordFailure(input.active, failure, diagnostic)
         .pipe(Effect.mapError((error) => mapControlError(error, "finalize", failure.step)));
     const summary = yield* control
       .finalize(input.active, status)

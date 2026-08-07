@@ -11,6 +11,8 @@ import {
   decodeStoredEvidenceStateResult,
   emptyEvidencePreviewAccounting,
   emptyEvidenceState,
+  publicEvidenceSummaryProjection,
+  type EvidenceJobSummaryV1,
 } from "../src/evidence-contracts";
 
 const step = {
@@ -18,6 +20,29 @@ const step = {
   action: { kind: "goto", path: "/" },
   expect: [{ kind: "urlPath", expected: "/" }],
 } as const;
+
+const diagnostic = {
+  operation: "screenshot",
+  reason: "ambiguous",
+  step: 0,
+  kitesurf: { operation: "screenshot", reason: "ambiguous" },
+} as const;
+
+const internalSummary: EvidenceJobSummaryV1 = {
+  version: 1,
+  sequence: 0,
+  jobId: "job-diagnostic",
+  status: "interrupted",
+  acceptedAt: "2026-08-06T12:00:00.000Z",
+  completedAt: "2026-08-06T12:00:01.000Z",
+  totalSteps: 1,
+  completedSteps: 0,
+  replay: true,
+  steps: [],
+  frameCount: 0,
+  failure: { code: "interrupted", step: 0 },
+  diagnostic,
+};
 
 const legacyActiveState = {
   version: 1,
@@ -88,6 +113,7 @@ describe("evidence contracts", () => {
     assert.ok(Option.isSome(decodeBrowserEvidenceToolResult(result)));
     const transported = decodeBrowserEvidenceToolResult({
       ...result,
+      diagnostic,
       rpcMetadata: "transport-only",
       cookie: "must-not-cross-boundary",
     });
@@ -101,14 +127,44 @@ describe("evidence contracts", () => {
     }
   });
 
-  it("keeps authoritative evidence state schema-owned", () => {
+  it("decodes old records and closes durable diagnostics to declared enums and fields", () => {
     const empty = emptyEvidenceState();
     assert.ok(Result.isSuccess(decodeEvidenceStateResult(empty)));
+    assert.ok(
+      Result.isSuccess(
+        decodeEvidenceStateResult({
+          ...empty,
+          nextSequence: 1,
+          jobs: [internalSummary],
+        }),
+      ),
+    );
+    for (const invalidDiagnostic of [
+      { ...diagnostic, detail: "private page data" },
+      { ...diagnostic, reason: "native_timeout" },
+      { ...diagnostic, kitesurf: { ...diagnostic.kitesurf, cause: "private cause" } },
+    ]) {
+      assert.ok(
+        Result.isFailure(
+          decodeEvidenceStateResult({
+            ...empty,
+            nextSequence: 1,
+            jobs: [{ ...internalSummary, diagnostic: invalidDiagnostic }],
+          }),
+        ),
+      );
+    }
     assert.ok(
       Result.isFailure(
         decodeEvidenceStateResult({ ...empty, retainedBytes: -1, previewCookie: "secret" }),
       ),
     );
+  });
+
+  it("explicitly omits internal diagnostics from the public summary projection", () => {
+    const projected = publicEvidenceSummaryProjection(internalSummary);
+    assert.notProperty(projected, "diagnostic");
+    assert.isFalse(JSON.stringify(projected).includes("kitesurf"));
   });
 
   it("normalizes only the legacy active storage shape into closed preview authority", () => {

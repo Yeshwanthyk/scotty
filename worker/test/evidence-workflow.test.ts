@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Fiber } from "effect";
+import { Effect, Exit, Fiber } from "effect";
 import { vi } from "vitest";
 
 vi.mock("@cloudflare/playwright", () => ({ launch: vi.fn() }));
@@ -9,6 +9,7 @@ import {
   type BrowserEvidenceJobV1,
   type CompleteEvidenceStepPublicationV1,
   type EvidenceActiveJobV1,
+  type EvidenceDiagnostic,
   type EvidenceFailure,
   type EvidenceJobSummaryV1,
 } from "../src/evidence-contracts";
@@ -101,7 +102,10 @@ const makePage = (overrides: Partial<KitesurfPage> = {}): KitesurfPage => ({
 const makeClient = (
   page: KitesurfPage,
   events: Array<string>,
-  options: { readonly closePageFails?: boolean } = {},
+  options: {
+    readonly closePageFails?: boolean;
+    readonly closePageInterrupts?: boolean;
+  } = {},
 ): KitesurfClientShape =>
   KitesurfClient.of({
     withPage: (_pageOptions, use) =>
@@ -117,14 +121,16 @@ const makeClient = (
                 () =>
                   Effect.sync(() => events.push("page:close")).pipe(
                     Effect.andThen(
-                      options.closePageFails === true
-                        ? Effect.fail(
-                            new KitesurfClientError({
-                              operation: "close_page",
-                              reason: "cleanup",
-                            }),
-                          )
-                        : Effect.void,
+                      options.closePageInterrupts === true
+                        ? Effect.interrupt
+                        : options.closePageFails === true
+                          ? Effect.fail(
+                              new KitesurfClientError({
+                                operation: "close_page",
+                                reason: "cleanup",
+                              }),
+                            )
+                          : Effect.void,
                     ),
                   ),
               ),
@@ -138,6 +144,7 @@ interface ControlState {
   readonly events: Array<string>;
   readonly publications: Array<CompleteEvidenceStepPublicationV1>;
   failure: EvidenceFailure | undefined;
+  diagnostic: EvidenceDiagnostic | undefined;
 }
 
 const makeControl = (
@@ -172,10 +179,12 @@ const makeControl = (
         state.events.push(`step:${input.index}`);
         state.publications.push(input);
       }),
-    recordFailure: (_active, failure) =>
+    recordFailure: (_active, failure, diagnostic) =>
       Effect.sync(() => {
         state.events.push(`failure:${failure.code}`);
+        if (state.failure !== undefined) return;
         state.failure = failure;
+        state.diagnostic = diagnostic;
       }),
     finalize: (active, status) =>
       options.finalizeFails === true
@@ -207,6 +216,7 @@ const makeControl = (
                 (publication) => publication.frame !== undefined,
               ).length,
               ...(state.failure === undefined ? {} : { failure: state.failure }),
+              ...(state.diagnostic === undefined ? {} : { diagnostic: state.diagnostic }),
             } satisfies EvidenceJobSummaryV1;
           }),
   });
@@ -217,6 +227,7 @@ const execute = (
   state: ControlState,
   options: {
     readonly closePageFails?: boolean;
+    readonly closePageInterrupts?: boolean;
     readonly exposeFailsAtDeadline?: boolean;
     readonly finalizeFails?: boolean;
   } = {},
@@ -230,7 +241,12 @@ const execute = (
     Effect.provideService(EvidenceWorkflowControl, makeControl(state, options)),
   );
 
-const emptyState = (): ControlState => ({ events: [], publications: [], failure: undefined });
+const emptyState = (): ControlState => ({
+  events: [],
+  publications: [],
+  failure: undefined,
+  diagnostic: undefined,
+});
 
 describe("Kitesurf evidence workflow", () => {
   it.effect(
@@ -391,15 +407,63 @@ describe("Kitesurf evidence workflow", () => {
           assert.deepStrictEqual(result.failure, { code: "interrupted", step: 0 });
           assert.lengthOf(state.publications, 0);
           assert.strictEqual(errorLog.mock.calls[0]?.[0], "Evidence workflow failed");
+          assert.deepStrictEqual(state.diagnostic, {
+            operation: "screenshot",
+            reason: "ambiguous",
+            step: 0,
+            kitesurf: { operation: "screenshot", reason: "ambiguous" },
+          });
           assert.deepStrictEqual(errorLog.mock.calls[0]?.[1], {
             jobId: "job-test",
             operation: "screenshot",
             reason: "ambiguous",
             step: 0,
+            kitesurf: { operation: "screenshot", reason: "ambiguous" },
           });
         }),
       (errorLog) => Effect.sync(() => errorLog.mockRestore()),
     ),
+  );
+
+  it.effect(
+    "persists screenshot ambiguity before cleanup and keeps it through outer interruption",
+    () =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => vi.spyOn(console, "error").mockImplementation(() => undefined)),
+        () =>
+          Effect.gen(function* () {
+            yield* TestClock.setTime(NOW);
+            const state = emptyState();
+            const exit = yield* execute(
+              defaultJob,
+              makePage({
+                screenshot: Effect.fail(
+                  new KitesurfClientError({ operation: "screenshot", reason: "ambiguous" }),
+                ),
+              }),
+              state,
+              { closePageInterrupts: true },
+            ).pipe(Effect.exit);
+
+            assert.isTrue(Exit.hasInterrupts(exit));
+            assert.deepStrictEqual(state.failure, { code: "interrupted", step: 0 });
+            assert.deepStrictEqual(state.diagnostic, {
+              operation: "screenshot",
+              reason: "ambiguous",
+              step: 0,
+              kitesurf: { operation: "screenshot", reason: "ambiguous" },
+            });
+            assert.isBelow(
+              state.events.indexOf("failure:interrupted"),
+              state.events.indexOf("page:close"),
+            );
+            assert.strictEqual(
+              state.events.filter((event) => event === "failure:interrupted").length,
+              2,
+            );
+          }),
+        (errorLog) => Effect.sync(() => errorLog.mockRestore()),
+      ),
   );
 
   it.effect("classifies unsupported actions and never publishes a step", () =>
