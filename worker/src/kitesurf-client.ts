@@ -306,14 +306,19 @@ const releaseResource = (
   useExit: Exit.Exit<unknown, unknown>,
 ): Effect.Effect<void, KitesurfClientError> => {
   const release = closeEffect(operation, close, timeoutMillis);
-  if (Exit.isSuccess(useExit)) return release;
+  if (Exit.isSuccess(useExit) && operation !== "close_browser") return release;
   return release.pipe(
     Effect.catch((error) =>
       Effect.sync(() =>
-        console.error("Kitesurf cleanup failed after an earlier evidence failure", {
-          operation: error.operation,
-          reason: error.reason,
-        }),
+        console.error(
+          Exit.isSuccess(useExit)
+            ? "Kitesurf cleanup failed after successful evidence use"
+            : "Kitesurf cleanup failed after an earlier evidence failure",
+          {
+            operation: error.operation,
+            reason: error.reason,
+          },
+        ),
       ),
     ),
   );
