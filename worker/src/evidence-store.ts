@@ -30,6 +30,7 @@ import {
   type EvidenceActiveJobV1,
   type EvidenceArtifactV1,
   type EvidenceDeleteV1,
+  type EvidenceFailure,
   type EvidenceJobStatus,
   type EvidenceJobSummaryV1,
   type EvidencePreviewAccountingV1,
@@ -143,6 +144,10 @@ interface EvidenceStoreShape {
     nonce: string,
     input: CompleteEvidenceStepInput,
   ) => Effect.Effect<EvidenceStepResult, EvidenceStateError>;
+  readonly recordFailure: (
+    nonce: string,
+    failure: EvidenceFailure,
+  ) => Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
   readonly finalize: (
     nonce: string,
     status: EvidenceTerminalStatus,
@@ -971,6 +976,11 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         return yield* new EvidenceStateError({ reason: "step_out_of_order" });
       return completed;
     }),
+    recordFailure: (nonce, failure) =>
+      updateActive(nonce, (active, state) => {
+        const next: EvidenceActiveJobV1 = { ...active, failure };
+        return Result.succeed({ active: next, state: { ...state, activeJob: next } });
+      }),
     finalize,
     interrupt: (nonce, reason) => finalize(nonce, "interrupted", reason),
     requestVerifiedDelete: Effect.fnUntraced(function* (artifact, reason) {

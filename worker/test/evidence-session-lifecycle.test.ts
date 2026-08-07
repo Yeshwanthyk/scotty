@@ -8,6 +8,7 @@ import {
   type EvidenceStateV1,
 } from "../src/evidence-contracts";
 import { sha256Hex } from "../src/digest";
+import { KitesurfClient } from "../src/kitesurf-client";
 import {
   createSessionHarness,
   injectedHarnessFailure,
@@ -73,6 +74,87 @@ const job = {
 } as const;
 
 describe("evidence session lifecycle", () => {
+  it.effect(
+    "runs one accepted job through the scoped RPC and existing artifact publication path",
+    () =>
+      Effect.gen(function* () {
+        const browserEvents: Array<string> = [];
+        const kitesurfClient = KitesurfClient.of({
+          withPage: (_options, use) =>
+            Effect.acquireUseRelease(
+              Effect.sync(() => browserEvents.push("browser:open")),
+              () =>
+                use({
+                  goto: () => Effect.void,
+                  click: () => Effect.void,
+                  fill: () => Effect.void,
+                  press: () => Effect.void,
+                  isVisible: () => Effect.succeed(true),
+                  textContent: () => Effect.succeed("Ready"),
+                  count: () => Effect.succeed(1),
+                  urlPath: Effect.succeed("/"),
+                  screenshot: Effect.succeed(PNG),
+                }),
+              () => Effect.sync(() => browserEvents.push("browser:close")),
+            ),
+        });
+        const harness = yield* createHarness({
+          kitesurfClient,
+          previewBase: "preview.scotty.example",
+        });
+        yield* Effect.promise(() => harness.startRuntime());
+
+        const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
+
+        assert.strictEqual(result.status, "succeeded");
+        assert.strictEqual(result.completedSteps, 1);
+        assert.strictEqual(result.frameCount, 1);
+        assert.match(result.summaryUrl, new RegExp(`^/s/${SESSION_ID}/evidence/job-`, "u"));
+        assert.deepStrictEqual(browserEvents, ["browser:open", "browser:close"]);
+        assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+        assert.lengthOf(harness.artifactKeys(), 1);
+        const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+        assert.strictEqual(state?.activeJob, undefined);
+        assert.strictEqual(state?.jobs[0]?.status, "succeeded");
+        assert.strictEqual(state?.jobs[0]?.frameCount, 1);
+        assert.strictEqual(harness.readRecord()?.operation, null);
+      }),
+  );
+
+  it.effect("fails an invalid screenshot without publishing an artifact", () =>
+    Effect.gen(function* () {
+      const kitesurfClient = KitesurfClient.of({
+        withPage: (_options, use) =>
+          use({
+            goto: () => Effect.void,
+            click: () => Effect.void,
+            fill: () => Effect.void,
+            press: () => Effect.void,
+            isVisible: () => Effect.succeed(true),
+            textContent: () => Effect.succeed("Ready"),
+            count: () => Effect.succeed(1),
+            urlPath: Effect.succeed("/"),
+            screenshot: Effect.succeed(Uint8Array.from([0, 1, 2, 3])),
+          }),
+      });
+      const harness = yield* createHarness({
+        kitesurfClient,
+        previewBase: "preview.scotty.example",
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+
+      const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
+
+      assert.strictEqual(result.status, "failed");
+      assert.deepStrictEqual(result.failure, { code: "artifact_invalid", step: 0 });
+      assert.strictEqual(result.completedSteps, 0);
+      assert.strictEqual(result.frameCount, 0);
+      assert.deepStrictEqual(harness.artifactKeys(), []);
+      assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+      assert.strictEqual(harness.readRecord()?.operation, null);
+    }),
+  );
+
   it.effect("keeps acceptance, exposure, and authorization disabled without the gate", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness({ evidenceEnabled: false });

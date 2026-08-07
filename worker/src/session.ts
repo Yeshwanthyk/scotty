@@ -24,6 +24,7 @@ import {
   Predicate,
   Result,
   Schedule,
+  Schema,
 } from "effect";
 import { BackupStore, backupStoreLayer } from "./backup-store";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
@@ -33,6 +34,7 @@ import {
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
   EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
   EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+  EvidenceArtifactError,
   EvidenceStateError,
   decodeBrowserEvidenceJobEffect,
   decodeCompleteEvidenceStepPublication,
@@ -41,6 +43,8 @@ import {
   decodeEvidencePreviewIngressBytes,
   decodeEvidencePreviewRequestId,
   publicEvidenceSummaryProjection,
+  type BrowserEvidenceJobV1,
+  type BrowserEvidenceResultV1,
   type EvidenceActiveJobV1,
   type EvidenceArtifactV1,
   type EvidenceJobSummaryV1,
@@ -53,6 +57,12 @@ import {
 } from "./evidence-contracts";
 import type { Bindings } from "./bindings";
 import { sha256Hex } from "./digest";
+import { KitesurfClient, makeKitesurfClient, type KitesurfClientShape } from "./kitesurf-client";
+import {
+  EvidenceWorkflowControl,
+  EvidenceWorkflowControlError,
+  runEvidenceWorkflow,
+} from "./evidence-workflow";
 import {
   ContainerAuth,
   containerAuthLayer,
@@ -225,6 +235,7 @@ export interface PassivePiConsoleRelay {
 
 export interface SandboxEffectOptions {
   readonly clock?: Clock.Clock;
+  readonly kitesurfClient?: KitesurfClientShape;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly previewRequestForwarder?: (request: Request) => Promise<Response>;
 }
@@ -285,6 +296,22 @@ const hostEffect = <A>(
     catch: (cause) => new HostOperationFailure({ operation, cause }),
   });
 
+const decodeEvidenceArtifactError = Schema.decodeUnknownOption(EvidenceArtifactError);
+const decodeEvidenceStateError = Schema.decodeUnknownOption(EvidenceStateError);
+
+const evidenceControlFailureCode = (error: unknown) => {
+  const artifactError = decodeEvidenceArtifactError(error);
+  if (Option.isSome(artifactError)) {
+    if (artifactError.value.reason === "invalid_png") return "artifact_invalid" as const;
+    if (artifactError.value.reason === "over_budget") return "artifact_over_budget" as const;
+    return "artifact_put_unknown" as const;
+  }
+  const stateError = decodeEvidenceStateError(error);
+  if (Option.isSome(stateError) && stateError.value.reason === "over_budget")
+    return "artifact_over_budget" as const;
+  return "interrupted" as const;
+};
+
 const classifyCheckpointExit = <A, E>(exit: Exit.Exit<A, E>): CheckpointExitClassification => ({
   failed: Exit.isFailure(exit),
   hasDefect: Exit.hasDies(exit),
@@ -330,6 +357,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly sessionControlGate: SessionControlGate;
   private readonly authoritativeStorage: SessionRecordStorage;
   private readonly evidenceEnabled: boolean;
+  private readonly kitesurfClient: KitesurfClientShape;
   private readonly previewBase: string | undefined;
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
@@ -341,6 +369,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.clock = options.clock;
     this.rawContainer = ctx.container;
     this.evidenceEnabled = env.SCOTTY_EVIDENCE_ENABLED === "true";
+    this.kitesurfClient = options.kitesurfClient ?? makeKitesurfClient(env.BROWSER);
     this.previewBase =
       env.SCOTTY_PREVIEW_BASE !== undefined &&
       EVIDENCE_PREVIEW_BASE_PATTERN.test(env.SCOTTY_PREVIEW_BASE)
@@ -465,15 +494,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return decoded.value;
   });
 
-  private readonly acceptScottyEvidenceJobProgram = Effect.fnUntraced(function* (
+  private readonly acceptDecodedScottyEvidenceJobProgram = Effect.fnUntraced(function* (
     this: Sandbox,
-    value: unknown,
+    job: BrowserEvidenceJobV1,
   ) {
     if (!this.evidenceEnabled)
       return yield* new EvidenceStateError({ reason: "preview_unavailable" });
-    const job = yield* decodeBrowserEvidenceJobEffect(value).pipe(
-      Effect.mapError(() => badRequest("Evidence job is invalid")),
-    );
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm" || record.execution.provider !== "cloudflare")
       return yield* wrongState(
@@ -513,6 +539,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (Result.isSuccess(scheduled)) return accepted;
     yield* evidence.interrupt(operationNonce, "interrupted");
     return yield* this.upstreamError("Evidence deadline scheduling failed", scheduled.failure);
+  });
+
+  private readonly acceptScottyEvidenceJobProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    value: unknown,
+  ) {
+    const job = yield* decodeBrowserEvidenceJobEffect(value).pipe(
+      Effect.mapError(() => badRequest("Evidence job is invalid")),
+    );
+    return yield* this.acceptDecodedScottyEvidenceJobProgram(job);
   });
 
   private abortPreviewRequests(operationNonce: string): void {
@@ -802,6 +838,92 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }),
       );
     return summary;
+  });
+
+  private evidenceWorkflowControl(): EvidenceWorkflowControl["Service"] {
+    return EvidenceWorkflowControl.of({
+      expose: (active) =>
+        this.exposeScottyEvidencePreviewProgram(active.operationNonce).pipe(
+          Effect.mapError(
+            () =>
+              new EvidenceWorkflowControlError({
+                operation: "expose",
+                failureCode: "unsupported",
+              }),
+          ),
+          Effect.provide(this.layer),
+        ),
+      markRunning: (active) =>
+        Effect.flatMap(EvidenceStore, (store) =>
+          store.setPhase(active.operationNonce, "running"),
+        ).pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            () =>
+              new EvidenceWorkflowControlError({
+                operation: "mark_running",
+                failureCode: "interrupted",
+              }),
+          ),
+          Effect.provide(this.layer),
+        ),
+      completeStep: (active, input) =>
+        this.completeScottyEvidenceStepProgram(active.operationNonce, input).pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            (error) =>
+              new EvidenceWorkflowControlError({
+                operation: "complete_step",
+                failureCode: evidenceControlFailureCode(error),
+              }),
+          ),
+          Effect.provide(this.layer),
+        ),
+      recordFailure: (active, failure) =>
+        Effect.flatMap(EvidenceStore, (store) =>
+          store.recordFailure(active.operationNonce, failure),
+        ).pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            () =>
+              new EvidenceWorkflowControlError({
+                operation: "record_failure",
+                failureCode: failure.code,
+              }),
+          ),
+          Effect.provide(this.layer),
+        ),
+      finalize: (active, status) =>
+        this.finalizeScottyEvidenceJobProgram(active.operationNonce, status).pipe(
+          Effect.mapError(
+            () =>
+              new EvidenceWorkflowControlError({
+                operation: "finalize",
+                failureCode: "interrupted",
+              }),
+          ),
+          Effect.provide(this.layer),
+        ),
+    });
+  }
+
+  private readonly runScottyEvidenceJobProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    value: unknown,
+  ) {
+    const job = yield* decodeBrowserEvidenceJobEffect(value).pipe(
+      Effect.mapError(() => badRequest("Evidence job is invalid")),
+    );
+    const active = yield* this.acceptDecodedScottyEvidenceJobProgram(job);
+    const record = yield* this.requireRecordProgram();
+    return yield* runEvidenceWorkflow({
+      active,
+      job,
+      summaryUrl: `/s/${record.id}/evidence/${active.jobId}`,
+    }).pipe(
+      Effect.provideService(KitesurfClient, this.kitesurfClient),
+      Effect.provideService(EvidenceWorkflowControl, this.evidenceWorkflowControl()),
+    );
   });
 
   private readonly assertRuntimeAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -2181,6 +2303,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async acceptScottyEvidenceJob(value: unknown): Promise<EvidenceActiveJobV1> {
     return this.#run(this.acceptScottyEvidenceJobProgram(value));
+  }
+
+  async runScottyEvidenceJob(value: unknown): Promise<BrowserEvidenceResultV1> {
+    return this.#run(this.runScottyEvidenceJobProgram(value));
   }
 
   async exposeScottyEvidencePreview(nonce: string): Promise<ExposedEvidencePreviewV1> {

@@ -78,6 +78,7 @@ export interface HarnessOptions {
   readonly evidenceEnabled?: boolean;
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
+  readonly kitesurfClient?: SandboxEffectOptions["kitesurfClient"];
   readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
     ? Stub extends { dispatch: infer Dispatch }
       ? Dispatch
@@ -662,6 +663,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 
   const sandbox = new Sandbox(ctx, env, {
     clock: options.clock,
+    kitesurfClient: options.kitesurfClient,
     passivePiConsoleRelay: options.passivePiConsoleRelay,
     previewRequestForwarder: options.previewRequestForwarder,
   });
