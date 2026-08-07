@@ -5,6 +5,7 @@ import { NodeServices } from "@effect/platform-node";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
 import { Credentials as DistilledCredentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as DNS from "@distilled.cloud/cloudflare/dns";
+import type { NotFound as CloudflareNotFound } from "@distilled.cloud/cloudflare/Errors";
 import * as KV from "@distilled.cloud/cloudflare/kv";
 import * as R2 from "@distilled.cloud/cloudflare/r2";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
@@ -768,7 +769,12 @@ export async function uninstallInstallation(
                 yield* DNS.deleteRecord({
                   zoneId: installation.preview.zoneId,
                   dnsRecordId: ownedPreviewDeletion.dnsRecordId,
-                });
+                }).pipe(
+                  // Distilled maps HTTP 404 to this shared error even though this generated
+                  // operation's static error union omits non-default HTTP status errors.
+                  Effect.mapError((error): DNS.DeleteRecordError | CloudflareNotFound => error),
+                  Effect.catchTag("NotFound", () => Effect.void),
+                );
                 deletedPreviewResources.push(previewRoutePattern, previewDnsName);
               }
 

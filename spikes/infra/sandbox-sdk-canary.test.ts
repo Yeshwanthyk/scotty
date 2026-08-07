@@ -173,8 +173,10 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
       [
         "build",
         "spikes/infra/sandbox-sdk-canary-worker.ts",
-        "--target=browser",
+        "--target=node",
         "--external=cloudflare:*",
+        "--external=*/loader",
+        "--external=*/chromium/appIcon.png",
         `--outfile=${bundlePath}`,
       ],
       {

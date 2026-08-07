@@ -581,7 +581,7 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("arms seven-day retention and deletes only after verified R2 absence", () =>
+  it.effect("chains the upload guard into seven-day retention before deleting from R2", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness();
       yield* Effect.promise(() => harness.startRuntime());
@@ -604,6 +604,21 @@ describe("evidence session lifecycle", () => {
       yield* Effect.promise(() =>
         harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "succeeded"),
       );
+      const guardAt = "2026-08-06T12:00:05.000Z";
+      const guardIndex = harness.schedules.findIndex(
+        ({ callback }) => callback === "expireRetainedEvidence",
+      );
+      assert.notStrictEqual(guardIndex, -1);
+      assert.deepInclude(harness.schedules[guardIndex], {
+        when: new Date(guardAt),
+        callback: "expireRetainedEvidence",
+        payload: { expiresAt: guardAt },
+      });
+      assert.notInclude(harness.deletedSchedules, "expireRetainedEvidence");
+
+      yield* TestClock.setTime(Date.parse(guardAt));
+      yield* Effect.promise(() => harness.sandbox.expireRetainedEvidence({ expiresAt: guardAt }));
+      harness.schedules.splice(guardIndex, 1);
       const expiresAt = "2026-08-13T12:00:01.000Z";
       assert.deepInclude(
         harness.schedules.find(({ callback }) => callback === "expireRetainedEvidence"),
@@ -623,10 +638,14 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(state?.retainedBytes, 0);
       assert.deepStrictEqual(harness.artifactKeys(), []);
       assert.lengthOf(harness.artifactDeletedKeys, 1);
+      assert.deepInclude(harness.schedules.at(-1), {
+        when: new Date("2026-08-13T12:00:06.000Z"),
+        callback: "expireRetainedEvidence",
+      });
     }),
   );
 
-  it.effect("keeps one earliest retention callback across staggered frames", () =>
+  it.effect("keeps one actionable retention callback across staggered frames", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness();
       yield* Effect.promise(() => harness.startRuntime());
@@ -658,10 +677,53 @@ describe("evidence session lifecycle", () => {
         );
         assert.lengthOf(retention, 1);
         assert.deepInclude(retention[0], {
-          when: new Date("2026-08-13T12:00:01.000Z"),
-          payload: { expiresAt: "2026-08-13T12:00:01.000Z" },
+          when: new Date("2026-08-06T12:00:05.000Z"),
+          payload: { expiresAt: "2026-08-06T12:00:05.000Z" },
         });
+        assert.notInclude(harness.deletedSchedules, "expireRetainedEvidence");
       }
+    }),
+  );
+
+  it.effect("does not amplify a future successor when an expiry alarm is retried", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      yield* Effect.promise(() =>
+        harness.sandbox.completeScottyEvidenceStep(accepted.operationNonce, {
+          index: 0,
+          startedAt: "2026-08-06T12:00:00.100Z",
+          completedAt: "2026-08-06T12:00:01.000Z",
+          offsetMillis: 1_000,
+          assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
+          frame: {
+            frameId: "frame-1",
+            bytes: PNG,
+            capturedAt: "2026-08-06T12:00:01.000Z",
+            offsetMillis: 1_000,
+          },
+        }),
+      );
+      const expiresAt = "2026-08-13T12:00:01.000Z";
+      yield* TestClock.setTime(Date.parse(expiresAt));
+      harness.injectFailure("artifactDeleteAmbiguous");
+
+      yield* Effect.promise(() => harness.sandbox.expireRetainedEvidence({ expiresAt }));
+      yield* Effect.promise(() => harness.sandbox.expireRetainedEvidence({ expiresAt }));
+
+      const future = harness.schedules.filter(
+        ({ callback, when }) =>
+          callback === "expireRetainedEvidence" &&
+          when instanceof Date &&
+          when.getTime() > Date.parse(expiresAt),
+      );
+      assert.lengthOf(future, 1);
+      assert.deepInclude(future[0], {
+        when: new Date("2026-08-13T12:00:06.000Z"),
+        payload: { expiresAt: "2026-08-13T12:00:06.000Z" },
+      });
+      assert.notInclude(harness.deletedSchedules, "expireRetainedEvidence");
     }),
   );
 
@@ -808,11 +870,11 @@ describe("evidence session lifecycle", () => {
       assert.deepInclude(
         harness.schedules.find(({ callback }) => callback === "expireRetainedEvidence"),
         {
-          when: new Date("2026-08-13T12:00:01.000Z"),
+          when: new Date("2026-08-06T12:00:05.000Z"),
           callback: "expireRetainedEvidence",
         },
       );
-      assert.include(harness.deletedSchedules, "expireRetainedEvidence");
+      assert.notInclude(harness.deletedSchedules, "expireRetainedEvidence");
       assert.lengthOf(
         harness.schedules.filter(({ callback }) => callback === "expireRetainedEvidence"),
         1,

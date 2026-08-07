@@ -205,9 +205,21 @@ class HarnessStorage {
 
   readonly sql = {
     exec: (query: string, ...bindings: ReadonlyArray<unknown>) => {
+      const [callback, time] = bindings;
+      if (query === "SELECT id FROM container_schedules WHERE callback = ? LIMIT 1")
+        return this.schedules.flatMap((schedule, index) =>
+          schedule.callback === callback ? [{ id: `schedule-${index}` }] : [],
+        );
+      if (query === "SELECT id FROM container_schedules WHERE callback = ? AND time > ? LIMIT 1")
+        return this.schedules.flatMap((schedule, index) =>
+          schedule.callback === callback &&
+          schedule.when instanceof Date &&
+          Math.floor(schedule.when.getTime() / 1_000) > Number(time)
+            ? [{ id: `schedule-${index}` }]
+            : [],
+        );
       if (query !== "SELECT id FROM container_schedules WHERE callback = ? AND time = ? LIMIT 1")
         return [];
-      const [callback, time] = bindings;
       return this.schedules.flatMap((schedule, index) =>
         schedule.callback === callback &&
         schedule.when instanceof Date &&

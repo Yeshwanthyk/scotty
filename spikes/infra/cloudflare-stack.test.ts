@@ -1,5 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   assertCloudflareStackConfig,
   CLOUDFLARE_STAGE,
@@ -248,6 +252,66 @@ describe("Cloudflare stack source contract", () => {
     assert.match(source, /ARTIFACT_BUCKET: artifacts/u);
   });
 
+  it("bundles the Worker and full-stack canary with the Kitesurf runtime and no credentials", () => {
+    const root = new URL("../../", import.meta.url);
+    const electronSource = readFileSync(
+      new URL(
+        "../../node_modules/@cloudflare/playwright/lib/playwright-core/src/server/electron/electron.js",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const launchAppSource = readFileSync(
+      new URL(
+        "../../node_modules/@cloudflare/playwright/lib/playwright-core/src/server/launchApp.js",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    assert.match(electronSource, /require\.resolve\("\.\/loader"\)/u);
+    assert.match(launchAppSource, /require\.resolve\("\.\/chromium\/appIcon\.png"\)/u);
+
+    const outputDirectory = mkdtempSync(join(tmpdir(), "scotty-playwright-bundle-"));
+    const syntheticMaterial = randomBytes(48).toString("base64url");
+    const entries = [
+      ["worker/src/index.ts", "worker.js"],
+      ["spikes/infra/full-stack-canary-worker.ts", "canary.js"],
+    ] as const;
+    for (const [entry, outputName] of entries) {
+      const bundlePath = join(outputDirectory, outputName);
+      execFileSync(
+        "bun",
+        [
+          "build",
+          entry,
+          "--target=node",
+          "--external=cloudflare:*",
+          "--external=*/loader",
+          "--external=*/chromium/appIcon.png",
+          `--outfile=${bundlePath}`,
+        ],
+        {
+          cwd: root,
+          stdio: "pipe",
+          env: {
+            ...process.env,
+            PI_AUTH_JSON: syntheticMaterial,
+            GH_TOKEN: syntheticMaterial,
+            SCOTTY_TOKEN: syntheticMaterial,
+          },
+        },
+      );
+      const bundle = readFileSync(bundlePath, "utf8");
+      assert.match(
+        bundle,
+        /node_modules\/@cloudflare\/playwright\/lib\/cloudflare\/wrapClientApis\.js/u,
+      );
+      assert.notMatch(bundle, /from ["']@cloudflare\/playwright["']/u);
+      assert.notInclude(bundle, syntheticMaterial);
+    }
+    rmSync(outputDirectory, { recursive: true, force: true });
+  });
+
   it("has no committed account, hostname, container UUID, or runner instance name", () => {
     const combined = `${source}\n${entrypointSource}`;
     assert.notMatch(combined, /workers\.dev|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f-]{27}/u);
@@ -297,6 +361,25 @@ describe("Cloudflare stack source contract", () => {
     assert.match(uninstallSource, /ownedPreviewDeletion\.routeId/u);
     assert.match(uninstallSource, /ownedPreviewDeletion\.dnsRecordId/u);
     assert.notMatch(uninstallSource, /listRoutes|listRecords/u);
+  });
+
+  it("makes a partial preview uninstall retry idempotent after route or DNS deletion", () => {
+    const uninstallSource = installationDeploymentSource.slice(
+      installationDeploymentSource.indexOf("export async function uninstallInstallation"),
+      installationDeploymentSource.indexOf("const piAuthTargetProgram"),
+    );
+    assert.match(
+      uninstallSource,
+      /Workers\.deleteRoute\([\s\S]*?Effect\.catchTag\("RouteNotFound", \(\) => Effect\.void\)/u,
+    );
+    assert.match(
+      installationDeploymentSource,
+      /import type \{ NotFound as CloudflareNotFound \} from "@distilled\.cloud\/cloudflare\/Errors"/u,
+    );
+    assert.match(
+      uninstallSource,
+      /DNS\.deleteRecord\([\s\S]*?DNS\.DeleteRecordError \| CloudflareNotFound[\s\S]*?Effect\.catchTag\("NotFound", \(\) => Effect\.void\)/u,
+    );
   });
 
   it("retains or exhaustively deletes both backup and artifact buckets on uninstall", () => {

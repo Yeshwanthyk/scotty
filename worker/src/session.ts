@@ -951,10 +951,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     expiresAt: string,
   ) {
-    yield* Effect.try({
-      try: () => this.deleteSchedules("expireRetainedEvidence"),
-      catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
-    });
     const scheduled = yield* Effect.result(
       hostEffect("schedule", () =>
         this.schedule(new Date(expiresAt), "expireRetainedEvidence", {
@@ -963,7 +959,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ),
     );
     if (Result.isSuccess(scheduled)) return;
-    const inserted = yield* this.hasScheduledEvidenceRetentionProgram(expiresAt);
+    const inserted = yield* this.hasScheduledEvidenceRetentionAtProgram(expiresAt);
     if (!inserted) return yield* scheduled.failure;
   });
 
@@ -973,11 +969,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const evidence = yield* EvidenceStore;
     const state = yield* evidence.read;
     const nowMillis = yield* Clock.currentTimeMillis;
-    const hasPending = state.artifacts.some(
+    const needsRetry = state.artifacts.some(
       (artifact) =>
-        artifact.status === "delete_pending" && artifact.objectKey !== promoting?.objectKey,
+        artifact.objectKey !== promoting?.objectKey &&
+        (artifact.status === "delete_pending" || Date.parse(artifact.expiresAt) <= nowMillis),
     );
-    const nextAtMillis = hasPending
+    const nextAtMillis = needsRetry
       ? nowMillis + EVIDENCE_CLEANUP_RETRY_SECONDS * 1_000
       : Math.min(
           ...state.artifacts
@@ -985,9 +982,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             .map((artifact) => Date.parse(artifact.expiresAt)),
           ...(promoting === undefined ? [] : [Date.parse(promoting.expiresAt)]),
         );
-    return Number.isFinite(nextAtMillis)
-      ? new Date(Math.max(nowMillis, nextAtMillis)).toISOString()
-      : undefined;
+    return Number.isFinite(nextAtMillis) ? new Date(nextAtMillis).toISOString() : undefined;
   });
 
   private readonly armEvidenceRetentionProgram = Effect.fnUntraced(function* (
@@ -995,17 +990,39 @@ export class Sandbox extends BaseSandbox<Bindings> {
     promoting?: EvidenceArtifactV1,
   ) {
     const expiresAt = yield* this.nextEvidenceRetentionAtProgram(promoting);
-    if (expiresAt === undefined) {
-      yield* Effect.try({
-        try: () => this.deleteSchedules("expireRetainedEvidence"),
-        catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
-      });
-      return;
-    }
+    if (expiresAt === undefined || (yield* this.hasScheduledEvidenceRetentionProgram())) return;
+    yield* this.scheduleEvidenceRetentionAtProgram(expiresAt);
+  });
+
+  private readonly armFutureEvidenceRetentionProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const expiresAt = yield* this.nextEvidenceRetentionAtProgram();
+    if (expiresAt === undefined) return;
+    const nowMillis = yield* Clock.currentTimeMillis;
+    if (yield* this.hasScheduledEvidenceRetentionProgram(nowMillis)) return;
     yield* this.scheduleEvidenceRetentionAtProgram(expiresAt);
   });
 
   private readonly hasScheduledEvidenceRetentionProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    afterMillis?: number,
+  ) {
+    return yield* Effect.try({
+      try: () =>
+        [
+          // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: inspect the pinned Container host's SDK-owned rows so publication never amplifies an actionable retention callback
+          ...this.ctx.storage.sql.exec<{ readonly id: string }>(
+            afterMillis === undefined
+              ? "SELECT id FROM container_schedules WHERE callback = ? LIMIT 1"
+              : "SELECT id FROM container_schedules WHERE callback = ? AND time > ? LIMIT 1",
+            "expireRetainedEvidence",
+            ...(afterMillis === undefined ? [] : [Math.floor(afterMillis / 1_000)]),
+          ),
+        ].length > 0,
+      catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
+    });
+  });
+
+  private readonly hasScheduledEvidenceRetentionAtProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     expiresAt: string,
   ) {
@@ -1032,6 +1049,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     },
   );
 
+  private readonly armFutureEvidenceRetentionFailClosedProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      yield* this.armFutureEvidenceRetentionProgram().pipe(
+        Effect.retry({ schedule: Schedule.spaced("1 second") }),
+      );
+    },
+  );
+
   private readonly expireRetainedEvidenceProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     payload: unknown,
@@ -1039,6 +1064,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const decoded = decodeEvidenceRetentionPayload(payload);
     if (Option.isNone(decoded) || !Number.isFinite(Date.parse(decoded.value.expiresAt))) return;
     const evidence = yield* EvidenceStore;
+    // The pinned Container host deletes the executing row after this callback returns. Insert its
+    // sole future successor first; interruption before insertion leaves the current alarm retryable.
+    yield* this.armFutureEvidenceRetentionFailClosedProgram();
     const reconciled = yield* Effect.result(
       Effect.gen({ self: this }, function* () {
         yield* evidence.prepareExpiredDeletes;
@@ -1051,7 +1079,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           error: errorName(reconciled.failure),
         }),
       );
-    yield* this.armEvidenceRetentionFailClosedProgram();
   });
 
   private readonly completeScottyEvidenceStepProgram = Effect.fnUntraced(function* (
