@@ -30,16 +30,22 @@ import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "
 import { EvidenceStore, evidenceStoreLayer } from "./evidence-store";
 import {
   EVIDENCE_JOB_TIMEOUT_MILLIS,
+  EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
+  EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
+  EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
   EvidenceStateError,
   decodeBrowserEvidenceJobEffect,
   decodeCompleteEvidenceStepPublication,
   decodeEvidenceIdentifier,
-  decodeEvidencePreviewAuthorization,
+  decodeEvidencePreviewAdmission,
+  decodeEvidencePreviewIngressBytes,
+  decodeEvidencePreviewRequestId,
   publicEvidenceSummaryProjection,
   type EvidenceActiveJobV1,
   type EvidenceArtifactV1,
   type EvidenceJobSummaryV1,
-  type EvidencePreviewAuthorizationV1,
+  type EvidencePreviewAdmissionV1,
+  type EvidencePreviewPermitAdmissionV1,
   type EvidenceStepResult,
   type EvidenceTerminalStatus,
   type ExposedEvidencePreviewV1,
@@ -127,6 +133,22 @@ const PASSIVE_PI_CONSOLE_REQUEST_HEADERS = ["accept", "content-type", "last-even
 const EVIDENCE_PREVIEW_BASE_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const EVIDENCE_CLEANUP_RETRY_SECONDS = 5;
+const SANDBOX_PREVIEW_PROXY_HEADER = "x-sandbox-preview-proxy";
+const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
+const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
+const SANDBOX_PREVIEW_SANDBOX_ID_HEADER = "x-sandbox-preview-sandbox-id";
+const PREVIEW_PORT_PATTERN = /^(?:[1-9][0-9]{3,4})$/u;
+
+const deniedEvidencePreviewResponse = (): Response =>
+  new Response("Not found", {
+    status: 404,
+    headers: {
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-robots-tag": "noindex, nofollow, noarchive",
+    },
+  });
 
 const copyBoundedPassivePiConsoleHeaders = (source: Headers): Headers => {
   const headers = new Headers();
@@ -204,6 +226,7 @@ export interface PassivePiConsoleRelay {
 export interface SandboxEffectOptions {
   readonly clock?: Clock.Clock;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
+  readonly previewRequestForwarder?: (request: Request) => Promise<Response>;
 }
 
 class ManagedStopArmedError extends Data.TaggedError("ManagedStopArmedError")<{
@@ -246,6 +269,11 @@ interface InFlightCreate {
   readonly keyDigest: string | undefined;
   readonly inputDigest: string | undefined;
   readonly promise: Promise<SessionView>;
+}
+
+interface InFlightPreviewRequest {
+  readonly operationNonce: string;
+  readonly controller: AbortController;
 }
 
 const hostEffect = <A>(
@@ -297,6 +325,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly layer: Layer.Layer<SandboxServices>;
   private readonly clock: Clock.Clock | undefined;
   private readonly passivePiConsoleRelay: PassivePiConsoleRelay;
+  private readonly previewRequestForwarder: (request: Request) => Promise<Response>;
   private readonly rawContainer: DurableObjectState["container"];
   private readonly sessionControlGate: SessionControlGate;
   private readonly authoritativeStorage: SessionRecordStorage;
@@ -305,6 +334,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
   private createInFlight: InFlightCreate | undefined;
+  private readonly previewRequests = new Map<string, InFlightPreviewRequest>();
 
   constructor(ctx: DurableObjectState<{}>, env: Bindings, options: SandboxEffectOptions = {}) {
     super(ctx, env);
@@ -319,6 +349,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.passivePiConsoleRelay = options.passivePiConsoleRelay ?? {
       fetch: (input) => this.fetchNativePassivePiConsole(input),
     };
+    this.previewRequestForwarder =
+      options.previewRequestForwarder ?? ((request) => this.forwardSandboxPreviewRequest(request));
     this.sessionControlGate = makeSessionControlGate();
 
     const authoritativeStorage = durableObjectSessionRecordStorage(
@@ -483,6 +515,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return yield* this.upstreamError("Evidence deadline scheduling failed", scheduled.failure);
   });
 
+  private abortPreviewRequests(operationNonce: string): void {
+    for (const [requestId, request] of this.previewRequests) {
+      if (request.operationNonce !== operationNonce) continue;
+      request.controller.abort();
+      this.previewRequests.delete(requestId);
+    }
+  }
+
   private readonly cleanupEvidencePreviewProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     nonce: string,
@@ -490,6 +530,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const evidence = yield* EvidenceStore;
     const revoked = yield* evidence.revokePreview(nonce, interruptionReason);
+    yield* Effect.sync(() => this.abortPreviewRequests(nonce));
     if (revoked.exposure === "unexpose_pending") {
       yield* hostEffect("unexpose", () => this.unexposePort(revoked.port));
       return yield* evidence.closePreview(nonce);
@@ -575,32 +616,81 @@ export class Sandbox extends BaseSandbox<Bindings> {
     } satisfies ExposedEvidencePreviewV1;
   });
 
-  private readonly authorizeScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
+  private readonly admitScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     value: unknown,
   ) {
-    const decoded = decodeEvidencePreviewAuthorization(value);
+    const decoded = decodeEvidencePreviewAdmission(value);
     if (!this.evidenceEnabled || Option.isNone(decoded) || this.rawContainer?.running !== true)
-      return false;
+      return undefined;
     const runtimeEpoch = yield* Effect.result(this.currentRuntimeEpochProgram());
-    if (Result.isFailure(runtimeEpoch)) return false;
+    if (Result.isFailure(runtimeEpoch)) return undefined;
     const cookieDigest = yield* Effect.result(
       Effect.tryPromise({
         try: () => sha256Hex(decoded.value.cookieSecret),
         catch: () => new EvidenceStateError({ reason: "preview_unavailable" }),
       }),
     );
-    if (Result.isFailure(cookieDigest)) return false;
+    if (Result.isFailure(cookieDigest)) return undefined;
     return yield* Effect.flatMap(EvidenceStore, (store) =>
-      store.authorizePreview({
+      store.admitPreview({
+        requestId: randomToken(16),
         sessionId: decoded.value.sessionId,
         port: decoded.value.port,
         routeNonce: decoded.value.routeNonce,
         runtimeEpoch: runtimeEpoch.success,
         cookieDigest: cookieDigest.success,
+        ingressBytes: decoded.value.ingressBytes,
         runtimeRunning: this.rawContainer?.running === true,
       }),
-    ).pipe(Effect.catch(() => Effect.succeed(false)));
+    ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  });
+
+  private readonly adjustScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
+    requestId: string,
+    ingressBytes: number,
+  ) {
+    const evidence = yield* EvidenceStore;
+    return yield* evidence.adjustPreview(requestId, ingressBytes);
+  });
+
+  private readonly claimScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    requestId: string,
+    route: { readonly sessionId: string; readonly port: number; readonly routeNonce: string },
+  ) {
+    const runtimeEpoch = yield* Effect.result(this.currentRuntimeEpochProgram());
+    if (Result.isFailure(runtimeEpoch)) return undefined;
+    return yield* Effect.flatMap(EvidenceStore, (store) =>
+      store.claimPreview({
+        requestId,
+        ...route,
+        runtimeEpoch: runtimeEpoch.success,
+        runtimeRunning: this.rawContainer?.running === true,
+      }),
+    ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  });
+
+  private readonly settleScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
+    requestId: string,
+    responseBytes: number,
+  ) {
+    const evidence = yield* EvidenceStore;
+    yield* evidence.settlePreview(requestId, responseBytes);
+  });
+
+  private readonly cancelScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
+    requestId: string,
+  ) {
+    const evidence = yield* EvidenceStore;
+    yield* evidence.cancelPreview(requestId);
+  });
+
+  private readonly expireScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
+    requestId: string,
+  ) {
+    const evidence = yield* EvidenceStore;
+    yield* evidence.expirePreview(requestId);
   });
 
   private readonly expireEvidenceJobProgram = Effect.fnUntraced(function* (
@@ -1817,6 +1907,240 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* this.destroyFailedRuntimeProgram(sessionId);
   });
 
+  private readonly previewForwardingRoute = (
+    request: Request,
+  ):
+    | {
+        readonly requestId: string;
+        readonly sessionId: string;
+        readonly port: number;
+        readonly routeNonce: string;
+      }
+    | undefined => {
+    const requestId = request.headers.get(EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER);
+    const portValue = request.headers.get(SANDBOX_PREVIEW_PORT_HEADER);
+    const sessionId = request.headers.get(SANDBOX_PREVIEW_SANDBOX_ID_HEADER);
+    const routeNonce = request.headers.get(SANDBOX_PREVIEW_TOKEN_HEADER);
+    if (
+      request.headers.get(SANDBOX_PREVIEW_PROXY_HEADER) !== "1" ||
+      requestId === null ||
+      Option.isNone(decodeEvidencePreviewRequestId(requestId)) ||
+      portValue === null ||
+      !PREVIEW_PORT_PATTERN.test(portValue) ||
+      sessionId === null ||
+      !/^[0-9a-f]{12}$/u.test(sessionId) ||
+      routeNonce === null ||
+      !/^[a-z0-9_]{16}$/u.test(routeNonce)
+    )
+      return undefined;
+    const port = Number(portValue);
+    return Number.isSafeInteger(port) ? { requestId, sessionId, port, routeNonce } : undefined;
+  };
+
+  private async settlePreviewForward(requestId: string, responseBytes: number): Promise<void> {
+    this.previewRequests.delete(requestId);
+    return this.#run(this.settleScottyEvidencePreviewProgram(requestId, responseBytes));
+  }
+
+  private async expirePreviewForward(requestId: string): Promise<void> {
+    this.previewRequests.delete(requestId);
+    return this.#run(this.expireScottyEvidencePreviewProgram(requestId));
+  }
+
+  private async previewResponseStream(
+    requestId: string,
+    response: Response,
+    abortController: AbortController,
+    settle: (responseBytes: number) => Promise<void>,
+  ): Promise<Response> {
+    const body = response.body;
+    if (body === null) {
+      await settle(0);
+      const headers = new Headers(response.headers);
+      headers.set(EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER, requestId);
+      return new Response(null, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    }
+    const reader = body.getReader();
+    let responseBytes = 0;
+    let terminal = false;
+    let consumerCancel = false;
+    const finish = async (bytes: number): Promise<void> => {
+      if (terminal) return;
+      terminal = true;
+      await settle(bytes);
+    };
+    let outputController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const abort = (): void => {
+      if (terminal || consumerCancel) return;
+      void reader.cancel().then(
+        () => undefined,
+        () => undefined,
+      );
+      void finish(responseBytes).then(
+        () => outputController?.error(new DOMException("Preview request ended", "AbortError")),
+        (cause) => outputController?.error(cause),
+      );
+    };
+    abortController.signal.addEventListener("abort", abort, { once: true });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        outputController = controller;
+      },
+      async pull(controller) {
+        const next = await reader.read().then(
+          (value) => ({ ok: true as const, value }),
+          (cause) => ({ ok: false as const, cause }),
+        );
+        if (terminal) return;
+        if (!next.ok) {
+          await finish(responseBytes);
+          controller.error(next.cause);
+          return;
+        }
+        if (next.value.done) {
+          await finish(responseBytes);
+          controller.close();
+          return;
+        }
+        const nextBytes = responseBytes + next.value.value.byteLength;
+        if (nextBytes > EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES) {
+          await reader.cancel().then(
+            () => undefined,
+            () => undefined,
+          );
+          await finish(EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES);
+          controller.error(
+            new DOMException("Preview response exceeded its limit", "QuotaExceededError"),
+          );
+          return;
+        }
+        responseBytes = nextBytes;
+        controller.enqueue(next.value.value);
+      },
+      async cancel(reason) {
+        consumerCancel = true;
+        abortController.abort();
+        await reader.cancel(reason).then(
+          () => undefined,
+          () => undefined,
+        );
+        await finish(responseBytes);
+      },
+    });
+    if (abortController.signal.aborted) abort();
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    headers.set(EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER, requestId);
+    return new Response(stream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  private forwardSandboxPreviewRequest(request: Request): Promise<Response> {
+    return super.fetch(request);
+  }
+
+  private async fetchEvidencePreviewRequest(request: Request): Promise<Response> {
+    const isSdkPreviewRequest = request.headers.get(SANDBOX_PREVIEW_PROXY_HEADER) === "1";
+    const privateRequestId = request.headers.get(EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER);
+    if (privateRequestId === null)
+      return isSdkPreviewRequest ? deniedEvidencePreviewResponse() : super.fetch(request);
+    const route = this.previewForwardingRoute(request);
+    const hasForbiddenTransportHeader = [...request.headers].some(([name]) => {
+      const normalized = name.toLowerCase();
+      return (
+        normalized === "upgrade" ||
+        normalized === "connection" ||
+        normalized.startsWith("sec-websocket-")
+      );
+    });
+    if (
+      route === undefined ||
+      request.method.toUpperCase() === "CONNECT" ||
+      request.method.toUpperCase() === "TRACE" ||
+      hasForbiddenTransportHeader
+    ) {
+      if (Option.isSome(decodeEvidencePreviewRequestId(privateRequestId)))
+        await this.cancelScottyEvidencePreviewRequest(privateRequestId);
+      return deniedEvidencePreviewResponse();
+    }
+    const claimed = await this.#run(this.claimScottyEvidencePreviewProgram(route.requestId, route));
+    if (claimed === undefined) {
+      await this.cancelScottyEvidencePreviewRequest(route.requestId);
+      return deniedEvidencePreviewResponse();
+    }
+    const abortController = new AbortController();
+    this.previewRequests.set(route.requestId, {
+      operationNonce: claimed.operationNonce,
+      controller: abortController,
+    });
+    const headers = new Headers(request.headers);
+    headers.delete(EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER);
+    const forwarded = new Request(request, { headers, signal: abortController.signal });
+    const nowMillis = await this.#run(Clock.currentTimeMillis);
+    const remainingMillis = Math.max(0, Date.parse(claimed.expiresAt) - nowMillis);
+    let expired = false;
+    // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: the native Sandbox.fetch/ReadableStream host callback requires a real-time abort through response completion
+    const timeout = setTimeout(() => {
+      expired = true;
+      abortController.abort();
+    }, remainingMillis);
+    request.signal.addEventListener("abort", () => abortController.abort(), { once: true });
+    let settled = false;
+    const settle = async (responseBytes: number): Promise<void> => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      await (expired
+        ? this.expirePreviewForward(route.requestId)
+        : this.settlePreviewForward(route.requestId, responseBytes));
+    };
+    const abortResult = new Promise<{ readonly kind: "aborted" }>((resolve) => {
+      abortController.signal.addEventListener("abort", () => resolve({ kind: "aborted" }), {
+        once: true,
+      });
+    });
+    const upstream = this.previewRequestForwarder(forwarded).then(
+      (response) => ({ kind: "response" as const, response }),
+      () => ({ kind: "error" as const }),
+    );
+    const result = await Promise.race([upstream, abortResult]);
+    if (result.kind !== "response") {
+      abortController.abort();
+      void upstream.then((late) => {
+        if (late.kind === "response") {
+          late.response.webSocket?.close(1001, "Preview request ended");
+          void late.response.body?.cancel().then(
+            () => undefined,
+            () => undefined,
+          );
+        }
+      });
+      await settle(0);
+      return deniedEvidencePreviewResponse();
+    }
+    if (abortController.signal.aborted) {
+      await result.response.body?.cancel().then(
+        () => undefined,
+        () => undefined,
+      );
+      await settle(0);
+      return deniedEvidencePreviewResponse();
+    }
+    if (result.response.webSocket !== null && result.response.webSocket !== undefined) {
+      result.response.webSocket.close(1008, "WebSocket previews are disabled");
+      await settle(0);
+      return deniedEvidencePreviewResponse();
+    }
+    return this.previewResponseStream(route.requestId, result.response, abortController, settle);
+  }
+
   async createScottySession(
     input: CreateSessionInput,
     id: string,
@@ -1863,8 +2187,34 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.exposeScottyEvidencePreviewProgram(nonce));
   }
 
-  async authorizeScottyEvidencePreview(input: EvidencePreviewAuthorizationV1): Promise<boolean> {
-    return this.#run(this.authorizeScottyEvidencePreviewProgram(input));
+  async admitScottyEvidencePreview(
+    input: EvidencePreviewAdmissionV1,
+  ): Promise<EvidencePreviewPermitAdmissionV1 | undefined> {
+    return this.#run(this.admitScottyEvidencePreviewProgram(input));
+  }
+
+  async adjustScottyEvidencePreviewRequest(
+    requestId: string,
+    ingressBytes: number,
+  ): Promise<boolean> {
+    if (
+      Option.isNone(decodeEvidencePreviewRequestId(requestId)) ||
+      Option.isNone(decodeEvidencePreviewIngressBytes(ingressBytes))
+    )
+      return false;
+    return this.#run(this.adjustScottyEvidencePreviewProgram(requestId, ingressBytes));
+  }
+
+  async cancelScottyEvidencePreviewRequest(requestId: string): Promise<void> {
+    if (Option.isNone(decodeEvidencePreviewRequestId(requestId))) return;
+    this.previewRequests.get(requestId)?.controller.abort();
+    return this.#run(this.cancelScottyEvidencePreviewProgram(requestId));
+  }
+
+  async expireScottyEvidencePreviewRequest(requestId: string): Promise<void> {
+    if (Option.isNone(decodeEvidencePreviewRequestId(requestId))) return;
+    this.previewRequests.get(requestId)?.controller.abort();
+    return this.#run(this.expireScottyEvidencePreviewProgram(requestId));
   }
 
   async completeScottyEvidenceStep(nonce: string, input: unknown): Promise<EvidenceStepResult> {
@@ -2141,6 +2491,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (
+      request.headers.has(EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER) ||
+      request.headers.get(SANDBOX_PREVIEW_PROXY_HEADER) === "1"
+    )
+      return this.fetchEvidencePreviewRequest(request);
     const incomingUrl = new URL(request.url);
     if (incomingUrl.pathname.startsWith(`${PI_CONSOLE_PROXY_PREFIX}/`)) {
       const action = incomingUrl.pathname.slice(PI_CONSOLE_PROXY_PREFIX.length + 1);

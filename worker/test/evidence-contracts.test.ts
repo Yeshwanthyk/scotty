@@ -2,9 +2,13 @@ import { assert, describe, it } from "@effect/vitest";
 import { Option, Result } from "effect";
 import {
   EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
+  EVIDENCE_PREVIEW_AGGREGATE_BYTES,
+  EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+  EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
   decodeBrowserEvidenceJob,
   decodeEvidenceStateResult,
   decodeStoredEvidenceStateResult,
+  emptyEvidencePreviewAccounting,
   emptyEvidenceState,
 } from "../src/evidence-contracts";
 
@@ -85,9 +89,12 @@ describe("evidence contracts", () => {
     const stored = decodeStoredEvidenceStateResult(legacyActiveState);
     assert.ok(Result.isSuccess(stored));
     assert.deepInclude(stored.success.activeJob, {
+      status: "interrupted",
+      failure: { code: "interrupted" },
       routeNonce: EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
       previewCookieDigest: null,
       exposure: "closed",
+      previewAccounting: emptyEvidencePreviewAccounting(),
     });
     assert.ok(Result.isSuccess(decodeEvidenceStateResult(stored.success)));
     assert.ok(
@@ -98,5 +105,69 @@ describe("evidence contracts", () => {
         }),
       ),
     );
+  });
+
+  it("closes the storage-only unaccounted preview shape without reopening its authority", () => {
+    const unaccounted = {
+      ...legacyActiveState,
+      activeJob: {
+        ...legacyActiveState.activeJob,
+        routeNonce: "0123456789abcdef",
+        previewCookieDigest: "a".repeat(64),
+        exposure: "active",
+      },
+    };
+    assert.ok(Result.isFailure(decodeEvidenceStateResult(unaccounted)));
+    const stored = decodeStoredEvidenceStateResult(unaccounted);
+    assert.ok(Result.isSuccess(stored));
+    assert.deepInclude(stored.success.activeJob, {
+      status: "interrupted",
+      failure: { code: "interrupted" },
+      routeNonce: "0123456789abcdef",
+      previewCookieDigest: null,
+      exposure: "unexpose_pending",
+      previewAccounting: emptyEvidencePreviewAccounting(),
+    });
+    assert.ok(Result.isSuccess(decodeEvidenceStateResult(stored.success)));
+  });
+
+  it("rejects duplicate or overcommitted persisted permit accounting", () => {
+    const permit = {
+      requestId: "1".repeat(32),
+      state: "admitted",
+      cookieDigest: "a".repeat(64),
+      ingressBytes: 0,
+      admittedAt: "2026-08-06T12:00:00.000Z",
+      expiresAt: "2026-08-06T12:00:30.000Z",
+    } as const;
+    const active = {
+      ...legacyActiveState.activeJob,
+      routeNonce: "0123456789abcdef",
+      previewCookieDigest: "a".repeat(64),
+      exposure: "active",
+    } as const;
+    for (const previewAccounting of [
+      { consumedBytes: 0, consumedRequestMillis: 0, permits: [permit, permit] },
+      {
+        consumedBytes:
+          EVIDENCE_PREVIEW_AGGREGATE_BYTES - EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES + 1,
+        consumedRequestMillis: 0,
+        permits: [permit],
+      },
+      {
+        consumedBytes: 0,
+        consumedRequestMillis: 120_000 - EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS + 1,
+        permits: [permit],
+      },
+    ]) {
+      assert.ok(
+        Result.isFailure(
+          decodeEvidenceStateResult({
+            ...legacyActiveState,
+            activeJob: { ...active, previewAccounting },
+          }),
+        ),
+      );
+    }
   });
 });

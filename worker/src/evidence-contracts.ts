@@ -8,6 +8,14 @@ export const EVIDENCE_MAX_JOB_BYTES = 40 * 1024 * 1024;
 export const EVIDENCE_MAX_RETAINED_JOBS = 100;
 export const EVIDENCE_JOB_TIMEOUT_MILLIS = 5 * 60 * 1_000;
 export const EVIDENCE_RETENTION_MILLIS = 7 * 24 * 60 * 60 * 1_000;
+export const EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS = 4;
+export const EVIDENCE_PREVIEW_MAX_INGRESS_BYTES = 16 * 1_024 * 1_024;
+export const EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES = 16 * 1_024 * 1_024;
+export const EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS = 30_000;
+export const EVIDENCE_PREVIEW_AGGREGATE_BYTES = 64 * 1_024 * 1_024;
+export const EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS = 120_000;
+export const EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER = "x-scotty-preview-request";
+export const EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER = "x-scotty-preview-claimed";
 
 const BoundedNameSchema = Schema.NonEmptyString.check(Schema.isMaxLength(120));
 const BoundedValueSchema = Schema.String.check(Schema.isMaxLength(512));
@@ -301,11 +309,73 @@ const LegacyEvidenceActiveJobV1Schema = Schema.Struct({
   ),
 });
 
-export const EvidenceActiveJobV1Schema = Schema.Struct({
+const UnaccountedEvidenceActiveJobV1Schema = Schema.Struct({
   ...LegacyEvidenceActiveJobV1Schema.fields,
   routeNonce: EvidenceRouteNonceSchema,
   previewCookieDigest: Schema.NullOr(Sha256Schema),
   exposure: Schema.Literals(["not_exposed", "active", "unexpose_pending", "closed"]),
+});
+
+export const EvidencePreviewRequestIdSchema = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{32}$/u),
+);
+export const decodeEvidencePreviewRequestId = Schema.decodeUnknownOption(
+  EvidencePreviewRequestIdSchema,
+);
+
+export const EvidencePreviewPermitV1Schema = Schema.Struct({
+  requestId: EvidencePreviewRequestIdSchema,
+  state: Schema.Literals(["admitted", "claimed"]),
+  cookieDigest: Sha256Schema,
+  ingressBytes: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: EVIDENCE_PREVIEW_MAX_INGRESS_BYTES }),
+  ),
+  admittedAt: Schema.String,
+  expiresAt: Schema.String,
+});
+export type EvidencePreviewPermitV1 = typeof EvidencePreviewPermitV1Schema.Type;
+export const decodeEvidencePreviewIngressBytes = Schema.decodeUnknownOption(
+  EvidencePreviewPermitV1Schema.fields.ingressBytes,
+);
+
+export const EvidencePreviewAccountingV1Schema = Schema.Struct({
+  consumedBytes: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: EVIDENCE_PREVIEW_AGGREGATE_BYTES }),
+  ),
+  consumedRequestMillis: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS }),
+  ),
+  permits: Schema.Array(EvidencePreviewPermitV1Schema).check(
+    Schema.isMaxLength(EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS),
+  ),
+}).check(
+  Schema.makeFilter(
+    (accounting) =>
+      new Set(accounting.permits.map((permit) => permit.requestId)).size ===
+        accounting.permits.length &&
+      accounting.consumedBytes +
+        accounting.permits.reduce(
+          (total, permit) => total + permit.ingressBytes + EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+          0,
+        ) <=
+        EVIDENCE_PREVIEW_AGGREGATE_BYTES &&
+      accounting.consumedRequestMillis +
+        accounting.permits.length * EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS <=
+        EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS,
+    { expected: "bounded unique preview permit reservations" },
+  ),
+);
+export type EvidencePreviewAccountingV1 = typeof EvidencePreviewAccountingV1Schema.Type;
+
+export const emptyEvidencePreviewAccounting = (): EvidencePreviewAccountingV1 => ({
+  consumedBytes: 0,
+  consumedRequestMillis: 0,
+  permits: [],
+});
+
+export const EvidenceActiveJobV1Schema = Schema.Struct({
+  ...UnaccountedEvidenceActiveJobV1Schema.fields,
+  previewAccounting: EvidencePreviewAccountingV1Schema,
 });
 export type EvidenceActiveJobV1 = typeof EvidenceActiveJobV1Schema.Type;
 
@@ -316,10 +386,23 @@ export const EvidencePreviewAuthorizationV1Schema = Schema.Struct({
   cookieSecret: PreviewCookieSecretSchema,
 });
 export type EvidencePreviewAuthorizationV1 = typeof EvidencePreviewAuthorizationV1Schema.Type;
-export const decodeEvidencePreviewAuthorization = Schema.decodeUnknownOption(
-  EvidencePreviewAuthorizationV1Schema,
+
+export const EvidencePreviewAdmissionV1Schema = Schema.Struct({
+  ...EvidencePreviewAuthorizationV1Schema.fields,
+  ingressBytes: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: EVIDENCE_PREVIEW_MAX_INGRESS_BYTES }),
+  ),
+});
+export type EvidencePreviewAdmissionV1 = typeof EvidencePreviewAdmissionV1Schema.Type;
+export const decodeEvidencePreviewAdmission = Schema.decodeUnknownOption(
+  EvidencePreviewAdmissionV1Schema,
   { onExcessProperty: "error" },
 );
+
+export interface EvidencePreviewPermitAdmissionV1 {
+  readonly requestId: string;
+  readonly expiresAt: string;
+}
 
 export interface ExposedEvidencePreviewV1 {
   readonly origin: string;
@@ -343,6 +426,11 @@ const LegacyEvidenceStateV1Schema = Schema.Struct({
   activeJob: Schema.optionalKey(LegacyEvidenceActiveJobV1Schema),
 });
 
+const UnaccountedEvidenceStateV1Schema = Schema.Struct({
+  ...EvidenceStateV1CommonFields,
+  activeJob: Schema.optionalKey(UnaccountedEvidenceActiveJobV1Schema),
+});
+
 export const EvidenceStateV1Schema = Schema.Struct({
   ...EvidenceStateV1CommonFields,
   activeJob: Schema.optionalKey(EvidenceActiveJobV1Schema),
@@ -362,15 +450,43 @@ export const decodeEvidenceStateResult = Schema.decodeUnknownResult(EvidenceStat
   onExcessProperty: "error",
 });
 
+const decodeUnaccountedEvidenceStateResult = Schema.decodeUnknownResult(
+  UnaccountedEvidenceStateV1Schema,
+  { onExcessProperty: "error" },
+);
+
 const decodeLegacyEvidenceStateResult = Schema.decodeUnknownResult(LegacyEvidenceStateV1Schema, {
   onExcessProperty: "error",
 });
 
 export const EVIDENCE_COMPATIBILITY_ROUTE_NONCE = "legacy_closed_v1";
 
+const closeUnaccountedPreview = (
+  state: typeof UnaccountedEvidenceStateV1Schema.Type,
+): EvidenceStateV1 => {
+  const { activeJob, ...rest } = state;
+  if (activeJob === undefined) return rest;
+  const mayRemainExposed =
+    activeJob.exposure === "active" || activeJob.exposure === "unexpose_pending";
+  return {
+    ...rest,
+    activeJob: {
+      ...activeJob,
+      status: "interrupted",
+      failure: { code: "interrupted" },
+      previewCookieDigest: null,
+      exposure: mayRemainExposed ? "unexpose_pending" : "closed",
+      previewAccounting: emptyEvidencePreviewAccounting(),
+    },
+  };
+};
+
 export const decodeStoredEvidenceStateResult = (value: unknown) => {
   const current = decodeEvidenceStateResult(value);
   if (Result.isSuccess(current)) return current;
+  const unaccounted = decodeUnaccountedEvidenceStateResult(value);
+  if (Result.isSuccess(unaccounted))
+    return Result.succeed(closeUnaccountedPreview(unaccounted.success));
   return Result.map(decodeLegacyEvidenceStateResult(value), (legacy): EvidenceStateV1 => {
     const { activeJob, ...state } = legacy;
     return activeJob === undefined
@@ -379,9 +495,12 @@ export const decodeStoredEvidenceStateResult = (value: unknown) => {
           ...state,
           activeJob: {
             ...activeJob,
+            status: "interrupted",
+            failure: { code: "interrupted" },
             routeNonce: EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
             previewCookieDigest: null,
             exposure: "closed",
+            previewAccounting: emptyEvidencePreviewAccounting(),
           },
         };
   });

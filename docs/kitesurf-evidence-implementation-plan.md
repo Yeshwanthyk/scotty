@@ -294,13 +294,25 @@ Domain failures should be tagged Effect values; native Cloudflare/Playwright/R2 
 - `worker/src/index.ts` — preview-host dispatch before Hono/assets.
 - `worker/src/session.ts` — fenced `exposePort`/`unexposePort` calls tied to runtime epoch and evidence nonce.
 
-**Execution/state:** evidence lease -> expose -> recheck runtime/nonce -> publish digest -> authorize requests -> revoke digest -> unexpose.
+**Execution/state:** evidence lease -> expose -> recheck runtime/nonce -> publish digest -> transactionally admit and reserve each HTTP request -> claim/revalidate at `Sandbox.fetch` -> settle on response EOF/cancel/error -> persistently revoke permits -> abort matching live streams -> unexpose.
 
 **Dependencies:** installation must explicitly provide wildcard DNS/route/TLS; never infer account/domain identity.
 
 **Verification:** deployed wildcard TLS/host-routing probe, exact-host cookie requirement, URL-only denial, header stripping, same-origin app fetch, WebSocket not required for this slice, unexpose and stale-runtime denial.
 
 **Risk:** this is the largest deployment gate. `workers.dev` cannot supply wildcard preview routing; enable evidence only after deployed DNS/route/TLS proof.
+
+The v1 bridge remains ordinary HTTP only: WebSocket/HMR upgrades are denied. Per-job accounting reserves at most four concurrent requests, 16 MiB ingress plus 16 MiB response per request, and 30 seconds per request against 64 MiB aggregate bytes and 120 seconds aggregate request time. Header and cookie parsing precede admission; a canonical declared length or the full 16 MiB ingress cap is persisted before body buffering, the body is read only until permit expiry, and EOF adjusts the reservation to observed bytes before forwarding. Normal EOF or client cancellation settles observed use, while timeout, persisted expiry, and unreconciled authority charge the full reservation and 30 seconds. An unclaimed proxy failure is canceled idempotently so recovery cannot reopen authority.
+
+`Sandbox.fetch(request: Request): Promise<Response>` is a public override in pinned `@cloudflare/sandbox@0.12.3`, but its preview marker/port/token/sandbox-id headers and forwarding implementation are SDK-private contracts. The local suite therefore proves Scotty's narrow boundary with an injected post-claim forwarder while production delegates to `super.fetch`. Before evidence can be enabled on a deployed stage, the canary must prove all of the following against the pinned SDK and actual Workers RPC streaming:
+
+1. `proxyToSandbox` preserves Scotty's Worker-added opaque request header until the subclass `fetch` override, while direct SDK preview requests without that header are denied. Because the pinned adapter converts routing failures to an unmarked synthetic 500, only a response carrying the subclass's private request-bound claimed marker is accepted; the Worker strips that marker externally.
+2. The subclass rejects all Upgrade, Connection, and `sec-websocket-*` framing before claim, strips the private request header before `super.fetch`, claims exactly once before any TCP-port fetch, and still receives the SDK's canonical preview route fields.
+3. Response EOF, client cancel, upstream error, 16 MiB truncation, and the 30-second deadline each cancel the upstream body as applicable and durably settle exactly once under backpressure.
+4. Runtime stop, finalization, hard cap, and vaporize persist revocation before aborting matching live streams and before unexpose/destroy; an old request ID cannot claim after restart or DO reconstruction.
+5. Upgrade/WebSocket/HMR requests remain denied at both Worker ingress and the Sandbox forwarding boundary.
+
+No local fake establishes these SDK/header/backpressure properties, and this task does not deploy or relax the gate.
 
 ### Chunk 5 — Execute real Kitesurf jobs and append frames
 

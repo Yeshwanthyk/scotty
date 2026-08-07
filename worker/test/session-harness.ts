@@ -88,6 +88,7 @@ export interface HarnessOptions {
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly piSessionRunning?: boolean;
   readonly previewBase?: string;
+  readonly previewRequestForwarder?: SandboxEffectOptions["previewRequestForwarder"];
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
@@ -662,6 +663,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const sandbox = new Sandbox(ctx, env, {
     clock: options.clock,
     passivePiConsoleRelay: options.passivePiConsoleRelay,
+    previewRequestForwarder: options.previewRequestForwarder,
   });
   await Promise.all(constructorWork);
   rawPiContainerRunning = options.rawPiContainerRunning ?? false;

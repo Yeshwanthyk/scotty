@@ -2,13 +2,19 @@
 // authoritative Sandbox RPC authorization. It is intentionally not an Effect domain module.
 import { getSandbox, proxyToSandbox } from "@cloudflare/sandbox";
 import type { Bindings } from "./bindings";
-import { EVIDENCE_RESERVED_PORTS, type EvidencePreviewAuthorizationV1 } from "./evidence-contracts";
+import {
+  EVIDENCE_PREVIEW_MAX_INGRESS_BYTES,
+  EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
+  EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
+  EVIDENCE_RESERVED_PORTS,
+  type EvidencePreviewAdmissionV1,
+} from "./evidence-contracts";
 
 export const EVIDENCE_PREVIEW_COOKIE = "__Host-scotty-preview";
 export const EVIDENCE_PREVIEW_MAX_URL_BYTES = 8 * 1_024;
 export const EVIDENCE_PREVIEW_MAX_HEADER_BYTES = 32 * 1_024;
 export const EVIDENCE_PREVIEW_MAX_HEADER_COUNT = 128;
-export const EVIDENCE_PREVIEW_MAX_BODY_BYTES = 16 * 1_024 * 1_024;
+export const EVIDENCE_PREVIEW_MAX_BODY_BYTES = EVIDENCE_PREVIEW_MAX_INGRESS_BYTES;
 const CONTROL_COOKIE = "__Host-scotty";
 const PREVIEW_BASE_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
@@ -129,10 +135,8 @@ const hasWebSocketOrUpgradeFraming = (headers: Headers): boolean => {
 };
 
 const declaredBodyLength = (headers: Headers): number | undefined => {
-  if (headers.get("transfer-encoding") !== null) return undefined;
   const contentLength = headers.get("content-length");
-  if (contentLength === null) return 0;
-  if (!CONTENT_LENGTH_PATTERN.test(contentLength)) return undefined;
+  if (contentLength === null || !CONTENT_LENGTH_PATTERN.test(contentLength)) return undefined;
   const parsed = Number(contentLength);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 };
@@ -149,42 +153,21 @@ const headersWithinBounds = (headers: Headers): boolean => {
   return true;
 };
 
-const readBoundedBody = async (
-  body: ReadableStream<Uint8Array> | null,
-): Promise<ArrayBuffer | null | undefined> => {
-  if (body === null) return null;
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  for (;;) {
-    const next = await reader.read().then(
-      (value) => ({ ok: true as const, value }),
-      () => ({ ok: false as const }),
-    );
-    if (!next.ok) return undefined;
-    if (next.value.done) break;
-    bytes += next.value.value.byteLength;
-    if (bytes > EVIDENCE_PREVIEW_MAX_BODY_BYTES) {
-      await reader.cancel().then(
-        () => undefined,
-        () => undefined,
-      );
-      return undefined;
-    }
-    chunks.push(next.value.value);
-  }
-  const buffered = new Uint8Array(bytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    buffered.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return buffered.buffer;
-};
+interface PreparedEvidencePreviewRequest {
+  readonly cookieSecret: string;
+  readonly declaredIngressBytes: number | undefined;
+  readonly reservedIngressBytes: number;
+  readonly headers: Headers;
+}
 
-export const sanitizeEvidencePreviewRequest = async (
+type EvidencePreviewBodyRead =
+  | { readonly kind: "complete"; readonly body: ArrayBuffer | null; readonly ingressBytes: number }
+  | { readonly kind: "canceled" | "invalid"; readonly ingressBytes: number }
+  | { readonly kind: "expired" };
+
+const prepareEvidencePreviewRequest = (
   request: Request,
-): Promise<{ readonly request: Request; readonly cookieSecret: string } | undefined> => {
+): PreparedEvidencePreviewRequest | undefined => {
   const method = request.method.toUpperCase();
   if (
     method === "CONNECT" ||
@@ -195,16 +178,12 @@ export const sanitizeEvidencePreviewRequest = async (
   )
     return undefined;
   const contentLengthHeader = request.headers.get("content-length");
-  const transferEncodingHeader = request.headers.get("transfer-encoding");
-  const length = declaredBodyLength(request.headers);
+  const declaredIngressBytes = declaredBodyLength(request.headers);
   if (
-    transferEncodingHeader !== null ||
-    (contentLengthHeader !== null && length === undefined) ||
-    (length ?? 0) > EVIDENCE_PREVIEW_MAX_BODY_BYTES
+    request.headers.has("transfer-encoding") ||
+    (contentLengthHeader !== null && declaredIngressBytes === undefined) ||
+    (declaredIngressBytes ?? 0) > EVIDENCE_PREVIEW_MAX_BODY_BYTES
   )
-    return undefined;
-  const body = await readBoundedBody(request.body);
-  if (body === undefined || (contentLengthHeader !== null && (body?.byteLength ?? 0) !== length))
     return undefined;
   const parsedCookie = parsePreviewCookie(request.headers.get("cookie"));
   if (parsedCookie === undefined) return undefined;
@@ -225,14 +204,118 @@ export const sanitizeEvidencePreviewRequest = async (
   if (parsedCookie.forwardedCookie !== undefined)
     headers.set("cookie", parsedCookie.forwardedCookie);
   return {
-    request: new Request(request.url, {
-      method: request.method,
-      headers,
-      redirect: request.redirect,
-      signal: request.signal,
-      ...(body === null ? {} : { body }),
-    }),
     cookieSecret: parsedCookie.secret,
+    declaredIngressBytes,
+    reservedIngressBytes: declaredIngressBytes ?? EVIDENCE_PREVIEW_MAX_BODY_BYTES,
+    headers,
+  };
+};
+
+const readBoundedBody = async (
+  body: ReadableStream<Uint8Array> | null,
+  signal?: AbortSignal,
+  expiresAt?: string,
+): Promise<EvidencePreviewBodyRead> => {
+  const expiryMillis = expiresAt === undefined ? Number.POSITIVE_INFINITY : Date.parse(expiresAt);
+  if (!Number.isFinite(expiryMillis) && expiresAt !== undefined) return { kind: "expired" };
+  // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native Worker request-body ingress must stop at the persisted absolute permit expiry
+  const nowMillis = Date.now();
+  if (nowMillis >= expiryMillis) return { kind: "expired" };
+  if (signal?.aborted === true) return { kind: "canceled", ingressBytes: 0 };
+  if (body === null) return { kind: "complete", body: null, ingressBytes: 0 };
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const interrupted = new Promise<{ readonly kind: "canceled" } | { readonly kind: "expired" }>(
+    (resolve) => {
+      onAbort = () => resolve({ kind: "canceled" });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (Number.isFinite(expiryMillis)) {
+        // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native Worker request-body ingress needs a real-time delay from the persisted permit expiry
+        const remainingMillis = Math.max(0, expiryMillis - Date.now());
+        // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native Worker request-body ingress must abort without an Effect runtime owning the host callback
+        timeout = setTimeout(() => resolve({ kind: "expired" }), remainingMillis);
+      }
+    },
+  );
+  const finish = <A extends EvidencePreviewBodyRead>(result: A): A => {
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
+    return result;
+  };
+
+  for (;;) {
+    const next = await Promise.race([
+      reader.read().then(
+        (value) => ({ kind: "read" as const, value }),
+        () => ({ kind: "read_error" as const }),
+      ),
+      interrupted,
+    ]);
+    if (next.kind === "canceled" || next.kind === "expired") {
+      void reader.cancel().then(
+        () => undefined,
+        () => undefined,
+      );
+      return finish(next.kind === "expired" ? next : { kind: "canceled", ingressBytes: bytes });
+    }
+    if (next.kind === "read_error") return finish({ kind: "canceled", ingressBytes: bytes });
+    if (next.value.done) break;
+    const nextBytes = bytes + next.value.value.byteLength;
+    if (nextBytes > EVIDENCE_PREVIEW_MAX_BODY_BYTES) {
+      void reader.cancel().then(
+        () => undefined,
+        () => undefined,
+      );
+      return finish({ kind: "invalid", ingressBytes: EVIDENCE_PREVIEW_MAX_BODY_BYTES });
+    }
+    bytes = nextBytes;
+    chunks.push(next.value.value);
+  }
+  const buffered = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffered.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return finish({ kind: "complete", body: buffered.buffer, ingressBytes: bytes });
+};
+
+const sanitizedEvidencePreviewRequest = (
+  request: Request,
+  prepared: PreparedEvidencePreviewRequest,
+  body: ArrayBuffer | null,
+): Request =>
+  new Request(request.url, {
+    method: request.method,
+    headers: prepared.headers,
+    redirect: request.redirect,
+    signal: request.signal,
+    ...(body === null ? {} : { body }),
+  });
+
+export const sanitizeEvidencePreviewRequest = async (
+  request: Request,
+): Promise<
+  | { readonly request: Request; readonly cookieSecret: string; readonly ingressBytes: number }
+  | undefined
+> => {
+  const prepared = prepareEvidencePreviewRequest(request);
+  if (prepared === undefined) return undefined;
+  const read = await readBoundedBody(request.body, request.signal);
+  if (
+    read.kind !== "complete" ||
+    (prepared.declaredIngressBytes !== undefined &&
+      read.ingressBytes !== prepared.declaredIngressBytes)
+  )
+    return undefined;
+  return {
+    request: sanitizedEvidencePreviewRequest(request, prepared, read.body),
+    cookieSecret: prepared.cookieSecret,
+    ingressBytes: read.ingressBytes,
   };
 };
 
@@ -295,26 +378,67 @@ export const handleEvidencePreviewRequest = async (
   if (parsed.kind === "not_preview") return null;
   if (parsed.kind === "invalid_preview" || env.SCOTTY_EVIDENCE_ENABLED !== "true")
     return deniedPreviewResponse();
-  const sanitized = await sanitizeEvidencePreviewRequest(request);
-  if (sanitized === undefined) return deniedPreviewResponse();
-  const authorization = {
+  const prepared = prepareEvidencePreviewRequest(request);
+  if (prepared === undefined) return deniedPreviewResponse();
+  const admission = {
     ...parsed.route,
-    cookieSecret: sanitized.cookieSecret,
-  } satisfies EvidencePreviewAuthorizationV1;
+    cookieSecret: prepared.cookieSecret,
+    ingressBytes: prepared.reservedIngressBytes,
+  } satisfies EvidencePreviewAdmissionV1;
   const sandbox = getSandbox(env.SANDBOX, parsed.route.sessionId, {
     sleepAfter: "60m",
     transport: "rpc",
     enableDefaultSession: false,
     normalizeId: true,
   });
-  const authorized = await sandbox.authorizeScottyEvidencePreview(authorization).then(
-    (value) => value === true,
-    () => false,
+  const permit = await sandbox.admitScottyEvidencePreview(admission).then(
+    (value) => value,
+    () => undefined,
   );
-  if (!authorized) return deniedPreviewResponse();
-  const proxied = await proxyToSandbox(sanitized.request, { Sandbox: env.SANDBOX }).then(
-    (response) => response,
-    () => null,
+  if (permit === undefined) return deniedPreviewResponse();
+  const cancelPermit = (): Promise<void> =>
+    sandbox.cancelScottyEvidencePreviewRequest(permit.requestId).then(
+      () => undefined,
+      () => undefined,
+    );
+  const read = await readBoundedBody(request.body, request.signal, permit.expiresAt);
+  if (read.kind === "expired") {
+    await sandbox.expireScottyEvidencePreviewRequest(permit.requestId).then(
+      () => undefined,
+      () => undefined,
+    );
+    return deniedPreviewResponse();
+  }
+  const adjusted = await sandbox
+    .adjustScottyEvidencePreviewRequest(permit.requestId, read.ingressBytes)
+    .then(
+      (value) => value,
+      () => false,
+    );
+  if (
+    !adjusted ||
+    read.kind !== "complete" ||
+    (prepared.declaredIngressBytes !== undefined &&
+      read.ingressBytes !== prepared.declaredIngressBytes)
+  ) {
+    await cancelPermit();
+    return deniedPreviewResponse();
+  }
+  const sanitized = sanitizedEvidencePreviewRequest(request, prepared, read.body);
+  const headers = new Headers(sanitized.headers);
+  headers.set(EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER, permit.requestId);
+  const permittedRequest = new Request(sanitized, { headers });
+  const proxied = await proxyToSandbox(permittedRequest, { Sandbox: env.SANDBOX }).then(
+    (response) => ({ ok: response !== null, response }),
+    () => ({ ok: false as const, response: null }),
   );
-  return proxied === null ? deniedPreviewResponse() : sanitizeEvidencePreviewResponse(proxied);
+  if (
+    !proxied.ok ||
+    proxied.response === null ||
+    proxied.response.headers.get(EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER) !== permit.requestId
+  ) {
+    await cancelPermit();
+    return deniedPreviewResponse();
+  }
+  return sanitizeEvidencePreviewResponse(proxied.response);
 };

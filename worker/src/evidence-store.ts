@@ -11,10 +11,16 @@ import {
   EVIDENCE_JOB_TIMEOUT_MILLIS,
   EVIDENCE_MAX_JOB_BYTES,
   EVIDENCE_MAX_RETAINED_JOBS,
+  EVIDENCE_PREVIEW_AGGREGATE_BYTES,
+  EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS,
+  EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS,
+  EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+  EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
   EvidenceStateError,
   artifactExpiry,
   decodeEvidenceObjectKey,
   decodeStoredEvidenceStateResult,
+  emptyEvidencePreviewAccounting,
   emptyEvidenceState,
   evidenceArtifactObjectKey,
   evidenceSummaryProjection,
@@ -26,6 +32,8 @@ import {
   type EvidenceDeleteV1,
   type EvidenceJobStatus,
   type EvidenceJobSummaryV1,
+  type EvidencePreviewAccountingV1,
+  type EvidencePreviewPermitAdmissionV1,
   type EvidenceStateV1,
   type EvidenceStepResult,
   type EvidenceTerminalStatus,
@@ -51,13 +59,29 @@ export interface PublishEvidencePreviewInput extends BeginEvidencePreviewInput {
   readonly cookieDigest: string;
 }
 
-export interface AuthorizeEvidencePreviewInput {
+export interface AdmitEvidencePreviewInput {
+  readonly requestId: string;
   readonly sessionId: string;
   readonly port: number;
   readonly routeNonce: string;
   readonly runtimeEpoch: string;
   readonly cookieDigest: string;
+  readonly ingressBytes: number;
   readonly runtimeRunning: boolean;
+}
+
+export interface ClaimEvidencePreviewInput {
+  readonly requestId: string;
+  readonly sessionId: string;
+  readonly port: number;
+  readonly routeNonce: string;
+  readonly runtimeEpoch: string;
+  readonly runtimeRunning: boolean;
+}
+
+export interface ClaimedEvidencePreviewPermit {
+  readonly operationNonce: string;
+  readonly expiresAt: string;
 }
 
 export interface CompleteEvidenceStepInput {
@@ -94,9 +118,22 @@ interface EvidenceStoreShape {
     nonce: string,
     input: PublishEvidencePreviewInput,
   ) => Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
-  readonly authorizePreview: (
-    input: AuthorizeEvidencePreviewInput,
+  readonly admitPreview: (
+    input: AdmitEvidencePreviewInput,
+  ) => Effect.Effect<EvidencePreviewPermitAdmissionV1 | undefined, EvidenceStateError>;
+  readonly adjustPreview: (
+    requestId: string,
+    ingressBytes: number,
   ) => Effect.Effect<boolean, EvidenceStateError>;
+  readonly claimPreview: (
+    input: ClaimEvidencePreviewInput,
+  ) => Effect.Effect<ClaimedEvidencePreviewPermit | undefined, EvidenceStateError>;
+  readonly settlePreview: (
+    requestId: string,
+    responseBytes: number,
+  ) => Effect.Effect<void, EvidenceStateError>;
+  readonly cancelPreview: (requestId: string) => Effect.Effect<void, EvidenceStateError>;
+  readonly expirePreview: (requestId: string) => Effect.Effect<void, EvidenceStateError>;
   readonly revokePreview: (
     nonce: string,
     interruptionReason?: "deadline" | "interrupted",
@@ -214,6 +251,56 @@ const terminalFailure = (
     : { status: requested, failure: active.failure };
 };
 
+const reservedPermitBytes = (permit: EvidencePreviewAccountingV1["permits"][number]): number =>
+  permit.ingressBytes + EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES;
+
+const settlePermitAccounting = (
+  accounting: EvidencePreviewAccountingV1,
+  requestId: string,
+  nowMillis: number,
+  responseBytes: number,
+  conservative: boolean,
+): EvidencePreviewAccountingV1 => {
+  const permit = accounting.permits.find((candidate) => candidate.requestId === requestId);
+  if (permit === undefined) return accounting;
+  const admittedAtMillis = Date.parse(permit.admittedAt);
+  const elapsed =
+    conservative || !Number.isFinite(admittedAtMillis)
+      ? EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS
+      : Math.min(
+          EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+          Math.max(0, nowMillis - admittedAtMillis),
+        );
+  return {
+    consumedBytes:
+      accounting.consumedBytes +
+      permit.ingressBytes +
+      (conservative ? EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES : responseBytes),
+    consumedRequestMillis: accounting.consumedRequestMillis + elapsed,
+    permits: accounting.permits.filter((candidate) => candidate.requestId !== requestId),
+  };
+};
+
+const reconcileExpiredPermits = (
+  accounting: EvidencePreviewAccountingV1,
+  nowMillis: number,
+): EvidencePreviewAccountingV1 =>
+  accounting.permits.reduce(
+    (current, permit) =>
+      !Number.isFinite(Date.parse(permit.expiresAt)) || Date.parse(permit.expiresAt) <= nowMillis
+        ? settlePermitAccounting(current, permit.requestId, nowMillis, 0, true)
+        : current,
+    accounting,
+  );
+
+const revokePermitAccounting = (
+  accounting: EvidencePreviewAccountingV1,
+): EvidencePreviewAccountingV1 =>
+  accounting.permits.reduce(
+    (current, permit) => settlePermitAccounting(current, permit.requestId, 0, 0, true),
+    accounting,
+  );
+
 export const evidenceStoreLayer = (storage: SessionRecordStorage): Layer.Layer<EvidenceStore> =>
   Layer.succeed(EvidenceStore)(makeEvidenceStore(storage));
 
@@ -297,6 +384,7 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
       if (Result.isFailure(active)) return Result.fail(active.failure);
       if (
         active.success.previewCookieDigest !== null ||
+        active.success.previewAccounting.permits.length > 0 ||
         (active.success.exposure !== "closed" && active.success.exposure !== "not_exposed")
       )
         return Result.fail(new EvidenceStateError({ reason: "preview_cleanup_pending" }));
@@ -416,6 +504,7 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
           routeNonce: input.routeNonce,
           previewCookieDigest: null,
           exposure: "not_exposed",
+          previewAccounting: emptyEvidencePreviewAccounting(),
           deadlineAt: input.deadlineAt,
           stepPlan: [
             evidenceStepPlan(input.job.steps[0]),
@@ -536,7 +625,7 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         return Result.succeed(next);
       }) as Effect.Effect<EvidenceActiveJobV1, EvidenceStateError>;
     }),
-    authorizePreview: Effect.fnUntraced(function* (input) {
+    admitPreview: Effect.fnUntraced(function* (input) {
       const nowMillis = yield* Clock.currentTimeMillis;
       return yield* transact(async (transaction) => {
         const [storedSession, storedEvidence, storedRuntimeEpoch] = await Promise.all([
@@ -549,32 +638,241 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         if (Result.isFailure(session)) return Result.fail(session.failure);
         if (Result.isFailure(state)) return Result.fail(state.failure);
         const active = state.success.activeJob;
-        const deadlineMillis = active === undefined ? Number.NaN : Date.parse(active.deadlineAt);
+        if (active === undefined) return Result.succeed(undefined);
+        const accounting = reconcileExpiredPermits(active.previewAccounting, nowMillis);
+        const deadlineMillis = Date.parse(active.deadlineAt);
         const hardCapMillis = Date.parse(session.success.hardCapAt);
         const digestMatches =
-          active?.previewCookieDigest !== null && active?.previewCookieDigest !== undefined
-            ? await constantTimeStringEqual(active.previewCookieDigest, input.cookieDigest)
-            : false;
-        return Result.succeed(
-          session.success.id === input.sessionId &&
-            session.success.status === "warm" &&
-            session.success.execution.provider === "cloudflare" &&
-            session.success.operation?.kind === "evidence" &&
-            session.success.operation.nonce === active?.operationNonce &&
-            active?.port === input.port &&
-            active?.routeNonce === input.routeNonce &&
-            active?.runtimeEpoch === input.runtimeEpoch &&
-            storedRuntimeEpoch === input.runtimeEpoch &&
-            active?.exposure === "active" &&
-            digestMatches &&
-            input.runtimeRunning &&
-            Number.isFinite(deadlineMillis) &&
-            Number.isFinite(hardCapMillis) &&
-            nowMillis < deadlineMillis &&
-            nowMillis < hardCapMillis &&
-            deadlineMillis <= hardCapMillis,
+          active.previewCookieDigest === null
+            ? false
+            : await constantTimeStringEqual(active.previewCookieDigest, input.cookieDigest);
+        const reservedBytes = accounting.permits.reduce(
+          (total, permit) => total + reservedPermitBytes(permit),
+          0,
         );
+        const admittedBytes = input.ingressBytes + EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES;
+        const authorized =
+          session.success.id === input.sessionId &&
+          session.success.status === "warm" &&
+          session.success.execution.provider === "cloudflare" &&
+          session.success.operation?.kind === "evidence" &&
+          session.success.operation.nonce === active.operationNonce &&
+          active.port === input.port &&
+          active.routeNonce === input.routeNonce &&
+          active.runtimeEpoch === input.runtimeEpoch &&
+          storedRuntimeEpoch === input.runtimeEpoch &&
+          active.exposure === "active" &&
+          digestMatches &&
+          input.runtimeRunning &&
+          Number.isFinite(deadlineMillis) &&
+          Number.isFinite(hardCapMillis) &&
+          nowMillis < deadlineMillis &&
+          nowMillis < hardCapMillis &&
+          deadlineMillis <= hardCapMillis &&
+          accounting.permits.length < EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS &&
+          !accounting.permits.some((permit) => permit.requestId === input.requestId) &&
+          accounting.consumedBytes + reservedBytes + admittedBytes <=
+            EVIDENCE_PREVIEW_AGGREGATE_BYTES &&
+          accounting.consumedRequestMillis +
+            (accounting.permits.length + 1) * EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS <=
+            EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS;
+        if (!authorized) {
+          if (accounting !== active.previewAccounting) {
+            const reconciled = { ...active, previewAccounting: accounting };
+            await transaction.putEvidence({ ...state.success, activeJob: reconciled });
+          }
+          return Result.succeed(undefined);
+        }
+        const expiresAtMillis = Math.min(
+          nowMillis + EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+          deadlineMillis,
+          hardCapMillis,
+        );
+        const expiresAt = new Date(expiresAtMillis).toISOString();
+        const next: EvidenceActiveJobV1 = {
+          ...active,
+          previewAccounting: {
+            ...accounting,
+            permits: [
+              ...accounting.permits,
+              {
+                requestId: input.requestId,
+                state: "admitted",
+                cookieDigest: input.cookieDigest,
+                ingressBytes: input.ingressBytes,
+                admittedAt: new Date(nowMillis).toISOString(),
+                expiresAt,
+              },
+            ],
+          },
+        };
+        await transaction.putEvidence({ ...state.success, activeJob: next });
+        return Result.succeed({ requestId: input.requestId, expiresAt });
+      }) as Effect.Effect<EvidencePreviewPermitAdmissionV1 | undefined, EvidenceStateError>;
+    }),
+    adjustPreview: Effect.fnUntraced(function* (requestId, ingressBytes) {
+      const nowMillis = yield* Clock.currentTimeMillis;
+      return yield* transact(async (transaction) => {
+        const state = decodeState(await transaction.getEvidence());
+        if (Result.isFailure(state)) return Result.fail(state.failure);
+        const active = state.success.activeJob;
+        if (active === undefined) return Result.succeed(false);
+        const accounting = reconcileExpiredPermits(active.previewAccounting, nowMillis);
+        const permit = accounting.permits.find((candidate) => candidate.requestId === requestId);
+        const accepted = permit?.state === "admitted" && ingressBytes <= permit.ingressBytes;
+        const adjusted = accepted
+          ? {
+              ...accounting,
+              permits: accounting.permits.map((candidate) =>
+                candidate.requestId === requestId ? { ...candidate, ingressBytes } : candidate,
+              ),
+            }
+          : accounting;
+        if (adjusted !== active.previewAccounting) {
+          await transaction.putEvidence({
+            ...state.success,
+            activeJob: { ...active, previewAccounting: adjusted },
+          });
+        }
+        return Result.succeed(accepted);
       }) as Effect.Effect<boolean, EvidenceStateError>;
+    }),
+    claimPreview: Effect.fnUntraced(function* (input) {
+      const nowMillis = yield* Clock.currentTimeMillis;
+      return yield* transact(async (transaction) => {
+        const [storedSession, storedEvidence, storedRuntimeEpoch] = await Promise.all([
+          transaction.getRecord(),
+          transaction.getEvidence(),
+          transaction.getRuntimeEpoch(),
+        ]);
+        const session = decodeSession(storedSession);
+        const state = decodeState(storedEvidence);
+        if (Result.isFailure(session)) return Result.fail(session.failure);
+        if (Result.isFailure(state)) return Result.fail(state.failure);
+        const active = state.success.activeJob;
+        if (active === undefined) return Result.succeed(undefined);
+        const accounting = reconcileExpiredPermits(active.previewAccounting, nowMillis);
+        const permit = accounting.permits.find(
+          (candidate) => candidate.requestId === input.requestId,
+        );
+        const deadlineMillis = Date.parse(active.deadlineAt);
+        const hardCapMillis = Date.parse(session.success.hardCapAt);
+        const authorized =
+          permit?.state === "admitted" &&
+          permit.cookieDigest === active.previewCookieDigest &&
+          session.success.id === input.sessionId &&
+          session.success.status === "warm" &&
+          session.success.execution.provider === "cloudflare" &&
+          session.success.operation?.kind === "evidence" &&
+          session.success.operation.nonce === active.operationNonce &&
+          active.port === input.port &&
+          active.routeNonce === input.routeNonce &&
+          active.runtimeEpoch === input.runtimeEpoch &&
+          storedRuntimeEpoch === input.runtimeEpoch &&
+          active.exposure === "active" &&
+          input.runtimeRunning &&
+          Number.isFinite(deadlineMillis) &&
+          Number.isFinite(hardCapMillis) &&
+          nowMillis < Date.parse(permit.expiresAt) &&
+          nowMillis < deadlineMillis &&
+          nowMillis < hardCapMillis &&
+          deadlineMillis <= hardCapMillis;
+        const nextAccounting = authorized
+          ? {
+              ...accounting,
+              permits: accounting.permits.map((candidate) =>
+                candidate.requestId === input.requestId
+                  ? { ...candidate, state: "claimed" as const }
+                  : candidate,
+              ),
+            }
+          : permit === undefined
+            ? accounting
+            : settlePermitAccounting(accounting, input.requestId, nowMillis, 0, true);
+        if (nextAccounting !== active.previewAccounting) {
+          const next = { ...active, previewAccounting: nextAccounting };
+          await transaction.putEvidence({ ...state.success, activeJob: next });
+        }
+        return Result.succeed(
+          authorized
+            ? { operationNonce: active.operationNonce, expiresAt: permit.expiresAt }
+            : undefined,
+        );
+      }) as Effect.Effect<ClaimedEvidencePreviewPermit | undefined, EvidenceStateError>;
+    }),
+    settlePreview: Effect.fnUntraced(function* (requestId, responseBytes) {
+      const nowMillis = yield* Clock.currentTimeMillis;
+      yield* transact(async (transaction) => {
+        const state = decodeState(await transaction.getEvidence());
+        if (Result.isFailure(state)) return Result.fail(state.failure);
+        const active = state.success.activeJob;
+        if (active === undefined) return Result.succeed(undefined);
+        const reconciled = reconcileExpiredPermits(active.previewAccounting, nowMillis);
+        const permit = reconciled.permits.find((candidate) => candidate.requestId === requestId);
+        const accounting =
+          permit === undefined
+            ? reconciled
+            : settlePermitAccounting(
+                reconciled,
+                requestId,
+                nowMillis,
+                responseBytes,
+                permit.state !== "claimed",
+              );
+        if (accounting !== active.previewAccounting) {
+          await transaction.putEvidence({
+            ...state.success,
+            activeJob: { ...active, previewAccounting: accounting },
+          });
+        }
+        return Result.succeed(undefined);
+      }) as Effect.Effect<void, EvidenceStateError>;
+    }),
+    cancelPreview: Effect.fnUntraced(function* (requestId) {
+      const nowMillis = yield* Clock.currentTimeMillis;
+      yield* transact(async (transaction) => {
+        const state = decodeState(await transaction.getEvidence());
+        if (Result.isFailure(state)) return Result.fail(state.failure);
+        const active = state.success.activeJob;
+        if (active === undefined) return Result.succeed(undefined);
+        const reconciled = reconcileExpiredPermits(active.previewAccounting, nowMillis);
+        const permit = reconciled.permits.find((candidate) => candidate.requestId === requestId);
+        const accounting =
+          permit === undefined
+            ? reconciled
+            : settlePermitAccounting(reconciled, requestId, nowMillis, 0, false);
+        if (accounting !== active.previewAccounting) {
+          await transaction.putEvidence({
+            ...state.success,
+            activeJob: { ...active, previewAccounting: accounting },
+          });
+        }
+        return Result.succeed(undefined);
+      }) as Effect.Effect<void, EvidenceStateError>;
+    }),
+    expirePreview: Effect.fnUntraced(function* (requestId) {
+      const nowMillis = yield* Clock.currentTimeMillis;
+      yield* transact(async (transaction) => {
+        const state = decodeState(await transaction.getEvidence());
+        if (Result.isFailure(state)) return Result.fail(state.failure);
+        const active = state.success.activeJob;
+        const permit = active?.previewAccounting.permits.find(
+          (candidate) => candidate.requestId === requestId,
+        );
+        if (active === undefined || permit === undefined) return Result.succeed(undefined);
+        const accounting = settlePermitAccounting(
+          active.previewAccounting,
+          requestId,
+          nowMillis,
+          0,
+          true,
+        );
+        await transaction.putEvidence({
+          ...state.success,
+          activeJob: { ...active, previewAccounting: accounting },
+        });
+        return Result.succeed(undefined);
+      }) as Effect.Effect<void, EvidenceStateError>;
     }),
     revokePreview: (nonce, interruptionReason) =>
       updateActive(nonce, (active, state) => {
@@ -584,13 +882,14 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
           status: interruptionReason === undefined ? "finalizing" : "interrupted",
           exposure: hasExposure ? "unexpose_pending" : "closed",
           previewCookieDigest: null,
+          previewAccounting: revokePermitAccounting(active.previewAccounting),
           ...(interruptionReason === undefined ? {} : { failure: { code: interruptionReason } }),
         };
         return Result.succeed({ active: next, state: { ...state, activeJob: next } });
       }),
     closePreview: (nonce) =>
       updateActive(nonce, (active, state) => {
-        if (active.previewCookieDigest !== null)
+        if (active.previewCookieDigest !== null || active.previewAccounting.permits.length > 0)
           return Result.fail(new EvidenceStateError({ reason: "preview_cleanup_pending" }));
         const next: EvidenceActiveJobV1 = { ...active, exposure: "closed" };
         return Result.succeed({ active: next, state: { ...state, activeJob: next } });

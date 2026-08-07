@@ -10,6 +10,12 @@ import {
 } from "../src/artifact-store";
 import {
   EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
+  EVIDENCE_PREVIEW_AGGREGATE_BYTES,
+  EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS,
+  EVIDENCE_PREVIEW_MAX_INGRESS_BYTES,
+  EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+  EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+  emptyEvidencePreviewAccounting,
   type BrowserEvidenceJobV1,
   type EvidenceArtifactV1,
   type EvidenceJobSummaryV1,
@@ -190,6 +196,31 @@ const accept = (testLayers: Layer.Layer<SessionStore | EvidenceStore | ArtifactS
     }),
   ).pipe(Effect.provide(testLayers));
 
+const publishPreview = (testLayers: Layer.Layer<SessionStore | EvidenceStore | ArtifactStore>) =>
+  Effect.gen(function* () {
+    const store = yield* EvidenceStore;
+    yield* store.beginPreviewExposure("evidence-nonce", {
+      runtimeEpoch: "runtime-1",
+      runtimeRunning: true,
+    });
+    yield* store.publishPreviewExposure("evidence-nonce", {
+      runtimeEpoch: "runtime-1",
+      runtimeRunning: true,
+      cookieDigest: "a".repeat(64),
+    });
+  }).pipe(Effect.provide(testLayers));
+
+const previewAdmission = (requestId: string) => ({
+  requestId,
+  sessionId: SESSION_ID,
+  port: JOB.port,
+  routeNonce: "0123456789abcdef",
+  runtimeEpoch: "runtime-1",
+  cookieDigest: "a".repeat(64),
+  ingressBytes: 0,
+  runtimeRunning: true,
+});
+
 const retainedSummary = (index: number): EvidenceJobSummaryV1 => ({
   version: 1,
   sequence: index,
@@ -324,9 +355,11 @@ describe("EvidenceStore", () => {
         Effect.provide(testLayers),
       );
       assert.deepInclude(state.activeJob, {
+        status: "interrupted",
         routeNonce: EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
         previewCookieDigest: null,
         exposure: "closed",
+        previewAccounting: emptyEvidencePreviewAccounting(),
       });
       const exposure = yield* Effect.result(
         Effect.flatMap(EvidenceStore, (store) =>
@@ -338,6 +371,169 @@ describe("EvidenceStore", () => {
       );
       assert.deepInclude(failure(exposure), { reason: "preview_unavailable" });
       assert.notProperty(authority.readEvidence()?.activeJob, "routeNonce");
+    }),
+  );
+
+  it.effect("admits, claims, and idempotently settles persisted preview accounting", () =>
+    Effect.gen(function* () {
+      const authority = makeAuthorityStorage();
+      const artifacts = makeArtifactCapabilities();
+      const testLayers = layers(authority.storage, artifacts.capabilities);
+      yield* TestClock.setTime(NOW);
+      yield* accept(testLayers);
+      yield* publishPreview(testLayers);
+      const requestId = "1".repeat(32);
+      const store = yield* Effect.provide(EvidenceStore, testLayers);
+      const admitted = yield* store
+        .admitPreview({ ...previewAdmission(requestId), ingressBytes: 100 })
+        .pipe(Effect.provide(testLayers));
+      assert.deepStrictEqual(admitted, {
+        requestId,
+        expiresAt: "2026-08-06T12:00:30.000Z",
+      });
+      assert.deepInclude(authority.readEvidence()?.activeJob?.previewAccounting.permits[0], {
+        requestId,
+        state: "admitted",
+        ingressBytes: 100,
+      });
+
+      const claimed = yield* store
+        .claimPreview(previewAdmission(requestId))
+        .pipe(Effect.provide(testLayers));
+      assert.deepStrictEqual(claimed, {
+        operationNonce: "evidence-nonce",
+        expiresAt: admitted?.expiresAt,
+      });
+      yield* TestClock.setTime(NOW + 2_000);
+      yield* store.settlePreview(requestId, 1_024).pipe(Effect.provide(testLayers));
+      yield* store.settlePreview(requestId, 1_024).pipe(Effect.provide(testLayers));
+      yield* store.cancelPreview(requestId).pipe(Effect.provide(testLayers));
+      assert.deepStrictEqual(authority.readEvidence()?.activeJob?.previewAccounting, {
+        consumedBytes: 1_124,
+        consumedRequestMillis: 2_000,
+        permits: [],
+      });
+    }),
+  );
+
+  it.effect("adjusts reservations and distinguishes normal cancellation from expiry", () =>
+    Effect.gen(function* () {
+      const authority = makeAuthorityStorage();
+      const artifacts = makeArtifactCapabilities();
+      const testLayers = layers(authority.storage, artifacts.capabilities);
+      yield* TestClock.setTime(NOW);
+      yield* accept(testLayers);
+      yield* publishPreview(testLayers);
+      const store = yield* Effect.provide(EvidenceStore, testLayers);
+      const canceledId = "2".repeat(32);
+      assert.ok(
+        (yield* store
+          .admitPreview({
+            ...previewAdmission(canceledId),
+            ingressBytes: EVIDENCE_PREVIEW_MAX_INGRESS_BYTES,
+          })
+          .pipe(Effect.provide(testLayers))) !== undefined,
+      );
+      assert.isTrue(yield* store.adjustPreview(canceledId, 123).pipe(Effect.provide(testLayers)));
+      assert.isTrue(yield* store.adjustPreview(canceledId, 123).pipe(Effect.provide(testLayers)));
+      yield* TestClock.setTime(NOW + 1_000);
+      yield* store.cancelPreview(canceledId).pipe(Effect.provide(testLayers));
+      assert.deepStrictEqual(authority.readEvidence()?.activeJob?.previewAccounting, {
+        consumedBytes: 123,
+        consumedRequestMillis: 1_000,
+        permits: [],
+      });
+
+      const expiredId = "3".repeat(32);
+      assert.ok(
+        (yield* store
+          .admitPreview({ ...previewAdmission(expiredId), ingressBytes: 100 })
+          .pipe(Effect.provide(testLayers))) !== undefined,
+      );
+      yield* store.expirePreview(expiredId).pipe(Effect.provide(testLayers));
+      yield* store.expirePreview(expiredId).pipe(Effect.provide(testLayers));
+      yield* store.cancelPreview(expiredId).pipe(Effect.provide(testLayers));
+      assert.deepStrictEqual(authority.readEvidence()?.activeJob?.previewAccounting, {
+        consumedBytes: 123 + 100 + EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+        consumedRequestMillis: 1_000 + EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+        permits: [],
+      });
+    }),
+  );
+
+  it.effect("revalidates the forwarding route at claim and consumes a mismatched permit", () =>
+    Effect.gen(function* () {
+      const authority = makeAuthorityStorage();
+      const artifacts = makeArtifactCapabilities();
+      const testLayers = layers(authority.storage, artifacts.capabilities);
+      yield* TestClock.setTime(NOW);
+      yield* accept(testLayers);
+      yield* publishPreview(testLayers);
+      const store = yield* Effect.provide(EvidenceStore, testLayers);
+      const requestId = "7".repeat(32);
+      assert.ok(
+        (yield* store
+          .admitPreview(previewAdmission(requestId))
+          .pipe(Effect.provide(testLayers))) !== undefined,
+      );
+      assert.strictEqual(
+        yield* store
+          .claimPreview({ ...previewAdmission(requestId), port: 5_173 })
+          .pipe(Effect.provide(testLayers)),
+        undefined,
+      );
+      assert.deepStrictEqual(authority.readEvidence()?.activeJob?.previewAccounting, {
+        consumedBytes: EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+        consumedRequestMillis: EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+        permits: [],
+      });
+    }),
+  );
+
+  it.effect("reserves capacity and charges stale permits conservatively without reopening it", () =>
+    Effect.gen(function* () {
+      const authority = makeAuthorityStorage();
+      const artifacts = makeArtifactCapabilities();
+      const testLayers = layers(authority.storage, artifacts.capabilities);
+      yield* TestClock.setTime(NOW);
+      yield* accept(testLayers);
+      yield* publishPreview(testLayers);
+      const store = yield* Effect.provide(EvidenceStore, testLayers);
+      for (const digit of ["1", "2", "3", "4"]) {
+        const admitted = yield* store
+          .admitPreview(previewAdmission(digit.repeat(32)))
+          .pipe(Effect.provide(testLayers));
+        assert.ok(admitted !== undefined);
+      }
+      assert.strictEqual(
+        yield* store
+          .admitPreview(previewAdmission("5".repeat(32)))
+          .pipe(Effect.provide(testLayers)),
+        undefined,
+      );
+
+      yield* store.cancelPreview("1".repeat(32)).pipe(Effect.provide(testLayers));
+      assert.ok(
+        (yield* store
+          .admitPreview(previewAdmission("5".repeat(32)))
+          .pipe(Effect.provide(testLayers))) !== undefined,
+      );
+      yield* TestClock.setTime(NOW + EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS);
+      assert.strictEqual(
+        yield* store
+          .admitPreview(previewAdmission("6".repeat(32)))
+          .pipe(Effect.provide(testLayers)),
+        undefined,
+      );
+      assert.deepStrictEqual(authority.readEvidence()?.activeJob?.previewAccounting, {
+        consumedBytes: EVIDENCE_PREVIEW_AGGREGATE_BYTES,
+        consumedRequestMillis: EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS,
+        permits: [],
+      });
+      assert.strictEqual(
+        EVIDENCE_PREVIEW_AGGREGATE_BYTES,
+        EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES * 4,
+      );
     }),
   );
 

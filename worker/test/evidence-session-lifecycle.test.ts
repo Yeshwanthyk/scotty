@@ -1,7 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Clock, Effect, Result } from "effect";
+import { Clock, Effect, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
-import type { EvidenceStateV1 } from "../src/evidence-contracts";
+import {
+  EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
+  EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
+  EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+  type EvidenceStateV1,
+} from "../src/evidence-contracts";
 import { sha256Hex } from "../src/digest";
 import {
   createSessionHarness,
@@ -36,6 +41,24 @@ const createHarness = (options: Omit<HarnessOptions, "clock" | "initialEntries">
     );
   });
 
+const previewForwardingRequest = (
+  requestId: string,
+  routeNonce: string,
+  signal?: AbortSignal,
+  extraHeaders: Readonly<Record<string, string>> = {},
+): Request =>
+  new Request(`https://4173-${SESSION_ID}-${routeNonce}.preview.scotty.example/`, {
+    headers: {
+      [EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER]: requestId,
+      "x-sandbox-preview-proxy": "1",
+      "x-sandbox-preview-port": "4173",
+      "x-sandbox-preview-sandbox-id": SESSION_ID,
+      "x-sandbox-preview-token": routeNonce,
+      ...extraHeaders,
+    },
+    signal,
+  });
+
 const job = {
   version: 1,
   port: 4_173,
@@ -68,15 +91,17 @@ describe("evidence session lifecycle", () => {
         }),
       );
       assert.ok(Result.isFailure(exposure));
-      assert.isFalse(
+      assert.strictEqual(
         yield* Effect.promise(() =>
-          harness.sandbox.authorizeScottyEvidencePreview({
+          harness.sandbox.admitScottyEvidencePreview({
             sessionId: SESSION_ID,
             port: job.port,
-            routeNonce: "valid-route",
-            cookieSecret: "valid-secret",
+            routeNonce: "valid_route_0001",
+            cookieSecret: "a".repeat(64),
+            ingressBytes: 0,
           }),
         ),
+        undefined,
       );
     }),
   );
@@ -204,15 +229,39 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("lets vaporize preempt evidence and remove its authority before gone", () =>
+  it.effect("lets vaporize revoke permits and unexpose before destroying owned state", () =>
     Effect.gen(function* () {
-      const harness = yield* createHarness();
+      const harness = yield* createHarness({ previewBase: "preview.scotty.example" });
       yield* Effect.promise(() => harness.startRuntime());
-      yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const exposed = yield* Effect.promise(() =>
+        harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
+      );
+      assert.ok(
+        (yield* Effect.promise(() =>
+          harness.sandbox.admitScottyEvidencePreview({
+            sessionId: SESSION_ID,
+            port: job.port,
+            routeNonce: accepted.routeNonce,
+            cookieSecret: exposed.cookieSecret,
+            ingressBytes: 0,
+          }),
+        )) !== undefined,
+      );
+      const eventStart = harness.events.length;
       const gone = yield* Effect.promise(() => harness.sandbox.vaporizeScottySession());
+      const cleanupEvents = harness.events.slice(eventStart);
       assert.deepStrictEqual(gone, { id: SESSION_ID, status: "gone" });
       assert.strictEqual(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence), undefined);
       assert.include(harness.deletedSchedules, "expireEvidenceJob");
+      assert.isBelow(
+        cleanupEvents.indexOf(`storage:put:${sessionHarnessKeys.evidence}`),
+        cleanupEvents.indexOf(`host:preview:unexpose:${job.port}`),
+      );
+      assert.isBelow(
+        cleanupEvents.indexOf(`host:preview:unexpose:${job.port}`),
+        cleanupEvents.indexOf("host:destroy"),
+      );
     }),
   );
 
@@ -313,16 +362,287 @@ describe("evidence session lifecycle", () => {
           routeNonce: accepted.routeNonce,
           cookieSecret: exposed.cookieSecret,
         } as const;
-        assert.isTrue(
-          yield* Effect.promise(() =>
-            harness.sandbox.authorizeScottyEvidencePreview(authorization),
-          ),
+        assert.ok(
+          (yield* Effect.promise(() =>
+            harness.sandbox.admitScottyEvidencePreview({ ...authorization, ingressBytes: 0 }),
+          )) !== undefined,
         );
         yield* Effect.promise(() => harness.startRuntime());
-        assert.isFalse(
+        assert.strictEqual(
           yield* Effect.promise(() =>
-            harness.sandbox.authorizeScottyEvidencePreview(authorization),
+            harness.sandbox.admitScottyEvidencePreview({ ...authorization, ingressBytes: 0 }),
           ),
+          undefined,
+        );
+      }),
+  );
+
+  it.effect("serializes concurrent preview admission at four persisted permits", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness({ previewBase: "preview.scotty.example" });
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const exposed = yield* Effect.promise(() =>
+        harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
+      );
+      const admissions = yield* Effect.promise(() =>
+        Promise.all(
+          Array.from({ length: 5 }, () =>
+            harness.sandbox.admitScottyEvidencePreview({
+              sessionId: SESSION_ID,
+              port: job.port,
+              routeNonce: accepted.routeNonce,
+              cookieSecret: exposed.cookieSecret,
+              ingressBytes: 0,
+            }),
+          ),
+        ),
+      );
+      assert.strictEqual(admissions.filter(Predicate.isNotUndefined).length, 4);
+      assert.strictEqual(
+        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting
+          .permits.length,
+        4,
+      );
+    }),
+  );
+
+  it.effect("claims at Sandbox.fetch and settles only when the response stream reaches EOF", () =>
+    Effect.gen(function* () {
+      const forwarded: Request[] = [];
+      const harness = yield* createHarness({
+        previewBase: "preview.scotty.example",
+        previewRequestForwarder: async (request) => {
+          forwarded.push(request.clone());
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(Uint8Array.of(1, 2));
+                controller.enqueue(Uint8Array.of(3, 4, 5));
+                controller.close();
+              },
+            }),
+          );
+        },
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const exposed = yield* Effect.promise(() =>
+        harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
+      );
+      const directSdkRequest = previewForwardingRequest("0".repeat(32), accepted.routeNonce);
+      const directHeaders = new Headers(directSdkRequest.headers);
+      directHeaders.delete(EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER);
+      assert.strictEqual(
+        (yield* Effect.promise(() =>
+          harness.sandbox.fetch(new Request(directSdkRequest, { headers: directHeaders })),
+        )).status,
+        404,
+      );
+      assert.strictEqual(forwarded.length, 0);
+      const permit = yield* Effect.promise(() =>
+        harness.sandbox.admitScottyEvidencePreview({
+          sessionId: SESSION_ID,
+          port: job.port,
+          routeNonce: accepted.routeNonce,
+          cookieSecret: exposed.cookieSecret,
+          ingressBytes: 7,
+        }),
+      );
+      assert.ok(permit !== undefined);
+      const response = yield* Effect.promise(() =>
+        harness.sandbox.fetch(previewForwardingRequest(permit.requestId, accepted.routeNonce)),
+      );
+      assert.strictEqual(
+        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting
+          .permits[0]?.state,
+        "claimed",
+      );
+      assert.strictEqual(
+        response.headers.get(EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER),
+        permit.requestId,
+      );
+      assert.strictEqual(forwarded[0]?.headers.get(EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER), null);
+      assert.deepStrictEqual(
+        new Uint8Array(yield* Effect.promise(() => response.arrayBuffer())),
+        Uint8Array.of(1, 2, 3, 4, 5),
+      );
+      assert.deepStrictEqual(
+        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
+        { consumedBytes: 12, consumedRequestMillis: 0, permits: [] },
+      );
+    }),
+  );
+
+  it.effect("rejects every WebSocket framing header before claiming the permit", () =>
+    Effect.gen(function* () {
+      let forwarded = 0;
+      const harness = yield* createHarness({
+        previewBase: "preview.scotty.example",
+        previewRequestForwarder: async () => {
+          forwarded += 1;
+          return new Response("must not forward");
+        },
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const exposed = yield* Effect.promise(() =>
+        harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
+      );
+      for (const [name, value] of [
+        ["connection", "keep-alive"],
+        ["upgrade", "h2c"],
+        ["sec-websocket-key", "attacker"],
+        ["sec-websocket-version", "13"],
+        ["sec-websocket-protocol", "attacker"],
+        ["sec-websocket-extensions", "attacker"],
+        ["sec-websocket-unrecognized", "attacker"],
+      ] as const) {
+        const permit = yield* Effect.promise(() =>
+          harness.sandbox.admitScottyEvidencePreview({
+            sessionId: SESSION_ID,
+            port: job.port,
+            routeNonce: accepted.routeNonce,
+            cookieSecret: exposed.cookieSecret,
+            ingressBytes: 0,
+          }),
+        );
+        assert.ok(permit !== undefined);
+        const response = yield* Effect.promise(() =>
+          harness.sandbox.fetch(
+            previewForwardingRequest(permit.requestId, accepted.routeNonce, undefined, {
+              [name]: value,
+            }),
+          ),
+        );
+        assert.strictEqual(response.status, 404, name);
+      }
+      assert.strictEqual(forwarded, 0);
+      assert.deepStrictEqual(
+        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
+        { consumedBytes: 0, consumedRequestMillis: 0, permits: [] },
+      );
+    }),
+  );
+
+  it.effect("charges the full reservation and duration when a claimed request times out", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness({
+        previewBase: "preview.scotty.example",
+        previewRequestForwarder: async () => new Promise<Response>(() => undefined),
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const exposed = yield* Effect.promise(() =>
+        harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
+      );
+      const permit = yield* Effect.promise(() =>
+        harness.sandbox.admitScottyEvidencePreview({
+          sessionId: SESSION_ID,
+          port: job.port,
+          routeNonce: accepted.routeNonce,
+          cookieSecret: exposed.cookieSecret,
+          ingressBytes: 0,
+        }),
+      );
+      assert.ok(permit !== undefined);
+      yield* TestClock.setTime(NOW + 29_999);
+      const response = yield* Effect.promise(() =>
+        harness.sandbox.fetch(previewForwardingRequest(permit.requestId, accepted.routeNonce)),
+      );
+      assert.strictEqual(response.status, 404);
+      assert.deepStrictEqual(
+        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
+        {
+          consumedBytes: EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+          consumedRequestMillis: 30_000,
+          permits: [],
+        },
+      );
+    }),
+  );
+
+  it.effect(
+    "cancels and charges an over-limit stream, then revokes live streams before unexpose",
+    () =>
+      Effect.gen(function* () {
+        let sourceCanceled = 0;
+        let responseNumber = 0;
+        const harness = yield* createHarness({
+          previewBase: "preview.scotty.example",
+          previewRequestForwarder: async () => {
+            responseNumber += 1;
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(
+                    responseNumber === 1
+                      ? new Uint8Array(EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES + 1)
+                      : Uint8Array.of(1),
+                  );
+                },
+                cancel() {
+                  sourceCanceled += 1;
+                },
+              }),
+            );
+          },
+        });
+        yield* Effect.promise(() => harness.startRuntime());
+        const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+        const exposed = yield* Effect.promise(() =>
+          harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
+        );
+        const admit = () =>
+          harness.sandbox.admitScottyEvidencePreview({
+            sessionId: SESSION_ID,
+            port: job.port,
+            routeNonce: accepted.routeNonce,
+            cookieSecret: exposed.cookieSecret,
+            ingressBytes: 0,
+          });
+        const overLimit = yield* Effect.promise(admit);
+        assert.ok(overLimit !== undefined);
+        const overLimitResponse = yield* Effect.promise(() =>
+          harness.sandbox.fetch(previewForwardingRequest(overLimit.requestId, accepted.routeNonce)),
+        );
+        const readOverLimit = yield* Effect.result(
+          Effect.tryPromise({
+            try: () => overLimitResponse.arrayBuffer(),
+            catch: (cause) => cause,
+          }),
+        );
+        assert.ok(Result.isFailure(readOverLimit));
+        assert.strictEqual(sourceCanceled, 1);
+        assert.deepInclude(
+          harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
+          { consumedBytes: EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES, permits: [] },
+        );
+
+        const live = yield* Effect.promise(admit);
+        assert.ok(live !== undefined);
+        const liveResponse = yield* Effect.promise(() =>
+          harness.sandbox.fetch(previewForwardingRequest(live.requestId, accepted.routeNonce)),
+        );
+        const reader = liveResponse.body?.getReader();
+        assert.ok(reader !== undefined);
+        assert.deepStrictEqual(
+          (yield* Effect.promise(() => reader.read())).value,
+          Uint8Array.of(1),
+        );
+        const eventStart = harness.events.length;
+        yield* Effect.promise(() =>
+          harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "succeeded"),
+        );
+        const cleanupEvents = harness.events.slice(eventStart);
+        assert.strictEqual(sourceCanceled, 2);
+        assert.isBelow(
+          cleanupEvents.indexOf(`storage:put:${sessionHarnessKeys.evidence}`),
+          cleanupEvents.indexOf(`host:preview:unexpose:${job.port}`),
+        );
+        assert.strictEqual(
+          harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob,
+          undefined,
         );
       }),
   );
@@ -332,10 +652,23 @@ describe("evidence session lifecycle", () => {
       const harness = yield* createHarness({ previewBase: "preview.scotty.example" });
       yield* Effect.promise(() => harness.startRuntime());
       const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
-      yield* Effect.promise(() =>
+      const exposed = yield* Effect.promise(() =>
         harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
       );
+      assert.ok(
+        (yield* Effect.promise(() =>
+          harness.sandbox.admitScottyEvidencePreview({
+            sessionId: SESSION_ID,
+            port: job.port,
+            routeNonce: accepted.routeNonce,
+            cookieSecret: exposed.cookieSecret,
+            ingressBytes: 0,
+          }),
+        )) !== undefined,
+      );
+      const eventStart = harness.events.length;
       yield* Effect.promise(() => harness.stopRuntime());
+      const cleanupEvents = harness.events.slice(eventStart);
       assert.strictEqual(harness.read<string>(sessionHarnessKeys.runtimeEpoch), undefined);
       assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
       assert.strictEqual(harness.readRecord()?.operation, null);
@@ -343,8 +676,12 @@ describe("evidence session lifecycle", () => {
         status: "interrupted",
       });
       assert.isBelow(
-        harness.events.indexOf(`host:preview:unexpose:${job.port}`),
-        harness.events.lastIndexOf(`storage:delete:${sessionHarnessKeys.runtimeEpoch}`),
+        cleanupEvents.indexOf(`storage:put:${sessionHarnessKeys.evidence}`),
+        cleanupEvents.indexOf(`host:preview:unexpose:${job.port}`),
+      );
+      assert.isBelow(
+        cleanupEvents.indexOf(`host:preview:unexpose:${job.port}`),
+        cleanupEvents.lastIndexOf(`storage:delete:${sessionHarnessKeys.runtimeEpoch}`),
       );
     }),
   );
@@ -544,15 +881,17 @@ describe("evidence session lifecycle", () => {
       );
       assert.ok(Result.isFailure(stopped));
       assert.strictEqual(failedStop.read<string>(sessionHarnessKeys.runtimeEpoch), undefined);
-      assert.isFalse(
+      assert.strictEqual(
         yield* Effect.promise(() =>
-          failedStop.sandbox.authorizeScottyEvidencePreview({
+          failedStop.sandbox.admitScottyEvidencePreview({
             sessionId: SESSION_ID,
             port: job.port,
             routeNonce: active.routeNonce,
             cookieSecret: exposed.cookieSecret,
+            ingressBytes: 0,
           }),
         ),
+        undefined,
       );
       assert.deepStrictEqual(failedStop.exposedPreviewPorts(), []);
     }),
@@ -563,8 +902,19 @@ describe("evidence session lifecycle", () => {
       const harness = yield* createHarness({ previewBase: "preview.scotty.example" });
       yield* Effect.promise(() => harness.startRuntime());
       const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
-      yield* Effect.promise(() =>
+      const exposed = yield* Effect.promise(() =>
         harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce),
+      );
+      assert.ok(
+        (yield* Effect.promise(() =>
+          harness.sandbox.admitScottyEvidencePreview({
+            sessionId: SESSION_ID,
+            port: job.port,
+            routeNonce: accepted.routeNonce,
+            cookieSecret: exposed.cookieSecret,
+            ingressBytes: 0,
+          }),
+        )) !== undefined,
       );
       harness.injectFailure("previewUnexpose");
 
@@ -580,6 +930,11 @@ describe("evidence session lifecycle", () => {
       const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob;
       assert.strictEqual(pending?.previewCookieDigest, null);
       assert.strictEqual(pending?.exposure, "unexpose_pending");
+      assert.deepStrictEqual(pending?.previewAccounting, {
+        consumedBytes: EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+        consumedRequestMillis: 30_000,
+        permits: [],
+      });
 
       const hardCapStart = harness.events.length;
       yield* Effect.promise(() =>
