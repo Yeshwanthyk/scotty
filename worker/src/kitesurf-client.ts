@@ -13,6 +13,8 @@ import type { EvidenceLocator } from "./evidence-contracts";
 import { EVIDENCE_PREVIEW_COOKIE } from "./evidence-preview";
 
 export const KITESURF_OPERATION_TIMEOUT_MILLIS = 5_000;
+const KITESURF_MAX_SAME_ORIGIN_REDIRECTS = 10;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export class KitesurfClientError extends Schema.TaggedErrorClass<KitesurfClientError>()(
   "KitesurfClientError",
@@ -116,6 +118,47 @@ const launchRuntimeKitesurf: KitesurfRuntimeLauncher = async (binding) => {
   return launch(binding, { browser: "kitesurf" });
 };
 
+const nativePromiseTimeout = <A>(
+  operation: KitesurfClientError["operation"],
+  reason: KitesurfClientError["reason"],
+  evaluate: () => Promise<A>,
+  timeoutMillis: number,
+  compensateLateSuccess?: (value: A) => Promise<void>,
+): Promise<A> =>
+  new Promise((resolve, reject) => {
+    let waiting = true;
+    // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native Playwright promises must be bounded even while Effect acquisition and release are uninterruptible
+    const timeout = setTimeout(() => {
+      waiting = false;
+      // oxlint-disable-next-line scotty/no-promise-reject -- boundary: this native timer must settle the Playwright Promise before Effect can decode the typed timeout
+      reject(new KitesurfClientError({ operation, reason }));
+    }, timeoutMillis);
+    void Promise.resolve()
+      .then(evaluate)
+      .then(
+        (value) => {
+          if (waiting) {
+            waiting = false;
+            clearTimeout(timeout);
+            resolve(value);
+            return;
+          }
+          if (compensateLateSuccess !== undefined)
+            void compensateLateSuccess(value).then(
+              () => undefined,
+              () => undefined,
+            );
+        },
+        (cause) => {
+          if (!waiting) return;
+          waiting = false;
+          clearTimeout(timeout);
+          // oxlint-disable-next-line scotty/no-promise-reject -- boundary: the native Playwright rejection is forwarded once into the surrounding Effect.tryPromise adapter
+          reject(cause);
+        },
+      );
+  });
+
 const runtimeEffect = <A>(
   operation: KitesurfClientError["operation"],
   reason: KitesurfClientError["reason"],
@@ -125,6 +168,17 @@ const runtimeEffect = <A>(
     try: evaluate,
     catch: () => new KitesurfClientError({ operation, reason }),
   });
+
+const boundedRuntimeEffect = <A>(
+  operation: KitesurfClientError["operation"],
+  reason: KitesurfClientError["reason"],
+  evaluate: () => Promise<A>,
+  timeoutMillis: number,
+  compensateLateSuccess?: (value: A) => Promise<void>,
+): Effect.Effect<A, KitesurfClientError> =>
+  runtimeEffect(operation, reason, () =>
+    nativePromiseTimeout(operation, reason, evaluate, timeoutMillis, compensateLateSuccess),
+  );
 
 const locatorFor = (page: KitesurfRuntimePage, locator: EvidenceLocator): KitesurfRuntimeLocator =>
   locator.kind === "testId" ? page.getByTestId(locator.value) : page.locator(locator.value);
@@ -154,7 +208,18 @@ const closeEffect = (
     "close_browser" | "close_context" | "close_page"
   >,
   close: () => Promise<void>,
-): Effect.Effect<void, KitesurfClientError> => runtimeEffect(operation, "cleanup", close);
+  timeoutMillis: number,
+): Effect.Effect<void, KitesurfClientError> =>
+  boundedRuntimeEffect(operation, "cleanup", close, timeoutMillis);
+
+const compensateLateResource = (
+  operation: Extract<
+    KitesurfClientError["operation"],
+    "close_browser" | "close_context" | "close_page"
+  >,
+  close: () => Promise<void>,
+  timeoutMillis: number,
+): Promise<void> => nativePromiseTimeout(operation, "cleanup", close, timeoutMillis);
 
 const singlePage = (
   context: KitesurfRuntimeContext,
@@ -211,10 +276,7 @@ const makePage = (
           timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
         }),
       ),
-    isVisible: (locator) =>
-      checked("visible", () =>
-        locatorFor(page, locator).isVisible({ timeout: KITESURF_OPERATION_TIMEOUT_MILLIS }),
-      ),
+    isVisible: (locator) => checked("visible", () => locatorFor(page, locator).isVisible()),
     textContent: (locator) =>
       checked("text_exact", () =>
         locatorFor(page, locator).textContent({
@@ -247,6 +309,46 @@ const makePage = (
   };
 };
 
+const fulfillGuardedRequest = async (
+  route: Route,
+  request: PlaywrightRequest,
+  origin: string,
+): Promise<void> => {
+  const requestUrl = request.url();
+  if (!URL.canParse(requestUrl) || new URL(requestUrl).origin !== origin) {
+    await route.abort("blockedbyclient");
+    return;
+  }
+  const method = request.method().toUpperCase();
+  let nextUrl = requestUrl;
+  for (let redirect = 0; redirect <= KITESURF_MAX_SAME_ORIGIN_REDIRECTS; redirect += 1) {
+    const response = await route.fetch({
+      url: nextUrl,
+      maxRedirects: 0,
+      maxRetries: 0,
+      timeout: KITESURF_OPERATION_TIMEOUT_MILLIS,
+    });
+    const location = response.headers()["location"];
+    if (!REDIRECT_STATUSES.has(response.status()) || location === undefined) {
+      await route.fulfill({ response });
+      await response.dispose();
+      return;
+    }
+    await response.dispose();
+    if ((method !== "GET" && method !== "HEAD") || !URL.canParse(location, nextUrl)) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    const redirected = new URL(location, nextUrl);
+    if (redirected.origin !== origin) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    nextUrl = redirected.href;
+  }
+  await route.abort("blockedbyclient");
+};
+
 const installContextPolicy = (
   context: KitesurfRuntimeContext,
   origin: string,
@@ -260,12 +362,9 @@ const installContextPolicy = (
         reason: "unsupported",
       });
     yield* runtimeEffect("install_network_guard", "unsupported", () =>
-      routeRequests.call(context, "**/*", (route: Route, request: PlaywrightRequest) => {
-        const requestUrl = request.url();
-        return URL.canParse(requestUrl) && new URL(requestUrl).origin === origin
-          ? route.continue()
-          : route.abort("blockedbyclient");
-      }),
+      routeRequests.call(context, "**/*", (route: Route, request: PlaywrightRequest) =>
+        fulfillGuardedRequest(route, request, origin),
+      ),
     );
     const routeWebSockets = context.routeWebSocket;
     if (routeWebSockets === undefined)
@@ -295,6 +394,7 @@ const installContextPolicy = (
 export const makeKitesurfClient = (
   binding: BrowserWorker,
   launchBrowser: KitesurfRuntimeLauncher = launchRuntimeKitesurf,
+  resourceTimeoutMillis = KITESURF_OPERATION_TIMEOUT_MILLIS,
 ): KitesurfClientShape =>
   KitesurfClient.of({
     withPage: (options, use) => {
@@ -304,7 +404,14 @@ export const makeKitesurfClient = (
           new KitesurfClientError({ operation: "install_network_guard", reason: "unsupported" }),
         );
       return Effect.acquireUseRelease(
-        runtimeEffect("launch", "ambiguous", () => launchBrowser(binding)),
+        boundedRuntimeEffect(
+          "launch",
+          "ambiguous",
+          () => launchBrowser(binding),
+          resourceTimeoutMillis,
+          (browser) =>
+            compensateLateResource("close_browser", () => browser.close(), resourceTimeoutMillis),
+        ),
         (browser) =>
           Effect.gen(function* () {
             const sessionId = yield* Effect.try({
@@ -321,29 +428,52 @@ export const makeKitesurfClient = (
                 reason: "unsupported",
               });
             return yield* Effect.acquireUseRelease(
-              runtimeEffect("create_context", "ambiguous", () =>
-                browser.newContext({
-                  serviceWorkers: "block",
-                  ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
-                }),
+              boundedRuntimeEffect(
+                "create_context",
+                "ambiguous",
+                () =>
+                  browser.newContext({
+                    serviceWorkers: "block",
+                    ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
+                  }),
+                resourceTimeoutMillis,
+                (context) =>
+                  compensateLateResource(
+                    "close_context",
+                    () => context.close(),
+                    resourceTimeoutMillis,
+                  ),
               ),
               (context) =>
                 installContextPolicy(context, origin, options.cookieSecret).pipe(
                   Effect.andThen(
                     Effect.acquireUseRelease(
-                      runtimeEffect("create_page", "ambiguous", () => context.newPage()),
+                      boundedRuntimeEffect(
+                        "create_page",
+                        "ambiguous",
+                        () => context.newPage(),
+                        resourceTimeoutMillis,
+                        (page) =>
+                          compensateLateResource(
+                            "close_page",
+                            () => page.close(),
+                            resourceTimeoutMillis,
+                          ),
+                      ),
                       (page) =>
                         singlePage(context, page).pipe(
                           Effect.andThen(use(makePage(origin, context, page))),
                         ),
-                      (page) => closeEffect("close_page", () => page.close()),
+                      (page) =>
+                        closeEffect("close_page", () => page.close(), resourceTimeoutMillis),
                     ),
                   ),
                 ),
-              (context) => closeEffect("close_context", () => context.close()),
+              (context) =>
+                closeEffect("close_context", () => context.close(), resourceTimeoutMillis),
             );
           }),
-        (browser) => closeEffect("close_browser", () => browser.close()),
+        (browser) => closeEffect("close_browser", () => browser.close(), resourceTimeoutMillis),
       );
     },
   });

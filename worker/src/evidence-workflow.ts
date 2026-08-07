@@ -20,6 +20,7 @@ import {
 } from "./kitesurf-client";
 
 export const EVIDENCE_ASSERTION_TIMEOUT_MILLIS = 5_000;
+export const EVIDENCE_ASSERTION_POLL_INTERVAL_MILLIS = 100;
 export const EVIDENCE_ACTION_TIMEOUT_MILLIS = 5_000;
 export const EVIDENCE_STEP_TIMEOUT_MILLIS = 30_000;
 
@@ -218,17 +219,34 @@ const assertionEffect = (
         ? page.count(assertion.locator).pipe(Effect.map((actual) => actual === assertion.expected))
         : page.urlPath.pipe(Effect.map((actual) => actual === assertion.expected));
 
-const executeAssertion = (
+const executeAssertion = Effect.fnUntraced(function* (
   page: KitesurfPage,
   assertion: EvidenceAssertion,
   step: number,
-): Effect.Effect<EvidenceAssertionResult, EvidenceWorkflowError> =>
-  boundedClientEffect(
-    assertionEffect(page, assertion),
-    "assertion",
-    step,
-    EVIDENCE_ASSERTION_TIMEOUT_MILLIS,
-  ).pipe(Effect.map((passed) => ({ kind: assertion.kind, passed })));
+) {
+  const startedAtMillis = yield* Clock.currentTimeMillis;
+  const deadlineMillis = startedAtMillis + EVIDENCE_ASSERTION_TIMEOUT_MILLIS;
+  const poll = Effect.gen(function* () {
+    for (;;) {
+      const passed = yield* assertionEffect(page, assertion).pipe(
+        Effect.mapError((error) => mapClientError(error, "assertion", step)),
+      );
+      if (passed) return true;
+      const nowMillis = yield* Clock.currentTimeMillis;
+      if (nowMillis >= deadlineMillis) return false;
+      yield* Effect.sleep(
+        Math.min(EVIDENCE_ASSERTION_POLL_INTERVAL_MILLIS, deadlineMillis - nowMillis),
+      );
+    }
+  });
+  const passed = yield* poll.pipe(
+    Effect.timeoutOrElse({
+      duration: EVIDENCE_ASSERTION_TIMEOUT_MILLIS,
+      orElse: () => Effect.succeed(false),
+    }),
+  );
+  return { kind: assertion.kind, passed } satisfies EvidenceAssertionResult;
+});
 
 const executeStep = Effect.fnUntraced(function* (
   control: EvidenceWorkflowControlShape,
@@ -307,50 +325,48 @@ const executeJob = Effect.fnUntraced(function* (
   const nowMillis = yield* Clock.currentTimeMillis;
   if (!Number.isFinite(deadlineMillis) || deadlineMillis <= nowMillis)
     return yield* workflowError("browser", "deadline", { failureCode: "deadline" });
-  const execution = Effect.gen(function* () {
-    const preview = yield* control
-      .expose(input.active)
-      .pipe(Effect.mapError((error) => mapControlError(error, "preview")));
-    const jobStartedAtMillis = yield* Clock.currentTimeMillis;
-    return yield* client
-      .withPage(
-        {
-          origin: preview.origin,
-          cookieSecret: preview.cookieSecret,
-          ...(input.job.viewport === undefined ? {} : { viewport: input.job.viewport }),
-        },
-        (page) =>
-          Effect.gen(function* () {
-            yield* control
-              .markRunning(input.active)
-              .pipe(Effect.mapError((error) => mapControlError(error, "phase")));
-            for (let index = 0; index < input.job.steps.length; index += 1) {
-              yield* executeStep(control, page, input, jobStartedAtMillis, index).pipe(
-                Effect.timeoutOrElse({
-                  duration: EVIDENCE_STEP_TIMEOUT_MILLIS,
-                  orElse: () =>
-                    Effect.fail(
-                      workflowError("action", "deadline", {
-                        failureCode: "deadline",
-                        step: index,
-                      }),
-                    ),
-                }),
-              );
-            }
-          }),
-      )
-      .pipe(
-        Effect.mapError((error) =>
-          Predicate.isTagged(error, "KitesurfClientError")
-            ? mapClientError(error, "browser")
-            : error,
-        ),
-      );
-  });
+  const preview = yield* control
+    .expose(input.active)
+    .pipe(Effect.mapError((error) => mapControlError(error, "preview")));
+  const jobStartedAtMillis = yield* Clock.currentTimeMillis;
+  if (jobStartedAtMillis >= deadlineMillis)
+    return yield* workflowError("browser", "deadline", { failureCode: "deadline" });
+  const execution = client
+    .withPage(
+      {
+        origin: preview.origin,
+        cookieSecret: preview.cookieSecret,
+        ...(input.job.viewport === undefined ? {} : { viewport: input.job.viewport }),
+      },
+      (page) =>
+        Effect.gen(function* () {
+          yield* control
+            .markRunning(input.active)
+            .pipe(Effect.mapError((error) => mapControlError(error, "phase")));
+          for (let index = 0; index < input.job.steps.length; index += 1) {
+            yield* executeStep(control, page, input, jobStartedAtMillis, index).pipe(
+              Effect.timeoutOrElse({
+                duration: EVIDENCE_STEP_TIMEOUT_MILLIS,
+                orElse: () =>
+                  Effect.fail(
+                    workflowError("action", "deadline", {
+                      failureCode: "deadline",
+                      step: index,
+                    }),
+                  ),
+              }),
+            );
+          }
+        }),
+    )
+    .pipe(
+      Effect.mapError((error) =>
+        Predicate.isTagged(error, "KitesurfClientError") ? mapClientError(error, "browser") : error,
+      ),
+    );
   return yield* execution.pipe(
     Effect.timeoutOrElse({
-      duration: deadlineMillis - nowMillis,
+      duration: deadlineMillis - jobStartedAtMillis,
       orElse: () => Effect.fail(workflowError("browser", "deadline", { failureCode: "deadline" })),
     }),
   );

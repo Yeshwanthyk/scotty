@@ -143,6 +143,7 @@ const PASSIVE_PI_CONSOLE_REQUEST_HEADERS = ["accept", "content-type", "last-even
 const EVIDENCE_PREVIEW_BASE_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const EVIDENCE_CLEANUP_RETRY_SECONDS = 5;
+const EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS = 5_000;
 const SANDBOX_PREVIEW_PROXY_HEADER = "x-sandbox-preview-proxy";
 const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
@@ -235,10 +236,16 @@ export interface PassivePiConsoleRelay {
 
 export interface SandboxEffectOptions {
   readonly clock?: Clock.Clock;
+  readonly evidencePreviewHostTimeoutMillis?: number;
   readonly kitesurfClient?: KitesurfClientShape;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly previewRequestForwarder?: (request: Request) => Promise<Response>;
 }
+
+export const SANDBOX_TEST_ACCEPT_EVIDENCE = Symbol("scotty.test.acceptEvidence");
+export const SANDBOX_TEST_EXPOSE_EVIDENCE = Symbol("scotty.test.exposeEvidence");
+export const SANDBOX_TEST_COMPLETE_EVIDENCE_STEP = Symbol("scotty.test.completeEvidenceStep");
+export const SANDBOX_TEST_FINALIZE_EVIDENCE = Symbol("scotty.test.finalizeEvidence");
 
 class ManagedStopArmedError extends Data.TaggedError("ManagedStopArmedError")<{
   readonly cause: unknown;
@@ -295,6 +302,77 @@ const hostEffect = <A>(
     try: evaluate,
     catch: (cause) => new HostOperationFailure({ operation, cause }),
   });
+
+interface BoundedHostPromise<A> {
+  readonly result: Promise<A>;
+  readonly reconciliation: Promise<void>;
+}
+
+const boundedHostPromise = <A>(
+  operation: HostOperation,
+  evaluate: () => Promise<A>,
+  timeoutMillis: number,
+  signal?: AbortSignal,
+  compensateLateSuccess?: (value: A) => Promise<void>,
+): BoundedHostPromise<A> => {
+  let resolveReconciliation = (): void => undefined;
+  let rejectReconciliation = (_cause: unknown): void => undefined;
+  const reconciliation = new Promise<void>((resolve, reject) => {
+    resolveReconciliation = resolve;
+    rejectReconciliation = reject;
+  });
+  const result = new Promise<A>((resolve, reject) => {
+    let waiting = true;
+    const finishWaiting = (): void => {
+      waiting = false;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    };
+    const stopWaiting = (cause: unknown): void => {
+      if (!waiting) return;
+      finishWaiting();
+      // oxlint-disable-next-line scotty/no-promise-reject -- boundary: native Sandbox timeout or abort must settle before Effect can reconcile the late host mutation
+      reject(new HostOperationFailure({ operation, cause }));
+    };
+    const abort = (): void => stopWaiting("interrupted");
+    // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native Sandbox preview mutations need a real host timeout and late reconciliation outside Effect interruption
+    const timeout = setTimeout(() => stopWaiting("timeout"), timeoutMillis);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted === true) abort();
+    void Promise.resolve()
+      .then(evaluate)
+      .then(
+        (value) => {
+          if (waiting) {
+            finishWaiting();
+            resolve(value);
+            resolveReconciliation();
+            return;
+          }
+          if (compensateLateSuccess === undefined) {
+            resolveReconciliation();
+            return;
+          }
+          void compensateLateSuccess(value).then(resolveReconciliation, rejectReconciliation);
+        },
+        (cause) => {
+          if (waiting) {
+            finishWaiting();
+            // oxlint-disable-next-line scotty/no-promise-reject -- boundary: the native Sandbox rejection is forwarded once into the surrounding Effect.tryPromise adapter
+            reject(cause);
+          }
+          resolveReconciliation();
+        },
+      );
+  });
+  return { result, reconciliation };
+};
+
+const boundedHostResult = <A>(
+  operation: HostOperation,
+  evaluate: () => Promise<A>,
+  timeoutMillis: number,
+): Promise<A> => boundedHostPromise(operation, evaluate, timeoutMillis).result;
 
 const decodeEvidenceArtifactError = Schema.decodeUnknownOption(EvidenceArtifactError);
 const decodeEvidenceStateError = Schema.decodeUnknownOption(EvidenceStateError);
@@ -357,11 +435,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly sessionControlGate: SessionControlGate;
   private readonly authoritativeStorage: SessionRecordStorage;
   private readonly evidenceEnabled: boolean;
+  private readonly evidencePreviewHostTimeoutMillis: number;
   private readonly kitesurfClient: KitesurfClientShape;
   private readonly previewBase: string | undefined;
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
   private createInFlight: InFlightCreate | undefined;
+  private readonly previewExposureReconciliations = new Map<string, Promise<void>>();
   private readonly previewRequests = new Map<string, InFlightPreviewRequest>();
 
   constructor(ctx: DurableObjectState<{}>, env: Bindings, options: SandboxEffectOptions = {}) {
@@ -369,6 +449,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.clock = options.clock;
     this.rawContainer = ctx.container;
     this.evidenceEnabled = env.SCOTTY_EVIDENCE_ENABLED === "true";
+    this.evidencePreviewHostTimeoutMillis =
+      options.evidencePreviewHostTimeoutMillis ?? EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS;
     this.kitesurfClient = options.kitesurfClient ?? makeKitesurfClient(env.BROWSER);
     this.previewBase =
       env.SCOTTY_PREVIEW_BASE !== undefined &&
@@ -567,8 +649,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const evidence = yield* EvidenceStore;
     const revoked = yield* evidence.revokePreview(nonce, interruptionReason);
     yield* Effect.sync(() => this.abortPreviewRequests(nonce));
+    const exposureReconciliation = this.previewExposureReconciliations.get(nonce);
+    if (exposureReconciliation !== undefined)
+      yield* hostEffect("expose", () => exposureReconciliation);
     if (revoked.exposure === "unexpose_pending") {
-      yield* hostEffect("unexpose", () => this.unexposePort(revoked.port));
+      yield* hostEffect("unexpose", () =>
+        boundedHostResult(
+          "unexpose",
+          () => this.unexposePort(revoked.port),
+          this.evidencePreviewHostTimeoutMillis,
+        ),
+      );
       return yield* evidence.closePreview(nonce);
     }
     return revoked;
@@ -606,20 +697,45 @@ export class Sandbox extends BaseSandbox<Bindings> {
       try: () => sha256Hex(cookieSecret),
       catch: () => new EvidenceStateError({ reason: "preview_unavailable" }),
     });
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const remainingMillis = Date.parse(active.deadlineAt) - nowMillis;
+    const exposureTimeoutMillis = Math.max(
+      0,
+      Math.min(this.evidencePreviewHostTimeoutMillis, remainingMillis),
+    );
     const exposed = yield* Effect.result(
-      hostEffect("expose", () =>
-        this.exposePort(active.port, {
-          hostname: previewBase,
-          token: active.routeNonce,
-          name: `evidence-${active.jobId}`,
-        }),
-      ),
+      Effect.tryPromise({
+        try: (signal) => {
+          const exposure = boundedHostPromise(
+            "expose",
+            () =>
+              this.exposePort(active.port, {
+                hostname: previewBase,
+                token: active.routeNonce,
+                name: `evidence-${active.jobId}`,
+              }),
+            exposureTimeoutMillis,
+            signal,
+            () =>
+              boundedHostResult(
+                "unexpose",
+                () => this.unexposePort(active.port),
+                this.evidencePreviewHostTimeoutMillis,
+              ),
+          );
+          this.previewExposureReconciliations.set(nonce, exposure.reconciliation);
+          const forget = (): void => {
+            if (this.previewExposureReconciliations.get(nonce) === exposure.reconciliation)
+              this.previewExposureReconciliations.delete(nonce);
+          };
+          void exposure.reconciliation.then(forget, forget);
+          return exposure.result;
+        },
+        catch: (cause) => new HostOperationFailure({ operation: "expose", cause }),
+      }),
     );
     if (Result.isFailure(exposed)) {
-      const cleaned = yield* Effect.result(
-        this.cleanupEvidencePreviewProgram(nonce, "interrupted"),
-      );
-      if (Result.isSuccess(cleaned)) yield* evidence.interrupt(nonce, "interrupted");
+      yield* Effect.result(this.cleanupEvidencePreviewProgram(nonce, "interrupted"));
       return yield* this.upstreamError("Evidence preview exposure failed", exposed.failure);
     }
     const exposedOrigin = yield* Effect.result(
@@ -639,10 +755,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           )
         : Result.fail(new EvidenceStateError({ reason: "preview_unavailable" }));
     if (Result.isFailure(published)) {
-      const cleaned = yield* Effect.result(
-        this.cleanupEvidencePreviewProgram(nonce, "interrupted"),
-      );
-      if (Result.isSuccess(cleaned)) yield* evidence.interrupt(nonce, "interrupted");
+      yield* Effect.result(this.cleanupEvidencePreviewProgram(nonce, "interrupted"));
       return yield* published.failure;
     }
     return {
@@ -790,33 +903,60 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (record.operation?.kind !== "evidence" || record.operation.nonce !== nonce)
       return yield* new EvidenceStateError({ reason: "lease_changed" });
     const frame = input.frame;
-    const artifact =
+    const failedAssertion = input.assertions.some((assertion) => !assertion.passed);
+    const artifactStore = yield* ArtifactStore;
+    const frameInput =
       frame === undefined
         ? undefined
-        : yield* Effect.flatMap(ArtifactStore, (store) =>
-            store.putFrame({
-              sessionId: record.id,
-              jobId: active.jobId,
-              frameId: frame.frameId,
-              bytes: frame.bytes,
-              capturedAt: frame.capturedAt,
-              offsetMillis: frame.offsetMillis,
-            }),
-          );
+        : {
+            sessionId: record.id,
+            jobId: active.jobId,
+            frameId: frame.frameId,
+            bytes: frame.bytes,
+            capturedAt: frame.capturedAt,
+            offsetMillis: frame.offsetMillis,
+          };
+    const artifactResult =
+      frameInput === undefined
+        ? Result.succeed<EvidenceArtifactV1 | undefined>(undefined)
+        : yield* Effect.result(artifactStore.putFrame(frameInput));
+    if (Result.isFailure(artifactResult)) {
+      if (!failedAssertion) return yield* artifactResult.failure;
+      if (
+        frameInput !== undefined &&
+        (artifactResult.failure.operation === "put" || artifactResult.failure.operation === "head")
+      )
+        yield* artifactStore.discardFrame(frameInput);
+    }
+    const artifact = Result.isSuccess(artifactResult) ? artifactResult.success : undefined;
+    const publication = {
+      index: input.index,
+      startedAt: input.startedAt,
+      completedAt: input.completedAt,
+      offsetMillis: input.offsetMillis,
+      assertions: input.assertions,
+    };
     const completed = yield* Effect.result(
       evidence.completeStep(nonce, {
-        index: input.index,
-        startedAt: input.startedAt,
-        completedAt: input.completedAt,
-        offsetMillis: input.offsetMillis,
-        assertions: input.assertions,
+        ...publication,
         ...(artifact === undefined ? {} : { artifact }),
       }),
     );
     if (Result.isSuccess(completed)) return completed.success;
     if (artifact !== undefined) {
       const pending = yield* evidence.requestVerifiedDelete(artifact, "abandoned");
-      if (pending !== undefined) yield* this.deleteEvidenceArtifactsProgram([pending]);
+      if (pending !== undefined) {
+        const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
+        if (Result.isFailure(deleted))
+          yield* Effect.sync(() =>
+            console.error("Failed evidence frame deletion remains authoritative and pending", {
+              jobId: active.jobId,
+              frameId: artifact.frameId,
+              error: errorName(deleted.failure),
+            }),
+          );
+      }
+      if (failedAssertion) return yield* evidence.completeStep(nonce, publication);
     }
     return yield* completed.failure;
   });
@@ -845,10 +985,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       expose: (active) =>
         this.exposeScottyEvidencePreviewProgram(active.operationNonce).pipe(
           Effect.mapError(
-            () =>
+            (error) =>
               new EvidenceWorkflowControlError({
                 operation: "expose",
-                failureCode: "unsupported",
+                failureCode: Predicate.isTagged(error, "HostOperationFailure")
+                  ? "interrupted"
+                  : "unsupported",
               }),
           ),
           Effect.provide(this.layer),
@@ -2301,7 +2443,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.getScottySessionProgram());
   }
 
-  async acceptScottyEvidenceJob(value: unknown): Promise<EvidenceActiveJobV1> {
+  async [SANDBOX_TEST_ACCEPT_EVIDENCE](value: unknown): Promise<EvidenceActiveJobV1> {
     return this.#run(this.acceptScottyEvidenceJobProgram(value));
   }
 
@@ -2309,7 +2451,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.runScottyEvidenceJobProgram(value));
   }
 
-  async exposeScottyEvidencePreview(nonce: string): Promise<ExposedEvidencePreviewV1> {
+  async [SANDBOX_TEST_EXPOSE_EVIDENCE](nonce: string): Promise<ExposedEvidencePreviewV1> {
     return this.#run(this.exposeScottyEvidencePreviewProgram(nonce));
   }
 
@@ -2343,11 +2485,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.expireScottyEvidencePreviewProgram(requestId));
   }
 
-  async completeScottyEvidenceStep(nonce: string, input: unknown): Promise<EvidenceStepResult> {
+  async [SANDBOX_TEST_COMPLETE_EVIDENCE_STEP](
+    nonce: string,
+    input: unknown,
+  ): Promise<EvidenceStepResult> {
     return this.#run(this.completeScottyEvidenceStepProgram(nonce, input));
   }
 
-  async finalizeScottyEvidenceJob(
+  async [SANDBOX_TEST_FINALIZE_EVIDENCE](
     nonce: string,
     status: EvidenceTerminalStatus,
   ): Promise<EvidenceJobSummaryV1> {

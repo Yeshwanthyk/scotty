@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Clock, Effect, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
+import { vi } from "vitest";
 import {
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
   EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
@@ -9,6 +10,13 @@ import {
 } from "../src/evidence-contracts";
 import { sha256Hex } from "../src/digest";
 import { KitesurfClient } from "../src/kitesurf-client";
+import {
+  SANDBOX_TEST_ACCEPT_EVIDENCE,
+  SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
+  SANDBOX_TEST_EXPOSE_EVIDENCE,
+  SANDBOX_TEST_FINALIZE_EVIDENCE,
+  Sandbox,
+} from "../src/session";
 import {
   createSessionHarness,
   injectedHarnessFailure,
@@ -74,6 +82,20 @@ const job = {
 } as const;
 
 describe("evidence session lifecycle", () => {
+  it("does not expose low-level evidence mutation methods over Durable Object RPC", () => {
+    const publicNames = Object.getOwnPropertyNames(Sandbox.prototype);
+    assert.include(publicNames, "runScottyEvidenceJob");
+    assert.notInclude(publicNames, "acceptScottyEvidenceJob");
+    assert.notInclude(publicNames, "exposeScottyEvidencePreview");
+    assert.notInclude(publicNames, "completeScottyEvidenceStep");
+    assert.notInclude(publicNames, "finalizeScottyEvidenceJob");
+    const symbols = Object.getOwnPropertySymbols(Sandbox.prototype);
+    assert.include(symbols, SANDBOX_TEST_ACCEPT_EVIDENCE);
+    assert.include(symbols, SANDBOX_TEST_EXPOSE_EVIDENCE);
+    assert.include(symbols, SANDBOX_TEST_COMPLETE_EVIDENCE_STEP);
+    assert.include(symbols, SANDBOX_TEST_FINALIZE_EVIDENCE);
+  });
+
   it.effect(
     "runs one accepted job through the scoped RPC and existing artifact publication path",
     () =>
@@ -152,6 +174,100 @@ describe("evidence session lifecycle", () => {
       assert.deepStrictEqual(harness.artifactKeys(), []);
       assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
       assert.strictEqual(harness.readRecord()?.operation, null);
+    }),
+  );
+
+  it.effect("publishes an assertion failure without a frame when failure capture is invalid", () =>
+    Effect.gen(function* () {
+      let assertionAttempts = 0;
+      const kitesurfClient = KitesurfClient.of({
+        withPage: (_options, use) =>
+          use({
+            goto: () => Effect.void,
+            click: () => Effect.void,
+            fill: () => Effect.void,
+            press: () => Effect.void,
+            isVisible: () => Effect.succeed(true),
+            textContent: () => Effect.succeed("Ready"),
+            count: () => Effect.succeed(1),
+            urlPath: Effect.sync(() => {
+              assertionAttempts += 1;
+              return "/not-ready";
+            }),
+            screenshot: Effect.succeed(Uint8Array.from([0, 1, 2, 3])),
+          }),
+      });
+      const harness = yield* createHarness({
+        kitesurfClient,
+        previewBase: "preview.scotty.example",
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+
+      const pending = harness.sandbox.runScottyEvidenceJob(job);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.isAtLeast(assertionAttempts, 1), {
+          interval: 1,
+          timeout: 1_000,
+        }),
+      );
+      yield* TestClock.adjust(5_000);
+      const result = yield* Effect.promise(() => pending);
+
+      assert.strictEqual(result.status, "failed");
+      assert.deepStrictEqual(result.failure, { code: "assertion_mismatch", step: 0 });
+      assert.strictEqual(result.completedSteps, 1);
+      assert.strictEqual(result.frameCount, 0);
+      assert.deepStrictEqual(harness.artifactKeys(), []);
+      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
+        status: "failed",
+        completedSteps: 1,
+        frameCount: 0,
+      });
+    }),
+  );
+
+  it.effect("does not let a failed assertion upload failure mask the functional result", () =>
+    Effect.gen(function* () {
+      let assertionAttempts = 0;
+      const kitesurfClient = KitesurfClient.of({
+        withPage: (_options, use) =>
+          use({
+            goto: () => Effect.void,
+            click: () => Effect.void,
+            fill: () => Effect.void,
+            press: () => Effect.void,
+            isVisible: () => Effect.succeed(true),
+            textContent: () => Effect.succeed("Ready"),
+            count: () => Effect.succeed(1),
+            urlPath: Effect.sync(() => {
+              assertionAttempts += 1;
+              return "/not-ready";
+            }),
+            screenshot: Effect.succeed(PNG),
+          }),
+      });
+      const harness = yield* createHarness({
+        failureStage: "artifactPut",
+        kitesurfClient,
+        previewBase: "preview.scotty.example",
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+
+      const pending = harness.sandbox.runScottyEvidenceJob(job);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.isAtLeast(assertionAttempts, 1), {
+          interval: 1,
+          timeout: 1_000,
+        }),
+      );
+      yield* TestClock.adjust(5_000);
+      const result = yield* Effect.promise(() => pending);
+
+      assert.strictEqual(result.status, "failed");
+      assert.deepStrictEqual(result.failure, { code: "assertion_mismatch", step: 0 });
+      assert.strictEqual(result.completedSteps, 1);
+      assert.strictEqual(result.frameCount, 0);
+      assert.deepStrictEqual(harness.artifactKeys(), []);
     }),
   );
 
@@ -784,6 +900,14 @@ describe("evidence session lifecycle", () => {
       );
       assert.ok(Result.isFailure(exposed));
       assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+      assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
+      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+        status: "interrupted",
+        exposure: "closed",
+      });
+      yield* Effect.promise(() =>
+        harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "interrupted"),
+      );
       assert.strictEqual(harness.readRecord()?.operation, null);
       assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
         status: "interrupted",
@@ -792,6 +916,64 @@ describe("evidence session lifecycle", () => {
         harness.events.indexOf(`host:preview:expose:${job.port}`),
         harness.events.indexOf(`host:preview:unexpose:${job.port}`),
       );
+    }),
+  );
+
+  it.effect("retains authority until a timed-out expose resolves and is unexposed", () =>
+    Effect.gen(function* () {
+      let releaseExpose = (): void => undefined;
+      const exposeGate = new Promise<void>((resolve) => {
+        releaseExpose = resolve;
+      });
+      const harness = yield* createHarness({
+        evidencePreviewHostTimeoutMillis: 10,
+        previewBase: "preview.scotty.example",
+        previewExposeGate: exposeGate,
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const exposure = harness.sandbox.exposeScottyEvidencePreview(accepted.operationNonce);
+      let settled = false;
+      void exposure.then(
+        () => void (settled = true),
+        () => void (settled = true),
+      );
+      yield* Effect.promise(() =>
+        vi.waitFor(
+          () => {
+            assert.deepInclude(
+              harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob,
+              { status: "interrupted", exposure: "unexpose_pending" },
+            );
+          },
+          { interval: 1, timeout: 1_000 },
+        ),
+      );
+      assert.isFalse(settled);
+      assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
+
+      releaseExpose();
+      const exposed = yield* Effect.result(
+        Effect.tryPromise({
+          try: () => exposure,
+          catch: (cause) => cause,
+        }),
+      );
+      assert.ok(Result.isFailure(exposed));
+      assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+      assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
+      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+        status: "interrupted",
+        exposure: "closed",
+      });
+      assert.isBelow(
+        harness.events.indexOf(`host:preview:expose:${job.port}`),
+        harness.events.indexOf(`host:preview:unexpose:${job.port}`),
+      );
+      yield* Effect.promise(() =>
+        harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "interrupted"),
+      );
+      assert.strictEqual(harness.readRecord()?.operation, null);
     }),
   );
 
@@ -811,6 +993,11 @@ describe("evidence session lifecycle", () => {
       );
       assert.ok(Result.isFailure(exposed));
       assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+      const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      assert.deepInclude(pending?.activeJob, { status: "interrupted", exposure: "closed" });
+      yield* Effect.promise(() =>
+        harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "interrupted"),
+      );
       const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
       assert.strictEqual(state?.activeJob, undefined);
       assert.deepInclude(state?.jobs[0], { status: "interrupted" });

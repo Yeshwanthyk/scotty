@@ -1,12 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 import type {
+  APIResponse,
   BrowserContext,
   BrowserWorker,
   Request as PlaywrightRequest,
   Route,
   WebSocketRoute,
 } from "@cloudflare/playwright";
-import { Effect } from "effect";
+import { Effect, Fiber, Result } from "effect";
 import { vi } from "vitest";
 
 const playwright = vi.hoisted(() => ({ launch: vi.fn() }));
@@ -109,6 +110,36 @@ const runtimeState = (): RuntimeState => ({
   webSocketHandler: undefined,
 });
 
+type RuntimeBrowser = Awaited<ReturnType<KitesurfRuntimeLauncher>>;
+type RuntimeContext = Awaited<ReturnType<RuntimeBrowser["newContext"]>>;
+type RuntimePage = Awaited<ReturnType<RuntimeContext["newPage"]>>;
+
+const deferredPromise = <A>() => {
+  let resolve = (_value: A): void => undefined;
+  const promise = new Promise<A>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+};
+
+const failureOf = <A, E>(result: Result.Result<A, E>): E => {
+  assert.ok(Result.isFailure(result));
+  return result.failure;
+};
+
+const apiResponse = (status: number, headers: Readonly<Record<string, string>> = {}): APIResponse =>
+  ({
+    dispose: async () => undefined,
+    headers: () => ({ ...headers }),
+    headersArray: () => Object.entries(headers).map(([name, value]) => ({ name, value })),
+    json: async () => null,
+    ok: () => status >= 200 && status <= 299,
+    status: () => status,
+    statusText: () => "",
+    text: async () => "",
+    url: () => "https://preview.scotty.example/",
+  }) as APIResponse;
+
 describe("Kitesurf client", () => {
   it.effect("launches the Worker binding with the sessionless Kitesurf selector", () =>
     Effect.gen(function* () {
@@ -178,23 +209,33 @@ describe("Kitesurf client", () => {
       assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("browser:close"));
       assert.isFalse(state.events.some((event) => event.includes(secret)));
 
-      let continued = false;
+      let fulfilled = false;
       let aborted = false;
+      const response = apiResponse(200);
       const handler = state.requestHandler;
       assert.ok(handler !== undefined);
       yield* Effect.promise(() =>
         handler(
-          { continue: async () => void (continued = true) } as Route,
-          { url: () => "https://preview.scotty.example/app.js" } as PlaywrightRequest,
+          {
+            fetch: async () => response,
+            fulfill: async () => void (fulfilled = true),
+          } as Route,
+          {
+            method: () => "GET",
+            url: () => "https://preview.scotty.example/app.js",
+          } as PlaywrightRequest,
         ),
       );
       yield* Effect.promise(() =>
         handler(
           { abort: async () => void (aborted = true) } as Route,
-          { url: () => "https://external.example/track.js" } as PlaywrightRequest,
+          {
+            method: () => "GET",
+            url: () => "https://external.example/track.js",
+          } as PlaywrightRequest,
         ),
       );
-      assert.isTrue(continued);
+      assert.isTrue(fulfilled);
       assert.isTrue(aborted);
 
       let webSocketClosed = false;
@@ -205,6 +246,232 @@ describe("Kitesurf client", () => {
       );
       assert.isTrue(webSocketClosed);
     }),
+  );
+
+  it.effect("never fetches a cross-origin redirect hop", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const client = makeKitesurfClient(binding, makeRuntime(state));
+      yield* client.withPage(
+        {
+          origin: "https://preview.scotty.example",
+          cookieSecret: "private-cookie-secret",
+        },
+        () => Effect.void,
+      );
+      const fetched: string[] = [];
+      let aborted = false;
+      let fulfilled = false;
+      const sameOriginRedirect = apiResponse(302, { location: "/next" });
+      const crossOriginRedirect = apiResponse(302, {
+        location: "https://external.example/private",
+      });
+      const handler = state.requestHandler;
+      assert.ok(handler !== undefined);
+      yield* Effect.promise(() =>
+        handler(
+          {
+            abort: async () => void (aborted = true),
+            fetch: async (options) => {
+              fetched.push(options?.url ?? "");
+              return fetched.length === 1 ? sameOriginRedirect : crossOriginRedirect;
+            },
+            fulfill: async () => void (fulfilled = true),
+          } as Route,
+          {
+            method: () => "GET",
+            url: () => "https://preview.scotty.example/start",
+          } as PlaywrightRequest,
+        ),
+      );
+
+      assert.deepStrictEqual(fetched, [
+        "https://preview.scotty.example/start",
+        "https://preview.scotty.example/next",
+      ]);
+      assert.isTrue(aborted);
+      assert.isFalse(fulfilled);
+    }),
+  );
+
+  it.effect("bounds acquisition and compensates browsers acquired after timeout", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),
+      () =>
+        Effect.gen(function* () {
+          const events: string[] = [];
+          const lateBrowser = deferredPromise<RuntimeBrowser>();
+          const client = makeKitesurfClient(binding, () => lateBrowser.promise, 0);
+          const fiber = yield* client
+            .withPage(
+              {
+                origin: "https://preview.scotty.example",
+                cookieSecret: "private-cookie-secret",
+              },
+              () => Effect.void,
+            )
+            .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
+          const result = yield* Fiber.join(fiber);
+          assert.deepInclude(failureOf(result), { operation: "launch", reason: "ambiguous" });
+
+          lateBrowser.resolve({
+            close: async () => void events.push("browser:late-close"),
+            newContext: async () => new Promise<RuntimeContext>(() => undefined),
+            sessionId: () => undefined,
+          });
+          yield* Effect.promise(() => vi.runAllTimersAsync());
+          assert.deepStrictEqual(events, ["browser:late-close"]);
+        }),
+      () => Effect.sync(() => vi.useRealTimers()),
+    ),
+  );
+
+  it.effect("compensates contexts and pages acquired after their native timeout", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),
+      () =>
+        Effect.gen(function* () {
+          const contextEvents: string[] = [];
+          const lateContext = deferredPromise<RuntimeContext>();
+          const contextClient = makeKitesurfClient(
+            binding,
+            async () => ({
+              close: async () => void contextEvents.push("browser:close"),
+              newContext: () => lateContext.promise,
+              sessionId: () => undefined,
+            }),
+            0,
+          );
+          const contextFiber = yield* contextClient
+            .withPage(
+              {
+                origin: "https://preview.scotty.example",
+                cookieSecret: "private-cookie-secret",
+              },
+              () => Effect.void,
+            )
+            .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
+          const contextResult = yield* Fiber.join(contextFiber);
+          assert.deepInclude(failureOf(contextResult), {
+            operation: "create_context",
+            reason: "ambiguous",
+          });
+          lateContext.resolve({
+            addCookies: async () => undefined,
+            close: async () => void contextEvents.push("context:late-close"),
+            newPage: async () => new Promise<RuntimePage>(() => undefined),
+            pages: () => [],
+          });
+          yield* Effect.promise(() => vi.runAllTimersAsync());
+          assert.deepStrictEqual(contextEvents, ["browser:close", "context:late-close"]);
+
+          const pageEvents: string[] = [];
+          const latePage = deferredPromise<RuntimePage>();
+          const context: RuntimeContext = {
+            addCookies: async () => undefined,
+            close: async () => void pageEvents.push("context:close"),
+            newPage: () => latePage.promise,
+            pages: () => [],
+            route: async () => undefined,
+            routeWebSocket: async () => undefined,
+          };
+          const pageClient = makeKitesurfClient(
+            binding,
+            async () => ({
+              close: async () => void pageEvents.push("browser:close"),
+              newContext: async () => context,
+              sessionId: () => undefined,
+            }),
+            0,
+          );
+          const pageFiber = yield* pageClient
+            .withPage(
+              {
+                origin: "https://preview.scotty.example",
+                cookieSecret: "private-cookie-secret",
+              },
+              () => Effect.void,
+            )
+            .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
+          const pageResult = yield* Fiber.join(pageFiber);
+          assert.deepInclude(failureOf(pageResult), {
+            operation: "create_page",
+            reason: "ambiguous",
+          });
+          latePage.resolve({
+            close: async () => void pageEvents.push("page:late-close"),
+          } as RuntimePage);
+          yield* Effect.promise(() => vi.runAllTimersAsync());
+          assert.deepStrictEqual(pageEvents, ["context:close", "browser:close", "page:late-close"]);
+        }),
+      () => Effect.sync(() => vi.useRealTimers()),
+    ),
+  );
+
+  it.effect("reports cleanup timeout and still runs enclosing cleanup", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })),
+      () =>
+        Effect.gen(function* () {
+          const events: string[] = [];
+          const pageClose = deferredPromise<void>();
+          const locator = {
+            click: async () => undefined,
+            count: async () => 1,
+            fill: async () => undefined,
+            isVisible: async () => true,
+            press: async () => undefined,
+            textContent: async () => "Ready",
+          };
+          const page: RuntimePage = {
+            close: () => pageClose.promise,
+            getByTestId: () => locator,
+            goto: async () => null,
+            locator: () => locator,
+            screenshot: async () => PNG,
+            url: () => "https://preview.scotty.example/",
+          };
+          const context: RuntimeContext = {
+            addCookies: async () => undefined,
+            close: async () => void events.push("context:close"),
+            newPage: async () => page,
+            pages: () => [page],
+            route: async () => undefined,
+            routeWebSocket: async () => undefined,
+          };
+          const client = makeKitesurfClient(
+            binding,
+            async () => ({
+              close: async () => void events.push("browser:close"),
+              newContext: async () => context,
+              sessionId: () => undefined,
+            }),
+            0,
+          );
+          const fiber = yield* client
+            .withPage(
+              {
+                origin: "https://preview.scotty.example",
+                cookieSecret: "private-cookie-secret",
+              },
+              () => Effect.void,
+            )
+            .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
+          const result = yield* Fiber.join(fiber);
+
+          assert.deepInclude(failureOf(result), {
+            operation: "close_page",
+            reason: "cleanup",
+          });
+          assert.deepStrictEqual(events, ["context:close", "browser:close"]);
+          pageClose.resolve();
+        }),
+      () => Effect.sync(() => vi.useRealTimers()),
+    ),
   );
 
   it.effect(

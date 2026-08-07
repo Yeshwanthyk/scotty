@@ -142,12 +142,21 @@ interface ControlState {
 
 const makeControl = (
   state: ControlState,
-  options: { readonly exposeNever?: boolean; readonly finalizeFails?: boolean } = {},
+  options: { readonly exposeFailsAtDeadline?: boolean; readonly finalizeFails?: boolean } = {},
 ): EvidenceWorkflowControlShape =>
   EvidenceWorkflowControl.of({
     expose: () =>
-      options.exposeNever === true
-        ? Effect.never
+      options.exposeFailsAtDeadline === true
+        ? Effect.sleep(60_000).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new EvidenceWorkflowControlError({
+                  operation: "expose",
+                  failureCode: "interrupted",
+                }),
+              ),
+            ),
+          )
         : Effect.sync(() => {
             state.events.push("preview:expose");
             return {
@@ -207,7 +216,7 @@ const execute = (
   state: ControlState,
   options: {
     readonly closePageFails?: boolean;
-    readonly exposeNever?: boolean;
+    readonly exposeFailsAtDeadline?: boolean;
     readonly finalizeFails?: boolean;
   } = {},
 ) =>
@@ -255,6 +264,34 @@ describe("Kitesurf evidence workflow", () => {
           state.events.indexOf("terminal:succeeded"),
         );
       }),
+  );
+
+  it.effect("polls transient assertion mismatches with the Effect clock", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const state = emptyState();
+      let visibleCalls = 0;
+      const fiber = yield* execute(
+        defaultJob,
+        makePage({
+          isVisible: () =>
+            Effect.sync(() => {
+              visibleCalls += 1;
+              return visibleCalls >= 3;
+            }),
+        }),
+        state,
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.yieldNow;
+      assert.strictEqual(visibleCalls, 1);
+      yield* TestClock.adjust(100);
+      assert.strictEqual(visibleCalls, 2);
+      yield* TestClock.adjust(100);
+      const result = yield* Fiber.join(fiber);
+
+      assert.strictEqual(visibleCalls, 3);
+      assert.strictEqual(result.status, "succeeded");
+    }),
   );
 
   it.effect("dispatches all four declarative action kinds exactly once and appends in order", () =>
@@ -314,11 +351,14 @@ describe("Kitesurf evidence workflow", () => {
       yield* TestClock.setTime(NOW);
       const state = emptyState();
       const privatePageText = "undeclared-page-secret";
-      const result = yield* execute(
+      const fiber = yield* execute(
         defaultJob,
         makePage({ textContent: () => Effect.succeed(privatePageText) }),
         state,
-      );
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(5_000);
+      const result = yield* Fiber.join(fiber);
 
       assert.strictEqual(result.status, "failed");
       assert.deepInclude(result, { failure: { code: "assertion_mismatch", step: 0 } });
@@ -414,22 +454,24 @@ describe("Kitesurf evidence workflow", () => {
     }),
   );
 
-  it.effect("bounds preview exposure by the accepted job deadline", () =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
-      const state = emptyState();
-      const fiber = yield* execute(defaultJob, makePage(), state, {
-        exposeNever: true,
-      }).pipe(Effect.forkChild({ startImmediately: true }));
-      yield* Effect.yieldNow;
-      yield* TestClock.adjust(60_000);
-      const result = yield* Fiber.join(fiber);
+  it.effect(
+    "lets the exposure authority own its deadline instead of interrupting it externally",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        const state = emptyState();
+        const fiber = yield* execute(defaultJob, makePage(), state, {
+          exposeFailsAtDeadline: true,
+        }).pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(60_000);
+        const result = yield* Fiber.join(fiber);
 
-      assert.strictEqual(result.status, "interrupted");
-      assert.deepStrictEqual(result.failure, { code: "deadline" });
-      assert.notInclude(state.events, "browser:open");
-      assert.include(state.events, "terminal:interrupted");
-    }),
+        assert.strictEqual(result.status, "interrupted");
+        assert.deepStrictEqual(result.failure, { code: "interrupted" });
+        assert.notInclude(state.events, "browser:open");
+        assert.include(state.events, "terminal:interrupted");
+      }),
   );
 
   it.effect("marks deadline and caller interruption without bypassing cleanup", () =>

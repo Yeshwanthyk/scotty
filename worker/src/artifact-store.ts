@@ -46,6 +46,11 @@ export interface PutEvidenceFrameInput {
   readonly offsetMillis: number;
 }
 
+export type DiscardEvidenceFrameInput = Pick<
+  PutEvidenceFrameInput,
+  "sessionId" | "jobId" | "frameId"
+>;
+
 export interface OpenEvidenceFrame {
   readonly body: ReadableStream<Uint8Array>;
   readonly bytes: number;
@@ -57,6 +62,9 @@ interface ArtifactStoreShape {
   readonly putFrame: (
     input: PutEvidenceFrameInput,
   ) => Effect.Effect<EvidenceArtifactV1, EvidenceArtifactError>;
+  readonly discardFrame: (
+    input: DiscardEvidenceFrameInput,
+  ) => Effect.Effect<void, EvidenceArtifactError>;
   readonly openFrame: (
     artifact: EvidenceArtifactV1,
   ) => Effect.Effect<OpenEvidenceFrame, EvidenceArtifactError>;
@@ -198,6 +206,26 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       expiresAt: artifactExpiry(capturedAtMillis),
       status: "available",
     };
+  }),
+  discardFrame: Effect.fnUntraced(function* (input) {
+    if (
+      Option.isNone(decodeEvidenceIdentifier(input.sessionId)) ||
+      Option.isNone(decodeEvidenceIdentifier(input.jobId)) ||
+      Option.isNone(decodeEvidenceIdentifier(input.frameId))
+    )
+      return yield* new EvidenceArtifactError({ operation: "validate", reason: "invalid_state" });
+    const key = evidenceArtifactObjectKey(input);
+    yield* Effect.tryPromise({
+      try: () => capabilities.delete(key),
+      catch: (cause) =>
+        new EvidenceArtifactError({ operation: "delete", reason: "upstream", cause }),
+    });
+    const remaining = yield* Effect.tryPromise({
+      try: () => capabilities.head(key),
+      catch: (cause) => new EvidenceArtifactError({ operation: "head", reason: "upstream", cause }),
+    });
+    if (remaining !== undefined)
+      return yield* new EvidenceArtifactError({ operation: "delete", reason: "upstream" });
   }),
   openFrame: Effect.fnUntraced(function* (artifact) {
     if (artifact.status !== "available" || !canonicalArtifact(artifact))

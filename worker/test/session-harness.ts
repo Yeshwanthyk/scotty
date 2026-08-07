@@ -10,7 +10,15 @@ import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
-import { Sandbox, type PassivePiConsoleRelay, type SandboxEffectOptions } from "../src/session";
+import {
+  SANDBOX_TEST_ACCEPT_EVIDENCE,
+  SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
+  SANDBOX_TEST_EXPOSE_EVIDENCE,
+  SANDBOX_TEST_FINALIZE_EVIDENCE,
+  Sandbox,
+  type PassivePiConsoleRelay,
+  type SandboxEffectOptions,
+} from "../src/session";
 import { EVIDENCE_RECORD_KEY, RUNTIME_EPOCH_KEY } from "../src/session-store";
 import { InMemoryFaultInjectableFake } from "./support";
 
@@ -49,6 +57,7 @@ export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
 
 export type HarnessFailureStage =
   | "artifactDelete"
+  | "artifactPut"
   | "backupDelete"
   | "backupList"
   | "checkpointDefect"
@@ -76,6 +85,7 @@ export interface HarnessOptions {
   readonly crashAfterInitialRecordCommit?: boolean;
   readonly destroyBehavior?: "pending" | "reject" | "success";
   readonly evidenceEnabled?: boolean;
+  readonly evidencePreviewHostTimeoutMillis?: number;
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
   readonly kitesurfClient?: SandboxEffectOptions["kitesurfClient"];
@@ -89,6 +99,7 @@ export interface HarnessOptions {
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly piSessionRunning?: boolean;
   readonly previewBase?: string;
+  readonly previewExposeGate?: Promise<void>;
   readonly previewRequestForwarder?: SandboxEffectOptions["previewRequestForwarder"];
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
@@ -112,8 +123,15 @@ export interface RecordedSchedule {
   readonly payload: unknown;
 }
 
+type SandboxHarness = Sandbox & {
+  readonly acceptScottyEvidenceJob: Sandbox[typeof SANDBOX_TEST_ACCEPT_EVIDENCE];
+  readonly completeScottyEvidenceStep: Sandbox[typeof SANDBOX_TEST_COMPLETE_EVIDENCE_STEP];
+  readonly exposeScottyEvidencePreview: Sandbox[typeof SANDBOX_TEST_EXPOSE_EVIDENCE];
+  readonly finalizeScottyEvidenceJob: Sandbox[typeof SANDBOX_TEST_FINALIZE_EVIDENCE];
+};
+
 export interface SessionHarness {
-  readonly sandbox: Sandbox;
+  readonly sandbox: SandboxHarness;
   readonly events: string[];
   readonly schedules: RecordedSchedule[];
   readonly deletedSchedules: string[];
@@ -595,6 +613,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     } as never,
     ARTIFACT_BUCKET: {
       put: async (key: string, value: unknown, putOptions?: R2PutOptions) => {
+        if (failures.has("artifactPut"))
+          throw injectedHarnessFailure("injected artifact put failure");
         if (!(value instanceof Uint8Array))
           throw injectedHarnessFailure("artifact value was not bytes");
         const contentType =
@@ -663,6 +683,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 
   const sandbox = new Sandbox(ctx, env, {
     clock: options.clock,
+    evidencePreviewHostTimeoutMillis: options.evidencePreviewHostTimeoutMillis,
     kitesurfClient: options.kitesurfClient,
     passivePiConsoleRelay: options.passivePiConsoleRelay,
     previewRequestForwarder: options.previewRequestForwarder,
@@ -680,6 +701,22 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     timestamp: "2026-01-01T00:00:00.000Z",
   });
   Object.defineProperties(sandbox, {
+    acceptScottyEvidenceJob: {
+      value: (value: unknown) => sandbox[SANDBOX_TEST_ACCEPT_EVIDENCE](value),
+    },
+    completeScottyEvidenceStep: {
+      value: (nonce: string, value: unknown) =>
+        sandbox[SANDBOX_TEST_COMPLETE_EVIDENCE_STEP](nonce, value),
+    },
+    exposeScottyEvidencePreview: {
+      value: (nonce: string) => sandbox[SANDBOX_TEST_EXPOSE_EVIDENCE](nonce),
+    },
+    finalizeScottyEvidenceJob: {
+      value: (
+        nonce: string,
+        status: Parameters<Sandbox[typeof SANDBOX_TEST_FINALIZE_EVIDENCE]>[1],
+      ) => sandbox[SANDBOX_TEST_FINALIZE_EVIDENCE](nonce, status),
+    },
     start: {
       value: async (): Promise<void> => {
         events.push("host:container:start");
@@ -749,6 +786,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         },
       ) => {
         events.push(`host:preview:expose:${port}`);
+        await options.previewExposeGate;
         const token = exposeOptions.token ?? "generated_token";
         exposedPreviewPorts.add(port);
         if (failures.has("previewExpose"))
@@ -889,7 +927,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   });
 
   return {
-    sandbox,
+    sandbox: sandbox as SandboxHarness,
     events,
     schedules,
     deletedSchedules,
