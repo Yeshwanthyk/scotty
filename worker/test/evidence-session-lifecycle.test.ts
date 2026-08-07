@@ -14,7 +14,7 @@ import {
   type EvidenceStateV1,
 } from "../src/evidence-contracts";
 import { sha256Hex } from "../src/digest";
-import { KitesurfClient } from "../src/kitesurf-client";
+import { KitesurfClient, KitesurfClientError } from "../src/kitesurf-client";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
   SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
@@ -221,6 +221,48 @@ describe("evidence session lifecycle", () => {
         assert.strictEqual(state?.jobs[0]?.frameCount, 1);
         assert.strictEqual(harness.readRecord()?.operation, null);
       }),
+  );
+
+  it.effect("does not complete a passed step when required screenshot capture fails", () =>
+    Effect.gen(function* () {
+      const kitesurfClient = KitesurfClient.of({
+        withPage: (_options, use) =>
+          use({
+            goto: () => Effect.void,
+            click: () => Effect.void,
+            fill: () => Effect.void,
+            press: () => Effect.void,
+            isVisible: () => Effect.succeed(true),
+            textContent: () => Effect.succeed("Ready"),
+            count: () => Effect.succeed(1),
+            urlPath: Effect.succeed("/"),
+            screenshot: Effect.fail(
+              new KitesurfClientError({ operation: "screenshot", reason: "ambiguous" }),
+            ),
+          }),
+      });
+      const harness = yield* createHarness({
+        kitesurfClient,
+        previewBase: "preview.scotty.example",
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+
+      const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
+
+      assert.strictEqual(result.status, "interrupted");
+      assert.deepStrictEqual(result.failure, { code: "interrupted", step: 0 });
+      assert.strictEqual(result.completedSteps, 0);
+      assert.strictEqual(result.frameCount, 0);
+      assert.deepStrictEqual(harness.artifactKeys(), []);
+      assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
+      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
+        status: "interrupted",
+        completedSteps: 0,
+        frameCount: 0,
+        failure: { code: "interrupted", step: 0 },
+      });
+      assert.strictEqual(harness.readRecord()?.operation, null);
+    }),
   );
 
   it.effect("fails an invalid screenshot without publishing an artifact", () =>

@@ -287,6 +287,7 @@ const executeStep = Effect.fnUntraced(function* (
         ),
       )
     : Result.succeed<Uint8Array | undefined>(undefined);
+  if (passed && Result.isFailure(screenshot)) return yield* screenshot.failure;
   const completedAtMillis = yield* Clock.currentTimeMillis;
   const completedAt = new Date(completedAtMillis).toISOString();
   const offsetMillis = Math.max(0, completedAtMillis - jobStartedAtMillis);
@@ -315,7 +316,6 @@ const executeStep = Effect.fnUntraced(function* (
       failureCode: "assertion_mismatch",
       step: index,
     });
-  if (Result.isFailure(screenshot)) return yield* screenshot.failure;
 });
 
 const executeJob = Effect.fnUntraced(function* (
@@ -433,6 +433,15 @@ export const runEvidenceWorkflow = Effect.fnUntraced(function* (input: RunEviden
     const execution = yield* Effect.result(executeJob(client, control, input));
     const status = terminalStatus(execution);
     const failure = Result.isFailure(execution) ? failureFor(execution.failure) : undefined;
+    if (Result.isFailure(execution))
+      yield* Effect.sync(() =>
+        console.error("Evidence workflow failed", {
+          jobId: input.active.jobId,
+          operation: execution.failure.operation,
+          reason: execution.failure.reason,
+          ...(execution.failure.step === undefined ? {} : { step: execution.failure.step }),
+        }),
+      );
     yield* Ref.set(requestedStatus, status);
     yield* Ref.set(requestedFailure, failure);
     if (failure !== undefined)
