@@ -10,7 +10,17 @@ import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
-import { Sandbox, type PassivePiConsoleRelay, type SandboxEffectOptions } from "../src/session";
+import type { EvidenceArtifactV1 } from "../src/evidence-contracts";
+import {
+  SANDBOX_TEST_ACCEPT_EVIDENCE,
+  SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
+  SANDBOX_TEST_EXPOSE_EVIDENCE,
+  SANDBOX_TEST_FINALIZE_EVIDENCE,
+  Sandbox,
+  type PassivePiConsoleRelay,
+  type SandboxEffectOptions,
+} from "../src/session";
+import { EVIDENCE_RECORD_KEY, RUNTIME_EPOCH_KEY } from "../src/session-store";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
@@ -47,6 +57,9 @@ export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
 };
 
 export type HarnessFailureStage =
+  | "artifactDelete"
+  | "artifactDeleteAmbiguous"
+  | "artifactPutAmbiguous"
   | "backupDelete"
   | "backupList"
   | "checkpointDefect"
@@ -56,8 +69,15 @@ export type HarnessFailureStage =
   | "downSha"
   | "downTar"
   | "downWriteManifest"
+  | "evidenceRetentionSchedulePostInsert"
+  | "evidenceRetentionSchedulePreInsert"
+  | "evidenceRetentionSchedulePreInsertOnce"
   | "hardCapSchedule"
+  | "previewExpose"
+  | "previewUnexpose"
   | "projectionDelete"
+  | "runtimeEpochDelete"
+  | "runtimeEpochPut"
   | "restoreBackup"
   | "terminalStop"
   | "vaporizeDestroy"
@@ -69,8 +89,12 @@ export interface HarnessOptions {
   readonly commandStdout?: (command: string) => string | undefined;
   readonly crashAfterInitialRecordCommit?: boolean;
   readonly destroyBehavior?: "pending" | "reject" | "success";
+  readonly evidenceEnabled?: boolean;
+  readonly evidencePreviewHostTimeoutMillis?: number;
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
+  readonly initialArtifactObjects?: ReadonlyArray<EvidenceArtifactV1>;
+  readonly kitesurfClient?: SandboxEffectOptions["kitesurfClient"];
   readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
     ? Stub extends { dispatch: infer Dispatch }
       ? Dispatch
@@ -80,9 +104,14 @@ export interface HarnessOptions {
   readonly initialProjections?: Readonly<Record<string, unknown>>;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly piSessionRunning?: boolean;
+  readonly previewBase?: string;
+  readonly previewExposeGate?: Promise<void>;
+  readonly previewRequestForwarder?: SandboxEffectOptions["previewRequestForwarder"];
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
+  readonly rotateEpochAfterPreviewExpose?: boolean;
+  readonly sharedMemory?: InMemoryFaultInjectableFake;
   readonly onStorageGet?: (
     key: string,
     count: number,
@@ -100,8 +129,15 @@ export interface RecordedSchedule {
   readonly payload: unknown;
 }
 
+type SandboxHarness = Sandbox & {
+  readonly acceptScottyEvidenceJob: Sandbox[typeof SANDBOX_TEST_ACCEPT_EVIDENCE];
+  readonly completeScottyEvidenceStep: Sandbox[typeof SANDBOX_TEST_COMPLETE_EVIDENCE_STEP];
+  readonly exposeScottyEvidencePreview: Sandbox[typeof SANDBOX_TEST_EXPOSE_EVIDENCE];
+  readonly finalizeScottyEvidenceJob: Sandbox[typeof SANDBOX_TEST_FINALIZE_EVIDENCE];
+};
+
 export interface SessionHarness {
-  readonly sandbox: Sandbox;
+  readonly sandbox: SandboxHarness;
   readonly events: string[];
   readonly schedules: RecordedSchedule[];
   readonly deletedSchedules: string[];
@@ -116,6 +152,11 @@ export interface SessionHarness {
     readonly content: string;
   }>;
   readonly r2DeletedKeys: ReadonlyArray<ReadonlyArray<string>>;
+  readonly artifactDeletedKeys: ReadonlyArray<string>;
+  readonly artifactKeys: () => ReadonlyArray<string>;
+  readonly exposedPreviewPorts: () => ReadonlyArray<number>;
+  readonly startRuntime: () => Promise<void>;
+  readonly stopRuntime: () => Promise<void>;
   readonly memory: InMemoryFaultInjectableFake;
   readonly injectFailure: (stage: HarnessFailureStage) => void;
   readonly clearFailure: (stage?: HarnessFailureStage) => void;
@@ -124,7 +165,7 @@ export interface SessionHarness {
 }
 
 class HarnessStorage {
-  readonly memory = new InMemoryFaultInjectableFake();
+  readonly memory: InMemoryFaultInjectableFake;
   private alarm: number | null = null;
   private failNextGet = false;
   private readonly getCounts = new Map<string, number>();
@@ -132,12 +173,15 @@ class HarnessStorage {
 
   constructor(
     private readonly events: string[],
+    private readonly schedules: ReadonlyArray<RecordedSchedule>,
     initialEntries: Readonly<Record<string, unknown>>,
     private readonly failures: ReadonlySet<HarnessFailureStage>,
     private readonly crashAfterInitialRecordCommit: boolean,
     private readonly onStorageGet?: HarnessOptions["onStorageGet"],
     transactionFailureCountdown?: number,
+    sharedMemory?: InMemoryFaultInjectableFake,
   ) {
+    this.memory = sharedMemory ?? new InMemoryFaultInjectableFake();
     for (const [key, value] of Object.entries(initialEntries)) {
       this.memory.values.set(key, structuredClone(value));
     }
@@ -160,7 +204,30 @@ class HarnessStorage {
   };
 
   readonly sql = {
-    exec: (): ReadonlyArray<never> => [],
+    exec: (query: string, ...bindings: ReadonlyArray<unknown>) => {
+      const [callback, time] = bindings;
+      if (query === "SELECT id FROM container_schedules WHERE callback = ? LIMIT 1")
+        return this.schedules.flatMap((schedule, index) =>
+          schedule.callback === callback ? [{ id: `schedule-${index}` }] : [],
+        );
+      if (query === "SELECT id FROM container_schedules WHERE callback = ? AND time > ? LIMIT 1")
+        return this.schedules.flatMap((schedule, index) =>
+          schedule.callback === callback &&
+          schedule.when instanceof Date &&
+          Math.floor(schedule.when.getTime() / 1_000) > Number(time)
+            ? [{ id: `schedule-${index}` }]
+            : [],
+        );
+      if (query !== "SELECT id FROM container_schedules WHERE callback = ? AND time = ? LIMIT 1")
+        return [];
+      return this.schedules.flatMap((schedule, index) =>
+        schedule.callback === callback &&
+        schedule.when instanceof Date &&
+        Math.floor(schedule.when.getTime() / 1_000) === time
+          ? [{ id: `schedule-${index}` }]
+          : [],
+      );
+    },
     databaseSize: 0,
     Cursor: class {},
     Statement: class {},
@@ -181,11 +248,15 @@ class HarnessStorage {
   put = async <A>(key: string, value: A): Promise<void> => {
     this.memory.values.set(key, structuredClone(value));
     this.recordMutation(key, value);
+    if (key === RUNTIME_EPOCH_KEY && this.failures.has("runtimeEpochPut"))
+      throw injectedHarnessFailure("injected ambiguous runtime epoch put failure");
   };
 
   delete = async (key: string): Promise<boolean> => {
     const deleted = this.memory.values.delete(key);
     this.events.push(`storage:delete:${key}`);
+    if (key === RUNTIME_EPOCH_KEY && this.failures.has("runtimeEpochDelete"))
+      throw injectedHarnessFailure("injected ambiguous runtime epoch delete failure");
     return deleted;
   };
 
@@ -331,17 +402,41 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const rawPiRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
+  const artifactDeletedKeys: string[] = [];
+  const exposedPreviewPorts = new Set<number>();
+  const artifactObjects = new Map<
+    string,
+    {
+      readonly bytes: Uint8Array;
+      readonly contentType: string | undefined;
+      readonly customMetadata: Readonly<Record<string, string>>;
+    }
+  >();
+  for (const artifact of options.initialArtifactObjects ?? []) {
+    artifactObjects.set(artifact.objectKey, {
+      bytes: new Uint8Array(artifact.bytes),
+      contentType: artifact.mediaType,
+      customMetadata: {
+        owner: artifact.sessionId,
+        job: artifact.jobId,
+        frame: artifact.frameId,
+        sha256: artifact.sha256,
+      },
+    });
+  }
   let piSessionRunning = options.piSessionRunning ?? false;
   let rawPiContainerRunning = false;
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
   const storage = new HarnessStorage(
     events,
+    schedules,
     options.initialEntries ?? {},
     failures,
     options.crashAfterInitialRecordCommit ?? false,
     options.onStorageGet,
     options.transactionFailureCountdown,
+    options.sharedMemory,
   );
   const constructorWork: Promise<unknown>[] = [];
 
@@ -559,6 +654,64 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         events.push(`r2:delete:${deleted.join(",")}`);
       },
     } as never,
+    ARTIFACT_BUCKET: {
+      put: async (key: string, value: unknown, putOptions?: R2PutOptions) => {
+        if (!(value instanceof Uint8Array))
+          throw injectedHarnessFailure("artifact value was not bytes");
+        const contentType =
+          putOptions?.httpMetadata instanceof Headers
+            ? (putOptions.httpMetadata.get("content-type") ?? undefined)
+            : putOptions?.httpMetadata?.contentType;
+        artifactObjects.set(key, {
+          bytes: Uint8Array.from(value),
+          contentType,
+          customMetadata: putOptions?.customMetadata ?? {},
+        });
+        events.push(`artifact:put:${key}`);
+        if (failures.has("artifactPutAmbiguous"))
+          throw injectedHarnessFailure("injected ambiguous artifact put failure");
+        return {};
+      },
+      head: async (key: string) => {
+        if (failures.has("artifactPutAmbiguous"))
+          throw injectedHarnessFailure("injected artifact head failure after ambiguous put");
+        const object = artifactObjects.get(key);
+        return object === undefined
+          ? null
+          : {
+              key,
+              size: object.bytes.byteLength,
+              httpMetadata: { contentType: object.contentType },
+              customMetadata: object.customMetadata,
+            };
+      },
+      get: async (key: string) => {
+        const object = artifactObjects.get(key);
+        if (object === undefined) return null;
+        return {
+          key,
+          size: object.bytes.byteLength,
+          httpMetadata: { contentType: object.contentType },
+          customMetadata: object.customMetadata,
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(object.bytes);
+              controller.close();
+            },
+          }),
+        };
+      },
+      delete: async (key: string) => {
+        events.push(`artifact:delete:${key}`);
+        if (failures.has("artifactDelete"))
+          throw injectedHarnessFailure("injected artifact delete failure");
+        artifactObjects.delete(key);
+        artifactDeletedKeys.push(key);
+        if (failures.has("artifactDeleteAmbiguous"))
+          throw injectedHarnessFailure("injected ambiguous artifact delete failure");
+      },
+    } as never,
+    BROWSER: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
     PI_AUTH_JSON: JSON.stringify({
@@ -571,11 +724,16 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     }),
     GH_TOKEN: "seed-github-token",
+    ...(options.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
+    ...(options.previewBase === undefined ? {} : { SCOTTY_PREVIEW_BASE: options.previewBase }),
   };
 
   const sandbox = new Sandbox(ctx, env, {
     clock: options.clock,
+    evidencePreviewHostTimeoutMillis: options.evidencePreviewHostTimeoutMillis,
+    kitesurfClient: options.kitesurfClient,
     passivePiConsoleRelay: options.passivePiConsoleRelay,
+    previewRequestForwarder: options.previewRequestForwarder,
   });
   await Promise.all(constructorWork);
   rawPiContainerRunning = options.rawPiContainerRunning ?? false;
@@ -590,6 +748,22 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     timestamp: "2026-01-01T00:00:00.000Z",
   });
   Object.defineProperties(sandbox, {
+    acceptScottyEvidenceJob: {
+      value: (value: unknown) => sandbox[SANDBOX_TEST_ACCEPT_EVIDENCE](value),
+    },
+    completeScottyEvidenceStep: {
+      value: (nonce: string, value: unknown) =>
+        sandbox[SANDBOX_TEST_COMPLETE_EVIDENCE_STEP](nonce, value),
+    },
+    exposeScottyEvidencePreview: {
+      value: (nonce: string) => sandbox[SANDBOX_TEST_EXPOSE_EVIDENCE](nonce),
+    },
+    finalizeScottyEvidenceJob: {
+      value: (
+        nonce: string,
+        status: Parameters<Sandbox[typeof SANDBOX_TEST_FINALIZE_EVIDENCE]>[1],
+      ) => sandbox[SANDBOX_TEST_FINALIZE_EVIDENCE](nonce, status),
+    },
     start: {
       value: async (): Promise<void> => {
         events.push("host:container:start");
@@ -647,6 +821,38 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           configured ??
           (stage === "workspace" ? "main\n" : stage === "downSha" ? "deadbeef\n" : "");
         return successfulExec(command, stdout);
+      },
+    },
+    exposePort: {
+      value: async (
+        port: number,
+        exposeOptions: {
+          readonly hostname: string;
+          readonly token?: string;
+          readonly name?: string;
+        },
+      ) => {
+        events.push(`host:preview:expose:${port}`);
+        await options.previewExposeGate;
+        const token = exposeOptions.token ?? "generated_token";
+        exposedPreviewPorts.add(port);
+        if (failures.has("previewExpose"))
+          throw injectedHarnessFailure("injected ambiguous preview exposure failure");
+        if (options.rotateEpochAfterPreviewExpose)
+          storage.kv.put(RUNTIME_EPOCH_KEY, "runtime-epoch-rotated-after-expose");
+        return {
+          url: `https://${port}-${SESSION_ID}-${token}.${exposeOptions.hostname}/`,
+          port,
+          name: exposeOptions.name,
+        };
+      },
+    },
+    unexposePort: {
+      value: async (port: number): Promise<void> => {
+        events.push(`host:preview:unexpose:${port}`);
+        if (failures.has("previewUnexpose"))
+          throw injectedHarnessFailure("injected preview unexpose failure");
+        exposedPreviewPorts.delete(port);
       },
     },
     createBackup: {
@@ -749,6 +955,12 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         payload: unknown,
       ): Promise<RecordedSchedule> => {
         events.push(`schedule:${callback}`);
+        if (
+          callback === "expireRetainedEvidence" &&
+          (failures.has("evidenceRetentionSchedulePreInsert") ||
+            failures.delete("evidenceRetentionSchedulePreInsertOnce"))
+        )
+          throw injectedHarnessFailure("injected pre-insert evidence retention schedule failure");
         if (failures.has("hardCapSchedule") && callback === "enforceHardCap") {
           throw injectedHarnessFailure("injected hard-cap schedule failure");
         }
@@ -756,19 +968,29 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           throw injectedHarnessFailure("injected vaporize retry schedule failure");
         const scheduled = { when, callback, payload };
         schedules.push(scheduled);
+        if (
+          failures.has("evidenceRetentionSchedulePostInsert") &&
+          callback === "expireRetainedEvidence"
+        )
+          throw injectedHarnessFailure("injected post-insert evidence retention schedule failure");
         return scheduled;
       },
     },
     deleteSchedules: {
       value: (callback: string): void => {
         deletedSchedules.push(callback);
+        if (callback === "expireRetainedEvidence") {
+          for (let index = schedules.length - 1; index >= 0; index -= 1) {
+            if (schedules[index]?.callback === callback) schedules.splice(index, 1);
+          }
+        }
         events.push(`schedule:delete:${callback}`);
       },
     },
   });
 
   return {
-    sandbox,
+    sandbox: sandbox as SandboxHarness,
     events,
     schedules,
     deletedSchedules,
@@ -780,6 +1002,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     rawPiRequests,
     writtenFiles,
     r2DeletedKeys,
+    artifactDeletedKeys,
+    artifactKeys: () => [...artifactObjects.keys()],
+    exposedPreviewPorts: () => [...exposedPreviewPorts],
+    startRuntime: async () => {
+      rawPiContainerRunning = true;
+      await sandbox.onStart();
+    },
+    stopRuntime: async () => {
+      rawPiContainerRunning = false;
+      await sandbox.onStop();
+    },
     memory: storage.memory,
     injectFailure: (stage) => {
       failures.add(stage);
@@ -796,5 +1029,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 export const sessionHarnessKeys = {
   credential: CREDENTIAL_KEY,
   createIdempotency: CREATE_IDEMPOTENCY_KEY,
+  evidence: EVIDENCE_RECORD_KEY,
   record: RECORD_KEY,
+  runtimeEpoch: RUNTIME_EPOCH_KEY,
 } as const;

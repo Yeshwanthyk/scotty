@@ -4,6 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
 import { Credentials as DistilledCredentials } from "@distilled.cloud/cloudflare/Credentials";
+import * as DNS from "@distilled.cloud/cloudflare/dns";
+import type { NotFound as CloudflareNotFound } from "@distilled.cloud/cloudflare/Errors";
 import * as KV from "@distilled.cloud/cloudflare/kv";
 import * as R2 from "@distilled.cloud/cloudflare/r2";
 import * as Workers from "@distilled.cloud/cloudflare/workers";
@@ -30,9 +32,15 @@ import {
   adoptionMatchesInstallation,
   CLOUDFLARE_STAGE,
   decodeAdoptionManifestJson,
+  decodeInstallationPreviewConfiguration,
   makeInstallationTopology,
   type AdoptionManifest,
+  type InstallationPreviewConfiguration,
 } from "../../infra/installation.ts";
+import {
+  PreviewCleanupOwnershipError,
+  readOwnedPreviewTopologyDeletion,
+} from "../../infra/preview-ownership.ts";
 import { CONTAINER_INPUTS, DEPLOYMENT_INPUTS } from "./deployment-inputs.ts";
 import type {
   InstallationApplyRequest,
@@ -57,12 +65,15 @@ type WorkerBinding = NonNullable<
 type DurableObjectBinding = Extract<WorkerBinding, { readonly type: "durable_object_namespace" }>;
 type KvBinding = Extract<WorkerBinding, { readonly type: "kv_namespace" }>;
 type R2Binding = Extract<WorkerBinding, { readonly type: "r2_bucket" }>;
+type PlainTextBinding = Extract<WorkerBinding, { readonly type: "plain_text" }>;
 
 const isDurableObjectBinding = (binding: WorkerBinding): binding is DurableObjectBinding =>
   binding.type === "durable_object_namespace";
 const isKvBinding = (binding: WorkerBinding): binding is KvBinding =>
   binding.type === "kv_namespace";
 const isR2Binding = (binding: WorkerBinding): binding is R2Binding => binding.type === "r2_bucket";
+const isPlainTextBinding = (binding: WorkerBinding): binding is PlainTextBinding =>
+  binding.type === "plain_text";
 
 class InstallationDeploymentError extends Data.TaggedError("InstallationDeploymentError")<{
   readonly message: string;
@@ -187,8 +198,30 @@ const runWithProfile = async <A, E>(
   }
 };
 
+const previewConfiguration = (
+  request: InstallationDeployRequest | InstallationInspectRequest,
+): InstallationPreviewConfiguration | undefined => {
+  if (request.previewBase === undefined && request.previewZoneId === undefined) return undefined;
+  const decoded = decodeInstallationPreviewConfiguration({
+    base: request.previewBase,
+    zoneId: request.previewZoneId,
+  });
+  if (Option.isNone(decoded)) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter rejects partial or malformed explicit preview topology before Cloudflare access
+    throw new InstallationDeploymentError({
+      message: "Preview base and Cloudflare zone must both be valid explicit configuration.",
+    });
+  }
+  return decoded.value;
+};
+
 const makeStack = (request: InstallationDeployRequest, adoption: AdoptionManifest | undefined) => {
-  const installation = makeInstallationTopology(request.installationName, adoption);
+  const installation = makeInstallationTopology(
+    request.installationName,
+    adoption,
+    previewConfiguration(request),
+    request.evidenceEnabled === true,
+  );
   const stack = Alchemy.Stack(
     installation.stackName,
     {
@@ -343,6 +376,13 @@ const deployWithProfile = async (
               containerName: installation.containerName,
               kvTitle: installation.kvTitle,
               backupBucketName: installation.backupBucketName,
+              ...(installation.preview === undefined
+                ? {}
+                : {
+                    previewBase: installation.preview.base,
+                    previewZoneId: installation.preview.zoneId,
+                  }),
+              ...(installation.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
               host: output.url,
             } satisfies InstallationResult;
           }),
@@ -358,7 +398,12 @@ const inspectWithProfile = async (
   token?: string,
   expectedAccountId?: string,
 ): Promise<InstallationResult> => {
-  const installation = makeInstallationTopology(request.installationName, adoption);
+  const installation = makeInstallationTopology(
+    request.installationName,
+    adoption,
+    previewConfiguration(request),
+    request.evidenceEnabled === true,
+  );
   return runWithProfile(request.profile, sourceRoot(), () =>
     provideAlchemy(
       Effect.gen(function* () {
@@ -381,6 +426,7 @@ const inspectWithProfile = async (
           "SANDBOX",
           "SESSIONS",
           "BACKUP_BUCKET",
+          "ARTIFACT_BUCKET",
         ];
         const sandboxBinding = bindings
           .filter(isDurableObjectBinding)
@@ -391,11 +437,27 @@ const inspectWithProfile = async (
         const backupBinding = bindings
           .filter(isR2Binding)
           .find((binding) => binding.name === "BACKUP_BUCKET");
+        const artifactBinding = bindings
+          .filter(isR2Binding)
+          .find((binding) => binding.name === "ARTIFACT_BUCKET");
+        const previewBaseBinding = bindings
+          .filter(isPlainTextBinding)
+          .find((binding) => binding.name === "SCOTTY_PREVIEW_BASE");
+        const evidenceEnabledBinding = bindings
+          .filter(isPlainTextBinding)
+          .find((binding) => binding.name === "SCOTTY_EVIDENCE_ENABLED");
         if (
           requiredBindings.some((name) => !bindingNames.has(name)) ||
           sandboxBinding?.namespaceId === undefined ||
           sessionsBinding?.namespaceId === undefined ||
-          backupBinding?.bucketName !== installation.backupBucketName
+          backupBinding?.bucketName !== installation.backupBucketName ||
+          artifactBinding?.bucketName !== installation.artifactBucketName ||
+          (installation.preview === undefined
+            ? previewBaseBinding !== undefined
+            : previewBaseBinding?.text !== installation.preview.base) ||
+          (installation.evidenceEnabled === true
+            ? evidenceEnabledBinding?.text !== "true"
+            : evidenceEnabledBinding !== undefined)
         )
           return yield* new InstallationDeploymentError({
             message: "The named Worker does not have the required Scotty bindings.",
@@ -428,6 +490,39 @@ const inspectWithProfile = async (
           accountId,
           bucketName: installation.backupBucketName,
         }).pipe(Effect.asVoid);
+        yield* R2.getBucket({
+          accountId,
+          bucketName: installation.artifactBucketName,
+        }).pipe(Effect.asVoid);
+        if (installation.preview !== undefined) {
+          const records = Array.from(
+            yield* DNS.listRecords
+              .items({
+                zoneId: installation.preview.zoneId,
+                name: { exact: `*.${installation.preview.base}` },
+                type: "AAAA",
+              })
+              .pipe(Stream.runCollect),
+          );
+          const routes = Array.from(
+            yield* Workers.listRoutes.items({ zoneId: installation.preview.zoneId }).pipe(
+              Stream.filter((route) => route.pattern === `*.${installation.preview?.base}/*`),
+              Stream.runCollect,
+            ),
+          );
+          if (
+            records.length !== 1 ||
+            records[0]?.name !== `*.${installation.preview.base}` ||
+            records[0].type !== "AAAA" ||
+            records[0].content !== "100::" ||
+            records[0].proxied !== true ||
+            routes.length !== 1 ||
+            routes[0]?.script !== installation.workerName
+          )
+            return yield* new InstallationDeploymentError({
+              message: "The evidence preview DNS or Worker Route has drifted.",
+            });
+        }
         const scriptSubdomain = yield* Workers.getScriptSubdomain({
           accountId,
           scriptName: installation.workerName,
@@ -456,6 +551,13 @@ const inspectWithProfile = async (
           containerName: installation.containerName,
           kvTitle: installation.kvTitle,
           backupBucketName: installation.backupBucketName,
+          ...(installation.preview === undefined
+            ? {}
+            : {
+                previewBase: installation.preview.base,
+                previewZoneId: installation.preview.zoneId,
+              }),
+          ...(installation.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
           host: `https://${installation.workerName}.${subdomain}.workers.dev`,
         } satisfies InstallationResult;
       }).pipe(Effect.provide(cloudflareApiLive())),
@@ -520,6 +622,10 @@ export async function createInstallation(
     const deployRequest = {
       installationName: request.installationName,
       profile: request.profile,
+      ...(request.previewBase === undefined || request.previewZoneId === undefined
+        ? {}
+        : { previewBase: request.previewBase, previewZoneId: request.previewZoneId }),
+      ...(request.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
     };
     const plan = await planWithProfile(deployRequest, deployment.root, undefined);
     if (
@@ -584,7 +690,12 @@ export async function uninstallInstallation(
       request.installationName,
     );
     await prepareContainerContext(deployment.root);
-    const installation = makeInstallationTopology(request.installationName, adoption);
+    const installation = makeInstallationTopology(
+      request.installationName,
+      adoption,
+      previewConfiguration(request),
+      request.evidenceEnabled === true,
+    );
     const { stack } = makeStack(request, adoption);
     return await runWithProfile(request.profile, deployment.root, () =>
       provideAlchemy(
@@ -600,7 +711,9 @@ export async function uninstallInstallation(
                 installation.runnerWorkerName !== request.expectedRunnerWorkerName ||
                 installation.containerName !== request.expectedContainerName ||
                 installation.kvTitle !== request.expectedKvTitle ||
-                installation.backupBucketName !== request.expectedBackupBucketName
+                installation.backupBucketName !== request.expectedBackupBucketName ||
+                installation.preview?.base !== request.expectedPreviewBase ||
+                installation.preview?.zoneId !== request.expectedPreviewZoneId
               )
                 return yield* new InstallationDeploymentError({
                   message: "The uninstall target no longer matches the saved installation.",
@@ -620,6 +733,20 @@ export async function uninstallInstallation(
                 return yield* new InstallationDeploymentError({
                   message: "Alchemy state does not prove ownership of every installation resource.",
                 });
+              const ownedPreviewDeletion =
+                installation.preview === undefined
+                  ? undefined
+                  : readOwnedPreviewTopologyDeletion(
+                      Object.values(destroyPlan.deletions),
+                      installation.preview,
+                      installation.workerName,
+                    );
+              if (installation.preview !== undefined && ownedPreviewDeletion === undefined)
+                return yield* new PreviewCleanupOwnershipError({
+                  message:
+                    "Alchemy state does not prove ownership of the evidence preview route and DNS record",
+                  hint: "No preview resource was deleted. Verify Alchemy state ownership, then remove the wildcard route and DNS record manually or rerun uninstall after restoring ownership proof.",
+                });
 
               const applications = yield* Containers.listContainerApplications({ accountId });
               const application = applications.find(
@@ -631,6 +758,26 @@ export async function uninstallInstallation(
                   applicationId: application.id,
                 }).pipe(Effect.catchTag("ContainerApplicationNotFound", () => Effect.void));
 
+              const deletedPreviewResources: string[] = [];
+              if (installation.preview !== undefined && ownedPreviewDeletion !== undefined) {
+                const previewDnsName = `*.${installation.preview.base}`;
+                const previewRoutePattern = `${previewDnsName}/*`;
+                yield* Workers.deleteRoute({
+                  zoneId: installation.preview.zoneId,
+                  routeId: ownedPreviewDeletion.routeId,
+                }).pipe(Effect.catchTag("RouteNotFound", () => Effect.void));
+                yield* DNS.deleteRecord({
+                  zoneId: installation.preview.zoneId,
+                  dnsRecordId: ownedPreviewDeletion.dnsRecordId,
+                }).pipe(
+                  // Distilled maps HTTP 404 to this shared error even though this generated
+                  // operation's static error union omits non-default HTTP status errors.
+                  Effect.mapError((error): DNS.DeleteRecordError | CloudflareNotFound => error),
+                  Effect.catchTag("NotFound", () => Effect.void),
+                );
+                deletedPreviewResources.push(previewRoutePattern, previewDnsName);
+              }
+
               yield* Workers.deleteScript({
                 accountId,
                 scriptName: installation.runnerWorkerName,
@@ -640,7 +787,11 @@ export async function uninstallInstallation(
                 scriptName: installation.workerName,
               }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
 
-              const retainedData = [installation.kvTitle, installation.backupBucketName];
+              const retainedBuckets = [
+                installation.backupBucketName,
+                installation.artifactBucketName,
+              ];
+              const retainedData = [installation.kvTitle, ...retainedBuckets];
               const deletedData: string[] = [];
               if (request.deleteData) {
                 const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
@@ -655,13 +806,8 @@ export async function uninstallInstallation(
                   deletedData.push(installation.kvTitle);
                 }
 
-                yield* R2.listObjects
-                  .items({
-                    accountId,
-                    bucketName: installation.backupBucketName,
-                    perPage: 1000,
-                  })
-                  .pipe(
+                for (const bucketName of retainedBuckets) {
+                  yield* R2.listObjects.items({ accountId, bucketName, perPage: 1000 }).pipe(
                     Stream.filter(
                       (object): object is typeof object & { key: string } =>
                         typeof object.key === "string" && object.key.length > 0,
@@ -670,17 +816,17 @@ export async function uninstallInstallation(
                     Stream.runForEachArray((keys) =>
                       R2.deleteObjects({
                         accountId,
-                        bucketName: installation.backupBucketName,
+                        bucketName,
                         body: [...keys],
                       }),
                     ),
                     Effect.catchTag("NoSuchBucket", () => Effect.void),
                   );
-                yield* R2.deleteBucket({
-                  accountId,
-                  bucketName: installation.backupBucketName,
-                }).pipe(Effect.catchTag("NoSuchBucket", () => Effect.void));
-                deletedData.push(installation.backupBucketName);
+                  yield* R2.deleteBucket({ accountId, bucketName }).pipe(
+                    Effect.catchTag("NoSuchBucket", () => Effect.void),
+                  );
+                  deletedData.push(bucketName);
+                }
               }
 
               // Retained resources stay in Alchemy state until every direct deletion succeeds.
@@ -692,6 +838,7 @@ export async function uninstallInstallation(
                   installation.containerName,
                   installation.runnerWorkerName,
                   installation.workerName,
+                  ...deletedPreviewResources,
                 ],
                 retainedData: request.deleteData ? [] : retainedData,
                 deletedData,
@@ -837,13 +984,20 @@ export async function recoverInstallation(
     request.adoptionManifestPath,
     request.installationName,
   );
-  const installation = makeInstallationTopology(request.installationName, adoption);
+  const installation = makeInstallationTopology(
+    request.installationName,
+    adoption,
+    previewConfiguration(request),
+    request.evidenceEnabled === true,
+  );
   if (
     installation.workerName !== request.expectedWorkerName ||
     installation.runnerWorkerName !== request.expectedRunnerWorkerName ||
     installation.containerName !== request.expectedContainerName ||
     installation.kvTitle !== request.expectedKvTitle ||
-    installation.backupBucketName !== request.expectedBackupBucketName
+    installation.backupBucketName !== request.expectedBackupBucketName ||
+    installation.preview?.base !== request.expectedPreviewBase ||
+    installation.preview?.zoneId !== request.expectedPreviewZoneId
   ) {
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise recovery adapter rejects a mapping that changed after confirmation
     throw new InstallationDeploymentError({

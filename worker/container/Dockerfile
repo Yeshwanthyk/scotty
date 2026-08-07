@@ -168,7 +168,8 @@ RUN mkdir -p /tmp/scotty-pi-agent \
     pi-askuser \
     pi-web-access \
     pi-codex-compaction \
-    pi-amp-ui; do \
+    pi-amp-ui \
+    scotty-browser-test; do \
       grep -F "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \
     done \
   && rm -rf /tmp/scotty-pi-agent /tmp/scotty-pi-help /tmp/scotty-pi-packages.list \

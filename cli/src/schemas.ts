@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 
@@ -6,7 +6,7 @@ export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
 
 export const ConfigSchema = Schema.Struct({
-  version: Schema.optionalKey(Schema.Literal(1)),
+  version: Schema.optionalKey(Schema.Literals([1, 2, 3])),
   installationName: Schema.optionalKey(Schema.String),
   profile: Schema.optionalKey(Schema.String),
   stackName: Schema.optionalKey(Schema.String),
@@ -17,6 +17,9 @@ export const ConfigSchema = Schema.Struct({
   containerName: Schema.optionalKey(Schema.String),
   kvTitle: Schema.optionalKey(Schema.String),
   backupBucketName: Schema.optionalKey(Schema.String),
+  previewBase: Schema.optionalKey(Schema.String),
+  previewZoneId: Schema.optionalKey(Schema.String),
+  evidenceEnabled: Schema.optionalKey(Schema.Literal(true)),
   adoptionManifestPath: Schema.optionalKey(Schema.String),
   host: Schema.optionalKey(Schema.String),
   token: Schema.optionalKey(Schema.String),
@@ -31,7 +34,7 @@ export const PendingUpSchema = Schema.Struct({
 export type PendingUp = typeof PendingUpSchema.Type;
 
 export const InitJournalSchema = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literals([1, 2, 3]),
   operation: Schema.Literal("init"),
   phase: Schema.Literals(["prepared", "apply_started"]),
   installationName: Schema.NonEmptyString,
@@ -43,6 +46,9 @@ export const InitJournalSchema = Schema.Struct({
   containerName: Schema.NonEmptyString,
   kvTitle: Schema.NonEmptyString,
   backupBucketName: Schema.NonEmptyString,
+  previewBase: Schema.optionalKey(Schema.NonEmptyString),
+  previewZoneId: Schema.optionalKey(Schema.NonEmptyString),
+  evidenceEnabled: Schema.optionalKey(Schema.Literal(true)),
   planFingerprint: Schema.NonEmptyString,
   token: Schema.NonEmptyString,
 });
@@ -89,6 +95,9 @@ export const RawConfigSchema = Schema.Struct({
   containerName: Schema.optionalKey(Schema.Unknown),
   kvTitle: Schema.optionalKey(Schema.Unknown),
   backupBucketName: Schema.optionalKey(Schema.Unknown),
+  previewBase: Schema.optionalKey(Schema.Unknown),
+  previewZoneId: Schema.optionalKey(Schema.Unknown),
+  evidenceEnabled: Schema.optionalKey(Schema.Unknown),
   adoptionManifestPath: Schema.optionalKey(Schema.Unknown),
   host: Schema.optionalKey(Schema.Unknown),
   token: Schema.optionalKey(Schema.Unknown),
@@ -250,10 +259,24 @@ export type SessionResponse = typeof SessionResponseSchema.Type;
 export const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 export const decodeRawConfig = Schema.decodeUnknownOption(RawConfigSchema);
 export const decodePendingUp = Schema.decodeUnknownOption(PendingUpSchema);
-export const decodeInitJournalJson = Schema.decodeUnknownOption(
+const decodeInitJournalJsonStructure = Schema.decodeUnknownOption(
   Schema.fromJsonString(InitJournalSchema),
   { onExcessProperty: "error" },
 );
+export const decodeInitJournalJson = (input: unknown): Option.Option<InitJournal> => {
+  const decoded = decodeInitJournalJsonStructure(input);
+  if (Option.isNone(decoded)) return Option.none();
+  const journal = decoded.value;
+  if (
+    (journal.version === 3 &&
+      (journal.evidenceEnabled !== true ||
+        journal.previewBase === undefined ||
+        journal.previewZoneId === undefined)) ||
+    (journal.version !== 3 && journal.evidenceEnabled !== undefined)
+  )
+    return Option.none();
+  return decoded;
+};
 export const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
 export const decodeRecoveryGrantResponse = Schema.decodeUnknownOption(RecoveryGrantResponseSchema);
 export const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
@@ -280,4 +303,5 @@ export const decodeRunnerStatusesResponse = Schema.decodeUnknownOption(
 );
 export const decodeRunnerRemovalResponse = Schema.decodeUnknownOption(RunnerRemovalResponseSchema);
 export const decodeString = Schema.decodeUnknownOption(Schema.String);
+export const decodeTrue = Schema.decodeUnknownOption(Schema.Literal(true));
 export const decodeNonEmptyString = Schema.decodeUnknownOption(Schema.NonEmptyString);

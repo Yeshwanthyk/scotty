@@ -66,13 +66,15 @@ The runner provider reopens for session creation only after these slices pass:
 
 ## Extension packaging
 
-The Pi extensions are image inputs, not optional developer checkouts. Seven source-based extensions
-are stored as ordinary vendored directories under
+The Pi extensions are image inputs, not optional developer checkouts. Seven externally sourced
+extensions and one first-party Scotty extension are stored as ordinary source directories under
 `worker/container/pi-packages/sources/`; one extension is installed from its locked npm artifact.
-The manifest records upstream repository, commit, load order, and image path. The package pin check
-validates metadata, lockfiles, settings order, and container-auth order without requiring nested Git
-repositories.
+The manifest records immutable upstream repository and commit provenance for external sources,
+while first-party source is owned by the current Scotty repository and Git index. Both classes record
+an exact indexed-source digest, load order, and image path. The package pin check validates those
+sources, lockfiles, settings order, and container-auth order without requiring nested Git repositories.
 
-Upgrades are intentional dependency updates: replace the vendored source from the declared
-upstream commit, refresh its lockfile if needed, update the manifest commit, run the package pin
-check, and rebuild the image.
+External upgrades are intentional dependency updates: replace the vendored source from the declared
+upstream commit, refresh its lockfile if needed, update the manifest commit and digest, run the package
+pin check, and rebuild the image. First-party package changes update their indexed-source digest
+without inventing external repository or commit provenance.

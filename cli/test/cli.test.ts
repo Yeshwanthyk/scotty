@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import {
   EMBEDDED_SKILL,
   EXIT,
@@ -448,6 +449,209 @@ describe("configuration and transport", () => {
     });
   });
 
+  test("init persists explicit preview topology without changing its public JSON contract", async () => {
+    const home = await temporaryDirectory();
+    let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
+    const h = harness({
+      home,
+      planCreateInstallation: async (input) => {
+        expect(input).toMatchObject({
+          previewBase: "preview.scotty.example",
+          previewZoneId: "0123456789abcdef0123456789abcdef",
+        });
+        return {
+          installationName: "home",
+          accountId: "0123456789abcdef0123456789abcdef",
+          hasExistingResources: false,
+          fingerprint: "preview-create-plan",
+          changes: [{ id: "Scotty-home/EvidencePreviewWorkerRoute", action: "create" }],
+        };
+      },
+      createInstallation: async (input) => {
+        request = input;
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          host: "https://scotty-home-worker.example.workers.dev",
+          previewBase: input.previewBase,
+          previewZoneId: input.previewZoneId,
+        };
+      },
+    });
+
+    expect(
+      await main(
+        [
+          "init",
+          "--name",
+          "home",
+          "--preview-base",
+          "preview.scotty.example",
+          "--preview-zone-id",
+          "0123456789abcdef0123456789abcdef",
+          "--yes",
+        ],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(request).toMatchObject({
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+    });
+    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect(config).toMatchObject({
+      version: 2,
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+    });
+    expect(h.json()).toEqual({
+      configPath: join(home, ".scotty.json"),
+      installationName: "home",
+      profile: "default",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "scotty-home-worker",
+      host: "https://scotty-home-worker.example.workers.dev",
+      rootTokenRotated: true,
+    });
+
+    const invalid = harness({ home: await temporaryDirectory() });
+    expect(
+      await main(
+        ["init", "--name", "home", "--preview-base", "preview.scotty.example", "--yes"],
+        invalid.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(invalid.error().error.message).toContain("must both provide");
+  });
+
+  test("evidence deployment requires explicit preview opt-in and persists across deploys", async () => {
+    const missingPreview = harness({ home: await temporaryDirectory() });
+    expect(
+      await main(["init", "--name", "home", "--enable-evidence", "--yes"], missingPreview.deps),
+    ).toBe(EXIT.USAGE);
+    expect(missingPreview.error().error.message).toContain("requires --preview-base");
+
+    const home = await temporaryDirectory();
+    const deploymentRequests: Array<
+      Parameters<NonNullable<CliDependencies["deployInstallation"]>>[0]
+    > = [];
+    const enabledResult = {
+      installationName: "home",
+      profile: "default",
+      stackName: "Scotty-home",
+      stage: "production",
+      accountId: "0123456789abcdef0123456789abcdef",
+      workerName: "scotty-home-worker",
+      runnerWorkerName: "scotty-home-runner",
+      containerName: "scotty-home-sandbox",
+      kvTitle: "scotty-home-sessions",
+      backupBucketName: "scotty-home-backups",
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true as const,
+      host: "https://scotty-home-worker.example.workers.dev",
+    };
+    const h = harness({
+      home,
+      planCreateInstallation: async (input) => {
+        expect(input.evidenceEnabled).toBe(true);
+        return {
+          installationName: "home",
+          accountId: enabledResult.accountId,
+          hasExistingResources: false,
+          fingerprint: "enabled-create-plan",
+          changes: [{ id: "Scotty-home/Worker", action: "create" }],
+        };
+      },
+      createInstallation: async (input) => {
+        expect(input).toMatchObject({
+          previewBase: enabledResult.previewBase,
+          previewZoneId: enabledResult.previewZoneId,
+          evidenceEnabled: true,
+        });
+        return enabledResult;
+      },
+      planInstallation: async (input) => {
+        expect(input.evidenceEnabled).toBe(true);
+        return {
+          installationName: "home",
+          accountId: enabledResult.accountId,
+          hasExistingResources: true,
+          fingerprint: "enabled-deploy-plan",
+          changes: [{ id: "Scotty-home/Worker", action: "update" }],
+        };
+      },
+      deployInstallation: async (input) => {
+        deploymentRequests.push(input);
+        return enabledResult;
+      },
+    });
+
+    expect(
+      await main(
+        [
+          "init",
+          "--name",
+          "home",
+          "--preview-base",
+          enabledResult.previewBase,
+          "--preview-zone-id",
+          enabledResult.previewZoneId,
+          "--enable-evidence",
+          "--yes",
+        ],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"))).toMatchObject({
+      version: 3,
+      previewBase: enabledResult.previewBase,
+      previewZoneId: enabledResult.previewZoneId,
+      evidenceEnabled: true,
+    });
+
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(deploymentRequests).toHaveLength(1);
+    expect(deploymentRequests[0]).toMatchObject({
+      previewBase: enabledResult.previewBase,
+      previewZoneId: enabledResult.previewZoneId,
+      evidenceEnabled: true,
+    });
+    expect(JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"))).toMatchObject({
+      version: 3,
+      evidenceEnabled: true,
+    });
+  });
+
+  test("rejects evidence opt-in stored under an older config version", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 2,
+        installationName: "home",
+        profile: "default",
+        accountId: "0123456789abcdef0123456789abcdef",
+        previewBase: "preview.scotty.example",
+        previewZoneId: "0123456789abcdef0123456789abcdef",
+        evidenceEnabled: true,
+        token: "root-secret",
+      }),
+      { mode: 0o600 },
+    );
+    const h = harness({ home });
+    expect(await main(["deploy"], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error.code).toBe("invalid_config");
+  });
+
   test("init resumes an apply-started journal with the same token", async () => {
     const home = await temporaryDirectory();
     const requests: Array<Parameters<NonNullable<CliDependencies["createInstallation"]>>[0]> = [];
@@ -724,7 +928,7 @@ describe("configuration and transport", () => {
         return {
           installationName: input.installationName,
           deletedCompute: ["scotty-home-sandbox", "scotty-home-runner", "scotty-home-worker"],
-          retainedData: ["scotty-home-sessions", "scotty-home-backups"],
+          retainedData: ["scotty-home-sessions", "scotty-home-backups", "scotty-home-artifacts"],
           deletedData: [],
         };
       },
@@ -746,10 +950,46 @@ describe("configuration and transport", () => {
     expect(h.json()).toEqual({
       installationName: "home",
       deletedCompute: ["scotty-home-sandbox", "scotty-home-runner", "scotty-home-worker"],
-      retainedData: ["scotty-home-sessions", "scotty-home-backups"],
+      retainedData: ["scotty-home-sessions", "scotty-home-backups", "scotty-home-artifacts"],
       deletedData: [],
       configRemoved: true,
     });
+  });
+
+  test("uninstall reports manual preview cleanup and retains config without ownership proof", async () => {
+    const home = await temporaryDirectory();
+    const configPath = join(home, ".scotty.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 2,
+        installationName: "home",
+        profile: "default",
+        accountId: "0123456789abcdef0123456789abcdef",
+        previewBase: "preview.scotty.example",
+        previewZoneId: "0123456789abcdef0123456789abcdef",
+      }),
+      { mode: 0o600 },
+    );
+    const h = harness({
+      home,
+      uninstallInstallation: async () => {
+        throw new PreviewCleanupOwnershipError({
+          message: "Alchemy state does not prove preview ownership",
+          hint: "Verify ownership and clean up the wildcard resources manually.",
+        });
+      },
+    });
+
+    expect(await main(["uninstall", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error()).toEqual({
+      error: {
+        code: "preview_cleanup_manual",
+        message: "Alchemy state does not prove preview ownership",
+        hint: "Verify ownership and clean up the wildcard resources manually.",
+      },
+    });
+    expect(await Bun.file(configPath).exists()).toBe(true);
   });
 
   test("uninstall passes the explicit data deletion choice", async () => {
@@ -773,14 +1013,18 @@ describe("configuration and transport", () => {
           installationName: input.installationName,
           deletedCompute: [],
           retainedData: [],
-          deletedData: ["scotty-home-sessions", "scotty-home-backups"],
+          deletedData: ["scotty-home-sessions", "scotty-home-backups", "scotty-home-artifacts"],
         };
       },
     });
 
     expect(await main(["uninstall", "--delete-data", "--yes"], h.deps)).toBe(EXIT.OK);
     expect(deleteData).toBe(true);
-    expect(h.json().deletedData).toEqual(["scotty-home-sessions", "scotty-home-backups"]);
+    expect(h.json().deletedData).toEqual([
+      "scotty-home-sessions",
+      "scotty-home-backups",
+      "scotty-home-artifacts",
+    ]);
   });
 
   test("init never infers an installation name in a non-interactive shell", async () => {
@@ -2307,6 +2551,7 @@ describe("beam down and embedded skill", () => {
     expect(toolNames).not.toContain("Chromium");
     expect(toolNames).toContain("build-essential");
     expect(toolNames).toContain("pkg-config");
+    expect(toolNames).toContain("scotty-browser-test");
     expect(fetched).toBe(false);
   });
 

@@ -20,6 +20,8 @@ import {
 import { hardCapObservationIsCurrent } from "./session-lifecycle";
 
 const RECORD_KEY = "scotty:session";
+export const EVIDENCE_RECORD_KEY = "scotty:evidence:v1";
+export const RUNTIME_EPOCH_KEY = "scotty:runtime-epoch:v1";
 export const SESSION_CONTROL_REVISION_KEY = "scotty:session-control-revision";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
 const INVALID_RECORD = new ScottyError("internal", "Authoritative session record is invalid", {
@@ -65,6 +67,15 @@ export interface SessionRecordTransaction {
   readonly put: (record: SessionRecord) => Promise<void>;
 }
 
+export interface SessionEvidenceTransaction {
+  readonly getRecord: () => Promise<unknown | undefined>;
+  readonly getEvidence: () => Promise<unknown | undefined>;
+  readonly getRuntimeEpoch: () => Promise<unknown | undefined>;
+  readonly putRecord: (record: SessionRecord) => Promise<void>;
+  readonly putEvidence: (evidence: unknown) => Promise<void>;
+  readonly deleteEvidence: () => Promise<void>;
+}
+
 export interface InitialSessionTransaction {
   readonly getRecord: () => Promise<unknown | undefined>;
   readonly getCreateIdempotency: () => Promise<unknown | undefined>;
@@ -82,6 +93,13 @@ export interface SessionRecordStorage {
   ) => Promise<A>;
   readonly initialSessionTransaction?: <A>(
     operation: (transaction: InitialSessionTransaction) => Promise<A>,
+  ) => Promise<A>;
+  readonly getEvidence?: () => Promise<unknown | undefined>;
+  readonly getRuntimeEpoch?: () => Promise<unknown | undefined>;
+  readonly putRuntimeEpoch?: (runtimeEpoch: string) => Promise<void>;
+  readonly deleteRuntimeEpoch?: () => Promise<void>;
+  readonly evidenceTransaction?: <A>(
+    operation: (transaction: SessionEvidenceTransaction) => Promise<A>,
   ) => Promise<A>;
   readonly readControlAuthority?: () => Promise<
     Result.Result<SessionControlAuthority | undefined, ScottyError>
@@ -220,6 +238,25 @@ export const durableObjectSessionRecordStorage = (
   readControlAuthority: () => readDurableObjectSessionControlAuthority(storage),
   getInitialRecord: () => storage.get(RECORD_KEY),
   getCreateIdempotency: () => storage.get(CREATE_IDEMPOTENCY_KEY),
+  getEvidence: () => storage.get(EVIDENCE_RECORD_KEY),
+  getRuntimeEpoch: () => storage.get(RUNTIME_EPOCH_KEY),
+  putRuntimeEpoch: (runtimeEpoch) =>
+    controlGate.run(() => storage.put(RUNTIME_EPOCH_KEY, runtimeEpoch)),
+  deleteRuntimeEpoch: () =>
+    controlGate.run(() => storage.delete(RUNTIME_EPOCH_KEY).then(() => undefined)),
+  evidenceTransaction: (operation) =>
+    controlGate.run(() =>
+      storage.transaction((transaction) =>
+        operation({
+          getRecord: () => transaction.get(RECORD_KEY),
+          getEvidence: () => transaction.get(EVIDENCE_RECORD_KEY),
+          getRuntimeEpoch: () => transaction.get(RUNTIME_EPOCH_KEY),
+          putRecord: (record) => writeRecordWithNextControlRevision(transaction, record),
+          putEvidence: (evidence) => transaction.put(EVIDENCE_RECORD_KEY, evidence),
+          deleteEvidence: () => transaction.delete(EVIDENCE_RECORD_KEY).then(() => undefined),
+        }),
+      ),
+    ),
   initialSessionTransaction: (operation) =>
     controlGate.run(() =>
       storage.transaction((transaction) =>
@@ -528,7 +565,7 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
           : {
               ...record,
               status: "failed",
-              operation: null,
+              operation: record.operation?.kind === "evidence" ? record.operation : null,
               failure: {
                 code: "runtime_stopped",
                 message: "Sandbox runtime stopped before a managed checkpoint",

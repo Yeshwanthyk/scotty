@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "vendored": [
     {
       "name": "pi-tasks",
@@ -64,6 +64,15 @@
       "sourceSha256": "69a9c0c0183c132cf5d7fdc3ad8bff2f610bfd0b864117771a3dd32f3aeacb8a",
       "sourcePath": "worker/container/pi-packages/sources/pi-amp-ui",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-amp-ui"
+    }
+  ],
+  "firstParty": [
+    {
+      "name": "scotty-browser-test",
+      "order": 8,
+      "sourceSha256": "3eca110a33b6023e4a16e5b08ff66b24a2eab7f565284f08a1a60b663606b623",
+      "sourcePath": "worker/container/pi-packages/sources/scotty-browser-test",
+      "imagePath": "/opt/scotty/pi-packages/sources/scotty-browser-test"
     }
   ],
   "npm": [

@@ -4,13 +4,51 @@ import { ContainerProxy as SandboxContainerProxy } from "@cloudflare/sandbox";
 import { vi } from "vitest";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
 import type { Bindings } from "../src/bindings";
-import { ContainerProxy, SCOTTY_INTERNAL_HOST } from "../src/container-session-egress";
+import {
+  ContainerProxy,
+  SCOTTY_EVIDENCE_JOB_ROUTE,
+  SCOTTY_INTERNAL_HOST,
+} from "../src/container-session-egress";
+import { EVIDENCE_TOOL_MAX_PROTOCOL_BYTES } from "../src/evidence-contracts";
 import { ALLOWED_HOSTS, makeOutboundByHost } from "../src/egress";
 import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
 const TARGET_ID = "b0b1c2d3e4f5";
 const SOURCE_CONTAINER_ID = "a".repeat(64);
+
+const evidenceJob = () => ({
+  version: 1 as const,
+  port: 4_173,
+  viewport: { width: 1_280, height: 720 },
+  steps: [
+    {
+      name: "Open home",
+      action: { kind: "goto" as const, path: "/" },
+      expect: [{ kind: "visible" as const, locator: { kind: "testId" as const, value: "home" } }],
+    },
+  ],
+  capture: { screenshots: "after-each-step" as const, replay: true },
+});
+
+const evidenceResult = () => ({
+  version: 1 as const,
+  jobId: "job-abcd1234",
+  status: "succeeded" as const,
+  summaryUrl: `/s/${SESSION_ID}/evidence/job-abcd1234`,
+  completedSteps: 1,
+  frameCount: 1,
+});
+
+const evidenceRequest = (
+  body: unknown = evidenceJob(),
+  headers: Readonly<Record<string, string>> = {},
+) =>
+  new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_EVIDENCE_JOB_ROUTE}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
 
 const snapshot = () => ({
   version: 1 as const,
@@ -82,6 +120,8 @@ function bindings(namespace: Bindings["SANDBOX"]): Bindings {
     SANDBOX: namespace,
     SESSIONS: undefined as never,
     BACKUP_BUCKET: undefined as never,
+    ARTIFACT_BUCKET: undefined as never,
+    BROWSER: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "unused",
     PI_AUTH_JSON: "unused",
@@ -282,9 +322,175 @@ describe("container-only session egress", () => {
       assert.strictEqual(invalid.status, 502);
     }
   });
+
+  it("runs one bounded evidence job only on the source selected by actual container identity", async () => {
+    const selectedContainerIds: string[] = [];
+    const jobs: unknown[] = [];
+    let unrelatedCalls = 0;
+    const source = {
+      getScottySession: async () => {
+        unrelatedCalls += 1;
+        return {};
+      },
+      runScottyEvidenceJob: async (job: unknown) => {
+        jobs.push(job);
+        return evidenceResult();
+      },
+    };
+    const namespace = sandboxNamespace({
+      fromString: () => source,
+      onString: (id) => selectedContainerIds.push(id),
+      onName: () => {
+        unrelatedCalls += 1;
+      },
+    });
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+
+    const response = await handler(evidenceRequest(), bindings(namespace), context());
+
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(await response.json(), evidenceResult());
+    assert.deepStrictEqual(selectedContainerIds, [SOURCE_CONTAINER_ID]);
+    assert.deepStrictEqual(jobs, [evidenceJob()]);
+    assert.strictEqual(unrelatedCalls, 0);
+    assert.strictEqual(response.headers.get("cache-control"), "no-store");
+  });
+
+  it("rejects evidence caller authority, source mismatches, invalid routes, and a disabled gate", async () => {
+    let sourceCalls = 0;
+    const source = {
+      runScottyEvidenceJob: async () => {
+        sourceCalls += 1;
+        return evidenceResult();
+      },
+    };
+    const namespace = sandboxNamespace({ fromString: () => source });
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(namespace);
+
+    const requests = [
+      evidenceRequest({ ...evidenceJob(), sessionId: SESSION_ID }),
+      evidenceRequest(evidenceJob(), { authorization: "Bearer ambient" }),
+      evidenceRequest(evidenceJob(), { "x-scotty-session-id": SESSION_ID }),
+      new Request(
+        `https://${SCOTTY_INTERNAL_HOST}${SCOTTY_EVIDENCE_JOB_ROUTE}?sessionId=${SESSION_ID}`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      ),
+      new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_EVIDENCE_JOB_ROUTE}`),
+    ];
+    for (const request of requests) {
+      const response = await handler(request, env, context());
+      assert.ok(response.status === 400 || response.status === 401);
+    }
+
+    const noIdentity = await handler(evidenceRequest(), env, context(""));
+    assert.strictEqual(noIdentity.status, 401);
+    const wrongClass = await handler(evidenceRequest(), env, {
+      containerId: SOURCE_CONTAINER_ID,
+      className: "CallerSelectedSandbox",
+    });
+    assert.strictEqual(wrongClass.status, 401);
+    const disabled = await handler(
+      evidenceRequest(),
+      { ...env, SCOTTY_BROWSER_TEST_ENABLED: "false" },
+      context(),
+    );
+    assert.strictEqual(disabled.status, 409);
+    assert.strictEqual(errorCode(await disabled.json()), "wrong_state");
+    assert.strictEqual(sourceCalls, 0);
+  });
+
+  it("enforces 64 KiB request and result limits and rejects source result mismatches", async () => {
+    let sourceCalls = 0;
+    const namespace = sandboxNamespace({
+      fromString: () => ({
+        runScottyEvidenceJob: async () => {
+          sourceCalls += 1;
+          return {
+            ...evidenceResult(),
+            summaryUrl: `/s/${SESSION_ID}/evidence/${"x".repeat(EVIDENCE_TOOL_MAX_PROTOCOL_BYTES)}`,
+          };
+        },
+      }),
+    });
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(namespace);
+
+    const oversized = new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_EVIDENCE_JOB_ROUTE}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "x".repeat(EVIDENCE_TOOL_MAX_PROTOCOL_BYTES + 1),
+    });
+    const oversizedResponse = await handler(oversized, env, context());
+    assert.strictEqual(oversizedResponse.status, 400);
+    assert.strictEqual(sourceCalls, 0);
+
+    const resultResponse = await handler(evidenceRequest(), env, context());
+    assert.strictEqual(resultResponse.status, 502);
+    assert.strictEqual(errorCode(await resultResponse.json()), "upstream");
+    assert.strictEqual(sourceCalls, 1);
+
+    const mismatchNamespace = sandboxNamespace({
+      fromString: () => ({
+        runScottyEvidenceJob: async () => ({
+          ...evidenceResult(),
+          summaryUrl: `/s/${SESSION_ID}/evidence/different-job`,
+        }),
+      }),
+    });
+    const mismatched = await handler(evidenceRequest(), bindings(mismatchNamespace), context());
+    assert.strictEqual(mismatched.status, 502);
+  });
 });
 
 describe("source Sandbox orchestration authority", () => {
+  it("requires evidence to originate from a warm running Cloudflare source", async () => {
+    const records = [
+      {
+        record: makeSessionRecord({ status: "sleeping" }),
+        rawPiContainerRunning: true,
+      },
+      {
+        record: makeSessionRecord({
+          provider: "runner",
+          runner: "garage",
+          execution: { provider: "runner" as const, runner: "garage", runtimeId: "runtime-1" },
+        }),
+        rawPiContainerRunning: true,
+      },
+      {
+        record: makeSessionRecord(),
+        rawPiContainerRunning: false,
+      },
+    ];
+
+    for (const { record, rawPiContainerRunning } of records) {
+      const source = await createSessionHarness({
+        evidenceEnabled: true,
+        initialEntries: { [sessionHarnessKeys.record]: record },
+        rawPiContainerRunning,
+      });
+      const namespace = sandboxNamespace({ fromString: () => source.sandbox });
+      const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+        SCOTTY_INTERNAL_HOST
+      ];
+      assert.isFunction(handler);
+
+      const response = await handler(evidenceRequest(), bindings(namespace), context());
+      assert.strictEqual(response.status, 409);
+      assert.strictEqual(errorCode(await response.json()), "wrong_state");
+    }
+  });
+
   it("requires an authoritative warm Cloudflare source with no operation", async () => {
     for (const record of [
       makeSessionRecord({ status: "sleeping" }),

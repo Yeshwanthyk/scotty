@@ -185,6 +185,14 @@
       "versionPolicy": "pinned",
       "expectedVersion": "0.84.0",
       "probe": ["pi", "--version"]
+    },
+    {
+      "name": "scotty-browser-test",
+      "category": "scotty",
+      "commands": [],
+      "source": "first-party Pi package",
+      "versionPolicy": "image",
+      "probe": ["sh", "-lc", "pi list | grep -F scotty-browser-test >/dev/null"]
     }
   ]
 }

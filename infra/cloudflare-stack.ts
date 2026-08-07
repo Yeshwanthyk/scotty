@@ -27,7 +27,7 @@ export const makeCloudflareStackTopology = (installation: InstallationTopology) 
     assets: {
       directory: "worker/public",
       binding: "ASSETS",
-      runWorkerFirst: ["/api/*", "/s/*", "/sessions", "/providers", "/devices", "/pair", "/health"],
+      runWorkerFirst: true,
       htmlHandling: "none",
       notFoundHandling: "404-page",
     },
@@ -70,9 +70,36 @@ export const makeCloudflareStackTopology = (installation: InstallationTopology) 
       bindingName: "BACKUP_BUCKET",
       name: installation.backupBucketName,
     },
+    artifactR2: {
+      logicalId: "ArtifactBucket",
+      bindingName: "ARTIFACT_BUCKET",
+      name: installation.artifactBucketName,
+    },
+    preview:
+      installation.preview === undefined
+        ? undefined
+        : {
+            base: installation.preview.base,
+            zoneId: installation.preview.zoneId,
+            dns: {
+              logicalId: "EvidencePreviewWildcardDns",
+              name: `*.${installation.preview.base}`,
+              type: "AAAA" as const,
+              content: "100::",
+              proxied: true,
+            },
+            route: {
+              logicalId: "EvidencePreviewWorkerRoute",
+              pattern: `*.${installation.preview.base}/*`,
+            },
+          },
     vars: {
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: installation.backupBucketName,
+      ...(installation.preview === undefined
+        ? {}
+        : { SCOTTY_PREVIEW_BASE: installation.preview.base }),
+      ...(installation.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
     },
     outputKeys: ["url", "accountId", "workerName"],
     removalPolicy: "retain",
@@ -98,12 +125,21 @@ export const expectedCloudflareResourceConfirmation = (
     `container=${installation.containerName}`,
     `kv=${installation.kvTitle}`,
     `r2=${installation.backupBucketName}`,
+    `artifacts=${installation.artifactBucketName}`,
+    ...(installation.preview === undefined
+      ? []
+      : [`previewBase=${installation.preview.base}`, `previewZone=${installation.preview.zoneId}`]),
+    ...(installation.evidenceEnabled === true ? ["evidence=enabled"] : []),
   ].join(":");
 
 export const expectedCloudflareStackApproval = (installation: InstallationTopology): string =>
   `deploy:${installation.installationName}:${installation.workerName}`;
 
 export function assertCloudflareStackConfig(config: CloudflareStackConfig): void {
+  if (config.installation.evidenceEnabled === true && config.installation.preview === undefined) {
+    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: synchronous deployment preflight rejects an enabled bridge without explicit preview authority
+    throw new Error("Evidence requires an explicit preview topology.");
+  }
   if (config.stage !== CLOUDFLARE_STAGE) {
     // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: synchronous deployment preflight rejects invalid host configuration before resource evaluation
     throw new Error(`Cloudflare deployment requires exact stage ${CLOUDFLARE_STAGE}.`);
@@ -137,6 +173,9 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   const backups = yield* Cloudflare.R2.Bucket(topology.r2.logicalId, {
     name: topology.r2.name,
   }).pipe(removalPolicy);
+  const artifacts = yield* Cloudflare.R2.Bucket(topology.artifactR2.logicalId, {
+    name: topology.artifactR2.name,
+  }).pipe(removalPolicy);
   const durableObject = Cloudflare.DurableObject(topology.durableObject.logicalId, {
     className: topology.durableObject.className,
   });
@@ -160,7 +199,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   const assetConfig = {
     directory: topology.assets.directory,
     binding: topology.assets.binding,
-    runWorkerFirst: [...topology.assets.runWorkerFirst],
+    runWorkerFirst: topology.assets.runWorkerFirst,
     htmlHandling: topology.assets.htmlHandling,
     notFoundHandling: topology.assets.notFoundHandling,
   };
@@ -181,6 +220,8 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
       SANDBOX: durableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,
+      ARTIFACT_BUCKET: artifacts,
+      BROWSER: Cloudflare.Browser("BROWSER"),
       ...topology.vars,
     },
   }).pipe(removalPolicy);
@@ -196,6 +237,21 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   }).pipe(removalPolicy);
 
   yield* bindExternalSandboxContainer({ worker, container, durableObject });
+
+  if (topology.preview !== undefined) {
+    yield* Cloudflare.DNS.Record(topology.preview.dns.logicalId, {
+      zoneId: topology.preview.zoneId,
+      name: topology.preview.dns.name,
+      type: topology.preview.dns.type,
+      content: topology.preview.dns.content,
+      proxied: topology.preview.dns.proxied,
+    }).pipe(RemovalPolicy.destroy());
+    yield* Cloudflare.Workers.WorkerRoute(topology.preview.route.logicalId, {
+      zoneId: topology.preview.zoneId,
+      pattern: topology.preview.route.pattern,
+      script: worker.workerName,
+    }).pipe(RemovalPolicy.destroy());
+  }
 
   return { url: worker.url, accountId, workerName: topology.worker.name };
 });

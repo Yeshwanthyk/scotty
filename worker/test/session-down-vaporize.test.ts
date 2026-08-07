@@ -173,9 +173,13 @@ describe("Sandbox vaporize orchestration", () => {
     assert.deepStrictEqual(harness.deletedSchedules, [
       "retryVaporizeSession",
       "enforceHardCap",
+      "expireEvidenceJob",
+      "expireRetainedEvidence",
       "finalizeManagedStop",
       "retryHardCapDestroy",
       "enforceHardCap",
+      "expireEvidenceJob",
+      "expireRetainedEvidence",
       "finalizeManagedStop",
       "retryHardCapDestroy",
       "retryVaporizeSession",

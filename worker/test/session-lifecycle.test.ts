@@ -28,12 +28,16 @@ describe("session lifecycle invariants", () => {
   it("tracks every callback and preserves only vaporize retry during cleanup", () => {
     assert.deepStrictEqual(SESSION_SCHEDULE_CALLBACKS, [
       "enforceHardCap",
+      "expireEvidenceJob",
+      "expireRetainedEvidence",
       "finalizeManagedStop",
       "retryHardCapDestroy",
       "retryVaporizeSession",
     ]);
     assert.deepStrictEqual(VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS, [
       "enforceHardCap",
+      "expireEvidenceJob",
+      "expireRetainedEvidence",
       "finalizeManagedStop",
       "retryHardCapDestroy",
     ]);
