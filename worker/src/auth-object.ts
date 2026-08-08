@@ -8,7 +8,9 @@ import {
   type AuthRegistryFailure,
   authRegistryLayer,
   durableObjectAuthAuthorityStorage,
+  type ConsumedHatchHandoff,
   type IssuedClientCredential,
+  type IssuedHatchHandoff,
   type IssuedOwnerTransfer,
   type IssuedPairingGrant,
   type IssuedRecoveryGrant,
@@ -20,6 +22,7 @@ const PAIRING_TTL_MILLIS = 5 * 60 * 1_000;
 const CLIENT_TTL_MILLIS = 30 * 24 * 60 * 60 * 1_000;
 const OWNER_TRANSFER_TTL_MILLIS = 5 * 60 * 1_000;
 const RECOVERY_TTL_MILLIS = 5 * 60 * 1_000;
+const HATCH_HANDOFF_TTL_MILLIS = 60 * 1_000;
 
 export interface AuthRpcError {
   readonly reason: AuthRegistryFailure["reason"];
@@ -175,6 +178,35 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
     );
   }
 
+  issueHatchHandoff(
+    browserCredential: string,
+    sessionId: string,
+    hatchId: string,
+  ): Promise<AuthRpcResult<IssuedHatchHandoff>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) =>
+        registry.issueHatchHandoff(browserCredential, {
+          credential: randomCredentialCandidate(),
+          sessionId,
+          hatchId,
+          ttlMillis: HATCH_HANDOFF_TTL_MILLIS,
+        }),
+      ),
+    );
+  }
+
+  consumeHatchHandoff(
+    credential: string,
+    sessionId: string,
+    hatchId: string,
+  ): Promise<AuthRpcResult<ConsumedHatchHandoff>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) =>
+        registry.consumeHatchHandoff(credential, sessionId, hatchId),
+      ),
+    );
+  }
+
   async #run<A>(
     operation: Effect.Effect<A, AuthRegistryFailure, AuthRegistry>,
   ): Promise<AuthRpcResult<A>> {
@@ -198,9 +230,11 @@ export type ScottyAuthRegistryStub = Pick<
   | "acceptOwnerTransfer"
   | "authenticate"
   | "cancelOwnerTransfer"
+  | "consumeHatchHandoff"
   | "consumePairing"
   | "consumeRecoveryGrant"
   | "currentOwnerTransfer"
+  | "issueHatchHandoff"
   | "issuePairing"
   | "issueRecoveryGrant"
   | "listClients"

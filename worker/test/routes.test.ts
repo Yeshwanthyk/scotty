@@ -8,6 +8,10 @@ const sandbox = vi.hoisted(() => ({
   listScottyEvidence: vi.fn(),
   getScottyEvidence: vi.fn(),
   getScottyEvidenceArtifact: vi.fn(),
+  getScottyHatchStatus: vi.fn(),
+  ensureScottyHatch: vi.fn(),
+  closeScottyHatch: vi.fn(),
+  getScottyHatchOpenRoute: vi.fn(),
   renameScottySession: vi.fn(),
   snapshotScottySession: vi.fn(),
   sleepScottySession: vi.fn(),
@@ -30,9 +34,11 @@ const auth = vi.hoisted(() => ({
   acceptOwnerTransfer: vi.fn(),
   authenticate: vi.fn(),
   cancelOwnerTransfer: vi.fn(),
+  consumeHatchHandoff: vi.fn(),
   consumePairing: vi.fn(),
   consumeRecoveryGrant: vi.fn(),
   currentOwnerTransfer: vi.fn(),
+  issueHatchHandoff: vi.fn(),
   issuePairing: vi.fn(),
   issueRecoveryGrant: vi.fn(),
   listClients: vi.fn(),
@@ -260,6 +266,31 @@ describe("real Hono boundary", () => {
       branch: "scotty/a0b1c2d3e4f5",
     });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
+    sandbox.getScottyHatchStatus.mockResolvedValue({ version: 1, status: "not_configured" });
+    sandbox.ensureScottyHatch.mockResolvedValue({
+      version: 1,
+      status: "configured",
+      hatchId: "hatch-primary",
+      generation: 1,
+      service: { name: "docs", port: 4_173 },
+      desiredStatus: "open",
+      observedStatus: "running",
+      exposure: "active",
+      createdAt: "2026-08-08T12:00:00.000Z",
+      updatedAt: "2026-08-08T12:00:01.000Z",
+    });
+    sandbox.closeScottyHatch.mockResolvedValue({
+      version: 1,
+      status: "configured",
+      hatchId: "hatch-primary",
+      generation: 2,
+      service: { name: "docs", port: 4_173 },
+      desiredStatus: "closed",
+      observedStatus: "stopped",
+      exposure: "closed",
+      createdAt: "2026-08-08T12:00:00.000Z",
+      updatedAt: "2026-08-08T12:00:02.000Z",
+    });
     sandbox.reseedPiAuth.mockResolvedValue({
       id: "a0b1c2d3e4f5",
       updatedAt: "2026-07-29T12:00:00.000Z",
@@ -336,6 +367,82 @@ describe("real Hono boundary", () => {
       lastSeenAt: "2026-07-27T12:00:00.000Z",
     });
     runner.fetch.mockResolvedValue(new Response(null, { status: 204 }));
+  });
+
+  it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
+    const read = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/hatch",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ version: 1, status: "not_configured" });
+
+    const input = {
+      version: 1,
+      service: {
+        name: "docs",
+        argv: ["npm", "run", "dev"],
+        workingDirectory: "/workspace/a0b1c2d3e4f5",
+        port: 4_173,
+        healthPath: "/health",
+      },
+    };
+    const opened = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/hatch",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+        body: JSON.stringify(input),
+      },
+      env(),
+    );
+    expect(opened.status).toBe(200);
+    expect(sandbox.ensureScottyHatch).toHaveBeenCalledWith(input);
+    expect(opened.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("returns an auto-submitting exact-host Hatch handoff without forwarding control authority", async () => {
+    sandbox.getScottyHatchOpenRoute.mockResolvedValue({
+      sessionId: "a0b1c2d3e4f5",
+      hatchId: "hatch-primary",
+      generation: 1,
+      port: 4_173,
+      routeNonce: "h_0123456789abcd",
+      runtimeEpoch: "epoch-current",
+    });
+    auth.issueHatchHandoff.mockResolvedValue({
+      ok: true,
+      value: {
+        credential: "scotty_hatch.bbbbbbbbbbbb.hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+        expiresAt: "2026-08-08T12:01:00.000Z",
+      },
+    });
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/hatch/open",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      { ...env(), SCOTTY_PREVIEW_BASE: "preview.example.test" },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const html = await response.text();
+    expect(html).toContain(
+      'action="https://4173-a0b1c2d3e4f5-h_0123456789abcd.preview.example.test/_scotty/hatch/handoff"',
+    );
+    expect(html).toContain('method="post"');
+    expect(html).toContain("scotty_hatch.bbbbbbbbbbbb");
+    expect(html).not.toContain(CLIENT_CREDENTIAL);
+    expect(html).not.toContain(TOKEN);
+    expect(auth.issueHatchHandoff).toHaveBeenCalledWith(
+      CLIENT_CREDENTIAL,
+      "a0b1c2d3e4f5",
+      "hatch-primary",
+    );
   });
 
   it("accepts only a registered authenticated runner and strips its credential", async () => {

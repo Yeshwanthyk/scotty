@@ -693,6 +693,60 @@ describe("AuthRegistry ownership authority", () => {
     }),
   );
 
+  it.effect("issues a browser-bound Hatch handoff and consumes its digest exactly once", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const storage = new MemoryAuthAuthorityStorage();
+      const owner = yield* recoverOwner(storage);
+      const handoff = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.issueHatchHandoff(owner.credential, {
+            credential: { id: "bbbbbbbbbbbb", secret: secret("h") },
+            sessionId: "a0b1c2d3e4f5",
+            hatchId: "hatch-primary",
+            ttlMillis: 60_000,
+          }),
+        ),
+      );
+      const authority = storage.snapshot() as AuthAuthority;
+      assert.lengthOf(authority.hatchHandoffs ?? [], 1);
+      assert.notInclude(JSON.stringify(authority), handoff.credential);
+      assert.notInclude(JSON.stringify(authority), secret("h"));
+
+      const [first, second] = yield* Effect.all(
+        [
+          withRegistry(
+            storage,
+            Effect.flatMap(AuthRegistry, (registry) =>
+              registry.consumeHatchHandoff(handoff.credential, "a0b1c2d3e4f5", "hatch-primary"),
+            ).pipe(Effect.result),
+          ),
+          withRegistry(
+            storage,
+            Effect.flatMap(AuthRegistry, (registry) =>
+              registry.consumeHatchHandoff(handoff.credential, "a0b1c2d3e4f5", "hatch-primary"),
+            ).pipe(Effect.result),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const outcomes = [first, second];
+      assert.strictEqual(outcomes.filter(Result.isSuccess).length, 1);
+      assert.strictEqual(outcomes.filter(Result.isFailure).length, 1);
+      const consumed = outcomes.find(Result.isSuccess);
+      assert.ok(consumed);
+      assert.deepStrictEqual(consumed.success, {
+        browserClientId: owner.client.id,
+        sessionId: "a0b1c2d3e4f5",
+        hatchId: "hatch-primary",
+      });
+      const rejected = outcomes.find(Result.isFailure);
+      assert.ok(rejected);
+      assert.strictEqual(rejected.failure.reason, "handoff_invalid");
+    }),
+  );
+
   it.effect("fails closed for malformed V2 authority", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);

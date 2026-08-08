@@ -6,8 +6,10 @@ const CLIENT_CREDENTIAL_PREFIX = "scotty_client";
 const PAIRING_CREDENTIAL_PREFIX = "scotty_pair";
 const OWNER_TRANSFER_CREDENTIAL_PREFIX = "scotty_transfer";
 const RECOVERY_CREDENTIAL_PREFIX = "scotty_recovery";
+const HATCH_HANDOFF_CREDENTIAL_PREFIX = "scotty_hatch";
 const MAX_CLIENTS = 64;
 const MAX_PAIRINGS = 32;
+const MAX_HATCH_HANDOFFS = 64;
 const OWNER_RENEWAL_WINDOW_MILLIS = 7 * 24 * 60 * 60 * 1_000;
 const OWNER_TTL_MILLIS = 30 * 24 * 60 * 60 * 1_000;
 
@@ -78,6 +80,17 @@ const RecoveryGrantRecordSchema = Schema.Struct({
 });
 type RecoveryGrantRecord = typeof RecoveryGrantRecordSchema.Type;
 
+const HatchHandoffRecordSchema = Schema.Struct({
+  id: Schema.String,
+  credentialDigest: Schema.String,
+  browserClientId: Schema.String,
+  sessionId: Schema.String,
+  hatchId: Schema.String,
+  createdAt: Schema.String,
+  expiresAt: Schema.String,
+});
+type HatchHandoffRecord = typeof HatchHandoffRecordSchema.Type;
+
 export const AuthAuthoritySchema = Schema.Struct({
   version: Schema.Literal(2),
   ownership: OwnershipStateSchema,
@@ -85,6 +98,7 @@ export const AuthAuthoritySchema = Schema.Struct({
   pairings: Schema.Array(PairingGrantRecordSchema),
   ownerTransfer: Schema.optionalKey(OwnerTransferRecordSchema),
   recoveryGrant: Schema.optionalKey(RecoveryGrantRecordSchema),
+  hatchHandoffs: Schema.optionalKey(Schema.Array(HatchHandoffRecordSchema)),
 });
 export type AuthAuthority = typeof AuthAuthoritySchema.Type;
 
@@ -129,6 +143,14 @@ const RecoveryGrantCandidateSchema = Schema.Struct({
   idempotencyKey: Schema.optionalKey(Schema.String),
 });
 export type RecoveryGrantCandidate = typeof RecoveryGrantCandidateSchema.Type;
+
+const HatchHandoffCandidateSchema = Schema.Struct({
+  credential: CredentialCandidateSchema,
+  sessionId: Schema.String,
+  hatchId: Schema.String,
+  ttlMillis: Schema.Number,
+});
+export type HatchHandoffCandidate = typeof HatchHandoffCandidateSchema.Type;
 
 export const AuthClientViewSchema = Schema.Struct({
   id: Schema.String,
@@ -181,11 +203,23 @@ export interface IssuedRecoveryGrant {
   readonly expiresAt: string;
 }
 
+export interface IssuedHatchHandoff {
+  readonly credential: string;
+  readonly expiresAt: string;
+}
+
+export interface ConsumedHatchHandoff {
+  readonly browserClientId: string;
+  readonly sessionId: string;
+  readonly hatchId: string;
+}
+
 export type AuthRegistryFailureReason =
   | "capacity"
   | "client_missing"
   | "credential_invalid"
   | "forbidden"
+  | "handoff_invalid"
   | "invalid_authority"
   | "invalid_input"
   | "outcome_unknown"
@@ -256,6 +290,15 @@ interface AuthRegistryShape {
     credential: unknown,
     ownerClient: unknown,
   ) => Effect.Effect<IssuedClientCredential, AuthRegistryFailure>;
+  readonly issueHatchHandoff: (
+    browserCredential: unknown,
+    candidate: unknown,
+  ) => Effect.Effect<IssuedHatchHandoff, AuthRegistryFailure>;
+  readonly consumeHatchHandoff: (
+    credential: unknown,
+    sessionId: unknown,
+    hatchId: unknown,
+  ) => Effect.Effect<ConsumedHatchHandoff, AuthRegistryFailure>;
 }
 
 export class AuthRegistry extends Context.Service<AuthRegistry, AuthRegistryShape>()(
@@ -299,11 +342,15 @@ const decodeReplacementCredentialCandidate = Schema.decodeUnknownResult(
 const decodeRecoveryGrantCandidate = Schema.decodeUnknownResult(RecoveryGrantCandidateSchema, {
   onExcessProperty: "error",
 });
+const decodeHatchHandoffCandidate = Schema.decodeUnknownResult(HatchHandoffCandidateSchema, {
+  onExcessProperty: "error",
+});
 const emptyAuthority = (): AuthAuthority => ({
   version: 2,
   ownership: { state: "unclaimed", epoch: 0 },
   clients: [],
   pairings: [],
+  hatchHandoffs: [],
 });
 
 const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
@@ -806,6 +853,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           },
           clients: nextClients,
           pairings: [],
+          hatchHandoffs: [],
         };
         return Result.succeed({
           value: {
@@ -813,6 +861,84 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
             client: toClientView(client.success.record, nextAuthority, client.success.record.id),
           },
           authority: nextAuthority,
+        });
+      }),
+
+    issueHatchHandoff: (browserCredential, candidateValue) =>
+      transact(async (authority, nowMillis) => {
+        const browser = await authenticateClient(authority, browserCredential, nowMillis, failure);
+        if (Result.isFailure(browser)) return Result.fail(browser.failure);
+        const decoded = Result.mapError(decodeHatchHandoffCandidate(candidateValue), invalidInput);
+        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
+        const candidate = decoded.success;
+        const handoffs = authority.hatchHandoffs ?? [];
+        if (
+          !validCandidate(candidate.credential) ||
+          !validTtl(candidate.ttlMillis) ||
+          !/^[0-9a-f]{12}$/u.test(candidate.sessionId) ||
+          !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(candidate.hatchId)
+        )
+          return Result.fail(invalidInput());
+        if (handoffs.length >= MAX_HATCH_HANDOFFS)
+          return Result.fail(failure("capacity", "Active Hatch handoff limit reached"));
+        const record: HatchHandoffRecord = {
+          id: candidate.credential.id,
+          credentialDigest: await sha256Hex(candidate.credential.secret),
+          browserClientId: browser.success.id,
+          sessionId: candidate.sessionId,
+          hatchId: candidate.hatchId,
+          createdAt: toIso(nowMillis),
+          expiresAt: toIso(nowMillis + candidate.ttlMillis),
+        };
+        return Result.succeed({
+          value: {
+            credential: formatCredential(HATCH_HANDOFF_CREDENTIAL_PREFIX, candidate.credential),
+            expiresAt: record.expiresAt,
+          },
+          authority: { ...authority, hatchHandoffs: [...handoffs, record] },
+        });
+      }),
+
+    consumeHatchHandoff: (credentialValue, sessionId, hatchId) =>
+      transact(async (authority, nowMillis) => {
+        const invalid = handoffInvalid(failure);
+        if (
+          typeof sessionId !== "string" ||
+          !/^[0-9a-f]{12}$/u.test(sessionId) ||
+          typeof hatchId !== "string" ||
+          !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(hatchId)
+        )
+          return Result.fail(invalid);
+        const parsed = parseCredential(
+          credentialValue,
+          HATCH_HANDOFF_CREDENTIAL_PREFIX,
+          () => invalid,
+        );
+        if (Result.isFailure(parsed)) return Result.fail(invalid);
+        const handoffs = authority.hatchHandoffs ?? [];
+        const handoff = handoffs.find((candidate) => candidate.id === parsed.success.id);
+        if (
+          handoff === undefined ||
+          handoff.sessionId !== sessionId ||
+          handoff.hatchId !== hatchId ||
+          Date.parse(handoff.expiresAt) <= nowMillis ||
+          !activeClients(authority, nowMillis).some(
+            (client) => client.id === handoff.browserClientId,
+          )
+        )
+          return Result.fail(invalid);
+        const digest = await sha256Hex(parsed.success.secret);
+        if (!safeDigestEqual(digest, handoff.credentialDigest)) return Result.fail(invalid);
+        return Result.succeed({
+          value: {
+            browserClientId: handoff.browserClientId,
+            sessionId: handoff.sessionId,
+            hatchId: handoff.hatchId,
+          },
+          authority: {
+            ...authority,
+            hatchHandoffs: handoffs.filter((candidate) => candidate.id !== handoff.id),
+          },
         });
       }),
   });
@@ -901,15 +1027,23 @@ function validAuthority(authority: AuthAuthority): boolean {
     ownerId === undefined ? undefined : authority.clients.find((client) => client.id === ownerId);
   const transfer = authority.ownerTransfer;
   const recovery = authority.recoveryGrant;
+  const hatchHandoffs = authority.hatchHandoffs ?? [];
   return (
     authority.clients.length <= MAX_CLIENTS * 2 + 1 &&
     authority.pairings.length <= MAX_PAIRINGS &&
+    hatchHandoffs.length <= MAX_HATCH_HANDOFFS &&
     validEpoch(authority.ownership.epoch) &&
     (authority.ownership.state === "unclaimed" || Boolean(owner && !owner.revokedAt)) &&
     uniqueIds(authority.clients) &&
     uniqueIds(authority.pairings) &&
+    uniqueIds(hatchHandoffs) &&
     authority.clients.every(validClientRecord) &&
     authority.pairings.every(validPairingRecord) &&
+    hatchHandoffs.every(
+      (handoff) =>
+        validHatchHandoffRecord(handoff) &&
+        authority.clients.some((client) => client.id === handoff.browserClientId),
+    ) &&
     (transfer === undefined ||
       (validOwnerTransferRecord(transfer) &&
         authority.ownership.state === "claimed" &&
@@ -971,6 +1105,16 @@ function validRecoveryGrantRecord(grant: RecoveryGrantRecord): boolean {
     validEpoch(grant.ownerEpoch) &&
     validRecordTimestamps(grant) &&
     validOptionalDigest(grant.idempotencyKeyDigest)
+  );
+}
+
+function validHatchHandoffRecord(handoff: HatchHandoffRecord): boolean {
+  return (
+    validStoredCredential(handoff.id, handoff.credentialDigest) &&
+    validClientId(handoff.browserClientId) &&
+    /^[0-9a-f]{12}$/u.test(handoff.sessionId) &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(handoff.hatchId) &&
+    validRecordTimestamps(handoff)
   );
 }
 
@@ -1041,11 +1185,16 @@ function purgeExpired(authority: AuthAuthority, nowMillis: number): AuthAuthorit
     authority.recoveryGrant.ownerEpoch === authority.ownership.epoch
       ? authority.recoveryGrant
       : undefined;
+  const hatchHandoffs = (authority.hatchHandoffs ?? []).filter(
+    (handoff) =>
+      Date.parse(handoff.expiresAt) > nowMillis && activeIds.has(handoff.browserClientId),
+  );
   if (
     clients.length === authority.clients.length &&
     pairings.length === authority.pairings.length &&
     ownerTransfer === authority.ownerTransfer &&
-    recoveryGrant === authority.recoveryGrant
+    recoveryGrant === authority.recoveryGrant &&
+    hatchHandoffs.length === (authority.hatchHandoffs?.length ?? 0)
   )
     return authority;
   return {
@@ -1055,6 +1204,7 @@ function purgeExpired(authority: AuthAuthority, nowMillis: number): AuthAuthorit
     pairings,
     ...(ownerTransfer === undefined ? {} : { ownerTransfer }),
     ...(recoveryGrant === undefined ? {} : { recoveryGrant }),
+    hatchHandoffs,
   };
 }
 
@@ -1146,4 +1296,10 @@ function recoveryInvalid(
   failure: (reason: AuthRegistryFailureReason, message: string) => AuthRegistryFailure,
 ): AuthRegistryFailure {
   return failure("recovery_invalid", "Recovery link is invalid or expired");
+}
+
+function handoffInvalid(
+  failure: (reason: AuthRegistryFailureReason, message: string) => AuthRegistryFailure,
+): AuthRegistryFailure {
+  return failure("handoff_invalid", "Hatch handoff is invalid or expired");
 }

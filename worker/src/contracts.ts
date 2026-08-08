@@ -76,6 +76,7 @@ export const OperationKindSchema = Schema.Literals([
   "snapshot",
   "resume",
   "evidence",
+  "hatch",
   "down",
   "vaporize",
 ]);

@@ -11,6 +11,7 @@ import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV1 } from "../src/evidence-contracts";
+import { HATCH_STATE_KEY } from "../src/session-store";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
   SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
@@ -107,6 +108,7 @@ export interface HarnessOptions {
   readonly previewBase?: string;
   readonly previewExposeGate?: Promise<void>;
   readonly previewRequestForwarder?: SandboxEffectOptions["previewRequestForwarder"];
+  readonly hatchRequestForwarder?: SandboxEffectOptions["hatchRequestForwarder"];
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
@@ -734,6 +736,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     kitesurfClient: options.kitesurfClient,
     passivePiConsoleRelay: options.passivePiConsoleRelay,
     previewRequestForwarder: options.previewRequestForwarder,
+    hatchRequestForwarder: options.hatchRequestForwarder,
   });
   await Promise.all(constructorWork);
   rawPiContainerRunning = options.rawPiContainerRunning ?? false;
@@ -1030,6 +1033,7 @@ export const sessionHarnessKeys = {
   credential: CREDENTIAL_KEY,
   createIdempotency: CREATE_IDEMPOTENCY_KEY,
   evidence: EVIDENCE_RECORD_KEY,
+  hatch: HATCH_STATE_KEY,
   record: RECORD_KEY,
   runtimeEpoch: RUNTIME_EPOCH_KEY,
 } as const;
