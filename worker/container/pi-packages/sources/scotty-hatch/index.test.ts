@@ -97,6 +97,7 @@ test("exposes one strict bounded operation union without env, identity, URL, or 
     Check(ScottyHatchParameters, { ...ensureInput(), healthPath: "//attacker.test/health" }),
     false,
   );
+  assert.equal(Check(ScottyHatchParameters, { ...ensureInput(), service: "web\n" }), false);
 });
 
 test("starts one process group with an allow-listed environment and registers source-local authority", async () => {
@@ -216,10 +217,15 @@ test("is idempotent for the exact fingerprint and conflicts without replacing ch
   await manager.run(ensureInput());
   assert.equal(spawns, 1);
   assert.equal(authorityCalls, 2);
-  await assert.rejects(
-    manager.run({ ...ensureInput(), argv: ["node", "other.mjs"] }),
-    /different primary Hatch service/u,
-  );
+  for (const changed of [
+    { ...ensureInput(), service: "other" },
+    { ...ensureInput(), argv: ["node", "other.mjs"] },
+    { ...ensureInput(), cwd: "." },
+    { ...ensureInput(), port: 4_174 },
+    { ...ensureInput(), healthPath: "/ready" },
+  ]) {
+    await assert.rejects(manager.run(changed), /different primary Hatch service/u);
+  }
   assert.equal(spawns, 1);
   assert.equal(authorityCalls, 2);
 });
@@ -254,9 +260,17 @@ test("stops the child when authoritative ensure fails and rejects invalid or ove
   await assert.rejects(manager.run(ensureInput()), /invalid result/u);
   assert.deepEqual(signals, ["SIGTERM", "SIGTERM"]);
 
+  reply = Response.json(configured({ hatchId: "hatch-abcd1234\n" }));
+  await assert.rejects(manager.run(ensureInput()), /invalid result/u);
+  assert.deepEqual(signals, ["SIGTERM", "SIGTERM", "SIGTERM"]);
+
+  reply = Response.json(configured({ service: { name: "other", port: 4_173 } }));
+  await assert.rejects(manager.run(ensureInput()), /did not confirm/u);
+  assert.deepEqual(signals, ["SIGTERM", "SIGTERM", "SIGTERM", "SIGTERM"]);
+
   reply = new Response("x".repeat(SCOTTY_HATCH_MAX_BYTES + 1));
   await assert.rejects(manager.run(ensureInput()), /64 KiB/u);
-  assert.deepEqual(signals, ["SIGTERM", "SIGTERM", "SIGTERM"]);
+  assert.deepEqual(signals, ["SIGTERM", "SIGTERM", "SIGTERM", "SIGTERM", "SIGTERM"]);
 });
 
 test("rejects a symlink escape and an oversized request before spawning", async () => {
@@ -321,6 +335,56 @@ test("status is read-only and close revokes authority before TERM-then-KILL clea
   assert.equal(closed.process.status, "stopped");
   const after = await manager.run({ operation: "status" });
   assert.equal(after.process.status, "not_owned");
+});
+
+test("close keeps the local service running unless authority confirms closure", async () => {
+  const { root } = await workspace();
+  const child = new FakeChild(420);
+  const signals: string[] = [];
+  const manager = new ScottyHatchManager({
+    workspaceRoot: root,
+    spawnProcess: () => child,
+    localTransport: async () => new Response(),
+    authorityTransport: async () => Response.json(configured()),
+    signalProcessGroup: (_pid, signal) => signals.push(signal),
+  });
+
+  await manager.run(ensureInput());
+  await assert.rejects(manager.run({ operation: "close" }), /did not confirm closure/u);
+  assert.deepEqual(signals, []);
+  const status = await manager.run({ operation: "status" });
+  assert.equal(status.process.status, "running");
+});
+
+test("close kills surviving process-group descendants after the leader exits", async () => {
+  const { root } = await workspace();
+  const child = new FakeChild(425);
+  const signals: string[] = [];
+  let groupExists = true;
+  const manager = new ScottyHatchManager({
+    workspaceRoot: root,
+    spawnProcess: () => child,
+    localTransport: async () => new Response(),
+    authorityTransport: async (_input, init) =>
+      Response.json(
+        init?.method === "DELETE"
+          ? configured({ desiredStatus: "closed", observedStatus: "stopped", exposure: "closed" })
+          : configured(),
+      ),
+    processGroupExists: () => groupExists,
+    signalProcessGroup: (_pid, signal) => {
+      signals.push(signal);
+      if (signal === "SIGKILL") groupExists = false;
+    },
+    termTimeoutMillis: 1,
+    killTimeoutMillis: 20,
+  });
+
+  await manager.run(ensureInput());
+  child.exit("SIGTERM");
+  const closed = await manager.run({ operation: "close" });
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(closed.process.status, "stopped");
 });
 
 test("session shutdown stops the owned group even when authority is already transitioning", async () => {

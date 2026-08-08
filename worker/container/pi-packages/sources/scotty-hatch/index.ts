@@ -36,7 +36,7 @@ const SAFE_ENVIRONMENT_NAMES = [
 const ServiceNameSchema = Type.String({
   minLength: 1,
   maxLength: MAX_NAME_LENGTH,
-  pattern: "^[A-Za-z0-9][A-Za-z0-9 ._-]*$",
+  pattern: "^[A-Za-z0-9][A-Za-z0-9 ._-]*(?![\\s\\S])",
 });
 const ArgSchema = Type.String({ maxLength: MAX_ARG_LENGTH, pattern: "^[^\\u0000]*$" });
 const RelativeCwdSchema = Type.String({
@@ -88,7 +88,9 @@ const ConfiguredStatusSchema = Type.Object(
   {
     version: Type.Literal(1),
     status: Type.Literal("configured"),
-    hatchId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" }),
+    hatchId: Type.String({
+      pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?![\\s\\S])",
+    }),
     generation: Type.Integer({ minimum: 1 }),
     service: Type.Object(
       { name: Type.String({ maxLength: MAX_NAME_LENGTH }), port: PortSchema },
@@ -172,6 +174,7 @@ export interface ScottyHatchManagerOptions {
     environment: NodeJS.ProcessEnv,
   ) => HatchChildProcess;
   readonly signalProcessGroup?: (pid: number, signal: ProcessSignal) => void;
+  readonly processGroupExists?: (pid: number) => boolean;
   readonly readyTimeoutMillis?: number;
   readonly termTimeoutMillis?: number;
   readonly killTimeoutMillis?: number;
@@ -282,8 +285,12 @@ class LogTail {
 
   append(chunk: string | Buffer): void {
     const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    const combined = Buffer.concat([this.#raw, incoming]);
     const rawLimit = SCOTTY_HATCH_LOG_TAIL_BYTES * 4;
+    const boundedIncoming =
+      incoming.byteLength <= rawLimit
+        ? incoming
+        : incoming.subarray(incoming.byteLength - rawLimit);
+    const combined = Buffer.concat([this.#raw, boundedIncoming]);
     this.#raw =
       combined.byteLength <= rawLimit
         ? combined
@@ -318,17 +325,37 @@ function defaultSpawnProcess(
   });
 }
 
+function missingProcessGroup(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ESRCH"
+  );
+}
+
 function defaultSignalProcessGroup(pid: number, signal: ProcessSignal): void {
   try {
     process.kill(-pid, signal);
   } catch (error) {
+    if (missingProcessGroup(error)) return;
+    throw error;
+  }
+}
+
+function defaultProcessGroupExists(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if (missingProcessGroup(error)) return false;
     if (
       typeof error === "object" &&
       error !== null &&
       "code" in error &&
-      error.code === "ESRCH"
+      error.code === "EPERM"
     )
-      return;
+      return true;
     throw error;
   }
 }
@@ -357,24 +384,6 @@ function wait(millis: number, signal?: AbortSignal): Promise<void> {
       rejectPromise(abortError());
     };
     signal?.addEventListener("abort", abort, { once: true });
-  });
-}
-
-async function waitForExit(child: HatchChildProcess, timeoutMillis: number): Promise<boolean> {
-  if (processExited(child)) return true;
-  return new Promise((resolvePromise) => {
-    let settled = false;
-    const finish = (exited: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      child.off("exit", onExit);
-      resolvePromise(exited);
-    };
-    const onExit = () => finish(true);
-    const timeout = setTimeout(() => finish(processExited(child)), timeoutMillis);
-    child.once("exit", onExit);
-    if (processExited(child)) finish(true);
   });
 }
 
@@ -530,6 +539,7 @@ export class ScottyHatchManager {
   readonly #localTransport: HatchTransport;
   readonly #spawnProcess: NonNullable<ScottyHatchManagerOptions["spawnProcess"]>;
   readonly #signalProcessGroup: NonNullable<ScottyHatchManagerOptions["signalProcessGroup"]>;
+  readonly #processGroupExists: NonNullable<ScottyHatchManagerOptions["processGroupExists"]>;
   readonly #readyTimeoutMillis: number;
   readonly #termTimeoutMillis: number;
   readonly #killTimeoutMillis: number;
@@ -542,6 +552,7 @@ export class ScottyHatchManager {
     this.#localTransport = options.localTransport ?? fetch;
     this.#spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
     this.#signalProcessGroup = options.signalProcessGroup ?? defaultSignalProcessGroup;
+    this.#processGroupExists = options.processGroupExists ?? defaultProcessGroupExists;
     this.#readyTimeoutMillis =
       options.readyTimeoutMillis ?? SCOTTY_HATCH_READY_TIMEOUT_MILLIS;
     this.#termTimeoutMillis = options.termTimeoutMillis ?? 3_000;
@@ -650,6 +661,7 @@ export class ScottyHatchManager {
       );
       if (
         status.status !== "configured" ||
+        status.service.name !== input.service ||
         status.service.port !== input.port ||
         status.desiredStatus !== "open" ||
         status.observedStatus !== "running" ||
@@ -680,6 +692,13 @@ export class ScottyHatchManager {
 
   async #close(signal?: AbortSignal): Promise<ScottyHatchResultV1> {
     const status = await requestAuthority("close", undefined, signal, this.#authorityTransport);
+    if (
+      status.status === "configured" &&
+      (status.desiredStatus !== "closed" ||
+        status.observedStatus !== "stopped" ||
+        status.exposure !== "closed")
+    )
+      throw new Error("Scotty Hatch did not confirm closure");
     const owned = this.#owned;
     if (owned !== undefined) await this.#stopOwned(owned);
     const result = this.#result("close", status, owned);
@@ -688,14 +707,26 @@ export class ScottyHatchManager {
   }
 
   async #stopOwned(owned: OwnedProcess): Promise<void> {
-    if (processExited(owned.child)) return;
     const pid = owned.child.pid;
     if (pid === undefined) throw new Error("Hatch service process group is unavailable");
+    if (processExited(owned.child) && !this.#processGroupExists(pid)) return;
     this.#signalProcessGroup(pid, "SIGTERM");
-    if (await waitForExit(owned.child, this.#termTimeoutMillis)) return;
+    if (await this.#waitForOwnedGroupExit(owned, this.#termTimeoutMillis)) return;
     this.#signalProcessGroup(pid, "SIGKILL");
-    if (!(await waitForExit(owned.child, this.#killTimeoutMillis)))
+    if (!(await this.#waitForOwnedGroupExit(owned, this.#killTimeoutMillis)))
       throw new Error("Hatch service process group did not stop");
+  }
+
+  async #waitForOwnedGroupExit(owned: OwnedProcess, timeoutMillis: number): Promise<boolean> {
+    const pid = owned.child.pid;
+    if (pid === undefined) return false;
+    const deadline = Date.now() + timeoutMillis;
+    for (;;) {
+      if (processExited(owned.child) && !this.#processGroupExists(pid)) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await wait(Math.min(25, remaining));
+    }
   }
 
   #result(
