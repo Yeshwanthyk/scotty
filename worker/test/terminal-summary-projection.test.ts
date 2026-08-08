@@ -400,6 +400,8 @@ describe("terminal Summary projection", () => {
     assert.include(terminalSource, "trapFocus(event, summarySidebar)");
     assert.include(terminalSource, "appShell.inert = open");
     assert.include(terminalSource, "focusedKey");
+    assert.include(terminalSource, "card.dataset.pendingFocusKey = focusedKey");
+    assert.include(terminalSource, "restoreSummaryHatchFocus(card, focusedKey)");
     assert.include(terminalSource, "replacement?.focus({ preventScroll: true })");
     assert.include(terminalSource, "browserHatchStatus");
     assert.notInclude(terminalSource, "summary-hatch-meta");

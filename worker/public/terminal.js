@@ -502,11 +502,7 @@ function summaryHatchAction(tag, className, label, action, reference) {
   return control;
 }
 
-function replaceSummaryHatchCard(card, ...children) {
-  const focusedKey = card.contains(document.activeElement)
-    ? document.activeElement?.closest?.("[data-summary-focus-key]")?.dataset.summaryFocusKey
-    : undefined;
-  card.replaceChildren(...children);
+function restoreSummaryHatchFocus(card, focusedKey) {
   if (!focusedKey) return;
   requestAnimationFrame(() => {
     if (!card.isConnected) return;
@@ -515,6 +511,15 @@ function replaceSummaryHatchCard(card, ...children) {
       controls.find((candidate) => candidate.dataset.summaryFocusKey === focusedKey) ?? controls[0];
     replacement?.focus({ preventScroll: true });
   });
+}
+
+function replaceSummaryHatchCard(card, ...children) {
+  const focusedKey = card.contains(document.activeElement)
+    ? document.activeElement?.closest?.("[data-summary-focus-key]")?.dataset.summaryFocusKey
+    : card.dataset.pendingFocusKey;
+  delete card.dataset.pendingFocusKey;
+  card.replaceChildren(...children);
+  restoreSummaryHatchFocus(card, focusedKey);
 }
 
 function summaryHatchActions(card, reference, status) {
@@ -653,6 +658,11 @@ async function loadSummaryHatch(
 }
 
 function setSummaryHatchPending(card, pending) {
+  if (pending && card.contains(document.activeElement)) {
+    const focusedKey = document.activeElement?.closest?.("[data-summary-focus-key]")?.dataset
+      .summaryFocusKey;
+    if (focusedKey) card.dataset.pendingFocusKey = focusedKey;
+  }
   for (const button of card.querySelectorAll("button")) button.disabled = pending;
   for (const link of card.querySelectorAll("a")) {
     link.setAttribute("aria-disabled", String(pending));
@@ -660,6 +670,11 @@ function setSummaryHatchPending(card, pending) {
     else link.removeAttribute("tabindex");
   }
   card.setAttribute("aria-busy", String(pending));
+  if (!pending) {
+    const focusedKey = card.dataset.pendingFocusKey;
+    delete card.dataset.pendingFocusKey;
+    restoreSummaryHatchFocus(card, focusedKey);
+  }
 }
 
 async function runSummaryHatchAction(card, reference, action) {
