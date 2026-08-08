@@ -4,6 +4,13 @@ export const HATCH_STATE_VERSION = 1 as const;
 export const HATCH_COOKIE = "__Host-scotty-hatch";
 export const HATCH_HANDOFF_PATH = "/_scotty/hatch/handoff";
 export const HATCH_MAX_CONCURRENT_REQUESTS = 8;
+export const HATCH_MAX_CONCURRENT_SOCKETS = 4;
+export const HATCH_MAX_WEBSOCKET_MESSAGE_BYTES = 1 * 1_024 * 1_024;
+export const HATCH_MAX_WEBSOCKET_MESSAGES = 10_000;
+export const HATCH_MAX_WEBSOCKET_AGGREGATE_BYTES = 64 * 1_024 * 1_024;
+export const HATCH_WEBSOCKET_IDLE_MILLIS = 60_000;
+export const HATCH_WEBSOCKET_ABSOLUTE_MILLIS = 60 * 60 * 1_000;
+export const HATCH_WEBSOCKET_ADMISSION_MILLIS = 10_000;
 export const HATCH_MAX_INGRESS_BYTES = 16 * 1_024 * 1_024;
 export const HATCH_RESERVED_RESPONSE_BYTES = 32 * 1_024 * 1_024;
 export const HATCH_MAX_PERMIT_BYTES = 256 * 1_024 * 1_024;
@@ -11,6 +18,8 @@ export const HATCH_REQUEST_DURATION_MILLIS = 30_000;
 export const HATCH_PERMIT_DURATION_MILLIS = 60 * 60 * 1_000;
 export const HATCH_PRIVATE_REQUEST_HEADER = "x-scotty-hatch-request";
 export const HATCH_PRIVATE_CLAIMED_HEADER = "x-scotty-hatch-claimed";
+export const HATCH_PRIVATE_WEBSOCKET_HEADER = "x-scotty-hatch-websocket";
+export const HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER = "x-scotty-hatch-websocket-claimed";
 export const HATCH_RESERVED_PORTS = new Set([3_000, 43_117]);
 
 const IdentifierSchema = Schema.String.check(
@@ -38,6 +47,14 @@ const PortSchema = Schema.Int.check(
 const RouteNonceSchema = Schema.String.check(Schema.isPattern(/^h_[a-z0-9_]{14}$/u));
 const CookieSecretSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const RequestIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u));
+const WebSocketIdSchema = RequestIdSchema;
+const HatchHostSchema = Schema.String.check(
+  Schema.isMaxLength(253),
+  Schema.makeFilter(
+    (value) => value === value.toLowerCase() && !value.includes(":") && !value.endsWith("."),
+    { expected: "a canonical Hatch host" },
+  ),
+);
 const AbsoluteWorkspacePathSchema = Schema.String.check(
   Schema.makeFilter(
     (path) =>
@@ -132,7 +149,13 @@ export const HatchHttpRequestV1Schema = Schema.Struct({
 });
 export type HatchHttpRequestV1 = typeof HatchHttpRequestV1Schema.Type;
 
-export const HatchCleanupTargetSchema = Schema.Literals(["failed", "sleeping", "stopped", "gone"]);
+export const HatchCleanupTargetSchema = Schema.Literals([
+  "failed",
+  "sleeping",
+  "stopped",
+  "unhealthy",
+  "gone",
+]);
 export type HatchCleanupTarget = typeof HatchCleanupTargetSchema.Type;
 export const HatchCleanupRetryV1Schema = Schema.Struct({
   operationNonce: IdentifierSchema,
@@ -317,6 +340,37 @@ export const HatchRequestPermitV1Schema = Schema.Struct({
   expiresAt: IsoTimestampSchema,
 });
 export type HatchRequestPermitV1 = typeof HatchRequestPermitV1Schema.Type;
+
+export const HatchWebSocketAdmissionV1Schema = Schema.Struct({
+  ...HatchHostRouteV1Schema.fields,
+  host: HatchHostSchema,
+  origin: Schema.String.check(Schema.isMaxLength(512)),
+  cookieSecret: CookieSecretSchema,
+});
+export type HatchWebSocketAdmissionV1 = typeof HatchWebSocketAdmissionV1Schema.Type;
+export const decodeHatchWebSocketAdmission = Schema.decodeUnknownOption(
+  HatchWebSocketAdmissionV1Schema,
+  { onExcessProperty: "error" },
+);
+
+export const HatchWebSocketPermitV1Schema = Schema.Struct({
+  socketId: WebSocketIdSchema,
+  generation: PositiveIntSchema,
+  runtimeEpoch: IdentifierSchema,
+  expiresAt: IsoTimestampSchema,
+});
+export type HatchWebSocketPermitV1 = typeof HatchWebSocketPermitV1Schema.Type;
+export const decodeHatchWebSocketId = Schema.decodeUnknownOption(WebSocketIdSchema);
+
+export const HatchRestoreDescriptorV1Schema = Schema.Struct({
+  version: Schema.Literal(1),
+  hatchId: IdentifierSchema,
+  generation: PositiveIntSchema,
+  operationNonce: IdentifierSchema,
+  runtimeEpoch: IdentifierSchema,
+  service: HatchServiceV1Schema,
+});
+export type HatchRestoreDescriptorV1 = typeof HatchRestoreDescriptorV1Schema.Type;
 
 export type HatchStateFailureReason =
   | "conflict"

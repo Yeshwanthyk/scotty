@@ -25,6 +25,7 @@ import {
 } from "./evidence-contracts";
 import {
   decodeEnsureHatchInput,
+  HatchRestoreDescriptorV1Schema,
   PublicHatchStatusV1Schema,
   type EnsureHatchInputV1,
 } from "./hatch-contracts";
@@ -35,6 +36,7 @@ import { scottyErrorResponse } from "./passive-session";
 export const SCOTTY_INTERNAL_HOST = "scotty.internal";
 export const SCOTTY_EVIDENCE_JOB_ROUTE = "/api/evidence/jobs";
 export const SCOTTY_HATCH_ROUTE = "/api/hatch";
+export const SCOTTY_HATCH_RESTORE_ROUTE = "/api/hatch/restore";
 export const SCOTTY_HATCH_MAX_PROTOCOL_BYTES = 64 * 1_024;
 
 // @cloudflare/containers passes the TypeScript constructor name. The Worker exports this class
@@ -140,6 +142,9 @@ const decodeScottyError = Schema.decodeUnknownOption(
 );
 const decodeEvidenceStateError = Schema.decodeUnknownOption(EvidenceStateError);
 const decodePublicHatchStatus = Schema.decodeUnknownOption(PublicHatchStatusV1Schema, {
+  onExcessProperty: "error",
+});
+const decodeHatchRestoreDescriptor = Schema.decodeUnknownOption(HatchRestoreDescriptorV1Schema, {
   onExcessProperty: "error",
 });
 
@@ -304,6 +309,62 @@ function sanitizeHatchStatus(value: unknown): Response {
   });
 }
 
+async function handleHatchRestoreEgress(
+  request: Request,
+  env: Bindings,
+  context: EgressContext,
+): Promise<Response> {
+  if (request.method !== "GET" || request.body !== null)
+    return rejectedRequest("Hatch restore requires an empty GET request");
+  if (
+    typeof context.containerId !== "string" ||
+    context.containerId.length === 0 ||
+    context.className !== SOURCE_SANDBOX_CLASS
+  )
+    return scottyErrorResponse(
+      new ScottyError("auth", "Container Hatch source is unavailable", {
+        httpStatus: 401,
+        exitCode: 4,
+      }),
+    );
+  const source = Result.try(() => env.SANDBOX.get(env.SANDBOX.idFromString(context.containerId)));
+  if (Result.isFailure(source))
+    return scottyErrorResponse(
+      new ScottyError("auth", "Container Hatch source is unavailable", {
+        httpStatus: 401,
+        exitCode: 4,
+      }),
+    );
+  const executed = await Promise.resolve()
+    .then(() => source.success.getScottyHatchRestoreDescriptor())
+    .then(Result.succeed, (error) => Result.fail(error));
+  if (Result.isFailure(executed)) return hatchFailureResponse(executed.failure);
+  if (executed.success === undefined)
+    return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+  const descriptor = decodeHatchRestoreDescriptor(executed.success);
+  if (Option.isNone(descriptor))
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty Hatch restore descriptor is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  const body = JSON.stringify(descriptor.value);
+  if (new TextEncoder().encode(body).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES)
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty Hatch restore descriptor is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  return new Response(body, {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
+
 async function handleHatchEgress(
   request: Request,
   env: Bindings,
@@ -441,6 +502,8 @@ export async function handleContainerSessionEgress(
 
   if (url.pathname === SCOTTY_EVIDENCE_JOB_ROUTE)
     return handleEvidenceJobEgress(request, env, context);
+  if (url.pathname === SCOTTY_HATCH_RESTORE_ROUTE)
+    return handleHatchRestoreEgress(request, env, context);
   if (url.pathname === SCOTTY_HATCH_ROUTE) return handleHatchEgress(request, env, context);
 
   const matched = CONTAINER_SESSION_ROUTE.exec(url.pathname);

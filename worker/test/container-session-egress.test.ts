@@ -8,6 +8,7 @@ import {
   ContainerProxy,
   SCOTTY_EVIDENCE_JOB_ROUTE,
   SCOTTY_HATCH_MAX_PROTOCOL_BYTES,
+  SCOTTY_HATCH_RESTORE_ROUTE,
   SCOTTY_HATCH_ROUTE,
   SCOTTY_INTERNAL_HOST,
 } from "../src/container-session-egress";
@@ -73,6 +74,15 @@ const hatchStatus = (closed = false) => ({
   createdAt: "2026-08-08T01:02:03.000Z",
   updatedAt: "2026-08-08T01:02:04.000Z",
   ...(closed ? {} : { lastHealthyAt: "2026-08-08T01:02:04.000Z" }),
+});
+
+const hatchRestoreDescriptor = () => ({
+  version: 1 as const,
+  hatchId: "hatch-abcd1234",
+  generation: 7,
+  operationNonce: "resume-abcd1234",
+  runtimeEpoch: "runtime-epoch-7",
+  service: hatchService(),
 });
 
 const hatchRequest = (
@@ -298,6 +308,43 @@ describe("container-only session egress", () => {
       { operation: "ensure", input: { version: 1, service: hatchService() } },
       { operation: "close" },
     ]);
+  });
+
+  it("returns only the source-derived strict Hatch restore descriptor", async () => {
+    let descriptor: unknown = hatchRestoreDescriptor();
+    const source = {
+      getScottyHatchRestoreDescriptor: async () => descriptor,
+    };
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(sandboxNamespace({ fromString: () => source }));
+    const request = () =>
+      new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_RESTORE_ROUTE}`);
+
+    const restored = await handler(request(), env, context());
+    assert.strictEqual(restored.status, 200);
+    assert.strictEqual(restored.headers.get("cache-control"), "no-store");
+    assert.deepStrictEqual(await restored.json(), hatchRestoreDescriptor());
+
+    descriptor = undefined;
+    assert.strictEqual((await handler(request(), env, context())).status, 204);
+
+    descriptor = { ...hatchRestoreDescriptor(), publicUrl: "https://forbidden.example" };
+    assert.strictEqual((await handler(request(), env, context())).status, 502);
+    assert.strictEqual(
+      (
+        await handler(
+          new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_RESTORE_ROUTE}`, {
+            method: "POST",
+          }),
+          env,
+          context(),
+        )
+      ).status,
+      400,
+    );
   });
 
   it("rejects Hatch identity spoofing, malformed intent, oversized input, and unsafe source results", async () => {

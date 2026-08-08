@@ -15,6 +15,7 @@ import {
   type HatchHttpRequestV1,
   type HatchRecordV1,
   type HatchRequestPermitV1,
+  type HatchRestoreDescriptorV1,
   type HatchRouteAuthorizationV1,
   type HatchServiceV1,
   type HatchStateV1,
@@ -75,6 +76,15 @@ export interface BeginHatchEnsureResult {
   readonly needsExposure: boolean;
 }
 
+export interface BeginHatchRestore {
+  readonly operationNonce: string;
+  readonly runtimeEpoch: string;
+}
+
+export interface HatchWebSocketAuthorization extends HatchRouteAuthorizationV1 {
+  readonly expiresAt: string;
+}
+
 export interface HatchRequestAdmission {
   readonly requestId: string;
   readonly sessionId: string;
@@ -90,6 +100,8 @@ export type HatchCleanupAuthority =
   | "hard_cap"
   | "runtime_start"
   | "runtime_stop"
+  | "restore_operation"
+  | "health_check"
   | "failed_runtime"
   | "scheduled";
 
@@ -107,6 +119,10 @@ interface HatchStoreShape {
   readonly beginEnsure: (
     input: BeginHatchEnsure,
   ) => Effect.Effect<BeginHatchEnsureResult, HatchStateError>;
+  readonly beginRestore: (
+    input: BeginHatchRestore,
+  ) => Effect.Effect<HatchRecordV1 | undefined, HatchStateError>;
+  readonly restoreDescriptor: Effect.Effect<HatchRestoreDescriptorV1 | undefined, HatchStateError>;
   readonly publishRunning: (
     operationNonce: string,
     hatchId: string,
@@ -119,6 +135,10 @@ interface HatchStoreShape {
     browserClientId: string,
     cookieDigest: string,
   ) => Effect.Effect<{ readonly expiresAt: string }, HatchStateError>;
+  readonly authorizeWebSocket: (
+    route: Pick<HatchRouteAuthorizationV1, "sessionId" | "port" | "routeNonce">,
+    cookieDigest: string,
+  ) => Effect.Effect<HatchWebSocketAuthorization | undefined, HatchStateError>;
   readonly admitRequest: (
     input: HatchRequestAdmission,
   ) => Effect.Effect<HatchRequestPermitV1 | undefined, HatchStateError>;
@@ -283,6 +303,25 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     return record;
   };
 
+  const requireRestoreLease = async (
+    transaction: HatchStateTransaction,
+    sessionId: string,
+    operationNonce: string,
+  ): Promise<Result.Result<SessionRecord, HatchStateError>> => {
+    const record = decodeRecord(await transaction.getRecord());
+    if (Result.isFailure(record)) return Result.fail(record.failure);
+    if (
+      record.success.id !== sessionId ||
+      record.success.execution.provider !== "cloudflare" ||
+      record.success.operation?.nonce !== operationNonce ||
+      (record.success.operation.kind !== "snapshot" &&
+        record.success.operation.kind !== "resume") ||
+      (record.success.status !== "warm" && record.success.status !== "booting")
+    )
+      return Result.fail(changed());
+    return record;
+  };
+
   return HatchStore.of({
     read: read(),
     publicStatus: read().pipe(Effect.map(publicHatchStatusProjection)),
@@ -336,6 +375,78 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         await transaction.putHatch({ version: 1, primary: hatch });
         return Result.succeed({ hatch, needsExposure: true });
       }),
+    beginRestore: (input) =>
+      transact(async (transaction, state, nowMillis) => {
+        const existing = state.primary;
+        if (existing === undefined || existing.desiredStatus !== "open")
+          return Result.succeed(undefined);
+        const lease = await requireRestoreLease(
+          transaction,
+          existing.sessionId,
+          input.operationNonce,
+        );
+        if (Result.isFailure(lease)) return Result.fail(lease.failure);
+        const runtime = await currentRuntime(transaction);
+        if (Result.isFailure(runtime) || runtime.success !== input.runtimeEpoch)
+          return Result.fail(
+            new HatchStateError({ reason: "runtime_changed", message: "Hatch runtime changed" }),
+          );
+        if (
+          existing.cleanup !== undefined ||
+          existing.transitionNonce !== undefined ||
+          existing.runtimeEpoch !== undefined ||
+          existing.exposure !== "closed" ||
+          (existing.observedStatus !== "sleeping" &&
+            existing.observedStatus !== "stopped" &&
+            existing.observedStatus !== "unhealthy" &&
+            existing.observedStatus !== "failed")
+        )
+          return Result.fail(changed());
+        const generation = existing.generation + 1;
+        if (!Number.isSafeInteger(generation))
+          return Result.fail(invalidState("Hatch generation exhausted"));
+        const now = new Date(nowMillis).toISOString();
+        const hatch: HatchRecordV1 = {
+          ...existing,
+          generation,
+          observedStatus: "starting",
+          runtimeEpoch: input.runtimeEpoch,
+          exposure: "unexpose_pending",
+          permits: [],
+          requests: [],
+          transitionNonce: input.operationNonce,
+          updatedAt: now,
+        };
+        await transaction.putHatch({ version: 1, primary: hatch });
+        return Result.succeed(hatch);
+      }),
+    restoreDescriptor: transact(async (transaction, state) => {
+      const hatch = state.primary;
+      if (hatch === undefined || hatch.desiredStatus !== "open") return Result.succeed(undefined);
+      if (hatch.observedStatus !== "starting" || hatch.exposure !== "unexpose_pending")
+        return Result.succeed(undefined);
+      if (
+        hatch.runtimeEpoch === undefined ||
+        hatch.transitionNonce === undefined ||
+        hatch.cleanup !== undefined
+      )
+        return Result.fail(changed());
+      const lease = await requireRestoreLease(transaction, hatch.sessionId, hatch.transitionNonce);
+      if (Result.isFailure(lease)) return Result.fail(lease.failure);
+      const runtime = await currentRuntime(transaction);
+      if (Result.isFailure(runtime) || runtime.success !== hatch.runtimeEpoch)
+        return Result.fail(
+          new HatchStateError({ reason: "runtime_changed", message: "Hatch runtime changed" }),
+        );
+      return Result.succeed({
+        version: 1,
+        hatchId: hatch.hatchId,
+        generation: hatch.generation,
+        operationNonce: hatch.transitionNonce,
+        runtimeEpoch: hatch.runtimeEpoch,
+        service: hatch.service,
+      });
+    }),
     publishRunning: (operationNonce, hatchId, generation, runtimeEpoch) =>
       transact(async (transaction, state, nowMillis) => {
         const hatch = state.primary;
@@ -449,6 +560,40 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           },
         });
         return Result.succeed({ expiresAt });
+      }),
+    authorizeWebSocket: (route, cookieDigest) =>
+      transact(async (transaction, state, nowMillis) => {
+        const hatch = state.primary;
+        if (
+          hatch === undefined ||
+          hatch.desiredStatus !== "open" ||
+          hatch.observedStatus !== "running" ||
+          hatch.exposure !== "active" ||
+          hatch.runtimeEpoch === undefined ||
+          hatch.sessionId !== route.sessionId ||
+          hatch.service.port !== route.port ||
+          hatch.routeNonce !== route.routeNonce
+        )
+          return Result.succeed(undefined);
+        const record = await requireWarmSession(transaction, hatch.sessionId);
+        if (Result.isFailure(record)) return Result.succeed(undefined);
+        const runtime = await currentRuntime(transaction);
+        if (Result.isFailure(runtime) || runtime.success !== hatch.runtimeEpoch)
+          return Result.succeed(undefined);
+        const permit = hatch.permits.find(
+          (candidate) =>
+            candidate.cookieDigest === cookieDigest && Date.parse(candidate.expiresAt) > nowMillis,
+        );
+        if (permit === undefined) return Result.succeed(undefined);
+        return Result.succeed({
+          sessionId: hatch.sessionId,
+          hatchId: hatch.hatchId,
+          generation: hatch.generation,
+          port: hatch.service.port,
+          routeNonce: hatch.routeNonce,
+          runtimeEpoch: hatch.runtimeEpoch,
+          expiresAt: permit.expiresAt,
+        });
       }),
     admitRequest: (input) =>
       transact(async (transaction, state, nowMillis) => {
@@ -624,7 +769,13 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
         )
           return Result.succeed(hatch);
         const stableObservedStatus =
-          target === "failed" ? "failed" : target === "sleeping" ? "sleeping" : "stopped";
+          target === "failed"
+            ? "failed"
+            : target === "sleeping"
+              ? "sleeping"
+              : target === "unhealthy"
+                ? "unhealthy"
+                : "stopped";
         if (
           target !== "gone" &&
           hatch.cleanup === undefined &&
@@ -644,13 +795,25 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
             record.success.operation.kind !== expectedKind
           )
             return Result.fail(changed());
+        } else if (authority === "restore_operation") {
+          const lease = await requireRestoreLease(transaction, hatch.sessionId, operationNonce);
+          if (Result.isFailure(lease)) return Result.fail(lease.failure);
         } else if (authority === "failed_runtime") {
           if (record.success.status !== "failed") return Result.fail(changed());
         } else if (authority === "hard_cap") {
           if (target !== "stopped" || record.success.operation?.kind !== "evidence")
             return Result.fail(changed());
         } else if (authority === "runtime_start") {
-          if (target !== "sleeping" || record.success.status === "gone")
+          const managedRestore =
+            record.success.status === "sleeping" ||
+            record.success.operation?.kind === "snapshot" ||
+            record.success.operation?.kind === "resume";
+          if (
+            record.success.status === "gone" ||
+            (target === "sleeping" && !managedRestore) ||
+            (target === "failed" && managedRestore) ||
+            (target !== "sleeping" && target !== "failed")
+          )
             return Result.fail(changed());
         } else if (authority === "scheduled") {
           return Result.fail(changed());
@@ -673,7 +836,13 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           generation,
           desiredStatus: closeDesired ? "closed" : hatch.desiredStatus,
           observedStatus:
-            target === "failed" ? "failed" : target === "sleeping" ? "sleeping" : "stopped",
+            target === "failed"
+              ? "failed"
+              : target === "sleeping"
+                ? "sleeping"
+                : target === "unhealthy"
+                  ? "unhealthy"
+                  : "stopped",
           exposure:
             hatch.exposure === "active" || hatch.exposure === "unexpose_pending"
               ? "unexpose_pending"

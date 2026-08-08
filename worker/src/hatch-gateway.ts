@@ -11,9 +11,12 @@ import {
   HATCH_MAX_INGRESS_BYTES,
   HATCH_PRIVATE_CLAIMED_HEADER,
   HATCH_PRIVATE_REQUEST_HEADER,
+  HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
+  HATCH_PRIVATE_WEBSOCKET_HEADER,
   HATCH_RESERVED_PORTS,
   type HatchHostRouteV1,
   type HatchRequestAdmissionV1,
+  type HatchWebSocketAdmissionV1,
 } from "./hatch-contracts";
 
 export type HatchGatewayBindings = Pick<Bindings, "AUTH" | "SANDBOX" | "SCOTTY_PREVIEW_BASE">;
@@ -29,6 +32,9 @@ const BASE_PATTERN =
 const HATCH_LABEL_PATTERN = /^([1-9][0-9]{3,4})-([0-9a-f]{12})-(h_[a-z0-9_]{14})$/u;
 const COOKIE_SECRET_PATTERN = /^[0-9a-f]{64}$/u;
 const CONTENT_LENGTH_PATTERN = /^(?:0|[1-9][0-9]*)$/u;
+const WEBSOCKET_KEY_PATTERN = /^[A-Za-z0-9+/]{22}==$/u;
+const WEBSOCKET_PROTOCOL_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/u;
+const HATCH_MAX_WEBSOCKET_PROTOCOLS = 16;
 const RESERVED_COOKIE_NAMES = new Set([
   CONTROL_COOKIE.toLowerCase(),
   EVIDENCE_COOKIE.toLowerCase(),
@@ -154,6 +160,65 @@ const declaredBodyLength = (headers: Headers): number | undefined => {
   if (value === null || !CONTENT_LENGTH_PATTERN.test(value)) return undefined;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
+
+interface PreparedHatchWebSocket {
+  readonly cookieSecret: string;
+  readonly headers: Headers;
+  readonly protocols: readonly string[];
+}
+
+const websocketProtocols = (value: string | null): readonly string[] | undefined => {
+  if (value === null || value.trim() === "") return [];
+  const protocols = value.split(",").map((protocol) => protocol.trim());
+  if (
+    protocols.length > HATCH_MAX_WEBSOCKET_PROTOCOLS ||
+    new Set(protocols).size !== protocols.length ||
+    protocols.some((protocol) => !WEBSOCKET_PROTOCOL_PATTERN.test(protocol))
+  )
+    return undefined;
+  return protocols;
+};
+
+const prepareHatchWebSocket = (
+  request: Request,
+  host: string,
+): PreparedHatchWebSocket | undefined => {
+  const protocols = websocketProtocols(request.headers.get("sec-websocket-protocol"));
+  const origin = request.headers.get("origin");
+  if (
+    request.method !== "GET" ||
+    request.body !== null ||
+    request.headers.get("upgrade")?.toLowerCase() !== "websocket" ||
+    request.headers
+      .get("connection")
+      ?.split(",")
+      .some((token) => token.trim().toLowerCase() === "upgrade") !== true ||
+    request.headers.get("sec-websocket-version") !== "13" ||
+    !WEBSOCKET_KEY_PATTERN.test(request.headers.get("sec-websocket-key") ?? "") ||
+    protocols === undefined ||
+    origin !== `https://${host}` ||
+    encoder.encode(request.url).byteLength > HATCH_MAX_URL_BYTES ||
+    !headersWithinBounds(request.headers)
+  )
+    return undefined;
+  const cookie = parseHatchCookie(request.headers.get("cookie"));
+  if (cookie === undefined) return undefined;
+  const headers = new Headers();
+  for (const [name, value] of request.headers) {
+    const normalized = name.toLowerCase();
+    if (
+      normalized === "cookie" ||
+      normalized === "sec-websocket-extensions" ||
+      normalized === "sec-websocket-protocol" ||
+      isUntrustedControlHeader(name)
+    )
+      continue;
+    headers.append(name, value);
+  }
+  if (cookie.forwardedCookie !== undefined) headers.set("cookie", cookie.forwardedCookie);
+  if (protocols.length > 0) headers.set("sec-websocket-protocol", protocols.join(", "));
+  return { cookieSecret: cookie.secret, headers, protocols };
 };
 
 interface PreparedHatchRequest {
@@ -334,6 +399,30 @@ const rewriteLoopbackLocation = (
   return external.toString();
 };
 
+const sanitizeHatchWebSocketResponse = (
+  response: Response,
+  protocols: readonly string[],
+): Response | undefined => {
+  const socket = response.webSocket;
+  if (response.status !== 101 || socket === null || socket === undefined) return undefined;
+  const selected = response.headers.get("sec-websocket-protocol");
+  if (
+    selected !== null &&
+    (!WEBSOCKET_PROTOCOL_PATTERN.test(selected) || !protocols.includes(selected))
+  ) {
+    socket.close(1002, "Invalid Hatch subprotocol");
+    return undefined;
+  }
+  const headers = new Headers({
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-robots-tag": "noindex, nofollow, noarchive",
+  });
+  if (selected !== null) headers.set("sec-websocket-protocol", selected);
+  return new Response(null, { status: 101, webSocket: socket, headers });
+};
+
 export const sanitizeHatchResponse = (
   response: Response,
   requestUrl: string,
@@ -457,6 +546,50 @@ export const handleHatchRequest = async (
   if (parsed.kind === "invalid_hatch") return denied();
   if (new URL(request.url).pathname === HATCH_HANDOFF_PATH)
     return handleHandoff(request, env, parsed.route);
+  const websocket = hasUpgradeFraming(request.headers)
+    ? prepareHatchWebSocket(request, authority)
+    : undefined;
+  if (websocket !== undefined) {
+    const sandbox = sandboxFor(env, parsed.route.sessionId);
+    const admission = {
+      ...parsed.route,
+      host: authority,
+      origin: request.headers.get("origin") ?? "",
+      cookieSecret: websocket.cookieSecret,
+    } satisfies HatchWebSocketAdmissionV1;
+    const permit = await sandbox.admitScottyHatchWebSocket(admission).then(
+      (value) => value,
+      () => undefined,
+    );
+    if (permit === undefined) return denied();
+    const headers = new Headers(websocket.headers);
+    headers.set(HATCH_PRIVATE_WEBSOCKET_HEADER, permit.socketId);
+    const proxied = await proxyToSandbox(new Request(request, { headers }), {
+      Sandbox: env.SANDBOX,
+    }).then(
+      (response) => response,
+      () => null,
+    );
+    if (
+      proxied === null ||
+      proxied.headers.get(HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER) !== permit.socketId
+    ) {
+      await sandbox.cancelScottyHatchWebSocket(permit.socketId).then(
+        () => undefined,
+        () => undefined,
+      );
+      proxied?.webSocket?.close(1008, "Hatch upgrade denied");
+      return denied();
+    }
+    const sanitized = sanitizeHatchWebSocketResponse(proxied, websocket.protocols);
+    if (sanitized !== undefined) return sanitized;
+    await sandbox.cancelScottyHatchWebSocket(permit.socketId).then(
+      () => undefined,
+      () => undefined,
+    );
+    return denied();
+  }
+  if (hasUpgradeFraming(request.headers)) return denied();
   const prepared = prepareHatchRequest(request);
   if (prepared === undefined) return denied();
   const sandbox = sandboxFor(env, parsed.route.sessionId);

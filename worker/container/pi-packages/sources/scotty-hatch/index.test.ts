@@ -12,6 +12,7 @@ import scottyHatch, {
   ScottyHatchManager,
   ScottyHatchParameters,
   SCOTTY_HATCH_MAX_BYTES,
+  SCOTTY_HATCH_RESTORE_ROUTE,
   SCOTTY_HATCH_ROUTE,
   waitForLoopbackReadiness,
 } from "./index.ts";
@@ -387,7 +388,53 @@ test("close kills surviving process-group descendants after the leader exits", a
   assert.equal(closed.process.status, "stopped");
 });
 
-test("session shutdown stops the owned group even when authority is already transitioning", async () => {
+test("session_start restores the exact fenced service without calling normal ensure", async () => {
+  const { root, app } = await workspace();
+  const child = new FakeChild(401);
+  const spawns: unknown[] = [];
+  const requests: Array<{ readonly input: string; readonly method: string }> = [];
+  const manager = new ScottyHatchManager({
+    workspaceRoot: root,
+    spawnProcess: (argv, workingDirectory, environment) => {
+      spawns.push({ argv, workingDirectory, environment });
+      return child;
+    },
+    localTransport: async () => new Response("ready"),
+    authorityTransport: async (input, init) => {
+      requests.push({ input: String(input), method: init?.method ?? "GET" });
+      return Response.json({
+        version: 1,
+        hatchId: "hatch-abcd1234",
+        generation: 7,
+        operationNonce: "resume-abcd1234",
+        runtimeEpoch: "runtime-epoch-7",
+        service: {
+          name: "web",
+          argv: ["npm", "run", "dev", "--", "--host", "0.0.0.0"],
+          workingDirectory: app,
+          port: 4_173,
+          healthPath: "/health?restored=1",
+        },
+      });
+    },
+  });
+
+  await manager.restore();
+
+  assert.deepEqual(requests, [{ input: SCOTTY_HATCH_RESTORE_ROUTE, method: "GET" }]);
+  assert.equal(spawns.length, 1);
+  assert.deepEqual(
+    (spawns[0] as { readonly argv: readonly string[]; readonly workingDirectory: string }).argv,
+    ["npm", "run", "dev", "--", "--host", "0.0.0.0"],
+  );
+  assert.equal(
+    (spawns[0] as { readonly workingDirectory: string }).workingDirectory,
+    app,
+  );
+  assert.notEqual(requests[0]?.input, SCOTTY_HATCH_ROUTE);
+});
+
+test("session shutdown stops the owned group without mutating authoritative intent", async () => {
   const { root } = await workspace();
   const child = new FakeChild(450);
   const methods: string[] = [];
@@ -414,7 +461,7 @@ test("session shutdown stops the owned group even when authority is already tran
   await manager.run(ensureInput());
   await manager.shutdown();
   await manager.shutdown();
-  assert.deepEqual(methods, ["POST", "DELETE"]);
+  assert.deepEqual(methods, ["POST"]);
   assert.deepEqual(signals, ["SIGTERM"]);
 });
 
@@ -463,9 +510,11 @@ test("loopback readiness accepts only a healthy loopback response and observes c
 
 test("registers exactly one scotty_hatch tool and idempotent session cleanup", async () => {
   const tools: Array<{ readonly name: string }> = [];
+  const startHandlers: Array<() => Promise<void>> = [];
   const shutdownHandlers: Array<() => Promise<void>> = [];
   const api = {
     on(event: string, handler: () => Promise<void>) {
+      if (event === "session_start") startHandlers.push(handler);
       if (event === "session_shutdown") shutdownHandlers.push(handler);
     },
     registerTool(tool: { readonly name: string }) {
@@ -474,6 +523,7 @@ test("registers exactly one scotty_hatch tool and idempotent session cleanup", a
   };
   scottyHatch(api as ExtensionAPI);
   assert.deepEqual(tools.map(({ name }) => name), ["scotty_hatch"]);
+  assert.equal(startHandlers.length, 1);
   assert.equal(shutdownHandlers.length, 1);
   await shutdownHandlers[0]?.();
   await shutdownHandlers[0]?.();

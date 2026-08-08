@@ -74,6 +74,7 @@ export type HarnessFailureStage =
   | "evidenceRetentionSchedulePreInsert"
   | "evidenceRetentionSchedulePreInsertOnce"
   | "hardCapSchedule"
+  | "hatchHealth"
   | "previewExpose"
   | "previewUnexpose"
   | "projectionDelete"
@@ -157,6 +158,7 @@ export interface SessionHarness {
   readonly artifactDeletedKeys: ReadonlyArray<string>;
   readonly artifactKeys: () => ReadonlyArray<string>;
   readonly exposedPreviewPorts: () => ReadonlyArray<number>;
+  readonly stopHatchProcess: (generation: number) => void;
   readonly startRuntime: () => Promise<void>;
   readonly stopRuntime: () => Promise<void>;
   readonly memory: InMemoryFaultInjectableFake;
@@ -893,18 +895,27 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     },
     startProcess: {
-      value: async (_command: string, options?: { readonly processId?: string }) => {
+      value: async (_command: string, processOptions?: { readonly processId?: string }) => {
+        const processId = processOptions?.processId ?? "generated";
         piSessionRunning = true;
-        events.push(`host:pi:start:${options?.processId ?? "generated"}`);
+        events.push(`host:pi:start:${processId}`);
         return {
-          id: options?.processId ?? "generated",
+          id: processId,
           status: "running" as const,
           kill: async () => {
             piSessionRunning = false;
             events.push("host:pi:kill");
           },
-          waitForExit: async () => ({ exitCode: 0 }),
+          waitForExit: async () => {
+            if (piSessionRunning) throw injectedHarnessFailure("process is still running");
+            return { exitCode: 0 };
+          },
           waitForPort: async () => {
+            const descriptor = await sandbox.getScottyHatchRestoreDescriptor();
+            if (descriptor !== undefined)
+              events.push(
+                `host:hatch:extension-restore:${descriptor.hatchId}:${descriptor.generation}:${descriptor.operationNonce}:${descriptor.runtimeEpoch}`,
+              );
             events.push("host:pi:ready");
           },
         };
@@ -920,7 +931,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                 piSessionRunning = false;
                 events.push("host:pi:kill");
               },
-              waitForExit: async () => ({ exitCode: 0 }),
+              waitForExit: async () => {
+                if (piSessionRunning) throw injectedHarnessFailure("process is still running");
+                return { exitCode: 0 };
+              },
               waitForPort: async () => {
                 events.push("host:pi:ready");
               },
@@ -931,7 +945,14 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       value: async (request: Request, port: number) => {
         piRequests.push(request.clone());
         const pathname = new URL(request.url).pathname;
+        if (port !== 43_117) {
+          events.push(`host:hatch:health:${port}:${pathname}`);
+          return failures.has("hatchHealth")
+            ? new Response("unhealthy", { status: 503 })
+            : new Response("healthy");
+        }
         events.push(`host:pi:fetch:${port}:${pathname}`);
+        if (pathname === "/quiesce") events.push("host:hatch:extension-shutdown");
         return failures.has("terminalStop") && pathname === "/quiesce"
           ? Response.json({ error: "injected Pi quiesce failure" }, { status: 502 })
           : Response.json({ status: "quiesced" });
@@ -1008,11 +1029,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     artifactDeletedKeys,
     artifactKeys: () => [...artifactObjects.keys()],
     exposedPreviewPorts: () => [...exposedPreviewPorts],
+    stopHatchProcess: (generation) => {
+      failures.add("hatchHealth");
+      events.push(`host:hatch:unexpected-stop:generation-${generation}`);
+    },
     startRuntime: async () => {
+      if (!rawPiContainerRunning) piSessionRunning = false;
       rawPiContainerRunning = true;
       await sandbox.onStart();
     },
     stopRuntime: async () => {
+      piSessionRunning = false;
       rawPiContainerRunning = false;
       await sandbox.onStop();
     },

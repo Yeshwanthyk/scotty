@@ -7,6 +7,7 @@ import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 
 export const SCOTTY_HATCH_ROUTE = "https://scotty.internal/api/hatch";
+export const SCOTTY_HATCH_RESTORE_ROUTE = "https://scotty.internal/api/hatch/restore";
 export const SCOTTY_HATCH_MAX_BYTES = 64 * 1_024;
 export const SCOTTY_HATCH_LOG_TAIL_BYTES = 4 * 1_024;
 export const SCOTTY_HATCH_READY_TIMEOUT_MILLIS = 30_000;
@@ -124,6 +125,36 @@ const HatchStatusSchema = Type.Union([
   ),
   ConfiguredStatusSchema,
 ]);
+const RestoreDescriptorSchema = Type.Object(
+  {
+    version: Type.Literal(1),
+    hatchId: Type.String({
+      pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?![\\s\\S])",
+    }),
+    generation: Type.Integer({ minimum: 1 }),
+    operationNonce: Type.String({
+      pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?![\\s\\S])",
+    }),
+    runtimeEpoch: Type.String({
+      pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?![\\s\\S])",
+    }),
+    service: Type.Object(
+      {
+        name: ServiceNameSchema,
+        argv: Type.Array(ArgSchema, { minItems: 1, maxItems: MAX_ARGV_LENGTH }),
+        workingDirectory: Type.String({
+          minLength: 1,
+          maxLength: MAX_CWD_LENGTH,
+          pattern: "^/(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\\u0000]+$",
+        }),
+        port: PortSchema,
+        healthPath: HealthPathSchema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
 const ErrorEnvelopeSchema = Type.Object(
   {
     error: Type.Object(
@@ -140,6 +171,7 @@ const ErrorEnvelopeSchema = Type.Object(
 
 type HatchStatus = Static<typeof HatchStatusSchema>;
 type ConfiguredStatus = Static<typeof ConfiguredStatusSchema>;
+type RestoreDescriptor = Static<typeof RestoreDescriptorSchema>;
 type HatchTransport = (
   input: string | URL | Request,
   init?: RequestInit,
@@ -467,6 +499,38 @@ async function requestAuthority(
   return status;
 }
 
+async function requestRestoreDescriptor(
+  transport: HatchTransport,
+): Promise<RestoreDescriptor | undefined> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SCOTTY_HATCH_AUTHORITY_TIMEOUT_MILLIS);
+  let response: Response;
+  let text: string | undefined;
+  try {
+    response = await transport(SCOTTY_HATCH_RESTORE_ROUTE, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (response.status === 204) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    text = await readBoundedResponse(response);
+  } catch {
+    throw new Error("Scotty Hatch restore request did not complete");
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok)
+    throw new Error(`Scotty Hatch restore request failed with HTTP ${response.status}`);
+  if (text === undefined)
+    throw new Error("Scotty Hatch restore response exceeds the 64 KiB limit or is invalid UTF-8");
+  const value = parseJson(text);
+  if (!Check(RestoreDescriptorSchema, value) || value.service.argv[0]?.length === 0)
+    throw new Error("Scotty Hatch returned an invalid restore descriptor");
+  return value;
+}
+
 async function resolveWorkingDirectory(workspaceRoot: string, relativeCwd: string): Promise<string> {
   if (
     isAbsolute(relativeCwd) ||
@@ -483,6 +547,29 @@ async function resolveWorkingDirectory(workspaceRoot: string, relativeCwd: strin
   if (candidate !== workspaceRoot && !candidate.startsWith(rootPrefix))
     throw new Error("Hatch cwd resolves outside the workspace");
   if (!(await stat(candidate)).isDirectory()) throw new Error("Hatch cwd must resolve to a directory");
+  return candidate;
+}
+
+async function resolveRestoreWorkingDirectory(
+  workspaceRoot: string,
+  absoluteCwd: string,
+): Promise<string> {
+  const rootPrefix = workspaceRoot.endsWith(sep) ? workspaceRoot : `${workspaceRoot}${sep}`;
+  if (
+    !isAbsolute(absoluteCwd) ||
+    absoluteCwd.includes("\\") ||
+    absoluteCwd.includes("\0") ||
+    absoluteCwd.split("/").includes("..") ||
+    (absoluteCwd !== workspaceRoot && !absoluteCwd.startsWith(rootPrefix))
+  )
+    throw new Error("Hatch restore cwd must stay inside the workspace");
+  const candidate = await realpath(absoluteCwd);
+  if (
+    candidate !== absoluteCwd ||
+    (candidate !== workspaceRoot && !candidate.startsWith(rootPrefix)) ||
+    !(await stat(candidate)).isDirectory()
+  )
+    throw new Error("Hatch restore cwd must resolve exactly inside the workspace");
   return candidate;
 }
 
@@ -568,16 +655,14 @@ export class ScottyHatchManager {
     });
   }
 
+  restore(): Promise<void> {
+    return this.#exclusive(() => this.#restore());
+  }
+
   shutdown(): Promise<void> {
     return this.#exclusive(async () => {
       const owned = this.#owned;
       if (owned === undefined) return;
-      await requestAuthority(
-        "close",
-        undefined,
-        undefined,
-        this.#authorityTransport,
-      ).catch(() => undefined);
       await this.#stopOwned(owned);
       if (this.#owned === owned) this.#owned = undefined;
     });
@@ -616,33 +701,8 @@ export class ScottyHatchManager {
       throw new Error("A different primary Hatch service is already owned by this Pi session");
 
     let owned = this.#owned;
-    if (owned === undefined || processExited(owned.child)) {
-      let child: HatchChildProcess;
-      try {
-        child = this.#spawnProcess(argv, workingDirectory, safeEnvironment(process.env));
-      } catch {
-        throw new Error("Hatch service process could not be started");
-      }
-      const stdout = new LogTail();
-      const stderr = new LogTail();
-      const spawnFailed = { value: false };
-      child.once("error", () => {
-        spawnFailed.value = true;
-      });
-      if (child.pid === undefined || child.pid <= 0)
-        throw new Error("Hatch service process did not provide a process-group identifier");
-      child.stdout?.on("data", (chunk: string | Buffer) => stdout.append(chunk));
-      child.stderr?.on("data", (chunk: string | Buffer) => stderr.append(chunk));
-      owned = {
-        fingerprint: requestedFingerprint,
-        service,
-        child,
-        spawnFailed,
-        stdout,
-        stderr,
-      };
-      this.#owned = owned;
-    }
+    if (owned === undefined || processExited(owned.child))
+      owned = this.#startOwned(service, input.service);
 
     try {
       await waitForLoopbackReadiness(
@@ -678,6 +738,78 @@ export class ScottyHatchManager {
       if (this.#owned === owned) this.#owned = undefined;
       throw error;
     }
+  }
+
+  async #restore(): Promise<void> {
+    const descriptor = await requestRestoreDescriptor(this.#authorityTransport);
+    if (descriptor === undefined) return;
+    const workspaceRoot = await this.#workspaceRoot;
+    const workingDirectory = await resolveRestoreWorkingDirectory(
+      workspaceRoot,
+      descriptor.service.workingDirectory,
+    );
+    const [command, ...args] = descriptor.service.argv;
+    if (command === undefined || command.length === 0)
+      throw new Error("Hatch restore command must not be empty");
+    const service: HatchServiceProcess = {
+      argv: [command, ...args],
+      workingDirectory,
+      port: descriptor.service.port,
+      healthPath: descriptor.service.healthPath,
+    };
+    const requestedFingerprint = fingerprint(service, descriptor.service.name);
+    if (this.#owned !== undefined && this.#owned.fingerprint !== requestedFingerprint)
+      throw new Error("A different primary Hatch service is already owned by this Pi session");
+    let owned = this.#owned;
+    if (owned === undefined || processExited(owned.child))
+      owned = this.#startOwned(service, descriptor.service.name);
+    try {
+      await waitForLoopbackReadiness(
+        service,
+        owned.child,
+        undefined,
+        this.#localTransport,
+        this.#readyTimeoutMillis,
+      );
+      if (owned.spawnFailed.value) throw new Error("Hatch service process failed to start");
+    } catch (error) {
+      try {
+        await this.#stopOwned(owned);
+      } catch {
+        throw new Error("Scotty Hatch restore failed and its child process could not be stopped");
+      }
+      if (this.#owned === owned) this.#owned = undefined;
+      throw error;
+    }
+  }
+
+  #startOwned(service: HatchServiceProcess, name: string): OwnedProcess {
+    let child: HatchChildProcess;
+    try {
+      child = this.#spawnProcess(service.argv, service.workingDirectory, safeEnvironment(process.env));
+    } catch {
+      throw new Error("Hatch service process could not be started");
+    }
+    const stdout = new LogTail();
+    const stderr = new LogTail();
+    const spawnFailed = { value: false };
+    child.once("error", () => {
+      spawnFailed.value = true;
+    });
+    if (child.pid === undefined || child.pid <= 0)
+      throw new Error("Hatch service process did not provide a process-group identifier");
+    child.stdout?.on("data", (chunk: string | Buffer) => stdout.append(chunk));
+    child.stderr?.on("data", (chunk: string | Buffer) => stderr.append(chunk));
+    const owned = {
+      fingerprint: fingerprint(service, name),
+      service,
+      child,
+      spawnFailed,
+      stdout,
+      stderr,
+    };
+    this.#owned = owned;
+    return owned;
   }
 
   async #status(signal?: AbortSignal): Promise<ScottyHatchResultV1> {
@@ -760,6 +892,7 @@ function renderResult(result: ScottyHatchResultV1): string {
 
 export default function scottyHatch(pi: ExtensionAPI): void {
   const manager = new ScottyHatchManager();
+  pi.on("session_start", async () => manager.restore());
   pi.on("session_shutdown", async () => manager.shutdown());
   pi.registerTool({
     name: "scotty_hatch",

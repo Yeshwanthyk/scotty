@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const adjust = vi.hoisted(() => vi.fn());
 const admit = vi.hoisted(() => vi.fn());
+const admitWebSocket = vi.hoisted(() => vi.fn());
 const cancel = vi.hoisted(() => vi.fn());
+const cancelWebSocket = vi.hoisted(() => vi.fn());
 const getRoute = vi.hoisted(() => vi.fn());
 const issuePermit = vi.hoisted(() => vi.fn());
 const proxy = vi.hoisted(() => vi.fn());
@@ -13,7 +15,9 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   getSandbox: vi.fn(() => ({
     adjustScottyHatchRequest: adjust,
     admitScottyHatchRequest: admit,
+    admitScottyHatchWebSocket: admitWebSocket,
     cancelScottyHatchRequest: cancel,
+    cancelScottyHatchWebSocket: cancelWebSocket,
     getScottyHatchRoute: getRoute,
     issueScottyHatchPermit: issuePermit,
   })),
@@ -27,6 +31,8 @@ import {
   HATCH_MAX_INGRESS_BYTES,
   HATCH_PRIVATE_CLAIMED_HEADER,
   HATCH_PRIVATE_REQUEST_HEADER,
+  HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
+  HATCH_PRIVATE_WEBSOCKET_HEADER,
 } from "../src/hatch-contracts";
 import { handleHatchRequest, parseHatchHost } from "../src/hatch-gateway";
 
@@ -61,7 +67,36 @@ const env = {
   AUTH: { getByName: () => authStub },
 };
 
+const installUpgradeResponse = (): (() => void) => {
+  const NativeResponse = globalThis.Response;
+  class UpgradeResponse extends NativeResponse {
+    constructor(body?: BodyInit | null, init?: ResponseInit) {
+      const status = init?.status;
+      super(body, status === 101 ? { ...init, status: 200 } : init);
+      if (status === 101) Object.defineProperty(this, "status", { value: 101 });
+      Object.defineProperty(this, "webSocket", {
+        configurable: true,
+        value: init === undefined ? null : (Reflect.get(init, "webSocket") ?? null),
+      });
+    }
+  }
+  vi.stubGlobal("Response", UpgradeResponse);
+  return () => vi.stubGlobal("Response", NativeResponse);
+};
+
+const upgradeResponse = (
+  socket: { readonly close: (code: number, reason: string) => void },
+  headers: HeadersInit,
+): Response => {
+  const response = new Response(null, { headers });
+  Object.defineProperty(response, "status", { value: 101 });
+  Object.defineProperty(response, "webSocket", { value: socket });
+  return response;
+};
+
 describe("Hatch exact-host gateway", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   beforeEach(() => {
     vi.clearAllMocks();
     getRoute.mockResolvedValue({
@@ -82,8 +117,15 @@ describe("Hatch exact-host gateway", () => {
     });
     issuePermit.mockResolvedValue({ expiresAt: future() });
     admit.mockResolvedValue({ requestId: "1".repeat(32), expiresAt: future() });
+    admitWebSocket.mockResolvedValue({
+      socketId: "2".repeat(32),
+      generation: 1,
+      runtimeEpoch: "epoch-current",
+      expiresAt: future(),
+    });
     adjust.mockResolvedValue(true);
     cancel.mockResolvedValue(undefined);
+    cancelWebSocket.mockResolvedValue(undefined);
     proxy.mockImplementation(async (request: Request) => {
       expect(request.headers.get(HATCH_PRIVATE_REQUEST_HEADER)).toBe("1".repeat(32));
       expect(request.headers.get("cookie")).toBe("app=kept");
@@ -181,6 +223,96 @@ describe("Hatch exact-host gateway", () => {
     );
     expect(websocket?.status).toBe(404);
     expect(admit).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits only same-origin authenticated WebSockets and preserves only the selected protocol", async () => {
+    const restoreResponse = installUpgradeResponse();
+    const socket = { close: vi.fn() };
+    proxy.mockImplementationOnce(async (request: Request) => {
+      expect(request.headers.get(HATCH_PRIVATE_WEBSOCKET_HEADER)).toBe("2".repeat(32));
+      expect(request.headers.get("origin")).toBe(`https://${HOST}`);
+      expect(request.headers.get("cookie")).toBe("app=kept");
+      expect(request.headers.get("sec-websocket-protocol")).toBe("vite-hmr, app-v1");
+      return upgradeResponse(socket, {
+        [HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER]: "2".repeat(32),
+        "sec-websocket-protocol": "vite-hmr",
+        "x-upstream-secret": "drop",
+      });
+    });
+    const response = await handleHatchRequest(
+      new Request(`https://${HOST}/hmr`, {
+        headers: {
+          host: HOST,
+          origin: `https://${HOST}`,
+          cookie: `app=kept; ${HATCH_COOKIE}=${COOKIE_SECRET}`,
+          connection: "keep-alive, Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "sec-websocket-protocol": "vite-hmr, app-v1",
+        },
+      }),
+      env,
+    );
+    expect(response?.status).toBe(101);
+    expect(response?.webSocket).toBe(socket);
+    expect(response?.headers.get("sec-websocket-protocol")).toBe("vite-hmr");
+    expect(response?.headers.get("x-upstream-secret")).toBeNull();
+    expect(admitWebSocket).toHaveBeenCalledWith({
+      sessionId: SESSION_ID,
+      port: 4_173,
+      routeNonce: ROUTE_NONCE,
+      host: HOST,
+      origin: `https://${HOST}`,
+      cookieSecret: COOKIE_SECRET,
+    });
+
+    const denied = await handleHatchRequest(
+      new Request(`https://${HOST}/hmr`, {
+        headers: {
+          host: HOST,
+          origin: "https://attacker.example",
+          cookie: `${HATCH_COOKIE}=${COOKIE_SECRET}`,
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+        },
+      }),
+      env,
+    );
+    expect(denied?.status).toBe(404);
+    expect(admitWebSocket).toHaveBeenCalledTimes(1);
+    restoreResponse();
+  });
+
+  it("fails closed when a WebSocket response selects an unoffered protocol", async () => {
+    const restoreResponse = installUpgradeResponse();
+    const socket = { close: vi.fn() };
+    proxy.mockResolvedValueOnce(
+      upgradeResponse(socket, {
+        [HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER]: "2".repeat(32),
+        "sec-websocket-protocol": "admin",
+      }),
+    );
+    const response = await handleHatchRequest(
+      new Request(`https://${HOST}/hmr`, {
+        headers: {
+          host: HOST,
+          origin: `https://${HOST}`,
+          cookie: `${HATCH_COOKIE}=${COOKIE_SECRET}`,
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+          "sec-websocket-protocol": "vite-hmr",
+        },
+      }),
+      env,
+    );
+    expect(response?.status).toBe(404);
+    expect(cancelWebSocket).toHaveBeenCalledWith("2".repeat(32));
+    restoreResponse();
   });
 
   it("rewrites loopback redirects and rejects application Domain cookies", async () => {
