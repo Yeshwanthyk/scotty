@@ -230,6 +230,7 @@ describe("container auth values", () => {
       "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
       "/opt/scotty/pi-packages/sources/pi-amp-ui",
       "/opt/scotty/pi-packages/sources/scotty-browser-test",
+      "/opt/scotty/pi-packages/sources/scotty-hatch",
     ]);
     for (const source of PI_PACKAGES) {
       assert.ok(source.startsWith("/opt/scotty/pi-packages/"));

@@ -55,7 +55,7 @@ function withIndexFixture(run) {
 test("Pi packages are externally vendored or first-party, pinned, locked, and image-local", () => {
   assert.deepEqual(verifyPiPackagePins(), {
     vendoredPackages: 7,
-    firstPartyPackages: 1,
+    firstPartyPackages: 2,
     npmPackages: 1,
   });
 });
@@ -63,17 +63,22 @@ test("Pi packages are externally vendored or first-party, pinned, locked, and im
 test("schema v3 identifies first-party source without external commit provenance", () => {
   const manifest = readManifest();
   assert.equal(manifest.schemaVersion, 3);
-  assert.equal(manifest.firstParty.length, 1);
-  assert.deepEqual(Object.keys(manifest.firstParty[0]), [
-    "name",
-    "order",
-    "sourceSha256",
-    "sourcePath",
-    "imagePath",
-  ]);
-  assert.equal(manifest.firstParty[0].name, "scotty-browser-test");
-  assert.equal(Object.hasOwn(manifest.firstParty[0], "repository"), false);
-  assert.equal(Object.hasOwn(manifest.firstParty[0], "commit"), false);
+  assert.equal(manifest.firstParty.length, 2);
+  assert.deepEqual(
+    manifest.firstParty.map((entry) => entry.name),
+    ["scotty-browser-test", "scotty-hatch"],
+  );
+  for (const entry of manifest.firstParty) {
+    assert.deepEqual(Object.keys(entry), [
+      "name",
+      "order",
+      "sourceSha256",
+      "sourcePath",
+      "imagePath",
+    ]);
+    assert.equal(Object.hasOwn(entry, "repository"), false);
+    assert.equal(Object.hasOwn(entry, "commit"), false);
+  }
 });
 
 test("first-party entries reject forged external commit provenance", () => {
@@ -114,6 +119,7 @@ test("source digests use staged blobs despite vendored and first-party worktree 
     for (const sourcePath of [
       "worker/container/pi-packages/sources/pi-tasks/README.md",
       "worker/container/pi-packages/sources/scotty-browser-test/README.md",
+      "worker/container/pi-packages/sources/scotty-hatch/README.md",
     ]) {
       appendFileSync(join(fixture, sourcePath), "\nunstaged test drift\n");
       assert.doesNotThrow(() => verifyPiPackagePins(fixture));
@@ -154,4 +160,31 @@ test("the first-party browser test package stays bounded and browser-authority f
   }
   assert.match(dockerfile, /scotty-browser-test/u);
   assert.doesNotMatch(dockerfile, /(?:apt-get|npm install)[^\n]*(?:chromium|agent-browser)/iu);
+});
+
+test("the first-party Hatch package stays source-bound, process-scoped, and credential-free", () => {
+  const source = readFileSync("worker/container/pi-packages/sources/scotty-hatch/index.ts", "utf8");
+  const dockerfile = readFileSync("worker/container/Dockerfile", "utf8");
+
+  assert.equal((source.match(/registerTool\(/gu) ?? []).length, 1);
+  assert.match(source, /name: "scotty_hatch"/u);
+  assert.match(source, /https:\/\/scotty\.internal\/api\/hatch/u);
+  assert.match(source, /detached: true/u);
+  assert.match(source, /shell: false/u);
+  assert.match(source, /process\.kill\(-pid, signal\)/u);
+  assert.match(source, /"SIGTERM"/u);
+  assert.match(source, /"SIGKILL"/u);
+  assert.match(source, /64 \* 1_024/u);
+  for (const forbidden of [
+    "SCOTTY_SESSION_ID",
+    "GH_TOKEN",
+    "GITHUB_SENTINEL",
+    'authorization"',
+    "x-api-key",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+  ]) {
+    assert.equal(source.includes(forbidden), false, forbidden);
+  }
+  assert.match(dockerfile, /scotty-hatch/u);
 });

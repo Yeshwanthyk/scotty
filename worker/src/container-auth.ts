@@ -15,6 +15,7 @@ export const PI_PACKAGES = [
   "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
   "/opt/scotty/pi-packages/sources/pi-amp-ui",
   "/opt/scotty/pi-packages/sources/scotty-browser-test",
+  "/opt/scotty/pi-packages/sources/scotty-hatch",
 ] as const;
 
 export const PI_SESSION_PORT = 43_117;

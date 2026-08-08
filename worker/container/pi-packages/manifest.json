@@ -73,6 +73,13 @@
       "sourceSha256": "3eca110a33b6023e4a16e5b08ff66b24a2eab7f565284f08a1a60b663606b623",
       "sourcePath": "worker/container/pi-packages/sources/scotty-browser-test",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-browser-test"
+    },
+    {
+      "name": "scotty-hatch",
+      "order": 9,
+      "sourceSha256": "88853a4450e557f608c73d6f74893b4c8ca3374ae2af25b7575edeb05c0eab83",
+      "sourcePath": "worker/container/pi-packages/sources/scotty-hatch",
+      "imagePath": "/opt/scotty/pi-packages/sources/scotty-hatch"
     }
   ],
   "npm": [

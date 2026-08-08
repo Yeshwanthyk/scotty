@@ -7,9 +7,12 @@ import type { Bindings } from "../src/bindings";
 import {
   ContainerProxy,
   SCOTTY_EVIDENCE_JOB_ROUTE,
+  SCOTTY_HATCH_MAX_PROTOCOL_BYTES,
+  SCOTTY_HATCH_ROUTE,
   SCOTTY_INTERNAL_HOST,
 } from "../src/container-session-egress";
 import { EVIDENCE_TOOL_MAX_PROTOCOL_BYTES } from "../src/evidence-contracts";
+import { ScottyError } from "../src/contracts";
 import { ALLOWED_HOSTS, makeOutboundByHost } from "../src/egress";
 import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "./session-harness";
 import { makeSessionRecord } from "./support";
@@ -48,6 +51,39 @@ const evidenceRequest = (
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
+  });
+
+const hatchService = () => ({
+  name: "web",
+  argv: ["node", "server.mjs", "--host", "0.0.0.0"] as const,
+  workingDirectory: `/workspace/${SESSION_ID}/apps/web`,
+  port: 4_173,
+  healthPath: "/health",
+});
+
+const hatchStatus = (closed = false) => ({
+  version: 1 as const,
+  status: "configured" as const,
+  hatchId: "hatch-abcd1234",
+  generation: 1,
+  service: { name: "web", port: 4_173 },
+  desiredStatus: closed ? ("closed" as const) : ("open" as const),
+  observedStatus: closed ? ("stopped" as const) : ("running" as const),
+  exposure: closed ? ("closed" as const) : ("active" as const),
+  createdAt: "2026-08-08T01:02:03.000Z",
+  updatedAt: "2026-08-08T01:02:04.000Z",
+  ...(closed ? {} : { lastHealthyAt: "2026-08-08T01:02:04.000Z" }),
+});
+
+const hatchRequest = (
+  method: "GET" | "POST" | "DELETE",
+  body: unknown = { version: 1, service: hatchService() },
+  headers: Readonly<Record<string, string>> = {},
+) =>
+  new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}`, {
+    method,
+    headers: method === "POST" ? { "content-type": "application/json", ...headers } : headers,
+    ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
   });
 
 const snapshot = () => ({
@@ -213,6 +249,135 @@ describe("container-only session egress", () => {
     assert.deepStrictEqual(jobs, [evidenceJob()]);
     assert.strictEqual(fallback.mock.calls.length, 0);
     fallback.mockRestore();
+  });
+
+  it("routes bounded Hatch status, ensure, and close only to source-derived authority", async () => {
+    const operations: unknown[] = [];
+    const selectedContainerIds: string[] = [];
+    const source = {
+      getScottyHatchStatus: async () => {
+        operations.push({ operation: "status" });
+        return hatchStatus();
+      },
+      ensureScottyHatch: async (input: unknown) => {
+        operations.push({ operation: "ensure", input });
+        return hatchStatus();
+      },
+      closeScottyHatch: async () => {
+        operations.push({ operation: "close" });
+        return hatchStatus(true);
+      },
+    };
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(
+      sandboxNamespace({
+        fromString: () => source,
+        onString: (id) => selectedContainerIds.push(id),
+      }),
+    );
+
+    for (const request of [hatchRequest("GET"), hatchRequest("POST"), hatchRequest("DELETE")]) {
+      const response = await handler(request, env, context());
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(response.headers.get("cache-control"), "no-store");
+      const result = await response.json();
+      assert.notProperty(result, "url");
+      assert.notProperty(result, "credential");
+    }
+
+    assert.deepStrictEqual(selectedContainerIds, [
+      SOURCE_CONTAINER_ID,
+      SOURCE_CONTAINER_ID,
+      SOURCE_CONTAINER_ID,
+    ]);
+    assert.deepStrictEqual(operations, [
+      { operation: "status" },
+      { operation: "ensure", input: { version: 1, service: hatchService() } },
+      { operation: "close" },
+    ]);
+  });
+
+  it("rejects Hatch identity spoofing, malformed intent, oversized input, and unsafe source results", async () => {
+    let sourceCalls = 0;
+    const source = {
+      getScottyHatchStatus: async () => {
+        sourceCalls += 1;
+        return { ...hatchStatus(), url: "https://forbidden.example" };
+      },
+      ensureScottyHatch: async () => {
+        sourceCalls += 1;
+        return hatchStatus();
+      },
+      closeScottyHatch: async () => {
+        sourceCalls += 1;
+        return hatchStatus(true);
+      },
+    };
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(sandboxNamespace({ fromString: () => source }));
+
+    for (const request of [
+      hatchRequest("POST", { version: 1, service: { ...hatchService(), env: { TOKEN: "x" } } }),
+      hatchRequest("POST", { version: 1, service: hatchService(), sessionId: SESSION_ID }),
+      hatchRequest("POST", { version: 1, service: hatchService() }, { authorization: "Bearer x" }),
+      new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}?session=${SESSION_ID}`),
+      new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}`, { method: "PUT" }),
+    ]) {
+      const response = await handler(request, env, context());
+      assert.ok(response.status === 400 || response.status === 401);
+    }
+    const oversized = new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "x".repeat(SCOTTY_HATCH_MAX_PROTOCOL_BYTES + 1),
+    });
+    assert.strictEqual((await handler(oversized, env, context())).status, 400);
+    assert.strictEqual((await handler(hatchRequest("GET"), env, context(""))).status, 401);
+    assert.strictEqual(
+      (await handler(hatchRequest("GET"), env, { ...context(), className: "ScottySandbox" }))
+        .status,
+      401,
+    );
+    assert.strictEqual((await handler(hatchRequest("GET"), env, context())).status, 502);
+    assert.strictEqual(sourceCalls, 1);
+  });
+
+  it("preserves typed Hatch conflicts and redacts unknown authority failures", async () => {
+    let failure: unknown = new ScottyError("conflict", "A different primary Hatch is configured", {
+      httpStatus: 409,
+      exitCode: 5,
+    });
+    const source = {
+      ensureScottyHatch: () => Promise.reject(failure),
+    };
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(sandboxNamespace({ fromString: () => source }));
+
+    const conflict = await handler(hatchRequest("POST"), env, context());
+    assert.strictEqual(conflict.status, 409);
+    assert.deepStrictEqual(await conflict.json(), {
+      error: {
+        code: "conflict",
+        message: "A different primary Hatch is configured",
+      },
+    });
+
+    failure = new Error("provider honeypot credential");
+    const unknown = await handler(hatchRequest("POST"), env, context());
+    assert.strictEqual(unknown.status, 500);
+    const body = await unknown.text();
+    assert.include(body, "Scotty Hatch request failed");
+    assert.notInclude(body, "honeypot");
+    assert.notInclude(body, "credential");
   });
 
   it("fails closed for missing context and ambient credential, proxy, or spoof headers", async () => {
