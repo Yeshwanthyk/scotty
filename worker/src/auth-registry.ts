@@ -879,7 +879,13 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(candidate.hatchId)
         )
           return Result.fail(invalidInput());
-        if (handoffs.length >= MAX_HATCH_HANDOFFS)
+        const retainedHandoffs = handoffs.filter(
+          (handoff) =>
+            handoff.browserClientId !== browser.success.id ||
+            handoff.sessionId !== candidate.sessionId ||
+            handoff.hatchId !== candidate.hatchId,
+        );
+        if (retainedHandoffs.length >= MAX_HATCH_HANDOFFS)
           return Result.fail(failure("capacity", "Active Hatch handoff limit reached"));
         const record: HatchHandoffRecord = {
           id: candidate.credential.id,
@@ -895,7 +901,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
             credential: formatCredential(HATCH_HANDOFF_CREDENTIAL_PREFIX, candidate.credential),
             expiresAt: record.expiresAt,
           },
-          authority: { ...authority, hatchHandoffs: [...handoffs, record] },
+          authority: { ...authority, hatchHandoffs: [...retainedHandoffs, record] },
         });
       }),
 

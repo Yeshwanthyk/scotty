@@ -411,16 +411,23 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
             new HatchStateError({ reason: "runtime_changed", message: "Hatch runtime changed" }),
           );
         const now = new Date(nowMillis).toISOString();
+        const existingPermit = hatch.permits.find(
+          (candidate) =>
+            candidate.browserClientId === browserClientId &&
+            Date.parse(candidate.expiresAt) > nowMillis,
+        );
         const permitId = `permit-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
-        const expiresAt = new Date(nowMillis + HATCH_PERMIT_DURATION_MILLIS).toISOString();
+        const expiresAt =
+          existingPermit?.expiresAt ??
+          new Date(nowMillis + HATCH_PERMIT_DURATION_MILLIS).toISOString();
         const permit = {
           permitId,
           browserClientId,
           cookieDigest,
-          createdAt: now,
+          createdAt: existingPermit?.createdAt ?? now,
           expiresAt,
-          ingressBytes: 0,
-          responseBytes: 0,
+          ingressBytes: existingPermit?.ingressBytes ?? 0,
+          responseBytes: existingPermit?.responseBytes ?? 0,
         };
         const retainedPermits = hatch.permits.filter(
           (candidate) =>

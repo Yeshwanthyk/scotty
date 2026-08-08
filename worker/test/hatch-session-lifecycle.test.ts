@@ -147,6 +147,35 @@ describe("authoritative Hatch session lifecycle", () => {
       }),
   );
 
+  it.effect("rejects a different primary service without revoking the active Hatch", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ version: 1, service }));
+      const original = hatchState(harness)?.primary;
+      assert.ok(original);
+      const rejected = yield* Effect.promise(() =>
+        harness.sandbox
+          .ensureScottyHatch({
+            version: 1,
+            service: { ...service, name: "other", port: 5_173 },
+          })
+          .then(
+            () => false,
+            () => true,
+          ),
+      );
+      assert.isTrue(rejected);
+      const current = hatchState(harness)?.primary;
+      assert.strictEqual(current?.hatchId, original.hatchId);
+      assert.strictEqual(current?.generation, original.generation);
+      assert.strictEqual(current?.exposure, "active");
+      assert.strictEqual(
+        harness.events.filter((event) => event.startsWith("host:preview:unexpose:")).length,
+        0,
+      );
+    }),
+  );
+
   it.effect("claims and settles bounded HTTP through the owning Sandbox DO", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
@@ -208,7 +237,20 @@ describe("authoritative Hatch session lifecycle", () => {
       assert.strictEqual(response.headers.get(HATCH_PRIVATE_CLAIMED_HEADER), admitted.requestId);
       assert.strictEqual(yield* Effect.promise(() => response.text()), "hello");
       assert.lengthOf(hatchState(harness)?.primary?.requests ?? [], 0);
-      assert.strictEqual(hatchState(harness)?.primary?.permits[0]?.responseBytes, 5);
+      const consumedPermit = hatchState(harness)?.primary?.permits[0];
+      assert.strictEqual(consumedPermit?.responseBytes, 5);
+      assert.ok(
+        yield* Effect.promise(() =>
+          harness.sandbox.issueScottyHatchPermit(
+            { sessionId: route.sessionId, port: route.port, routeNonce: route.routeNonce },
+            "111111111111",
+            "f".repeat(64),
+          ),
+        ),
+      );
+      const rotatedPermit = hatchState(harness)?.primary?.permits[0];
+      assert.strictEqual(rotatedPermit?.responseBytes, 5);
+      assert.strictEqual(rotatedPermit?.expiresAt, consumedPermit?.expiresAt);
     }),
   );
 

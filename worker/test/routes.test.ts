@@ -405,6 +405,22 @@ describe("real Hono boundary", () => {
     expect(opened.status).toBe(200);
     expect(sandbox.ensureScottyHatch).toHaveBeenCalledWith(input);
     expect(opened.headers.get("cache-control")).toBe("private, no-store");
+
+    const closed = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/hatch",
+      {
+        method: "DELETE",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
+      env(),
+    );
+    expect(closed.status).toBe(200);
+    expect(sandbox.closeScottyHatch).toHaveBeenCalledOnce();
+    expect(closed.headers.get("cache-control")).toBe("private, no-store");
   });
 
   it("returns an auto-submitting exact-host Hatch handoff without forwarding control authority", async () => {

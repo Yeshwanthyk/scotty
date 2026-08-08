@@ -649,6 +649,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     )
       return yield* conflict("Hatch cannot expose the active evidence service port");
     const operation = yield* this.acquireOperationProgram("hatch", ["warm"]);
+    let cleanupRequired = false;
     const result = yield* Effect.result(
       Effect.gen({ self: this }, function* () {
         const runtimeEpoch = yield* this.currentRuntimeEpochProgram();
@@ -663,6 +664,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         });
         if (!beginning.needsExposure)
           return publicHatchStatusProjection({ version: 1, primary: beginning.hatch });
+        cleanupRequired = true;
         const runtime = yield* SandboxRuntime;
         const healthStatus = yield* runtime.fetchPortStatus(
           beginning.hatch.service.healthPath,
@@ -708,7 +710,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return publicHatchStatusProjection({ version: 1, primary: running });
       }),
     );
-    if (Result.isFailure(result)) {
+    if (Result.isFailure(result) && cleanupRequired) {
       const cleanup = yield* Effect.result(
         this.cleanupHatchProgram(operation.nonce, "failed", false, "operation"),
       );
@@ -727,8 +729,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly hatchControlError = (failure: unknown): ScottyError => {
-    if (Predicate.isTagged("HatchStateError")(failure)) {
-      const reason = Reflect.get(failure, "reason");
+    if (isHatchStateError(failure)) {
+      const { reason } = failure;
       if (reason === "conflict" || reason === "lease_changed")
         return conflict("Hatch state changed during the operation");
       if (reason === "invalid_state" || reason === "runtime_changed")
@@ -4013,6 +4015,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
 Sandbox.outboundByHost = makeOutboundByHost(fetch);
 Sandbox.outbound = denyOutbound;
+
+function isHatchStateError(error: unknown): error is HatchStateError {
+  return Predicate.isTagged("HatchStateError")(error);
+}
 
 function piRuntimeStopStage(error: unknown): string | undefined {
   if (!Predicate.isTagged("PiRuntimeStopFailure")(error)) return undefined;
