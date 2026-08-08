@@ -13,6 +13,11 @@ stack and resource set. It is never inferred from a username, machine name, repo
 A durable unit of agent work with one workspace, lifecycle, repository branch, and immutable
 execution provider.
 
+**Hatch**:
+An authenticated, interactive view of an application service currently running in a Session. A
+Hatch is live access, not retained evidence or a deployment.
+_Avoid_: Portal, preview, live view
+
 **Provider**:
 A named implementation that supplies compute for a session. Cloudflare is the production session
 provider. Runner-backed session creation remains gated on a native Pi RPC worklog transport.

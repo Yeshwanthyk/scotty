@@ -2552,6 +2552,7 @@ describe("beam down and embedded skill", () => {
     expect(toolNames).toContain("build-essential");
     expect(toolNames).toContain("pkg-config");
     expect(toolNames).toContain("scotty-browser-test");
+    expect(toolNames).toContain("scotty-hatch");
     expect(fetched).toBe(false);
   });
 
@@ -2608,5 +2609,11 @@ describe("beam down and embedded skill", () => {
     });
     expect(await main(["tools", "doctor", "--json"], healthy.deps)).toBe(EXIT.OK);
     expect(healthy.json().ok).toBe(true);
+    expect(healthy.json().tools).toContainEqual({
+      name: "scotty-hatch",
+      status: "ok",
+      version: "scotty-hatch image",
+      expectedVersion: null,
+    });
   });
 });

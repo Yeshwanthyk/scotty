@@ -10,8 +10,15 @@ import {
   browserEvidenceStatusLabel,
   browserEvidenceSummary,
 } from "/terminal-evidence-attachment.js";
+import {
+  browserHatchStatus,
+  hatchActions,
+  hatchStatusCopy,
+  hatchStatusLabel,
+} from "/terminal-hatch-reference.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
 import { evictableSessions, hasBlockingCommands } from "/terminal-session-cache.js";
+import { projectSessionSummary } from "/terminal-summary-projection.js";
 import {
   createUiResponseTracker,
   markUiResponseDelivered,
@@ -38,8 +45,10 @@ import {
 
 const CACHE_LIMIT = 6;
 const compactViewport = window.matchMedia("(max-width: 780px)");
+const summaryCompactViewport = window.matchMedia("(max-width: 1100px)");
 const coarsePointer = window.matchMedia("(pointer: coarse)");
 
+const appShell = document.querySelector(".app-shell");
 const workspaceList = document.querySelector("#workspace-list");
 const currentRepo = document.querySelector("#current-repo");
 const currentMeta = document.querySelector("#current-meta");
@@ -80,6 +89,11 @@ const activityDrawer = document.querySelector("#activity-drawer");
 const activityBackdrop = document.querySelector("#activity-backdrop");
 const activityContent = document.querySelector("#activity-content");
 const activityIndicator = document.querySelector("#activity-indicator");
+const openSummaryButton = document.querySelector("#open-summary");
+const closeSummaryButton = document.querySelector("#close-summary");
+const summarySidebar = document.querySelector("#summary-sidebar");
+const summaryBackdrop = document.querySelector("#summary-backdrop");
+const summaryContent = document.querySelector("#summary-content");
 const toastRegion = document.querySelector("#toast-region");
 
 let currentSessionId = sessionIdFromLocation();
@@ -93,6 +107,10 @@ let deliveryMode = "follow_up";
 let composing = false;
 let renderScheduled = false;
 let runtimeOptionsSignature;
+let renderedSummaryKey;
+let summaryRenderVersion = 0;
+let compactSurface;
+let desktopSummaryOpen = true;
 let localCommandItems = [];
 const sessionCache = new Map();
 const composerDrafts = createComposerDrafts(cacheEntry);
@@ -320,6 +338,7 @@ function renderProjection({ restoreScroll = false } = {}) {
   worklogFeed.setAttribute("aria-busy", "false");
   renderReceipts();
   renderActivity();
+  renderSummary();
   updateComposer();
 
   const entry = cacheEntry(currentSessionId);
@@ -327,6 +346,505 @@ function renderProjection({ restoreScroll = false } = {}) {
     if (restoreScroll) worklog.scrollTop = entry.scrollTop;
     else if (nearBottom) worklog.scrollTop = worklog.scrollHeight;
   });
+}
+
+function summaryReplayLink(evidence) {
+  const link = textElement("a", "summary-replay-link", "Replay");
+  link.href = evidence.paths.replay;
+  link.dataset.summaryFocusKey = `evidence:${evidence.jobId}:replay`;
+  return link;
+}
+
+function summaryEvidenceMeta(status, assertionCopy) {
+  const meta = document.createElement("div");
+  meta.className = "summary-evidence-meta";
+  const state = document.createElement("span");
+  state.className = "summary-evidence-status";
+  state.append(
+    textElement("i", "summary-evidence-dot", ""),
+    document.createTextNode(browserEvidenceStatusLabel(status)),
+  );
+  meta.append(state, textElement("span", "summary-assertions", assertionCopy));
+  return meta;
+}
+
+function summaryEvidenceActions(evidence) {
+  const actions = document.createElement("div");
+  actions.className = "summary-evidence-actions";
+  actions.append(summaryReplayLink(evidence));
+  return actions;
+}
+
+function renderReferencedEvidenceUnavailable(jobId) {
+  const card = document.createElement("article");
+  card.className = "summary-evidence-card";
+  card.dataset.state = "unavailable";
+  card.setAttribute("aria-label", `Unavailable evidence ${jobId}`);
+  card.append(
+    summaryEvidenceMeta(undefined, "Not verified"),
+    textElement(
+      "p",
+      "summary-evidence-message",
+      "This reference was not produced by a validated browser test in this conversation.",
+    ),
+  );
+  return card;
+}
+
+function renderSummaryEvidenceLoading(evidence, renderVersion, sessionId) {
+  const card = document.createElement("article");
+  card.className = "summary-evidence-card";
+  card.dataset.status = evidence.status;
+  card.setAttribute("aria-label", `Browser evidence ${evidence.jobId}`);
+  card.append(
+    summaryEvidenceMeta(evidence.status, "Loading assertions…"),
+    ...(evidence.frameCount === 0
+      ? [textElement("p", "summary-evidence-message", browserEvidenceNoFrameCopy(evidence.status))]
+      : []),
+    summaryEvidenceActions(evidence),
+  );
+  void loadSummaryEvidence(card, evidence, renderVersion, sessionId);
+  return card;
+}
+
+function renderSummaryEvidenceFailure(card, evidence, state) {
+  const expired = state === "expired";
+  card.dataset.state = state;
+  delete card.dataset.status;
+  card.replaceChildren(
+    summaryEvidenceMeta(undefined, expired ? "Expired" : "Unavailable"),
+    textElement(
+      "p",
+      "summary-evidence-message",
+      expired
+        ? "These screenshots are no longer retained."
+        : "The authenticated evidence summary is unavailable right now.",
+    ),
+    ...(expired ? [] : [summaryEvidenceActions(evidence)]),
+  );
+}
+
+async function loadSummaryEvidence(card, evidence, renderVersion, sessionId) {
+  let summary;
+  let failureState = "unavailable";
+  try {
+    const response = await fetch(evidence.paths.summary, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 410) failureState = "expired";
+    } else {
+      summary = browserEvidenceSummary(await response.json(), evidence);
+    }
+  } catch {
+    summary = undefined;
+  }
+  if (renderVersion !== summaryRenderVersion || sessionId !== currentSessionId) return;
+  if (!summary) {
+    renderSummaryEvidenceFailure(card, evidence, failureState);
+    return;
+  }
+
+  card.dataset.status = summary.status;
+  delete card.dataset.state;
+  const assertionCopy = `${summary.passedAssertions}/${summary.totalAssertions} assertions passed`;
+  card.replaceChildren(summaryEvidenceMeta(summary.status, assertionCopy));
+  if (summary.frames.length > 0) {
+    for (const frame of summary.frames) {
+      const path = evidence.paths.frame(frame.frameId);
+      if (!path) continue;
+      const figure = document.createElement("figure");
+      figure.className = "summary-frame";
+      const image = document.createElement("img");
+      image.src = path;
+      image.alt = `Screenshot for step ${frame.stepIndex + 1}: ${frame.stepName}`;
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.referrerPolicy = "same-origin";
+      image.addEventListener("error", () => {
+        image.remove();
+        figure.prepend(
+          textElement("p", "summary-evidence-message", "Screenshot expired or unavailable."),
+        );
+      });
+      figure.append(
+        image,
+        textElement("figcaption", "", `Step ${frame.stepIndex + 1} · ${frame.stepName}`),
+      );
+      card.append(figure);
+    }
+  } else {
+    card.append(
+      textElement("p", "summary-evidence-message", browserEvidenceNoFrameCopy(summary.status)),
+    );
+  }
+  card.append(summaryEvidenceActions(evidence));
+}
+
+function summaryEmptyState(title, copy) {
+  const empty = document.createElement("div");
+  empty.className = "summary-empty";
+  empty.append(
+    textElement("span", "summary-empty-mark", "S"),
+    textElement("strong", "", title),
+    textElement("p", "summary-empty-copy", copy),
+  );
+  return empty;
+}
+
+function summaryHatchAction(tag, className, label, action, reference) {
+  const control = textElement(tag, className, label);
+  control.dataset.hatchAction = action;
+  control.dataset.summaryFocusKey = `hatch:${reference.hatchId}:${action}`;
+  if (tag === "button") control.type = "button";
+  return control;
+}
+
+function restoreSummaryHatchFocus(card, focusedKey) {
+  if (!focusedKey) return;
+  requestAnimationFrame(() => {
+    if (!card.isConnected) return;
+    const controls = [...card.querySelectorAll("[data-summary-focus-key]")];
+    const replacement =
+      controls.find((candidate) => candidate.dataset.summaryFocusKey === focusedKey) ?? controls[0];
+    replacement?.focus({ preventScroll: true });
+  });
+}
+
+function replaceSummaryHatchCard(card, ...children) {
+  const focusedKey = card.contains(document.activeElement)
+    ? document.activeElement?.closest?.("[data-summary-focus-key]")?.dataset.summaryFocusKey
+    : card.dataset.pendingFocusKey;
+  delete card.dataset.pendingFocusKey;
+  card.replaceChildren(...children);
+  restoreSummaryHatchFocus(card, focusedKey);
+}
+
+function summaryHatchActions(card, reference, status) {
+  const availability = hatchActions(status);
+  const actions = document.createElement("div");
+  actions.className = "summary-hatch-actions";
+  if (availability.open) {
+    const open = summaryHatchAction("a", "summary-hatch-primary", "Open Hatch", "open", reference);
+    open.href = reference.paths.open;
+    open.target = "_blank";
+    open.rel = "noopener";
+    actions.append(open);
+  }
+  if (availability.wakeAndOpen)
+    actions.append(
+      summaryHatchAction("button", "summary-hatch-primary", "Wake and Open", "wake", reference),
+    );
+  if (availability.verify)
+    actions.append(
+      summaryHatchAction("button", "summary-hatch-secondary", "Verify", "verify", reference),
+    );
+  if (availability.stop)
+    actions.append(summaryHatchAction("button", "summary-hatch-stop", "Stop", "stop", reference));
+  actions.addEventListener("click", (event) => {
+    if (event.target.closest?.('a[aria-disabled="true"]')) {
+      event.preventDefault();
+      return;
+    }
+    const control = event.target.closest?.("button[data-hatch-action]");
+    if (control) void runSummaryHatchAction(card, reference, control.dataset.hatchAction);
+  });
+  return actions;
+}
+
+function renderSummaryHatchStatus(card, reference, status) {
+  card.dataset.status = status.observedStatus;
+  delete card.dataset.state;
+  card.setAttribute("aria-busy", "false");
+  const heading = document.createElement("div");
+  heading.className = "summary-hatch-heading";
+  heading.append(
+    textElement("strong", "", status.service.name || "Application Hatch"),
+    textElement("span", "summary-hatch-state", hatchStatusLabel(status)),
+  );
+  replaceSummaryHatchCard(
+    card,
+    heading,
+    textElement("p", "summary-hatch-copy", hatchStatusCopy(status)),
+    summaryHatchActions(card, reference, status),
+  );
+}
+
+function renderSummaryHatchUnavailable(card, reference, copy) {
+  card.dataset.state = "unavailable";
+  delete card.dataset.status;
+  card.setAttribute("aria-busy", "false");
+  const actions = document.createElement("div");
+  actions.className = "summary-hatch-actions";
+  const verify = summaryHatchAction(
+    "button",
+    "summary-hatch-secondary",
+    "Verify",
+    "verify",
+    reference,
+  );
+  verify.addEventListener("click", () => void runSummaryHatchAction(card, reference, "verify"));
+  actions.append(verify);
+  replaceSummaryHatchCard(
+    card,
+    textElement("strong", "summary-hatch-unavailable-title", "Hatch unavailable"),
+    textElement("p", "summary-hatch-copy", copy),
+    actions,
+  );
+}
+
+function renderReferencedHatchUnavailable(hatchId) {
+  const card = document.createElement("article");
+  card.className = "summary-hatch-card";
+  card.dataset.state = "unavailable";
+  card.setAttribute("aria-label", `Unavailable Hatch ${hatchId}`);
+  card.append(
+    textElement("strong", "summary-hatch-unavailable-title", "Hatch unavailable"),
+    textElement(
+      "p",
+      "summary-hatch-copy",
+      "This reference was not produced by a validated Hatch tool result in this conversation.",
+    ),
+  );
+  return card;
+}
+
+function renderSummaryHatchLoading(reference, renderVersion, sessionId) {
+  const card = document.createElement("article");
+  card.className = "summary-hatch-card";
+  card.dataset.state = "loading";
+  card.setAttribute("aria-label", `Hatch ${reference.hatchId}`);
+  card.setAttribute("aria-busy", "true");
+  card.append(
+    textElement("strong", "summary-hatch-unavailable-title", "Checking Hatch…"),
+    textElement("p", "summary-hatch-copy", "Loading current authenticated status."),
+  );
+  void loadSummaryHatch(card, reference, renderVersion, sessionId);
+  return card;
+}
+
+async function loadSummaryHatch(
+  card,
+  reference,
+  renderVersion,
+  sessionId,
+  openWhenRunning = false,
+) {
+  let status;
+  try {
+    const response = await fetch(reference.paths.status, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (response.ok) status = browserHatchStatus(await response.json(), reference);
+  } catch {
+    status = undefined;
+  }
+  if (renderVersion !== summaryRenderVersion || sessionId !== currentSessionId || !card.isConnected)
+    return;
+  if (!status) {
+    renderSummaryHatchUnavailable(
+      card,
+      reference,
+      "The current browser-authenticated Hatch status does not match this reference.",
+    );
+    return;
+  }
+  renderSummaryHatchStatus(card, reference, status);
+  if (openWhenRunning && hatchActions(status).open) window.location.assign(reference.paths.open);
+}
+
+function setSummaryHatchPending(card, pending) {
+  if (pending && card.contains(document.activeElement)) {
+    const focusedKey = document.activeElement?.closest?.("[data-summary-focus-key]")?.dataset
+      .summaryFocusKey;
+    if (focusedKey) card.dataset.pendingFocusKey = focusedKey;
+  }
+  for (const button of card.querySelectorAll("button")) button.disabled = pending;
+  for (const link of card.querySelectorAll("a")) {
+    link.setAttribute("aria-disabled", String(pending));
+    if (pending) link.setAttribute("tabindex", "-1");
+    else link.removeAttribute("tabindex");
+  }
+  card.setAttribute("aria-busy", String(pending));
+  if (!pending) {
+    const focusedKey = card.dataset.pendingFocusKey;
+    delete card.dataset.pendingFocusKey;
+    restoreSummaryHatchFocus(card, focusedKey);
+  }
+}
+
+async function runSummaryHatchAction(card, reference, action) {
+  if (!["verify", "wake", "stop"].includes(action)) return;
+  const renderVersion = summaryRenderVersion;
+  const sessionId = currentSessionId;
+  setSummaryHatchPending(card, true);
+  try {
+    if (action === "verify") {
+      await loadSummaryHatch(card, reference, renderVersion, sessionId);
+      return;
+    }
+    const path = action === "wake" ? reference.paths.wake : reference.paths.stop;
+    const response = await fetch(path, {
+      method: action === "wake" ? "POST" : "DELETE",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) throw new Error("Hatch control request failed");
+    if (action === "stop") {
+      const status = browserHatchStatus(await response.json(), reference);
+      if (!status) throw new Error("Hatch control returned an invalid status");
+      if (renderVersion === summaryRenderVersion && sessionId === currentSessionId)
+        renderSummaryHatchStatus(card, reference, status);
+      return;
+    }
+    await loadSummaryHatch(card, reference, renderVersion, sessionId, true);
+  } catch {
+    if (renderVersion !== summaryRenderVersion || sessionId !== currentSessionId) return;
+    setSummaryHatchPending(card, false);
+    showToast(
+      action === "wake"
+        ? "Could not wake and open this Hatch."
+        : action === "stop"
+          ? "Could not stop this Hatch."
+          : "Could not verify this Hatch.",
+    );
+  }
+}
+
+function renderSummary() {
+  const projection = projectSessionSummary(
+    currentProjection?.messages,
+    currentProjection?.tools,
+    currentSessionId,
+  );
+  const renderKey = `${currentSessionId}:${semanticSignature(projection)}`;
+  if (renderKey === renderedSummaryKey) return;
+  renderedSummaryKey = renderKey;
+  const renderVersion = ++summaryRenderVersion;
+  const focusedKey = document.activeElement?.closest?.("[data-summary-focus-key]")?.dataset
+    .summaryFocusKey;
+  summaryContent.setAttribute("aria-busy", "false");
+
+  if (projection.kind === "empty") {
+    summaryContent.replaceChildren(
+      summaryEmptyState(
+        "No update yet",
+        "Pi’s latest update and any referenced Hatch or browser evidence will appear here.",
+      ),
+    );
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  const updateSection = document.createElement("section");
+  updateSection.setAttribute("aria-labelledby", "summary-update-title");
+  const updateTitle = textElement("h2", "summary-section-title", "Latest update");
+  updateTitle.id = "summary-update-title";
+  const update = document.createElement("div");
+  update.className = "summary-update markdown";
+  update.append(
+    assistantMarkdownFragment(document, projection.update, {
+      baseUrl: window.location.href,
+      focusKeyPrefix: `summary:${currentSessionId}:${projection.conversationKey}`,
+    }),
+  );
+  updateSection.append(updateTitle, update);
+  fragment.append(updateSection);
+
+  const hatchSection = document.createElement("section");
+  hatchSection.className = "summary-hatch-section";
+  hatchSection.setAttribute("aria-labelledby", "summary-hatch-title");
+  const hatchTitle = textElement("h2", "summary-section-title", "Hatch");
+  hatchTitle.id = "summary-hatch-title";
+  hatchSection.append(hatchTitle);
+  if (projection.hatches.length === 0) {
+    hatchSection.append(
+      textElement("p", "summary-hatch-empty", "No Hatch is referenced in this update."),
+    );
+  } else {
+    const list = document.createElement("div");
+    list.className = "summary-hatch-list";
+    for (const hatch of projection.hatches) {
+      list.append(
+        hatch.kind === "hatch"
+          ? renderSummaryHatchLoading(hatch, renderVersion, currentSessionId)
+          : renderReferencedHatchUnavailable(hatch.hatchId),
+      );
+    }
+    hatchSection.append(list);
+  }
+  fragment.append(hatchSection);
+
+  const evidenceSection = document.createElement("section");
+  evidenceSection.className = "summary-evidence-section";
+  evidenceSection.setAttribute("aria-labelledby", "summary-evidence-title");
+  const evidenceTitle = textElement("h2", "summary-section-title", "Evidence");
+  evidenceTitle.id = "summary-evidence-title";
+  evidenceSection.append(evidenceTitle);
+  if (projection.evidence.length === 0) {
+    evidenceSection.append(
+      textElement(
+        "p",
+        "summary-evidence-empty",
+        "No browser evidence is referenced in this update.",
+      ),
+    );
+  } else {
+    const list = document.createElement("div");
+    list.className = "summary-evidence-list";
+    for (const evidence of projection.evidence) {
+      list.append(
+        evidence.kind === "evidence"
+          ? renderSummaryEvidenceLoading(evidence, renderVersion, currentSessionId)
+          : renderReferencedEvidenceUnavailable(evidence.jobId),
+      );
+    }
+    evidenceSection.append(list);
+  }
+  fragment.append(evidenceSection);
+  summaryContent.replaceChildren(fragment);
+
+  if (focusedKey) {
+    const replacement = [...summaryContent.querySelectorAll("[data-summary-focus-key]")].find(
+      (candidate) => candidate.dataset.summaryFocusKey === focusedKey,
+    );
+    replacement?.focus({ preventScroll: true });
+  }
+}
+
+function renderSummaryUnavailable() {
+  renderedSummaryKey = undefined;
+  summaryRenderVersion += 1;
+  summaryContent.setAttribute("aria-busy", "false");
+  summaryContent.replaceChildren(
+    summaryEmptyState(
+      "Summary unavailable",
+      "Scotty could not load the transcript needed to reconstruct this Summary.",
+    ),
+  );
+}
+
+function renderSummaryLoading() {
+  renderedSummaryKey = undefined;
+  summaryRenderVersion += 1;
+  summaryContent.setAttribute("aria-busy", "true");
+  const placeholder = document.createElement("div");
+  placeholder.className = "summary-placeholder";
+  placeholder.setAttribute("aria-hidden", "true");
+  placeholder.append(
+    textElement("span", "", ""),
+    textElement("span", "", ""),
+    textElement("span", "", ""),
+  );
+  summaryContent.replaceChildren(
+    placeholder,
+    textElement("p", "summary-loading", "Loading Summary…"),
+  );
 }
 
 function scheduleRender() {
@@ -1369,6 +1887,7 @@ function showLoadError(error) {
   if (error?.name === "AbortError") return;
   setConnection("disconnected", "Unavailable");
   worklogFeed.setAttribute("aria-busy", "false");
+  renderSummaryUnavailable();
   worklogFeed.replaceChildren(
     (() => {
       const empty = document.createElement("div");
@@ -1508,10 +2027,11 @@ function navigateToSession(sessionId, { push = true } = {}) {
   if (push) window.history.pushState({ sessionId }, "", `/s/${encodeURIComponent(sessionId)}`);
   const entry = cacheEntry(sessionId);
   currentProjection = entry.projection;
+  renderSummaryLoading();
   composerInput.value = entry.draft;
   autosizeComposer();
   updateCurrentWorkspace();
-  setWorkspaceDrawer(false);
+  setCompactSurface(undefined);
   setActivityDrawer(false);
   if (currentProjection.loaded) {
     renderProjection({ restoreScroll: true });
@@ -1550,33 +2070,106 @@ function focusableElements(container) {
   ].filter((element) => element.getClientRects().length > 0);
 }
 
-function setWorkspaceDrawer(open) {
-  const wasOpen = document.body.classList.contains("drawer-open");
-  const isOpen = compactViewport.matches && open;
-  document.body.classList.toggle("drawer-open", isOpen);
-  drawerBackdrop.hidden = !isOpen;
-  openDrawerButton.setAttribute("aria-expanded", String(isOpen));
-  workspaceRail.toggleAttribute("role", isOpen);
-  if (isOpen) {
+function setActivityDrawer(open, { restoreFocus = true } = {}) {
+  const wasOpen = activityDrawer.classList.contains("open");
+  if (open && compactSurface) setCompactSurface(undefined, { restoreFocus: false });
+  activityDrawer.classList.toggle("open", open);
+  activityDrawer.setAttribute("aria-hidden", String(!open));
+  activityBackdrop.hidden = !open;
+  openActivityButton.setAttribute("aria-expanded", String(open));
+  appShell.inert = open;
+  if (open) {
+    requestAnimationFrame(() => {
+      if (activityDrawer.classList.contains("open")) closeActivityButton.focus();
+    });
+  } else if (wasOpen && restoreFocus) openActivityButton.focus();
+}
+
+function setCompactSurface(surface, { restoreFocus = true } = {}) {
+  const next =
+    surface === "workspace" && compactViewport.matches
+      ? "workspace"
+      : surface === "summary" && summaryCompactViewport.matches
+        ? "summary"
+        : undefined;
+  const previous = compactSurface;
+  if (next && activityDrawer.classList.contains("open")) {
+    setActivityDrawer(false, { restoreFocus: false });
+  }
+  compactSurface = next;
+  const workspaceOpen = next === "workspace";
+  const summaryOpen = next === "summary";
+
+  document.body.classList.toggle("drawer-open", workspaceOpen);
+  drawerBackdrop.hidden = !workspaceOpen;
+  openDrawerButton.setAttribute("aria-expanded", String(workspaceOpen));
+  if (workspaceOpen) {
     workspaceRail.setAttribute("role", "dialog");
     workspaceRail.setAttribute("aria-modal", "true");
   } else {
     workspaceRail.removeAttribute("role");
     workspaceRail.removeAttribute("aria-modal");
   }
-  sessionWorkspace.inert = isOpen;
-  if (isOpen) closeDrawerButton.focus();
-  else if (wasOpen && compactViewport.matches) openDrawerButton.focus();
+
+  summarySidebar.classList.toggle("open", summaryOpen);
+  summarySidebar.setAttribute("aria-hidden", String(!summaryOpen));
+  summaryBackdrop.hidden = !summaryOpen;
+  openSummaryButton.setAttribute("aria-expanded", String(summaryOpen));
+  if (summaryCompactViewport.matches) {
+    summarySidebar.setAttribute("role", "dialog");
+    summarySidebar.setAttribute("aria-modal", "true");
+  } else {
+    summarySidebar.removeAttribute("role");
+    summarySidebar.removeAttribute("aria-modal");
+  }
+
+  sessionWorkspace.inert = workspaceOpen || summaryOpen;
+  workspaceRail.inert = summaryOpen;
+  summarySidebar.inert = summaryCompactViewport.matches && !summaryOpen;
+
+  if (workspaceOpen || summaryOpen) {
+    requestAnimationFrame(() => {
+      if (compactSurface === "workspace") closeDrawerButton.focus();
+      else if (compactSurface === "summary") closeSummaryButton.focus();
+    });
+  } else if (restoreFocus && previous === "workspace") openDrawerButton.focus();
+  else if (restoreFocus && previous === "summary") openSummaryButton.focus();
 }
 
-function setActivityDrawer(open) {
-  activityDrawer.classList.toggle("open", open);
-  activityDrawer.setAttribute("aria-hidden", String(!open));
-  activityBackdrop.hidden = !open;
-  openActivityButton.setAttribute("aria-expanded", String(open));
-  document.querySelector(".app-shell").inert = open;
-  if (open) closeActivityButton.focus();
-  else if (document.activeElement === closeActivityButton) openActivityButton.focus();
+function setWorkspaceDrawer(open) {
+  if (open) {
+    if (compactViewport.matches) setCompactSurface("workspace");
+  } else if (compactSurface === "workspace") {
+    setCompactSurface(undefined);
+  }
+}
+
+function setSummaryOpen(open, { restoreFocus = true } = {}) {
+  if (summaryCompactViewport.matches) {
+    if (open) setCompactSurface("summary", { restoreFocus });
+    else if (compactSurface === "summary") setCompactSurface(undefined, { restoreFocus });
+    return;
+  }
+  desktopSummaryOpen = open;
+  document.body.classList.toggle("summary-collapsed", !open);
+  summarySidebar.classList.remove("open");
+  summarySidebar.setAttribute("aria-hidden", String(!open));
+  summarySidebar.removeAttribute("role");
+  summarySidebar.removeAttribute("aria-modal");
+  summarySidebar.inert = !open;
+  summaryBackdrop.hidden = true;
+  openSummaryButton.setAttribute("aria-expanded", String(open));
+  if (!open && restoreFocus) openSummaryButton.focus();
+}
+
+function syncSummarySurface() {
+  if (summaryCompactViewport.matches) {
+    document.body.classList.remove("summary-collapsed");
+    setCompactSurface(undefined, { restoreFocus: false });
+  } else {
+    setCompactSurface(undefined, { restoreFocus: false });
+    setSummaryOpen(desktopSummaryOpen, { restoreFocus: false });
+  }
 }
 
 function trapFocus(event, container) {
@@ -1613,6 +2206,12 @@ for (const eventName of ["pointerover", "focusin", "touchstart"]) {
 openDrawerButton.addEventListener("click", () => setWorkspaceDrawer(true));
 closeDrawerButton.addEventListener("click", () => setWorkspaceDrawer(false));
 drawerBackdrop.addEventListener("click", () => setWorkspaceDrawer(false));
+openSummaryButton.addEventListener("click", () => {
+  const open = summaryCompactViewport.matches ? compactSurface !== "summary" : !desktopSummaryOpen;
+  setSummaryOpen(open);
+});
+closeSummaryButton.addEventListener("click", () => setSummaryOpen(false));
+summaryBackdrop.addEventListener("click", () => setSummaryOpen(false));
 openActivityButton.addEventListener("click", () => setActivityDrawer(true));
 closeActivityButton.addEventListener("click", () => setActivityDrawer(false));
 activityBackdrop.addEventListener("click", () => setActivityDrawer(false));
@@ -1724,7 +2323,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (activityDrawer.classList.contains("open")) setActivityDrawer(false);
-    else if (document.body.classList.contains("drawer-open")) setWorkspaceDrawer(false);
+    else if (compactSurface) setCompactSurface(undefined);
     else if (deliveryMenu.classList.contains("open")) {
       setDeliveryMenu(false);
       deliveryModeButton.focus();
@@ -1735,8 +2334,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Tab" && activityDrawer.classList.contains("open")) {
     trapFocus(event, activityDrawer);
-  } else if (event.key === "Tab" && document.body.classList.contains("drawer-open")) {
+  } else if (event.key === "Tab" && compactSurface === "workspace") {
     trapFocus(event, workspaceRail);
+  } else if (event.key === "Tab" && compactSurface === "summary") {
+    trapFocus(event, summarySidebar);
   }
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
     event.preventDefault();
@@ -1744,8 +2345,9 @@ document.addEventListener("keydown", (event) => {
   }
 });
 compactViewport.addEventListener("change", (event) => {
-  if (!event.matches) setWorkspaceDrawer(false);
+  if (!event.matches && compactSurface === "workspace") setWorkspaceDrawer(false);
 });
+summaryCompactViewport.addEventListener("change", syncSummarySurface);
 window.addEventListener("popstate", () => {
   const sessionId = sessionIdFromLocation();
   if (sessionId) navigateToSession(sessionId, { push: false });
@@ -1758,6 +2360,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 async function start() {
+  syncSummarySurface();
   if (!currentSessionId) {
     showLoadError(new Error("This URL does not identify a Scotty session."));
     return;

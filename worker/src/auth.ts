@@ -168,7 +168,7 @@ export function requireClientCredential(principal: AuthPrincipal): string {
   throw authenticationRequired();
 }
 
-export function authRegistry(env: AuthBindings): ScottyAuthRegistryStub {
+export function authRegistry(env: Pick<AuthBindings, "AUTH">): ScottyAuthRegistryStub {
   return env.AUTH.getByName(AUTH_OBJECT_NAME);
 }
 
@@ -177,6 +177,7 @@ export function unwrapAuthRpc<A>(result: AuthRpcResult<A>): A {
   const { reason, message } = result.error;
   if (
     reason === "credential_invalid" ||
+    reason === "handoff_invalid" ||
     reason === "pairing_invalid" ||
     reason === "recovery_invalid" ||
     reason === "transfer_invalid" ||

@@ -32,6 +32,7 @@ describe("session lifecycle invariants", () => {
       "expireRetainedEvidence",
       "finalizeManagedStop",
       "retryHardCapDestroy",
+      "retryHatchCleanup",
       "retryVaporizeSession",
     ]);
     assert.deepStrictEqual(VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS, [
@@ -40,6 +41,7 @@ describe("session lifecycle invariants", () => {
       "expireRetainedEvidence",
       "finalizeManagedStop",
       "retryHardCapDestroy",
+      "retryHatchCleanup",
     ]);
   });
 

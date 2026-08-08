@@ -19,8 +19,9 @@ import {
 } from "./create-idempotency";
 import { hardCapObservationIsCurrent } from "./session-lifecycle";
 
-const RECORD_KEY = "scotty:session";
+export const SESSION_RECORD_KEY = "scotty:session";
 export const EVIDENCE_RECORD_KEY = "scotty:evidence:v1";
+export const HATCH_STATE_KEY = "scotty:hatch:v1";
 export const RUNTIME_EPOCH_KEY = "scotty:runtime-epoch:v1";
 export const SESSION_CONTROL_REVISION_KEY = "scotty:session-control-revision";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
@@ -191,7 +192,7 @@ const readDurableObjectSessionControlAuthority = (
 ): Promise<Result.Result<SessionControlAuthority | undefined, ScottyError>> =>
   storage.transaction(async (transaction) => {
     const [stored, storedRevision] = await Promise.all([
-      transaction.get<unknown>(RECORD_KEY),
+      transaction.get<unknown>(SESSION_RECORD_KEY),
       transaction.get<unknown>(SESSION_CONTROL_REVISION_KEY),
     ]);
     if (stored === undefined) return Result.succeed(undefined);
@@ -211,7 +212,7 @@ const writeRecordWithNextControlRevision = async (
     return Promise.reject(new SessionControlRevisionFailure({ reason: "exhausted" }));
   }
   await Promise.all([
-    transaction.put(RECORD_KEY, record),
+    transaction.put(SESSION_RECORD_KEY, record),
     transaction.put(SESSION_CONTROL_REVISION_KEY, revision + 1),
   ]);
 };
@@ -220,7 +221,7 @@ export const durableObjectSessionRecordStorage = (
   storage: DurableObjectStorage,
   controlGate: SessionControlGate = makeSessionControlGate(),
 ): SessionRecordStorage => ({
-  get: () => storage.get(RECORD_KEY),
+  get: () => storage.get(SESSION_RECORD_KEY),
   put: (record) =>
     controlGate.run(() =>
       storage.transaction((transaction) => writeRecordWithNextControlRevision(transaction, record)),
@@ -230,13 +231,13 @@ export const durableObjectSessionRecordStorage = (
     controlGate.run(() =>
       storage.transaction((transaction) =>
         operation({
-          get: () => transaction.get(RECORD_KEY),
+          get: () => transaction.get(SESSION_RECORD_KEY),
           put: (record) => writeRecordWithNextControlRevision(transaction, record),
         }),
       ),
     ),
   readControlAuthority: () => readDurableObjectSessionControlAuthority(storage),
-  getInitialRecord: () => storage.get(RECORD_KEY),
+  getInitialRecord: () => storage.get(SESSION_RECORD_KEY),
   getCreateIdempotency: () => storage.get(CREATE_IDEMPOTENCY_KEY),
   getEvidence: () => storage.get(EVIDENCE_RECORD_KEY),
   getRuntimeEpoch: () => storage.get(RUNTIME_EPOCH_KEY),
@@ -248,7 +249,7 @@ export const durableObjectSessionRecordStorage = (
     controlGate.run(() =>
       storage.transaction((transaction) =>
         operation({
-          getRecord: () => transaction.get(RECORD_KEY),
+          getRecord: () => transaction.get(SESSION_RECORD_KEY),
           getEvidence: () => transaction.get(EVIDENCE_RECORD_KEY),
           getRuntimeEpoch: () => transaction.get(RUNTIME_EPOCH_KEY),
           putRecord: (record) => writeRecordWithNextControlRevision(transaction, record),
@@ -261,7 +262,7 @@ export const durableObjectSessionRecordStorage = (
     controlGate.run(() =>
       storage.transaction((transaction) =>
         operation({
-          getRecord: () => transaction.get(RECORD_KEY),
+          getRecord: () => transaction.get(SESSION_RECORD_KEY),
           getCreateIdempotency: () => transaction.get(CREATE_IDEMPOTENCY_KEY),
           putRecord: (record) => writeRecordWithNextControlRevision(transaction, record),
           putCreateIdempotency: (metadata) => transaction.put(CREATE_IDEMPOTENCY_KEY, metadata),

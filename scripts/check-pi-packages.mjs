@@ -284,6 +284,6 @@ export function verifyPiPackagePins(root = scriptRoot) {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const result = verifyPiPackagePins();
   console.log(
-    `Verified ${result.vendoredPackages} externally vendored Pi packages, ${result.firstPartyPackages} first-party Pi package, and ${result.npmPackages} pinned Pi npm package.`,
+    `Verified ${result.vendoredPackages} externally vendored Pi packages, ${result.firstPartyPackages} first-party Pi package${result.firstPartyPackages === 1 ? "" : "s"}, and ${result.npmPackages} pinned Pi npm package${result.npmPackages === 1 ? "" : "s"}.`,
   );
 }

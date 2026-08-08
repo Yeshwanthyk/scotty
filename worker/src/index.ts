@@ -13,6 +13,8 @@ import { readBoundedUtf8Body } from "./bounded-http";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
 import { decodeEvidenceIdentifier } from "./evidence-contracts";
 import { handleEvidencePreviewRequest } from "./evidence-preview";
+import { handleHatchRequest } from "./hatch-gateway";
+import { hatchOrigin } from "./hatch-contracts";
 import { ContainerProxy } from "./container-session-egress";
 import {
   badRequest,
@@ -123,7 +125,7 @@ app.use("/api/auth/*", async (c, next) => {
 app.use("*", async (c, next) => {
   const incomingUrl = new URL(c.req.url);
   if (incomingUrl.searchParams.has("t")) c.header("cache-control", "no-store");
-  else if (/^\/(?:api\/sessions|s)\/[^/]+\/evidence(?:\/|$)/u.test(incomingUrl.pathname))
+  else if (/^\/(?:api\/sessions|s)\/[^/]+\/(?:evidence|hatch)(?:\/|$)/u.test(incomingUrl.pathname))
     c.header("cache-control", "private, no-store");
   rejectRootQuery(c.req.raw);
   await next();
@@ -527,6 +529,25 @@ app.get("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).getScottySession());
 });
 
+app.get("/api/sessions/:id/hatch", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).getScottyHatchStatus());
+});
+
+app.post("/api/sessions/:id/hatch", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  requireJsonContentType(c.req.raw);
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).ensureScottyHatch(await readJsonBody(c.req.raw)));
+});
+
+app.delete("/api/sessions/:id/hatch", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).closeScottyHatch());
+});
+
 app.get("/api/sessions/:id/inspect", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));
@@ -648,6 +669,26 @@ app.get("/s/:id/evidence/:jobId/frames/:frame", async (c) => {
         },
       }),
   });
+});
+
+app.get("/s/:id/hatch/open", async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  requireAuthScope(principal, "sessions:read");
+  refreshClientAuthCookie(c, principal);
+  const previewBase = c.env.SCOTTY_PREVIEW_BASE;
+  if (previewBase === undefined) throw wrongState("warm", "hatch", "Hatch routing is unavailable");
+  const route = await sessionSandbox(c.env, id).getScottyHatchOpenRoute();
+  if (route === undefined) throw wrongState("warm", "hatch", "Hatch is not open");
+  const issued = unwrapAuthRpc(
+    await authRegistry(c.env).issueHatchHandoff(
+      requireClientCredential(principal),
+      id,
+      route.hatchId,
+    ),
+  );
+  return hatchHandoffPage(hatchOrigin(route, previewBase), issued.credential);
 });
 
 app.all("/s/:id/terminal", async (c) => {
@@ -791,6 +832,8 @@ export const workerFetch = async (
   env: Bindings,
   executionContext: ExecutionContext,
 ): Promise<Response> => {
+  const hatch = await handleHatchRequest(request, env);
+  if (hatch !== null) return hatch;
   const preview = await handleEvidencePreviewRequest(request, env);
   return preview ?? app.fetch(request, env, executionContext);
 };
@@ -1219,6 +1262,23 @@ function normalizeError(error: unknown): ScottyError {
     name: error instanceof Error ? error.name : "UnknownError",
   });
   return new ScottyError("internal", "Internal error", { httpStatus: 500, exitCode: 1 });
+}
+
+function hatchHandoffPage(origin: string, handoff: string): Response {
+  const action = `${origin}/_scotty/hatch/handoff`;
+  const escape = (value: string): string =>
+    value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  const body = `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Opening Hatch</title></head><body><form id="handoff" method="post" action="${escape(action)}"><input type="hidden" name="handoff" value="${escape(handoff)}"></form><script>document.getElementById("handoff").submit()</script><noscript><button form="handoff" type="submit">Open Hatch</button></noscript></body></html>`;
+  return new Response(body, {
+    headers: {
+      "cache-control": "private, no-store",
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": `default-src 'none'; script-src 'unsafe-inline'; form-action ${origin}; base-uri 'none'; frame-ancestors 'none'`,
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+    },
+  });
 }
 
 async function secureAsset(env: Bindings, request: Request, pathname: string): Promise<Response> {

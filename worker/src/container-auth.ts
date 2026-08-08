@@ -15,6 +15,7 @@ export const PI_PACKAGES = [
   "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
   "/opt/scotty/pi-packages/sources/pi-amp-ui",
   "/opt/scotty/pi-packages/sources/scotty-browser-test",
+  "/opt/scotty/pi-packages/sources/scotty-hatch",
 ] as const;
 
 export const PI_SESSION_PORT = 43_117;
@@ -106,6 +107,8 @@ export const sandboxAgentsInstructions = `- Read and follow the repository AGENT
 - If a required tool is absent or a dependency download is blocked by Scotty policy (including HTTP 520), stop after one bounded retry. Run the focused checks that are available and report the exact unavailable gate. If publication was requested, continue to commit, push, and open the PR so CI can run the locked full gate.
 - Don't build a missing toolchain from source, install a third-party embedded toolchain, add temporary module replacements, or bypass the proxy with direct arbitrary-host downloads unless the user explicitly asks.
 - Use matching skills under \`$PI_CODING_AGENT_DIR/skills\` or \`$CODEX_HOME/skills\`; read the selected \`SKILL.md\` before acting.
+- Publish concise progress checkpoints only when there is meaningful new evidence: a completed implementation slice, a verification result, or a blocker. Finish with a concise outcome and proof.
+- In progress and final updates, include each exact \`scotty-evidence:<jobId>\` or \`scotty-hatch:<hatchId>\` reference returned by its structured first-party tool result at most once. Never invent, alter, expand, or repeat a reference, and never publish tool URLs, ports, paths, arguments, cookies, credentials, or route values as a substitute.
 `;
 
 export interface ContainerAuthSeedOptions {

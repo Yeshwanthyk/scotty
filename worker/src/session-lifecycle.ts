@@ -6,6 +6,7 @@ export const SESSION_SCHEDULE_CALLBACKS = [
   "expireRetainedEvidence",
   "finalizeManagedStop",
   "retryHardCapDestroy",
+  "retryHatchCleanup",
   "retryVaporizeSession",
 ] as const;
 

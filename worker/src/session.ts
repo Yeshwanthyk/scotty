@@ -30,6 +30,13 @@ import { BackupStore, backupStoreLayer } from "./backup-store";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
 import { EvidenceStore, evidenceStoreLayer } from "./evidence-store";
 import {
+  HatchStore,
+  durableObjectHatchStateStorage,
+  hatchStoreLayer,
+  type HatchCleanupAuthority,
+  type HatchWebSocketAuthorization,
+} from "./hatch-store";
+import {
   EVIDENCE_JOB_TIMEOUT_MILLIS,
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
   EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
@@ -56,6 +63,43 @@ import {
   type PublicEvidenceJobSummaryV1,
 } from "./evidence-contracts";
 import type { Bindings } from "./bindings";
+import {
+  HATCH_MAX_CONCURRENT_SOCKETS,
+  HATCH_MAX_WEBSOCKET_AGGREGATE_BYTES,
+  HATCH_MAX_WEBSOCKET_MESSAGE_BYTES,
+  HATCH_MAX_WEBSOCKET_MESSAGES,
+  HATCH_PRIVATE_CLAIMED_HEADER,
+  HATCH_PRIVATE_REQUEST_HEADER,
+  HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
+  HATCH_PRIVATE_WEBSOCKET_HEADER,
+  HATCH_RESERVED_RESPONSE_BYTES,
+  HATCH_WEBSOCKET_ABSOLUTE_MILLIS,
+  HATCH_WEBSOCKET_ADMISSION_MILLIS,
+  HATCH_WEBSOCKET_IDLE_MILLIS,
+  HatchStateError,
+  decodeEnsureHatchInput,
+  decodeHatchBrowserClientId,
+  decodeHatchCookieDigest,
+  decodeHatchCleanupRetry,
+  decodeHatchHostRoute,
+  decodeHatchIngressBytes,
+  decodeHatchRequestAdmission,
+  decodeHatchRequestId,
+  decodeHatchWebSocketAdmission,
+  decodeHatchWebSocketId,
+  hatchOrigin,
+  publicHatchStatusProjection,
+  type HatchCleanupRetryV1,
+  type HatchCleanupTarget,
+  type HatchHostRouteV1,
+  type HatchRecordV1,
+  type HatchRequestPermitV1,
+  type HatchRestoreDescriptorV1,
+  type HatchRouteAuthorizationV1,
+  type HatchWebSocketPermitV1,
+  type IssuedHatchPermitV1,
+  type PublicHatchStatusV1,
+} from "./hatch-contracts";
 import { sha256Hex } from "./digest";
 import { KitesurfClient, makeKitesurfClient, type KitesurfClientShape } from "./kitesurf-client";
 import {
@@ -81,6 +125,7 @@ import {
   badRequest,
   conflict,
   decodeContainerSessionRequest,
+  hasCommittedManagedStop,
   decodeJsonValue,
   notFound,
   ScottyError,
@@ -121,7 +166,13 @@ import {
   sessionAllowsRuntimeAccess,
   VAPORIZE_CONFLICTING_SCHEDULE_CALLBACKS,
 } from "./session-lifecycle";
-import { errorName, SandboxRuntime, sandboxRuntimeLayer, shellQuote } from "./sandbox-runtime";
+import {
+  errorName,
+  SandboxRuntime,
+  SandboxRuntimeFailure,
+  sandboxRuntimeLayer,
+  shellQuote,
+} from "./sandbox-runtime";
 import {
   kvSessionProjectionStorage,
   projectSessionBestEffort,
@@ -202,6 +253,7 @@ type SandboxServices =
   | ContainerAuth
   | CredentialVault
   | EvidenceStore
+  | HatchStore
   | RolloutDiscovery
   | SandboxRuntime
   | SessionProjection
@@ -246,6 +298,7 @@ export interface SandboxEffectOptions {
   readonly kitesurfClient?: KitesurfClientShape;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly previewRequestForwarder?: (request: Request) => Promise<Response>;
+  readonly hatchRequestForwarder?: (request: Request) => Promise<Response>;
 }
 
 export const SANDBOX_TEST_ACCEPT_EVIDENCE = Symbol("scotty.test.acceptEvidence");
@@ -374,6 +427,25 @@ const boundedHostPromise = <A>(
 const boundedHostResult = <A>(evaluate: () => Promise<A>, timeoutMillis: number): Promise<A> =>
   boundedHostPromise(evaluate, timeoutMillis).result;
 
+interface HatchWebSocketMessage {
+  readonly data: string | ArrayBuffer;
+  readonly bytes: number;
+}
+
+const normalizeHatchWebSocketMessage = async (
+  value: unknown,
+): Promise<HatchWebSocketMessage | undefined> => {
+  if (typeof value === "string")
+    return { data: value, bytes: new TextEncoder().encode(value).byteLength };
+  if (value instanceof ArrayBuffer) return { data: value, bytes: value.byteLength };
+  if (value instanceof Blob) {
+    if (value.size > HATCH_MAX_WEBSOCKET_MESSAGE_BYTES) return undefined;
+    const data = await value.arrayBuffer();
+    return { data, bytes: data.byteLength };
+  }
+  return undefined;
+};
+
 const decodeEvidenceArtifactError = Schema.decodeUnknownOption(EvidenceArtifactError);
 const decodeEvidenceStateError = Schema.decodeUnknownOption(EvidenceStateError);
 
@@ -422,6 +494,22 @@ export const withCheckpointRuntimeRestore = <A, E, R, RestoreE, RestoreR>(
     ),
   );
 
+interface PendingHatchRestore {
+  readonly hatch: HatchRecordV1;
+  readonly operationNonce: string;
+  readonly runtimeEpoch: string;
+}
+
+interface PendingHatchWebSocket {
+  readonly authorization: HatchWebSocketAuthorization;
+  readonly expiresAtMillis: number;
+}
+
+interface TrackedHatchWebSocket {
+  readonly authorization: HatchWebSocketAuthorization;
+  readonly close: (code: number, reason: string) => void;
+}
+
 export class Sandbox extends BaseSandbox<Bindings> {
   override sleepAfter = "60m";
   interceptHttps = true;
@@ -431,6 +519,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly clock: Clock.Clock | undefined;
   private readonly passivePiConsoleRelay: PassivePiConsoleRelay;
   private readonly previewRequestForwarder: (request: Request) => Promise<Response>;
+  private readonly hatchRequestForwarder: (request: Request) => Promise<Response>;
   private readonly rawContainer: DurableObjectState["container"];
   private readonly sessionControlGate: SessionControlGate;
   private readonly authoritativeStorage: SessionRecordStorage;
@@ -443,6 +532,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private createInFlight: InFlightCreate | undefined;
   private readonly previewExposureReconciliations = new Map<string, InFlightPreviewExposure>();
   private readonly previewRequests = new Map<string, InFlightPreviewRequest>();
+  private readonly hatchRequests = new Map<string, AbortController>();
+  private readonly hatchWebSocketAdmissions = new Map<string, PendingHatchWebSocket>();
+  private readonly hatchWebSockets = new Map<string, TrackedHatchWebSocket>();
 
   constructor(ctx: DurableObjectState<{}>, env: Bindings, options: SandboxEffectOptions = {}) {
     super(ctx, env);
@@ -462,6 +554,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     };
     this.previewRequestForwarder =
       options.previewRequestForwarder ?? ((request) => this.forwardSandboxPreviewRequest(request));
+    this.hatchRequestForwarder =
+      options.hatchRequestForwarder ?? ((request) => this.forwardSandboxPreviewRequest(request));
     this.sessionControlGate = makeSessionControlGate();
 
     const authoritativeStorage = durableObjectSessionRecordStorage(
@@ -472,6 +566,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.authoritativeStorage = authoritativeStorage;
     const store = sessionStoreLayer(authoritativeStorage);
     const evidence = evidenceStoreLayer(authoritativeStorage);
+    const hatch = hatchStoreLayer(
+      durableObjectHatchStateStorage(
+        // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning Hatch authority adapter
+        ctx.storage,
+        this.sessionControlGate,
+      ),
+    );
     const artifacts = artifactStoreLayer(r2ArtifactStoreCapabilities(env.ARTIFACT_BUCKET));
     const runtimeAccess = this.assertRuntimeAccessProgram().pipe(
       Effect.asVoid,
@@ -517,6 +618,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.layer = Layer.mergeAll(
       store,
       evidence,
+      hatch,
       artifacts,
       sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS)),
       backup,
@@ -576,6 +678,272 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return decoded.value;
   });
 
+  private readonly healthCheckAndExposeHatchProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    hatch: HatchRecordV1,
+    operationNonce: string,
+    runtimeEpoch: string,
+  ) {
+    const previewBase = this.previewBase;
+    if (previewBase === undefined)
+      return yield* new HatchStateError({
+        reason: "invalid_state",
+        message: "Hatch routing is unavailable",
+      });
+    const runtime = yield* SandboxRuntime;
+    const healthStatus = yield* runtime.fetchPortStatus(
+      hatch.service.healthPath,
+      hatch.service.port,
+      "GET",
+    );
+    if (healthStatus < 200 || healthStatus > 399)
+      return yield* new HatchStateError({
+        reason: "invalid_state",
+        message: "Hatch service health check failed",
+      });
+    const exposed = yield* hostEffect("expose", () =>
+      this.exposePort(hatch.service.port, {
+        hostname: previewBase,
+        token: hatch.routeNonce,
+        name: `hatch-${hatch.hatchId}`,
+      }),
+    );
+    const expectedOrigin = hatchOrigin(
+      { sessionId: hatch.sessionId, port: hatch.service.port, routeNonce: hatch.routeNonce },
+      previewBase,
+    );
+    const exposedOrigin = yield* Effect.try({
+      try: () => new URL(exposed.url).origin,
+      catch: () =>
+        new HatchStateError({ reason: "invalid_state", message: "Hatch exposure is invalid" }),
+    });
+    if (exposedOrigin !== expectedOrigin)
+      return yield* new HatchStateError({
+        reason: "invalid_state",
+        message: "Hatch exposure host did not match authority",
+      });
+    const store = yield* HatchStore;
+    return yield* store.publishRunning(
+      operationNonce,
+      hatch.hatchId,
+      hatch.generation,
+      runtimeEpoch,
+    );
+  });
+
+  private readonly prepareHatchRestoreProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    operationNonce: string,
+  ) {
+    const store = yield* HatchStore;
+    const state = yield* store.read;
+    if (state.primary === undefined || state.primary.desiredStatus !== "open") return undefined;
+    const runtimeEpoch = yield* this.currentRuntimeEpochProgram();
+    const hatch = yield* store.beginRestore({ operationNonce, runtimeEpoch });
+    return hatch === undefined ? undefined : { hatch, operationNonce, runtimeEpoch };
+  });
+
+  private readonly completeHatchRestoreProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    pending: PendingHatchRestore,
+  ) {
+    const restored = yield* Effect.result(
+      this.healthCheckAndExposeHatchProgram(
+        pending.hatch,
+        pending.operationNonce,
+        pending.runtimeEpoch,
+      ),
+    );
+    if (Result.isSuccess(restored)) return;
+    yield* this.cleanupHatchProgram(
+      pending.operationNonce,
+      "failed",
+      false,
+      "restore_operation",
+    ).pipe(Effect.ignore);
+    return yield* restored.failure;
+  });
+
+  private readonly restorePiAndHatchProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    operationNonce: string,
+    restorePi: Effect.Effect<void, SandboxRuntimeFailure>,
+  ) {
+    const pending = yield* this.prepareHatchRestoreProgram(operationNonce);
+    const restored = yield* Effect.result(
+      restorePi.pipe(
+        Effect.andThen(
+          pending === undefined ? Effect.void : this.completeHatchRestoreProgram(pending),
+        ),
+      ),
+    );
+    if (Result.isSuccess(restored)) return;
+    if (pending !== undefined)
+      yield* this.cleanupHatchProgram(operationNonce, "failed", false, "restore_operation").pipe(
+        Effect.ignore,
+      );
+    return yield* Effect.fail(restored.failure);
+  });
+
+  private readonly ensureScottyHatchProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    value: unknown,
+  ) {
+    const decoded = decodeEnsureHatchInput(value);
+    if (Option.isNone(decoded)) return yield* badRequest("Hatch configuration is invalid");
+    const previewBase = this.previewBase;
+    if (previewBase === undefined)
+      return yield* wrongState("warm", "hatch", "Hatch routing is not configured");
+    const initial = yield* this.requireRecordProgram();
+    if (
+      initial.status !== "warm" ||
+      initial.execution.provider !== "cloudflare" ||
+      this.rawContainer?.running !== true
+    )
+      return yield* wrongState(initial.status, "hatch", "Hatch requires a warm Cloudflare runtime");
+    const expectedRoot = `${sessionRoot(initial.id)}/`;
+    if (
+      decoded.value.service.workingDirectory !== sessionRoot(initial.id) &&
+      !decoded.value.service.workingDirectory.startsWith(expectedRoot)
+    )
+      return yield* badRequest("Hatch working directory must belong to this session");
+    const evidenceState = yield* Effect.flatMap(EvidenceStore, (store) => store.read);
+    if (
+      evidenceState.activeJob?.port === decoded.value.service.port &&
+      (evidenceState.activeJob.exposure === "active" ||
+        evidenceState.activeJob.exposure === "unexpose_pending")
+    )
+      return yield* conflict("Hatch cannot expose the active evidence service port");
+    const operation = yield* this.acquireOperationProgram("hatch", ["warm"]);
+    let cleanupRequired = false;
+    const result = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        const runtimeEpoch = yield* this.currentRuntimeEpochProgram();
+        const hatch = yield* HatchStore;
+        const beginning = yield* hatch.beginEnsure({
+          sessionId: initial.id,
+          operationNonce: operation.nonce,
+          hatchId: `hatch-${randomToken(8)}`,
+          routeNonce: `h_${randomToken(7)}`,
+          runtimeEpoch,
+          service: decoded.value.service,
+        });
+        if (!beginning.needsExposure)
+          return publicHatchStatusProjection({ version: 1, primary: beginning.hatch });
+        cleanupRequired = true;
+        const running = yield* this.healthCheckAndExposeHatchProgram(
+          beginning.hatch,
+          operation.nonce,
+          runtimeEpoch,
+        );
+        return publicHatchStatusProjection({ version: 1, primary: running });
+      }),
+    );
+    if (Result.isFailure(result) && cleanupRequired) {
+      const cleanup = yield* Effect.result(
+        this.cleanupHatchProgram(operation.nonce, "failed", false, "operation"),
+      );
+      if (Result.isFailure(cleanup))
+        yield* hostEffect("schedule", () =>
+          this.schedule(5, "retryHatchCleanup", {
+            operationNonce: operation.nonce,
+            target: "failed",
+            closeDesired: false,
+          } satisfies HatchCleanupRetryV1),
+        );
+    }
+    yield* this.releaseOperationIfHeldProgram(operation.nonce);
+    if (Result.isFailure(result)) return yield* this.hatchControlError(result.failure);
+    return result.success;
+  });
+
+  private readonly hatchControlError = (failure: unknown): ScottyError => {
+    if (isHatchStateError(failure)) {
+      const { reason } = failure;
+      if (reason === "conflict" || reason === "lease_changed")
+        return conflict("Hatch state changed during the operation");
+      if (reason === "invalid_state" || reason === "runtime_changed")
+        return wrongState("warm", "hatch", "Hatch is unavailable for the current runtime");
+    }
+    return this.upstreamError("Hatch operation failed", failure);
+  };
+
+  private closeTrackedHatchWebSockets(code: number, reason: string): void {
+    this.hatchWebSocketAdmissions.clear();
+    for (const socket of this.hatchWebSockets.values()) socket.close(code, reason);
+    this.hatchWebSockets.clear();
+  }
+
+  private readonly cleanupHatchProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    operationNonce: string,
+    target: HatchCleanupTarget,
+    closeDesired: boolean,
+    authority: HatchCleanupAuthority,
+  ) {
+    const hatch = yield* HatchStore;
+    const current = yield* hatch.read;
+    if (current.primary === undefined) return false;
+    const pending = yield* hatch.beginCleanup(operationNonce, target, closeDesired, authority);
+    if (pending === undefined) return false;
+    yield* Effect.sync(() => {
+      this.closeTrackedHatchWebSockets(1001, "Hatch authority revoked");
+      for (const controller of this.hatchRequests.values()) controller.abort();
+      this.hatchRequests.clear();
+    });
+    if (pending.exposure === "unexpose_pending")
+      yield* hostEffect("unexpose", () => this.unexposePort(pending.service.port));
+    yield* hatch.completeCleanup(operationNonce, target);
+    return true;
+  });
+
+  private readonly closeScottyHatchProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const record = yield* this.requireRecordProgram();
+    if (record.status !== "warm") return yield* wrongState(record.status, "hatch");
+    const operation = yield* this.acquireOperationProgram("hatch", ["warm"]);
+    const closed = yield* Effect.result(
+      this.cleanupHatchProgram(operation.nonce, "stopped", true, "operation"),
+    );
+    const scheduled = Result.isFailure(closed)
+      ? yield* Effect.result(
+          hostEffect("schedule", () =>
+            this.schedule(5, "retryHatchCleanup", {
+              operationNonce: operation.nonce,
+              target: "stopped",
+              closeDesired: true,
+            } satisfies HatchCleanupRetryV1),
+          ),
+        )
+      : Result.succeed(undefined);
+    yield* this.releaseOperationIfHeldProgram(operation.nonce);
+    if (Result.isFailure(scheduled))
+      return yield* this.upstreamError("Hatch cleanup retry scheduling failed", scheduled.failure);
+    if (Result.isFailure(closed)) return yield* this.hatchControlError(closed.failure);
+    return yield* Effect.flatMap(HatchStore, (store) => store.publicStatus);
+  });
+
+  private readonly retryHatchCleanupProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: HatchCleanupRetryV1,
+  ) {
+    const state = yield* Effect.flatMap(HatchStore, (store) => store.read);
+    if (
+      state.primary?.cleanup?.operationNonce !== payload.operationNonce ||
+      state.primary.cleanup.target !== payload.target
+    )
+      return;
+    const cleaned = yield* Effect.result(
+      this.cleanupHatchProgram(
+        payload.operationNonce,
+        payload.target,
+        payload.closeDesired,
+        "scheduled",
+      ),
+    );
+    if (Result.isFailure(cleaned))
+      yield* hostEffect("schedule", () => this.schedule(5, "retryHatchCleanup", payload));
+  });
+
   private readonly acceptDecodedScottyEvidenceJobProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     job: BrowserEvidenceJobV1,
@@ -600,6 +968,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (!Number.isFinite(deadlineMillis) || deadlineMillis <= now)
       return yield* wrongState(record.status, "evidence", "The session hard cap has elapsed");
     const deadlineAt = new Date(deadlineMillis).toISOString();
+    const hatchState = yield* Effect.flatMap(HatchStore, (store) => store.read);
+    if (
+      hatchState.primary?.service.port === job.port &&
+      (hatchState.primary.exposure === "active" ||
+        hatchState.primary.exposure === "unexpose_pending")
+    )
+      return yield* conflict("Evidence cannot expose the active Hatch service port");
     const operationNonce = randomToken(12);
     const evidence = yield* EvidenceStore;
     const capacityDeletes = yield* evidence.prepareJobCapacity;
@@ -1867,7 +2242,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* backups.restore(backup);
         const credential = yield* vault.require;
         yield* containerAuth.seed(record.id, credential);
-        yield* containerAuth.ensurePiSession(record.id, credential);
+        yield* this.restorePiAndHatchProgram(
+          operation.nonce,
+          containerAuth.ensurePiSession(record.id, credential),
+        );
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
           ...current,
@@ -1921,6 +2299,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
     yield* projectSessionBestEffort(current);
     yield* Effect.sync(() => this.cancelVaporizeConflictingSchedules());
+    const hatchCleanup = yield* Effect.result(
+      this.cleanupHatchProgram(payload.nonce, "gone", true, "operation"),
+    );
+    if (Result.isFailure(hatchCleanup)) {
+      yield* this.armVaporizeRetryProgram(payload);
+      return yield* hatchCleanup.failure;
+    }
     const destroyed =
       current.execution.provider === "runner"
         ? yield* this.removeRunnerRuntimeProgram(current, `vaporize-${payload.nonce}`).pipe(
@@ -1938,6 +2323,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
         exitCode: 1,
       });
     }
+    if (hatchCleanup.success)
+      yield* Effect.flatMap(HatchStore, (hatch) => hatch.clearAfterVaporize(payload.nonce));
 
     for (const backupId of new Set(current.ownedBackupIds)) yield* backups.delete(backupId);
     const evidence = yield* EvidenceStore;
@@ -2102,12 +2489,26 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly destroyFailedRuntimeProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     sessionId: string,
+    hatchAuthority: "failed_runtime" | "hard_cap" = "failed_runtime",
   ) {
     const record = yield* this.readRecordProgram();
     if (record?.execution.provider === "runner") {
       yield* this.removeRunnerRuntimeProgram(record, `failed-cleanup-${sessionId}`);
       return;
     }
+    const hatchCleanupNonce = `hardcap-${randomToken(8)}`;
+    const hatchTarget = hatchAuthority === "failed_runtime" ? "failed" : "stopped";
+    const hatchCleanup = yield* Effect.result(
+      this.cleanupHatchProgram(hatchCleanupNonce, hatchTarget, false, hatchAuthority),
+    );
+    if (Result.isFailure(hatchCleanup))
+      yield* hostEffect("schedule", () =>
+        this.schedule(5, "retryHatchCleanup", {
+          operationNonce: hatchCleanupNonce,
+          target: hatchTarget,
+          closeDesired: false,
+        } satisfies HatchCleanupRetryV1),
+      );
     yield* Effect.sync(() => this.deleteSchedules("retryHardCapDestroy"));
     const destroyed = yield* Effect.result(
       Effect.raceFirst(
@@ -2200,7 +2601,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
               this.schedule(EVIDENCE_CLEANUP_RETRY_SECONDS, "enforceHardCap", payload),
             ),
           );
-          const destroyed = yield* Effect.result(this.destroyFailedRuntimeProgram(record.id));
+          const destroyed = yield* Effect.result(
+            this.destroyFailedRuntimeProgram(record.id, "hard_cap"),
+          );
           if (Result.isFailure(destroyed)) return yield* destroyed.failure;
           if (Result.isFailure(rescheduled)) return yield* rescheduled.failure;
           return;
@@ -2685,6 +3088,243 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.getScottySessionProgram());
   }
 
+  private readonly requireHealthyHatchServiceProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    authorization: HatchRouteAuthorizationV1,
+  ) {
+    const store = yield* HatchStore;
+    const state = yield* store.read;
+    const hatch = state.primary;
+    if (
+      hatch === undefined ||
+      hatch.hatchId !== authorization.hatchId ||
+      hatch.generation !== authorization.generation ||
+      hatch.runtimeEpoch !== authorization.runtimeEpoch
+    )
+      return false;
+    const runtime = yield* SandboxRuntime;
+    const health = yield* Effect.result(
+      runtime.fetchPortStatus(hatch.service.healthPath, hatch.service.port, "GET"),
+    );
+    if (Result.isSuccess(health) && health.success >= 200 && health.success <= 399) return true;
+    const operationNonce = `health-${randomToken(8)}`;
+    const cleaned = yield* Effect.result(
+      this.cleanupHatchProgram(operationNonce, "unhealthy", false, "health_check"),
+    );
+    if (Result.isFailure(cleaned))
+      yield* hostEffect("schedule", () =>
+        this.schedule(5, "retryHatchCleanup", {
+          operationNonce,
+          target: "unhealthy",
+          closeDesired: false,
+        } satisfies HatchCleanupRetryV1),
+      ).pipe(Effect.ignore);
+    return false;
+  });
+
+  async getScottyHatchStatus(): Promise<PublicHatchStatusV1> {
+    return this.#run(
+      Effect.gen({ self: this }, function* () {
+        yield* this.requireRecordProgram();
+        const store = yield* HatchStore;
+        const status = yield* store.publicStatus;
+        if (
+          status.status === "configured" &&
+          status.observedStatus === "running" &&
+          status.exposure === "active" &&
+          this.rawContainer?.running === true
+        ) {
+          const route = yield* Effect.result(store.activeRoute);
+          if (Result.isSuccess(route)) yield* this.requireHealthyHatchServiceProgram(route.success);
+          return yield* store.publicStatus;
+        }
+        return status;
+      }),
+    );
+  }
+
+  async getScottyHatchRestoreDescriptor(): Promise<HatchRestoreDescriptorV1 | undefined> {
+    if (this.rawContainer?.running !== true) return undefined;
+    return this.#run(Effect.flatMap(HatchStore, (store) => store.restoreDescriptor));
+  }
+
+  async ensureScottyHatch(value: unknown): Promise<PublicHatchStatusV1> {
+    return this.#run(this.ensureScottyHatchProgram(value));
+  }
+
+  async closeScottyHatch(): Promise<PublicHatchStatusV1> {
+    return this.#run(this.closeScottyHatchProgram());
+  }
+
+  async getScottyHatchOpenRoute(): Promise<HatchRouteAuthorizationV1 | undefined> {
+    if (this.rawContainer?.running !== true) return undefined;
+    return this.#run(
+      Effect.flatMap(HatchStore, (store) => store.activeRoute).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      ),
+    );
+  }
+
+  async getScottyHatchRoute(value: unknown): Promise<HatchRouteAuthorizationV1 | undefined> {
+    const decoded = decodeHatchHostRoute(value);
+    if (Option.isNone(decoded) || this.rawContainer?.running !== true) return undefined;
+    const route = await this.#run(
+      Effect.result(Effect.flatMap(HatchStore, (store) => store.activeRoute)),
+    );
+    if (
+      Result.isFailure(route) ||
+      route.success.sessionId !== decoded.value.sessionId ||
+      route.success.port !== decoded.value.port ||
+      route.success.routeNonce !== decoded.value.routeNonce
+    )
+      return undefined;
+    return route.success;
+  }
+
+  async issueScottyHatchPermit(
+    routeValue: unknown,
+    browserClientIdValue: unknown,
+    cookieDigestValue: unknown,
+  ): Promise<IssuedHatchPermitV1 | undefined> {
+    const route = decodeHatchHostRoute(routeValue);
+    const browserClientId = decodeHatchBrowserClientId(browserClientIdValue);
+    const cookieDigest = decodeHatchCookieDigest(cookieDigestValue);
+    if (
+      Option.isNone(route) ||
+      Option.isNone(browserClientId) ||
+      Option.isNone(cookieDigest) ||
+      this.rawContainer?.running !== true
+    )
+      return undefined;
+    const active = await this.getScottyHatchRoute(route.value);
+    if (active === undefined) return undefined;
+    return this.#run(
+      Effect.flatMap(HatchStore, (store) =>
+        store.issuePermit(route.value, browserClientId.value, cookieDigest.value),
+      ).pipe(Effect.catch(() => Effect.succeed(undefined))),
+    );
+  }
+
+  async admitScottyHatchRequest(value: unknown): Promise<HatchRequestPermitV1 | undefined> {
+    const decoded = decodeHatchRequestAdmission(value);
+    if (Option.isNone(decoded) || this.rawContainer?.running !== true) return undefined;
+    const routeValue = {
+      sessionId: decoded.value.sessionId,
+      port: decoded.value.port,
+      routeNonce: decoded.value.routeNonce,
+    } satisfies HatchHostRouteV1;
+    const route = await this.getScottyHatchRoute(routeValue);
+    if (route === undefined) return undefined;
+    const runtimeEpoch = await this.#run(Effect.result(this.currentRuntimeEpochProgram()));
+    if (Result.isFailure(runtimeEpoch) || runtimeEpoch.success !== route.runtimeEpoch)
+      return undefined;
+    const cookieDigest = await sha256Hex(decoded.value.cookieSecret).then(
+      (digest) => digest,
+      () => undefined,
+    );
+    if (cookieDigest === undefined) return undefined;
+    return this.#run(
+      Effect.flatMap(HatchStore, (store) =>
+        store.admitRequest({
+          requestId: randomToken(16),
+          sessionId: decoded.value.sessionId,
+          port: decoded.value.port,
+          routeNonce: decoded.value.routeNonce,
+          runtimeEpoch: runtimeEpoch.success,
+          cookieDigest,
+          ingressBytes: decoded.value.ingressBytes,
+        }),
+      ).pipe(Effect.catch(() => Effect.succeed(undefined))),
+    );
+  }
+
+  async adjustScottyHatchRequest(requestId: string, ingressBytes: number): Promise<boolean> {
+    if (
+      Option.isNone(decodeHatchRequestId(requestId)) ||
+      Option.isNone(decodeHatchIngressBytes(ingressBytes))
+    )
+      return false;
+    return this.#run(
+      Effect.flatMap(HatchStore, (store) => store.adjustRequest(requestId, ingressBytes)).pipe(
+        Effect.catch(() => Effect.succeed(false)),
+      ),
+    );
+  }
+
+  async cancelScottyHatchRequest(requestId: string): Promise<void> {
+    if (Option.isNone(decodeHatchRequestId(requestId))) return;
+    this.hatchRequests.get(requestId)?.abort();
+    return this.#run(
+      Effect.flatMap(HatchStore, (store) => store.cancelRequest(requestId)).pipe(Effect.ignore),
+    );
+  }
+
+  async admitScottyHatchWebSocket(value: unknown): Promise<HatchWebSocketPermitV1 | undefined> {
+    const decoded = decodeHatchWebSocketAdmission(value);
+    const previewBase = this.previewBase;
+    if (Option.isNone(decoded) || previewBase === undefined || this.rawContainer?.running !== true)
+      return undefined;
+    const expectedOrigin = hatchOrigin(decoded.value, previewBase);
+    if (
+      decoded.value.host !== new URL(expectedOrigin).hostname ||
+      decoded.value.origin !== expectedOrigin
+    )
+      return undefined;
+    const routeValue = {
+      sessionId: decoded.value.sessionId,
+      port: decoded.value.port,
+      routeNonce: decoded.value.routeNonce,
+    } satisfies HatchHostRouteV1;
+    const active = await this.getScottyHatchRoute(routeValue);
+    if (active === undefined) return undefined;
+    const cookieDigest = await sha256Hex(decoded.value.cookieSecret).then(
+      (digest) => digest,
+      () => undefined,
+    );
+    if (cookieDigest === undefined) return undefined;
+    const authorization = await this.#run(
+      Effect.flatMap(HatchStore, (store) =>
+        store.authorizeWebSocket(decoded.value, cookieDigest),
+      ).pipe(Effect.catch(() => Effect.succeed(undefined))),
+    );
+    if (authorization === undefined) return undefined;
+    const now = await this.#run(Clock.currentTimeMillis);
+    for (const [socketId, admission] of this.hatchWebSocketAdmissions) {
+      if (admission.expiresAtMillis <= now) this.hatchWebSocketAdmissions.delete(socketId);
+    }
+    if (
+      this.hatchWebSocketAdmissions.size + this.hatchWebSockets.size >=
+      HATCH_MAX_CONCURRENT_SOCKETS
+    )
+      return undefined;
+    const socketId = randomToken(16);
+    const expiresAtMillis = Math.min(
+      Date.parse(authorization.expiresAt),
+      now + HATCH_WEBSOCKET_ADMISSION_MILLIS,
+    );
+    if (expiresAtMillis <= now) return undefined;
+    this.hatchWebSocketAdmissions.set(socketId, { authorization, expiresAtMillis });
+    return {
+      socketId,
+      generation: authorization.generation,
+      runtimeEpoch: authorization.runtimeEpoch,
+      expiresAt: new Date(expiresAtMillis).toISOString(),
+    };
+  }
+
+  async cancelScottyHatchWebSocket(socketId: string): Promise<void> {
+    if (Option.isNone(decodeHatchWebSocketId(socketId))) return;
+    this.hatchWebSocketAdmissions.delete(socketId);
+    const tracked = this.hatchWebSockets.get(socketId);
+    if (tracked !== undefined) tracked.close(1008, "Hatch WebSocket canceled");
+  }
+
+  async retryHatchCleanup(value: unknown): Promise<void> {
+    const payload = decodeHatchCleanupRetry(value);
+    if (Option.isNone(payload) || payload.value.target === "gone") return;
+    return this.#run(this.retryHatchCleanupProgram(payload.value));
+  }
+
   async [SANDBOX_TEST_ACCEPT_EVIDENCE](value: unknown): Promise<EvidenceActiveJobV1> {
     return this.#run(this.acceptScottyEvidenceJobProgram(value));
   }
@@ -3007,7 +3647,359 @@ export class Sandbox extends BaseSandbox<Bindings> {
       : this.sessionControlGate.run(relayWithCurrentAuthority);
   }
 
+  private readonly hatchWebSocketForwardingRoute = (
+    request: Request,
+  ): (HatchHostRouteV1 & { readonly socketId: string }) | undefined => {
+    const socketId = request.headers.get(HATCH_PRIVATE_WEBSOCKET_HEADER);
+    const portValue = request.headers.get(SANDBOX_PREVIEW_PORT_HEADER);
+    const sessionId = request.headers.get(SANDBOX_PREVIEW_SANDBOX_ID_HEADER);
+    const routeNonce = request.headers.get(SANDBOX_PREVIEW_TOKEN_HEADER);
+    if (
+      request.headers.get(SANDBOX_PREVIEW_PROXY_HEADER) !== "1" ||
+      socketId === null ||
+      Option.isNone(decodeHatchWebSocketId(socketId)) ||
+      portValue === null ||
+      !PREVIEW_PORT_PATTERN.test(portValue) ||
+      sessionId === null ||
+      routeNonce === null
+    )
+      return undefined;
+    const decoded = decodeHatchHostRoute({ sessionId, port: Number(portValue), routeNonce });
+    return Option.isSome(decoded) ? { ...decoded.value, socketId } : undefined;
+  };
+
+  private bridgeHatchWebSocket(
+    socketId: string,
+    response: Response,
+    authorization: HatchWebSocketAuthorization,
+    nowMillis: number,
+  ): Response | undefined {
+    const upstream = response.webSocket;
+    if (response.status !== 101 || upstream === null || upstream === undefined) return undefined;
+    const [client, server] = Object.values(new WebSocketPair());
+    let closed = false;
+    let messageCount = 0;
+    let aggregateBytes = 0;
+    let idleTimer: ReturnType<typeof setTimeout>;
+    let absoluteTimer: ReturnType<typeof setTimeout>;
+    let messageTail = Promise.resolve();
+    const close = (code: number, reason: string): void => {
+      if (closed) return;
+      closed = true;
+      clearTimeout(idleTimer);
+      clearTimeout(absoluteTimer);
+      if (this.hatchWebSockets.get(socketId)?.close === close)
+        this.hatchWebSockets.delete(socketId);
+      server.close(code, reason);
+      upstream.close(code, reason);
+    };
+    const resetIdle = (): void => {
+      clearTimeout(idleTimer);
+      // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native WebSocket idle enforcement cannot be driven by Effect Clock callbacks
+      idleTimer = setTimeout(
+        () => close(1008, "Hatch WebSocket idle limit"),
+        HATCH_WEBSOCKET_IDLE_MILLIS,
+      );
+    };
+    const forward = (event: MessageEvent, destination: WebSocket): void => {
+      messageTail = messageTail.then(async () => {
+        if (closed) return;
+        const message = await normalizeHatchWebSocketMessage(event.data);
+        if (message === undefined || message.bytes > HATCH_MAX_WEBSOCKET_MESSAGE_BYTES) {
+          close(1009, "Hatch WebSocket message limit");
+          return;
+        }
+        messageCount += 1;
+        aggregateBytes += message.bytes;
+        if (
+          messageCount > HATCH_MAX_WEBSOCKET_MESSAGES ||
+          aggregateBytes > HATCH_MAX_WEBSOCKET_AGGREGATE_BYTES
+        ) {
+          close(1008, "Hatch WebSocket traffic limit");
+          return;
+        }
+        resetIdle();
+        destination.send(message.data);
+      });
+      void messageTail.then(
+        () => undefined,
+        () => close(1011, "Hatch WebSocket forwarding failed"),
+      );
+    };
+    upstream.accept();
+    server.accept();
+    server.addEventListener("message", (event) => forward(event, upstream));
+    upstream.addEventListener("message", (event) => forward(event, server));
+    server.addEventListener("close", (event) => {
+      const code = event.code === 1005 || event.code === 1006 ? 1000 : event.code;
+      close(code, event.reason);
+    });
+    upstream.addEventListener("close", (event) => {
+      const code = event.code === 1005 || event.code === 1006 ? 1000 : event.code;
+      close(code, event.reason);
+    });
+    server.addEventListener("error", () => close(1011, "Hatch client socket error"));
+    upstream.addEventListener("error", () => close(1011, "Hatch service socket error"));
+    const absoluteExpiresAt = Math.min(
+      Date.parse(authorization.expiresAt),
+      nowMillis + HATCH_WEBSOCKET_ABSOLUTE_MILLIS,
+    );
+    // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native WebSocket idle enforcement cannot be driven by Effect Clock callbacks
+    idleTimer = setTimeout(
+      () => close(1008, "Hatch WebSocket idle limit"),
+      HATCH_WEBSOCKET_IDLE_MILLIS,
+    );
+    // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native WebSocket authority uses the fixed persisted permit deadline
+    absoluteTimer = setTimeout(
+      () => close(1008, "Hatch WebSocket duration limit"),
+      Math.max(0, absoluteExpiresAt - nowMillis),
+    );
+    this.hatchWebSockets.set(socketId, { authorization, close });
+    const headers = new Headers(response.headers);
+    headers.set(HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER, socketId);
+    return new Response(null, { status: 101, webSocket: client, headers });
+  }
+
+  private readonly hatchForwardingRoute = (
+    request: Request,
+  ): (HatchHostRouteV1 & { readonly requestId: string }) | undefined => {
+    const requestId = request.headers.get(HATCH_PRIVATE_REQUEST_HEADER);
+    const portValue = request.headers.get(SANDBOX_PREVIEW_PORT_HEADER);
+    const sessionId = request.headers.get(SANDBOX_PREVIEW_SANDBOX_ID_HEADER);
+    const routeNonce = request.headers.get(SANDBOX_PREVIEW_TOKEN_HEADER);
+    if (
+      request.headers.get(SANDBOX_PREVIEW_PROXY_HEADER) !== "1" ||
+      requestId === null ||
+      Option.isNone(decodeHatchRequestId(requestId)) ||
+      portValue === null ||
+      !PREVIEW_PORT_PATTERN.test(portValue) ||
+      sessionId === null ||
+      routeNonce === null
+    )
+      return undefined;
+    const decoded = decodeHatchHostRoute({ sessionId, port: Number(portValue), routeNonce });
+    return Option.isSome(decoded) ? { ...decoded.value, requestId } : undefined;
+  };
+
+  private async hatchResponseStream(
+    requestId: string,
+    response: Response,
+    abortController: AbortController,
+    timeout: ReturnType<typeof setTimeout>,
+  ): Promise<Response> {
+    const settle = async (responseBytes: number): Promise<void> => {
+      this.hatchRequests.delete(requestId);
+      await this.#run(
+        Effect.flatMap(HatchStore, (store) => store.settleRequest(requestId, responseBytes)).pipe(
+          Effect.ignore,
+        ),
+      );
+    };
+    if (response.body === null) {
+      clearTimeout(timeout);
+      await settle(0);
+      const headers = new Headers(response.headers);
+      headers.set(HATCH_PRIVATE_CLAIMED_HEADER, requestId);
+      return new Response(null, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    }
+    const reader = response.body.getReader();
+    let bytes = 0;
+    let terminal = false;
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const finish = async (): Promise<void> => {
+      if (terminal) return;
+      terminal = true;
+      clearTimeout(timeout);
+      abortController.signal.removeEventListener("abort", abortStream);
+      await settle(bytes);
+    };
+    const abortStream = (): void => {
+      if (terminal) return;
+      void finish().then(() =>
+        reader.cancel().then(
+          () => streamController?.error(new DOMException("Hatch request expired", "TimeoutError")),
+          () => streamController?.error(new DOMException("Hatch request expired", "TimeoutError")),
+        ),
+      );
+    };
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+      async pull(controller) {
+        const next = await reader.read().then(
+          (value) => ({ ok: true as const, value }),
+          (cause) => ({ ok: false as const, cause }),
+        );
+        if (terminal) return;
+        if (!next.ok) {
+          await finish();
+          controller.error(next.cause);
+          return;
+        }
+        if (next.value.done) {
+          await finish();
+          controller.close();
+          return;
+        }
+        const nextBytes = bytes + next.value.value.byteLength;
+        if (nextBytes > HATCH_RESERVED_RESPONSE_BYTES) {
+          await reader.cancel();
+          bytes = HATCH_RESERVED_RESPONSE_BYTES;
+          await finish();
+          controller.error(
+            new DOMException("Hatch response exceeded its limit", "QuotaExceededError"),
+          );
+          return;
+        }
+        bytes = nextBytes;
+        controller.enqueue(next.value.value);
+      },
+      async cancel(reason) {
+        abortController.signal.removeEventListener("abort", abortStream);
+        abortController.abort();
+        await reader.cancel(reason).then(
+          () => undefined,
+          () => undefined,
+        );
+        await finish();
+      },
+    });
+    abortController.signal.addEventListener("abort", abortStream, { once: true });
+    if (abortController.signal.aborted) abortStream();
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    headers.set(HATCH_PRIVATE_CLAIMED_HEADER, requestId);
+    return new Response(stream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  private async fetchHatchWebSocket(request: Request): Promise<Response> {
+    const route = this.hatchWebSocketForwardingRoute(request);
+    if (
+      route === undefined ||
+      request.method !== "GET" ||
+      request.headers.get("upgrade")?.toLowerCase() !== "websocket" ||
+      request.headers
+        .get("connection")
+        ?.split(",")
+        .some((token) => token.trim().toLowerCase() === "upgrade") !== true
+    )
+      return deniedEvidencePreviewResponse();
+    const pending = this.hatchWebSocketAdmissions.get(route.socketId);
+    this.hatchWebSocketAdmissions.delete(route.socketId);
+    // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native WebSocket upgrade admission has a fixed host deadline
+    const nowMillis = Date.now();
+    if (
+      pending === undefined ||
+      pending.expiresAtMillis <= nowMillis ||
+      pending.authorization.sessionId !== route.sessionId ||
+      pending.authorization.port !== route.port ||
+      pending.authorization.routeNonce !== route.routeNonce
+    )
+      return deniedEvidencePreviewResponse();
+    const routeValue = {
+      sessionId: route.sessionId,
+      port: route.port,
+      routeNonce: route.routeNonce,
+    } satisfies HatchHostRouteV1;
+    const current = await this.getScottyHatchRoute(routeValue);
+    if (
+      current === undefined ||
+      current.hatchId !== pending.authorization.hatchId ||
+      current.generation !== pending.authorization.generation ||
+      current.runtimeEpoch !== pending.authorization.runtimeEpoch
+    )
+      return deniedEvidencePreviewResponse();
+    const headers = new Headers(request.headers);
+    headers.delete(HATCH_PRIVATE_WEBSOCKET_HEADER);
+    const response = await this.hatchRequestForwarder(new Request(request, { headers })).then(
+      (value) => value,
+      () => undefined,
+    );
+    if (response === undefined) return deniedEvidencePreviewResponse();
+    const after = await this.getScottyHatchRoute(routeValue);
+    if (
+      after === undefined ||
+      after.hatchId !== pending.authorization.hatchId ||
+      after.generation !== pending.authorization.generation ||
+      after.runtimeEpoch !== pending.authorization.runtimeEpoch
+    ) {
+      response.webSocket?.close(1008, "Stale Hatch WebSocket upgrade");
+      await response.body?.cancel();
+      return deniedEvidencePreviewResponse();
+    }
+    const bridged = this.bridgeHatchWebSocket(
+      route.socketId,
+      response,
+      pending.authorization,
+      nowMillis,
+    );
+    if (bridged !== undefined) return bridged;
+    await response.body?.cancel();
+    return deniedEvidencePreviewResponse();
+  }
+
+  private async fetchHatchRequest(request: Request): Promise<Response> {
+    const route = this.hatchForwardingRoute(request);
+    if (route === undefined || request.method === "CONNECT" || request.method === "TRACE")
+      return deniedEvidencePreviewResponse();
+    const runtimeEpoch = await this.#run(Effect.result(this.currentRuntimeEpochProgram()));
+    if (Result.isFailure(runtimeEpoch)) return deniedEvidencePreviewResponse();
+    const claimed = await this.#run(
+      Effect.flatMap(HatchStore, (store) =>
+        store.claimRequest({ ...route, runtimeEpoch: runtimeEpoch.success }),
+      ).pipe(Effect.catch(() => Effect.succeed(undefined))),
+    );
+    if (claimed === undefined) return deniedEvidencePreviewResponse();
+    const abortController = new AbortController();
+    this.hatchRequests.set(route.requestId, abortController);
+    const headers = new Headers(request.headers);
+    headers.delete(HATCH_PRIVATE_REQUEST_HEADER);
+    const forwarded = new Request(request, { headers, signal: abortController.signal });
+    const remainingMillis = Math.max(
+      0,
+      Date.parse(claimed.expiresAt) - (await this.#run(Clock.currentTimeMillis)),
+    );
+    // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native Sandbox fetch streaming is fenced by the persisted Hatch request deadline
+    const timeout = setTimeout(() => abortController.abort(), remainingMillis);
+    const result = await Promise.race([
+      this.hatchRequestForwarder(forwarded).then(
+        (response) => ({ kind: "response" as const, response }),
+        () => ({ kind: "error" as const }),
+      ),
+      new Promise<{ readonly kind: "aborted" }>((resolve) =>
+        abortController.signal.addEventListener("abort", () => resolve({ kind: "aborted" }), {
+          once: true,
+        }),
+      ),
+    ]);
+    if (result.kind !== "response" || abortController.signal.aborted) {
+      clearTimeout(timeout);
+      await this.cancelScottyHatchRequest(route.requestId);
+      if (result.kind === "response") await result.response.body?.cancel();
+      return deniedEvidencePreviewResponse();
+    }
+    if (result.response.webSocket !== null && result.response.webSocket !== undefined) {
+      clearTimeout(timeout);
+      result.response.webSocket.close(1008, "Hatch WebSockets are disabled");
+      await this.cancelScottyHatchRequest(route.requestId);
+      return deniedEvidencePreviewResponse();
+    }
+    return this.hatchResponseStream(route.requestId, result.response, abortController, timeout);
+  }
+
   override async fetch(request: Request): Promise<Response> {
+    if (request.headers.has(HATCH_PRIVATE_WEBSOCKET_HEADER))
+      return this.fetchHatchWebSocket(request);
+    if (request.headers.has(HATCH_PRIVATE_REQUEST_HEADER)) return this.fetchHatchRequest(request);
     if (
       request.headers.has(EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER) ||
       request.headers.get(SANDBOX_PREVIEW_PROXY_HEADER) === "1"
@@ -3099,11 +4091,39 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   override async onStart(): Promise<void> {
-    if (!this.evidenceEnabled) return super.onStart();
-    const staleEvidence = await this.#run(
-      Effect.result(this.interruptEvidenceForRuntimeStopProgram()),
-    );
-    if (Result.isFailure(staleEvidence)) return this.#run(Effect.fail(staleEvidence.failure));
+    const runtimeEpochEnabled = this.evidenceEnabled || this.previewBase !== undefined;
+    if (!runtimeEpochEnabled) return super.onStart();
+    if (this.evidenceEnabled) {
+      const staleEvidence = await this.#run(
+        Effect.result(this.interruptEvidenceForRuntimeStopProgram()),
+      );
+      if (Result.isFailure(staleEvidence)) return this.#run(Effect.fail(staleEvidence.failure));
+    }
+    if (this.previewBase !== undefined) {
+      const beforeStart = await this.#run(this.readRecordProgram());
+      const managedRestore =
+        beforeStart !== undefined &&
+        (beforeStart.status === "sleeping" ||
+          beforeStart.operation?.kind === "snapshot" ||
+          beforeStart.operation?.kind === "resume");
+      const target = managedRestore ? "sleeping" : "failed";
+      const hatchNonce = `start-${randomToken(8)}`;
+      const staleHatch = await this.#run(
+        Effect.result(this.cleanupHatchProgram(hatchNonce, target, false, "runtime_start")),
+      );
+      if (Result.isFailure(staleHatch)) {
+        await this.schedule(5, "retryHatchCleanup", {
+          operationNonce: hatchNonce,
+          target,
+          closeDesired: false,
+        } satisfies HatchCleanupRetryV1).then(
+          () => undefined,
+          () => undefined,
+        );
+        await this.#run(Effect.result(this.deleteRuntimeEpochProgram()));
+        return this.#run(Effect.fail(staleHatch.failure));
+      }
+    }
     await super.onStart();
     const runtimeEpoch = randomToken(16);
     const stored = await this.#run(Effect.result(this.putRuntimeEpochProgram(runtimeEpoch)));
@@ -3114,21 +4134,49 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   override async onStop(): Promise<void> {
-    if (!this.evidenceEnabled) {
-      await super.onStop();
-      return this.#run(this.onStopProgram());
-    }
-    const cleanup = await this.#run(Effect.result(this.interruptEvidenceForRuntimeStopProgram()));
-    if (Result.isFailure(cleanup))
-      console.error("Evidence runtime-stop cleanup remains pending", {
-        error: errorName(cleanup.failure),
+    const runtimeEpochEnabled = this.evidenceEnabled || this.previewBase !== undefined;
+    const beforeStop = await this.#run(this.readRecordProgram());
+    const managedStop = beforeStop !== undefined && hasCommittedManagedStop(beforeStop);
+    const hatchNonce = `stop-${randomToken(8)}`;
+    const hatchCleanup = await this.#run(
+      Effect.result(
+        this.cleanupHatchProgram(
+          hatchNonce,
+          managedStop ? "sleeping" : "failed",
+          false,
+          "runtime_stop",
+        ),
+      ),
+    );
+    if (Result.isFailure(hatchCleanup)) {
+      console.error("Hatch runtime-stop cleanup remains pending", {
+        error: errorName(hatchCleanup.failure),
       });
-    const deletedEpoch = await this.#run(Effect.result(this.deleteRuntimeEpochProgram()));
+      await this.schedule(5, "retryHatchCleanup", {
+        operationNonce: hatchNonce,
+        target: managedStop ? "sleeping" : "failed",
+        closeDesired: false,
+      } satisfies HatchCleanupRetryV1).then(
+        () => undefined,
+        () => undefined,
+      );
+    }
+    const evidenceCleanup = this.evidenceEnabled
+      ? await this.#run(Effect.result(this.interruptEvidenceForRuntimeStopProgram()))
+      : Result.succeed(undefined);
+    if (Result.isFailure(evidenceCleanup))
+      console.error("Evidence runtime-stop cleanup remains pending", {
+        error: errorName(evidenceCleanup.failure),
+      });
+    const deletedEpoch = runtimeEpochEnabled
+      ? await this.#run(Effect.result(this.deleteRuntimeEpochProgram()))
+      : Result.succeed(undefined);
     if (Result.isFailure(deletedEpoch))
       console.error("Runtime epoch cleanup failed", { error: errorName(deletedEpoch.failure) });
     await super.onStop();
     await this.#run(this.onStopProgram());
-    if (Result.isFailure(cleanup)) return this.#run(Effect.fail(cleanup.failure));
+    if (Result.isFailure(hatchCleanup)) return this.#run(Effect.fail(hatchCleanup.failure));
+    if (Result.isFailure(evidenceCleanup)) return this.#run(Effect.fail(evidenceCleanup.failure));
     if (Result.isFailure(deletedEpoch)) return this.#run(Effect.fail(deletedEpoch.failure));
   }
 
@@ -3143,6 +4191,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
     releaseLease = resumeRuntime,
   ) {
     const record = yield* this.requireRecordProgram();
+    const hatchCleanup = yield* Effect.result(
+      this.cleanupHatchProgram(nonce, "sleeping", false, "operation"),
+    );
+    if (Result.isFailure(hatchCleanup)) {
+      yield* hostEffect("schedule", () =>
+        this.schedule(5, "retryHatchCleanup", {
+          operationNonce: nonce,
+          target: "sleeping",
+          closeDesired: false,
+        } satisfies HatchCleanupRetryV1),
+      );
+      return yield* hatchCleanup.failure;
+    }
     const runtime = yield* SandboxRuntime;
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
@@ -3201,9 +4262,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return updated;
       }),
       {
-        restore: Effect.gen(function* () {
+        restore: Effect.gen({ self: this }, function* () {
           const credential = yield* vault.require;
-          yield* containerAuth.ensurePiSession(record.id, credential);
+          yield* this.restorePiAndHatchProgram(
+            nonce,
+            containerAuth.ensurePiSession(record.id, credential),
+          );
         }),
         resumeRuntime,
         stopAttempted: () => runtimeStopAttempted,
@@ -3412,6 +4476,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
 Sandbox.outboundByHost = makeOutboundByHost(fetch);
 Sandbox.outbound = denyOutbound;
+
+function isHatchStateError(error: unknown): error is HatchStateError {
+  return Predicate.isTagged("HatchStateError")(error);
+}
 
 function piRuntimeStopStage(error: unknown): string | undefined {
   if (!Predicate.isTagged("PiRuntimeStopFailure")(error)) return undefined;

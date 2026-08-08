@@ -23,12 +23,21 @@ import {
   EVIDENCE_TOOL_MAX_PROTOCOL_BYTES,
   EvidenceStateError,
 } from "./evidence-contracts";
+import {
+  decodeEnsureHatchInput,
+  HatchRestoreDescriptorV1Schema,
+  PublicHatchStatusV1Schema,
+  type EnsureHatchInputV1,
+} from "./hatch-contracts";
 import { scottyErrorResponse } from "./passive-session";
 
 // Deployed-canary gate: cloudflare/sandbox:0.12.3 must prove that its TLS trust store
 // accepts the SDK interception certificate for this reserved host.
 export const SCOTTY_INTERNAL_HOST = "scotty.internal";
 export const SCOTTY_EVIDENCE_JOB_ROUTE = "/api/evidence/jobs";
+export const SCOTTY_HATCH_ROUTE = "/api/hatch";
+export const SCOTTY_HATCH_RESTORE_ROUTE = "/api/hatch/restore";
+export const SCOTTY_HATCH_MAX_PROTOCOL_BYTES = 64 * 1_024;
 
 // @cloudflare/containers passes the TypeScript constructor name. The Worker exports this class
 // under the separate deployed binding name "ScottySandbox".
@@ -132,6 +141,12 @@ const decodeScottyError = Schema.decodeUnknownOption(
   }),
 );
 const decodeEvidenceStateError = Schema.decodeUnknownOption(EvidenceStateError);
+const decodePublicHatchStatus = Schema.decodeUnknownOption(PublicHatchStatusV1Schema, {
+  onExcessProperty: "error",
+});
+const decodeHatchRestoreDescriptor = Schema.decodeUnknownOption(HatchRestoreDescriptorV1Schema, {
+  onExcessProperty: "error",
+});
 
 type EgressContext = OutboundHandlerContext<unknown>;
 interface ContainerProxyProps {
@@ -251,6 +266,168 @@ function sanitizeEvidenceResult(value: unknown): Response {
   });
 }
 
+function hatchFailureResponse(error: unknown): Response {
+  const scotty = decodeScottyError(error);
+  if (Option.isSome(scotty))
+    return scottyErrorResponse(
+      new ScottyError(scotty.value.code, scotty.value.message, {
+        httpStatus: scotty.value.httpStatus,
+        exitCode: scotty.value.exitCode,
+        ...(scotty.value.hint === undefined ? {} : { hint: scotty.value.hint }),
+      }),
+    );
+  return scottyErrorResponse(
+    new ScottyError("internal", "Scotty Hatch request failed", {
+      httpStatus: 500,
+      exitCode: 1,
+    }),
+  );
+}
+
+function sanitizeHatchStatus(value: unknown): Response {
+  const decoded = decodePublicHatchStatus(value);
+  if (Option.isNone(decoded))
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty Hatch result is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  const body = JSON.stringify(decoded.value);
+  if (new TextEncoder().encode(body).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES)
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty Hatch result is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  return new Response(body, {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
+
+async function handleHatchRestoreEgress(
+  request: Request,
+  env: Bindings,
+  context: EgressContext,
+): Promise<Response> {
+  if (request.method !== "GET" || request.body !== null)
+    return rejectedRequest("Hatch restore requires an empty GET request");
+  if (
+    typeof context.containerId !== "string" ||
+    context.containerId.length === 0 ||
+    context.className !== SOURCE_SANDBOX_CLASS
+  )
+    return scottyErrorResponse(
+      new ScottyError("auth", "Container Hatch source is unavailable", {
+        httpStatus: 401,
+        exitCode: 4,
+      }),
+    );
+  const source = Result.try(() => env.SANDBOX.get(env.SANDBOX.idFromString(context.containerId)));
+  if (Result.isFailure(source))
+    return scottyErrorResponse(
+      new ScottyError("auth", "Container Hatch source is unavailable", {
+        httpStatus: 401,
+        exitCode: 4,
+      }),
+    );
+  const executed = await Promise.resolve()
+    .then(() => source.success.getScottyHatchRestoreDescriptor())
+    .then(Result.succeed, (error) => Result.fail(error));
+  if (Result.isFailure(executed)) return hatchFailureResponse(executed.failure);
+  if (executed.success === undefined)
+    return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
+  const descriptor = decodeHatchRestoreDescriptor(executed.success);
+  if (Option.isNone(descriptor))
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty Hatch restore descriptor is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  const body = JSON.stringify(descriptor.value);
+  if (new TextEncoder().encode(body).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES)
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty Hatch restore descriptor is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  return new Response(body, {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
+
+async function handleHatchEgress(
+  request: Request,
+  env: Bindings,
+  context: EgressContext,
+): Promise<Response> {
+  if (
+    typeof context.containerId !== "string" ||
+    context.containerId.length === 0 ||
+    context.className !== SOURCE_SANDBOX_CLASS
+  )
+    return scottyErrorResponse(
+      new ScottyError("auth", "Container Hatch source is unavailable", {
+        httpStatus: 401,
+        exitCode: 4,
+      }),
+    );
+
+  let intent:
+    | { readonly operation: "status" }
+    | { readonly operation: "close" }
+    | { readonly operation: "ensure"; readonly input: EnsureHatchInputV1 };
+  if (request.method === "GET") {
+    if (request.body !== null) return rejectedRequest("Hatch status requires an empty GET request");
+    intent = { operation: "status" };
+  } else if (request.method === "DELETE") {
+    if (request.body !== null)
+      return rejectedRequest("Hatch close requires an empty DELETE request");
+    intent = { operation: "close" };
+  } else if (
+    request.method === "POST" &&
+    mediaType(request.headers.get("content-type")) === "application/json"
+  ) {
+    const bodyText = await readBoundedUtf8Body(request, SCOTTY_HATCH_MAX_PROTOCOL_BYTES);
+    if (bodyText === undefined) return rejectedRequest("Hatch ensure request body is too large");
+    const body = decodeJsonValue(bodyText);
+    if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
+    const input = decodeEnsureHatchInput(body.value);
+    if (Option.isNone(input)) return rejectedRequest("Hatch ensure request is invalid");
+    intent = { operation: "ensure", input: input.value };
+  } else {
+    return rejectedRequest("Hatch requires GET status, JSON POST ensure, or DELETE close");
+  }
+
+  const source = Result.try(() => env.SANDBOX.get(env.SANDBOX.idFromString(context.containerId)));
+  if (Result.isFailure(source))
+    return scottyErrorResponse(
+      new ScottyError("auth", "Container Hatch source is unavailable", {
+        httpStatus: 401,
+        exitCode: 4,
+      }),
+    );
+  let operation: () => Promise<unknown>;
+  if (intent.operation === "status") operation = () => source.success.getScottyHatchStatus();
+  else if (intent.operation === "close") operation = () => source.success.closeScottyHatch();
+  else operation = () => source.success.ensureScottyHatch(intent.input);
+  const executed = await Promise.resolve()
+    .then(operation)
+    .then(Result.succeed, (error) => Result.fail(error));
+  return Result.isFailure(executed)
+    ? hatchFailureResponse(executed.failure)
+    : sanitizeHatchStatus(executed.success);
+}
+
 async function handleEvidenceJobEgress(
   request: Request,
   env: Bindings,
@@ -325,6 +502,9 @@ export async function handleContainerSessionEgress(
 
   if (url.pathname === SCOTTY_EVIDENCE_JOB_ROUTE)
     return handleEvidenceJobEgress(request, env, context);
+  if (url.pathname === SCOTTY_HATCH_RESTORE_ROUTE)
+    return handleHatchRestoreEgress(request, env, context);
+  if (url.pathname === SCOTTY_HATCH_ROUTE) return handleHatchEgress(request, env, context);
 
   const matched = CONTAINER_SESSION_ROUTE.exec(url.pathname);
   if (matched === null) return rejectedRequest("Invalid container session route");

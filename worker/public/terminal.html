@@ -14,6 +14,7 @@
   </head>
   <body>
     <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+    <div id="summary-backdrop" class="summary-backdrop" hidden></div>
     <div id="activity-backdrop" class="activity-backdrop" hidden></div>
 
     <div class="app-shell">
@@ -75,6 +76,20 @@
             <span class="connection-dot" aria-hidden="true"></span>
             <span id="connection-label">Connecting</span>
           </div>
+
+          <button
+            id="open-summary"
+            class="summary-trigger"
+            type="button"
+            aria-label="Open Summary"
+            aria-controls="summary-sidebar"
+            aria-expanded="true"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 5.5h16M4 10h10M4 14.5h13M4 19h7"></path>
+            </svg>
+            <span>Summary</span>
+          </button>
 
           <button
             id="open-activity"
@@ -229,6 +244,26 @@
           </form>
         </div>
       </main>
+
+      <aside id="summary-sidebar" class="summary-sidebar" aria-label="Summary" aria-hidden="false">
+        <header class="summary-header">
+          <div>
+            <strong>Summary</strong>
+            <span>Latest update, Hatch, and evidence</span>
+          </div>
+          <button id="close-summary" class="icon-button" type="button" aria-label="Close Summary">
+            ×
+          </button>
+        </header>
+        <div id="summary-content" class="summary-content" aria-busy="true">
+          <div class="summary-placeholder" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <p class="summary-loading">Loading Summary…</p>
+        </div>
+      </aside>
     </div>
 
     <aside
