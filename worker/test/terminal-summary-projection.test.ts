@@ -1,6 +1,13 @@
 import { assert, describe, it } from "vitest";
 import {
+  browserHatchPaths,
+  browserHatchReference,
+  browserHatchStatus,
+  hatchActions,
+} from "../public/terminal-hatch-reference.js";
+import {
   assistantEvidenceReferences,
+  assistantHatchReferences,
   projectSessionSummary,
 } from "../public/terminal-summary-projection.js";
 import terminalHtml from "../public/terminal.html?raw";
@@ -8,6 +15,7 @@ import terminalSource from "../public/terminal.js?raw";
 
 const SESSION_ID = "a0b1c2d3e4f5";
 const JOB_ID = "job-abcd1234";
+const HATCH_ID = "hatch-abcd1234";
 
 const evidenceTool = (jobId = JOB_ID) => ({
   id: "tool-1",
@@ -21,6 +29,36 @@ const evidenceTool = (jobId = JOB_ID) => ({
       summaryUrl: `/s/${SESSION_ID}/evidence/${jobId}`,
       completedSteps: 1,
       frameCount: 1,
+    },
+  },
+});
+
+const hatchStatus = (overrides: Readonly<Record<string, unknown>> = {}) => ({
+  version: 1 as const,
+  status: "configured" as const,
+  hatchId: HATCH_ID,
+  generation: 2,
+  service: { name: "Web", port: 4_173 },
+  desiredStatus: "open" as const,
+  observedStatus: "running" as const,
+  exposure: "active" as const,
+  createdAt: "2026-08-09T10:00:00.000Z",
+  updatedAt: "2026-08-09T10:01:00.000Z",
+  lastHealthyAt: "2026-08-09T10:01:00.000Z",
+  ...overrides,
+});
+
+const hatchTool = () => ({
+  id: "tool-hatch",
+  name: "scotty_hatch",
+  status: "done",
+  result: {
+    details: {
+      version: 1,
+      operation: "ensure",
+      reference: `scotty-hatch:${HATCH_ID}`,
+      hatch: hatchStatus(),
+      process: { status: "running", stdoutTail: "", stderrTail: "" },
     },
   },
 });
@@ -77,8 +115,201 @@ describe("terminal Summary projection", () => {
       kind: "summary",
       conversationKey: "user-2",
       update: `See scotty-evidence:${JOB_ID}`,
+      hatches: [],
       evidence: [{ kind: "unavailable", jobId: JOB_ID }],
     });
+  });
+
+  it("validates and deduplicates exact same-conversation Hatch references", () => {
+    const tool = hatchTool();
+    const messages = [
+      { role: "user", id: "user-hatch", content: "Show the app" },
+      {
+        role: "assistant",
+        id: "assistant-hatch-tool",
+        content: [{ type: "toolCall", id: tool.id, name: tool.name, arguments: {} }],
+      },
+      { role: "toolResult", id: tool.id, toolCallId: tool.id, content: tool.result },
+      {
+        role: "assistant",
+        id: "assistant-hatch-update",
+        content: [
+          {
+            type: "text",
+            text: `Ready: scotty-hatch:${HATCH_ID} and [open](scotty-hatch:${HATCH_ID})`,
+          },
+        ],
+      },
+    ];
+    const projection = projectSessionSummary(messages, new Map([[tool.id, tool]]), SESSION_ID);
+    assert.deepInclude(projection, {
+      hatches: [
+        {
+          kind: "hatch",
+          version: 1,
+          hatchId: HATCH_ID,
+          paths: {
+            status: `/api/sessions/${SESSION_ID}/hatch`,
+            open: `/s/${SESSION_ID}/hatch/open`,
+            stop: `/api/sessions/${SESSION_ID}/hatch`,
+            wake: `/api/sessions/${SESSION_ID}/resume`,
+          },
+        },
+      ],
+    });
+  });
+
+  it("retains and deduplicates references from meaningful updates through the final update", () => {
+    const evidence = evidenceTool();
+    const hatch = hatchTool();
+    const messages = [
+      { role: "user", id: "user-progress", content: "Build and verify it" },
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: hatch.id, name: hatch.name, arguments: {} },
+          { type: "toolCall", id: evidence.id, name: evidence.name, arguments: {} },
+        ],
+      },
+      { role: "toolResult", id: hatch.id, toolCallId: hatch.id, content: hatch.result },
+      { role: "toolResult", id: evidence.id, toolCallId: evidence.id, content: evidence.result },
+      {
+        role: "assistant",
+        content: `The app is ready: scotty-hatch:${HATCH_ID} scotty-evidence:${JOB_ID}`,
+      },
+      {
+        role: "assistant",
+        content: `Verified again: scotty-hatch:${HATCH_ID} scotty-evidence:${JOB_ID}`,
+      },
+      { role: "assistant", content: "Finished with all focused checks passing." },
+    ];
+    const projection = projectSessionSummary(
+      messages,
+      new Map<string, unknown>([
+        [hatch.id, hatch],
+        [evidence.id, evidence],
+      ]),
+      SESSION_ID,
+    );
+
+    if (projection.kind !== "summary") throw new Error("Expected a Summary projection");
+    assert.strictEqual(projection.update, "Finished with all focused checks passing.");
+    assert.lengthOf(projection.hatches, 1);
+    assert.lengthOf(projection.evidence, 1);
+    assert.deepInclude(projection.hatches[0], { kind: "hatch", hatchId: HATCH_ID });
+    assert.deepInclude(projection.evidence[0], { kind: "evidence", jobId: JOB_ID });
+  });
+
+  it("fails Hatch references closed across conversations and malformed tool results", () => {
+    const tool = hatchTool();
+    const messages = [
+      { role: "user", id: "user-old", content: "Start it" },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: tool.id, name: tool.name, arguments: {} }],
+      },
+      { role: "toolResult", id: tool.id, toolCallId: tool.id, content: tool.result },
+      { role: "user", id: "user-current", content: "Status?" },
+      { role: "assistant", content: `See scotty-hatch:${HATCH_ID}` },
+    ];
+    assert.deepInclude(projectSessionSummary(messages, new Map([[tool.id, tool]]), SESSION_ID), {
+      hatches: [{ kind: "unavailable", hatchId: HATCH_ID }],
+    });
+
+    const forged = {
+      ...tool,
+      result: {
+        details: {
+          ...tool.result.details,
+          openUrl: "https://attacker.example/hatch",
+        },
+      },
+    };
+    assert.deepStrictEqual(browserHatchReference(forged, SESSION_ID), { kind: "unavailable" });
+    assert.deepStrictEqual(
+      browserHatchReference(
+        {
+          ...tool,
+          result: {
+            details: {
+              ...tool.result.details,
+              process: {
+                ...tool.result.details.process,
+                stdoutTail: "🪺".repeat(1_025),
+              },
+            },
+          },
+        },
+        SESSION_ID,
+      ),
+      { kind: "unavailable" },
+    );
+  });
+
+  it("parses only exact Hatch references outside code and untrusted URLs", () => {
+    const source = [
+      `scotty-hatch:${HATCH_ID}`,
+      `[same](scotty-hatch:${HATCH_ID})`,
+      "`scotty-hatch:code-only`",
+      "```text\nscotty-hatch:fenced\n```",
+      "scotty-hatch:../private",
+      "scotty-hatch:hatch/extra",
+      "scotty-hatch:hatch?nonce=secret",
+      "https://example.com/scotty-hatch:remote",
+    ].join("\n\n");
+    assert.deepStrictEqual(assistantHatchReferences(source), [HATCH_ID]);
+  });
+
+  it("accepts current authenticated status only for the exact referenced Hatch", () => {
+    const reference = browserHatchReference(hatchTool(), SESSION_ID);
+    if (reference?.kind !== "hatch") throw new Error("Expected a validated Hatch reference");
+    assert.deepStrictEqual(browserHatchStatus(hatchStatus(), reference), hatchStatus());
+    assert.isUndefined(browserHatchStatus(hatchStatus({ hatchId: "hatch-other" }), reference));
+    assert.isUndefined(browserHatchStatus({ ...hatchStatus(), routeNonce: "h_secret" }, reference));
+    assert.isUndefined(
+      browserHatchStatus(
+        { ...hatchStatus(), service: { name: "Web", port: 4_173, url: "https://unsafe.test" } },
+        reference,
+      ),
+    );
+    assert.isUndefined(
+      browserHatchStatus(hatchStatus({ service: { name: "Web", port: 3_000 } }), reference),
+    );
+    assert.isUndefined(browserHatchPaths(SESSION_ID, "../unsafe"));
+  });
+
+  it("permits Hatch controls only for compatible current states", () => {
+    const reference = browserHatchReference(hatchTool(), SESSION_ID);
+    if (reference?.kind !== "hatch") throw new Error("Expected a validated Hatch reference");
+    const running = browserHatchStatus(hatchStatus(), reference);
+    if (!running) throw new Error("Expected current Hatch status");
+    assert.deepStrictEqual(hatchActions(running), {
+      open: true,
+      verify: true,
+      wakeAndOpen: false,
+      stop: true,
+    });
+    assert.deepStrictEqual(
+      hatchActions({ ...running, observedStatus: "sleeping", exposure: "closed" }),
+      { open: false, verify: true, wakeAndOpen: true, stop: false },
+    );
+    assert.deepStrictEqual(
+      hatchActions({ ...running, observedStatus: "starting", exposure: "not_exposed" }),
+      { open: false, verify: true, wakeAndOpen: false, stop: false },
+    );
+    assert.deepStrictEqual(
+      hatchActions({ ...running, observedStatus: "failed", exposure: "closed" }),
+      { open: false, verify: true, wakeAndOpen: true, stop: false },
+    );
+    assert.deepStrictEqual(
+      hatchActions({
+        ...running,
+        desiredStatus: "closed",
+        observedStatus: "stopped",
+        exposure: "closed",
+      }),
+      { open: false, verify: true, wakeAndOpen: false, stop: false },
+    );
   });
 
   it("parses only exact evidence references outside code and deduplicates them", () => {
@@ -117,6 +348,7 @@ describe("terminal Summary projection", () => {
     });
     assert.deepStrictEqual(projectSessionSummary([], new Map(), SESSION_ID), {
       kind: "empty",
+      hatches: [],
       evidence: [],
     });
   });
@@ -154,9 +386,25 @@ describe("terminal Summary projection", () => {
     assert.include(terminalSource, "evidence.paths.summary");
     assert.include(terminalSource, "evidence.paths.frame(frame.frameId)");
     assert.include(terminalSource, "evidence.paths.replay");
+    assert.include(terminalSource, "reference.paths.status");
+    assert.include(terminalSource, "reference.paths.open");
+    assert.include(terminalSource, "reference.paths.wake");
+    assert.include(terminalSource, "reference.paths.stop");
+    assert.include(terminalSource, 'credentials: "same-origin"');
+    assert.include(terminalSource, 'method: action === "wake" ? "POST" : "DELETE"');
+    assert.include(terminalSource, '"Open Hatch", "open"');
+    assert.include(terminalSource, '"Wake and Open", "wake"');
+    assert.include(terminalSource, '"Verify", "verify"');
+    assert.include(terminalSource, '"Stop", "stop"');
     assert.include(terminalSource, 'compactSurface === "summary"');
     assert.include(terminalSource, "trapFocus(event, summarySidebar)");
     assert.include(terminalSource, "appShell.inert = open");
-    assert.notInclude(terminalSource, "scotty-hatch");
+    assert.include(terminalSource, "focusedKey");
+    assert.include(terminalSource, "replacement?.focus({ preventScroll: true })");
+    assert.include(terminalSource, "browserHatchStatus");
+    assert.notInclude(terminalSource, "summary-hatch-meta");
+    assert.notInclude(terminalSource, "status.service.port");
+    assert.notInclude(terminalSource, "routeNonce");
+    assert.notInclude(terminalSource, "cookieSecret");
   });
 });

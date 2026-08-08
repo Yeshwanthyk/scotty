@@ -508,8 +508,8 @@ test("loopback readiness accepts only a healthy loopback response and observes c
   );
 });
 
-test("registers exactly one scotty_hatch tool and idempotent session cleanup", async () => {
-  const tools: Array<{ readonly name: string }> = [];
+test("registers one safely guided scotty_hatch tool and idempotent session cleanup", async () => {
+  const tools: Array<{ readonly name: string; readonly promptGuidelines: readonly string[] }> = [];
   const startHandlers: Array<() => Promise<void>> = [];
   const shutdownHandlers: Array<() => Promise<void>> = [];
   const api = {
@@ -517,12 +517,17 @@ test("registers exactly one scotty_hatch tool and idempotent session cleanup", a
       if (event === "session_start") startHandlers.push(handler);
       if (event === "session_shutdown") shutdownHandlers.push(handler);
     },
-    registerTool(tool: { readonly name: string }) {
+    registerTool(tool: { readonly name: string; readonly promptGuidelines: readonly string[] }) {
       tools.push(tool);
     },
   };
   scottyHatch(api as ExtensionAPI);
   assert.deepEqual(tools.map(({ name }) => name), ["scotty_hatch"]);
+  assert.match(
+    tools[0]?.promptGuidelines.join("\n") ?? "",
+    /returned exact scotty-hatch:<hatchId> reference once/u,
+  );
+  assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /do not publish ports, paths, argv/u);
   assert.equal(startHandlers.length, 1);
   assert.equal(shutdownHandlers.length, 1);
   await shutdownHandlers[0]?.();

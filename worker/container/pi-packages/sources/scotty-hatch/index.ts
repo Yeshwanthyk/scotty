@@ -902,7 +902,7 @@ export default function scottyHatch(pi: ExtensionAPI): void {
     promptSnippet: "Manage the current session's bounded authenticated application Hatch",
     promptGuidelines: [
       "Use scotty_hatch ensure only with an explicit argv array and workspace-relative cwd. Do not pass shell commands, environment variables, credentials, URLs, or inferred service identity.",
-      "Include the returned exact scotty-hatch:<hatchId> reference when reporting an ensured Hatch.",
+      "In the next meaningful progress or final update, include the returned exact scotty-hatch:<hatchId> reference once. Never invent or repeat a reference, and do not publish ports, paths, argv, authority values, or URLs.",
     ],
     parameters: ScottyHatchParameters,
     async execute(_toolCallId, params, signal) {

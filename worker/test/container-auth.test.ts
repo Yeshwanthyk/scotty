@@ -266,6 +266,17 @@ describe("container auth values", () => {
     assert.ok(!sandboxAgentsInstructions.includes("screenshot blocker"));
     assert.ok(!sandboxAgentsInstructions.includes("agent-browser"));
   });
+
+  it("teaches concise meaningful checkpoints and exact deduplicated Scotty references", () => {
+    assert.include(sandboxAgentsInstructions, "meaningful new evidence");
+    assert.include(sandboxAgentsInstructions, "a completed implementation slice");
+    assert.include(sandboxAgentsInstructions, "a verification result");
+    assert.include(sandboxAgentsInstructions, "a blocker");
+    assert.include(sandboxAgentsInstructions, "scotty-evidence:<jobId>");
+    assert.include(sandboxAgentsInstructions, "scotty-hatch:<hatchId>");
+    assert.include(sandboxAgentsInstructions, "at most once");
+    assert.include(sandboxAgentsInstructions, "Never invent, alter, expand, or repeat");
+  });
 });
 
 describe("ContainerAuth", () => {

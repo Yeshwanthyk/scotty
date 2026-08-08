@@ -10,6 +10,12 @@ import {
   browserEvidenceStatusLabel,
   browserEvidenceSummary,
 } from "/terminal-evidence-attachment.js";
+import {
+  browserHatchStatus,
+  hatchActions,
+  hatchStatusCopy,
+  hatchStatusLabel,
+} from "/terminal-hatch-reference.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
 import { evictableSessions, hasBlockingCommands } from "/terminal-session-cache.js";
 import { projectSessionSummary } from "/terminal-summary-projection.js";
@@ -488,6 +494,213 @@ function summaryEmptyState(title, copy) {
   return empty;
 }
 
+function summaryHatchAction(tag, className, label, action, reference) {
+  const control = textElement(tag, className, label);
+  control.dataset.hatchAction = action;
+  control.dataset.summaryFocusKey = `hatch:${reference.hatchId}:${action}`;
+  if (tag === "button") control.type = "button";
+  return control;
+}
+
+function replaceSummaryHatchCard(card, ...children) {
+  const focusedKey = card.contains(document.activeElement)
+    ? document.activeElement?.closest?.("[data-summary-focus-key]")?.dataset.summaryFocusKey
+    : undefined;
+  card.replaceChildren(...children);
+  if (!focusedKey) return;
+  requestAnimationFrame(() => {
+    if (!card.isConnected) return;
+    const controls = [...card.querySelectorAll("[data-summary-focus-key]")];
+    const replacement =
+      controls.find((candidate) => candidate.dataset.summaryFocusKey === focusedKey) ?? controls[0];
+    replacement?.focus({ preventScroll: true });
+  });
+}
+
+function summaryHatchActions(card, reference, status) {
+  const availability = hatchActions(status);
+  const actions = document.createElement("div");
+  actions.className = "summary-hatch-actions";
+  if (availability.open) {
+    const open = summaryHatchAction("a", "summary-hatch-primary", "Open Hatch", "open", reference);
+    open.href = reference.paths.open;
+    open.target = "_blank";
+    open.rel = "noopener";
+    actions.append(open);
+  }
+  if (availability.wakeAndOpen)
+    actions.append(
+      summaryHatchAction("button", "summary-hatch-primary", "Wake and Open", "wake", reference),
+    );
+  if (availability.verify)
+    actions.append(
+      summaryHatchAction("button", "summary-hatch-secondary", "Verify", "verify", reference),
+    );
+  if (availability.stop)
+    actions.append(summaryHatchAction("button", "summary-hatch-stop", "Stop", "stop", reference));
+  actions.addEventListener("click", (event) => {
+    if (event.target.closest?.('a[aria-disabled="true"]')) {
+      event.preventDefault();
+      return;
+    }
+    const control = event.target.closest?.("button[data-hatch-action]");
+    if (control) void runSummaryHatchAction(card, reference, control.dataset.hatchAction);
+  });
+  return actions;
+}
+
+function renderSummaryHatchStatus(card, reference, status) {
+  card.dataset.status = status.observedStatus;
+  delete card.dataset.state;
+  card.setAttribute("aria-busy", "false");
+  const heading = document.createElement("div");
+  heading.className = "summary-hatch-heading";
+  heading.append(
+    textElement("strong", "", status.service.name || "Application Hatch"),
+    textElement("span", "summary-hatch-state", hatchStatusLabel(status)),
+  );
+  replaceSummaryHatchCard(
+    card,
+    heading,
+    textElement("p", "summary-hatch-copy", hatchStatusCopy(status)),
+    summaryHatchActions(card, reference, status),
+  );
+}
+
+function renderSummaryHatchUnavailable(card, reference, copy) {
+  card.dataset.state = "unavailable";
+  delete card.dataset.status;
+  card.setAttribute("aria-busy", "false");
+  const actions = document.createElement("div");
+  actions.className = "summary-hatch-actions";
+  const verify = summaryHatchAction(
+    "button",
+    "summary-hatch-secondary",
+    "Verify",
+    "verify",
+    reference,
+  );
+  verify.addEventListener("click", () => void runSummaryHatchAction(card, reference, "verify"));
+  actions.append(verify);
+  replaceSummaryHatchCard(
+    card,
+    textElement("strong", "summary-hatch-unavailable-title", "Hatch unavailable"),
+    textElement("p", "summary-hatch-copy", copy),
+    actions,
+  );
+}
+
+function renderReferencedHatchUnavailable(hatchId) {
+  const card = document.createElement("article");
+  card.className = "summary-hatch-card";
+  card.dataset.state = "unavailable";
+  card.setAttribute("aria-label", `Unavailable Hatch ${hatchId}`);
+  card.append(
+    textElement("strong", "summary-hatch-unavailable-title", "Hatch unavailable"),
+    textElement(
+      "p",
+      "summary-hatch-copy",
+      "This reference was not produced by a validated Hatch tool result in this conversation.",
+    ),
+  );
+  return card;
+}
+
+function renderSummaryHatchLoading(reference, renderVersion, sessionId) {
+  const card = document.createElement("article");
+  card.className = "summary-hatch-card";
+  card.dataset.state = "loading";
+  card.setAttribute("aria-label", `Hatch ${reference.hatchId}`);
+  card.setAttribute("aria-busy", "true");
+  card.append(
+    textElement("strong", "summary-hatch-unavailable-title", "Checking Hatch…"),
+    textElement("p", "summary-hatch-copy", "Loading current authenticated status."),
+  );
+  void loadSummaryHatch(card, reference, renderVersion, sessionId);
+  return card;
+}
+
+async function loadSummaryHatch(
+  card,
+  reference,
+  renderVersion,
+  sessionId,
+  openWhenRunning = false,
+) {
+  let status;
+  try {
+    const response = await fetch(reference.paths.status, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (response.ok) status = browserHatchStatus(await response.json(), reference);
+  } catch {
+    status = undefined;
+  }
+  if (renderVersion !== summaryRenderVersion || sessionId !== currentSessionId || !card.isConnected)
+    return;
+  if (!status) {
+    renderSummaryHatchUnavailable(
+      card,
+      reference,
+      "The current browser-authenticated Hatch status does not match this reference.",
+    );
+    return;
+  }
+  renderSummaryHatchStatus(card, reference, status);
+  if (openWhenRunning && hatchActions(status).open) window.location.assign(reference.paths.open);
+}
+
+function setSummaryHatchPending(card, pending) {
+  for (const button of card.querySelectorAll("button")) button.disabled = pending;
+  for (const link of card.querySelectorAll("a")) {
+    link.setAttribute("aria-disabled", String(pending));
+    if (pending) link.setAttribute("tabindex", "-1");
+    else link.removeAttribute("tabindex");
+  }
+  card.setAttribute("aria-busy", String(pending));
+}
+
+async function runSummaryHatchAction(card, reference, action) {
+  if (!["verify", "wake", "stop"].includes(action)) return;
+  const renderVersion = summaryRenderVersion;
+  const sessionId = currentSessionId;
+  setSummaryHatchPending(card, true);
+  try {
+    if (action === "verify") {
+      await loadSummaryHatch(card, reference, renderVersion, sessionId);
+      return;
+    }
+    const path = action === "wake" ? reference.paths.wake : reference.paths.stop;
+    const response = await fetch(path, {
+      method: action === "wake" ? "POST" : "DELETE",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) throw new Error("Hatch control request failed");
+    if (action === "stop") {
+      const status = browserHatchStatus(await response.json(), reference);
+      if (!status) throw new Error("Hatch control returned an invalid status");
+      if (renderVersion === summaryRenderVersion && sessionId === currentSessionId)
+        renderSummaryHatchStatus(card, reference, status);
+      return;
+    }
+    await loadSummaryHatch(card, reference, renderVersion, sessionId, true);
+  } catch {
+    if (renderVersion !== summaryRenderVersion || sessionId !== currentSessionId) return;
+    setSummaryHatchPending(card, false);
+    showToast(
+      action === "wake"
+        ? "Could not wake and open this Hatch."
+        : action === "stop"
+          ? "Could not stop this Hatch."
+          : "Could not verify this Hatch.",
+    );
+  }
+}
+
 function renderSummary() {
   const projection = projectSessionSummary(
     currentProjection?.messages,
@@ -506,7 +719,7 @@ function renderSummary() {
     summaryContent.replaceChildren(
       summaryEmptyState(
         "No update yet",
-        "Pi’s latest assistant update and any referenced browser evidence will appear here.",
+        "Pi’s latest update and any referenced Hatch or browser evidence will appear here.",
       ),
     );
     return;
@@ -527,6 +740,30 @@ function renderSummary() {
   );
   updateSection.append(updateTitle, update);
   fragment.append(updateSection);
+
+  const hatchSection = document.createElement("section");
+  hatchSection.className = "summary-hatch-section";
+  hatchSection.setAttribute("aria-labelledby", "summary-hatch-title");
+  const hatchTitle = textElement("h2", "summary-section-title", "Hatch");
+  hatchTitle.id = "summary-hatch-title";
+  hatchSection.append(hatchTitle);
+  if (projection.hatches.length === 0) {
+    hatchSection.append(
+      textElement("p", "summary-hatch-empty", "No Hatch is referenced in this update."),
+    );
+  } else {
+    const list = document.createElement("div");
+    list.className = "summary-hatch-list";
+    for (const hatch of projection.hatches) {
+      list.append(
+        hatch.kind === "hatch"
+          ? renderSummaryHatchLoading(hatch, renderVersion, currentSessionId)
+          : renderReferencedHatchUnavailable(hatch.hatchId),
+      );
+    }
+    hatchSection.append(list);
+  }
+  fragment.append(hatchSection);
 
   const evidenceSection = document.createElement("section");
   evidenceSection.className = "summary-evidence-section";

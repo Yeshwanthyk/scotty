@@ -144,13 +144,19 @@ test("rejects oversized, malformed, extra-field, and mismatched results", async 
   }
 });
 
-test("registers exactly one scotty_browser_test tool", () => {
-  const tools: Array<{ readonly name: string }> = [];
+test("registers exactly one scotty_browser_test tool with safe reference guidance", () => {
+  const tools: Array<{ readonly name: string; readonly promptGuidelines: readonly string[] }> = [];
   const api = {
-    registerTool(tool: { readonly name: string }) {
+    registerTool(tool: { readonly name: string; readonly promptGuidelines: readonly string[] }) {
       tools.push(tool);
     },
   };
   scottyBrowserTest(api as ExtensionAPI);
   assert.deepEqual(tools.map(({ name }) => name), ["scotty_browser_test"]);
+  assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /exact scotty-evidence:<jobId>/u);
+  assert.match(tools[0]?.promptGuidelines.join("\n") ?? "", /once/u);
+  assert.match(
+    tools[0]?.promptGuidelines.join("\n") ?? "",
+    /do not publish the authenticated summary URL/u,
+  );
 });

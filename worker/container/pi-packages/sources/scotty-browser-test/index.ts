@@ -331,6 +331,7 @@ export default function scottyBrowserTest(pi: ExtensionAPI): void {
       "Run a bounded one-shot browser evidence job against the current warm Scotty session",
     promptGuidelines: [
       "Use scotty_browser_test only after starting the repository app on 0.0.0.0 at an allowed port; use relative paths and declarative assertions.",
+      "In the next meaningful progress or final update, include the exact scotty-evidence:<jobId> reference derived from the structured result once. Never invent or repeat a reference, and do not publish the authenticated summary URL.",
     ],
     parameters: BrowserEvidenceJobV1Parameters,
     async execute(_toolCallId, params, signal) {

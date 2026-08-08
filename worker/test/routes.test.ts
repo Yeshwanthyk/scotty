@@ -421,6 +421,43 @@ describe("real Hono boundary", () => {
     expect(closed.status).toBe(200);
     expect(sandbox.closeScottyHatch).toHaveBeenCalledOnce();
     expect(closed.headers.get("cache-control")).toBe("private, no-store");
+
+    sandbox.resumeScottySession.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      status: "warm",
+      provider: "cloudflare",
+      repo: "owner/repo",
+      branch: "scotty/a0b1c2d3e4f5",
+    });
+    const woken = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/resume",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
+      env(),
+    );
+    expect(woken.status).toBe(200);
+    expect(sandbox.resumeScottySession).toHaveBeenCalledOnce();
+
+    const crossSiteStop = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/hatch",
+      {
+        method: "DELETE",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "https://attacker.example",
+          "sec-fetch-site": "cross-site",
+        },
+      },
+      env(),
+    );
+    expect(crossSiteStop.status).toBe(400);
+    expect(sandbox.closeScottyHatch).toHaveBeenCalledOnce();
   });
 
   it("returns an auto-submitting exact-host Hatch handoff without forwarding control authority", async () => {
