@@ -12,6 +12,7 @@ import {
 } from "/terminal-evidence-attachment.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
 import { evictableSessions, hasBlockingCommands } from "/terminal-session-cache.js";
+import { projectSessionSummary } from "/terminal-summary-projection.js";
 import {
   createUiResponseTracker,
   markUiResponseDelivered,
@@ -38,8 +39,10 @@ import {
 
 const CACHE_LIMIT = 6;
 const compactViewport = window.matchMedia("(max-width: 780px)");
+const summaryCompactViewport = window.matchMedia("(max-width: 1100px)");
 const coarsePointer = window.matchMedia("(pointer: coarse)");
 
+const appShell = document.querySelector(".app-shell");
 const workspaceList = document.querySelector("#workspace-list");
 const currentRepo = document.querySelector("#current-repo");
 const currentMeta = document.querySelector("#current-meta");
@@ -80,6 +83,11 @@ const activityDrawer = document.querySelector("#activity-drawer");
 const activityBackdrop = document.querySelector("#activity-backdrop");
 const activityContent = document.querySelector("#activity-content");
 const activityIndicator = document.querySelector("#activity-indicator");
+const openSummaryButton = document.querySelector("#open-summary");
+const closeSummaryButton = document.querySelector("#close-summary");
+const summarySidebar = document.querySelector("#summary-sidebar");
+const summaryBackdrop = document.querySelector("#summary-backdrop");
+const summaryContent = document.querySelector("#summary-content");
 const toastRegion = document.querySelector("#toast-region");
 
 let currentSessionId = sessionIdFromLocation();
@@ -93,6 +101,10 @@ let deliveryMode = "follow_up";
 let composing = false;
 let renderScheduled = false;
 let runtimeOptionsSignature;
+let renderedSummaryKey;
+let summaryRenderVersion = 0;
+let compactSurface;
+let desktopSummaryOpen = true;
 let localCommandItems = [];
 const sessionCache = new Map();
 const composerDrafts = createComposerDrafts(cacheEntry);
@@ -320,6 +332,7 @@ function renderProjection({ restoreScroll = false } = {}) {
   worklogFeed.setAttribute("aria-busy", "false");
   renderReceipts();
   renderActivity();
+  renderSummary();
   updateComposer();
 
   const entry = cacheEntry(currentSessionId);
@@ -327,6 +340,259 @@ function renderProjection({ restoreScroll = false } = {}) {
     if (restoreScroll) worklog.scrollTop = entry.scrollTop;
     else if (nearBottom) worklog.scrollTop = worklog.scrollHeight;
   });
+}
+
+function summaryReplayLink(evidence) {
+  const link = textElement("a", "summary-replay-link", "Replay");
+  link.href = evidence.paths.replay;
+  link.dataset.summaryFocusKey = `evidence:${evidence.jobId}:replay`;
+  return link;
+}
+
+function summaryEvidenceMeta(status, assertionCopy) {
+  const meta = document.createElement("div");
+  meta.className = "summary-evidence-meta";
+  const state = document.createElement("span");
+  state.className = "summary-evidence-status";
+  state.append(
+    textElement("i", "summary-evidence-dot", ""),
+    document.createTextNode(browserEvidenceStatusLabel(status)),
+  );
+  meta.append(state, textElement("span", "summary-assertions", assertionCopy));
+  return meta;
+}
+
+function summaryEvidenceActions(evidence) {
+  const actions = document.createElement("div");
+  actions.className = "summary-evidence-actions";
+  actions.append(summaryReplayLink(evidence));
+  return actions;
+}
+
+function renderReferencedEvidenceUnavailable(jobId) {
+  const card = document.createElement("article");
+  card.className = "summary-evidence-card";
+  card.dataset.state = "unavailable";
+  card.setAttribute("aria-label", `Unavailable evidence ${jobId}`);
+  card.append(
+    summaryEvidenceMeta(undefined, "Not verified"),
+    textElement(
+      "p",
+      "summary-evidence-message",
+      "This reference was not produced by a validated browser test in this conversation.",
+    ),
+  );
+  return card;
+}
+
+function renderSummaryEvidenceLoading(evidence, renderVersion, sessionId) {
+  const card = document.createElement("article");
+  card.className = "summary-evidence-card";
+  card.dataset.status = evidence.status;
+  card.setAttribute("aria-label", `Browser evidence ${evidence.jobId}`);
+  card.append(
+    summaryEvidenceMeta(evidence.status, "Loading assertions…"),
+    ...(evidence.frameCount === 0
+      ? [textElement("p", "summary-evidence-message", browserEvidenceNoFrameCopy(evidence.status))]
+      : []),
+    summaryEvidenceActions(evidence),
+  );
+  void loadSummaryEvidence(card, evidence, renderVersion, sessionId);
+  return card;
+}
+
+function renderSummaryEvidenceFailure(card, evidence, state) {
+  const expired = state === "expired";
+  card.dataset.state = state;
+  delete card.dataset.status;
+  card.replaceChildren(
+    summaryEvidenceMeta(undefined, expired ? "Expired" : "Unavailable"),
+    textElement(
+      "p",
+      "summary-evidence-message",
+      expired
+        ? "These screenshots are no longer retained."
+        : "The authenticated evidence summary is unavailable right now.",
+    ),
+    ...(expired ? [] : [summaryEvidenceActions(evidence)]),
+  );
+}
+
+async function loadSummaryEvidence(card, evidence, renderVersion, sessionId) {
+  let summary;
+  let failureState = "unavailable";
+  try {
+    const response = await fetch(evidence.paths.summary, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 410) failureState = "expired";
+    } else {
+      summary = browserEvidenceSummary(await response.json(), evidence);
+    }
+  } catch {
+    summary = undefined;
+  }
+  if (renderVersion !== summaryRenderVersion || sessionId !== currentSessionId) return;
+  if (!summary) {
+    renderSummaryEvidenceFailure(card, evidence, failureState);
+    return;
+  }
+
+  card.dataset.status = summary.status;
+  delete card.dataset.state;
+  const assertionCopy = `${summary.passedAssertions}/${summary.totalAssertions} assertions passed`;
+  card.replaceChildren(summaryEvidenceMeta(summary.status, assertionCopy));
+  if (summary.frames.length > 0) {
+    for (const frame of summary.frames) {
+      const path = evidence.paths.frame(frame.frameId);
+      if (!path) continue;
+      const figure = document.createElement("figure");
+      figure.className = "summary-frame";
+      const image = document.createElement("img");
+      image.src = path;
+      image.alt = `Screenshot for step ${frame.stepIndex + 1}: ${frame.stepName}`;
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.referrerPolicy = "same-origin";
+      image.addEventListener("error", () => {
+        image.remove();
+        figure.prepend(
+          textElement("p", "summary-evidence-message", "Screenshot expired or unavailable."),
+        );
+      });
+      figure.append(
+        image,
+        textElement("figcaption", "", `Step ${frame.stepIndex + 1} · ${frame.stepName}`),
+      );
+      card.append(figure);
+    }
+  } else {
+    card.append(
+      textElement("p", "summary-evidence-message", browserEvidenceNoFrameCopy(summary.status)),
+    );
+  }
+  card.append(summaryEvidenceActions(evidence));
+}
+
+function summaryEmptyState(title, copy) {
+  const empty = document.createElement("div");
+  empty.className = "summary-empty";
+  empty.append(
+    textElement("span", "summary-empty-mark", "S"),
+    textElement("strong", "", title),
+    textElement("p", "summary-empty-copy", copy),
+  );
+  return empty;
+}
+
+function renderSummary() {
+  const projection = projectSessionSummary(
+    currentProjection?.messages,
+    currentProjection?.tools,
+    currentSessionId,
+  );
+  const renderKey = `${currentSessionId}:${semanticSignature(projection)}`;
+  if (renderKey === renderedSummaryKey) return;
+  renderedSummaryKey = renderKey;
+  const renderVersion = ++summaryRenderVersion;
+  const focusedKey = document.activeElement?.closest?.("[data-summary-focus-key]")?.dataset
+    .summaryFocusKey;
+  summaryContent.setAttribute("aria-busy", "false");
+
+  if (projection.kind === "empty") {
+    summaryContent.replaceChildren(
+      summaryEmptyState(
+        "No update yet",
+        "Pi’s latest assistant update and any referenced browser evidence will appear here.",
+      ),
+    );
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  const updateSection = document.createElement("section");
+  updateSection.setAttribute("aria-labelledby", "summary-update-title");
+  const updateTitle = textElement("h2", "summary-section-title", "Latest update");
+  updateTitle.id = "summary-update-title";
+  const update = document.createElement("div");
+  update.className = "summary-update markdown";
+  update.append(
+    assistantMarkdownFragment(document, projection.update, {
+      baseUrl: window.location.href,
+      focusKeyPrefix: `summary:${currentSessionId}:${projection.conversationKey}`,
+    }),
+  );
+  updateSection.append(updateTitle, update);
+  fragment.append(updateSection);
+
+  const evidenceSection = document.createElement("section");
+  evidenceSection.className = "summary-evidence-section";
+  evidenceSection.setAttribute("aria-labelledby", "summary-evidence-title");
+  const evidenceTitle = textElement("h2", "summary-section-title", "Evidence");
+  evidenceTitle.id = "summary-evidence-title";
+  evidenceSection.append(evidenceTitle);
+  if (projection.evidence.length === 0) {
+    evidenceSection.append(
+      textElement(
+        "p",
+        "summary-evidence-empty",
+        "No browser evidence is referenced in this update.",
+      ),
+    );
+  } else {
+    const list = document.createElement("div");
+    list.className = "summary-evidence-list";
+    for (const evidence of projection.evidence) {
+      list.append(
+        evidence.kind === "evidence"
+          ? renderSummaryEvidenceLoading(evidence, renderVersion, currentSessionId)
+          : renderReferencedEvidenceUnavailable(evidence.jobId),
+      );
+    }
+    evidenceSection.append(list);
+  }
+  fragment.append(evidenceSection);
+  summaryContent.replaceChildren(fragment);
+
+  if (focusedKey) {
+    const replacement = [...summaryContent.querySelectorAll("[data-summary-focus-key]")].find(
+      (candidate) => candidate.dataset.summaryFocusKey === focusedKey,
+    );
+    replacement?.focus({ preventScroll: true });
+  }
+}
+
+function renderSummaryUnavailable() {
+  renderedSummaryKey = undefined;
+  summaryRenderVersion += 1;
+  summaryContent.setAttribute("aria-busy", "false");
+  summaryContent.replaceChildren(
+    summaryEmptyState(
+      "Summary unavailable",
+      "Scotty could not load the transcript needed to reconstruct this Summary.",
+    ),
+  );
+}
+
+function renderSummaryLoading() {
+  renderedSummaryKey = undefined;
+  summaryRenderVersion += 1;
+  summaryContent.setAttribute("aria-busy", "true");
+  const placeholder = document.createElement("div");
+  placeholder.className = "summary-placeholder";
+  placeholder.setAttribute("aria-hidden", "true");
+  placeholder.append(
+    textElement("span", "", ""),
+    textElement("span", "", ""),
+    textElement("span", "", ""),
+  );
+  summaryContent.replaceChildren(
+    placeholder,
+    textElement("p", "summary-loading", "Loading Summary…"),
+  );
 }
 
 function scheduleRender() {
@@ -1369,6 +1635,7 @@ function showLoadError(error) {
   if (error?.name === "AbortError") return;
   setConnection("disconnected", "Unavailable");
   worklogFeed.setAttribute("aria-busy", "false");
+  renderSummaryUnavailable();
   worklogFeed.replaceChildren(
     (() => {
       const empty = document.createElement("div");
@@ -1508,10 +1775,11 @@ function navigateToSession(sessionId, { push = true } = {}) {
   if (push) window.history.pushState({ sessionId }, "", `/s/${encodeURIComponent(sessionId)}`);
   const entry = cacheEntry(sessionId);
   currentProjection = entry.projection;
+  renderSummaryLoading();
   composerInput.value = entry.draft;
   autosizeComposer();
   updateCurrentWorkspace();
-  setWorkspaceDrawer(false);
+  setCompactSurface(undefined);
   setActivityDrawer(false);
   if (currentProjection.loaded) {
     renderProjection({ restoreScroll: true });
@@ -1550,33 +1818,106 @@ function focusableElements(container) {
   ].filter((element) => element.getClientRects().length > 0);
 }
 
-function setWorkspaceDrawer(open) {
-  const wasOpen = document.body.classList.contains("drawer-open");
-  const isOpen = compactViewport.matches && open;
-  document.body.classList.toggle("drawer-open", isOpen);
-  drawerBackdrop.hidden = !isOpen;
-  openDrawerButton.setAttribute("aria-expanded", String(isOpen));
-  workspaceRail.toggleAttribute("role", isOpen);
-  if (isOpen) {
+function setActivityDrawer(open, { restoreFocus = true } = {}) {
+  const wasOpen = activityDrawer.classList.contains("open");
+  if (open && compactSurface) setCompactSurface(undefined, { restoreFocus: false });
+  activityDrawer.classList.toggle("open", open);
+  activityDrawer.setAttribute("aria-hidden", String(!open));
+  activityBackdrop.hidden = !open;
+  openActivityButton.setAttribute("aria-expanded", String(open));
+  appShell.inert = open;
+  if (open) {
+    requestAnimationFrame(() => {
+      if (activityDrawer.classList.contains("open")) closeActivityButton.focus();
+    });
+  } else if (wasOpen && restoreFocus) openActivityButton.focus();
+}
+
+function setCompactSurface(surface, { restoreFocus = true } = {}) {
+  const next =
+    surface === "workspace" && compactViewport.matches
+      ? "workspace"
+      : surface === "summary" && summaryCompactViewport.matches
+        ? "summary"
+        : undefined;
+  const previous = compactSurface;
+  if (next && activityDrawer.classList.contains("open")) {
+    setActivityDrawer(false, { restoreFocus: false });
+  }
+  compactSurface = next;
+  const workspaceOpen = next === "workspace";
+  const summaryOpen = next === "summary";
+
+  document.body.classList.toggle("drawer-open", workspaceOpen);
+  drawerBackdrop.hidden = !workspaceOpen;
+  openDrawerButton.setAttribute("aria-expanded", String(workspaceOpen));
+  if (workspaceOpen) {
     workspaceRail.setAttribute("role", "dialog");
     workspaceRail.setAttribute("aria-modal", "true");
   } else {
     workspaceRail.removeAttribute("role");
     workspaceRail.removeAttribute("aria-modal");
   }
-  sessionWorkspace.inert = isOpen;
-  if (isOpen) closeDrawerButton.focus();
-  else if (wasOpen && compactViewport.matches) openDrawerButton.focus();
+
+  summarySidebar.classList.toggle("open", summaryOpen);
+  summarySidebar.setAttribute("aria-hidden", String(!summaryOpen));
+  summaryBackdrop.hidden = !summaryOpen;
+  openSummaryButton.setAttribute("aria-expanded", String(summaryOpen));
+  if (summaryCompactViewport.matches) {
+    summarySidebar.setAttribute("role", "dialog");
+    summarySidebar.setAttribute("aria-modal", "true");
+  } else {
+    summarySidebar.removeAttribute("role");
+    summarySidebar.removeAttribute("aria-modal");
+  }
+
+  sessionWorkspace.inert = workspaceOpen || summaryOpen;
+  workspaceRail.inert = summaryOpen;
+  summarySidebar.inert = summaryCompactViewport.matches && !summaryOpen;
+
+  if (workspaceOpen || summaryOpen) {
+    requestAnimationFrame(() => {
+      if (compactSurface === "workspace") closeDrawerButton.focus();
+      else if (compactSurface === "summary") closeSummaryButton.focus();
+    });
+  } else if (restoreFocus && previous === "workspace") openDrawerButton.focus();
+  else if (restoreFocus && previous === "summary") openSummaryButton.focus();
 }
 
-function setActivityDrawer(open) {
-  activityDrawer.classList.toggle("open", open);
-  activityDrawer.setAttribute("aria-hidden", String(!open));
-  activityBackdrop.hidden = !open;
-  openActivityButton.setAttribute("aria-expanded", String(open));
-  document.querySelector(".app-shell").inert = open;
-  if (open) closeActivityButton.focus();
-  else if (document.activeElement === closeActivityButton) openActivityButton.focus();
+function setWorkspaceDrawer(open) {
+  if (open) {
+    if (compactViewport.matches) setCompactSurface("workspace");
+  } else if (compactSurface === "workspace") {
+    setCompactSurface(undefined);
+  }
+}
+
+function setSummaryOpen(open, { restoreFocus = true } = {}) {
+  if (summaryCompactViewport.matches) {
+    if (open) setCompactSurface("summary", { restoreFocus });
+    else if (compactSurface === "summary") setCompactSurface(undefined, { restoreFocus });
+    return;
+  }
+  desktopSummaryOpen = open;
+  document.body.classList.toggle("summary-collapsed", !open);
+  summarySidebar.classList.remove("open");
+  summarySidebar.setAttribute("aria-hidden", String(!open));
+  summarySidebar.removeAttribute("role");
+  summarySidebar.removeAttribute("aria-modal");
+  summarySidebar.inert = !open;
+  summaryBackdrop.hidden = true;
+  openSummaryButton.setAttribute("aria-expanded", String(open));
+  if (!open && restoreFocus) openSummaryButton.focus();
+}
+
+function syncSummarySurface() {
+  if (summaryCompactViewport.matches) {
+    document.body.classList.remove("summary-collapsed");
+    setCompactSurface(undefined, { restoreFocus: false });
+  } else {
+    setCompactSurface(undefined, { restoreFocus: false });
+    setSummaryOpen(desktopSummaryOpen, { restoreFocus: false });
+  }
 }
 
 function trapFocus(event, container) {
@@ -1613,6 +1954,12 @@ for (const eventName of ["pointerover", "focusin", "touchstart"]) {
 openDrawerButton.addEventListener("click", () => setWorkspaceDrawer(true));
 closeDrawerButton.addEventListener("click", () => setWorkspaceDrawer(false));
 drawerBackdrop.addEventListener("click", () => setWorkspaceDrawer(false));
+openSummaryButton.addEventListener("click", () => {
+  const open = summaryCompactViewport.matches ? compactSurface !== "summary" : !desktopSummaryOpen;
+  setSummaryOpen(open);
+});
+closeSummaryButton.addEventListener("click", () => setSummaryOpen(false));
+summaryBackdrop.addEventListener("click", () => setSummaryOpen(false));
 openActivityButton.addEventListener("click", () => setActivityDrawer(true));
 closeActivityButton.addEventListener("click", () => setActivityDrawer(false));
 activityBackdrop.addEventListener("click", () => setActivityDrawer(false));
@@ -1724,7 +2071,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (activityDrawer.classList.contains("open")) setActivityDrawer(false);
-    else if (document.body.classList.contains("drawer-open")) setWorkspaceDrawer(false);
+    else if (compactSurface) setCompactSurface(undefined);
     else if (deliveryMenu.classList.contains("open")) {
       setDeliveryMenu(false);
       deliveryModeButton.focus();
@@ -1735,8 +2082,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Tab" && activityDrawer.classList.contains("open")) {
     trapFocus(event, activityDrawer);
-  } else if (event.key === "Tab" && document.body.classList.contains("drawer-open")) {
+  } else if (event.key === "Tab" && compactSurface === "workspace") {
     trapFocus(event, workspaceRail);
+  } else if (event.key === "Tab" && compactSurface === "summary") {
+    trapFocus(event, summarySidebar);
   }
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
     event.preventDefault();
@@ -1744,8 +2093,9 @@ document.addEventListener("keydown", (event) => {
   }
 });
 compactViewport.addEventListener("change", (event) => {
-  if (!event.matches) setWorkspaceDrawer(false);
+  if (!event.matches && compactSurface === "workspace") setWorkspaceDrawer(false);
 });
+summaryCompactViewport.addEventListener("change", syncSummarySurface);
 window.addEventListener("popstate", () => {
   const sessionId = sessionIdFromLocation();
   if (sessionId) navigateToSession(sessionId, { push: false });
@@ -1758,6 +2108,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 async function start() {
+  syncSummarySurface();
   if (!currentSessionId) {
     showLoadError(new Error("This URL does not identify a Scotty session."));
     return;
