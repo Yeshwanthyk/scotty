@@ -267,7 +267,9 @@ describe("container-only session egress", () => {
     const source = {
       getScottyHatchStatus: async () => {
         operations.push({ operation: "status" });
-        return hatchStatus();
+        // Production Durable Object RPC can retain a cross-realm wrapper while exposing the exact
+        // public contract through its JSON transport representation.
+        return { toJSON: () => hatchStatus() };
       },
       ensureScottyHatch: async (input: unknown) => {
         operations.push({ operation: "ensure", input });
