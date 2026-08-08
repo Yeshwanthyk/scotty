@@ -275,6 +275,9 @@ describe("container auth values", () => {
     assert.include(sandboxAgentsInstructions, "scotty-evidence:<jobId>");
     assert.include(sandboxAgentsInstructions, "scotty-hatch:<hatchId>");
     assert.include(sandboxAgentsInstructions, "at most once");
+    assert.include(sandboxAgentsInstructions, "same conversation as the update");
+    assert.include(sandboxAgentsInstructions, "call the relevant status or evidence tool again");
+    assert.include(sandboxAgentsInstructions, "If that tool fails or returns no reference");
     assert.include(sandboxAgentsInstructions, "Never invent, alter, expand, or repeat");
   });
 });

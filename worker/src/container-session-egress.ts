@@ -285,23 +285,24 @@ function hatchFailureResponse(error: unknown): Response {
 }
 
 function sanitizeHatchStatus(value: unknown): Response {
-  const decoded = decodePublicHatchStatus(value);
-  if (Option.isNone(decoded))
+  // Durable Object RPC values can retain a cross-realm transport wrapper. Validate the bounded JSON
+  // representation that the container actually receives rather than the wrapper's prototype.
+  const encoded = Result.try(() => JSON.stringify(value));
+  const body = Result.isSuccess(encoded) ? encoded.success : undefined;
+  const parsed = typeof body === "string" ? decodeJsonValue(body) : Option.none();
+  const decoded = Option.isSome(parsed) ? decodePublicHatchStatus(parsed.value) : Option.none();
+  if (
+    Option.isNone(decoded) ||
+    body === undefined ||
+    new TextEncoder().encode(body).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES
+  )
     return scottyErrorResponse(
       new ScottyError("upstream", "Scotty Hatch result is unavailable", {
         httpStatus: 502,
         exitCode: 1,
       }),
     );
-  const body = JSON.stringify(decoded.value);
-  if (new TextEncoder().encode(body).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES)
-    return scottyErrorResponse(
-      new ScottyError("upstream", "Scotty Hatch result is unavailable", {
-        httpStatus: 502,
-        exitCode: 1,
-      }),
-    );
-  return new Response(body, {
+  return new Response(JSON.stringify(decoded.value), {
     headers: {
       "cache-control": "no-store",
       "content-type": "application/json; charset=utf-8",
