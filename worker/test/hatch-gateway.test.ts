@@ -34,7 +34,7 @@ import {
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
 } from "../src/hatch-contracts";
-import { handleHatchRequest, parseHatchHost } from "../src/hatch-gateway";
+import { handleHatchRequest, hatchPreviewFormAction, parseHatchHost } from "../src/hatch-gateway";
 
 const BASE = "preview.example.test";
 const SESSION_ID = "a0b1c2d3e4f5";
@@ -138,6 +138,12 @@ describe("Hatch exact-host gateway", () => {
         },
       });
     });
+  });
+
+  it("bounds the session-shell form action to a validated Hatch preview base", () => {
+    expect(hatchPreviewFormAction(BASE)).toBe("https://*.preview.example.test");
+    expect(hatchPreviewFormAction(undefined)).toBe("'none'");
+    expect(hatchPreviewFormAction("preview.example.test; form-action *")).toBe("'none'");
   });
 
   it("parses only the Hatch-prefixed canonical SDK host and leaves evidence isolated", () => {

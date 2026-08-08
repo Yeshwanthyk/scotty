@@ -29,6 +29,10 @@ const CONTROL_COOKIE = "__Host-scotty";
 const EVIDENCE_COOKIE = "__Host-scotty-preview";
 const BASE_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+export const hatchPreviewFormAction = (previewBase: string | undefined): string =>
+  previewBase !== undefined && BASE_PATTERN.test(previewBase)
+    ? `https://*.${previewBase}`
+    : "'none'";
 const HATCH_LABEL_PATTERN = /^([1-9][0-9]{3,4})-([0-9a-f]{12})-(h_[a-z0-9_]{14})$/u;
 const COOKIE_SECRET_PATTERN = /^[0-9a-f]{64}$/u;
 const CONTENT_LENGTH_PATTERN = /^(?:0|[1-9][0-9]*)$/u;

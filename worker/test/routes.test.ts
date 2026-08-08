@@ -483,6 +483,9 @@ describe("real Hono boundary", () => {
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; script-src 'unsafe-inline'; form-action https://4173-a0b1c2d3e4f5-h_0123456789abcd.preview.example.test; base-uri 'none'; frame-ancestors 'none'",
+    );
     const html = await response.text();
     expect(html).toContain(
       'action="https://4173-a0b1c2d3e4f5-h_0123456789abcd.preview.example.test/_scotty/hatch/handoff"',
@@ -2422,10 +2425,14 @@ describe("real Hono boundary", () => {
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      env(),
+      { ...env(), SCOTTY_PREVIEW_BASE: "preview.example.test" },
     );
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("<title>Scotty</title>");
+    expect(response.headers.get("content-security-policy")).toContain(
+      "form-action https://*.preview.example.test",
+    );
+    expect(response.headers.get("content-security-policy")).not.toContain("form-action 'none'");
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(response.headers.get("content-length")).toBeNull();
     expect(response.headers.get("etag")).toBeNull();

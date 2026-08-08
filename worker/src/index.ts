@@ -13,7 +13,7 @@ import { readBoundedUtf8Body } from "./bounded-http";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
 import { decodeEvidenceIdentifier } from "./evidence-contracts";
 import { handleEvidencePreviewRequest } from "./evidence-preview";
-import { handleHatchRequest } from "./hatch-gateway";
+import { handleHatchRequest, hatchPreviewFormAction } from "./hatch-gateway";
 import { hatchOrigin } from "./hatch-contracts";
 import { ContainerProxy } from "./container-session-egress";
 import {
@@ -1105,7 +1105,7 @@ async function serveScottySessionPage(
     return Response.redirect(new URL("/sessions", request.url).toString(), 302);
   if (session.provider === "runner")
     return Response.redirect(new URL("/sessions", request.url).toString(), 302);
-  return secureAsset(env, request, "/terminal.html");
+  return secureAsset(env, request, "/terminal.html", true);
 }
 
 async function serveScottySessionSubpath(
@@ -1281,7 +1281,12 @@ function hatchHandoffPage(origin: string, handoff: string): Response {
   });
 }
 
-async function secureAsset(env: Bindings, request: Request, pathname: string): Promise<Response> {
+async function secureAsset(
+  env: Bindings,
+  request: Request,
+  pathname: string,
+  allowHatchHandoff = false,
+): Promise<Response> {
   const url = new URL(request.url);
   url.pathname = pathname;
   url.search = "";
@@ -1290,7 +1295,7 @@ async function secureAsset(env: Bindings, request: Request, pathname: string): P
   headers.set("cache-control", "no-store");
   headers.set(
     "content-security-policy",
-    "default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' data: ws: wss:; font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    `default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' data: ws: wss:; font-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action ${allowHatchHandoff ? hatchPreviewFormAction(env.SCOTTY_PREVIEW_BASE) : "'none'"}`,
   );
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");
