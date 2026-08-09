@@ -4,6 +4,8 @@ import {
   redactRemoteString,
   truncateRemoteString,
 } from "./redaction.ts";
+import { Schema } from "effect";
+import { decodeJsonObject } from "./schemas.ts";
 
 const MAX_TRANSCRIPT_ITEMS = 2_000;
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024;
@@ -53,8 +55,8 @@ export interface DesktopTranscriptProjection {
 export interface DesktopActiveTool {
   readonly id: string;
   readonly name: string;
-  readonly arguments?: unknown;
-  readonly partialResult?: unknown;
+  readonly arguments?: Schema.Json;
+  readonly partialResult?: Schema.Json;
 }
 
 type MutableToolItem = {
@@ -72,8 +74,8 @@ interface StoredItem {
   bytes: number;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+const isJsonObject = (value: unknown): value is Schema.JsonObject =>
+  decodeJsonObject(value) !== undefined;
 
 const bounded = (value: string, maxLength: number): string =>
   truncateRemoteString(redactRemoteString(value), maxLength);
@@ -81,7 +83,7 @@ const bounded = (value: string, maxLength: number): string =>
 const identifier = (value: unknown, fallback: string, maxLength = 256): string =>
   typeof value === "string" && value.length > 0 ? bounded(value, maxLength) : fallback;
 
-const messageIdentifier = (message: Record<string, unknown>, index: number): string => {
+const messageIdentifier = (message: Schema.JsonObject, index: number): string => {
   const explicit = message.id ?? message.messageId ?? message.message_id;
   if (typeof explicit === "string" && explicit.length > 0) return identifier(explicit, "message");
   const role = identifier(message.role, "event", 32);
@@ -105,7 +107,7 @@ const textParts = (
   const text: string[] = [];
   let images = 0;
   for (const part of value.slice(0, MAX_MESSAGE_PARTS)) {
-    if (!isRecord(part) || typeof part.type !== "string") continue;
+    if (!isJsonObject(part) || typeof part.type !== "string") continue;
     if (part.type === "text" && typeof part.text === "string")
       text.push(bounded(part.text, MAX_TEXT_LENGTH));
     else if (part.type === "image") images += 1;
@@ -120,9 +122,10 @@ const textParts = (
 };
 
 const firstString = (value: unknown, keys: ReadonlyArray<string>): string | undefined => {
-  if (!isRecord(value)) return undefined;
+  const object = decodeJsonObject(value);
+  if (object === undefined) return undefined;
   for (const key of keys) {
-    const candidate = value[key];
+    const candidate = object[key];
     if (typeof candidate === "string" && candidate.trim().length > 0)
       return truncateRemoteString(redactRemoteLine(candidate), MAX_DETAIL_LENGTH);
     if (Array.isArray(candidate)) {
@@ -183,7 +186,7 @@ const itemBytes = (item: DesktopTranscriptItem): number =>
   encoder.encode(JSON.stringify(item)).byteLength;
 
 export const projectDesktopTranscript = (
-  messages: ReadonlyArray<unknown>,
+  messages: ReadonlyArray<Schema.Json>,
   activeTools: ReadonlyArray<DesktopActiveTool>,
 ): DesktopTranscriptProjection => {
   const stored: StoredItem[] = [];
@@ -232,7 +235,7 @@ export const projectDesktopTranscript = (
   };
 
   messages.forEach((message, messageIndex) => {
-    if (!isRecord(message) || typeof message.role !== "string") {
+    if (!isJsonObject(message) || typeof message.role !== "string") {
       append({
         kind: "fallback",
         id: `message-event-${messageIndex}`,
@@ -341,7 +344,7 @@ export const projectDesktopTranscript = (
       if (message.content.length > MAX_MESSAGE_PARTS) truncated = true;
       message.content.slice(0, MAX_MESSAGE_PARTS).forEach((part, partIndex) => {
         const partId = `${baseId}-part-${partIndex}`;
-        if (!isRecord(part) || typeof part.type !== "string") {
+        if (!isJsonObject(part) || typeof part.type !== "string") {
           append({ kind: "fallback", id: partId, text: "Unsupported assistant content" });
           return;
         }

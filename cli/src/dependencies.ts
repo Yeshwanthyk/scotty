@@ -1,7 +1,7 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Effect, Option, Result } from "effect";
 import { decodeInstallationPreviewConfiguration } from "../../infra/installation";
-import { CliError, EXIT, PENDING_UP_TTL_MS, type GlobalOptions, type JsonObject } from "./core";
+import { CliError, EXIT, PENDING_UP_TTL_MS, type GlobalOptions } from "./core";
 import {
   decodeJsonValue,
   decodePendingUp,
@@ -9,6 +9,7 @@ import {
   decodeString,
   decodeTrue,
   type Config,
+  type BeamUpRequest,
   type PendingUp,
 } from "./schemas";
 import { CliRuntime, FileSystem } from "./services";
@@ -155,7 +156,7 @@ export const readPendingUp = Effect.fnUntraced(function* (path: string) {
   return Option.isSome(decoded) ? { exists: true, value: decoded.value } : { exists: true };
 });
 
-export const pendingUpRequest = Effect.fnUntraced(function* (host: string, body: JsonObject) {
+export const pendingUpRequest = Effect.fnUntraced(function* (host: string, body: BeamUpRequest) {
   const runtime = yield* CliRuntime;
   const fileSystem = yield* FileSystem;
   const fingerprint = yield* sha256Hex(JSON.stringify([host, body]));

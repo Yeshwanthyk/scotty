@@ -13,11 +13,12 @@ import {
   type Component,
   type TUI,
 } from "@earendil-works/pi-tui";
+import { Schema } from "effect";
 import type { FleetConsoleController } from "./controller.ts";
 import { adaptRemoteMessage, adaptRemoteTool, type RemoteToolCall } from "./remote-ui-adapters.ts";
 import { formatRemoteValue, redactRemoteLine, redactRemoteString } from "./redaction.ts";
 import type { FleetSession } from "./schemas.ts";
-import { SETTLED_TURNS_FOLD_ID } from "./state.ts";
+import { SETTLED_TURNS_FOLD_ID, type ToolProjection } from "./state.ts";
 import { initializePiPresentation } from "./theme.ts";
 
 const color = {
@@ -94,7 +95,7 @@ class RemoteToolCard implements Component {
     this.#tool = tool;
   }
 
-  updateArguments(arguments_: Record<string, unknown>): void {
+  updateArguments(arguments_: RemoteToolCall["arguments"]): void {
     Object.assign(this.#tool.arguments, arguments_);
   }
 
@@ -329,7 +330,7 @@ export class FleetConsoleComponent implements Component {
       }
 
       lines.push("", color.accent(`TRANSCRIPT (${live.messages.length})`));
-      let visibleMessages: ReadonlyArray<unknown> = live.messages;
+      let visibleMessages: ReadonlyArray<Schema.Json> = live.messages;
       if (cache.folded.has(SETTLED_TURNS_FOLD_ID) && live.messages.length > 0) {
         const foldedCount = Math.max(0, live.messages.length - 1);
         if (foldedCount > 0)
@@ -408,13 +409,8 @@ export class FleetConsoleComponent implements Component {
   }
 
   #renderTranscript(
-    messages: ReadonlyArray<unknown>,
-    activeTools: ReadonlyArray<{
-      readonly id: string;
-      readonly name: string;
-      readonly arguments?: unknown;
-      readonly partialResult?: unknown;
-    }>,
+    messages: ReadonlyArray<Schema.Json>,
+    activeTools: ReadonlyArray<ToolProjection>,
     width: number,
   ): string[] {
     const components: Component[] = [];

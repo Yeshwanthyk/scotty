@@ -12,6 +12,7 @@ import {
   chunk2InventoryBlockers,
   chunk2PlanReviewBlockers,
   chunk2ReadinessBlockers,
+  Chunk2ReadinessError,
   normalizeChunk2Plan,
   type Chunk2Blocker,
   type Chunk2BlockerCode,
@@ -363,6 +364,16 @@ const planCodes = (snapshot: Chunk2PlanReviewSnapshot, phase: "reviewed" | "seco
   codes(chunk2PlanReviewBlockers(snapshot, inventory(), evidence(), markers, phase));
 const cloneCodes = (value: Chunk2CloneEvidence) =>
   codes(chunk2CloneEvidenceBlockers(inventory(), value, markers));
+const assertPlanShapeMessage = (run: () => unknown, message: string): void => {
+  let caught: unknown;
+  try {
+    run();
+  } catch (error) {
+    caught = error;
+  }
+  assert.instanceOf(caught, Chunk2ReadinessError);
+  assert.strictEqual(caught.message, `PLAN_SHAPE_INVALID: ${message}`);
+};
 const replaceResource = (
   snapshot: Chunk2PlanReviewSnapshot,
   logicalId: string,
@@ -464,6 +475,74 @@ describe("Chunk 2 monolith adoption readiness", () => {
     assert.throws(
       () => normalizeChunk2Plan(missingSid, transcript()),
       /bindingActions\[0\].sid must be a string/u,
+    );
+  });
+
+  it("preserves exact Plan shape errors and accepts open beta.63 provider rows", () => {
+    assertPlanShapeMessage(() => normalizeChunk2Plan([], transcript()), "plan must be a record");
+    const missingCycleMembers = { ...rawPlan() };
+    Reflect.deleteProperty(missingCycleMembers, "cycleMembers");
+    assertPlanShapeMessage(
+      () => normalizeChunk2Plan(missingCycleMembers, transcript()),
+      "plan surfaces must be exact",
+    );
+    assertPlanShapeMessage(
+      () =>
+        normalizeChunk2Plan(
+          { ...rawPlan(), output: { url: "ok", futureProviderField: true } },
+          transcript(),
+        ),
+      "plan.output must contain only url",
+    );
+
+    const source = rawPlan();
+    const workerFqn = fqn("MonolithWorker");
+    const worker = source.resources[workerFqn];
+    assert.ok(worker);
+    const withOpenRows = {
+      ...source,
+      resources: {
+        ...source.resources,
+        [workerFqn]: {
+          ...worker,
+          futureNodeField: true,
+          resource: { ...worker.resource, futureResourceField: true },
+          bindings: worker.bindings.map((binding) => ({ ...binding, futureBindingField: true })),
+        },
+      },
+      actions: {
+        "scotty::clone::Build": { action: "noop", futureActionField: true },
+      },
+    };
+    const normalized = normalizeChunk2Plan(withOpenRows, transcript());
+    assert.deepStrictEqual(normalized.actions, [{ fqn: "scotty::clone::Build", action: "noop" }]);
+    assert.strictEqual(normalized.resources[0]?.fqn, plan().resources[0]?.fqn);
+
+    const missingTranscript = { ...transcript() };
+    Reflect.deleteProperty(missingTranscript, fqn("BackupBucket"));
+    assertPlanShapeMessage(
+      () =>
+        normalizeChunk2Plan(
+          {
+            ...rawPlan(),
+            actions: { "scotty::clone::Build": [] },
+          },
+          missingTranscript,
+        ),
+      "transcript FQNs must exactly match plan.resources FQNs",
+    );
+    assertPlanShapeMessage(
+      () =>
+        normalizeChunk2Plan(
+          {
+            ...rawPlan(),
+            actionDeletions: {
+              "scotty::clone::OldTask": { action: "delete", def: null },
+            },
+          },
+          transcript(),
+        ),
+      "plan.actionDeletions.scotty::clone::OldTask.def must be a record",
     );
   });
 

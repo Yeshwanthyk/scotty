@@ -8,10 +8,15 @@ import type {
 import { Data, Match } from "effect";
 import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
-import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
+import type {
+  CreateSessionInput,
+  SessionRecord,
+  StoredCredential,
+  WorkspaceCreationMarker,
+} from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
-import { HATCH_STATE_KEY } from "../src/session-store";
+import { HATCH_STATE_KEY, SESSION_CONTROL_REVISION_KEY } from "../src/session-store";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
   SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
@@ -36,8 +41,23 @@ export const injectedHarnessFailure = (message: string): InjectedHarnessFailure 
   new InjectedHarnessFailure({ message });
 
 interface StatusProjection {
+  readonly id?: string;
   readonly status?: string;
 }
+
+type InitialProjection = StatusProjection | WorkspaceCreationMarker;
+
+export type InitialStorageEntries = Partial<{
+  [RECORD_KEY]: SessionRecord;
+  [CREDENTIAL_KEY]: StoredCredential;
+  [CREATE_IDEMPOTENCY_KEY]: CreateIdempotencyMetadata;
+  [EVIDENCE_RECORD_KEY]: unknown;
+  [HATCH_STATE_KEY]: unknown;
+  [RUNTIME_EPOCH_KEY]: unknown;
+  [SESSION_CONTROL_REVISION_KEY]: unknown;
+}>;
+
+export type InitialProjections = Readonly<{ readonly [key: string]: InitialProjection }>;
 
 const isStatusProjection = (value: unknown): value is StatusProjection =>
   typeof value === "object" &&
@@ -95,7 +115,7 @@ export interface HarnessOptions {
   readonly evidenceEnabled?: boolean;
   readonly evidencePreviewHostTimeoutMillis?: number;
   readonly failureStage?: HarnessFailureStage;
-  readonly initialEntries?: Readonly<Record<string, unknown>>;
+  readonly initialEntries?: InitialStorageEntries;
   readonly initialArtifactObjects?: ReadonlyArray<EvidenceArtifactV2>;
   readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
     ? Stub extends { dispatch: infer Dispatch }
@@ -103,7 +123,7 @@ export interface HarnessOptions {
       : never
     : never;
   readonly runnerFetch?: (request: Request) => Promise<Response>;
-  readonly initialProjections?: Readonly<Record<string, unknown>>;
+  readonly initialProjections?: InitialProjections;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly piSessionRunning?: boolean;
   readonly previewBase?: string;
@@ -178,7 +198,7 @@ class HarnessStorage {
   constructor(
     private readonly events: string[],
     private readonly schedules: ReadonlyArray<RecordedSchedule>,
-    initialEntries: Readonly<Record<string, unknown>>,
+    initialEntries: InitialStorageEntries,
     private readonly failures: ReadonlySet<HarnessFailureStage>,
     private readonly crashAfterInitialRecordCommit: boolean,
     private readonly onStorageGet?: HarnessOptions["onStorageGet"],

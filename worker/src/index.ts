@@ -19,7 +19,7 @@ import { ContainerProxy } from "./container-session-egress";
 import {
   badRequest,
   decodeJsonValue,
-  isRecord,
+  ApiErrorCodeSchema,
   parseAuthClientId,
   parseCreateInput,
   parseIdempotencyKey,
@@ -100,6 +100,16 @@ const RunnerRegistrationInputSchema = Schema.Struct({
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
   onExcessProperty: "error",
 });
+const WorkerErrorSchema = Schema.Struct({
+  _tag: Schema.optionalKey(Schema.String),
+  operation: Schema.optionalKey(Schema.String),
+  code: Schema.optionalKey(ApiErrorCodeSchema),
+  message: Schema.optionalKey(Schema.String),
+  httpStatus: Schema.optionalKey(Schema.Number),
+  exitCode: Schema.optionalKey(Schema.Literals([1, 2, 3, 4, 5])),
+  hint: Schema.optionalKey(Schema.String),
+});
+const decodeWorkerError = Schema.decodeUnknownOption(WorkerErrorSchema);
 app.onError((error, c) => {
   const normalized = normalizeError(error);
   return c.json(
@@ -1278,14 +1288,10 @@ async function createSessionIdempotency(
 
 function normalizeError(error: unknown): ScottyError {
   if (error instanceof ScottyError) return error;
-  if (isRecord(error)) {
-    const fields: Record<string, unknown> = error;
+  const decoded = decodeWorkerError(error);
+  if (Option.isSome(decoded)) {
+    const fields = decoded.value;
     const operation = fields.operation;
-    const code = fields.code;
-    const message = fields.message;
-    const httpStatus = fields.httpStatus;
-    const exitCode = fields.exitCode;
-    const hint = fields.hint;
     const isSessionProjectionFailure = Predicate.isTagged(fields, "SessionProjectionFailure");
     const isRepoProjectionFailure = Predicate.isTagged(fields, "RepoProjectionFailure");
     const isStatsProjectionFailure = Predicate.isTagged(fields, "StatsProjectionFailure");
@@ -1300,27 +1306,18 @@ function normalizeError(error: unknown): ScottyError {
       });
       return new ScottyError("internal", "Internal error", { httpStatus: 500, exitCode: 1 });
     }
-    const isScottyError = Predicate.isTagged(fields, "ScottyError");
+    const isScottyError = Predicate.isTagged(error, "ScottyError");
     if (
-      (isScottyError || !Predicate.hasProperty(fields, "_tag")) &&
-      typeof code === "string" &&
-      [
-        "bad_request",
-        "auth",
-        "not_found",
-        "wrong_state",
-        "conflict",
-        "upstream",
-        "internal",
-      ].includes(code) &&
-      typeof message === "string" &&
-      typeof httpStatus === "number" &&
-      typeof exitCode === "number"
+      (isScottyError || !Predicate.hasProperty(error, "_tag")) &&
+      fields.code !== undefined &&
+      fields.message !== undefined &&
+      fields.httpStatus !== undefined &&
+      fields.exitCode !== undefined
     ) {
-      return new ScottyError(code as ScottyError["code"], message, {
-        httpStatus,
-        exitCode: exitCode as ScottyError["exitCode"],
-        hint: typeof hint === "string" ? hint : undefined,
+      return new ScottyError(fields.code, fields.message, {
+        httpStatus: fields.httpStatus,
+        exitCode: fields.exitCode,
+        hint: fields.hint,
       });
     }
   }

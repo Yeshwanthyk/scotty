@@ -7,6 +7,7 @@ import {
   CREATE_IDEMPOTENCY,
   type HarnessFailureStage,
   type HarnessOptions,
+  type InitialStorageEntries,
   lifecycleWallClock,
   makeResumeBackup,
   makeStoredCredential,
@@ -29,9 +30,7 @@ const warmRecord = (overrides: Partial<SessionRecord> = {}): SessionRecord =>
     ...overrides,
   });
 
-const authorityEntries = (
-  record: SessionRecord = warmRecord(),
-): Readonly<Record<string, unknown>> => ({
+const authorityEntries = (record: SessionRecord = warmRecord()): InitialStorageEntries => ({
   [sessionHarnessKeys.record]: record,
   [sessionHarnessKeys.credential]: makeStoredCredential(),
 });

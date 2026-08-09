@@ -11,7 +11,6 @@ export const EXIT = {
 } as const;
 
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
-export type JsonObject = Record<string, unknown>;
 export type Writer = (text: string) => void;
 
 export interface GlobalOptions {

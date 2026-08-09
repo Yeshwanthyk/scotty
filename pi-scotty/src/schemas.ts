@@ -116,6 +116,74 @@ export const ToolEventSchema = Schema.Struct({
 });
 export type ToolEvent = typeof ToolEventSchema.Type;
 
+export const JsonObjectSchema = Schema.Record(Schema.String, Schema.Json);
+export type JsonObject = typeof JsonObjectSchema.Type;
+const decodeJsonObjectOption = Schema.decodeUnknownOption(JsonObjectSchema);
+export const decodeJsonObject = (value: unknown): JsonObject | undefined =>
+  Option.getOrUndefined(decodeJsonObjectOption(value));
+export const RemoteToolArgumentsSchema = JsonObjectSchema;
+export type RemoteToolArguments = typeof RemoteToolArgumentsSchema.Type;
+
+const RemoteTextContentSchema = Schema.Struct({
+  type: Schema.Literal("text"),
+  text: Schema.String,
+});
+const RemoteThinkingContentSchema = Schema.Struct({
+  type: Schema.Literal("thinking"),
+  thinking: Schema.String,
+});
+const RemoteToolCallContentSchema = Schema.Struct({
+  type: Schema.Literal("toolCall"),
+  id: Schema.String,
+  name: Schema.String,
+  arguments: RemoteToolArgumentsSchema,
+});
+const RemoteAssistantContentSchema = Schema.Union([
+  RemoteTextContentSchema,
+  RemoteThinkingContentSchema,
+  RemoteToolCallContentSchema,
+]);
+const RemoteTextContentArraySchema = Schema.Array(RemoteTextContentSchema);
+const RemoteUserMessageSchema = Schema.Struct({
+  role: Schema.Literal("user"),
+  content: Schema.Union([Schema.String, RemoteTextContentArraySchema]),
+});
+const RemoteToolResultMessageSchema = Schema.Struct({
+  role: Schema.Literal("toolResult"),
+  toolCallId: Schema.String,
+  toolName: Schema.String,
+  content: RemoteTextContentArraySchema,
+  isError: Schema.Boolean,
+});
+const RemoteAssistantMessageSchema = Schema.Struct({
+  role: Schema.Literal("assistant"),
+  content: Schema.Array(RemoteAssistantContentSchema),
+  api: Schema.optionalKey(Schema.Unknown),
+  provider: Schema.optionalKey(Schema.Unknown),
+  model: Schema.optionalKey(Schema.Unknown),
+  stopReason: Schema.optionalKey(Schema.Unknown),
+  timestamp: Schema.optionalKey(Schema.Unknown),
+  errorMessage: Schema.optionalKey(Schema.Unknown),
+});
+export type RemoteUserMessage = typeof RemoteUserMessageSchema.Type;
+export type RemoteToolResultMessage = typeof RemoteToolResultMessageSchema.Type;
+export type RemoteAssistantMessage = typeof RemoteAssistantMessageSchema.Type;
+export type RemoteAssistantContent = RemoteAssistantMessage["content"][number];
+export type RemoteToolCallContent = Extract<RemoteAssistantContent, { readonly type: "toolCall" }>;
+const decodeRemoteUserMessageOption = Schema.decodeUnknownOption(RemoteUserMessageSchema);
+const decodeRemoteToolResultMessageOption = Schema.decodeUnknownOption(
+  RemoteToolResultMessageSchema,
+);
+const decodeRemoteAssistantMessageOption = Schema.decodeUnknownOption(RemoteAssistantMessageSchema);
+export const decodeRemoteUserMessage = (value: unknown): RemoteUserMessage | undefined =>
+  Option.getOrUndefined(decodeRemoteUserMessageOption(value));
+export const decodeRemoteToolResultMessage = (
+  value: unknown,
+): RemoteToolResultMessage | undefined =>
+  Option.getOrUndefined(decodeRemoteToolResultMessageOption(value));
+export const decodeRemoteAssistantMessage = (value: unknown): RemoteAssistantMessage | undefined =>
+  Option.getOrUndefined(decodeRemoteAssistantMessageOption(value));
+
 const ContentIndexSchema = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1024 }));
 const AssistantMessageEventSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("text_start"), contentIndex: ContentIndexSchema }),

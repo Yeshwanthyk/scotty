@@ -1,17 +1,25 @@
 import { readFile } from "node:fs/promises";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
 const root = new URL("../", import.meta.url);
-type JsonObject = Record<string, unknown>;
+const PackageManifestSchema = Schema.Struct({
+  dependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  devDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+});
+type PackageManifest = typeof PackageManifestSchema.Type;
+const decodePackageManifest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(PackageManifestSchema),
+);
 
-async function readJson(path: string): Promise<JsonObject> {
-  return JSON.parse(await readFile(new URL(path, root), "utf8")) as JsonObject;
+async function readPackageManifest(path: string): Promise<PackageManifest> {
+  return decodePackageManifest(await readFile(new URL(path, root), "utf8"));
 }
 
 describe("pinned Task 4 contracts", () => {
   it("pins the selected toolchain and runtime packages exactly", async () => {
-    const rootPackage = await readJson("package.json");
-    const workerPackage = await readJson("worker/package.json");
+    const rootPackage = await readPackageManifest("package.json");
+    const workerPackage = await readPackageManifest("worker/package.json");
 
     expect(rootPackage.devDependencies).toMatchObject({
       "@effect/vitest": "4.0.0-beta.103",

@@ -20,6 +20,7 @@ import noManualTagCheck from "../../scripts/oxlint-plugin-scotty/rules/no-manual
 import noMatchOrelse from "../../scripts/oxlint-plugin-scotty/rules/no-match-orelse.js";
 import noPromiseClientSurface from "../../scripts/oxlint-plugin-scotty/rules/no-promise-client-surface.js";
 import noPromiseReject from "../../scripts/oxlint-plugin-scotty/rules/no-promise-reject.js";
+import noRecordStringUnknown from "../../scripts/oxlint-plugin-scotty/rules/no-record-string-unknown.js";
 import noRawErrorThrow from "../../scripts/oxlint-plugin-scotty/rules/no-raw-error-throw.js";
 import noRawFetch from "../../scripts/oxlint-plugin-scotty/rules/no-raw-fetch.js";
 import noRawWallClock from "../../scripts/oxlint-plugin-scotty/rules/no-raw-wall-clock.js";
@@ -580,6 +581,41 @@ tester.run("no-promise-reject", noPromiseReject, {
       filename: productionFile,
       code: `new Promise((resolve, reject) => reject(error))`,
       errors: 1,
+    },
+  ],
+});
+
+tester.run("no-record-string-unknown", noRecordStringUnknown, {
+  valid: [
+    {
+      filename: productionFile,
+      code: `type JsonValue = string | number | boolean | null; type Precise = Record<string, string>; type ReadonlyPrecise = Readonly<Record<string, string>>; type Index = { [key: string]: string }; type ReadonlyIndex = { readonly [key: string]: string }; type Mapped = { [key in string]: string }; type ReadonlyMapped = { readonly [key in string]: string }; type Remapped = { [key in string as \`prefix_\${key}\`]: unknown }; type Recursive = Record<string, JsonValue>; type MapValue = Map<string, unknown>; const JsonObjectSchema = Schema.Record(Schema.String, Schema.Json)`,
+    },
+  ],
+  invalid: [
+    {
+      filename: productionFile,
+      code: `type Direct = Record<string, unknown>; type ReadonlyDirect = Readonly<Record<string, unknown>>; type Index = { [key: string]: unknown }; type ReadonlyIndex = { readonly [key: string]: unknown }; type Mapped = { [key in string]: unknown }; type ReadonlyMapped = { readonly [key in string]: unknown }`,
+      errors: 6,
+      output: null,
+    },
+    {
+      filename: productionFile,
+      code: `type Parenthesized = Readonly<(Record<string, unknown>)>`,
+      errors: 1,
+      output: null,
+    },
+    {
+      filename: productionFile,
+      code: `type ReadonlyIndexWrapper = Readonly<{ [key: string]: unknown }>; type ReadonlyMappedWrapper = Readonly<{ [key in string]: unknown }>`,
+      errors: 2,
+      output: null,
+    },
+    {
+      filename: productionFile,
+      code: `const UnknownObjectSchema = Schema.Record(Schema.String, Schema.Unknown)`,
+      errors: 1,
+      output: null,
     },
   ],
 });

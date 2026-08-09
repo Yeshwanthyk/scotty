@@ -1,18 +1,24 @@
 import type {
   ConsoleCommandEnvelope,
+  ConsoleCommandResponseBody,
   ConsoleCommandTransportResult,
 } from "./terminal-console-client.js";
+import type { PiConsoleCommandReceiptV1, PiConsoleRemoteIntentV1 } from "../../protocol/pi-console";
 
 export type CommandOutcome =
-  | { readonly status: "accepted"; readonly receipt: Readonly<Record<string, unknown>> }
+  | { readonly status: "accepted"; readonly receipt: PiConsoleCommandReceiptV1 }
   | {
       readonly status: "rejected";
-      readonly receipt?: Readonly<Record<string, unknown>>;
-      readonly response?: unknown;
+      readonly receipt?: PiConsoleCommandReceiptV1;
+      readonly response?: ConsoleCommandResponseBody;
       readonly message: string;
     }
-  | { readonly status: "stale"; readonly response: unknown }
-  | { readonly status: "ambiguous"; readonly response?: unknown; readonly message: string }
+  | { readonly status: "stale"; readonly response: ConsoleCommandResponseBody }
+  | {
+      readonly status: "ambiguous";
+      readonly response?: ConsoleCommandResponseBody;
+      readonly message: string;
+    }
   | { readonly status: "discarded"; readonly accepted: false; readonly message: string };
 
 export type CommandLaneItem = {
@@ -35,7 +41,7 @@ export function createCommandLane(options: {
     readonly sessionId: string;
     readonly epoch: string;
     readonly expectedSessionRevision: number;
-    readonly intent: Readonly<Record<string, unknown>>;
+    readonly intent: PiConsoleRemoteIntentV1;
     readonly label: string;
   }) => { readonly commandId: string; readonly outcome: Promise<CommandOutcome> };
   readonly discard: (sessionId: string) => { readonly discardedCount: number };

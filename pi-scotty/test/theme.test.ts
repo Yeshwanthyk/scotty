@@ -1,10 +1,30 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { detectPiThemeName, loadPiPresentationTheme } from "../src/theme.ts";
 
 const entry = new URL(import.meta.resolve("@earendil-works/pi-coding-agent"));
 const themeDirectory = join(dirname(fileURLToPath(entry)), "modes", "interactive", "theme");
+const decodeJsonObject = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Json));
+const decodePublishedTheme = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
+);
+
+const publishedTheme = (): Schema.JsonObject =>
+  decodePublishedTheme(readFileSync(join(themeDirectory, "dark.json"), "utf8"));
+
+const expectThemeError = (payload: Schema.Json, message: string): void => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-scotty-theme-"));
+  try {
+    writeFileSync(join(directory, "dark.json"), JSON.stringify(payload));
+    expect(() => loadPiPresentationTheme("dark", directory, "truecolor")).toThrow(message);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
 
 describe("exact Pi 0.84 presentation theme", () => {
   it("preserves semantic colors in the published dark and light assets", () => {
@@ -27,5 +47,35 @@ describe("exact Pi 0.84 presentation theme", () => {
     expect(detectPiThemeName({ COLORFGBG: "15;0" })).toBe("dark");
     expect(detectPiThemeName({ COLORFGBG: "0;15" })).toBe("light");
     expect(detectPiThemeName({})).toBe("dark");
+  });
+
+  it("preserves the non-object and unsupported-field errors", () => {
+    expectThemeError(null, "Packaged Pi theme must be an object");
+    expectThemeError({ ...publishedTheme(), unsupported: true }, "contains an unsupported field");
+  });
+
+  it("preserves identity and schema errors", () => {
+    expectThemeError({ ...publishedTheme(), name: "light" }, "dark theme has an invalid identity");
+    expectThemeError({ ...publishedTheme(), $schema: true }, "theme schema must be a string");
+  });
+
+  it("preserves export and variable errors", () => {
+    const base = publishedTheme();
+    expectThemeError({ ...base, export: true }, "theme export must be an object");
+    expectThemeError({ ...base, export: { unsupported: "#fff" } }, "contains an unsupported field");
+    expectThemeError({ ...base, export: { pageBg: true } }, "export contains an invalid color");
+    expectThemeError({ ...base, vars: true }, "theme vars must be an object");
+    expectThemeError({ ...base, vars: { accent: true } }, "contains an invalid variable");
+  });
+
+  it("preserves missing and invalid color errors", () => {
+    const base = publishedTheme();
+    const colors = { ...decodeJsonObject(base.colors) };
+    delete colors.accent;
+    expectThemeError({ ...base, colors }, "missing a required color");
+    expectThemeError(
+      { ...base, colors: { ...decodeJsonObject(base.colors), accent: true } },
+      "missing a required color",
+    );
   });
 });

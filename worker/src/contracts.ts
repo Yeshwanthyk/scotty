@@ -1,5 +1,5 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
-import { Option, Schema } from "effect";
+import { Option, Predicate, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
 import { PiCredentialSchema } from "../../protocol/pi-auth";
 
@@ -181,7 +181,7 @@ const decodeCurrentSessionRecordResult = Schema.decodeUnknownResult(SessionRecor
   onExcessProperty: "error",
 });
 const withLegacyCloudflareBinding = (value: unknown): unknown =>
-  isRecord(value) &&
+  Predicate.isObject(value) &&
   value.version === 1 &&
   value.provider === "cloudflare" &&
   !("execution" in value)
@@ -360,7 +360,7 @@ export const OAuthRefreshRequestSchema = Schema.StructWithRest(
     grant_type: Schema.Literal("refresh_token"),
     refresh_token: Schema.String,
   }),
-  [Schema.Record(Schema.String, Schema.Unknown)],
+  [Schema.Record(Schema.String, Schema.Json)],
 );
 export type OAuthRefreshRequest = typeof OAuthRefreshRequestSchema.Type;
 
@@ -692,10 +692,6 @@ export function toSessionView(projection: SessionProjection, nowMs: number): Ses
     ageSeconds: Math.max(0, Math.floor((nowMs - Date.parse(projection.createdAt)) / 1000)),
     capRemainingSeconds: Math.max(0, Math.floor((Date.parse(projection.hardCapAt) - nowMs) / 1000)),
   };
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readNonEmptyString(value: unknown, field: string, maxLength: number): string {

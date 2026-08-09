@@ -1,4 +1,5 @@
 import { redactCredentialSentinels } from "../../protocol/pi-console-shared.mjs";
+import { Schema } from "effect";
 
 const MAX_STRING_LENGTH = 16 * 1024;
 const MAX_DEPTH = 12;
@@ -38,7 +39,7 @@ export const redactRemoteString = (value: string): string =>
 export const redactRemoteLine = (value: string): string =>
   redactRemoteString(value).replaceAll(/[\t\r\n]+/gu, " ");
 
-export const redactRemoteValue = (value: unknown, depth = 0): unknown => {
+export const redactRemoteValue = (value: unknown, depth = 0): Schema.Json => {
   if (depth > MAX_DEPTH) return "[truncated]";
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;

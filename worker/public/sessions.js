@@ -8,7 +8,11 @@ import {
   submissionIdentity,
   titleText,
 } from "/session-form.js";
-import { renderSessionsView, sessionsRenderSignature } from "/session-list.js";
+import {
+  normalizeSessionListItem,
+  renderSessionsView,
+  sessionsRenderSignature,
+} from "/session-list.js";
 
 const POLL_INTERVAL = 5000;
 const content = document.querySelector("#content");
@@ -409,9 +413,7 @@ async function refresh(options = {}) {
     const body = await response.json();
     const next = Array.isArray(body) ? body : body?.sessions;
     if (!Array.isArray(next)) throw new Error("Scotty returned an unexpected response.");
-    sessions = next.filter(
-      (session) => session && typeof session === "object" && typeof session.id === "string",
-    );
+    sessions = next.map(normalizeSessionListItem).filter((session) => session !== undefined);
     loaded = true;
     notice.hidden = true;
     if (!wasLoaded || sessions.length !== previousCount) {

@@ -262,6 +262,19 @@ describe("stats schemas", () => {
 });
 
 describe("persisted session schemas", () => {
+  it.effect("upgrades legacy Cloudflare records before current decoding", () =>
+    Effect.gen(function* () {
+      const legacyRecord = Object.fromEntries(
+        Object.entries(persistedRecord).filter(([key]) => key !== "execution"),
+      );
+      assert.notProperty(legacyRecord, "execution");
+
+      const decoded = yield* decodeSessionRecord(legacyRecord);
+
+      assert.deepStrictEqual(decoded, persistedRecord);
+    }),
+  );
+
   it.effect("decodes an exact authoritative version 1 record", () =>
     Effect.gen(function* () {
       const decoded = yield* decodeSessionRecord(persistedRecord);

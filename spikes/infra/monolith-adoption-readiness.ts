@@ -1,4 +1,5 @@
 import type { Plan } from "alchemy/Plan";
+import { Option, Schema } from "effect";
 
 export const CHUNK2_ALCHEMY_VERSION = "2.0.0-beta.63";
 
@@ -369,33 +370,277 @@ export interface Chunk2Blocker {
 
 export class Chunk2ReadinessError extends Error {}
 
+const BindingInputSchema = Schema.Struct({
+  type: Schema.Unknown,
+  name: Schema.Unknown,
+  className: Schema.optionalKey(Schema.Unknown),
+  namespaceId: Schema.optionalKey(Schema.Unknown),
+  bucketName: Schema.optionalKey(Schema.Unknown),
+  value: Schema.optionalKey(Schema.Unknown),
+  storeId: Schema.optionalKey(Schema.Unknown),
+  secretName: Schema.optionalKey(Schema.Unknown),
+});
+const MigrationInputSchema = Schema.Struct({
+  newClasses: Schema.Unknown,
+  newSqliteClasses: Schema.Unknown,
+  deletedClasses: Schema.Unknown,
+  renamedClasses: Schema.Unknown,
+  transferredClasses: Schema.Unknown,
+});
+const RenamedClassInputSchema = Schema.Struct({ from: Schema.Unknown, to: Schema.Unknown });
+const TransferredClassInputSchema = Schema.Struct({
+  from: Schema.Unknown,
+  to: Schema.Unknown,
+  fromScript: Schema.Unknown,
+});
+const PolicyInputSchema = Schema.Struct({
+  lifecycleRules: Schema.Unknown,
+  corsRules: Schema.Unknown,
+  customDomains: Schema.Unknown,
+  location: Schema.Unknown,
+  storageClass: Schema.Unknown,
+});
+const LifecycleRuleInputSchema = Schema.Struct({
+  id: Schema.Unknown,
+  enabled: Schema.Unknown,
+  conditions: Schema.Unknown,
+  actions: Schema.Unknown,
+});
+const CorsRuleInputSchema = Schema.Struct({
+  allowedOrigins: Schema.Unknown,
+  allowedMethods: Schema.Unknown,
+  allowedHeaders: Schema.Unknown,
+  exposedHeaders: Schema.Unknown,
+  maxAgeSeconds: Schema.Unknown,
+});
+const CustomDomainInputSchema = Schema.Struct({
+  domain: Schema.Unknown,
+  enabled: Schema.Unknown,
+  status: Schema.Unknown,
+  minimumTls: Schema.Unknown,
+});
+const TopologyInputSchema = Schema.Struct({
+  worker: Schema.Unknown,
+  durableObject: Schema.Unknown,
+  container: Schema.Unknown,
+  kv: Schema.Unknown,
+  r2: Schema.Unknown,
+});
+const WorkerInputSchema = Schema.Struct({
+  name: Schema.Unknown,
+  physicalId: Schema.Unknown,
+  entryPoint: Schema.Unknown,
+  exports: Schema.Unknown,
+  compatibilityDate: Schema.Unknown,
+  compatibilityFlags: Schema.Unknown,
+  observability: Schema.Unknown,
+  routes: Schema.Unknown,
+  assets: Schema.Unknown,
+  outputKeys: Schema.Unknown,
+  bindings: Schema.Unknown,
+});
+const AssetsInputSchema = Schema.Struct({
+  binding: Schema.Unknown,
+  directory: Schema.Unknown,
+  runWorkerFirst: Schema.Unknown,
+  htmlHandling: Schema.Unknown,
+  notFoundHandling: Schema.Unknown,
+});
+const DurableObjectInputSchema = Schema.Struct({
+  binding: Schema.Unknown,
+  className: Schema.Unknown,
+  namespaceId: Schema.Unknown,
+  hostScript: Schema.Unknown,
+  migrations: Schema.Unknown,
+});
+const DurableObjectMigrationInputSchema = Schema.Struct({
+  tag: Schema.Unknown,
+  newSqliteClasses: Schema.Unknown,
+});
+const ContainerInputSchema = Schema.Struct({
+  applicationId: Schema.Unknown,
+  applicationName: Schema.Unknown,
+  dockerfile: Schema.Unknown,
+  instanceType: Schema.Unknown,
+  maxInstances: Schema.Unknown,
+  durableObjectNamespaceId: Schema.Unknown,
+});
+const KvInputSchema = Schema.Struct({
+  binding: Schema.Unknown,
+  namespaceId: Schema.Unknown,
+  title: Schema.Unknown,
+});
+const R2InputSchema = Schema.Struct({
+  binding: Schema.Unknown,
+  bucketName: Schema.Unknown,
+  policy: Schema.Unknown,
+});
+const SecretPropsInputSchema = Schema.Struct({
+  sourceId: Schema.Unknown,
+  accountId: Schema.Unknown,
+  storeId: Schema.Unknown,
+  secretName: Schema.Unknown,
+  bindingName: Schema.Unknown,
+  providerVersion: Schema.Unknown,
+  keyedDigest: Schema.Unknown,
+});
+const ResourceReviewInputSchema = Schema.Struct({
+  fqn: Schema.Unknown,
+  logicalId: Schema.Unknown,
+  resourceType: Schema.Unknown,
+  action: Schema.Unknown,
+  removalPolicy: Schema.Unknown,
+  resolvedIdentity: Schema.Unknown,
+  changedInputKeys: Schema.Unknown,
+  bindingActions: Schema.Unknown,
+  derivationFailures: Schema.Unknown,
+  secretProps: Schema.optionalKey(Schema.Unknown),
+  desiredTopology: Schema.optionalKey(Schema.Unknown),
+  workerMigrations: Schema.optionalKey(Schema.Unknown),
+  r2LifecycleRulesInput: Schema.optionalKey(Schema.Unknown),
+  providerRequestEvidence: Schema.optionalKey(Schema.Unknown),
+});
+const ResolvedIdentityInputSchema = Schema.Struct({
+  before: Schema.Unknown,
+  desired: Schema.Unknown,
+});
+const BindingActionInputSchema = Schema.Struct({ sid: Schema.Unknown, action: Schema.Unknown });
+const DerivationFailureInputSchema = Schema.Struct({
+  field: Schema.Unknown,
+  transcriptArtifactDigest: Schema.Unknown,
+});
+const ProviderEvidenceInputSchema = Schema.Struct({
+  transcriptArtifactDigest: Schema.Unknown,
+  firewallMode: Schema.Unknown,
+  reviewedRequestDigests: Schema.Unknown,
+  observedRequestDigests: Schema.Unknown,
+});
+const RawPlanInputSchema = Schema.Struct({
+  resources: Schema.Unknown,
+  actions: Schema.Unknown,
+  deletions: Schema.Unknown,
+  actionDeletions: Schema.Unknown,
+  output: Schema.Unknown,
+  cycleMembers: Schema.Unknown,
+});
+const OutputInputSchema = Schema.Struct({ url: Schema.Unknown });
+
+// Alchemy beta.63 rows are open objects. Their named fields are decoded here,
+// while extra provider fields remain accepted and are not retained by Scotty.
+const RawActionInputSchema = Schema.Struct({ action: Schema.optionalKey(Schema.Unknown) });
+const RawDeletionInputSchema = Schema.Struct({
+  action: Schema.optionalKey(Schema.Unknown),
+  resource: Schema.optionalKey(Schema.Unknown),
+});
+const RawDeletionResourceInputSchema = Schema.Struct({
+  LogicalId: Schema.optionalKey(Schema.Unknown),
+  Type: Schema.optionalKey(Schema.Unknown),
+});
+const RawActionDeletionInputSchema = Schema.Struct({
+  action: Schema.optionalKey(Schema.Unknown),
+  def: Schema.optionalKey(Schema.Unknown),
+});
+const RawActionDefinitionInputSchema = Schema.Struct({
+  LogicalId: Schema.optionalKey(Schema.Unknown),
+});
+const RawResourceNodeInputSchema = Schema.Struct({
+  resource: Schema.optionalKey(Schema.Unknown),
+  action: Schema.optionalKey(Schema.Unknown),
+  bindings: Schema.optionalKey(Schema.Unknown),
+});
+const RawResourceInputSchema = Schema.Struct({
+  LogicalId: Schema.optionalKey(Schema.Unknown),
+  Type: Schema.optionalKey(Schema.Unknown),
+  RemovalPolicy: Schema.optionalKey(Schema.Unknown),
+});
+const RawBindingInputSchema = Schema.Struct({
+  sid: Schema.optionalKey(Schema.Unknown),
+  action: Schema.optionalKey(Schema.Unknown),
+});
+const ObservedValueInputSchema = Schema.Struct({ before: Schema.Unknown, after: Schema.Unknown });
+const DisclosureMarkersInputSchema = Schema.Struct({
+  plaintext: Schema.String,
+  ownerKey: Schema.String,
+});
+
+const strict = { onExcessProperty: "error" } as const;
+const open = { onExcessProperty: "preserve" } as const;
+const decodeBindingInput = Schema.decodeUnknownOption(BindingInputSchema, strict);
+const decodeMigrationInput = Schema.decodeUnknownOption(MigrationInputSchema, strict);
+const decodeRenamedClassInput = Schema.decodeUnknownOption(RenamedClassInputSchema, strict);
+const decodeTransferredClassInput = Schema.decodeUnknownOption(TransferredClassInputSchema, strict);
+const decodePolicyInput = Schema.decodeUnknownOption(PolicyInputSchema, strict);
+const decodeLifecycleRuleInput = Schema.decodeUnknownOption(LifecycleRuleInputSchema, strict);
+const decodeCorsRuleInput = Schema.decodeUnknownOption(CorsRuleInputSchema, strict);
+const decodeCustomDomainInput = Schema.decodeUnknownOption(CustomDomainInputSchema, strict);
+const decodeTopologyInput = Schema.decodeUnknownOption(TopologyInputSchema, strict);
+const decodeWorkerInput = Schema.decodeUnknownOption(WorkerInputSchema, strict);
+const decodeAssetsInput = Schema.decodeUnknownOption(AssetsInputSchema, strict);
+const decodeDurableObjectInput = Schema.decodeUnknownOption(DurableObjectInputSchema, strict);
+const decodeDurableObjectMigrationInput = Schema.decodeUnknownOption(
+  DurableObjectMigrationInputSchema,
+  strict,
+);
+const decodeContainerInput = Schema.decodeUnknownOption(ContainerInputSchema, strict);
+const decodeKvInput = Schema.decodeUnknownOption(KvInputSchema, strict);
+const decodeR2Input = Schema.decodeUnknownOption(R2InputSchema, strict);
+const decodeSecretPropsInput = Schema.decodeUnknownOption(SecretPropsInputSchema, strict);
+const decodeResourceReviewInput = Schema.decodeUnknownOption(ResourceReviewInputSchema, strict);
+const decodeResolvedIdentityInput = Schema.decodeUnknownOption(ResolvedIdentityInputSchema, strict);
+const decodeBindingActionInput = Schema.decodeUnknownOption(BindingActionInputSchema, strict);
+const decodeDerivationFailureInput = Schema.decodeUnknownOption(
+  DerivationFailureInputSchema,
+  strict,
+);
+const decodeProviderEvidenceInput = Schema.decodeUnknownOption(ProviderEvidenceInputSchema, strict);
+const decodeRawPlanInput = Schema.decodeUnknownOption(RawPlanInputSchema, strict);
+const decodeOutputInput = Schema.decodeUnknownOption(OutputInputSchema, strict);
+const decodeRawActionInput = Schema.decodeUnknownOption(RawActionInputSchema, open);
+const decodeRawDeletionInput = Schema.decodeUnknownOption(RawDeletionInputSchema, open);
+const decodeRawDeletionResourceInput = Schema.decodeUnknownOption(
+  RawDeletionResourceInputSchema,
+  open,
+);
+const decodeRawActionDeletionInput = Schema.decodeUnknownOption(RawActionDeletionInputSchema, open);
+const decodeRawActionDefinitionInput = Schema.decodeUnknownOption(
+  RawActionDefinitionInputSchema,
+  open,
+);
+const decodeRawResourceNodeInput = Schema.decodeUnknownOption(RawResourceNodeInputSchema, open);
+const decodeRawResourceInput = Schema.decodeUnknownOption(RawResourceInputSchema, open);
+const decodeRawBindingInput = Schema.decodeUnknownOption(RawBindingInputSchema, open);
+const decodeObservedValueInput = Schema.decodeUnknownOption(ObservedValueInputSchema, strict);
+const decodeDisclosureMarkersInput = Schema.decodeUnknownOption(
+  DisclosureMarkersInputSchema,
+  strict,
+);
+
 const blocker = (code: Chunk2BlockerCode, message: string): Chunk2Blocker => ({ code, message });
 const missing = (value: string | undefined): boolean => value === undefined || value.trim() === "";
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 const sorted = (values: readonly string[]): readonly string[] => [...values].sort();
 const sameStrings = (left: readonly string[], right: readonly string[]): boolean =>
   JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
 const sameOrdered = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
-const exactKeys = (
-  value: object,
-  required: readonly string[],
-  optional: readonly string[] = [],
-) => {
-  const actual = Object.keys(value).sort();
-  const allowed = [...required, ...optional];
-  return (
-    required.every((key) => actual.includes(key)) && actual.every((key) => allowed.includes(key))
-  );
-};
-
 const failShape = (message: string): never => {
   throw new Chunk2ReadinessError(`PLAN_SHAPE_INVALID: ${message}`);
 };
-const record = (value: unknown, path: string): Record<string, unknown> => {
-  if (!isRecord(value)) return failShape(`${path} must be a record`);
-  return value;
+const isEntriesObject = (value: unknown): value is object =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const entriesOf = (value: unknown, path: string): readonly [string, unknown][] => {
+  if (!isEntriesObject(value)) return failShape(`${path} must be a record`);
+  return Object.entries(value);
+};
+const decodeShape = <A>(
+  decoder: (value: unknown) => Option.Option<A>,
+  value: unknown,
+  path: string,
+  message: string,
+): A => {
+  entriesOf(value, path);
+  const decoded = decoder(value);
+  if (Option.isNone(decoded)) return failShape(message);
+  return decoded.value;
 };
 const string = (value: unknown, path: string): string => {
   if (typeof value !== "string") return failShape(`${path} must be a string`);
@@ -435,15 +680,12 @@ const isSecretBindingName = (value: string): value is Chunk2SecretBindingName =>
   CHUNK2_SECRET_RESOURCES.some(({ bindingName }) => bindingName === value);
 
 const normalizeBinding = (value: unknown, path: string): Chunk2NormalizedWorkerBinding => {
-  const input = record(value, path);
-  if (
-    !exactKeys(
-      input,
-      ["type", "name"],
-      ["className", "namespaceId", "bucketName", "value", "storeId", "secretName"],
-    )
-  )
-    return failShape(`${path} has missing or unknown fields`);
+  const input = decodeShape(
+    decodeBindingInput,
+    value,
+    path,
+    `${path} has missing or unknown fields`,
+  );
   const className = optionalString(input.className, `${path}.className`);
   const namespaceId = optionalString(input.namespaceId, `${path}.namespaceId`);
   const bucketName = optionalString(input.bucketName, `${path}.bucketName`);
@@ -463,28 +705,28 @@ const normalizeBinding = (value: unknown, path: string): Chunk2NormalizedWorkerB
 };
 
 const normalizeMigrations = (value: unknown, path: string): Chunk2WorkerMigrationOperations => {
-  const input = record(value, path);
-  const keys = [
-    "newClasses",
-    "newSqliteClasses",
-    "deletedClasses",
-    "renamedClasses",
-    "transferredClasses",
-  ];
-  if (!exactKeys(input, keys)) return failShape(`${path} has missing or unknown fields`);
+  const input = decodeShape(
+    decodeMigrationInput,
+    value,
+    path,
+    `${path} has missing or unknown fields`,
+  );
   const renamedClasses = array(input.renamedClasses, `${path}.renamedClasses`).map(
     (entry, index) => {
-      const row = record(entry, `${path}.renamedClasses[${index}]`);
-      if (!exactKeys(row, ["from", "to"]))
-        return failShape(`${path}.renamedClasses[${index}] is malformed`);
+      const rowPath = `${path}.renamedClasses[${index}]`;
+      const row = decodeShape(decodeRenamedClassInput, entry, rowPath, `${rowPath} is malformed`);
       return { from: string(row.from, `${path}.from`), to: string(row.to, `${path}.to`) };
     },
   );
   const transferredClasses = array(input.transferredClasses, `${path}.transferredClasses`).map(
     (entry, index) => {
-      const row = record(entry, `${path}.transferredClasses[${index}]`);
-      if (!exactKeys(row, ["from", "to", "fromScript"]))
-        return failShape(`${path}.transferredClasses[${index}] is malformed`);
+      const rowPath = `${path}.transferredClasses[${index}]`;
+      const row = decodeShape(
+        decodeTransferredClassInput,
+        entry,
+        rowPath,
+        `${rowPath} is malformed`,
+      );
       return {
         from: string(row.from, `${path}.from`),
         to: string(row.to, `${path}.to`),
@@ -502,16 +744,16 @@ const normalizeMigrations = (value: unknown, path: string): Chunk2WorkerMigratio
 };
 
 const normalizePolicy = (value: unknown, path: string): Chunk2R2PolicyDetails => {
-  const input = record(value, path);
-  if (
-    !exactKeys(input, ["lifecycleRules", "corsRules", "customDomains", "location", "storageClass"])
-  )
-    return failShape(`${path} has missing or unknown fields`);
+  const input = decodeShape(
+    decodePolicyInput,
+    value,
+    path,
+    `${path} has missing or unknown fields`,
+  );
   const lifecycleRules = array(input.lifecycleRules, `${path}.lifecycleRules`).map(
     (entry, index) => {
-      const row = record(entry, `${path}.lifecycleRules[${index}]`);
-      if (!exactKeys(row, ["id", "enabled", "conditions", "actions"]))
-        return failShape(`${path}.lifecycleRules[${index}] is malformed`);
+      const rowPath = `${path}.lifecycleRules[${index}]`;
+      const row = decodeShape(decodeLifecycleRuleInput, entry, rowPath, `${rowPath} is malformed`);
       return {
         id: string(row.id, `${path}.id`),
         enabled: boolean(row.enabled, `${path}.enabled`),
@@ -521,17 +763,8 @@ const normalizePolicy = (value: unknown, path: string): Chunk2R2PolicyDetails =>
     },
   );
   const corsRules = array(input.corsRules, `${path}.corsRules`).map((entry, index) => {
-    const row = record(entry, `${path}.corsRules[${index}]`);
-    if (
-      !exactKeys(row, [
-        "allowedOrigins",
-        "allowedMethods",
-        "allowedHeaders",
-        "exposedHeaders",
-        "maxAgeSeconds",
-      ])
-    )
-      return failShape(`${path}.corsRules[${index}] is malformed`);
+    const rowPath = `${path}.corsRules[${index}]`;
+    const row = decodeShape(decodeCorsRuleInput, entry, rowPath, `${rowPath} is malformed`);
     return {
       allowedOrigins: strings(row.allowedOrigins, `${path}.allowedOrigins`),
       allowedMethods: strings(row.allowedMethods, `${path}.allowedMethods`),
@@ -544,9 +777,8 @@ const normalizePolicy = (value: unknown, path: string): Chunk2R2PolicyDetails =>
     };
   });
   const customDomains = array(input.customDomains, `${path}.customDomains`).map((entry, index) => {
-    const row = record(entry, `${path}.customDomains[${index}]`);
-    if (!exactKeys(row, ["domain", "enabled", "status", "minimumTls"]))
-      return failShape(`${path}.customDomains[${index}] is malformed`);
+    const rowPath = `${path}.customDomains[${index}]`;
+    const row = decodeShape(decodeCustomDomainInput, entry, rowPath, `${rowPath} is malformed`);
     return {
       domain: string(row.domain, `${path}.domain`),
       enabled: boolean(row.enabled, `${path}.enabled`),
@@ -564,71 +796,59 @@ const normalizePolicy = (value: unknown, path: string): Chunk2R2PolicyDetails =>
 };
 
 const normalizeTopology = (value: unknown, path: string): Chunk2Topology => {
-  const input = record(value, path);
-  if (!exactKeys(input, ["worker", "durableObject", "container", "kv", "r2"]))
-    return failShape(`${path} has missing or unknown fields`);
-  const worker = record(input.worker, `${path}.worker`);
-  if (
-    !exactKeys(worker, [
-      "name",
-      "physicalId",
-      "entryPoint",
-      "exports",
-      "compatibilityDate",
-      "compatibilityFlags",
-      "observability",
-      "routes",
-      "assets",
-      "outputKeys",
-      "bindings",
-    ])
-  )
-    return failShape(`${path}.worker is malformed`);
-  const assets = record(worker.assets, `${path}.worker.assets`);
-  if (
-    !exactKeys(assets, [
-      "binding",
-      "directory",
-      "runWorkerFirst",
-      "htmlHandling",
-      "notFoundHandling",
-    ])
-  )
-    return failShape(`${path}.worker.assets is malformed`);
-  const durableObject = record(input.durableObject, `${path}.durableObject`);
-  if (
-    !exactKeys(durableObject, ["binding", "className", "namespaceId", "hostScript", "migrations"])
-  )
-    return failShape(`${path}.durableObject is malformed`);
+  const input = decodeShape(
+    decodeTopologyInput,
+    value,
+    path,
+    `${path} has missing or unknown fields`,
+  );
+  const workerPath = `${path}.worker`;
+  const worker = decodeShape(
+    decodeWorkerInput,
+    input.worker,
+    workerPath,
+    `${workerPath} is malformed`,
+  );
+  const assetsPath = `${path}.worker.assets`;
+  const assets = decodeShape(
+    decodeAssetsInput,
+    worker.assets,
+    assetsPath,
+    `${assetsPath} is malformed`,
+  );
+  const durableObjectPath = `${path}.durableObject`;
+  const durableObject = decodeShape(
+    decodeDurableObjectInput,
+    input.durableObject,
+    durableObjectPath,
+    `${durableObjectPath} is malformed`,
+  );
   const migrations = array(durableObject.migrations, `${path}.durableObject.migrations`).map(
     (entry, index) => {
-      const row = record(entry, `${path}.durableObject.migrations[${index}]`);
-      if (!exactKeys(row, ["tag", "newSqliteClasses"]))
-        return failShape(`${path}.durableObject.migrations[${index}] is malformed`);
+      const rowPath = `${path}.durableObject.migrations[${index}]`;
+      const row = decodeShape(
+        decodeDurableObjectMigrationInput,
+        entry,
+        rowPath,
+        `${rowPath} is malformed`,
+      );
       return {
         tag: string(row.tag, `${path}.tag`),
         newSqliteClasses: strings(row.newSqliteClasses, `${path}.newSqliteClasses`),
       };
     },
   );
-  const container = record(input.container, `${path}.container`);
-  if (
-    !exactKeys(container, [
-      "applicationId",
-      "applicationName",
-      "dockerfile",
-      "instanceType",
-      "maxInstances",
-      "durableObjectNamespaceId",
-    ])
-  )
-    return failShape(`${path}.container is malformed`);
-  const kv = record(input.kv, `${path}.kv`);
-  if (!exactKeys(kv, ["binding", "namespaceId", "title"]))
-    return failShape(`${path}.kv is malformed`);
-  const r2 = record(input.r2, `${path}.r2`);
-  if (!exactKeys(r2, ["binding", "bucketName", "policy"]))
-    return failShape(`${path}.r2 is malformed`);
+  const containerPath = `${path}.container`;
+  const container = decodeShape(
+    decodeContainerInput,
+    input.container,
+    containerPath,
+    `${containerPath} is malformed`,
+  );
+  const kvPath = `${path}.kv`;
+  const kv = decodeShape(decodeKvInput, input.kv, kvPath, `${kvPath} is malformed`);
+  const r2Path = `${path}.r2`;
+  const r2 = decodeShape(decodeR2Input, input.r2, r2Path, `${r2Path} is malformed`);
   return {
     worker: {
       name: string(worker.name, `${path}.worker.name`),
@@ -683,9 +903,12 @@ const normalizeTopology = (value: unknown, path: string): Chunk2Topology => {
 };
 
 const normalizeSecretProps = (value: unknown, path: string): Chunk2SecretProps => {
-  const input = record(value, path);
-  if (!exactKeys(input, CHUNK2_SECRET_PROP_KEYS))
-    return failShape(`${path} has missing or unknown fields`);
+  const input = decodeShape(
+    decodeSecretPropsInput,
+    value,
+    path,
+    `${path} has missing or unknown fields`,
+  );
   const bindingName = string(input.bindingName, `${path}.bindingName`);
   if (!isSecretBindingName(bindingName)) return failShape(`${path}.bindingName is unsupported`);
   const providerVersion = number(input.providerVersion, `${path}.providerVersion`);
@@ -702,35 +925,23 @@ const normalizeSecretProps = (value: unknown, path: string): Chunk2SecretProps =
 };
 
 const normalizeResource = (value: unknown, path: string): Chunk2PlanResourceReview => {
-  const input = record(value, path);
-  const required = [
-    "fqn",
-    "logicalId",
-    "resourceType",
-    "action",
-    "removalPolicy",
-    "resolvedIdentity",
-    "changedInputKeys",
-    "bindingActions",
-    "derivationFailures",
-  ];
-  const optional = [
-    "secretProps",
-    "desiredTopology",
-    "workerMigrations",
-    "r2LifecycleRulesInput",
-    "providerRequestEvidence",
-  ];
-  if (!exactKeys(input, required, optional))
-    return failShape(`${path} has missing or unknown fields`);
-  const identity = record(input.resolvedIdentity, `${path}.resolvedIdentity`);
-  if (!exactKeys(identity, ["before", "desired"]))
-    return failShape(`${path}.resolvedIdentity is malformed`);
+  const input = decodeShape(
+    decodeResourceReviewInput,
+    value,
+    path,
+    `${path} has missing or unknown fields`,
+  );
+  const identityPath = `${path}.resolvedIdentity`;
+  const identity = decodeShape(
+    decodeResolvedIdentityInput,
+    input.resolvedIdentity,
+    identityPath,
+    `${identityPath} is malformed`,
+  );
   const bindingActions = array(input.bindingActions, `${path}.bindingActions`).map(
     (entry, index) => {
-      const row = record(entry, `${path}.bindingActions[${index}]`);
-      if (!exactKeys(row, ["sid", "action"]))
-        return failShape(`${path}.bindingActions[${index}] is malformed`);
+      const rowPath = `${path}.bindingActions[${index}]`;
+      const row = decodeShape(decodeBindingActionInput, entry, rowPath, `${rowPath} is malformed`);
       const action = string(row.action, `${path}.bindingActions[${index}].action`);
       if (!isBindingAction(action))
         return failShape(`${path}.bindingActions[${index}].action is unsupported`);
@@ -744,9 +955,13 @@ const normalizeResource = (value: unknown, path: string): Chunk2PlanResourceRevi
   if (!isPlanAction(action)) return failShape(`${path}.action is unsupported`);
   const derivationFailures = array(input.derivationFailures, `${path}.derivationFailures`).map(
     (entry, index) => {
-      const row = record(entry, `${path}.derivationFailures[${index}]`);
-      if (!exactKeys(row, ["field", "transcriptArtifactDigest"]))
-        return failShape(`${path}.derivationFailures[${index}] is malformed`);
+      const rowPath = `${path}.derivationFailures[${index}]`;
+      const row = decodeShape(
+        decodeDerivationFailureInput,
+        entry,
+        rowPath,
+        `${rowPath} is malformed`,
+      );
       const transcriptArtifactDigest = string(
         row.transcriptArtifactDigest,
         `${path}.derivationFailures[${index}].transcriptArtifactDigest`,
@@ -809,16 +1024,7 @@ const normalizeResource = (value: unknown, path: string): Chunk2PlanResourceRevi
 };
 
 const normalizeProviderEvidence = (value: unknown, path: string): Chunk2ProviderRequestEvidence => {
-  const input = record(value, path);
-  if (
-    !exactKeys(input, [
-      "transcriptArtifactDigest",
-      "firewallMode",
-      "reviewedRequestDigests",
-      "observedRequestDigests",
-    ])
-  )
-    return failShape(`${path} is malformed`);
+  const input = decodeShape(decodeProviderEvidenceInput, value, path, `${path} is malformed`);
   const firewallMode = string(input.firewallMode, `${path}.firewallMode`);
   if (firewallMode !== "deny-by-default") return failShape(`${path}.firewallMode is unsupported`);
   const transcriptArtifactDigest = string(
@@ -863,23 +1069,40 @@ export function normalizeChunk2Plan(
   input: unknown,
   transcriptInput: unknown,
 ): Chunk2PlanReviewSnapshot {
-  const plan = record(input, "plan");
-  if (!exactKeys(plan, CHUNK2_PLAN_SURFACES)) return failShape("plan surfaces must be exact");
-  const output = record(plan.output, "plan.output");
-  if (!exactKeys(output, ["url"])) return failShape("plan.output must contain only url");
-  const resources = record(plan.resources, "plan.resources");
-  const transcript = record(transcriptInput, "transcript");
-  if (!sameStrings(Object.keys(resources), Object.keys(transcript)))
+  const plan = decodeShape(decodeRawPlanInput, input, "plan", "plan surfaces must be exact");
+  const output = decodeShape(
+    decodeOutputInput,
+    plan.output,
+    "plan.output",
+    "plan.output must contain only url",
+  );
+  const resources = entriesOf(plan.resources, "plan.resources");
+  const transcript = entriesOf(transcriptInput, "transcript");
+  if (
+    !sameStrings(
+      resources.map(([fqn]) => fqn),
+      transcript.map(([fqn]) => fqn),
+    )
+  )
     return failShape("transcript FQNs must exactly match plan.resources FQNs");
-  const actions = Object.entries(record(plan.actions, "plan.actions")).map(([fqn, value]) => {
-    const row = record(value, `plan.actions.${fqn}`);
+  const transcriptByFqn = new Map(transcript);
+  const actions = entriesOf(plan.actions, "plan.actions").map(([fqn, value]) => {
+    const rowPath = `plan.actions.${fqn}`;
+    const row = decodeShape(decodeRawActionInput, value, rowPath, `${rowPath} is malformed`);
     const action = string(row.action, `plan.actions.${fqn}.action`);
     if (!isTaskAction(action)) return failShape(`plan.actions.${fqn}.action is unsupported`);
     return { fqn: nonEmptyString(fqn, "plan action FQN"), action };
   });
-  const deletions = Object.entries(record(plan.deletions, "plan.deletions")).map(([fqn, value]) => {
-    const row = record(value, `plan.deletions.${fqn}`);
-    const resource = record(row.resource, `plan.deletions.${fqn}.resource`);
+  const deletions = entriesOf(plan.deletions, "plan.deletions").map(([fqn, value]) => {
+    const rowPath = `plan.deletions.${fqn}`;
+    const row = decodeShape(decodeRawDeletionInput, value, rowPath, `${rowPath} is malformed`);
+    const resourcePath = `plan.deletions.${fqn}.resource`;
+    const resource = decodeShape(
+      decodeRawDeletionResourceInput,
+      row.resource,
+      resourcePath,
+      `${resourcePath} is malformed`,
+    );
     if (row.action !== "delete") return failShape(`plan.deletions.${fqn}.action is unsupported`);
     return {
       fqn: nonEmptyString(fqn, "plan deletion FQN"),
@@ -888,15 +1111,28 @@ export function normalizeChunk2Plan(
       action: "delete" as const,
     };
   });
-  const actionDeletions = Object.entries(record(plan.actionDeletions, "plan.actionDeletions")).map(
+  const actionDeletions = entriesOf(plan.actionDeletions, "plan.actionDeletions").map(
     ([fqn, value]) => {
-      const row = record(value, `plan.actionDeletions.${fqn}`);
+      const rowPath = `plan.actionDeletions.${fqn}`;
+      const row = decodeShape(
+        decodeRawActionDeletionInput,
+        value,
+        rowPath,
+        `${rowPath} is malformed`,
+      );
       if (row.action !== "delete")
         return failShape(`plan.actionDeletions.${fqn}.action is unsupported`);
+      const definitionPath = `plan.actionDeletions.${fqn}.def`;
+      const definition = decodeShape(
+        decodeRawActionDefinitionInput,
+        row.def,
+        definitionPath,
+        `${definitionPath} is malformed`,
+      );
       return {
         fqn: nonEmptyString(fqn, "plan action deletion FQN"),
         logicalId: nonEmptyString(
-          record(row.def, `plan.actionDeletions.${fqn}.def`).LogicalId,
+          definition.LogicalId,
           `plan.actionDeletions.${fqn}.def.LogicalId`,
         ),
         action: "delete" as const,
@@ -904,27 +1140,45 @@ export function normalizeChunk2Plan(
     },
   );
   return {
-    resources: Object.entries(resources).map(([fqn, value]) => {
-      const node = record(value, `plan.resources.${fqn}`);
-      const resource = record(node.resource, `plan.resources.${fqn}.resource`);
+    resources: resources.map(([fqn, value]) => {
+      const nodePath = `plan.resources.${fqn}`;
+      const node = decodeShape(
+        decodeRawResourceNodeInput,
+        value,
+        nodePath,
+        `${nodePath} is malformed`,
+      );
+      const resourcePath = `plan.resources.${fqn}.resource`;
+      const resource = decodeShape(
+        decodeRawResourceInput,
+        node.resource,
+        resourcePath,
+        `${resourcePath} is malformed`,
+      );
       const action = string(node.action, `plan.resources.${fqn}.action`);
       if (!isApplyAction(action)) return failShape(`plan.resources.${fqn}.action is unsupported`);
       const bindingActions = array(node.bindings, `plan.resources.${fqn}.bindings`).map(
         (binding, index) => {
-          const row = record(binding, `plan.resources.${fqn}.bindings[${index}]`);
+          const rowPath = `plan.resources.${fqn}.bindings[${index}]`;
+          const row = decodeShape(
+            decodeRawBindingInput,
+            binding,
+            rowPath,
+            `${rowPath} is malformed`,
+          );
           return { sid: row.sid, action: row.action };
         },
       );
       return normalizeResource(
-        {
-          ...record(transcript[fqn], `transcript.${fqn}`),
-          fqn,
-          logicalId: resource.LogicalId,
-          resourceType: resource.Type,
-          removalPolicy: resource.RemovalPolicy,
-          action,
-          bindingActions,
-        },
+        Object.fromEntries([
+          ...entriesOf(transcriptByFqn.get(fqn), `transcript.${fqn}`),
+          ["fqn", fqn],
+          ["logicalId", resource.LogicalId],
+          ["resourceType", resource.Type],
+          ["removalPolicy", resource.RemovalPolicy],
+          ["action", action],
+          ["bindingActions", bindingActions],
+        ]),
         `review.${fqn}`,
       );
     }),
@@ -1080,11 +1334,11 @@ const observedRecordValid = (
   exactRecordKeys(value, keys) &&
   keys.every((key) => {
     const entry = Object.getOwnPropertyDescriptor(value, key)?.value;
+    const decoded = decodeObservedValueInput(entry);
     return (
-      isRecord(entry) &&
-      exactRecordKeys(entry, ["before", "after"]) &&
-      entry.before === expected[key] &&
-      entry.after === expected[key]
+      Option.isSome(decoded) &&
+      decoded.value.before === expected[key] &&
+      decoded.value.after === expected[key]
     );
   });
 
@@ -1119,12 +1373,12 @@ export function chunk2CloneEvidenceBlockers(
     !exactRecordKeys(evidence.seededDigests, digestKeys) ||
     digestKeys.some((key) => {
       const entry = Object.getOwnPropertyDescriptor(evidence.seededDigests, key)?.value;
+      const decoded = decodeObservedValueInput(entry);
       return (
-        !isRecord(entry) ||
-        !exactRecordKeys(entry, ["before", "after"]) ||
-        !isSha256Digest(entry.before) ||
-        !isSha256Digest(entry.after) ||
-        entry.before !== entry.after
+        Option.isNone(decoded) ||
+        !isSha256Digest(decoded.value.before) ||
+        !isSha256Digest(decoded.value.after) ||
+        decoded.value.before !== decoded.value.after
       );
     })
   )
@@ -1201,13 +1455,10 @@ export function chunk2CloneEvidenceBlockers(
         "Post-destroy IDs must have exact keys and preserve every resource.",
       ),
     );
-  const markerShapeValid =
-    isRecord(disclosureMarkers) &&
-    exactRecordKeys(disclosureMarkers, ["plaintext", "ownerKey"]) &&
-    typeof disclosureMarkers.plaintext === "string" &&
-    typeof disclosureMarkers.ownerKey === "string";
+  const decodedMarkers = decodeDisclosureMarkersInput(disclosureMarkers);
+  const markerShapeValid = Option.isSome(decodedMarkers);
   const markerValues = markerShapeValid
-    ? [disclosureMarkers.plaintext, disclosureMarkers.ownerKey]
+    ? [decodedMarkers.value.plaintext, decodedMarkers.value.ownerKey]
     : [];
   const artifacts = [...evidence.disclosureScan.artifacts].sort((left, right) =>
     left.id.localeCompare(right.id),

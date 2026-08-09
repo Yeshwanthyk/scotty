@@ -8,7 +8,9 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import scottyHatch, {
+  type ConfiguredStatus,
   type HatchChildProcess,
+  type HatchServiceProcess,
   ScottyHatchManager,
   ScottyHatchParameters,
   SCOTTY_HATCH_MAX_BYTES,
@@ -17,7 +19,7 @@ import scottyHatch, {
   waitForLoopbackReadiness,
 } from "./index.ts";
 
-const configured = (overrides: Readonly<Record<string, unknown>> = {}) => ({
+const configured = (overrides: Partial<ConfiguredStatus> = {}): ConfiguredStatus => ({
   version: 1 as const,
   status: "configured" as const,
   hatchId: "hatch-abcd1234",
@@ -79,15 +81,7 @@ test("exposes one strict bounded operation union without env, identity, URL, or 
   assert.equal(Check(ScottyHatchParameters, { operation: "status" }), true);
   assert.equal(Check(ScottyHatchParameters, { operation: "close" }), true);
 
-  for (const field of [
-    "env",
-    "credential",
-    "headers",
-    "sessionId",
-    "url",
-    "shell",
-    "command",
-  ]) {
+  for (const field of ["env", "credential", "headers", "sessionId", "url", "shell", "command"]) {
     assert.equal(Check(ScottyHatchParameters, { ...ensureInput(), [field]: "forbidden" }), false);
   }
   for (const port of [1_023, 3_000, 43_117, 65_536])
@@ -173,9 +167,10 @@ test("starts one process group with an allow-listed environment and registers so
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.input, SCOTTY_HATCH_ROUTE);
     assert.equal(requests[0]?.init?.method, "POST");
-    assert.deepEqual([...new Headers(requests[0]?.init?.headers).entries()], [
-      ["content-type", "application/json"],
-    ]);
+    assert.deepEqual(
+      [...new Headers(requests[0]?.init?.headers).entries()],
+      [["content-type", "application/json"]],
+    );
     assert.deepEqual(JSON.parse(String(requests[0]?.init?.body)), {
       version: 1,
       service: {
@@ -391,12 +386,12 @@ test("close kills surviving process-group descendants after the leader exits", a
 test("session_start restores the exact fenced service without calling normal ensure", async () => {
   const { root, app } = await workspace();
   const child = new FakeChild(401);
-  const spawns: unknown[] = [];
+  const spawns: Array<Pick<HatchServiceProcess, "argv" | "workingDirectory">> = [];
   const requests: Array<{ readonly input: string; readonly method: string }> = [];
   const manager = new ScottyHatchManager({
     workspaceRoot: root,
-    spawnProcess: (argv, workingDirectory, environment) => {
-      spawns.push({ argv, workingDirectory, environment });
+    spawnProcess: (argv, workingDirectory) => {
+      spawns.push({ argv, workingDirectory });
       return child;
     },
     localTransport: async () => new Response("ready"),
@@ -423,14 +418,8 @@ test("session_start restores the exact fenced service without calling normal ens
 
   assert.deepEqual(requests, [{ input: SCOTTY_HATCH_RESTORE_ROUTE, method: "GET" }]);
   assert.equal(spawns.length, 1);
-  assert.deepEqual(
-    (spawns[0] as { readonly argv: readonly string[]; readonly workingDirectory: string }).argv,
-    ["npm", "run", "dev", "--", "--host", "0.0.0.0"],
-  );
-  assert.equal(
-    (spawns[0] as { readonly workingDirectory: string }).workingDirectory,
-    app,
-  );
+  assert.deepEqual(spawns[0]?.argv, ["npm", "run", "dev", "--", "--host", "0.0.0.0"]);
+  assert.equal(spawns[0]?.workingDirectory, app);
   assert.notEqual(requests[0]?.input, SCOTTY_HATCH_ROUTE);
 });
 
@@ -522,7 +511,10 @@ test("registers one safely guided scotty_hatch tool and idempotent session clean
     },
   };
   scottyHatch(api as ExtensionAPI);
-  assert.deepEqual(tools.map(({ name }) => name), ["scotty_hatch"]);
+  assert.deepEqual(
+    tools.map(({ name }) => name),
+    ["scotty_hatch"],
+  );
   assert.match(
     tools[0]?.promptGuidelines.join("\n") ?? "",
     /returned exact scotty-hatch:<hatchId> reference once/u,

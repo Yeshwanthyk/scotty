@@ -7,6 +7,7 @@ import {
   type PiConsoleSnapshotV1,
   type PiConsoleUnavailableV1,
 } from "../../protocol/pi-console.ts";
+import { Schema } from "effect";
 import { PiScottyError } from "./errors.ts";
 import { redactRemoteString, redactRemoteValue } from "./redaction.ts";
 import {
@@ -30,8 +31,8 @@ export const SETTLED_TURNS_FOLD_ID = "settled-turns";
 export interface ToolProjection {
   readonly id: string;
   readonly name: string;
-  readonly arguments?: unknown;
-  readonly partialResult?: unknown;
+  readonly arguments?: Schema.Json;
+  readonly partialResult?: Schema.Json;
 }
 
 export interface ConsoleNotification {
@@ -42,7 +43,7 @@ export interface ConsoleNotification {
 
 interface PendingMessageProjection {
   index: number;
-  message: unknown;
+  message: Schema.Json;
 }
 
 interface MessageProjectionState {
@@ -54,9 +55,9 @@ export interface LiveProjection {
   readonly epoch: string;
   readonly sequence: number;
   readonly sessionRevision: number;
-  readonly state: unknown;
+  readonly state: Schema.Json;
   readonly isStreaming: boolean;
-  readonly messages: ReadonlyArray<unknown>;
+  readonly messages: ReadonlyArray<Schema.Json>;
   readonly messageProjection: MessageProjectionState;
   readonly activeTools: ReadonlyMap<string, ToolProjection>;
   readonly queue: PiConsoleSnapshotV1["queue"];
@@ -65,7 +66,7 @@ export interface LiveProjection {
   readonly extensionSurface: PiConsoleSnapshotV1["extensionSurface"];
   readonly capabilities: PiConsoleSnapshotV1["capabilities"];
   readonly truncated: PiConsoleSnapshotV1["truncated"];
-  readonly recentEvents: ReadonlyArray<unknown>;
+  readonly recentEvents: ReadonlyArray<Schema.Json>;
   readonly notifications: ReadonlyArray<ConsoleNotification>;
   readonly activity: "working" | "waiting" | "completed" | "unknown";
 }
@@ -99,15 +100,15 @@ export type EventReduction = "applied" | "duplicate" | "resnapshot";
 const toolId = (event: ReturnType<typeof decodeToolEvent>): string | undefined =>
   event?.toolCallId ?? event?.tool_call_id ?? event?.id;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+const isJsonObject = (value: Schema.Json): value is Schema.JsonObject =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-const messageSignature = (message: unknown): string => JSON.stringify(message) ?? "null";
-const messageId = (message: unknown): string | undefined => {
+const messageSignature = (message: Schema.Json): string => JSON.stringify(message) ?? "null";
+const messageId = (message: Schema.Json): string | undefined => {
   const identity = decodeMessageIdentity(message);
   return identity?.id ?? identity?.messageId ?? identity?.message_id;
 };
-const sameLifecycleMessage = (left: unknown, right: unknown): boolean => {
+const sameLifecycleMessage = (left: Schema.Json, right: Schema.Json): boolean => {
   const leftIdentity = decodeMessageIdentity(left);
   const rightIdentity = decodeMessageIdentity(right);
   const leftId = leftIdentity?.id ?? leftIdentity?.messageId ?? leftIdentity?.message_id;
@@ -122,7 +123,7 @@ const sameLifecycleMessage = (left: unknown, right: unknown): boolean => {
 
 const claimSnapshotMessage = (
   projection: MessageProjectionState,
-  message: unknown,
+  message: Schema.Json,
 ): number | undefined => {
   const signature = messageSignature(message);
   const index = projection.overlap.findIndex((candidate) => candidate.signature === signature);
@@ -131,10 +132,10 @@ const claimSnapshotMessage = (
 };
 
 const projectMessageEvent = (
-  messages: unknown[],
+  messages: Schema.Json[],
   projection: MessageProjectionState,
   type: "message_start" | "message_update" | "message_end",
-  message: unknown,
+  message: Schema.Json,
 ): void => {
   const identity = decodeMessageIdentity(message);
   const id = messageId(message);
@@ -186,7 +187,7 @@ const projectMessageEvent = (
 };
 
 const projectAssistantMessageEvent = (
-  messages: unknown[],
+  messages: Schema.Json[],
   projection: MessageProjectionState,
   event: AssistantMessageEvent,
 ): void => {
@@ -197,7 +198,7 @@ const projectAssistantMessageEvent = (
     const index = messages.findLastIndex(
       (candidate) =>
         decodeMessageIdentity(candidate)?.role === "assistant" &&
-        isRecord(candidate) &&
+        isJsonObject(candidate) &&
         Array.isArray(candidate.content),
     );
     const message = messages[index];
@@ -205,7 +206,7 @@ const projectAssistantMessageEvent = (
     pending = { index, message };
     projection.pending.push(pending);
   }
-  if (!isRecord(pending.message)) return;
+  if (!isJsonObject(pending.message)) return;
   const sourceContent = pending.message.content;
   if (!Array.isArray(sourceContent) || event.contentIndex > sourceContent.length) return;
   if (event.type === "toolcall_start" || event.type === "toolcall_delta") return;
@@ -216,7 +217,7 @@ const projectAssistantMessageEvent = (
   else if (event.type === "text_delta") {
     const part = content[event.contentIndex];
     const text =
-      isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "";
+      isJsonObject(part) && part.type === "text" && typeof part.text === "string" ? part.text : "";
     content[event.contentIndex] = {
       type: "text",
       text: redactRemoteString(`${text}${event.delta}`),
@@ -228,7 +229,7 @@ const projectAssistantMessageEvent = (
   else if (event.type === "thinking_delta") {
     const part = content[event.contentIndex];
     const thinking =
-      isRecord(part) && part.type === "thinking" && typeof part.thinking === "string"
+      isJsonObject(part) && part.type === "thinking" && typeof part.thinking === "string"
         ? part.thinking
         : "";
     content[event.contentIndex] = {
@@ -246,7 +247,7 @@ const projectAssistantMessageEvent = (
   messages[pending.index] = message;
 };
 
-const boundMessages = (messages: unknown[], projection: MessageProjectionState): void => {
+const boundMessages = (messages: Schema.Json[], projection: MessageProjectionState): void => {
   const removed = Math.max(0, messages.length - PI_CONSOLE_MAX_MESSAGES);
   if (removed === 0) return;
   messages.splice(0, removed);
@@ -269,7 +270,7 @@ const sanitizeQueue = (queue: PiConsoleSnapshotV1["queue"]): PiConsoleSnapshotV1
   })),
 });
 
-const eventQueueItems = (items: ReadonlyArray<unknown> | undefined, kind: string) =>
+const eventQueueItems = (items: ReadonlyArray<Schema.Json> | undefined, kind: string) =>
   (items ?? []).slice(0, PI_CONSOLE_MAX_QUEUE_ITEMS).map((item, index) => ({
     id: `${kind}-${index}`,
     text: redactRemoteString(typeof item === "string" ? item : (JSON.stringify(item) ?? "null")),

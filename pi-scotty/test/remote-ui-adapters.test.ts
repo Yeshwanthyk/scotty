@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
+import type { Schema } from "effect";
 import { redactRemoteString } from "../src/redaction.ts";
 import { adaptRemoteMessage, adaptRemoteTool } from "../src/remote-ui-adapters.ts";
 
-const assistant = (content: ReadonlyArray<unknown>, overrides: Record<string, unknown> = {}) => ({
+type AssistantFixture = {
+  readonly role: string;
+  readonly content: Schema.Json;
+  readonly stopReason: string;
+  readonly timestamp: number;
+};
+
+const assistant = (content: Schema.Json, overrides: Partial<AssistantFixture> = {}) => ({
   role: "assistant",
   content,
   stopReason: "stop",
@@ -37,7 +45,7 @@ describe("untrusted remote Pi UI adapters", () => {
       ]),
     );
     expect(adapted.kind).toBe("assistant");
-    if (adapted.kind !== "assistant") throw new Error("assistant was not adapted");
+    if (adapted.kind !== "assistant") return;
     expect(adapted.message.content).toEqual([
       { type: "thinking", thinking: "considering" },
       { type: "text", text: "done" },

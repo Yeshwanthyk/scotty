@@ -9,6 +9,15 @@ compatibility: Scotty with Effect 4.0.0-beta.103; verify Schema APIs against ven
 
 Parse unknown data once at ingress, then keep the domain typed.
 
+When you find `Record<string, unknown>`, choose the owning case before changing the type:
+
+1. For I/O data, trace the value to the first Scotty-owned HTTP, environment, storage, OAuth,
+   CLI, archive, state, or SDK boundary and decode it there.
+2. For an internal object, construct the precise domain type at the point that creates it, or
+   derive it from the schema or runtime value that owns its shape.
+3. For genuinely dynamic JSON, define a named schema-derived JSON value or object type with a
+   precise recursive value schema. Do not only rename `Record<string, unknown>`.
+
 ## Workflow
 
 1. Locate the trust boundary: HTTP, env, KV, R2, OAuth, CLI, archive, state, or third-party response.
@@ -36,4 +45,4 @@ Avoid `JSON.parse`, `as unknown as X`, inline object assertions, `as Record<stri
 
 At a native Cloudflare or Alchemy boundary, locally construct an allow-listed output rather than retaining an untrusted response object. Never retain request objects, raw causes, or credential-bearing fields in state, errors, logs, telemetry, or Alchemy outputs.
 
-Verify decoder names and signatures against `vendor/effect/packages/effect/src/Schema.ts` and beta.99 tests. Do not use Effect v3 Schema imports.
+Verify decoder names and signatures against `vendor/effect/packages/effect/src/Schema.ts` and beta.103 tests. Do not use Effect v3 Schema imports.
