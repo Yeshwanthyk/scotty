@@ -312,6 +312,27 @@ pass with the pinned Pi version, then the guarded deployment and deployed canary
 
 ## CLI
 
+Install the current signed release on macOS or Linux with GitHub CLI:
+
+```sh
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) asset=scotty-darwin-arm64 ;;
+  Darwin-x86_64) asset=scotty-darwin-x64 ;;
+  Linux-aarch64 | Linux-arm64) asset=scotty-linux-arm64 ;;
+  Linux-x86_64) asset=scotty-linux-x64 ;;
+  *) echo "Unsupported platform" >&2; exit 1 ;;
+esac
+scotty_download_dir=$(mktemp -d)
+gh release download --repo Yeshwanthyk/scotty --pattern "$asset" --dir "$scotty_download_dir"
+mkdir -p "${HOME}/.local/bin"
+install -m 0755 "$scotty_download_dir/$asset" "${HOME}/.local/bin/scotty"
+"${HOME}/.local/bin/scotty" --version
+```
+
+After the first install, `scotty upgrade` verifies the signed release manifest and executable hash
+before replacing the current binary. Add `${HOME}/.local/bin` to `PATH` to invoke it as `scotty`.
+Contributors can instead run `npm run build:cli` and use `./dist/scotty` directly.
+
 ```sh
 npm run build:cli
 ./dist/scotty init --name home
@@ -328,6 +349,20 @@ npm run build:cli
 ./dist/scotty uninstall
 ./dist/scotty skills
 ```
+
+### Hatch and screenshots
+
+Hatch is the authenticated live app for the current sandbox. The sandbox agent starts it with
+`scotty_hatch ensure` and keeps that process running. Open it from the paired session shell's
+**Open Hatch** control, or open the session URL with `/hatch/open` appended. Do not copy or share the
+wildcard preview URL, handoff token, route nonce, or Hatch cookie.
+
+Browser evidence must use a separate temporary server on a different port from Hatch. Run one
+bounded `scotty_browser_test`, stop only the temporary server, and leave Hatch running. The agent's
+latest update must include the exact structured `scotty-hatch:<hatchId>` and
+`scotty-evidence:<jobId>` references from the same conversation. Summary then shows the live Hatch
+control and retained screenshots. Do not blindly retry a failed evidence run; change the failure
+cause or session state first.
 
 For a trusted Linux VPS, first build or pull the pinned runtime image and sign in with `gh`.
 Then run the repeatable user-service setup:
