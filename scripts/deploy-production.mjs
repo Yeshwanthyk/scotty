@@ -24,6 +24,14 @@ export const PRODUCTION_DEPLOY_STEPS = [
     args: ["scripts/prepare-container-context.mjs"],
   },
   {
+    name: "Plan production through Alchemy",
+    command: "npx",
+    args: ["--no-install", "alchemy", "plan", "alchemy.run.ts", "--stage", "production"],
+    capture: true,
+    tee: true,
+    projectOutput: true,
+  },
+  {
     name: "Deploy production through Alchemy",
     command: "npx",
     args: ["--no-install", "alchemy", "deploy", "alchemy.run.ts", "--stage", "production", "--yes"],
@@ -231,6 +239,39 @@ export function readAlchemyContainerAction(output) {
     throw new Error("Alchemy did not report one terminal SandboxContainer action.");
   }
   return actions.values().next().value;
+}
+
+export function readAlchemyContainerPlanAction(output) {
+  const actions = new Set(
+    [...stripAnsi(output).matchAll(/^\[SandboxContainer\] (create|update|delete|noop)$/gmu)].map(
+      (match) => match[1],
+    ),
+  );
+  if (actions.size !== 1) {
+    throw new Error("Alchemy did not report one planned SandboxContainer action.");
+  }
+  return actions.values().next().value;
+}
+
+export function assertContainerPlanAuthorized(output, allowContainerRollout = false) {
+  const action = readAlchemyContainerPlanAction(output);
+  if (action === "delete") {
+    throw new Error("The production deploy guard refuses to delete the Container application.");
+  }
+  if (action !== "noop" && !allowContainerRollout) {
+    throw new Error(
+      `Alchemy planned a Container ${action}. Rerun with --container only when this release intentionally changes the Container image or configuration.`,
+    );
+  }
+  return action;
+}
+
+export function parseProductionDeployOptions(arguments_) {
+  const unknown = arguments_.filter((argument) => argument !== "--container");
+  if (unknown.length > 0) {
+    throw new Error(`Unknown production deploy option: ${unknown[0]}`);
+  }
+  return { allowContainerRollout: arguments_.includes("--container") };
 }
 
 export function assertSettledContainerBaseline(snapshot) {
@@ -1002,6 +1043,7 @@ export async function executeProductionDeploySteps(
     auditTopology = auditProductionHatchEvidenceTopology,
     resolveDockerEnvironment = resolveProductionDockerEnvironment,
     environment = process.env,
+    allowContainerRollout = false,
   } = {},
 ) {
   const topology = resolveProductionTopology(environment);
@@ -1011,14 +1053,19 @@ export async function executeProductionDeploySteps(
   await execute(PRODUCTION_DEPLOY_STEPS[1], productionEnv);
   await execute(PRODUCTION_DEPLOY_STEPS[2], verificationEnv);
   await revalidate();
+  const planOutput = await execute(PRODUCTION_DEPLOY_STEPS[3], productionEnv);
+  const plannedContainerAction = assertContainerPlanAuthorized(planOutput, allowContainerRollout);
   const controlPlaneBeforeDeploy = await readControlPlane(productionEnv);
   assertSettledContainerBaseline(controlPlaneBeforeDeploy);
-  const deployEnv = await resolveDockerEnvironment(productionEnv);
+  const deployEnv =
+    plannedContainerAction === "noop"
+      ? productionEnv
+      : await resolveDockerEnvironment(productionEnv);
 
   let deployError;
   let containerAction = "unknown";
   try {
-    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[3], deployEnv);
+    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[4], deployEnv);
     containerAction = readAlchemyContainerAction(deployOutput);
   } catch (error) {
     deployError = error;
@@ -1034,7 +1081,7 @@ export async function executeProductionDeploySteps(
 
   let auditError;
   try {
-    await execute(PRODUCTION_DEPLOY_STEPS[4], productionEnv, { allowAfterSignal: true });
+    await execute(PRODUCTION_DEPLOY_STEPS[5], productionEnv, { allowAfterSignal: true });
   } catch (error) {
     auditError = error;
   }
@@ -1057,15 +1104,17 @@ export async function executeProductionDeploySteps(
   if (errors.length === 1) throw errors[0];
 }
 
-export async function deployProduction() {
+export async function deployProduction({ allowContainerRollout = false } = {}) {
   const removeTerminationHandlers = installTerminationHandlers();
   let lockAcquired = false;
   try {
     await acquireDeployLock();
     lockAcquired = true;
     const verifiedHead = await assertLocalReleaseState();
-    await executeProductionDeploySteps(runProductionDeployStep, () =>
-      assertLocalReleaseState(verifiedHead),
+    await executeProductionDeploySteps(
+      runProductionDeployStep,
+      () => assertLocalReleaseState(verifiedHead),
+      { allowContainerRollout },
     );
   } finally {
     try {
@@ -1079,13 +1128,16 @@ export async function deployProduction() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  deployProduction().catch((error) => {
-    process.stderr.write(`Production deployment failed: ${error.message}\n`);
-    if (error instanceof AggregateError) {
-      for (const cause of error.errors) {
-        process.stderr.write(`- ${cause.message}\n`);
+  Promise.resolve()
+    .then(() => parseProductionDeployOptions(process.argv.slice(2)))
+    .then(deployProduction)
+    .catch((error) => {
+      process.stderr.write(`Production deployment failed: ${error.message}\n`);
+      if (error instanceof AggregateError) {
+        for (const cause of error.errors) {
+          process.stderr.write(`- ${cause.message}\n`);
+        }
       }
-    }
-    process.exitCode = 1;
-  });
+      process.exitCode = 1;
+    });
 }

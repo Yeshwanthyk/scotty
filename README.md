@@ -261,7 +261,8 @@ other than `main`, a dirty worktree, or a local `main` that differs from `origin
    git status --short --branch
    ```
 
-2. Ensure Docker and Cloudflare authentication are available. On macOS with Colima:
+2. Ensure Cloudflare authentication is available. Docker is required only for an intentional
+   Container release. On macOS with Colima:
 
    ```sh
    colima start default
@@ -280,10 +281,22 @@ other than `main`, a dirty worktree, or a local `main` that differs from `origin
      npm run deploy:production
    ```
 
+   The default command requires the Container plan to be a no-op and does not open Docker. When
+   the release intentionally changes the Container image or configuration, review that plan and
+   authorize it explicitly:
+
+   ```sh
+   DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
+   SCOTTY_INSTALLATION_NAME=home \
+   SCOTTY_ADOPTION_MANIFEST="${HOME}/.config/scotty/production-adoption.json" \
+     npm run deploy:production -- --container
+   ```
+
 4. Require the command to finish successfully. It runs `npm run check`, audits the current
-   Container inventory, builds an isolated image context, deploys through Alchemy, waits for the
-   exact Container rollout and health counters to converge, and audits the deployed inventory
-   again.
+   Container inventory, builds a dependency-minimal image context, and runs an Alchemy plan before
+   applying anything. A normal release stops unless `SandboxContainer` is a no-op. An explicitly
+   authorized Container release waits for the exact rollout and health counters to converge. Both
+   paths audit the deployed inventory again.
 
 5. Verify the connected installation from the freshly built CLI:
 
@@ -295,7 +308,9 @@ other than `main`, a dirty worktree, or a local `main` that differs from `origin
 Do not substitute a direct Wrangler production upload for this runbook. A Worker upload alone does
 not prove that the Container rollout converged or that runtime inventory remained healthy. If the
 guard fails, fix the reported Git, test, audit, or rollout condition and rerun the same command; do
-not bypass it with a direct Alchemy or Wrangler deployment.
+not bypass it with a direct Alchemy or Wrangler deployment. Do not add `--container` merely to get
+past a failed no-op check; first confirm that the image or Container configuration is intended to
+change.
 
 On an ARM Mac, the emulated `linux/amd64` image build can rarely stop during `npm ci` with a
 segmentation fault or exit code 139. Let the guarded command finish its rollout settlement and final
