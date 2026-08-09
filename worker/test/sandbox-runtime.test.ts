@@ -42,6 +42,9 @@ const execChecked = (command: string, options?: SandboxExecOptions) =>
 const exec = (command: string, options?: SandboxExecOptions) =>
   Effect.flatMap(SandboxRuntime, (runtime) => runtime.exec(command, options));
 
+const readFile = (path: string, maxBytes: number) =>
+  Effect.flatMap(SandboxRuntime, (runtime) => runtime.readFile(path, maxBytes));
+
 const startProcess = (command: string, options?: SandboxProcessOptions) =>
   Effect.flatMap(SandboxRuntime, (runtime) => runtime.startProcess(command, options));
 
@@ -179,6 +182,61 @@ describe("SandboxRuntime", () => {
         failure(result),
         new SandboxRuntimeFailure({ reason: "nonzero_exit", message: "permission denied" }),
       );
+    }),
+  );
+
+  it.effect("reads raw file chunks up to the caller-owned byte limit", () =>
+    Effect.gen(function* () {
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        readFileStream: () =>
+          Promise.resolve(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(Uint8Array.from([1, 2]));
+                controller.enqueue(Uint8Array.from([3, 4]));
+                controller.close();
+              },
+            }),
+          ),
+      };
+
+      const bytes = yield* withRuntime(capabilities, readFile("/tmp/frame.png", 4));
+
+      assert.deepStrictEqual(bytes, Uint8Array.from([1, 2, 3, 4]));
+    }),
+  );
+
+  it.effect("fails closed and cancels a file stream that exceeds its byte limit", () =>
+    Effect.gen(function* () {
+      let cancelled = false;
+      const capabilities: SandboxRuntimeCapabilities = {
+        ...sandboxRuntimeCapabilitiesFake(),
+        readFileStream: () =>
+          Promise.resolve(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(Uint8Array.from([1, 2, 3]));
+              },
+              cancel() {
+                cancelled = true;
+              },
+            }),
+          ),
+      };
+
+      const result = yield* Effect.result(
+        withRuntime(capabilities, readFile("/tmp/video.webm", 2)),
+      );
+
+      assert.deepStrictEqual(
+        failure(result),
+        new SandboxRuntimeFailure({
+          reason: "transport",
+          message: "Sandbox file exceeds its byte limit",
+        }),
+      );
+      assert.isTrue(cancelled);
     }),
   );
 

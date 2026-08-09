@@ -15,6 +15,11 @@ import {
   type EvidenceJobSummaryV2,
 } from "../src/evidence-contracts";
 import {
+  ContainerEvidenceRecorder,
+  ContainerEvidenceRecorderError,
+  type ContainerEvidenceRecording,
+} from "../src/container-evidence-recorder";
+import {
   EVIDENCE_ASSERTION_TIMEOUT_MILLIS,
   EvidenceWorkflowControl,
   EvidenceWorkflowControlError,
@@ -111,10 +116,8 @@ const makeClient = (
     readonly closeBrowserFails?: boolean;
     readonly closePageFails?: boolean;
     readonly closePageInterrupts?: boolean;
-    readonly videoBytes?: Uint8Array;
   } = {},
 ): KitesurfClientShape => {
-  const videoBytes = options.videoBytes;
   const withLifecycle = <A, E, R>(use: (page: KitesurfPage) => Effect.Effect<A, E, R>) =>
     Effect.acquireUseRelease(
       Effect.sync(() => events.push("browser:open")),
@@ -156,17 +159,6 @@ const makeClient = (
     );
   return KitesurfClient.of({
     withPage: (_pageOptions, use) => withLifecycle(use),
-    ...(videoBytes === undefined
-      ? {}
-      : {
-          withRecordedPage: (_pageOptions, use) =>
-            withLifecycle(use).pipe(
-              Effect.map((value) => {
-                events.push("video:flush");
-                return { value, video: videoBytes };
-              }),
-            ),
-        }),
   });
 };
 
@@ -280,17 +272,37 @@ const execute = (
     readonly closePageInterrupts?: boolean;
     readonly exposeFailsAtDeadline?: boolean;
     readonly finalizeFails?: boolean;
-    readonly videoBytes?: Uint8Array;
+    readonly recording?: ContainerEvidenceRecording;
   } = {},
 ) =>
-  runEvidenceWorkflow({
-    active: activeFor(job),
-    job,
-    summaryUrl: "/s/session/evidence/job-test",
-  }).pipe(
-    Effect.provideService(KitesurfClient, makeClient(page, state.events, options)),
-    Effect.provideService(EvidenceWorkflowControl, makeControl(state, options)),
-  );
+  Effect.gen(function* () {
+    const recording = options.recording;
+    return yield* runEvidenceWorkflow({
+      active: activeFor(job),
+      job,
+      summaryUrl: "/s/session/evidence/job-test",
+    }).pipe(
+      Effect.provideService(KitesurfClient, makeClient(page, state.events, options)),
+      Effect.provideService(
+        ContainerEvidenceRecorder,
+        ContainerEvidenceRecorder.of({
+          record: () =>
+            recording === undefined
+              ? Effect.fail(
+                  new ContainerEvidenceRecorderError({
+                    operation: "run",
+                    reason: "unsupported",
+                  }),
+                )
+              : Effect.sync(() => {
+                  state.events.push("recorder:closed");
+                  return recording;
+                }),
+        }),
+      ),
+      Effect.provideService(EvidenceWorkflowControl, makeControl(state, options)),
+    );
+  });
 
 const emptyState = (): ControlState => ({
   events: [],
@@ -336,11 +348,12 @@ describe("Kitesurf evidence workflow", () => {
       }),
   );
 
-  it.effect("publishes a real WebM only after the recorded browser context closes", () =>
+  it.effect("publishes a real WebM only after the Container recorder closes", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const state = emptyState();
       const webm = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
+      const capturedAt = new Date(NOW + 1_000).toISOString();
       const result = yield* execute(
         {
           ...defaultJob,
@@ -348,13 +361,34 @@ describe("Kitesurf evidence workflow", () => {
         },
         makePage(),
         state,
-        { videoBytes: webm },
+        {
+          recording: {
+            status: "succeeded",
+            completedSteps: 1,
+            steps: [
+              {
+                index: 0,
+                startedAt: new Date(NOW).toISOString(),
+                completedAt: capturedAt,
+                offsetMillis: 1_000,
+                assertions: [
+                  { kind: "visible", passed: true },
+                  { kind: "textExact", passed: true },
+                ],
+                frame: { bytes: PNG, capturedAt, offsetMillis: 1_000 },
+              },
+            ],
+            video: { bytes: webm, capturedAt, offsetMillis: 1_000 },
+          },
+        },
       );
 
       assert.deepInclude(result, { status: "succeeded", frameCount: 1, video: true });
       assert.deepStrictEqual(state.videoPublication?.bytes, webm);
-      assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("video:flush"));
-      assert.isBelow(state.events.indexOf("video:flush"), state.events.indexOf("video:publish"));
+      assert.isBelow(
+        state.events.indexOf("recorder:closed"),
+        state.events.indexOf("video:publish"),
+      );
       assert.isBelow(
         state.events.indexOf("video:publish"),
         state.events.indexOf("terminal:succeeded"),

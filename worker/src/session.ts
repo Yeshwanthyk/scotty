@@ -28,6 +28,10 @@ import {
 } from "effect";
 import { BackupStore, backupStoreLayer } from "./backup-store";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
+import {
+  ContainerEvidenceRecorder,
+  containerEvidenceRecorderLayer,
+} from "./container-evidence-recorder";
 import { EvidenceStore, evidenceStoreLayer } from "./evidence-store";
 import {
   HatchStore,
@@ -251,6 +255,7 @@ export const decodeSandboxFileStream = (
 type SandboxServices =
   | ArtifactStore
   | BackupStore
+  | ContainerEvidenceRecorder
   | ContainerAuth
   | CredentialVault
   | EvidenceStore
@@ -597,6 +602,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       {
         exec: (command, execOptions) => this.exec(command, execOptions),
         mkdir: (path, mkdirOptions) => this.mkdir(path, mkdirOptions),
+        readFileStream: (path) =>
+          this.readFile(path, { encoding: "none" }).then((result) => result.content),
         writeFile: (path, content) => this.writeFile(path, content),
         setEnvVars: (envVars) => this.setEnvVars(envVars),
         startProcess: (command, processOptions) => this.startProcess(command, processOptions),
@@ -641,6 +648,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       rolloutDiscoveryLayer.pipe(Layer.provide(runtime)),
       workspaceLayer.pipe(Layer.provide(runtime)),
       containerAuthLayer.pipe(Layer.provide(runtime)),
+      containerEvidenceRecorderLayer.pipe(Layer.provide(runtime)),
     );
   }
 

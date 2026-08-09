@@ -14,6 +14,8 @@ The container includes the exact source and npm pins recorded in [`manifest.json
 - `pi-amp-ui` is MIT licensed. See `sources/pi-amp-ui/LICENSE`.
 - `scotty-browser-test` is first-party Scotty code under the repository MIT license. See
   `sources/scotty-browser-test/LICENSE`.
+- `playwright-core` is Apache-2.0 licensed. Its package license is installed with the pinned npm
+  package used by `scotty-browser-test` in the container image.
 - `scotty-hatch` is first-party Scotty code under the repository MIT license. See
   `sources/scotty-hatch/LICENSE`.
 - `@ogulcancelik/pi-codex-compaction` is MIT licensed. Its package license is installed with the

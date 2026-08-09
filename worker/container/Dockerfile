@@ -27,6 +27,7 @@ ARG FD_SHA256=0e44eb5fca93f09bc6f5430b90acdf44c8e069d0a903700aeb4820629337b67b
 ARG GO_VERSION=1.26.1
 ARG GO_SHA256=031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a
 ARG PI_VERSION=0.84.0
+ARG PLAYWRIGHT_VERSION=1.62.1
 ARG PNPM_VERSION=11.11.0
 ARG QSV_VERSION=21.1.0
 ARG QSV_SHA256=6e1e322c2ac0d2e862e961f0bb5b30c8ceccb12ace37067bc8d911c77cf101f3
@@ -49,9 +50,11 @@ RUN apt-get update \
     git \
     jq \
     locales \
+    ffmpeg \
     pkg-config \
     shellcheck \
     unzip \
+    xvfb \
   && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
   && locale-gen \
   && curl --fail --location --silent --show-error \
@@ -110,6 +113,7 @@ ENV LANG=en_US.UTF-8 \
   GOPROXY=https://proxy.golang.org \
   GOSUMDB=sum.golang.org \
   PATH=/usr/local/go/bin:${PATH} \
+  PLAYWRIGHT_BROWSERS_PATH=/opt/scotty/playwright-browsers \
   UV_PYTHON_INSTALL_DIR=/opt/uv/python \
   UV_PYTHON_BIN_DIR=/usr/local/bin
 
@@ -150,9 +154,15 @@ RUN set -eu; \
         --no-fund \
         --legacy-peer-deps; \
   done \
+  && test "$(node --input-type=module -e "import('/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/package.json', { with: { type: 'json' } }).then(({ default: packageJson }) => process.stdout.write(packageJson.version))")" = "${PLAYWRIGHT_VERSION}" \
+  && node \
+    /opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/cli.js \
+    install --with-deps chromium \
   && test -z "$(find /opt/scotty/pi-packages/sources -mindepth 2 -maxdepth 2 -name .git -print -quit)" \
   && npm cache clean --force \
-  && rm -rf /root/.cache
+  && rm -rf /root/.cache /tmp/* \
+  && apt-get clean \
+  && find /var/lib/apt/lists -mindepth 1 -delete
 
 FROM scotty-package-image
 
@@ -184,13 +194,13 @@ RUN mkdir -p /tmp/scotty-pi-agent \
     /usr/local/bin/scotty-pi-shell \
     /usr/local/bin/scotty-pi-session \
     /usr/local/bin/scotty \
-  && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/skills \
+  && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills \
   && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-pi-shell \
   && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
   && test "$(pi --version)" = "${PI_VERSION}" \
   && scotty tools list --json >/dev/null \
   && for command_name in \
-    rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck \
+    rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck ffmpeg Xvfb \
     node npm bun corepack cc pkg-config codex pi scotty-pi-session scotty-pi-shell scotty-runner-bootstrap; do \
       command -v "${command_name}" >/dev/null || exit 1; \
     done
