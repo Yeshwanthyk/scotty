@@ -323,7 +323,7 @@ describe("Kitesurf client", () => {
         captureBeyondViewport: false,
       });
       assert.include(state.events, "browser:sessionless");
-      assert.include(state.events, `locator:click:${KITESURF_OPERATION_TIMEOUT_MILLIS}`);
+      assert.include(state.events, `locator:click:${KITESURF_NAVIGATION_TIMEOUT_MILLIS}`);
       assert.notInclude(state.events, "page:screenshot");
       const captureEvents = state.events.slice(
         state.events.lastIndexOf("context:new-cdp-session") - 1,
