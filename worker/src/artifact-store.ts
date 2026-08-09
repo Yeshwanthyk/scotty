@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Result } from "effect";
+import { Context, Effect, Layer, Option, Predicate, Result } from "effect";
 import {
   EVIDENCE_MAX_FRAME_BYTES,
   EVIDENCE_MAX_VIDEO_BYTES,
@@ -161,7 +161,16 @@ const metadataMatches = (
   metadata.customMetadata.sha256 === expected.sha256;
 
 const reportArtifactStorageFailure = (operation: "put" | "head", cause: unknown): void => {
-  console.error("Evidence artifact storage failed", { operation, cause });
+  // oxlint-disable scotty/no-unknown-error-message -- boundary: native R2 rejection telemetry is redacted and never drives domain behavior
+  const message = Predicate.isError(cause)
+    ? cause.message.replaceAll(/[A-Za-z0-9_=-]{40,}/gu, "[redacted]").slice(0, 300)
+    : undefined;
+  // oxlint-enable scotty/no-unknown-error-message
+  console.error("Evidence artifact storage failed", {
+    operation,
+    error: Predicate.isError(cause) ? cause.name : typeof cause,
+    ...(message === undefined || message.length === 0 ? {} : { message }),
+  });
 };
 
 const reportArtifactVerificationFailure = (

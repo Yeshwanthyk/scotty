@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
+import { vi } from "vitest";
 import {
   ArtifactStore,
   artifactStoreLayer,
@@ -217,6 +218,30 @@ describe("ArtifactStore", () => {
       assert.strictEqual(artifact.status, "available");
       assert.strictEqual(test.objects.size, 1);
       assert.strictEqual(test.headCalls(), 1);
+    }),
+  );
+
+  it.effect("logs a safe actionable R2 failure without exposing a long token", () =>
+    Effect.gen(function* () {
+      const token = "a".repeat(48);
+      const test = makeMemoryCapabilities();
+      const capabilities: ArtifactStoreCapabilities = {
+        ...test.capabilities,
+        put: () => Promise.reject(new TypeError(`R2 write rejected ${token}`)),
+        head: () => Promise.resolve(undefined),
+      };
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      const result = yield* Effect.result(putFrame(capabilities));
+      const calls = error.mock.calls;
+      error.mockRestore();
+
+      assert.deepInclude(failure(result), { operation: "put", reason: "put_unknown" });
+      assert.deepStrictEqual(calls[0], [
+        "Evidence artifact storage failed",
+        { operation: "put", error: "TypeError", message: "R2 write rejected [redacted]" },
+      ]);
+      assert.notInclude(JSON.stringify(calls), token);
     }),
   );
 

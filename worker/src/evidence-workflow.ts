@@ -27,10 +27,10 @@ import {
   type KitesurfPageResult,
 } from "./kitesurf-client";
 
-export const EVIDENCE_ASSERTION_TIMEOUT_MILLIS = 5_000;
+export const EVIDENCE_ASSERTION_TIMEOUT_MILLIS = 15_000;
 export const EVIDENCE_ASSERTION_POLL_INTERVAL_MILLIS = 100;
 export const EVIDENCE_ACTION_TIMEOUT_MILLIS = 5_000;
-export const EVIDENCE_STEP_TIMEOUT_MILLIS = 30_000;
+export const EVIDENCE_STEP_TIMEOUT_MILLIS = 45_000;
 
 export class EvidenceWorkflowError extends Schema.TaggedErrorClass<EvidenceWorkflowError>()(
   "EvidenceWorkflowError",
@@ -249,9 +249,12 @@ const executeAssertion = Effect.fnUntraced(function* (
   page: KitesurfPage,
   assertion: EvidenceAssertion,
   step: number,
+  deadlineMillis: number,
 ) {
   const startedAtMillis = yield* Clock.currentTimeMillis;
-  const deadlineMillis = startedAtMillis + EVIDENCE_ASSERTION_TIMEOUT_MILLIS;
+  const remainingMillis = Math.max(0, deadlineMillis - startedAtMillis);
+  if (remainingMillis === 0)
+    return { kind: assertion.kind, passed: false } satisfies EvidenceAssertionResult;
   const poll = Effect.gen(function* () {
     for (;;) {
       const passed = yield* assertionEffect(page, assertion).pipe(
@@ -267,7 +270,7 @@ const executeAssertion = Effect.fnUntraced(function* (
   });
   const passed = yield* poll.pipe(
     Effect.timeoutOrElse({
-      duration: EVIDENCE_ASSERTION_TIMEOUT_MILLIS,
+      duration: remainingMillis,
       orElse: () => Effect.succeed(false),
     }),
   );
@@ -291,8 +294,10 @@ const executeStep = Effect.fnUntraced(function* (
   const startedAt = new Date(startedAtMillis).toISOString();
   yield* executeAction(page, step.action, index);
   const assertions: EvidenceAssertionResult[] = [];
+  const assertionDeadlineMillis =
+    (yield* Clock.currentTimeMillis) + EVIDENCE_ASSERTION_TIMEOUT_MILLIS;
   for (const assertion of step.expect) {
-    assertions.push(yield* executeAssertion(page, assertion, index));
+    assertions.push(yield* executeAssertion(page, assertion, index, assertionDeadlineMillis));
   }
   const firstAssertion = assertions[0];
   if (firstAssertion === undefined)

@@ -15,6 +15,7 @@ import {
   type EvidenceJobSummaryV2,
 } from "../src/evidence-contracts";
 import {
+  EVIDENCE_ASSERTION_TIMEOUT_MILLIS,
   EvidenceWorkflowControl,
   EvidenceWorkflowControlError,
   runEvidenceWorkflow,
@@ -443,7 +444,7 @@ describe("Kitesurf evidence workflow", () => {
         state,
       ).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Effect.yieldNow;
-      yield* TestClock.adjust(5_000);
+      yield* TestClock.adjust(EVIDENCE_ASSERTION_TIMEOUT_MILLIS);
       const result = yield* Fiber.join(fiber);
 
       assert.strictEqual(result.status, "failed");
@@ -697,6 +698,28 @@ describe("Kitesurf evidence workflow", () => {
       assert.strictEqual(result.status, "succeeded");
       assert.include(state.events, "step:0");
       assert.include(state.events, "terminal:succeeded");
+    }),
+  );
+
+  it.effect("allows one shared assertion phase to wait for app hydration", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const state = emptyState();
+      const fiber = yield* execute(
+        defaultJob,
+        makePage({ isVisible: () => Effect.sleep(5_001).pipe(Effect.as(true)) }),
+        state,
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(5_001);
+      const result = yield* Fiber.join(fiber);
+
+      assert.strictEqual(result.status, "succeeded");
+      assert.deepStrictEqual(
+        state.publications[0].assertions.map((assertion) => assertion.passed),
+        [true, true, true, true],
+      );
     }),
   );
 
