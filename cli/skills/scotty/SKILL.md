@@ -1,6 +1,6 @@
 ---
 name: scotty
-description: Operate Scotty sessions. Use when creating, observing, opening, checkpointing, resuming, beaming down, or vaporizing a session; recovering ownership; or checking sandbox tools.
+description: Operate Scotty sessions. Use when creating, observing, opening Hatch, capturing browser evidence, checkpointing, resuming, beaming down, or vaporizing a session; recovering ownership; or checking sandbox tools.
 ---
 
 # Scotty
@@ -48,6 +48,26 @@ Observation is complete when the final record and its stopping reason are known.
   credentials or source identity. Outside a sandbox, they use the configured authenticated Worker.
 - Treat `stale` and `unavailable` as wrong-state results. Treat `ambiguous` as non-retryable unless
   the session is inspected first.
+
+## Hatch and browser evidence
+
+- Ask the sandbox agent to start the permanent app with `scotty_hatch ensure` on one allowed,
+  non-reserved port. Keep that Hatch process running.
+- Run `scotty_browser_test` against one separate temporary app server on a different port. Stop only
+  that temporary server afterward. Do not restart or replace the permanent Hatch process for
+  evidence collection.
+- Use one bounded evidence attempt with stable declarative assertions. Do not repeat a failed run
+  unless the failure cause or session state changed.
+- In the sandbox agent's final update, include each exact structured `scotty-hatch:<hatchId>` and
+  `scotty-evidence:<jobId>` reference at most once. The result must belong to the current
+  conversation. After a steer or follow-up, call Hatch status or evidence again before publishing
+  its reference.
+- Open Hatch only from the paired session shell's **Open Hatch** control or the returned session URL
+  plus `/hatch/open`. Never copy, guess, or publish the wildcard preview origin, handoff token,
+  route nonce, or Hatch cookie. `scotty attach ID --json` opens the session shell, not Hatch itself.
+- Summary shows Hatch and screenshots only when the latest same-conversation update contains the
+  matching structured references. Treat a retained frame as useful evidence even when a later step
+  failed, but report the job's actual terminal status.
 
 ## Final response
 

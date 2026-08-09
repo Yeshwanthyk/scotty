@@ -2522,6 +2522,10 @@ describe("beam down and embedded skill", () => {
     expect(await main(["skills"], skills.deps)).toBe(EXIT.OK);
     expect(EMBEDDED_SKILL).toBe(source);
     expect(skills.stdout.join("")).toBe(EMBEDDED_SKILL);
+    expect(EMBEDDED_SKILL).toContain("## Hatch and browser evidence");
+    expect(EMBEDDED_SKILL).toContain("one separate temporary app server on a different port");
+    expect(EMBEDDED_SKILL).toContain("plus `/hatch/open`");
+    expect(EMBEDDED_SKILL).toContain("Never copy, guess, or publish the wildcard preview origin");
   });
 
   test("skills rejects JSON wrapping and filesystem installation", async () => {
