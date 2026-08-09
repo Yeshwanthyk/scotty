@@ -531,7 +531,10 @@ const handleHandoff = async (
     status: 303,
     headers: {
       location: "/",
-      "set-cookie": `${HATCH_COOKIE}=${rawCookie}; Max-Age=${maxAge}; Path=/; Secure; HttpOnly; SameSite=Strict`,
+      // The handoff is a cross-site POST followed by this top-level GET redirect.
+      // Lax permits the redirect request to carry the exact-host Hatch cookie;
+      // Strict withholds it until a later, separate navigation.
+      "set-cookie": `${HATCH_COOKIE}=${rawCookie}; Max-Age=${maxAge}; Path=/; Secure; HttpOnly; SameSite=Lax`,
       "cache-control": "no-store",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
