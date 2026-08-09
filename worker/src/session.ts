@@ -2658,10 +2658,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
     const continued = yield* Effect.result(this.continueVaporizeSessionProgram(payload));
     if (Result.isFailure(continued)) {
+      const stateError = decodeEvidenceStateError(continued.failure);
       yield* Effect.sync(() =>
         console.error("Vaporize reconciliation failed", {
           sessionId: payload.id,
           error: errorName(continued.failure),
+          ...(Option.isSome(stateError) ? { evidenceStateReason: stateError.value.reason } : {}),
         }),
       );
     }
@@ -4567,9 +4569,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   private upstreamError(message: string, error: unknown, sessionId?: string): ScottyError {
+    const stateError = decodeEvidenceStateError(error);
     console.error(message, {
       sessionId,
       error: errorName(error),
+      ...(Option.isSome(stateError) ? { evidenceStateReason: stateError.value.reason } : {}),
       stage: piRuntimeStopStage(error),
       cause: nestedSandboxRuntimeFailure(error),
     });
