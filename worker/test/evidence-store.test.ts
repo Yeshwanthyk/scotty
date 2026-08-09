@@ -66,13 +66,15 @@ const makeArtifactCapabilities = () => {
   const objects = new Map<string, ArtifactObjectMetadata & { readonly bytes: Uint8Array }>();
   const capabilities: ArtifactStoreCapabilities = {
     put: async (key, bytes, metadata) => {
-      objects.set(key, {
+      const object = {
         key,
         size: bytes.byteLength,
         contentType: metadata.contentType,
         customMetadata: metadata.customMetadata,
         bytes: Uint8Array.from(bytes),
-      });
+      };
+      objects.set(key, object);
+      return object;
     },
     head: async (key) => objects.get(key),
     get: async (key): Promise<ArtifactObjectBody | undefined> => {
