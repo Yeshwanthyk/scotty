@@ -824,7 +824,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           sessionId: initial.id,
           operationNonce: operation.nonce,
           hatchId: `hatch-${randomToken(8)}`,
-          routeNonce: `h-${randomToken(7)}`,
+          routeNonce: `h${randomToken(7)}`,
           runtimeEpoch,
           service: decoded.value.service,
         });

@@ -38,7 +38,7 @@ import { handleHatchRequest, hatchPreviewFormAction, parseHatchHost } from "../s
 
 const BASE = "preview.example.test";
 const SESSION_ID = "a0b1c2d3e4f5";
-const ROUTE_NONCE = "h-0123456789abcd";
+const ROUTE_NONCE = "h0123456789abcd";
 const HOST = `4173-${SESSION_ID}-${ROUTE_NONCE}.${BASE}`;
 const COOKIE_SECRET = "a".repeat(64);
 const future = (): string => {
