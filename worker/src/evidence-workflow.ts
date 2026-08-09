@@ -225,7 +225,9 @@ const executeAction = (
     effect,
     "action",
     step,
-    action.kind === "goto" ? KITESURF_NAVIGATION_TIMEOUT_MILLIS : EVIDENCE_ACTION_TIMEOUT_MILLIS,
+    action.kind === "goto" || action.kind === "click"
+      ? KITESURF_NAVIGATION_TIMEOUT_MILLIS
+      : EVIDENCE_ACTION_TIMEOUT_MILLIS,
   );
 };
 

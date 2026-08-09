@@ -699,4 +699,33 @@ describe("Kitesurf evidence workflow", () => {
       assert.include(state.events, "terminal:succeeded");
     }),
   );
+
+  it.effect("allows a link click to wait for navigation longer than a generic action", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const state = emptyState();
+      const clickJob: BrowserEvidenceJobV2 = {
+        ...defaultJob,
+        steps: [
+          {
+            ...defaultJob.steps[0],
+            action: { kind: "click", locator: { kind: "css", value: ".feature-link" } },
+          },
+        ],
+      };
+      const fiber = yield* execute(
+        clickJob,
+        makePage({ click: () => Effect.sleep(5_001) }),
+        state,
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(5_001);
+      const result = yield* Fiber.join(fiber);
+
+      assert.strictEqual(result.status, "succeeded");
+      assert.include(state.events, "step:0");
+      assert.include(state.events, "terminal:succeeded");
+    }),
+  );
 });

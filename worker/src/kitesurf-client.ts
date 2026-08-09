@@ -537,7 +537,7 @@ const makePage = (
     },
     click: (locator) =>
       checkedLocator("click", locator, (runtimeLocator) =>
-        runtimeLocator.click({ timeout: KITESURF_OPERATION_TIMEOUT_MILLIS }),
+        runtimeLocator.click({ timeout: KITESURF_NAVIGATION_TIMEOUT_MILLIS }),
       ),
     fill: (locator, value) =>
       checkedLocator("fill", locator, (runtimeLocator) =>
