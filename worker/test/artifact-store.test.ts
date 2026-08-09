@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Effect, Fiber, Result } from "effect";
+import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import {
+  ARTIFACT_PUT_RETRY_DELAY_MILLIS,
   ArtifactStore,
   artifactStoreLayer,
   r2ArtifactStoreCapabilities,
@@ -221,6 +223,32 @@ describe("ArtifactStore", () => {
     }),
   );
 
+  it.effect("retries one missing R2 put and publishes its exact receipt", () =>
+    Effect.gen(function* () {
+      const test = makeMemoryCapabilities();
+      let attempts = 0;
+      const capabilities: ArtifactStoreCapabilities = {
+        ...test.capabilities,
+        put: (key, bytes, metadata) => {
+          attempts += 1;
+          return attempts === 1
+            ? Promise.reject(new Error("put: Unspecified error (0)"))
+            : test.capabilities.put(key, bytes, metadata);
+        },
+      };
+      const fiber = yield* putFrame(capabilities).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
+      const artifact = yield* Fiber.join(fiber);
+
+      assert.strictEqual(artifact.status, "available");
+      assert.strictEqual(attempts, 2);
+      assert.strictEqual(test.headCalls(), 1);
+    }),
+  );
+
   it.effect("logs a safe actionable R2 failure without exposing a long token", () =>
     Effect.gen(function* () {
       const token = "a".repeat(48);
@@ -232,7 +260,12 @@ describe("ArtifactStore", () => {
       };
       const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-      const result = yield* Effect.result(putFrame(capabilities));
+      const fiber = yield* Effect.result(putFrame(capabilities)).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
+      const result = yield* Fiber.join(fiber);
       const calls = error.mock.calls;
       error.mockRestore();
 
