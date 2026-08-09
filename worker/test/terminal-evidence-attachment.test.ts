@@ -10,17 +10,18 @@ const SESSION_ID = "a0b1c2d3e4f5";
 const JOB_ID = "job-abcd1234";
 
 const details = () => ({
-  version: 1,
+  version: 2,
   jobId: JOB_ID,
   status: "failed",
   summaryUrl: `/s/${SESSION_ID}/evidence/${JOB_ID}`,
   completedSteps: 2,
   frameCount: 1,
+  video: false,
   failure: { code: "assertion_mismatch", step: 1 },
 });
 
 const summary = () => ({
-  version: 1,
+  version: 2,
   sequence: 3,
   jobId: JOB_ID,
   status: "failed",
@@ -29,7 +30,9 @@ const summary = () => ({
   completedAt: "2026-08-07T12:00:02.000Z",
   totalSteps: 2,
   completedSteps: 2,
-  replay: true,
+  viewport: { width: 1_280, height: 720 },
+  recordVideo: false,
+  flowHash: "a".repeat(64),
   steps: [
     {
       index: 0,
@@ -110,7 +113,7 @@ describe("terminal browser evidence attachment adapter", () => {
     for (const unsafe of [
       { ...details(), summaryUrl: `/s/ffffffffffff/evidence/${JOB_ID}` },
       { ...details(), summaryUrl: `/s/${SESSION_ID}/evidence/other-job` },
-      { ...details(), objectKey: "evidence/v1/private/storage-key.png" },
+      { ...details(), objectKey: "evidence/v2/private/storage-key.png" },
       { ...details(), jobId: "../private" },
     ]) {
       assert.deepStrictEqual(
@@ -123,11 +126,11 @@ describe("terminal browser evidence attachment adapter", () => {
     }
   });
 
-  it("constructs authenticated same-origin summary, Replay, and frame paths locally", () => {
+  it("constructs authenticated same-origin summary, detail, and frame paths locally", () => {
     const paths = browserEvidencePaths(SESSION_ID, JOB_ID);
     assert.ok(paths);
     assert.strictEqual(paths.summary, `/api/sessions/${SESSION_ID}/evidence/${JOB_ID}`);
-    assert.strictEqual(paths.replay, `/s/${SESSION_ID}/evidence/${JOB_ID}`);
+    assert.strictEqual(paths.detail, `/s/${SESSION_ID}/evidence/${JOB_ID}`);
     assert.strictEqual(
       paths.frame("frame-1"),
       `/s/${SESSION_ID}/evidence/${JOB_ID}/frames/frame-1.png`,

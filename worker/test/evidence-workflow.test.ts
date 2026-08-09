@@ -6,12 +6,13 @@ vi.mock("@cloudflare/playwright", () => ({ launch: vi.fn() }));
 import { TestClock } from "effect/testing";
 import {
   emptyEvidencePreviewAccounting,
-  type BrowserEvidenceJobV1,
-  type CompleteEvidenceStepPublicationV1,
-  type EvidenceActiveJobV1,
+  type BrowserEvidenceJobV2,
+  type CompleteEvidenceStepPublicationV2,
+  type CompleteEvidenceVideoPublicationV2,
+  type EvidenceActiveJobV2,
   type EvidenceDiagnostic,
   type EvidenceFailure,
-  type EvidenceJobSummaryV1,
+  type EvidenceJobSummaryV2,
 } from "../src/evidence-contracts";
 import {
   EvidenceWorkflowControl,
@@ -31,10 +32,11 @@ const PNG = Uint8Array.from([
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
 ]);
 
-const defaultJob: BrowserEvidenceJobV1 = {
-  version: 1,
+const defaultJob: BrowserEvidenceJobV2 = {
+  version: 2,
   port: 4_173,
-  capture: { screenshots: "after-each-step", replay: true },
+  viewport: { width: 1_280, height: 720 },
+  capture: { screenshots: "after-each-step", video: false },
   steps: [
     {
       name: "Open app",
@@ -54,25 +56,27 @@ const defaultJob: BrowserEvidenceJobV1 = {
 };
 
 const stepPlanFor = (
-  step: BrowserEvidenceJobV1["steps"][number],
-): EvidenceActiveJobV1["stepPlan"][number] => ({
+  step: BrowserEvidenceJobV2["steps"][number],
+): EvidenceActiveJobV2["stepPlan"][number] => ({
   name: step.name,
   action: step.action.kind,
   assertions: [step.expect[0].kind, ...step.expect.slice(1).map((assertion) => assertion.kind)],
 });
 
 const activeFor = (
-  job: BrowserEvidenceJobV1,
+  job: BrowserEvidenceJobV2,
   deadlineAt = new Date(NOW + 60_000).toISOString(),
-): EvidenceActiveJobV1 => ({
-  version: 1,
+): EvidenceActiveJobV2 => ({
+  version: 2,
   sequence: 0,
   jobId: "job-test",
   status: "accepted",
   acceptedAt: new Date(NOW).toISOString(),
   totalSteps: job.steps.length,
   completedSteps: 0,
-  replay: job.capture?.replay ?? false,
+  viewport: job.viewport,
+  recordVideo: job.capture.video,
+  flowHash: "a".repeat(64),
   steps: [],
   frameCount: 0,
   operationNonce: "operation-test",
@@ -105,44 +109,60 @@ const makeClient = (
   options: {
     readonly closePageFails?: boolean;
     readonly closePageInterrupts?: boolean;
+    readonly videoBytes?: Uint8Array;
   } = {},
-): KitesurfClientShape =>
-  KitesurfClient.of({
-    withPage: (_pageOptions, use) =>
-      Effect.acquireUseRelease(
-        Effect.sync(() => events.push("browser:open")),
-        () =>
-          Effect.acquireUseRelease(
-            Effect.sync(() => events.push("context:open")),
-            () =>
-              Effect.acquireUseRelease(
-                Effect.sync(() => events.push("page:open")),
-                () => use(page),
-                () =>
-                  Effect.sync(() => events.push("page:close")).pipe(
-                    Effect.andThen(
-                      options.closePageInterrupts === true
-                        ? Effect.interrupt
-                        : options.closePageFails === true
-                          ? Effect.fail(
-                              new KitesurfClientError({
-                                operation: "close_page",
-                                reason: "cleanup",
-                              }),
-                            )
-                          : Effect.void,
-                    ),
+): KitesurfClientShape => {
+  const videoBytes = options.videoBytes;
+  const withLifecycle = <A, E, R>(use: (page: KitesurfPage) => Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => events.push("browser:open")),
+      () =>
+        Effect.acquireUseRelease(
+          Effect.sync(() => events.push("context:open")),
+          () =>
+            Effect.acquireUseRelease(
+              Effect.sync(() => events.push("page:open")),
+              () => use(page),
+              () =>
+                Effect.sync(() => events.push("page:close")).pipe(
+                  Effect.andThen(
+                    options.closePageInterrupts === true
+                      ? Effect.interrupt
+                      : options.closePageFails === true
+                        ? Effect.fail(
+                            new KitesurfClientError({
+                              operation: "close_page",
+                              reason: "cleanup",
+                            }),
+                          )
+                        : Effect.void,
                   ),
-              ),
-            () => Effect.sync(() => events.push("context:close")),
-          ),
-        () => Effect.sync(() => events.push("browser:close")),
-      ),
+                ),
+            ),
+          () => Effect.sync(() => events.push("context:close")),
+        ),
+      () => Effect.sync(() => events.push("browser:close")),
+    );
+  return KitesurfClient.of({
+    withPage: (_pageOptions, use) => withLifecycle(use),
+    ...(videoBytes === undefined
+      ? {}
+      : {
+          withRecordedPage: (_pageOptions, use) =>
+            withLifecycle(use).pipe(
+              Effect.map((value) => {
+                events.push("video:flush");
+                return { value, video: videoBytes };
+              }),
+            ),
+        }),
   });
+};
 
 interface ControlState {
   readonly events: Array<string>;
-  readonly publications: Array<CompleteEvidenceStepPublicationV1>;
+  readonly publications: Array<CompleteEvidenceStepPublicationV2>;
+  videoPublication: CompleteEvidenceVideoPublicationV2 | undefined;
   failure: EvidenceFailure | undefined;
   diagnostic: EvidenceDiagnostic | undefined;
 }
@@ -179,6 +199,11 @@ const makeControl = (
         state.events.push(`step:${input.index}`);
         state.publications.push(input);
       }),
+    completeVideo: (_active, input) =>
+      Effect.sync(() => {
+        state.events.push("video:publish");
+        state.videoPublication = input;
+      }),
     recordFailure: (_active, failure, diagnostic) =>
       Effect.sync(() => {
         state.events.push(`failure:${failure.code}`);
@@ -202,7 +227,7 @@ const makeControl = (
             state.events.push("preview:unexpose");
             state.events.push(`terminal:${status}`);
             return {
-              version: 1,
+              version: 2,
               sequence: active.sequence,
               jobId: active.jobId,
               status,
@@ -210,19 +235,32 @@ const makeControl = (
               completedAt: new Date(NOW + 1).toISOString(),
               totalSteps: active.totalSteps,
               completedSteps: state.publications.length,
-              replay: active.replay,
+              viewport: active.viewport,
+              recordVideo: active.recordVideo,
+              flowHash: active.flowHash,
               steps: [],
               frameCount: state.publications.filter(
                 (publication) => publication.frame !== undefined,
               ).length,
+              ...(state.videoPublication === undefined
+                ? {}
+                : {
+                    video: {
+                      artifactId: "recording" as const,
+                      sha256: "b".repeat(64),
+                      bytes: state.videoPublication.bytes.byteLength,
+                      capturedAt: state.videoPublication.capturedAt,
+                      offsetMillis: state.videoPublication.offsetMillis,
+                    },
+                  }),
               ...(state.failure === undefined ? {} : { failure: state.failure }),
               ...(state.diagnostic === undefined ? {} : { diagnostic: state.diagnostic }),
-            } satisfies EvidenceJobSummaryV1;
+            } satisfies EvidenceJobSummaryV2;
           }),
   });
 
 const execute = (
-  job: BrowserEvidenceJobV1,
+  job: BrowserEvidenceJobV2,
   page: KitesurfPage,
   state: ControlState,
   options: {
@@ -230,6 +268,7 @@ const execute = (
     readonly closePageInterrupts?: boolean;
     readonly exposeFailsAtDeadline?: boolean;
     readonly finalizeFails?: boolean;
+    readonly videoBytes?: Uint8Array;
   } = {},
 ) =>
   runEvidenceWorkflow({
@@ -244,6 +283,7 @@ const execute = (
 const emptyState = (): ControlState => ({
   events: [],
   publications: [],
+  videoPublication: undefined,
   failure: undefined,
   diagnostic: undefined,
 });
@@ -258,12 +298,13 @@ describe("Kitesurf evidence workflow", () => {
         const result = yield* execute(defaultJob, makePage(), state);
 
         assert.deepStrictEqual(result, {
-          version: 1,
+          version: 2,
           jobId: "job-test",
           status: "succeeded",
           summaryUrl: "/s/session/evidence/job-test",
           completedSteps: 1,
           frameCount: 1,
+          video: false,
         });
         assert.deepStrictEqual(state.publications[0].frame?.bytes, PNG);
         assert.isBelow(state.events.indexOf("step:0"), state.events.indexOf("page:close"));
@@ -281,6 +322,32 @@ describe("Kitesurf evidence workflow", () => {
           state.events.indexOf("terminal:succeeded"),
         );
       }),
+  );
+
+  it.effect("publishes a real WebM only after the recorded browser context closes", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const state = emptyState();
+      const webm = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
+      const result = yield* execute(
+        {
+          ...defaultJob,
+          capture: { screenshots: "after-each-step", video: true },
+        },
+        makePage(),
+        state,
+        { videoBytes: webm },
+      );
+
+      assert.deepInclude(result, { status: "succeeded", frameCount: 1, video: true });
+      assert.deepStrictEqual(state.videoPublication?.bytes, webm);
+      assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("video:flush"));
+      assert.isBelow(state.events.indexOf("video:flush"), state.events.indexOf("video:publish"));
+      assert.isBelow(
+        state.events.indexOf("video:publish"),
+        state.events.indexOf("terminal:succeeded"),
+      );
+    }),
   );
 
   it.effect("polls transient assertion mismatches with the Effect clock", () =>
@@ -317,9 +384,11 @@ describe("Kitesurf evidence workflow", () => {
       const state = emptyState();
       const actions: Array<string> = [];
       const locator = { kind: "testId", value: "control" } as const;
-      const job: BrowserEvidenceJobV1 = {
-        version: 1,
+      const job: BrowserEvidenceJobV2 = {
+        version: 2,
         port: 4_173,
+        viewport: defaultJob.viewport,
+        capture: defaultJob.capture,
         steps: [
           {
             name: "Goto",
@@ -470,7 +539,7 @@ describe("Kitesurf evidence workflow", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const state = emptyState();
-      const job: BrowserEvidenceJobV1 = {
+      const job: BrowserEvidenceJobV2 = {
         ...defaultJob,
         steps: [
           {
@@ -504,9 +573,9 @@ describe("Kitesurf evidence workflow", () => {
       yield* TestClock.setTime(NOW);
       const state = emptyState();
       const privateFill = "private-fill-value";
-      const job: BrowserEvidenceJobV1 = {
+      const job: BrowserEvidenceJobV2 = {
         ...defaultJob,
-        capture: undefined,
+        capture: { screenshots: "after-each-step", video: false },
         steps: [
           {
             name: "Fill",
@@ -523,7 +592,7 @@ describe("Kitesurf evidence workflow", () => {
 
       assert.strictEqual(result.status, "interrupted");
       assert.deepStrictEqual(result.failure, { code: "interrupted" });
-      assert.strictEqual(state.publications[0].frame, undefined);
+      assert.deepStrictEqual(state.publications[0].frame?.bytes, PNG);
       assert.isFalse(JSON.stringify({ result, state }).includes(privateFill));
       assert.isBelow(state.events.indexOf("page:close"), state.events.indexOf("context:close"));
       assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("browser:close"));

@@ -1,9 +1,4 @@
-import {
-  evidenceStatusLabel,
-  orderedReplayFrames,
-  replayDelayMillis,
-  shouldPollEvidence,
-} from "/evidence-view.js";
+import { evidenceStatusLabel, orderedEvidenceFrames, shouldPollEvidence } from "/evidence-view.js";
 
 const POLL_INTERVAL = 1_000;
 const route = window.location.pathname.match(
@@ -21,11 +16,6 @@ const retry = document.querySelector("#retry");
 const sessionLink = document.querySelector("#session-link");
 const evidenceListLink = document.querySelector("#evidence-list-link");
 let pollTimer;
-let playTimer;
-let playing = false;
-let selectedFrameId;
-let currentFrames = [];
-let currentFrameIndex = 0;
 
 function addText(parent, className, text, tag = "div") {
   const element = document.createElement(tag);
@@ -70,7 +60,6 @@ function statusElement(status) {
 }
 
 function renderList(jobs) {
-  pauseReplay();
   pageTitle.textContent = "Browser evidence";
   pageSubtitle.textContent = jobs.length
     ? `${jobs.length} retained ${jobs.length === 1 ? "run" : "runs"}`
@@ -128,148 +117,50 @@ function renderSteps(parent, summary) {
     list.append(row);
   }
   if (summary.steps.length === 0)
-    addText(list, "replay-empty", "Waiting for the first completed step.");
+    addText(list, "evidence-frames-empty", "Waiting for the first completed step.");
   parent.append(list);
 }
 
-function selectFrame(index) {
-  if (currentFrames.length === 0) return;
-  currentFrameIndex = Math.max(0, Math.min(currentFrames.length - 1, index));
-  selectedFrameId = currentFrames[currentFrameIndex].frameId;
-  const frame = currentFrames[currentFrameIndex];
-  const image = document.querySelector("#replay-image");
-  if (image) {
-    image.src = framePath(frame.frameId);
-    image.alt = `${frame.stepName}, checkpoint ${currentFrameIndex + 1} of ${currentFrames.length}`;
-  }
-  const scrubber = document.querySelector("#replay-scrubber");
-  if (scrubber) scrubber.value = String(currentFrameIndex);
-  const time = document.querySelector("#replay-time");
-  if (time)
-    time.textContent = `${formatOffset(frame.offsetMillis)} / ${formatOffset(
-      currentFrames.at(-1)?.offsetMillis ?? 0,
-    )}`;
-  const caption = document.querySelector("#replay-caption-name");
-  if (caption) caption.textContent = frame.stepName;
-  for (const [buttonIndex, button] of [...document.querySelectorAll(".replay-frame")].entries()) {
-    button.setAttribute("aria-current", buttonIndex === currentFrameIndex ? "true" : "false");
-  }
-}
-
-function scheduleReplay() {
-  clearTimeout(playTimer);
-  if (!playing || currentFrameIndex >= currentFrames.length - 1) {
-    if (currentFrameIndex >= currentFrames.length - 1) pauseReplay();
-    return;
-  }
-  playTimer = setTimeout(
-    () => {
-      selectFrame(currentFrameIndex + 1);
-      scheduleReplay();
-    },
-    replayDelayMillis(currentFrames, currentFrameIndex),
-  );
-}
-
-function pauseReplay() {
-  playing = false;
-  clearTimeout(playTimer);
-  const button = document.querySelector("#replay-toggle");
-  if (button) button.textContent = "Play";
-}
-
-function toggleReplay() {
-  if (currentFrames.length < 2) return;
-  playing = !playing;
-  const button = document.querySelector("#replay-toggle");
-  if (button) button.textContent = playing ? "Pause" : "Play";
-  if (playing && currentFrameIndex >= currentFrames.length - 1) selectFrame(0);
-  scheduleReplay();
-}
-
-function renderReplay(parent, summary) {
-  currentFrames = orderedReplayFrames(summary);
-  const previousIndex = currentFrames.findIndex((frame) => frame.frameId === selectedFrameId);
-  currentFrameIndex = previousIndex >= 0 ? previousIndex : Math.max(0, currentFrames.length - 1);
-
+function renderScreenshots(parent, summary) {
+  const frames = orderedEvidenceFrames(summary);
   const panel = document.createElement("section");
-  panel.className = "replay-panel";
-  panel.setAttribute("aria-label", "Screenshot replay");
-  const stage = document.createElement("div");
-  stage.className = "replay-stage";
-  if (currentFrames.length === 0) {
+  panel.className = "evidence-frames-panel";
+  panel.setAttribute("aria-label", "Verified screenshots");
+  addText(panel, "evidence-frames-title", "Verified screenshots", "h2");
+  if (frames.length === 0) {
     addText(
-      stage,
-      "replay-empty",
-      "Replay begins when the first verified screenshot is available.",
+      panel,
+      "evidence-frames-empty",
+      "Screenshots appear after verified checkpoints complete.",
     );
-    panel.append(stage);
     parent.append(panel);
     return;
   }
-
-  const image = document.createElement("img");
-  image.id = "replay-image";
-  image.decoding = "async";
-  stage.append(image);
-  panel.append(stage);
-
-  const toolbar = document.createElement("div");
-  toolbar.className = "replay-toolbar";
-  const toggle = document.createElement("button");
-  toggle.type = "button";
-  toggle.id = "replay-toggle";
-  toggle.className = "button";
-  toggle.textContent = playing ? "Pause" : "Play";
-  toggle.disabled = currentFrames.length < 2;
-  toggle.addEventListener("click", toggleReplay);
-  const scrubber = document.createElement("input");
-  scrubber.id = "replay-scrubber";
-  scrubber.className = "replay-scrubber";
-  scrubber.type = "range";
-  scrubber.min = "0";
-  scrubber.max = String(currentFrames.length - 1);
-  scrubber.step = "1";
-  scrubber.setAttribute("aria-label", "Replay frame");
-  scrubber.addEventListener("input", () => {
-    pauseReplay();
-    selectFrame(Number(scrubber.value));
-  });
-  const time = document.createElement("span");
-  time.id = "replay-time";
-  time.className = "replay-time";
-  toolbar.append(toggle, scrubber, time);
-  panel.append(toolbar);
-
-  const caption = document.createElement("div");
-  caption.className = "replay-caption";
-  addText(caption, "", "", "span").id = "replay-caption-name";
-  addText(caption, "", `${currentFrames.length} verified frames`, "span");
-  panel.append(caption);
-
-  const strip = document.createElement("div");
-  strip.className = "replay-strip";
-  strip.setAttribute("aria-label", "Replay frames");
-  currentFrames.forEach((frame, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "replay-frame";
-    button.setAttribute("aria-label", `Show checkpoint ${index + 1}: ${frame.stepName}`);
-    const thumbnail = document.createElement("img");
-    thumbnail.src = framePath(frame.frameId);
-    thumbnail.alt = "";
-    thumbnail.loading = "lazy";
-    button.append(thumbnail);
-    button.addEventListener("click", () => {
-      pauseReplay();
-      selectFrame(index);
-    });
-    strip.append(button);
-  });
-  panel.append(strip);
+  const grid = document.createElement("div");
+  grid.className = "evidence-frames-grid";
+  for (const frame of frames) {
+    const figure = document.createElement("figure");
+    const image = document.createElement("img");
+    image.src = framePath(frame.frameId);
+    image.alt = frame.stepName;
+    image.loading = "lazy";
+    image.decoding = "async";
+    figure.append(
+      image,
+      textCaption(
+        `${frame.stepIndex + 1}. ${frame.stepName} · ${formatOffset(frame.offsetMillis)}`,
+      ),
+    );
+    grid.append(figure);
+  }
+  panel.append(grid);
   parent.append(panel);
-  selectFrame(currentFrameIndex);
-  if (playing) scheduleReplay();
+}
+
+function textCaption(value) {
+  const caption = document.createElement("figcaption");
+  caption.textContent = value;
+  return caption;
 }
 
 function renderSummary(summary) {
@@ -277,7 +168,9 @@ function renderSummary(summary) {
   pageSubtitle.textContent =
     summary.failure?.code === "assertion_mismatch"
       ? `A required assertion failed at step ${(summary.failure.step ?? 0) + 1}.`
-      : "Ordered screenshots are review evidence, not continuous video.";
+      : summary.video
+        ? "Verified screenshots and a real browser recording are available."
+        : "Verified screenshots are available for this baseline run.";
   jobStatus.hidden = false;
   jobStatus.dataset.status = summary.status;
   jobStatus.textContent = evidenceStatusLabel(summary.status);
@@ -295,7 +188,7 @@ function renderSummary(summary) {
   detail.append(summaryLine);
   renderSteps(detail, summary);
   workspace.append(detail);
-  renderReplay(workspace, summary);
+  renderScreenshots(workspace, summary);
   content.append(workspace);
 }
 

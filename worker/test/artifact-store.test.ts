@@ -12,6 +12,7 @@ import {
 const PNG = Uint8Array.from([
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
 ]);
+const WEBM = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01]);
 
 interface StoredObject extends ArtifactObjectMetadata {
   readonly bytes: Uint8Array;
@@ -176,7 +177,7 @@ describe("ArtifactStore", () => {
           status: "available",
         });
         assert.match(artifact.sha256, /^[0-9a-f]{64}$/u);
-        assert.strictEqual(artifact.objectKey, "evidence/v1/a0b1c2d3e4f5/job-1/frame-1.png");
+        assert.strictEqual(artifact.objectKey, "evidence/v2/a0b1c2d3e4f5/job-1/frame-1.png");
         assert.strictEqual(test.putCalls(), 1);
 
         const opened = yield* Effect.flatMap(ArtifactStore, (store) =>
@@ -254,6 +255,59 @@ describe("ArtifactStore", () => {
       assert.deepInclude(failure(result), { operation: "validate", reason: "invalid_png" });
       assert.strictEqual(test.putCalls(), 0);
       assert.strictEqual(test.objects.size, 0);
+    }),
+  );
+
+  it.effect("publishes and opens a verified browser-recorded WebM", () =>
+    Effect.gen(function* () {
+      const test = makeMemoryCapabilities();
+      const artifact = yield* Effect.gen(function* () {
+        const store = yield* ArtifactStore;
+        const prepared = yield* store.prepareVideo({
+          sessionId: "a0b1c2d3e4f5",
+          jobId: "job-1",
+          artifactId: "recording",
+          bytes: WEBM,
+          capturedAt: "2026-08-06T12:00:02.000Z",
+          offsetMillis: 2_000,
+        });
+        return yield* store.writeArtifact(prepared);
+      }).pipe(Effect.provide(artifactStoreLayer(test.capabilities)));
+
+      assert.deepInclude(artifact, {
+        version: 2,
+        frameId: "recording",
+        mediaType: "video/webm",
+        bytes: WEBM.byteLength,
+        status: "available",
+      });
+      assert.strictEqual(artifact.objectKey, "evidence/v2/a0b1c2d3e4f5/job-1/recording.webm");
+
+      const opened = yield* Effect.flatMap(ArtifactStore, (store) =>
+        store.openArtifact(artifact),
+      ).pipe(Effect.provide(artifactStoreLayer(test.capabilities)));
+      assert.strictEqual(opened.mediaType, "video/webm");
+      assert.strictEqual(opened.bytes, WEBM.byteLength);
+    }),
+  );
+
+  it.effect("rejects invalid WebM bytes before storage", () =>
+    Effect.gen(function* () {
+      const test = makeMemoryCapabilities();
+      const result = yield* Effect.result(
+        Effect.flatMap(ArtifactStore, (store) =>
+          store.prepareVideo({
+            sessionId: "a0b1c2d3e4f5",
+            jobId: "job-1",
+            artifactId: "recording",
+            bytes: Uint8Array.from([1, 2, 3, 4]),
+            capturedAt: "2026-08-06T12:00:02.000Z",
+            offsetMillis: 2_000,
+          }),
+        ).pipe(Effect.provide(artifactStoreLayer(test.capabilities))),
+      );
+      assert.deepInclude(failure(result), { operation: "validate", reason: "invalid_webm" });
+      assert.strictEqual(test.putCalls(), 0);
     }),
   );
 });

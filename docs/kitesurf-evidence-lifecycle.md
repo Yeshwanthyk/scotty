@@ -1,6 +1,10 @@
-# Kitesurf-first evidence and lifecycle ownership
+# Kitesurf-first evidence and lifecycle ownership (superseded)
 
-- **Status:** target architecture
+> Historical research record. It predates Evidence v2 and does not describe the
+> shipped Showcase contract. See `docs/hatch-summary-architecture.md` for the
+> active design.
+
+- **Status:** superseded by Evidence v2
 - **External facts verified:** 2026-08-06
 - **Scope:** Browser Run Kitesurf only; no `agent-browser`, no browser binary in the Scotty container, and no local Chromium process.
 

@@ -17,18 +17,19 @@ const SESSION_ID = "a0b1c2d3e4f5";
 const JOB_ID = "job-abcd1234";
 const HATCH_ID = "hatch-abcd1234";
 
-const evidenceTool = (jobId = JOB_ID) => ({
-  id: "tool-1",
+const evidenceTool = (jobId = JOB_ID, video = false, id = "tool-1") => ({
+  id,
   name: "scotty_browser_test",
   status: "done",
   result: {
     details: {
-      version: 1,
+      version: 2,
       jobId,
       status: "succeeded",
       summaryUrl: `/s/${SESSION_ID}/evidence/${jobId}`,
       completedSteps: 1,
       frameCount: 1,
+      video,
     },
   },
 });
@@ -98,6 +99,45 @@ describe("terminal Summary projection", () => {
       status: "succeeded",
     });
     assert.strictEqual(evidence.paths.summary, `/api/sessions/${SESSION_ID}/evidence/${JOB_ID}`);
+  });
+
+  it("projects one private Showcase link from referenced before and recorded after proof", () => {
+    const before = evidenceTool("job-before", false, "tool-before");
+    const after = evidenceTool("job-after", true, "tool-after");
+    const messages = [
+      { role: "user", id: "user-showcase", content: "Make and prove the change" },
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: before.id, name: before.name, arguments: {} },
+          { type: "toolCall", id: after.id, name: after.name, arguments: {} },
+        ],
+      },
+      { role: "toolResult", id: before.id, toolCallId: before.id, content: before.result },
+      { role: "toolResult", id: after.id, toolCallId: after.id, content: after.result },
+      {
+        role: "assistant",
+        content: `Verified scotty-evidence:job-before and scotty-evidence:job-after`,
+      },
+    ];
+
+    assert.deepInclude(
+      projectSessionSummary(
+        messages,
+        new Map([
+          [before.id, before],
+          [after.id, after],
+        ]),
+        SESSION_ID,
+      ),
+      {
+        showcase: {
+          beforeJobId: "job-before",
+          afterJobId: "job-after",
+          path: `/s/${SESSION_ID}/showcase/job-before/job-after`,
+        },
+      },
+    );
   });
 
   it("fails a valid reference closed when its tool result belongs to another conversation", () => {
@@ -385,7 +425,7 @@ describe("terminal Summary projection", () => {
     assert.include(terminalSource, 'credentials: "same-origin"');
     assert.include(terminalSource, "evidence.paths.summary");
     assert.include(terminalSource, "evidence.paths.frame(frame.frameId)");
-    assert.include(terminalSource, "evidence.paths.replay");
+    assert.include(terminalSource, "evidence.paths.detail");
     assert.include(terminalSource, "reference.paths.status");
     assert.include(terminalSource, "reference.paths.open");
     assert.include(terminalSource, "reference.paths.wake");

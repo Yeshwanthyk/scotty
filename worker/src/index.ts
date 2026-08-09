@@ -11,7 +11,7 @@ import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
 import { readBoundedUtf8Body } from "./bounded-http";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
-import { decodeEvidenceIdentifier } from "./evidence-contracts";
+import { decodeEvidenceIdentifier, evidenceShowcaseProjection } from "./evidence-contracts";
 import { handleEvidencePreviewRequest } from "./evidence-preview";
 import { handleHatchRequest, hatchPreviewFormAction } from "./hatch-gateway";
 import { hatchOrigin } from "./hatch-contracts";
@@ -188,6 +188,23 @@ app.get("/api/sessions/:id/evidence/:jobId", async (c) => {
   const id = parseSessionId(c.req.param("id"));
   const jobId = parseEvidenceIdentifier(c.req.param("jobId"));
   return c.json(await sessionSandbox(c.env, id).getScottyEvidence(jobId));
+});
+
+app.get("/api/sessions/:id/showcase/:beforeJobId/:afterJobId", async (c) => {
+  const principal = await requireEvidenceBrowser(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const id = parseSessionId(c.req.param("id"));
+  const beforeJobId = parseEvidenceIdentifier(c.req.param("beforeJobId"));
+  const afterJobId = parseEvidenceIdentifier(c.req.param("afterJobId"));
+  const sandbox = sessionSandbox(c.env, id);
+  const [before, after] = await Promise.all([
+    sandbox.getScottyEvidence(beforeJobId),
+    sandbox.getScottyEvidence(afterJobId),
+  ]);
+  const showcase = evidenceShowcaseProjection(id, before, after);
+  if (showcase === undefined)
+    throw wrongState("warm", "evidence", "Evidence runs do not form a matched Showcase");
+  return c.json(showcase);
 });
 
 app.use("/api/*", async (c, next) => {
@@ -638,6 +655,22 @@ app.get("/s/:id/evidence/:jobId", async (c) => {
   return evidenceAsset(c.env, c.req.raw);
 });
 
+app.get("/s/:id/showcase/:beforeJobId/:afterJobId", async (c) => {
+  const principal = await requireEvidenceBrowser(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const id = parseSessionId(c.req.param("id"));
+  const beforeJobId = parseEvidenceIdentifier(c.req.param("beforeJobId"));
+  const afterJobId = parseEvidenceIdentifier(c.req.param("afterJobId"));
+  const sandbox = sessionSandbox(c.env, id);
+  const [before, after] = await Promise.all([
+    sandbox.getScottyEvidence(beforeJobId),
+    sandbox.getScottyEvidence(afterJobId),
+  ]);
+  if (evidenceShowcaseProjection(id, before, after) === undefined)
+    throw wrongState("warm", "evidence", "Evidence runs do not form a matched Showcase");
+  return authAsset(c.env, c.req.raw, "/showcase.html");
+});
+
 app.get("/s/:id/evidence/:jobId/frames/:frame", async (c) => {
   const principal = await requireEvidenceBrowser(c.req.raw, c.env);
   refreshClientAuthCookie(c, principal);
@@ -665,6 +698,39 @@ app.get("/s/:id/evidence/:jobId/frames/:frame", async (c) => {
           "cache-control": "private, no-store",
           "content-length": String(frame.bytes),
           "content-type": frame.mediaType,
+          "x-content-type-options": "nosniff",
+        },
+      }),
+  });
+});
+
+app.get("/s/:id/evidence/:jobId/video.webm", async (c) => {
+  const principal = await requireEvidenceBrowser(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  const id = parseSessionId(c.req.param("id"));
+  const jobId = parseEvidenceIdentifier(c.req.param("jobId"));
+  const artifact = await sessionSandbox(c.env, id).getScottyEvidenceArtifact(jobId, "recording");
+  if (artifact.mediaType !== "video/webm") throw badRequest("Evidence video is invalid");
+  const opened = await Effect.runPromise(
+    Effect.flatMap(ArtifactStore, (store) => store.openArtifact(artifact)).pipe(
+      Effect.provide(artifactStoreLayer(r2ArtifactStoreCapabilities(c.env.ARTIFACT_BUCKET))),
+      Effect.result,
+    ),
+  );
+  return Result.match(opened, {
+    onFailure: () => {
+      throw new ScottyError("internal", "Evidence video is unavailable", {
+        httpStatus: 500,
+        exitCode: 1,
+      });
+    },
+    onSuccess: (video) =>
+      new Response(video.body, {
+        headers: {
+          "cache-control": "private, no-store",
+          "content-length": String(video.bytes),
+          "content-type": video.mediaType,
+          "content-disposition": "inline",
           "x-content-type-options": "nosniff",
         },
       }),
@@ -1319,7 +1385,7 @@ async function authAsset(env: Bindings, request: Request, pathname: string): Pro
   headers.set("cache-control", "no-store");
   headers.set(
     "content-security-policy",
-    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   );
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");

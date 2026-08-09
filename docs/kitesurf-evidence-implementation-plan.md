@@ -1,6 +1,10 @@
-# Kitesurf evidence implementation plan
+# Kitesurf evidence implementation plan (superseded)
 
-- **Status:** implementation-ready target packet
+> Historical design record. Evidence v2 replaced this PNG replay proposal with
+> matched before/after screenshots and a real browser-recorded WebM. The current
+> contract is documented in `docs/hatch-summary-architecture.md`.
+
+- **Status:** superseded by Evidence v2
 - **Scope:** run bounded Kitesurf tests against the real app in one warm Scotty session, retain screenshots and a replay timeline, and update an authenticated session summary page
 - **Deferred:** human portals, Live View, true pixel-time video, persistent browser sessions, arbitrary Playwright/CDP, runner-backed sessions
 - **Supersedes for delivery:** the broader phase ordering in `docs/kitesurf-first-architecture.md`; that document remains the detailed security and lifecycle reference

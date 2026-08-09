@@ -194,11 +194,11 @@ describe("terminal worklog view", () => {
     assert.include(terminalSource, 'image.loading = "lazy"');
     assert.include(terminalSource, 'cache: "no-store"');
     assert.include(terminalSource, 'credentials: "same-origin"');
-    assert.include(terminalSource, '"Open Replay"');
+    assert.include(terminalSource, '"Open proof"');
     assert.include(terminalSource, "browserEvidenceNoFrameCopy(summary.status)");
     assert.include(evidenceAttachmentSource, "The run failed before a screenshot was available.");
     assert.include(terminalSource, "Evidence unavailable");
-    assert.include(evidenceAttachmentSource, "value.summaryUrl !== paths.replay");
+    assert.include(evidenceAttachmentSource, "value.summaryUrl !== paths.detail");
     assert.notInclude(evidenceAttachmentSource, "base64");
     assert.notInclude(evidenceAttachmentSource, "objectKey");
   });

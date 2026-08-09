@@ -1,9 +1,10 @@
 import { Clock, Context, Effect, Exit, Predicate, Ref, Result, Schema } from "effect";
 import {
-  type BrowserEvidenceJobV1,
-  type BrowserEvidenceResultV1,
-  type CompleteEvidenceStepPublicationV1,
-  type EvidenceActiveJobV1,
+  type BrowserEvidenceJobV2,
+  type BrowserEvidenceResultV2,
+  type CompleteEvidenceStepPublicationV2,
+  type CompleteEvidenceVideoPublicationV2,
+  type EvidenceActiveJobV2,
   type EvidenceAssertion,
   EvidenceKitesurfDiagnosticSchema,
   EvidenceWorkflowOperationSchema,
@@ -12,9 +13,9 @@ import {
   type EvidenceDiagnostic,
   type EvidenceFailure,
   type EvidenceFailureCode,
-  type EvidenceJobSummaryV1,
+  type EvidenceJobSummaryV2,
   type EvidenceTerminalStatus,
-  type ExposedEvidencePreviewV1,
+  type ExposedEvidencePreviewV2,
 } from "./evidence-contracts";
 import {
   KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
@@ -22,6 +23,7 @@ import {
   type KitesurfClientError,
   type KitesurfClientShape,
   type KitesurfPage,
+  type KitesurfPageResult,
 } from "./kitesurf-client";
 
 export const EVIDENCE_ASSERTION_TIMEOUT_MILLIS = 5_000;
@@ -57,6 +59,7 @@ export class EvidenceWorkflowControlError extends Schema.TaggedErrorClass<Eviden
       "expose",
       "mark_running",
       "complete_step",
+      "complete_video",
       "record_failure",
       "finalize",
     ]),
@@ -74,24 +77,28 @@ export class EvidenceWorkflowControlError extends Schema.TaggedErrorClass<Eviden
 
 export interface EvidenceWorkflowControlShape {
   readonly expose: (
-    active: EvidenceActiveJobV1,
-  ) => Effect.Effect<ExposedEvidencePreviewV1, EvidenceWorkflowControlError>;
+    active: EvidenceActiveJobV2,
+  ) => Effect.Effect<ExposedEvidencePreviewV2, EvidenceWorkflowControlError>;
   readonly markRunning: (
-    active: EvidenceActiveJobV1,
+    active: EvidenceActiveJobV2,
   ) => Effect.Effect<void, EvidenceWorkflowControlError>;
   readonly completeStep: (
-    active: EvidenceActiveJobV1,
-    input: CompleteEvidenceStepPublicationV1,
+    active: EvidenceActiveJobV2,
+    input: CompleteEvidenceStepPublicationV2,
+  ) => Effect.Effect<void, EvidenceWorkflowControlError>;
+  readonly completeVideo: (
+    active: EvidenceActiveJobV2,
+    input: CompleteEvidenceVideoPublicationV2,
   ) => Effect.Effect<void, EvidenceWorkflowControlError>;
   readonly recordFailure: (
-    active: EvidenceActiveJobV1,
+    active: EvidenceActiveJobV2,
     failure: EvidenceFailure,
     diagnostic?: EvidenceDiagnostic,
   ) => Effect.Effect<void, EvidenceWorkflowControlError>;
   readonly finalize: (
-    active: EvidenceActiveJobV1,
+    active: EvidenceActiveJobV2,
     status: EvidenceTerminalStatus,
-  ) => Effect.Effect<EvidenceJobSummaryV1, EvidenceWorkflowControlError>;
+  ) => Effect.Effect<EvidenceJobSummaryV2, EvidenceWorkflowControlError>;
 }
 
 export class EvidenceWorkflowControl extends Context.Service<
@@ -100,8 +107,8 @@ export class EvidenceWorkflowControl extends Context.Service<
 >()("scotty/EvidenceWorkflowControl") {}
 
 export interface RunEvidenceWorkflowInput {
-  readonly active: EvidenceActiveJobV1;
-  readonly job: BrowserEvidenceJobV1;
+  readonly active: EvidenceActiveJobV2;
+  readonly job: BrowserEvidenceJobV2;
   readonly summaryUrl: string;
 }
 
@@ -176,7 +183,7 @@ const boundedClientEffect = <A>(
     }),
   );
 
-const activeMatchesJob = (active: EvidenceActiveJobV1, job: BrowserEvidenceJobV1): boolean =>
+const activeMatchesJob = (active: EvidenceActiveJobV2, job: BrowserEvidenceJobV2): boolean =>
   active.status === "accepted" &&
   active.exposure === "not_exposed" &&
   active.previewCookieDigest === null &&
@@ -185,7 +192,9 @@ const activeMatchesJob = (active: EvidenceActiveJobV1, job: BrowserEvidenceJobV1
   active.frameCount === 0 &&
   active.port === job.port &&
   active.totalSteps === job.steps.length &&
-  active.replay === (job.capture?.replay ?? false) &&
+  active.viewport.width === job.viewport.width &&
+  active.viewport.height === job.viewport.height &&
+  active.recordVideo === job.capture.video &&
   active.stepPlan.length === job.steps.length &&
   active.stepPlan.every((plan, index) => {
     const step = job.steps[index];
@@ -200,7 +209,7 @@ const activeMatchesJob = (active: EvidenceActiveJobV1, job: BrowserEvidenceJobV1
 
 const executeAction = (
   page: KitesurfPage,
-  action: BrowserEvidenceJobV1["steps"][number]["action"],
+  action: BrowserEvidenceJobV2["steps"][number]["action"],
   step: number,
 ): Effect.Effect<void, EvidenceWorkflowError> => {
   const effect =
@@ -305,7 +314,7 @@ const executeStep = Effect.fnUntraced(function* (
   const completedAtMillis = yield* Clock.currentTimeMillis;
   const completedAt = new Date(completedAtMillis).toISOString();
   const offsetMillis = Math.max(0, completedAtMillis - jobStartedAtMillis);
-  const publication: CompleteEvidenceStepPublicationV1 = {
+  const publication: CompleteEvidenceStepPublicationV2 = {
     index,
     startedAt,
     completedAt,
@@ -351,45 +360,63 @@ const executeJob = Effect.fnUntraced(function* (
   const jobStartedAtMillis = yield* Clock.currentTimeMillis;
   if (jobStartedAtMillis >= deadlineMillis)
     return yield* workflowError("browser", "deadline", { failureCode: "deadline" });
-  const execution = client
-    .withPage(
-      {
-        origin: preview.origin,
-        cookieSecret: preview.cookieSecret,
-        ...(input.job.viewport === undefined ? {} : { viewport: input.job.viewport }),
-      },
-      (page) =>
-        Effect.gen(function* () {
-          yield* control
-            .markRunning(input.active)
-            .pipe(Effect.mapError((error) => mapControlError(error, "phase")));
-          for (let index = 0; index < input.job.steps.length; index += 1) {
-            yield* executeStep(control, page, input, jobStartedAtMillis, index).pipe(
-              Effect.timeoutOrElse({
-                duration: EVIDENCE_STEP_TIMEOUT_MILLIS,
-                orElse: () =>
-                  Effect.fail(
-                    workflowError("action", "deadline", {
-                      failureCode: "deadline",
-                      step: index,
-                    }),
-                  ),
-              }),
-            );
-          }
-        }),
-    )
-    .pipe(
-      Effect.mapError((error) =>
-        Predicate.isTagged(error, "KitesurfClientError") ? mapClientError(error, "browser") : error,
-      ),
-    );
-  return yield* execution.pipe(
+  const pageOptions = {
+    origin: preview.origin,
+    cookieSecret: preview.cookieSecret,
+    viewport: input.job.viewport,
+  };
+  const usePage = (page: KitesurfPage) =>
+    Effect.gen(function* () {
+      yield* control
+        .markRunning(input.active)
+        .pipe(Effect.mapError((error) => mapControlError(error, "phase")));
+      for (let index = 0; index < input.job.steps.length; index += 1) {
+        yield* executeStep(control, page, input, jobStartedAtMillis, index).pipe(
+          Effect.timeoutOrElse({
+            duration: EVIDENCE_STEP_TIMEOUT_MILLIS,
+            orElse: () =>
+              Effect.fail(
+                workflowError("action", "deadline", {
+                  failureCode: "deadline",
+                  step: index,
+                }),
+              ),
+          }),
+        );
+      }
+    });
+  const recorded = input.job.capture.video ? client.withRecordedPage : undefined;
+  if (input.job.capture.video && recorded === undefined)
+    return yield* workflowError("video", "unsupported", { failureCode: "unsupported" });
+  const execution = (
+    recorded === undefined
+      ? client
+          .withPage(pageOptions, usePage)
+          .pipe(Effect.map((value): KitesurfPageResult<void> => ({ value })))
+      : recorded(pageOptions, usePage)
+  ).pipe(
+    Effect.mapError((error) =>
+      Predicate.isTagged(error, "KitesurfClientError") ? mapClientError(error, "browser") : error,
+    ),
+  );
+  const pageResult = yield* execution.pipe(
     Effect.timeoutOrElse({
       duration: deadlineMillis - jobStartedAtMillis,
       orElse: () => Effect.fail(workflowError("browser", "deadline", { failureCode: "deadline" })),
     }),
   );
+  if (!input.job.capture.video) return;
+  if (pageResult.video === undefined)
+    return yield* workflowError("video", "unsupported", { failureCode: "unsupported" });
+  const capturedAtMillis = yield* Clock.currentTimeMillis;
+  yield* control
+    .completeVideo(input.active, {
+      artifactId: "recording",
+      bytes: pageResult.video,
+      capturedAt: new Date(capturedAtMillis).toISOString(),
+      offsetMillis: Math.max(0, capturedAtMillis - jobStartedAtMillis),
+    })
+    .pipe(Effect.mapError((error) => mapControlError(error, "publish")));
 });
 
 const terminalStatus = (
@@ -408,10 +435,10 @@ const terminalStatus = (
         : "failed";
 
 const workflowResult = (
-  summary: EvidenceJobSummaryV1,
+  summary: EvidenceJobSummaryV2,
   summaryUrl: string,
-): BrowserEvidenceResultV1 => ({
-  version: 1,
+): BrowserEvidenceResultV2 => ({
+  version: 2,
   jobId: summary.jobId,
   status:
     summary.status === "succeeded" ||
@@ -423,6 +450,7 @@ const workflowResult = (
   summaryUrl,
   completedSteps: summary.completedSteps,
   frameCount: summary.frameCount,
+  video: summary.video !== undefined,
   ...(summary.failure === undefined ? {} : { failure: summary.failure }),
 });
 

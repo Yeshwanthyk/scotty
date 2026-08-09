@@ -1,6 +1,10 @@
-# Kitesurf-first browser evidence architecture
+# Kitesurf-first browser evidence architecture (superseded)
 
-- **Status:** target architecture
+> Historical design record. Evidence v2 replaced its screenshot-timeline motion
+> model with matched before/after screenshots and a real browser-recorded WebM.
+> See `docs/hatch-summary-architecture.md` for the active product contract.
+
+- **Status:** superseded by Evidence v2
 - **Scope:** one-shot browser tests against one warm Cloudflare Sandbox session
 - **Supersedes for this decision:** `docs/kitesurf-worker-native-runtime.md`, `docs/kitesurf-preview-bridge.md`, and `docs/kitesurf-evidence-lifecycle.md`
 

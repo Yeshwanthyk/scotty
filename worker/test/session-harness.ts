@@ -10,7 +10,7 @@ import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, StoredCredential } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
-import type { EvidenceArtifactV1 } from "../src/evidence-contracts";
+import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
 import { HATCH_STATE_KEY } from "../src/session-store";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
@@ -95,7 +95,7 @@ export interface HarnessOptions {
   readonly evidencePreviewHostTimeoutMillis?: number;
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
-  readonly initialArtifactObjects?: ReadonlyArray<EvidenceArtifactV1>;
+  readonly initialArtifactObjects?: ReadonlyArray<EvidenceArtifactV2>;
   readonly kitesurfClient?: SandboxEffectOptions["kitesurfClient"];
   readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
     ? Stub extends { dispatch: infer Dispatch }

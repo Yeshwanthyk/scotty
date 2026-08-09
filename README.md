@@ -350,19 +350,23 @@ npm run build:cli
 ./dist/scotty skills
 ```
 
-### Hatch and screenshots
+### Hatch and Showcase
 
 Hatch is the authenticated live app for the current sandbox. The sandbox agent starts it with
 `scotty_hatch ensure` and keeps that process running. Open it from the paired session shell's
 **Open Hatch** control, or open the session URL with `/hatch/open` appended. Do not copy or share the
 wildcard preview URL, handoff token, route nonce, or Hatch cookie.
 
-Browser evidence must use a separate temporary server on a different port from Hatch. Run one
-bounded `scotty_browser_test`, stop only the temporary server, and leave Hatch running. The agent's
-latest update must include the exact structured `scotty-hatch:<hatchId>` and
-`scotty-evidence:<jobId>` references from the same conversation. Summary then shows the live Hatch
-control and retained screenshots. Do not blindly retry a failed evidence run; change the failure
-cause or session state first.
+Browser evidence uses a separate temporary server on a different port from Hatch. Before changing
+visible behavior, define one bounded flow with at most three observable checks. Run that exact
+viewport, action, and assertion graph once with video disabled. Make the change, then run the same
+graph with video enabled. Stop only the temporary server and leave Hatch running.
+
+The agent's latest update must include the exact structured `scotty-hatch:<hatchId>` reference and
+both `scotty-evidence:<jobId>` references from the same conversation. Summary then shows the live
+Hatch control and one private Showcase link. Showcase contains matched before/after screenshots,
+passed assertions, and the actual WebM recorded by the after browser run. Do not blindly retry a
+failed evidence run; change the failure cause or session state first.
 
 For a trusted Linux VPS, first build or pull the pinned runtime image and sign in with `gh`.
 Then run the repeatable user-service setup:

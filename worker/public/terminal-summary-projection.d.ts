@@ -2,17 +2,18 @@ import type { BrowserHatchReference } from "./terminal-hatch-reference.js";
 
 export interface SummaryEvidencePaths {
   readonly summary: string;
-  readonly replay: string;
+  readonly detail: string;
   readonly frame: (frameId: string) => string | undefined;
 }
 
 export interface SummaryEvidence {
   readonly kind: "evidence";
-  readonly version: 1;
+  readonly version: 2;
   readonly jobId: string;
   readonly status: "succeeded" | "failed" | "interrupted" | "unsupported";
   readonly completedSteps: number;
   readonly frameCount: number;
+  readonly video: boolean;
   readonly paths: SummaryEvidencePaths;
 }
 
@@ -38,6 +39,11 @@ export type SessionSummaryProjection =
       readonly update: string;
       readonly hatches: ReadonlyArray<BrowserHatchReference | UnavailableSummaryHatch>;
       readonly evidence: ReadonlyArray<SummaryEvidence | UnavailableSummaryEvidence>;
+      readonly showcase?: {
+        readonly beforeJobId: string;
+        readonly afterJobId: string;
+        readonly path: string;
+      };
     };
 
 export function assistantEvidenceReferences(source: unknown): string[];

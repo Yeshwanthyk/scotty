@@ -1,13 +1,16 @@
-import { Option, Result, Schema } from "effect";
+import { Option, Schema } from "effect";
 
-export const EVIDENCE_STATE_VERSION = 1 as const;
+export const EVIDENCE_STATE_VERSION = 2 as const;
 export const EVIDENCE_MAX_STEPS = 12;
 export const EVIDENCE_MAX_ASSERTIONS_PER_STEP = 4;
 export const EVIDENCE_TOOL_MAX_PROTOCOL_BYTES = 64 * 1_024;
 export const EVIDENCE_MAX_FRAME_BYTES = 5 * 1024 * 1024;
-export const EVIDENCE_MAX_JOB_BYTES = 40 * 1024 * 1024;
+export const EVIDENCE_MAX_VIDEO_BYTES = 25 * 1024 * 1024;
+export const EVIDENCE_MAX_JOB_BYTES = 64 * 1024 * 1024;
 export const EVIDENCE_MAX_RETAINED_JOBS = 100;
-export const EVIDENCE_MAX_RETAINED_ARTIFACTS = EVIDENCE_MAX_RETAINED_JOBS * EVIDENCE_MAX_STEPS;
+export const EVIDENCE_MAX_ARTIFACTS_PER_JOB = EVIDENCE_MAX_STEPS + 1;
+export const EVIDENCE_MAX_RETAINED_ARTIFACTS =
+  EVIDENCE_MAX_RETAINED_JOBS * EVIDENCE_MAX_ARTIFACTS_PER_JOB;
 export const EVIDENCE_JOB_TIMEOUT_MILLIS = 5 * 60 * 1_000;
 export const EVIDENCE_RETENTION_MILLIS = 7 * 24 * 60 * 60 * 1_000;
 export const EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS = 4;
@@ -28,7 +31,7 @@ const IdentifierSchema = EvidenceIdentifierSchema;
 export const decodeEvidenceIdentifier = Schema.decodeUnknownOption(EvidenceIdentifierSchema);
 export const EvidenceObjectKeySchema = Schema.String.check(
   Schema.isPattern(
-    /^evidence\/v1\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.png$/u,
+    /^evidence\/v2\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.(?:png|webm)$/u,
   ),
 );
 export const decodeEvidenceObjectKey = Schema.decodeUnknownOption(EvidenceObjectKeySchema);
@@ -116,41 +119,37 @@ export const EvidenceAssertionSchema = Schema.Union([
 ]);
 export type EvidenceAssertion = typeof EvidenceAssertionSchema.Type;
 
-export const BrowserEvidenceStepV1Schema = Schema.Struct({
+export const BrowserEvidenceStepV2Schema = Schema.Struct({
   name: BoundedNameSchema,
   action: EvidenceActionSchema,
   expect: Schema.NonEmptyArray(EvidenceAssertionSchema).check(
     Schema.isMaxLength(EVIDENCE_MAX_ASSERTIONS_PER_STEP),
   ),
 });
-export type BrowserEvidenceStepV1 = typeof BrowserEvidenceStepV1Schema.Type;
+export type BrowserEvidenceStepV2 = typeof BrowserEvidenceStepV2Schema.Type;
 
-export const BrowserEvidenceJobV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
+export const BrowserEvidenceJobV2Schema = Schema.Struct({
+  version: Schema.Literal(2),
   port: PositivePortSchema,
-  viewport: Schema.optionalKey(
-    Schema.Struct({
-      width: Schema.Int.check(Schema.isBetween({ minimum: 320, maximum: 1_920 })),
-      height: Schema.Int.check(Schema.isBetween({ minimum: 240, maximum: 1_080 })),
-    }),
-  ),
-  steps: Schema.NonEmptyArray(BrowserEvidenceStepV1Schema).check(
+  viewport: Schema.Struct({
+    width: Schema.Int.check(Schema.isBetween({ minimum: 320, maximum: 1_920 })),
+    height: Schema.Int.check(Schema.isBetween({ minimum: 240, maximum: 1_080 })),
+  }),
+  steps: Schema.NonEmptyArray(BrowserEvidenceStepV2Schema).check(
     Schema.isMaxLength(EVIDENCE_MAX_STEPS),
   ),
-  capture: Schema.optionalKey(
-    Schema.Struct({
-      screenshots: Schema.Literal("after-each-step"),
-      replay: Schema.Boolean,
-    }),
-  ),
+  capture: Schema.Struct({
+    screenshots: Schema.Literal("after-each-step"),
+    video: Schema.Boolean,
+  }),
 });
-export type BrowserEvidenceJobV1 = typeof BrowserEvidenceJobV1Schema.Type;
+export type BrowserEvidenceJobV2 = typeof BrowserEvidenceJobV2Schema.Type;
 
-export const decodeBrowserEvidenceJob = Schema.decodeUnknownOption(BrowserEvidenceJobV1Schema, {
+export const decodeBrowserEvidenceJob = Schema.decodeUnknownOption(BrowserEvidenceJobV2Schema, {
   onExcessProperty: "error",
 });
 export const decodeBrowserEvidenceJobEffect = Schema.decodeUnknownEffect(
-  BrowserEvidenceJobV1Schema,
+  BrowserEvidenceJobV2Schema,
   { onExcessProperty: "error" },
 );
 
@@ -199,6 +198,7 @@ export const EvidenceWorkflowOperationSchema = Schema.Literals([
   "action",
   "assertion",
   "screenshot",
+  "video",
   "publish",
   "finalize",
 ]);
@@ -228,6 +228,7 @@ export const EvidenceKitesurfOperationSchema = Schema.Literals([
   "count",
   "url_path",
   "screenshot",
+  "save_video",
   "close_page",
   "close_context",
   "close_browser",
@@ -259,7 +260,7 @@ export const EvidenceAssertionResultSchema = Schema.Struct({
 });
 export type EvidenceAssertionResult = typeof EvidenceAssertionResultSchema.Type;
 
-const EvidenceFrameUploadV1Schema = Schema.Struct({
+const EvidenceFrameUploadV2Schema = Schema.Struct({
   frameId: IdentifierSchema,
   bytes: Schema.Uint8Array.check(
     Schema.makeFilter(
@@ -271,7 +272,7 @@ const EvidenceFrameUploadV1Schema = Schema.Struct({
   offsetMillis: NonNegativeIntSchema,
 });
 
-export const CompleteEvidenceStepPublicationV1Schema = Schema.Struct({
+export const CompleteEvidenceStepPublicationV2Schema = Schema.Struct({
   index: NonNegativeIntSchema,
   startedAt: Schema.String,
   completedAt: Schema.String,
@@ -279,11 +280,11 @@ export const CompleteEvidenceStepPublicationV1Schema = Schema.Struct({
   assertions: Schema.NonEmptyArray(EvidenceAssertionResultSchema).check(
     Schema.isMaxLength(EVIDENCE_MAX_ASSERTIONS_PER_STEP),
   ),
-  frame: Schema.optionalKey(EvidenceFrameUploadV1Schema),
+  frame: Schema.optionalKey(EvidenceFrameUploadV2Schema),
 });
-export type CompleteEvidenceStepPublicationV1 = typeof CompleteEvidenceStepPublicationV1Schema.Type;
+export type CompleteEvidenceStepPublicationV2 = typeof CompleteEvidenceStepPublicationV2Schema.Type;
 export const decodeCompleteEvidenceStepPublication = Schema.decodeUnknownEffect(
-  CompleteEvidenceStepPublicationV1Schema,
+  CompleteEvidenceStepPublicationV2Schema,
   { onExcessProperty: "error" },
 );
 
@@ -312,31 +313,63 @@ export const EvidenceStepResultSchema = Schema.Struct({
 export type EvidenceStepResult = typeof EvidenceStepResultSchema.Type;
 
 export const EvidenceArtifactStatusSchema = Schema.Literals(["available", "delete_pending"]);
-export const EvidenceArtifactV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
+export const EvidenceArtifactV2Schema = Schema.Struct({
+  version: Schema.Literal(2),
   sessionId: IdentifierSchema,
   jobId: IdentifierSchema,
   frameId: IdentifierSchema,
   objectKey: EvidenceObjectKeySchema,
-  mediaType: Schema.Literal("image/png"),
+  mediaType: Schema.Literals(["image/png", "video/webm"]),
   sha256: Sha256Schema,
-  bytes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: EVIDENCE_MAX_FRAME_BYTES })),
+  bytes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: EVIDENCE_MAX_VIDEO_BYTES })),
   capturedAt: Schema.String,
   offsetMillis: NonNegativeIntSchema,
   expiresAt: Schema.String,
   status: EvidenceArtifactStatusSchema,
-});
-export type EvidenceArtifactV1 = typeof EvidenceArtifactV1Schema.Type;
+}).check(
+  Schema.makeFilter(
+    (artifact) => artifact.mediaType === "video/webm" || artifact.bytes <= EVIDENCE_MAX_FRAME_BYTES,
+    { expected: "a media-specific bounded evidence artifact" },
+  ),
+);
+export type EvidenceArtifactV2 = typeof EvidenceArtifactV2Schema.Type;
 
-export const EvidenceDeleteV1Schema = Schema.Struct({
+export const CompleteEvidenceVideoPublicationV2Schema = Schema.Struct({
+  artifactId: Schema.Literal("recording"),
+  bytes: Schema.Uint8Array.check(
+    Schema.makeFilter(
+      (bytes) => bytes.byteLength > 0 && bytes.byteLength <= EVIDENCE_MAX_VIDEO_BYTES,
+      { expected: "bounded WebM bytes" },
+    ),
+  ),
+  capturedAt: Schema.String,
+  offsetMillis: NonNegativeIntSchema,
+});
+export type CompleteEvidenceVideoPublicationV2 =
+  typeof CompleteEvidenceVideoPublicationV2Schema.Type;
+export const decodeCompleteEvidenceVideoPublication = Schema.decodeUnknownEffect(
+  CompleteEvidenceVideoPublicationV2Schema,
+  { onExcessProperty: "error" },
+);
+
+export const EvidenceVideoProjectionSchema = Schema.Struct({
+  artifactId: Schema.Literal("recording"),
+  sha256: Sha256Schema,
+  bytes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: EVIDENCE_MAX_VIDEO_BYTES })),
+  capturedAt: Schema.String,
+  offsetMillis: NonNegativeIntSchema,
+});
+export type EvidenceVideoProjection = typeof EvidenceVideoProjectionSchema.Type;
+
+export const EvidenceDeleteV2Schema = Schema.Struct({
   objectKey: EvidenceObjectKeySchema,
   requestedAt: Schema.String,
   reason: Schema.Literals(["abandoned", "expired", "history_evicted", "vaporize"]),
 });
-export type EvidenceDeleteV1 = typeof EvidenceDeleteV1Schema.Type;
+export type EvidenceDeleteV2 = typeof EvidenceDeleteV2Schema.Type;
 
-export const EvidenceJobSummaryV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
+export const EvidenceJobSummaryV2Schema = Schema.Struct({
+  version: Schema.Literal(2),
   sequence: NonNegativeIntSchema,
   jobId: IdentifierSchema,
   status: EvidenceJobStatusSchema,
@@ -345,13 +378,19 @@ export const EvidenceJobSummaryV1Schema = Schema.Struct({
   completedAt: Schema.optionalKey(Schema.String),
   totalSteps: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: EVIDENCE_MAX_STEPS })),
   completedSteps: NonNegativeIntSchema,
-  replay: Schema.Boolean,
+  viewport: Schema.Struct({
+    width: Schema.Int.check(Schema.isBetween({ minimum: 320, maximum: 1_920 })),
+    height: Schema.Int.check(Schema.isBetween({ minimum: 240, maximum: 1_080 })),
+  }),
+  recordVideo: Schema.Boolean,
+  flowHash: Sha256Schema,
+  video: Schema.optionalKey(EvidenceVideoProjectionSchema),
   steps: Schema.Array(EvidenceStepResultSchema).check(Schema.isMaxLength(EVIDENCE_MAX_STEPS)),
   frameCount: NonNegativeIntSchema,
   failure: Schema.optionalKey(EvidenceFailureSchema),
   diagnostic: Schema.optionalKey(EvidenceDiagnosticSchema),
 });
-export type EvidenceJobSummaryV1 = typeof EvidenceJobSummaryV1Schema.Type;
+export type EvidenceJobSummaryV2 = typeof EvidenceJobSummaryV2Schema.Type;
 
 const EvidenceStepPlanSchema = Schema.Struct({
   name: BoundedNameSchema,
@@ -361,8 +400,8 @@ const EvidenceStepPlanSchema = Schema.Struct({
   ),
 });
 
-const LegacyEvidenceActiveJobV1Schema = Schema.Struct({
-  ...EvidenceJobSummaryV1Schema.fields,
+const EvidenceActiveJobBaseSchema = Schema.Struct({
+  ...EvidenceJobSummaryV2Schema.fields,
   operationNonce: IdentifierSchema,
   port: PositivePortSchema,
   runtimeEpoch: IdentifierSchema,
@@ -372,8 +411,8 @@ const LegacyEvidenceActiveJobV1Schema = Schema.Struct({
   ),
 });
 
-const UnaccountedEvidenceActiveJobV1Schema = Schema.Struct({
-  ...LegacyEvidenceActiveJobV1Schema.fields,
+const EvidenceActiveJobPreviewSchema = Schema.Struct({
+  ...EvidenceActiveJobBaseSchema.fields,
   routeNonce: EvidenceRouteNonceSchema,
   previewCookieDigest: Schema.NullOr(Sha256Schema),
   exposure: Schema.Literals(["not_exposed", "active", "unexpose_pending", "closed"]),
@@ -386,7 +425,7 @@ export const decodeEvidencePreviewRequestId = Schema.decodeUnknownOption(
   EvidencePreviewRequestIdSchema,
 );
 
-export const EvidencePreviewPermitV1Schema = Schema.Struct({
+export const EvidencePreviewPermitV2Schema = Schema.Struct({
   requestId: EvidencePreviewRequestIdSchema,
   state: Schema.Literals(["admitted", "claimed"]),
   cookieDigest: Sha256Schema,
@@ -396,19 +435,19 @@ export const EvidencePreviewPermitV1Schema = Schema.Struct({
   admittedAt: Schema.String,
   expiresAt: Schema.String,
 });
-export type EvidencePreviewPermitV1 = typeof EvidencePreviewPermitV1Schema.Type;
+export type EvidencePreviewPermitV2 = typeof EvidencePreviewPermitV2Schema.Type;
 export const decodeEvidencePreviewIngressBytes = Schema.decodeUnknownOption(
-  EvidencePreviewPermitV1Schema.fields.ingressBytes,
+  EvidencePreviewPermitV2Schema.fields.ingressBytes,
 );
 
-export const EvidencePreviewAccountingV1Schema = Schema.Struct({
+export const EvidencePreviewAccountingV2Schema = Schema.Struct({
   consumedBytes: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: EVIDENCE_PREVIEW_AGGREGATE_BYTES }),
   ),
   consumedRequestMillis: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS }),
   ),
-  permits: Schema.Array(EvidencePreviewPermitV1Schema).check(
+  permits: Schema.Array(EvidencePreviewPermitV2Schema).check(
     Schema.isMaxLength(EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS),
   ),
 }).check(
@@ -428,83 +467,73 @@ export const EvidencePreviewAccountingV1Schema = Schema.Struct({
     { expected: "bounded unique preview permit reservations" },
   ),
 );
-export type EvidencePreviewAccountingV1 = typeof EvidencePreviewAccountingV1Schema.Type;
+export type EvidencePreviewAccountingV2 = typeof EvidencePreviewAccountingV2Schema.Type;
 
-export const emptyEvidencePreviewAccounting = (): EvidencePreviewAccountingV1 => ({
+export const emptyEvidencePreviewAccounting = (): EvidencePreviewAccountingV2 => ({
   consumedBytes: 0,
   consumedRequestMillis: 0,
   permits: [],
 });
 
-export const EvidenceActiveJobV1Schema = Schema.Struct({
-  ...UnaccountedEvidenceActiveJobV1Schema.fields,
-  previewAccounting: EvidencePreviewAccountingV1Schema,
+export const EvidenceActiveJobV2Schema = Schema.Struct({
+  ...EvidenceActiveJobPreviewSchema.fields,
+  previewAccounting: EvidencePreviewAccountingV2Schema,
 });
-export type EvidenceActiveJobV1 = typeof EvidenceActiveJobV1Schema.Type;
+export type EvidenceActiveJobV2 = typeof EvidenceActiveJobV2Schema.Type;
 
-export const EvidencePreviewAuthorizationV1Schema = Schema.Struct({
+export const EvidencePreviewAuthorizationV2Schema = Schema.Struct({
   sessionId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u)),
   port: PositivePortSchema,
   routeNonce: EvidenceRouteNonceSchema,
   cookieSecret: PreviewCookieSecretSchema,
 });
-export type EvidencePreviewAuthorizationV1 = typeof EvidencePreviewAuthorizationV1Schema.Type;
+export type EvidencePreviewAuthorizationV2 = typeof EvidencePreviewAuthorizationV2Schema.Type;
 
-export const EvidencePreviewAdmissionV1Schema = Schema.Struct({
-  ...EvidencePreviewAuthorizationV1Schema.fields,
+export const EvidencePreviewAdmissionV2Schema = Schema.Struct({
+  ...EvidencePreviewAuthorizationV2Schema.fields,
   ingressBytes: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: EVIDENCE_PREVIEW_MAX_INGRESS_BYTES }),
   ),
 });
-export type EvidencePreviewAdmissionV1 = typeof EvidencePreviewAdmissionV1Schema.Type;
+export type EvidencePreviewAdmissionV2 = typeof EvidencePreviewAdmissionV2Schema.Type;
 export const decodeEvidencePreviewAdmission = Schema.decodeUnknownOption(
-  EvidencePreviewAdmissionV1Schema,
+  EvidencePreviewAdmissionV2Schema,
   { onExcessProperty: "error" },
 );
 
-export interface EvidencePreviewPermitAdmissionV1 {
+export interface EvidencePreviewPermitAdmissionV2 {
   readonly requestId: string;
   readonly expiresAt: string;
 }
 
-export interface ExposedEvidencePreviewV1 {
+export interface ExposedEvidencePreviewV2 {
   readonly origin: string;
   readonly cookieSecret: string;
   readonly expiresAt: string;
 }
 
-const EvidenceStateV1CommonFields = {
+const EvidenceStateV2CommonFields = {
   version: Schema.Literal(EVIDENCE_STATE_VERSION),
   nextSequence: NonNegativeIntSchema,
-  jobs: Schema.Array(EvidenceJobSummaryV1Schema).check(
+  jobs: Schema.Array(EvidenceJobSummaryV2Schema).check(
     Schema.isMaxLength(EVIDENCE_MAX_RETAINED_JOBS),
   ),
-  artifacts: Schema.Array(EvidenceArtifactV1Schema).check(
+  artifacts: Schema.Array(EvidenceArtifactV2Schema).check(
     Schema.isMaxLength(EVIDENCE_MAX_RETAINED_ARTIFACTS),
   ),
-  pendingDeletes: Schema.Array(EvidenceDeleteV1Schema).check(
+  pendingDeletes: Schema.Array(EvidenceDeleteV2Schema).check(
     Schema.isMaxLength(EVIDENCE_MAX_RETAINED_ARTIFACTS),
   ),
   retainedBytes: NonNegativeIntSchema,
 };
 
-const LegacyEvidenceStateV1Schema = Schema.Struct({
-  ...EvidenceStateV1CommonFields,
-  activeJob: Schema.optionalKey(LegacyEvidenceActiveJobV1Schema),
+export const EvidenceStateV2Schema = Schema.Struct({
+  ...EvidenceStateV2CommonFields,
+  activeJob: Schema.optionalKey(EvidenceActiveJobV2Schema),
 });
+export type EvidenceStateV2 = typeof EvidenceStateV2Schema.Type;
 
-const UnaccountedEvidenceStateV1Schema = Schema.Struct({
-  ...EvidenceStateV1CommonFields,
-  activeJob: Schema.optionalKey(UnaccountedEvidenceActiveJobV1Schema),
-});
-
-export const EvidenceStateV1Schema = Schema.Struct({
-  ...EvidenceStateV1CommonFields,
-  activeJob: Schema.optionalKey(EvidenceActiveJobV1Schema),
-});
-export type EvidenceStateV1 = typeof EvidenceStateV1Schema.Type;
-
-export const emptyEvidenceState = (): EvidenceStateV1 => ({
+export const emptyEvidenceState = (): EvidenceStateV2 => ({
   version: EVIDENCE_STATE_VERSION,
   nextSequence: 0,
   jobs: [],
@@ -513,84 +542,31 @@ export const emptyEvidenceState = (): EvidenceStateV1 => ({
   retainedBytes: 0,
 });
 
-export const decodeEvidenceStateResult = Schema.decodeUnknownResult(EvidenceStateV1Schema, {
+export const decodeEvidenceStateResult = Schema.decodeUnknownResult(EvidenceStateV2Schema, {
   onExcessProperty: "error",
 });
 
-const decodeUnaccountedEvidenceStateResult = Schema.decodeUnknownResult(
-  UnaccountedEvidenceStateV1Schema,
-  { onExcessProperty: "error" },
-);
+export const decodeStoredEvidenceStateResult = decodeEvidenceStateResult;
 
-const decodeLegacyEvidenceStateResult = Schema.decodeUnknownResult(LegacyEvidenceStateV1Schema, {
-  onExcessProperty: "error",
-});
-
-export const EVIDENCE_COMPATIBILITY_ROUTE_NONCE = "legacy_closed_v1";
-
-const closeUnaccountedPreview = (
-  state: typeof UnaccountedEvidenceStateV1Schema.Type,
-): EvidenceStateV1 => {
-  const { activeJob, ...rest } = state;
-  if (activeJob === undefined) return rest;
-  const mayRemainExposed =
-    activeJob.exposure === "active" || activeJob.exposure === "unexpose_pending";
-  return {
-    ...rest,
-    activeJob: {
-      ...activeJob,
-      status: "interrupted",
-      failure: { code: "interrupted" },
-      previewCookieDigest: null,
-      exposure: mayRemainExposed ? "unexpose_pending" : "closed",
-      previewAccounting: emptyEvidencePreviewAccounting(),
-    },
-  };
-};
-
-export const decodeStoredEvidenceStateResult = (value: unknown) => {
-  const current = decodeEvidenceStateResult(value);
-  if (Result.isSuccess(current)) return current;
-  const unaccounted = decodeUnaccountedEvidenceStateResult(value);
-  if (Result.isSuccess(unaccounted))
-    return Result.succeed(closeUnaccountedPreview(unaccounted.success));
-  return Result.map(decodeLegacyEvidenceStateResult(value), (legacy): EvidenceStateV1 => {
-    const { activeJob, ...state } = legacy;
-    return activeJob === undefined
-      ? state
-      : {
-          ...state,
-          activeJob: {
-            ...activeJob,
-            status: "interrupted",
-            failure: { code: "interrupted" },
-            routeNonce: EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
-            previewCookieDigest: null,
-            exposure: "closed",
-            previewAccounting: emptyEvidencePreviewAccounting(),
-          },
-        };
-  });
-};
-
-export const BrowserEvidenceResultV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
+export const BrowserEvidenceResultV2Schema = Schema.Struct({
+  version: Schema.Literal(2),
   jobId: IdentifierSchema,
   status: EvidenceTerminalStatusSchema,
   summaryUrl: Schema.String,
   completedSteps: NonNegativeIntSchema,
   frameCount: NonNegativeIntSchema,
+  video: Schema.Boolean,
   failure: Schema.optionalKey(EvidenceFailureSchema),
 });
-export type BrowserEvidenceResultV1 = typeof BrowserEvidenceResultV1Schema.Type;
+export type BrowserEvidenceResultV2 = typeof BrowserEvidenceResultV2Schema.Type;
 
 const EvidenceSummaryPathSchema = Schema.String.check(
   Schema.isMaxLength(512),
   Schema.isPattern(/^\/s\/[0-9a-f]{12}\/evidence\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u),
 );
 
-export const BrowserEvidenceToolResultV1Schema = Schema.Struct({
-  ...BrowserEvidenceResultV1Schema.fields,
+export const BrowserEvidenceToolResultV2Schema = Schema.Struct({
+  ...BrowserEvidenceResultV2Schema.fields,
   summaryUrl: EvidenceSummaryPathSchema,
   completedSteps: NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(EVIDENCE_MAX_STEPS)),
   frameCount: NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(EVIDENCE_MAX_STEPS)),
@@ -607,11 +583,11 @@ export const BrowserEvidenceToolResultV1Schema = Schema.Struct({
     expected: "an authenticated summary path for the returned evidence job",
   }),
 );
-export type BrowserEvidenceToolResultV1 = typeof BrowserEvidenceToolResultV1Schema.Type;
+export type BrowserEvidenceToolResultV2 = typeof BrowserEvidenceToolResultV2Schema.Type;
 // Cloudflare RPC may attach transport-only fields to a returned object. Decode and project the
 // allow-listed tool result instead of letting harmless transport metadata hide a committed job.
 export const decodeBrowserEvidenceToolResult = Schema.decodeUnknownOption(
-  BrowserEvidenceToolResultV1Schema,
+  BrowserEvidenceToolResultV2Schema,
 );
 
 const PublicEvidenceAssertionResultSchema = Schema.Struct({
@@ -633,8 +609,8 @@ const PublicEvidenceStepResultSchema = Schema.Struct({
   frame: Schema.optionalKey(EvidenceFrameProjectionSchema),
 });
 
-export const PublicEvidenceJobSummaryV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
+export const PublicEvidenceJobSummaryV2Schema = Schema.Struct({
+  version: Schema.Literal(2),
   sequence: NonNegativeIntSchema,
   jobId: IdentifierSchema,
   status: EvidenceJobStatusSchema,
@@ -643,12 +619,64 @@ export const PublicEvidenceJobSummaryV1Schema = Schema.Struct({
   completedAt: Schema.optionalKey(Schema.String),
   totalSteps: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: EVIDENCE_MAX_STEPS })),
   completedSteps: NonNegativeIntSchema,
-  replay: Schema.Boolean,
+  viewport: EvidenceJobSummaryV2Schema.fields.viewport,
+  recordVideo: Schema.Boolean,
+  flowHash: Sha256Schema,
+  video: Schema.optionalKey(EvidenceVideoProjectionSchema),
   steps: Schema.Array(PublicEvidenceStepResultSchema).check(Schema.isMaxLength(EVIDENCE_MAX_STEPS)),
   frameCount: NonNegativeIntSchema,
   failure: Schema.optionalKey(EvidenceFailureSchema),
 });
-export type PublicEvidenceJobSummaryV1 = typeof PublicEvidenceJobSummaryV1Schema.Type;
+export type PublicEvidenceJobSummaryV2 = typeof PublicEvidenceJobSummaryV2Schema.Type;
+
+export interface PublicEvidenceShowcaseV2 {
+  readonly version: 2;
+  readonly before: PublicEvidenceJobSummaryV2;
+  readonly after: PublicEvidenceJobSummaryV2;
+  readonly paths: {
+    readonly hatch: string;
+    readonly video: string;
+  };
+}
+
+const completeProofRun = (job: PublicEvidenceJobSummaryV2): boolean =>
+  job.status === "succeeded" &&
+  job.completedSteps === job.totalSteps &&
+  job.frameCount === job.totalSteps &&
+  job.steps.length === job.totalSteps &&
+  job.steps.every(
+    (step) =>
+      step.status === "passed" &&
+      step.frame !== undefined &&
+      step.assertions.every((assertion) => assertion.passed),
+  );
+
+export const evidenceShowcaseProjection = (
+  sessionId: string,
+  before: PublicEvidenceJobSummaryV2,
+  after: PublicEvidenceJobSummaryV2,
+): PublicEvidenceShowcaseV2 | undefined => {
+  if (
+    !completeProofRun(before) ||
+    !completeProofRun(after) ||
+    before.recordVideo ||
+    !after.recordVideo ||
+    after.video === undefined ||
+    before.flowHash !== after.flowHash ||
+    before.viewport.width !== after.viewport.width ||
+    before.viewport.height !== after.viewport.height
+  )
+    return undefined;
+  return {
+    version: 2,
+    before,
+    after,
+    paths: {
+      hatch: `/s/${sessionId}/hatch/open`,
+      video: `/s/${sessionId}/evidence/${after.jobId}/video.webm`,
+    },
+  };
+};
 
 export class EvidenceStateError extends Schema.TaggedErrorClass<EvidenceStateError>()(
   "EvidenceStateError",
@@ -672,6 +700,7 @@ export class EvidenceArtifactError extends Schema.TaggedErrorClass<EvidenceArtif
     operation: Schema.Literals(["validate", "hash", "put", "head", "open", "delete"]),
     reason: Schema.Literals([
       "invalid_png",
+      "invalid_webm",
       "over_budget",
       "put_unknown",
       "metadata_mismatch",
@@ -684,16 +713,19 @@ export class EvidenceArtifactError extends Schema.TaggedErrorClass<EvidenceArtif
 ) {}
 
 export const evidenceArtifactObjectKey = (
-  artifact: Pick<EvidenceArtifactV1, "sessionId" | "jobId" | "frameId">,
-): string => `evidence/v1/${artifact.sessionId}/${artifact.jobId}/${artifact.frameId}.png`;
+  artifact: Pick<EvidenceArtifactV2, "sessionId" | "jobId" | "frameId"> & {
+    readonly mediaType?: EvidenceArtifactV2["mediaType"];
+  },
+): string =>
+  `evidence/v2/${artifact.sessionId}/${artifact.jobId}/${artifact.frameId}.${artifact.mediaType === "video/webm" ? "webm" : "png"}`;
 
 export const artifactExpiry = (capturedAtMillis: number): string =>
   new Date(capturedAtMillis + EVIDENCE_RETENTION_MILLIS).toISOString();
 
 export const evidenceSummaryProjection = (
-  job: EvidenceActiveJobV1 | EvidenceJobSummaryV1,
-): EvidenceJobSummaryV1 => ({
-  version: 1,
+  job: EvidenceActiveJobV2 | EvidenceJobSummaryV2,
+): EvidenceJobSummaryV2 => ({
+  version: 2,
   sequence: job.sequence,
   jobId: job.jobId,
   status: job.status,
@@ -702,7 +734,10 @@ export const evidenceSummaryProjection = (
   ...(job.completedAt === undefined ? {} : { completedAt: job.completedAt }),
   totalSteps: job.totalSteps,
   completedSteps: job.completedSteps,
-  replay: job.replay,
+  viewport: job.viewport,
+  recordVideo: job.recordVideo,
+  flowHash: job.flowHash,
+  ...(job.video === undefined ? {} : { video: job.video }),
   steps: job.steps,
   frameCount: job.frameCount,
   ...(job.failure === undefined ? {} : { failure: job.failure }),
@@ -710,9 +745,9 @@ export const evidenceSummaryProjection = (
 });
 
 export const publicEvidenceSummaryProjection = (
-  job: EvidenceActiveJobV1 | EvidenceJobSummaryV1,
-): PublicEvidenceJobSummaryV1 => ({
-  version: 1,
+  job: EvidenceActiveJobV2 | EvidenceJobSummaryV2,
+): PublicEvidenceJobSummaryV2 => ({
+  version: 2,
   sequence: job.sequence,
   jobId: job.jobId,
   status: job.status,
@@ -721,7 +756,10 @@ export const publicEvidenceSummaryProjection = (
   ...(job.completedAt === undefined ? {} : { completedAt: job.completedAt }),
   totalSteps: job.totalSteps,
   completedSteps: job.completedSteps,
-  replay: job.replay,
+  viewport: job.viewport,
+  recordVideo: job.recordVideo,
+  flowHash: job.flowHash,
+  ...(job.video === undefined ? {} : { video: job.video }),
   steps: job.steps.map((step) => ({
     ...step,
     assertions: [
@@ -741,9 +779,9 @@ export const publicEvidenceSummaryProjection = (
 });
 
 export const findEvidenceJob = (
-  state: EvidenceStateV1,
+  state: EvidenceStateV2,
   jobId: string,
-): Option.Option<EvidenceJobSummaryV1> => {
+): Option.Option<EvidenceJobSummaryV2> => {
   if (state.activeJob?.jobId === jobId)
     return Option.some(evidenceSummaryProjection(state.activeJob));
   const completed = state.jobs.find((job) => job.jobId === jobId);

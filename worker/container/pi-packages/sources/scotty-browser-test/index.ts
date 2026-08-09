@@ -123,38 +123,34 @@ const StepSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const BrowserEvidenceJobV1Parameters = Type.Object(
+export const BrowserEvidenceJobV2Parameters = Type.Object(
   {
-    version: Type.Literal(1),
+    version: Type.Literal(2),
     port: Type.Integer({
       minimum: 1_024,
       maximum: 65_535,
       not: { enum: RESERVED_PORTS },
     }),
-    viewport: Type.Optional(
-      Type.Object(
-        {
-          width: Type.Integer({ minimum: 320, maximum: 1_920 }),
-          height: Type.Integer({ minimum: 240, maximum: 1_080 }),
-        },
-        { additionalProperties: false },
-      ),
+    viewport: Type.Object(
+      {
+        width: Type.Integer({ minimum: 320, maximum: 1_920 }),
+        height: Type.Integer({ minimum: 240, maximum: 1_080 }),
+      },
+      { additionalProperties: false },
     ),
     steps: Type.Array(StepSchema, { minItems: 1, maxItems: MAX_STEPS }),
-    capture: Type.Optional(
-      Type.Object(
-        {
-          screenshots: Type.Literal("after-each-step"),
-          replay: Type.Boolean(),
-        },
-        { additionalProperties: false },
-      ),
+    capture: Type.Object(
+      {
+        screenshots: Type.Literal("after-each-step"),
+        video: Type.Boolean(),
+      },
+      { additionalProperties: false },
     ),
   },
   { additionalProperties: false },
 );
 
-export type BrowserEvidenceJobV1 = Static<typeof BrowserEvidenceJobV1Parameters>;
+export type BrowserEvidenceJobV2 = Static<typeof BrowserEvidenceJobV2Parameters>;
 
 const FailureSchema = Type.Object(
   {
@@ -172,9 +168,9 @@ const FailureSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const BrowserEvidenceResultV1Schema = Type.Object(
+const BrowserEvidenceResultV2Schema = Type.Object(
   {
-    version: Type.Literal(1),
+    version: Type.Literal(2),
     jobId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" }),
     status: Type.Union([
       Type.Literal("succeeded"),
@@ -189,12 +185,13 @@ const BrowserEvidenceResultV1Schema = Type.Object(
     }),
     completedSteps: Type.Integer({ minimum: 0, maximum: MAX_STEPS }),
     frameCount: Type.Integer({ minimum: 0, maximum: MAX_STEPS }),
+    video: Type.Boolean(),
     failure: Type.Optional(FailureSchema),
   },
   { additionalProperties: false },
 );
 
-export type BrowserEvidenceResultV1 = Static<typeof BrowserEvidenceResultV1Schema>;
+export type BrowserEvidenceResultV2 = Static<typeof BrowserEvidenceResultV2Schema>;
 
 const ErrorEnvelopeSchema = Type.Object(
   {
@@ -219,8 +216,8 @@ type EvidenceTransport = (
 const byteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 export function serializeBrowserEvidenceJob(value: unknown): string {
-  if (!Check(BrowserEvidenceJobV1Parameters, value)) {
-    throw new Error("scotty_browser_test input does not match BrowserEvidenceJob v1");
+  if (!Check(BrowserEvidenceJobV2Parameters, value)) {
+    throw new Error("scotty_browser_test input does not match BrowserEvidenceJob v2");
   }
   const body = JSON.stringify(value);
   if (byteLength(body) > SCOTTY_BROWSER_TEST_MAX_BYTES) {
@@ -270,8 +267,8 @@ function parseJson(text: string): unknown {
   }
 }
 
-function validateResult(value: unknown): BrowserEvidenceResultV1 | undefined {
-  if (!Check(BrowserEvidenceResultV1Schema, value)) return undefined;
+function validateResult(value: unknown): BrowserEvidenceResultV2 | undefined {
+  if (!Check(BrowserEvidenceResultV2Schema, value)) return undefined;
   if (!value.summaryUrl.endsWith(`/evidence/${value.jobId}`)) return undefined;
   return value;
 }
@@ -288,7 +285,7 @@ export async function runScottyBrowserTest(
   job: unknown,
   signal?: AbortSignal,
   transport: EvidenceTransport = fetch,
-): Promise<BrowserEvidenceResultV1> {
+): Promise<BrowserEvidenceResultV2> {
   const body = serializeBrowserEvidenceJob(job);
   const response = await transport(SCOTTY_BROWSER_TEST_ROUTE, {
     method: "POST",
@@ -307,11 +304,12 @@ export async function runScottyBrowserTest(
   return result;
 }
 
-function renderResult(result: BrowserEvidenceResultV1): string {
+function renderResult(result: BrowserEvidenceResultV2): string {
   const lines = [
     `Browser evidence: ${result.status}`,
     `Completed steps: ${result.completedSteps}`,
     `Frames: ${result.frameCount}`,
+    `Video: ${result.video ? "recorded" : "not requested"}`,
   ];
   if (result.failure !== undefined) {
     const step = result.failure.step === undefined ? "" : ` at step ${result.failure.step + 1}`;
@@ -326,14 +324,15 @@ export default function scottyBrowserTest(pi: ExtensionAPI): void {
     name: "scotty_browser_test",
     label: "Scotty Browser Test",
     description:
-      "Run one bounded BrowserEvidenceJob v1 against an app port in the current warm Scotty session. Supports relative navigation, locator actions, bounded assertions, step screenshots, and replay metadata only.",
+      "Run one bounded BrowserEvidenceJob v2 against an app port in the current warm Scotty session. Captures verified screenshots and, when requested, a real WebM browser recording.",
     promptSnippet:
       "Run a bounded one-shot browser evidence job against the current warm Scotty session",
     promptGuidelines: [
       "Use scotty_browser_test only after starting the repository app on 0.0.0.0 at an allowed port; use relative paths and declarative assertions.",
+      "For user-visible work, run the same viewport, steps, and assertions before and after the change. Set video false for the before run and true for the after run so Scotty can build one matched Showcase.",
       "In the next meaningful progress or final update, include the exact scotty-evidence:<jobId> reference derived from the structured result once. Never invent or repeat a reference, and do not publish the authenticated summary URL.",
     ],
-    parameters: BrowserEvidenceJobV1Parameters,
+    parameters: BrowserEvidenceJobV2Parameters,
     async execute(_toolCallId, params, signal) {
       const result = await runScottyBrowserTest(params, signal);
       return {

@@ -61,7 +61,7 @@ export function browserEvidencePaths(sessionId, jobId) {
   const job = encodeURIComponent(jobId);
   return {
     summary: `/api/sessions/${session}/evidence/${job}`,
-    replay: `/s/${session}/evidence/${job}`,
+    detail: `/s/${session}/evidence/${job}`,
     frame(frameId) {
       return IDENTIFIER.test(frameId)
         ? `/s/${session}/evidence/${job}/frames/${encodeURIComponent(frameId)}.png`
@@ -84,27 +84,29 @@ export function browserEvidenceAttachment(tool, sessionId) {
     !value ||
     !exactKeys(
       value,
-      ["version", "jobId", "status", "summaryUrl", "completedSteps", "frameCount"],
+      ["version", "jobId", "status", "summaryUrl", "completedSteps", "frameCount", "video"],
       ["failure"],
     ) ||
-    value.version !== 1 ||
+    value.version !== 2 ||
     !IDENTIFIER.test(value.jobId) ||
     !RESULT_STATUSES.has(value.status) ||
     !isBoundedInteger(value.completedSteps, MAX_STEPS) ||
     !isBoundedInteger(value.frameCount, MAX_STEPS) ||
+    typeof value.video !== "boolean" ||
     (value.failure !== undefined && !validFailure(value.failure, MAX_STEPS - 1))
   ) {
     return { kind: "unavailable" };
   }
   const paths = browserEvidencePaths(sessionId, value.jobId);
-  if (!paths || value.summaryUrl !== paths.replay) return { kind: "unavailable" };
+  if (!paths || value.summaryUrl !== paths.detail) return { kind: "unavailable" };
   return {
     kind: "evidence",
-    version: 1,
+    version: 2,
     jobId: value.jobId,
     status: value.status,
     completedSteps: value.completedSteps,
     frameCount: value.frameCount,
+    video: value.video,
     ...(value.failure === undefined ? {} : { failure: { ...value.failure } }),
     paths,
   };
@@ -178,6 +180,20 @@ function normalizeStep(value) {
   };
 }
 
+function validVideo(value) {
+  return (
+    isObject(value) &&
+    exactKeys(value, ["artifactId", "sha256", "bytes", "capturedAt", "offsetMillis"]) &&
+    value.artifactId === "recording" &&
+    SHA256.test(value.sha256) &&
+    Number.isInteger(value.bytes) &&
+    value.bytes > 0 &&
+    value.bytes <= 25 * 1_024 * 1_024 &&
+    typeof value.capturedAt === "string" &&
+    isBoundedInteger(value.offsetMillis, Number.MAX_SAFE_INTEGER)
+  );
+}
+
 export function browserEvidenceSummary(value, attachment) {
   if (
     attachment?.kind !== "evidence" ||
@@ -192,13 +208,15 @@ export function browserEvidenceSummary(value, attachment) {
         "acceptedAt",
         "totalSteps",
         "completedSteps",
-        "replay",
+        "viewport",
+        "recordVideo",
+        "flowHash",
         "steps",
         "frameCount",
       ],
-      ["startedAt", "completedAt", "failure"],
+      ["startedAt", "completedAt", "video", "failure"],
     ) ||
-    value.version !== 1 ||
+    value.version !== 2 ||
     value.jobId !== attachment.jobId ||
     !SUMMARY_STATUSES.has(value.status) ||
     !isBoundedInteger(value.sequence, Number.MAX_SAFE_INTEGER) ||
@@ -209,10 +227,16 @@ export function browserEvidenceSummary(value, attachment) {
     value.totalSteps < 1 ||
     value.totalSteps > MAX_STEPS ||
     !isNonNegativeInteger(value.completedSteps) ||
-    typeof value.replay !== "boolean" ||
+    !isObject(value.viewport) ||
+    !exactKeys(value.viewport, ["width", "height"]) ||
+    !Number.isInteger(value.viewport.width) ||
+    !Number.isInteger(value.viewport.height) ||
+    typeof value.recordVideo !== "boolean" ||
+    !SHA256.test(value.flowHash) ||
     !Array.isArray(value.steps) ||
     value.steps.length > MAX_STEPS ||
     !isNonNegativeInteger(value.frameCount) ||
+    (value.video !== undefined && !validVideo(value.video)) ||
     (value.failure !== undefined && !validFailure(value.failure))
   )
     return undefined;

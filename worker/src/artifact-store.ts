@@ -1,16 +1,18 @@
 import { Context, Effect, Layer, Option, Result } from "effect";
 import {
   EVIDENCE_MAX_FRAME_BYTES,
+  EVIDENCE_MAX_VIDEO_BYTES,
   EvidenceArtifactError,
   artifactExpiry,
   decodeEvidenceIdentifier,
   evidenceArtifactObjectKey,
-  type EvidenceArtifactV1,
+  type EvidenceArtifactV2,
 } from "./evidence-contracts";
 import { sha256BytesHex } from "./digest";
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10] as const;
-const ARTIFACT_MEDIA_TYPE = "image/png" as const;
+const WEBM_SIGNATURE = [0x1a, 0x45, 0xdf, 0xa3] as const;
+type ArtifactMediaType = EvidenceArtifactV2["mediaType"];
 
 export interface ArtifactObjectMetadata {
   readonly key: string;
@@ -28,7 +30,7 @@ export interface ArtifactStoreCapabilities {
     key: string,
     bytes: Uint8Array,
     metadata: {
-      readonly contentType: typeof ARTIFACT_MEDIA_TYPE;
+      readonly contentType: ArtifactMediaType;
       readonly customMetadata: Readonly<Record<string, string>>;
     },
   ) => Promise<void>;
@@ -46,15 +48,24 @@ export interface PutEvidenceFrameInput {
   readonly offsetMillis: number;
 }
 
+export interface PutEvidenceVideoInput {
+  readonly sessionId: string;
+  readonly jobId: string;
+  readonly artifactId: "recording";
+  readonly bytes: Uint8Array;
+  readonly capturedAt: string;
+  readonly offsetMillis: number;
+}
+
 export interface OpenEvidenceFrame {
   readonly body: ReadableStream<Uint8Array>;
   readonly bytes: number;
-  readonly mediaType: typeof ARTIFACT_MEDIA_TYPE;
+  readonly mediaType: ArtifactMediaType;
   readonly sha256: string;
 }
 
 export interface PreparedEvidenceFrame {
-  readonly artifact: EvidenceArtifactV1;
+  readonly artifact: EvidenceArtifactV2;
   readonly bytes: Uint8Array;
 }
 
@@ -64,12 +75,24 @@ interface ArtifactStoreShape {
   ) => Effect.Effect<PreparedEvidenceFrame, EvidenceArtifactError>;
   readonly writeFrame: (
     prepared: PreparedEvidenceFrame,
-  ) => Effect.Effect<EvidenceArtifactV1, EvidenceArtifactError>;
+  ) => Effect.Effect<EvidenceArtifactV2, EvidenceArtifactError>;
+  readonly prepareVideo: (
+    input: PutEvidenceVideoInput,
+  ) => Effect.Effect<PreparedEvidenceFrame, EvidenceArtifactError>;
+  readonly writeArtifact: (
+    prepared: PreparedEvidenceFrame,
+  ) => Effect.Effect<EvidenceArtifactV2, EvidenceArtifactError>;
   readonly openFrame: (
-    artifact: EvidenceArtifactV1,
+    artifact: EvidenceArtifactV2,
+  ) => Effect.Effect<OpenEvidenceFrame, EvidenceArtifactError>;
+  readonly openArtifact: (
+    artifact: EvidenceArtifactV2,
   ) => Effect.Effect<OpenEvidenceFrame, EvidenceArtifactError>;
   readonly deleteFrame: (
-    artifact: EvidenceArtifactV1,
+    artifact: EvidenceArtifactV2,
+  ) => Effect.Effect<void, EvidenceArtifactError>;
+  readonly deleteArtifact: (
+    artifact: EvidenceArtifactV2,
   ) => Effect.Effect<void, EvidenceArtifactError>;
 }
 
@@ -85,8 +108,12 @@ const validPng = (bytes: Uint8Array): boolean =>
   bytes[14] === 68 &&
   bytes[15] === 82;
 
+const validWebm = (bytes: Uint8Array): boolean =>
+  bytes.length >= WEBM_SIGNATURE.length &&
+  WEBM_SIGNATURE.every((value, index) => bytes[index] === value);
+
 const expectedMetadata = (
-  input: Pick<EvidenceArtifactV1, "sessionId" | "jobId" | "frameId">,
+  input: Pick<EvidenceArtifactV2, "sessionId" | "jobId" | "frameId">,
   sha256: string,
 ): Readonly<Record<string, string>> => ({
   owner: input.sessionId,
@@ -95,10 +122,16 @@ const expectedMetadata = (
   sha256,
 });
 
-const canonicalArtifact = (artifact: EvidenceArtifactV1): boolean =>
+const canonicalArtifact = (artifact: EvidenceArtifactV2): boolean =>
   artifact.objectKey === evidenceArtifactObjectKey(artifact);
 
-const validPublicationInput = (input: PutEvidenceFrameInput): boolean =>
+const validPublicationInput = (input: {
+  readonly sessionId: string;
+  readonly jobId: string;
+  readonly frameId: string;
+  readonly offsetMillis: number;
+  readonly capturedAt: string;
+}): boolean =>
   Option.isSome(decodeEvidenceIdentifier(input.sessionId)) &&
   Option.isSome(decodeEvidenceIdentifier(input.jobId)) &&
   Option.isSome(decodeEvidenceIdentifier(input.frameId)) &&
@@ -115,12 +148,13 @@ const metadataMatches = (
     readonly sessionId: string;
     readonly jobId: string;
     readonly frameId: string;
+    readonly mediaType: ArtifactMediaType;
   },
 ): boolean =>
   metadata !== undefined &&
   metadata.key === expected.key &&
   metadata.size === expected.bytes &&
-  metadata.contentType === ARTIFACT_MEDIA_TYPE &&
+  metadata.contentType === expected.mediaType &&
   metadata.customMetadata.owner === expected.sessionId &&
   metadata.customMetadata.job === expected.jobId &&
   metadata.customMetadata.frame === expected.frameId &&
@@ -130,17 +164,27 @@ export const artifactStoreLayer = (
   capabilities: ArtifactStoreCapabilities,
 ): Layer.Layer<ArtifactStore> => Layer.succeed(ArtifactStore)(makeArtifactStore(capabilities));
 
-const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactStoreShape => ({
-  prepareFrame: Effect.fnUntraced(function* (input) {
+const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactStoreShape => {
+  const prepare = Effect.fnUntraced(function* (
+    input: PutEvidenceFrameInput,
+    mediaType: ArtifactMediaType,
+  ) {
     if (!validPublicationInput(input))
       return yield* new EvidenceArtifactError({ operation: "validate", reason: "invalid_state" });
     const bytes = Uint8Array.from(input.bytes);
-    if (!validPng(bytes))
+    if (mediaType === "image/png" && !validPng(bytes))
       return yield* new EvidenceArtifactError({
         operation: "validate",
         reason: "invalid_png",
       });
-    if (bytes.byteLength > EVIDENCE_MAX_FRAME_BYTES)
+    if (mediaType === "video/webm" && !validWebm(bytes))
+      return yield* new EvidenceArtifactError({
+        operation: "validate",
+        reason: "invalid_webm",
+      });
+    const maxBytes =
+      mediaType === "video/webm" ? EVIDENCE_MAX_VIDEO_BYTES : EVIDENCE_MAX_FRAME_BYTES;
+    if (bytes.byteLength > maxBytes)
       return yield* new EvidenceArtifactError({
         operation: "validate",
         reason: "over_budget",
@@ -149,13 +193,13 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       try: () => sha256BytesHex(bytes),
       catch: (cause) => new EvidenceArtifactError({ operation: "hash", reason: "upstream", cause }),
     });
-    const artifact: EvidenceArtifactV1 = {
-      version: 1,
+    const artifact: EvidenceArtifactV2 = {
+      version: 2,
       sessionId: input.sessionId,
       jobId: input.jobId,
       frameId: input.frameId,
-      objectKey: evidenceArtifactObjectKey(input),
-      mediaType: ARTIFACT_MEDIA_TYPE,
+      objectKey: evidenceArtifactObjectKey({ ...input, mediaType }),
+      mediaType,
       sha256,
       bytes: bytes.byteLength,
       capturedAt: input.capturedAt,
@@ -164,8 +208,8 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       status: "delete_pending",
     };
     return { artifact, bytes };
-  }),
-  writeFrame: Effect.fnUntraced(function* (prepared) {
+  });
+  const writeArtifact = Effect.fnUntraced(function* (prepared: PreparedEvidenceFrame) {
     const artifact = prepared.artifact;
     if (
       artifact.status !== "delete_pending" ||
@@ -185,7 +229,7 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       Effect.tryPromise({
         try: () =>
           capabilities.put(key, prepared.bytes, {
-            contentType: ARTIFACT_MEDIA_TYPE,
+            contentType: artifact.mediaType,
             customMetadata,
           }),
         catch: (cause) =>
@@ -206,6 +250,7 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       sessionId: artifact.sessionId,
       jobId: artifact.jobId,
       frameId: artifact.frameId,
+      mediaType: artifact.mediaType,
     };
     if (Result.isFailure(headResult))
       return yield* Result.isFailure(putResult)
@@ -222,9 +267,9 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
             operation: "head",
             reason: headResult.success === undefined ? "put_unknown" : "metadata_mismatch",
           });
-    return { ...artifact, status: "available" };
-  }),
-  openFrame: Effect.fnUntraced(function* (artifact) {
+    return { ...artifact, status: "available" as const };
+  });
+  const openArtifact = Effect.fnUntraced(function* (artifact: EvidenceArtifactV2) {
     if (artifact.status !== "available" || !canonicalArtifact(artifact))
       return yield* new EvidenceArtifactError({ operation: "open", reason: "invalid_state" });
     const key = evidenceArtifactObjectKey(artifact);
@@ -242,6 +287,7 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
         sessionId: artifact.sessionId,
         jobId: artifact.jobId,
         frameId: artifact.frameId,
+        mediaType: artifact.mediaType,
       })
     )
       return yield* new EvidenceArtifactError({
@@ -251,11 +297,11 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
     return {
       body: body.body,
       bytes: body.size,
-      mediaType: ARTIFACT_MEDIA_TYPE,
+      mediaType: artifact.mediaType,
       sha256: artifact.sha256,
     };
-  }),
-  deleteFrame: Effect.fnUntraced(function* (artifact) {
+  });
+  const deleteArtifact = Effect.fnUntraced(function* (artifact: EvidenceArtifactV2) {
     if (artifact.status !== "delete_pending" || !canonicalArtifact(artifact))
       return yield* new EvidenceArtifactError({ operation: "delete", reason: "invalid_state" });
     const key = evidenceArtifactObjectKey(artifact);
@@ -270,8 +316,29 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
     });
     if (remaining !== undefined)
       return yield* new EvidenceArtifactError({ operation: "delete", reason: "upstream" });
-  }),
-});
+  });
+  return {
+    prepareFrame: (input) => prepare(input, "image/png"),
+    prepareVideo: (input) =>
+      prepare(
+        {
+          sessionId: input.sessionId,
+          jobId: input.jobId,
+          frameId: input.artifactId,
+          bytes: input.bytes,
+          capturedAt: input.capturedAt,
+          offsetMillis: input.offsetMillis,
+        },
+        "video/webm",
+      ),
+    writeFrame: writeArtifact,
+    writeArtifact,
+    openFrame: openArtifact,
+    openArtifact,
+    deleteFrame: deleteArtifact,
+    deleteArtifact,
+  };
+};
 
 const r2Metadata = (object: R2Object): ArtifactObjectMetadata => ({
   key: object.key,

@@ -7,7 +7,7 @@ import {
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
   EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
   EVIDENCE_RESERVED_PORTS,
-  type EvidencePreviewAdmissionV1,
+  type EvidencePreviewAdmissionV2,
 } from "./evidence-contracts";
 
 export const EVIDENCE_PREVIEW_COOKIE = "__Host-scotty-preview";
@@ -384,7 +384,7 @@ export const handleEvidencePreviewRequest = async (
     ...parsed.route,
     cookieSecret: prepared.cookieSecret,
     ingressBytes: prepared.reservedIngressBytes,
-  } satisfies EvidencePreviewAdmissionV1;
+  } satisfies EvidencePreviewAdmissionV2;
   const sandbox = getSandbox(env.SANDBOX, parsed.route.sessionId, {
     sleepAfter: "60m",
     transport: "rpc",

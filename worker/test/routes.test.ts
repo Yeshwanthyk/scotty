@@ -71,11 +71,13 @@ import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
 import { conflict } from "../src/contracts";
-import type { EvidenceStateV1 } from "../src/evidence-contracts";
-import { orderedReplayFrames } from "../public/evidence-view.js";
+import type { EvidenceStateV2 } from "../src/evidence-contracts";
+import { orderedEvidenceFrames } from "../public/evidence-view.js";
 import { browserEvidenceAttachment } from "../public/terminal-evidence-attachment.js";
 import evidenceHtml from "../public/evidence.html?raw";
 import evidenceScript from "../public/evidence.js?raw";
+import showcaseHtml from "../public/showcase.html?raw";
+import showcaseScript from "../public/showcase.js?raw";
 import {
   createSessionHarness,
   makeResumeBackup,
@@ -158,10 +160,11 @@ function useRealSandbox(harness: SessionHarness): void {
 const evidencePng = Uint8Array.from([
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
 ]);
+const evidenceWebm = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
 
 const evidenceArtifactBucket = (jobId: string, sha256: string): R2Bucket => {
   const objectFor = (key: string) => {
-    const prefix = `evidence/v1/a0b1c2d3e4f5/${jobId}/`;
+    const prefix = `evidence/v2/a0b1c2d3e4f5/${jobId}/`;
     const frameId = key.startsWith(prefix) ? key.slice(prefix.length, -".png".length) : "";
     if (!key.endsWith(".png") || (frameId !== "frame-1" && frameId !== "frame-2")) {
       return null;
@@ -216,6 +219,49 @@ const evidenceAssets = (): Fetcher => ({
   },
 });
 
+const showcaseAssets = (): Fetcher => ({
+  fetch: async (input) => {
+    const pathname = new URL(new Request(input).url).pathname;
+    return new Response(pathname === "/showcase.html" ? showcaseHtml : "not found", {
+      status: pathname === "/showcase.html" ? 200 : 404,
+      headers: { "content-type": "text/html" },
+    });
+  },
+  connect: () => {
+    throw new Error("Showcase asset tests do not use connect");
+  },
+});
+
+const evidenceVideoBucket = (jobId: string, sha256: string): R2Bucket => {
+  const key = `evidence/v2/${SESSION_ID}/${jobId}/recording.webm`;
+  const object = {
+    key,
+    version: "1",
+    size: evidenceWebm.byteLength,
+    etag: "video-etag",
+    httpEtag: '"video-etag"',
+    checksums: { toJSON: () => ({}) },
+    uploaded: new Date("2026-08-06T12:00:01.000Z"),
+    httpMetadata: { contentType: "video/webm" },
+    customMetadata: { owner: SESSION_ID, job: jobId, frame: "recording", sha256 },
+    storageClass: "Standard",
+    writeHttpMetadata: () => undefined,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(evidenceWebm);
+        controller.close();
+      },
+    }),
+    bodyUsed: false,
+    arrayBuffer: () => Promise.resolve(evidenceWebm.buffer.slice(0)),
+    bytes: () => Promise.resolve(Uint8Array.from(evidenceWebm)),
+    text: () => Promise.resolve(""),
+    json: <T>() => Promise.resolve({} as T),
+    blob: () => Promise.resolve(new Blob([evidenceWebm], { type: "video/webm" })),
+  };
+  return { get: async (candidate: string) => (candidate === key ? object : null) } as R2Bucket;
+};
+
 const projection = {
   version: 1,
   id: "a0b1c2d3e4f5",
@@ -245,7 +291,7 @@ describe("real Hono boundary", () => {
     );
     sandbox.listScottyEvidence.mockResolvedValue([]);
     sandbox.getScottyEvidence.mockResolvedValue({
-      version: 1,
+      version: 2,
       sequence: 0,
       jobId: "job-1",
       status: "succeeded",
@@ -253,7 +299,9 @@ describe("real Hono boundary", () => {
       completedAt: "2026-07-22T12:00:01.000Z",
       totalSteps: 1,
       completedSteps: 1,
-      replay: true,
+      viewport: { width: 1_280, height: 720 },
+      recordVideo: false,
+      flowHash: "a".repeat(64),
       steps: [],
       frameCount: 0,
     });
@@ -2471,7 +2519,7 @@ describe("real Hono boundary", () => {
     expect(sessionRootBearer.status).toBe(401);
   });
 
-  it("shows fake-backed failed evidence frames through authenticated polling and Replay", async () => {
+  it("shows fake-backed failed evidence frames through authenticated polling", async () => {
     const harness = await createSessionHarness({
       evidenceEnabled: true,
       initialEntries: {
@@ -2483,9 +2531,10 @@ describe("real Hono boundary", () => {
     });
     await harness.startRuntime();
     const accepted = await harness.sandbox.acceptScottyEvidenceJob({
-      version: 1,
+      version: 2,
       port: 4_173,
-      capture: { screenshots: "after-each-step", replay: true },
+      viewport: { width: 1_280, height: 720 },
+      capture: { screenshots: "after-each-step", video: false },
       steps: [
         {
           name: "Open the app",
@@ -2546,7 +2595,7 @@ describe("real Hono boundary", () => {
       accepted.operationNonce,
       "succeeded",
     );
-    const internalState = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+    const internalState = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
     expect(internalState).toBeDefined();
     if (internalState === undefined) return;
     harness.memory.values.set(sessionHarnessKeys.evidence, {
@@ -2564,7 +2613,7 @@ describe("real Hono boundary", () => {
             }
           : summary,
       ),
-    } satisfies EvidenceStateV1);
+    } satisfies EvidenceStateV2);
     useRealSandbox(harness);
     const firstFrame = failedSummary.steps[0]?.frame;
     expect(firstFrame).toBeDefined();
@@ -2578,12 +2627,13 @@ describe("real Hono boundary", () => {
         name: "scotty_browser_test",
         result: {
           details: {
-            version: 1,
+            version: 2,
             jobId: accepted.jobId,
             status: "failed",
             summaryUrl: `/s/${SESSION_ID}/evidence/${accepted.jobId}`,
             completedSteps: 2,
             frameCount: 2,
+            video: false,
             failure: { code: "assertion_mismatch", step: 1 },
           },
         },
@@ -2625,7 +2675,7 @@ describe("real Hono boundary", () => {
     expect(serializedSummary).not.toContain('"actual"');
     expect(serializedSummary).not.toContain("diagnostic");
     expect(serializedSummary).not.toContain("kitesurf");
-    expect(orderedReplayFrames(summaryBody).map((frame) => frame.frameId)).toEqual([
+    expect(orderedEvidenceFrames(summaryBody).map((frame) => frame.frameId)).toEqual([
       "frame-1",
       "frame-2",
     ]);
@@ -2638,13 +2688,13 @@ describe("real Hono boundary", () => {
     expect(missingJob.status).toBe(404);
     expect(missingJob.headers.get("cache-control")).toBe("private, no-store");
 
-    const shell = await app.request(worklogAttachment.paths.replay, { headers }, testEnv);
+    const shell = await app.request(worklogAttachment.paths.detail, { headers }, testEnv);
     expect(shell.status).toBe(200);
     expect(shell.headers.get("cache-control")).toBe("private, no-store");
     expect(await shell.text()).toContain("<title>Scotty evidence</title>");
-    expect(evidenceScript).toContain('setAttribute("aria-label", "Screenshot replay")');
+    expect(evidenceScript).toContain('setAttribute("aria-label", "Verified screenshots")');
     expect(evidenceScript).toContain("setTimeout(() => void refresh(), POLL_INTERVAL)");
-    expect(evidenceScript).toContain("orderedReplayFrames(summary)");
+    expect(evidenceScript).toContain("orderedEvidenceFrames(summary)");
 
     const missingFrame = await app.request(
       `/s/${SESSION_ID}/evidence/${accepted.jobId}/frames/not-owned.png`,
@@ -2671,6 +2721,113 @@ describe("real Hono boundary", () => {
     expect(failedFrame.headers.get("content-type")).toBe("image/png");
     expect(failedFrame.headers.get("cache-control")).toBe("private, no-store");
     expect(new Uint8Array(await failedFrame.arrayBuffer())).toEqual(evidencePng);
+  });
+
+  it("serves a private matched Showcase and its real WebM recording", async () => {
+    const sha256 = "b".repeat(64);
+    const summary = (jobId: string, recordVideo: boolean) => ({
+      version: 2 as const,
+      sequence: recordVideo ? 1 : 0,
+      jobId,
+      status: "succeeded" as const,
+      acceptedAt: "2026-08-06T12:00:00.000Z",
+      completedAt: "2026-08-06T12:00:01.000Z",
+      totalSteps: 1,
+      completedSteps: 1,
+      viewport: { width: 1_280, height: 720 },
+      recordVideo,
+      flowHash: "a".repeat(64),
+      ...(recordVideo
+        ? {
+            video: {
+              artifactId: "recording" as const,
+              sha256,
+              bytes: evidenceWebm.byteLength,
+              capturedAt: "2026-08-06T12:00:01.000Z",
+              offsetMillis: 1_000,
+            },
+          }
+        : {}),
+      steps: [
+        {
+          index: 0,
+          name: "Open the app",
+          action: "goto" as const,
+          status: "passed" as const,
+          assertions: [{ kind: "urlPath" as const, passed: true }],
+          startedAt: "2026-08-06T12:00:00.000Z",
+          completedAt: "2026-08-06T12:00:01.000Z",
+          offsetMillis: 1_000,
+          frame: {
+            frameId: "frame-1",
+            sha256: "c".repeat(64),
+            bytes: evidencePng.byteLength,
+            capturedAt: "2026-08-06T12:00:01.000Z",
+            offsetMillis: 1_000,
+          },
+        },
+      ],
+      frameCount: 1,
+    });
+    const before = summary("job-before", false);
+    const after = summary("job-after", true);
+    sandbox.getScottyEvidence.mockImplementation(async (jobId: string) =>
+      jobId === before.jobId ? before : after,
+    );
+    sandbox.getScottyEvidenceArtifact.mockResolvedValue({
+      version: 2,
+      sessionId: SESSION_ID,
+      jobId: after.jobId,
+      frameId: "recording",
+      objectKey: `evidence/v2/${SESSION_ID}/${after.jobId}/recording.webm`,
+      mediaType: "video/webm",
+      sha256,
+      bytes: evidenceWebm.byteLength,
+      capturedAt: "2026-08-06T12:00:01.000Z",
+      offsetMillis: 1_000,
+      expiresAt: "2026-08-13T12:00:01.000Z",
+      status: "available",
+    });
+    const testEnv = env({
+      assets: showcaseAssets(),
+      artifactBucket: evidenceVideoBucket(after.jobId, sha256),
+    });
+    const headers = { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` };
+    const path = `/s/${SESSION_ID}/showcase/${before.jobId}/${after.jobId}`;
+    const apiPath = `/api/sessions/${SESSION_ID}/showcase/${before.jobId}/${after.jobId}`;
+
+    expect((await app.request(apiPath, undefined, testEnv)).status).toBe(401);
+    const apiResponse = await app.request(apiPath, { headers }, testEnv);
+    expect(apiResponse.status).toBe(200);
+    expect(await apiResponse.json()).toMatchObject({
+      version: 2,
+      paths: {
+        hatch: `/s/${SESSION_ID}/hatch/open`,
+        video: `/s/${SESSION_ID}/evidence/${after.jobId}/video.webm`,
+      },
+    });
+
+    const shell = await app.request(path, { headers }, testEnv);
+    expect(shell.status).toBe(200);
+    expect(shell.headers.get("cache-control")).toBe("no-store");
+    expect(shell.headers.get("content-security-policy")).toContain("media-src 'self'");
+    expect(await shell.text()).toContain("<title>Scotty Showcase</title>");
+    expect(showcaseScript).toContain("video.controls = true");
+    expect(showcaseScript).toContain('video.preload = "metadata"');
+
+    const video = await app.request(
+      `/s/${SESSION_ID}/evidence/${after.jobId}/video.webm`,
+      { headers },
+      testEnv,
+    );
+    expect(video.status).toBe(200);
+    expect(video.headers.get("content-type")).toBe("video/webm");
+    expect(video.headers.get("content-disposition")).toBe("inline");
+    expect(video.headers.get("cache-control")).toBe("private, no-store");
+    expect(new Uint8Array(await video.arrayBuffer())).toEqual(evidenceWebm);
+
+    sandbox.getScottyEvidence.mockResolvedValueOnce({ ...before, flowHash: "d".repeat(64) });
+    expect((await app.request(path, { headers }, testEnv)).status).toBe(409);
   });
 
   it("returns non-warm Cloudflare session pages to Home for explicit resume", async () => {
