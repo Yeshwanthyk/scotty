@@ -61,6 +61,7 @@ const makeRuntime = (
     readonly acquireCdpSession?: () => Promise<CaptureSession>;
     readonly browserClose?: () => Promise<void>;
     readonly pageCount?: () => number;
+    readonly sessionId?: string;
     readonly videoBytes?: Uint8Array;
   } = {},
 ): KitesurfRuntimeLauncher => {
@@ -171,8 +172,10 @@ const makeRuntime = (
       return context;
     },
     sessionId: () => {
-      state.events.push("browser:sessionless");
-      return undefined;
+      state.events.push(
+        options.sessionId === undefined ? "browser:sessionless" : "browser:session",
+      );
+      return options.sessionId;
     },
   });
 };
@@ -225,7 +228,7 @@ const apiResponse = (status: number, headers: Readonly<Record<string, string>> =
   }) as APIResponse;
 
 describe("Kitesurf client", () => {
-  it.effect("launches the Worker binding with the sessionless Kitesurf selector", () =>
+  it.effect("launches screenshot jobs with the sessionless Kitesurf selector", () =>
     Effect.gen(function* () {
       const state = runtimeState();
       playwright.launch.mockImplementationOnce(makeRuntime(state));
@@ -241,6 +244,32 @@ describe("Kitesurf client", () => {
 
       assert.strictEqual(playwright.launch.mock.calls.length, 1);
       assert.deepStrictEqual(playwright.launch.mock.calls[0], [binding, { browser: "kitesurf" }]);
+    }),
+  );
+
+  it.effect("launches video jobs in a managed Browser Run session", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const webm = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
+      playwright.launch.mockImplementationOnce(
+        makeRuntime(state, { sessionId: "session-video", videoBytes: webm }),
+      );
+      const client = makeKitesurfClient(binding);
+      const record = client.withRecordedPage;
+      assert.ok(record !== undefined);
+
+      const result = yield* record(
+        {
+          origin: "https://preview.scotty.example",
+          cookieSecret: "private-cookie-secret",
+        },
+        () => Effect.void,
+      );
+
+      assert.deepStrictEqual(result.video, webm);
+      assert.deepStrictEqual(playwright.launch.mock.calls.at(-1), [binding]);
+      assert.include(state.events, "browser:session");
+      assert.strictEqual(state.events.at(-1), "browser:close");
     }),
   );
 
@@ -401,7 +430,10 @@ describe("Kitesurf client", () => {
     Effect.gen(function* () {
       const state = runtimeState();
       const webm = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
-      const client = makeKitesurfClient(binding, makeRuntime(state, { videoBytes: webm }));
+      const client = makeKitesurfClient(
+        binding,
+        makeRuntime(state, { sessionId: "session-video", videoBytes: webm }),
+      );
       const record = client.withRecordedPage;
       assert.ok(record !== undefined);
 

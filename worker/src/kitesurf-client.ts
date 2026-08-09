@@ -139,7 +139,10 @@ interface KitesurfRuntimeBrowser {
   readonly sessionId: () => string | undefined;
 }
 
-export type KitesurfRuntimeLauncher = (binding: BrowserWorker) => Promise<KitesurfRuntimeBrowser>;
+export type KitesurfRuntimeLauncher = (
+  binding: BrowserWorker,
+  options: { readonly recordVideo: boolean },
+) => Promise<KitesurfRuntimeBrowser>;
 
 const runtimeContext = (context: BrowserContext): KitesurfRuntimeContext => {
   const pages = new Map<Page, KitesurfRuntimePage>();
@@ -181,9 +184,11 @@ const runtimeContext = (context: BrowserContext): KitesurfRuntimeContext => {
   return ownedContext;
 };
 
-const launchRuntimeKitesurf: KitesurfRuntimeLauncher = async (binding) => {
+const launchRuntimeKitesurf: KitesurfRuntimeLauncher = async (binding, options) => {
   const { launch } = await import("@cloudflare/playwright");
-  const browser = await launch(binding, { browser: "kitesurf" });
+  const browser = options.recordVideo
+    ? await launch(binding)
+    : await launch(binding, { browser: "kitesurf" });
   return {
     close: browser.close.bind(browser),
     newContext: (options) => browser.newContext(options).then(runtimeContext),
@@ -713,7 +718,7 @@ export const makeKitesurfClient = (
       boundedRuntimeEffect(
         "launch",
         "ambiguous",
-        () => launchBrowser(binding),
+        () => launchBrowser(binding, { recordVideo: options.recordVideo }),
         resourceTimeoutMillis,
         (browser) =>
           compensateLateResource("close_browser", () => browser.close(), resourceTimeoutMillis),
@@ -728,7 +733,10 @@ export const makeKitesurfClient = (
                 reason: "unsupported",
               }),
           });
-          if (sessionId !== undefined)
+          if (
+            (options.recordVideo && sessionId === undefined) ||
+            (!options.recordVideo && sessionId !== undefined)
+          )
             return yield* new KitesurfClientError({
               operation: "verify_sessionless",
               reason: "unsupported",
