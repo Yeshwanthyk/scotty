@@ -18,13 +18,17 @@ import {
   type ExposedEvidencePreviewV2,
 } from "./evidence-contracts";
 import {
+  ContainerEvidenceRecorder,
+  type ContainerEvidenceRecorderError,
+  type ContainerEvidenceRecording,
+} from "./container-evidence-recorder";
+import {
   KITESURF_NAVIGATION_TIMEOUT_MILLIS,
   KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
   KitesurfClient,
   type KitesurfClientError,
   type KitesurfClientShape,
   type KitesurfPage,
-  type KitesurfPageResult,
 } from "./kitesurf-client";
 
 export const EVIDENCE_ASSERTION_TIMEOUT_MILLIS = 15_000;
@@ -354,8 +358,69 @@ const executeStep = Effect.fnUntraced(function* (
     });
 });
 
+const publishContainerRecording = Effect.fnUntraced(function* (
+  control: EvidenceWorkflowControlShape,
+  input: RunEvidenceWorkflowInput,
+  recording: ContainerEvidenceRecording,
+) {
+  for (const step of recording.steps) {
+    const firstAssertion = step.assertions[0];
+    if (firstAssertion === undefined)
+      return yield* workflowError("validate", "invalid", {
+        failureCode: "interrupted",
+        step: step.index,
+      });
+    yield* control
+      .completeStep(input.active, {
+        index: step.index,
+        startedAt: step.startedAt,
+        completedAt: step.completedAt,
+        offsetMillis: step.offsetMillis,
+        assertions: [firstAssertion, ...step.assertions.slice(1)],
+        frame: {
+          frameId: `frame-${step.index + 1}`,
+          bytes: step.frame.bytes,
+          capturedAt: step.frame.capturedAt,
+          offsetMillis: step.frame.offsetMillis,
+        },
+      })
+      .pipe(Effect.mapError((error) => mapControlError(error, "publish", step.index)));
+  }
+  if (recording.status === "succeeded") {
+    if (recording.completedSteps !== input.job.steps.length || recording.video === undefined)
+      return yield* workflowError("video", "invalid", { failureCode: "interrupted" });
+    yield* control
+      .completeVideo(input.active, {
+        artifactId: "recording",
+        bytes: recording.video.bytes,
+        capturedAt: recording.video.capturedAt,
+        offsetMillis: recording.video.offsetMillis,
+      })
+      .pipe(Effect.mapError((error) => mapControlError(error, "publish")));
+    return;
+  }
+  const failure = recording.failure;
+  if (failure === undefined)
+    return yield* workflowError("video", "invalid", { failureCode: "interrupted" });
+  return yield* workflowError(
+    failure.code === "assertion_mismatch" ? "assertion" : "video",
+    failure.code === "unsupported"
+      ? "unsupported"
+      : failure.code === "deadline"
+        ? "deadline"
+        : failure.code === "assertion_mismatch"
+          ? "assertion"
+          : "ambiguous",
+    {
+      failureCode: failure.code,
+      ...(failure.step === undefined ? {} : { step: failure.step }),
+    },
+  );
+});
+
 const executeJob = Effect.fnUntraced(function* (
   client: KitesurfClientShape,
+  recorder: ContainerEvidenceRecorder["Service"],
   control: EvidenceWorkflowControlShape,
   input: RunEvidenceWorkflowInput,
 ) {
@@ -367,6 +432,25 @@ const executeJob = Effect.fnUntraced(function* (
   const nowMillis = yield* Clock.currentTimeMillis;
   if (!Number.isFinite(deadlineMillis) || deadlineMillis <= nowMillis)
     return yield* workflowError("browser", "deadline", { failureCode: "deadline" });
+  if (input.job.capture.video) {
+    const jobStartedAtMillis = yield* Clock.currentTimeMillis;
+    yield* control
+      .markRunning(input.active)
+      .pipe(Effect.mapError((error) => mapControlError(error, "phase")));
+    const recording = yield* recorder.record(input.job).pipe(
+      Effect.mapError((error: ContainerEvidenceRecorderError) =>
+        workflowError(error.operation === "cleanup" ? "browser" : "video", error.reason, {
+          failureCode: error.reason === "unsupported" ? "unsupported" : "interrupted",
+        }),
+      ),
+      Effect.timeoutOrElse({
+        duration: deadlineMillis - jobStartedAtMillis,
+        orElse: () => Effect.fail(workflowError("video", "deadline", { failureCode: "deadline" })),
+      }),
+    );
+    yield* publishContainerRecording(control, input, recording);
+    return;
+  }
   const preview = yield* control
     .expose(input.active)
     .pipe(Effect.mapError((error) => mapControlError(error, "preview")));
@@ -398,38 +482,19 @@ const executeJob = Effect.fnUntraced(function* (
         );
       }
     });
-  const recorded = input.job.capture.video ? client.withRecordedPage : undefined;
-  if (input.job.capture.video && recorded === undefined)
-    return yield* workflowError("video", "unsupported", { failureCode: "unsupported" });
-  const execution = (
-    recorded === undefined
-      ? client
-          .withPage(pageOptions, usePage)
-          .pipe(Effect.map((value): KitesurfPageResult<void> => ({ value })))
-      : recorded(pageOptions, usePage)
-  ).pipe(
-    Effect.mapError((error) =>
-      Predicate.isTagged(error, "KitesurfClientError") ? mapClientError(error, "browser") : error,
-    ),
-  );
-  const pageResult = yield* execution.pipe(
+  const execution = client
+    .withPage(pageOptions, usePage)
+    .pipe(
+      Effect.mapError((error) =>
+        Predicate.isTagged(error, "KitesurfClientError") ? mapClientError(error, "browser") : error,
+      ),
+    );
+  yield* execution.pipe(
     Effect.timeoutOrElse({
       duration: deadlineMillis - jobStartedAtMillis,
       orElse: () => Effect.fail(workflowError("browser", "deadline", { failureCode: "deadline" })),
     }),
   );
-  if (!input.job.capture.video) return;
-  if (pageResult.video === undefined)
-    return yield* workflowError("video", "unsupported", { failureCode: "unsupported" });
-  const capturedAtMillis = yield* Clock.currentTimeMillis;
-  yield* control
-    .completeVideo(input.active, {
-      artifactId: "recording",
-      bytes: pageResult.video,
-      capturedAt: new Date(capturedAtMillis).toISOString(),
-      offsetMillis: Math.max(0, capturedAtMillis - jobStartedAtMillis),
-    })
-    .pipe(Effect.mapError((error) => mapControlError(error, "publish")));
 });
 
 const terminalStatus = (
@@ -469,12 +534,13 @@ const workflowResult = (
 
 export const runEvidenceWorkflow = Effect.fnUntraced(function* (input: RunEvidenceWorkflowInput) {
   const client = yield* KitesurfClient;
+  const recorder = yield* ContainerEvidenceRecorder;
   const control = yield* EvidenceWorkflowControl;
   const terminalCommitted = yield* Ref.make(false);
   const requestedStatus = yield* Ref.make<EvidenceTerminalStatus>("interrupted");
   const requestedFailure = yield* Ref.make<EvidenceFailure | undefined>(undefined);
   const main = Effect.gen(function* () {
-    const execution = yield* Effect.result(executeJob(client, control, input));
+    const execution = yield* Effect.result(executeJob(client, recorder, control, input));
     const status = terminalStatus(execution);
     const failure = Result.isFailure(execution) ? failureFor(execution.failure) : undefined;
     const diagnostic = Result.isFailure(execution) ? diagnosticFor(execution.failure) : undefined;

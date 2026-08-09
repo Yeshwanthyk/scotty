@@ -32,6 +32,7 @@ export class SandboxRuntimeFailure extends Data.TaggedError("SandboxRuntimeFailu
 export interface SandboxRuntimeCapabilities {
   readonly exec: (command: string, options?: SandboxExecOptions) => Promise<ExecResult>;
   readonly mkdir: (path: string, options?: { readonly recursive?: boolean }) => Promise<unknown>;
+  readonly readFileStream?: (path: string) => Promise<ReadableStream<Uint8Array>>;
   readonly writeFile: (path: string, content: string) => Promise<unknown>;
   readonly setEnvVars: (envVars: Record<string, string | undefined>) => Promise<void>;
   readonly startProcess?: (
@@ -75,6 +76,10 @@ interface SandboxRuntimeShape {
     path: string,
     options?: { readonly recursive?: boolean },
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly readFile: (
+    path: string,
+    maxBytes: number,
+  ) => Effect.Effect<Uint8Array, SandboxRuntimeFailure>;
   readonly writeFile: (path: string, content: string) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly setEnvVars: (
     envVars: Record<string, string | undefined>,
@@ -130,6 +135,39 @@ const makeSandboxRuntime = <E>(
       transportVoid(beforeOperation, "Sandbox directory transport failed", () =>
         capabilities.mkdir(path, options),
       ),
+    readFile: Effect.fnUntraced(function* (path, maxBytes) {
+      const readFileStream = capabilities.readFileStream;
+      if (readFileStream === undefined)
+        return yield* transportFailure("Sandbox file stream transport is unavailable");
+      yield* guardOperation(beforeOperation, "Sandbox file stream transport failed");
+      const stream = yield* Effect.tryPromise({
+        try: () => readFileStream(path),
+        catch: () => transportFailure("Sandbox file stream transport failed"),
+      });
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const next = yield* Effect.tryPromise({
+          try: () => reader.read(),
+          catch: () => transportFailure("Sandbox file stream transport failed"),
+        });
+        if (next.done) break;
+        total += next.value.byteLength;
+        if (total > maxBytes) {
+          yield* Effect.promise(() => reader.cancel()).pipe(Effect.ignore);
+          return yield* transportFailure("Sandbox file exceeds its byte limit");
+        }
+        chunks.push(next.value);
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes;
+    }),
     writeFile: (path, content) =>
       transportVoid(beforeOperation, "Sandbox file transport failed", () =>
         capabilities.writeFile(path, content),

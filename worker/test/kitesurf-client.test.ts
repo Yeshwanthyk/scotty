@@ -9,7 +9,6 @@ import type {
 } from "@cloudflare/playwright";
 import { Effect, Fiber, Result } from "effect";
 import { TestClock } from "effect/testing";
-import { writeFile } from "node:fs/promises";
 import { vi } from "vitest";
 
 const playwright = vi.hoisted(() => ({ launch: vi.fn() }));
@@ -68,10 +67,8 @@ const makeRuntime = (
     readonly pageCount?: () => number;
     readonly sessionId?: string;
     readonly sessionless?: boolean;
-    readonly videoBytes?: Uint8Array;
   } = {},
 ): KitesurfRuntimeLauncher => {
-  const videoBytes = options.videoBytes;
   const locator = {
     click: async (callOptions?: { readonly timeout?: number }) => {
       state.events.push(`locator:click:${callOptions?.timeout ?? 0}`);
@@ -116,15 +113,6 @@ const makeRuntime = (
       return locator;
     },
     url: () => "https://preview.scotty.example/ready?mode=test",
-    video: () =>
-      videoBytes === undefined
-        ? null
-        : {
-            saveAs: async (path: string) => {
-              state.events.push("video:save");
-              await writeFile(path, videoBytes);
-            },
-          },
   };
   const route: BrowserContext["route"] = async (_url, handler) => {
     state.events.push("context:route");
@@ -273,32 +261,6 @@ describe("Kitesurf client", () => {
       });
       assert.notInclude(state.events, "context:open");
       assert.include(state.events, "browser:close");
-    }),
-  );
-
-  it.effect("launches video jobs in a managed Browser Run session", () =>
-    Effect.gen(function* () {
-      const state = runtimeState();
-      const webm = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
-      playwright.launch.mockImplementationOnce(
-        makeRuntime(state, { sessionId: "session-video", videoBytes: webm }),
-      );
-      const client = makeKitesurfClient(binding);
-      const record = client.withRecordedPage;
-      assert.ok(record !== undefined);
-
-      const result = yield* record(
-        {
-          origin: "https://preview.scotty.example",
-          cookieSecret: "private-cookie-secret",
-        },
-        () => Effect.void,
-      );
-
-      assert.deepStrictEqual(result.video, webm);
-      assert.deepStrictEqual(playwright.launch.mock.calls.at(-1), [binding]);
-      assert.include(state.events, "browser:session");
-      assert.strictEqual(state.events.at(-1), "browser:close");
     }),
   );
 
@@ -452,36 +414,6 @@ describe("Kitesurf client", () => {
       assert.strictEqual(bytes[0], 0);
       assert.strictEqual(bytes.at(-1), 0);
       assert.isBelow(state.events.indexOf("cdp:max-send"), state.events.indexOf("cdp:max-detach"));
-    }),
-  );
-
-  it.effect("flushes and returns a real WebM recording after closing its context", () =>
-    Effect.gen(function* () {
-      const state = runtimeState();
-      const webm = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
-      const client = makeKitesurfClient(
-        binding,
-        makeRuntime(state, { sessionId: "session-video", videoBytes: webm }),
-      );
-      const record = client.withRecordedPage;
-      assert.ok(record !== undefined);
-
-      const result = yield* record(
-        {
-          origin: "https://preview.scotty.example",
-          cookieSecret: "private-cookie-secret",
-          viewport: { width: 800, height: 600 },
-        },
-        () => Effect.succeed("complete"),
-      );
-
-      assert.strictEqual(result.value, "complete");
-      assert.deepStrictEqual(result.video, webm);
-      assert.deepInclude(state.pageOptions, {
-        recordVideo: { dir: "/tmp", size: { width: 800, height: 600 } },
-      });
-      assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("video:save"));
-      assert.isBelow(state.events.indexOf("video:save"), state.events.indexOf("browser:close"));
     }),
   );
 
@@ -1065,7 +997,6 @@ describe("Kitesurf client", () => {
             goto: async () => null,
             locator: () => locator,
             url: () => "https://preview.scotty.example/",
-            video: () => null,
           };
           latePage.resolve(page);
           yield* Effect.promise(() => vi.runAllTimersAsync());
@@ -1115,7 +1046,6 @@ describe("Kitesurf client", () => {
             goto: async () => null,
             locator: () => locator,
             url: () => "https://preview.scotty.example/",
-            video: () => null,
           };
           const client = makeKitesurfClient(
             binding,
@@ -1258,11 +1188,9 @@ describe("Kitesurf client", () => {
         },
       });
       const recoveredLaunch = makeRuntime(recoveredState);
-      const client = makeKitesurfClient(binding, (browserBinding, options) => {
+      const client = makeKitesurfClient(binding, (browserBinding) => {
         launches += 1;
-        return launches === 1
-          ? failedLaunch(browserBinding, options)
-          : recoveredLaunch(browserBinding, options);
+        return launches === 1 ? failedLaunch(browserBinding) : recoveredLaunch(browserBinding);
       });
       const fiber = yield* client
         .withPage(
@@ -1296,9 +1224,9 @@ describe("Kitesurf client", () => {
       const state = runtimeState();
       let launches = 0;
       let useCalls = 0;
-      const client = makeKitesurfClient(binding, (browserBinding, options) => {
+      const client = makeKitesurfClient(binding, (browserBinding) => {
         launches += 1;
-        return makeRuntime(state)(browserBinding, options);
+        return makeRuntime(state)(browserBinding);
       });
       const result = yield* client
         .withPage(

@@ -228,7 +228,6 @@ export const EvidenceKitesurfOperationSchema = Schema.Literals([
   "count",
   "url_path",
   "screenshot",
-  "save_video",
   "close_page",
   "close_context",
   "close_browser",

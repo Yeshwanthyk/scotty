@@ -70,7 +70,7 @@
     {
       "name": "scotty-browser-test",
       "order": 8,
-      "sourceSha256": "9a3a78dfd36202d34c70cd37395b791bd4e83bdc938ec1047f31371e36f0c346",
+      "sourceSha256": "5853adf320add01c3541e9d91b0a548d40a8571734a3a5a23330f3c8eca9dceb",
       "sourcePath": "worker/container/pi-packages/sources/scotty-browser-test",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-browser-test"
     },
