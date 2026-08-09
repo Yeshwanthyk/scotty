@@ -1667,6 +1667,7 @@ describe("real Hono boundary", () => {
 
   it("vaporizes through real destruction, credential deletion, and authority transition", async () => {
     const harness = await createSessionHarness({
+      rawPiContainerRunning: true,
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,

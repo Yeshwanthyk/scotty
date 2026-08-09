@@ -2311,10 +2311,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
         ? yield* this.removeRunnerRuntimeProgram(current, `vaporize-${payload.nonce}`).pipe(
             Effect.as(true),
           )
-        : yield* Effect.raceFirst(
-            hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
-            Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
-          );
+        : this.rawContainer?.running !== true
+          ? true
+          : yield* Effect.raceFirst(
+              hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
+              Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
+            );
     if (!destroyed) {
       yield* this.armVaporizeRetryProgram(payload);
       yield* Effect.sync(() => this.ctx.abort(`Sandbox destroy exceeded ${DESTROY_DEADLINE_MS}ms`));
@@ -2409,7 +2411,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const vault = yield* CredentialVault;
     const store = yield* SessionStore;
-    if (record.execution.provider === "cloudflare") {
+    if (record.execution.provider === "cloudflare" && this.rawContainer?.running === true) {
       const destroyed = yield* Effect.raceFirst(
         hostEffect("destroy", () => this.destroy()).pipe(Effect.as(true)),
         Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
