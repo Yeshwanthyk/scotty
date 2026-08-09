@@ -153,6 +153,15 @@
       "probe": ["corepack", "--version"]
     },
     {
+      "name": "pnpm",
+      "category": "javascript",
+      "commands": ["pnpm"],
+      "source": "Corepack",
+      "versionPolicy": "pinned",
+      "expectedVersion": "11.11.0",
+      "probe": ["pnpm", "--version"]
+    },
+    {
       "name": "build-essential",
       "category": "build",
       "commands": ["cc", "c++", "make"],

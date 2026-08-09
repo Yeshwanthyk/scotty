@@ -27,6 +27,7 @@ ARG FD_SHA256=0e44eb5fca93f09bc6f5430b90acdf44c8e069d0a903700aeb4820629337b67b
 ARG GO_VERSION=1.26.1
 ARG GO_SHA256=031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a
 ARG PI_VERSION=0.84.0
+ARG PNPM_VERSION=11.11.0
 ARG QSV_VERSION=21.1.0
 ARG QSV_SHA256=6e1e322c2ac0d2e862e961f0bb5b30c8ceccb12ace37067bc8d911c77cf101f3
 ARG RIPGREP_VERSION=15.2.0
@@ -35,6 +36,8 @@ ARG UV_VERSION=0.11.32
 ARG UV_SHA256=aab924fd522efd06f1c5f3b93a243864fc453132c94b2dc49f1371b528a4b967
 ARG YQ_VERSION=4.53.3
 ARG YQ_SHA256=fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
+
+ENV COREPACK_HOME=/opt/corepack
 
 USER root
 
@@ -90,6 +93,8 @@ RUN apt-get update \
     "@openai/codex@${CODEX_VERSION}" \
     "corepack@${COREPACK_VERSION}" \
   && corepack enable \
+  && corepack install --global "pnpm@${PNPM_VERSION}" \
+  && test "$(pnpm --version)" = "${PNPM_VERSION}" \
   && UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_PYTHON_BIN_DIR=/usr/local/bin \
     uv python install 3.13.13 --default --managed-python --no-cache --no-progress \
   && npm cache clean --force \
