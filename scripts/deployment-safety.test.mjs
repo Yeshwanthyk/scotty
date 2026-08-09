@@ -10,6 +10,7 @@ import { makeWorkerRuntimeContext } from "../node_modules/alchemy/lib/Cloudflare
 import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
 import {
   assessContainerSettlement,
+  auditProductionHatchEvidenceTopology,
   assertSettledContainerBaseline,
   CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
   createProductionDeploymentProgressReporter,
@@ -30,6 +31,11 @@ import { dedupeBindings, diffBindings, stripEffects } from "../node_modules/alch
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 const INSTALLATION_ENVIRONMENT = { SCOTTY_INSTALLATION_NAME: "test" };
+const PRODUCTION_TOPOLOGY_ENVIRONMENT = {
+  ...INSTALLATION_ENVIRONMENT,
+  SCOTTY_PREVIEW_BASE: "preview.scotty.example",
+  SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
+};
 const CONTAINER_APPLICATION_ID = "application-id";
 const CONTAINER_APPLICATION_NAME = "scotty-test-sandbox";
 
@@ -168,7 +174,7 @@ describe("production deployment ownership", () => {
   });
 
   it("checks, audits, deploys through Alchemy, and audits again", () => {
-    assert.deepEqual(resolveProductionTopology(INSTALLATION_ENVIRONMENT), {
+    assert.deepEqual(resolveProductionTopology(PRODUCTION_TOPOLOGY_ENVIRONMENT), {
       installationName: "test",
       adoptionPath: undefined,
       workerName: "scotty-test-worker",
@@ -177,6 +183,9 @@ describe("production deployment ownership", () => {
       kvTitle: "scotty-test-sessions",
       backupBucketName: "scotty-test-backups",
       artifactBucketName: "scotty-test-artifacts",
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true,
     });
     assert.deepEqual(
       PRODUCTION_DEPLOY_STEPS.map(({ name }) => name),
@@ -218,83 +227,30 @@ describe("production deployment ownership", () => {
   });
 
   it("requires an explicit complete preview topology and never derives account identity", () => {
-    assert.deepEqual(
-      resolveProductionTopology({
-        ...INSTALLATION_ENVIRONMENT,
-        SCOTTY_PREVIEW_BASE: "preview.scotty.example",
-        SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
-      }),
-      {
-        installationName: "test",
-        adoptionPath: undefined,
-        workerName: "scotty-test-worker",
-        runnerWorkerName: "scotty-test-runner",
-        containerName: "scotty-test-sandbox",
-        kvTitle: "scotty-test-sessions",
-        backupBucketName: "scotty-test-backups",
-        artifactBucketName: "scotty-test-artifacts",
-        previewBase: "preview.scotty.example",
-        previewZoneId: "0123456789abcdef0123456789abcdef",
-      },
-    );
-    assert.deepEqual(
-      resolveProductionTopology({
-        ...INSTALLATION_ENVIRONMENT,
-        SCOTTY_PREVIEW_BASE: "preview.scotty.example",
-        SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
-        SCOTTY_EVIDENCE_ENABLED: "true",
-      }),
-      {
-        installationName: "test",
-        adoptionPath: undefined,
-        workerName: "scotty-test-worker",
-        runnerWorkerName: "scotty-test-runner",
-        containerName: "scotty-test-sandbox",
-        kvTitle: "scotty-test-sessions",
-        backupBucketName: "scotty-test-backups",
-        artifactBucketName: "scotty-test-artifacts",
-        previewBase: "preview.scotty.example",
-        previewZoneId: "0123456789abcdef0123456789abcdef",
-        evidenceEnabled: true,
-      },
-    );
+    assert.deepEqual(resolveProductionTopology(PRODUCTION_TOPOLOGY_ENVIRONMENT), {
+      installationName: "test",
+      adoptionPath: undefined,
+      workerName: "scotty-test-worker",
+      runnerWorkerName: "scotty-test-runner",
+      containerName: "scotty-test-sandbox",
+      kvTitle: "scotty-test-sessions",
+      backupBucketName: "scotty-test-backups",
+      artifactBucketName: "scotty-test-artifacts",
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true,
+    });
     assert.throws(
       () =>
         resolveProductionTopology({
-          ...INSTALLATION_ENVIRONMENT,
+          ...PRODUCTION_TOPOLOGY_ENVIRONMENT,
           SCOTTY_EVIDENCE_ENABLED: "true",
         }),
-      /requires the explicit preview topology/u,
-    );
-    assert.deepEqual(
-      resolveProductionTopology({
-        ...INSTALLATION_ENVIRONMENT,
-        SCOTTY_PREVIEW_BASE: "preview.scotty.example",
-        SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
-        SCOTTY_EVIDENCE_ENABLED: "false",
-      }),
-      {
-        installationName: "test",
-        adoptionPath: undefined,
-        workerName: "scotty-test-worker",
-        runnerWorkerName: "scotty-test-runner",
-        containerName: "scotty-test-sandbox",
-        kvTitle: "scotty-test-sessions",
-        backupBucketName: "scotty-test-backups",
-        artifactBucketName: "scotty-test-artifacts",
-        previewBase: "preview.scotty.example",
-        previewZoneId: "0123456789abcdef0123456789abcdef",
-      },
+      /no longer configurable/u,
     );
     assert.throws(
-      () =>
-        resolveProductionTopology({
-          ...INSTALLATION_ENVIRONMENT,
-          SCOTTY_PREVIEW_BASE: "preview.scotty.example",
-          SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
-          SCOTTY_EVIDENCE_ENABLED: "1",
-        }),
-      /exactly true or false/u,
+      () => resolveProductionTopology(INSTALLATION_ENVIRONMENT),
+      /requires an explicit Hatch and Evidence preview topology/u,
     );
     for (const environment of [
       { ...INSTALLATION_ENVIRONMENT, SCOTTY_PREVIEW_BASE: "preview.scotty.example" },
@@ -310,6 +266,63 @@ describe("production deployment ownership", () => {
     ]) {
       assert.throws(() => resolveProductionTopology(environment), /explicit preview topology/u);
     }
+  });
+
+  it("proves active Worker bindings and the wildcard deny route after deployment", async () => {
+    const topology = resolveProductionTopology(PRODUCTION_TOPOLOGY_ENVIRONMENT);
+    const commands = [];
+    const execute = async (_command, args) => {
+      commands.push(args);
+      if (args.includes("deployments")) {
+        return JSON.stringify({ versions: [{ version_id: "version-1", percentage: 100 }] });
+      }
+      return JSON.stringify({
+        resources: {
+          bindings: [
+            { name: "SCOTTY_EVIDENCE_ENABLED", type: "plain_text", text: "true" },
+            {
+              name: "SCOTTY_PREVIEW_BASE",
+              type: "plain_text",
+              text: "preview.scotty.example",
+            },
+            {
+              name: "ARTIFACT_BUCKET",
+              type: "r2_bucket",
+              bucket_name: "scotty-test-artifacts",
+            },
+            { name: "BROWSER", type: "browser" },
+          ],
+        },
+      });
+    };
+    const request = async (url) => {
+      assert.equal(url, "https://scotty-topology-probe.preview.scotty.example/");
+      return new Response("Not found", {
+        status: 404,
+        headers: {
+          "cache-control": "no-store",
+          "x-robots-tag": "noindex, nofollow, noarchive",
+        },
+      });
+    };
+
+    await auditProductionHatchEvidenceTopology(topology, {}, { execute, request });
+    assert.equal(commands.length, 2);
+
+    await assert.rejects(
+      auditProductionHatchEvidenceTopology(
+        topology,
+        {},
+        {
+          execute: async (_command, args) =>
+            args.includes("deployments")
+              ? JSON.stringify({ versions: [{ version_id: "version-1", percentage: 100 }] })
+              : JSON.stringify({ resources: { bindings: [] } }),
+          request,
+        },
+      ),
+      /missing required Hatch or Evidence bindings/u,
+    );
   });
 
   it("redacts production identity while keeping useful deployment progress", () => {
@@ -515,7 +528,7 @@ describe("production deployment ownership", () => {
           executed.push("Revalidate release state");
         },
         {
-          environment: INSTALLATION_ENVIRONMENT,
+          environment: PRODUCTION_TOPOLOGY_ENVIRONMENT,
           readControlPlane: async (env) => {
             executed.push("Read Container baseline");
             environments.set("Read Container baseline", { env });
@@ -524,6 +537,10 @@ describe("production deployment ownership", () => {
           waitForRollout: async (before, env, options) => {
             executed.push("Wait for Container rollout");
             environments.set("Wait for Container rollout", { before, env, options });
+          },
+          auditTopology: async (topology, env) => {
+            executed.push("Audit deployed Hatch and Evidence topology");
+            environments.set("Audit deployed Hatch and Evidence topology", { topology, env });
           },
         },
       ),
@@ -538,6 +555,7 @@ describe("production deployment ownership", () => {
       "Deploy production through Alchemy",
       "Wait for Container rollout",
       "Audit deployed runtime inventory",
+      "Audit deployed Hatch and Evidence topology",
     ]);
     assert.equal(executed.filter((name) => name === "Deploy production through Alchemy").length, 1);
     const verificationEnv = environments.get("Check repository").env;
@@ -551,6 +569,7 @@ describe("production deployment ownership", () => {
       "Read Container baseline",
       "Wait for Container rollout",
       "Audit deployed runtime inventory",
+      "Audit deployed Hatch and Evidence topology",
     ]) {
       const { env } = environments.get(name);
       assert.equal(env.CLOUDFLARE_ACCOUNT_ID, undefined);
@@ -572,8 +591,14 @@ describe("production deployment ownership", () => {
           "kv=scotty-test-sessions",
           "r2=scotty-test-backups",
           "artifacts=scotty-test-artifacts",
+          "previewBase=preview.scotty.example",
+          "previewZone=0123456789abcdef0123456789abcdef",
+          "evidence=enabled",
         ].join(":"),
       );
+      assert.equal(env.SCOTTY_PREVIEW_BASE, "preview.scotty.example");
+      assert.equal(env.SCOTTY_PREVIEW_ZONE_ID, "0123456789abcdef0123456789abcdef");
+      assert.equal(env.SCOTTY_EVIDENCE_ENABLED, "true");
       assert.equal(env.SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL, "deploy:test:scotty-test-worker");
     }
     assert.deepEqual(environments.get("Audit deployed runtime inventory").options, {

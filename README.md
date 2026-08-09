@@ -269,7 +269,9 @@ other than `main`, a dirty worktree, or a local `main` that differs from `origin
    ```
 
 3. Run the guarded deployment for the installation. Omit `SCOTTY_ADOPTION_MANIFEST` when the
-   installation uses Scotty's default resource names.
+   installation uses Scotty's default resource names. Production requires the installation's
+   explicit Hatch/Evidence preview topology and always enables Evidence. Put that topology in the
+   private adoption manifest, or provide `SCOTTY_PREVIEW_BASE` and `SCOTTY_PREVIEW_ZONE_ID`.
 
    ```sh
    DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \

@@ -774,11 +774,11 @@ export function resolveProductionTopology(environment = process.env) {
   const previewZoneId = hasEnvironmentPreview
     ? environmentPreviewZoneId
     : adoption?.preview?.zoneId;
-  const evidenceGate = environment.SCOTTY_EVIDENCE_ENABLED?.trim();
-  if (evidenceGate !== undefined && evidenceGate !== "true" && evidenceGate !== "false") {
-    throw new Error("SCOTTY_EVIDENCE_ENABLED must be exactly true or false when set.");
+  if (environment.SCOTTY_EVIDENCE_ENABLED !== undefined) {
+    throw new Error(
+      "SCOTTY_EVIDENCE_ENABLED is no longer configurable; production Evidence is always enabled.",
+    );
   }
-  const evidenceEnabled = evidenceGate === "true";
   if (
     (previewBase === undefined) !== (previewZoneId === undefined) ||
     (previewBase !== undefined &&
@@ -791,8 +791,10 @@ export function resolveProductionTopology(environment = process.env) {
       "SCOTTY_PREVIEW_BASE and SCOTTY_PREVIEW_ZONE_ID must both name the explicit preview topology.",
     );
   }
-  if (evidenceEnabled && previewBase === undefined) {
-    throw new Error("SCOTTY_EVIDENCE_ENABLED requires the explicit preview topology.");
+  if (previewBase === undefined) {
+    throw new Error(
+      "Production deployment requires an explicit Hatch and Evidence preview topology.",
+    );
   }
   return {
     installationName,
@@ -803,9 +805,119 @@ export function resolveProductionTopology(environment = process.env) {
     kvTitle: adoption?.resources?.kvTitle ?? `${prefix}-sessions`,
     backupBucketName: adoption?.resources?.backupBucketName ?? `${prefix}-backups`,
     artifactBucketName: adoption?.resources?.artifactBucketName ?? `${prefix}-artifacts`,
-    ...(previewBase === undefined ? {} : { previewBase, previewZoneId }),
-    ...(evidenceEnabled ? { evidenceEnabled: true } : {}),
+    previewBase,
+    previewZoneId,
+    evidenceEnabled: true,
   };
+}
+
+const parseJsonObject = (value) => {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const deployedBinding = (version, name) => {
+  const bindings = version?.resources?.bindings;
+  return Array.isArray(bindings)
+    ? bindings.find(
+        (candidate) =>
+          candidate !== null && typeof candidate === "object" && candidate.name === name,
+      )
+    : undefined;
+};
+
+export async function auditProductionHatchEvidenceTopology(
+  topology,
+  environment,
+  { execute = runCommand, request = fetch } = {},
+) {
+  let deploymentOutput;
+  try {
+    deploymentOutput = await execute(
+      "npx",
+      [
+        "--no-install",
+        "wrangler",
+        "deployments",
+        "status",
+        "--name",
+        topology.workerName,
+        "--json",
+      ],
+      { env: environment, capture: true, allowAfterSignal: true, timeoutMs: 60_000 },
+    );
+  } catch {
+    throw new Error("Could not read the deployed Worker version for the topology audit.");
+  }
+  const deployment = parseJsonObject(deploymentOutput);
+  const versions = deployment?.versions;
+  const activeVersion =
+    Array.isArray(versions) && versions.length === 1 && versions[0]?.percentage === 100
+      ? versions[0]?.version_id
+      : undefined;
+  if (typeof activeVersion !== "string" || activeVersion.length === 0) {
+    throw new Error("Production Worker does not have one unambiguous 100% active version.");
+  }
+
+  let versionOutput;
+  try {
+    versionOutput = await execute(
+      "npx",
+      [
+        "--no-install",
+        "wrangler",
+        "versions",
+        "view",
+        activeVersion,
+        "--name",
+        topology.workerName,
+        "--json",
+      ],
+      { env: environment, capture: true, allowAfterSignal: true, timeoutMs: 60_000 },
+    );
+  } catch {
+    throw new Error("Could not read the active Worker bindings for the topology audit.");
+  }
+  const version = parseJsonObject(versionOutput);
+  const evidence = deployedBinding(version, "SCOTTY_EVIDENCE_ENABLED");
+  const preview = deployedBinding(version, "SCOTTY_PREVIEW_BASE");
+  const artifactBucket = deployedBinding(version, "ARTIFACT_BUCKET");
+  const browser = deployedBinding(version, "BROWSER");
+  if (
+    evidence?.type !== "plain_text" ||
+    evidence.text !== "true" ||
+    preview?.type !== "plain_text" ||
+    preview.text !== topology.previewBase ||
+    artifactBucket?.type !== "r2_bucket" ||
+    artifactBucket.bucket_name !== topology.artifactBucketName ||
+    browser?.type !== "browser"
+  ) {
+    throw new Error("The active Worker is missing required Hatch or Evidence bindings.");
+  }
+
+  let response;
+  try {
+    response = await request(`https://scotty-topology-probe.${topology.previewBase}/`, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    throw new Error("The deployed wildcard preview route or TLS endpoint is unreachable.");
+  }
+  if (
+    response.status !== 404 ||
+    response.headers.get("cache-control") !== "no-store" ||
+    response.headers.get("x-robots-tag") !== "noindex, nofollow, noarchive"
+  ) {
+    throw new Error("The wildcard preview request did not reach Scotty's deny-by-default route.");
+  }
+  process.stdout.write("Production Hatch and Evidence topology audit passed.\n");
 }
 
 function productionEnvironment(environment = process.env) {
@@ -820,23 +932,18 @@ function productionEnvironment(environment = process.env) {
     `kv=${topology.kvTitle}`,
     `r2=${topology.backupBucketName}`,
     `artifacts=${topology.artifactBucketName}`,
-    ...(topology.previewBase === undefined
-      ? []
-      : [`previewBase=${topology.previewBase}`, `previewZone=${topology.previewZoneId}`]),
-    ...(topology.evidenceEnabled === true ? ["evidence=enabled"] : []),
+    `previewBase=${topology.previewBase}`,
+    `previewZone=${topology.previewZoneId}`,
+    "evidence=enabled",
   ].join(":");
   return {
     ...sanitizedLocalEnvironment(environment),
     ALCHEMY_TELEMETRY_DISABLED: "1",
     SCOTTY_INSTALLATION_NAME: topology.installationName,
     ...(topology.adoptionPath ? { SCOTTY_ADOPTION_MANIFEST: topology.adoptionPath } : {}),
-    ...(topology.previewBase === undefined
-      ? {}
-      : {
-          SCOTTY_PREVIEW_BASE: topology.previewBase,
-          SCOTTY_PREVIEW_ZONE_ID: topology.previewZoneId,
-        }),
-    ...(topology.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
+    SCOTTY_PREVIEW_BASE: topology.previewBase,
+    SCOTTY_PREVIEW_ZONE_ID: topology.previewZoneId,
+    SCOTTY_EVIDENCE_ENABLED: "true",
     SCOTTY_CONTAINER_APPLICATION_NAME: topology.containerName,
     SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED: resourceConfirmation,
     SCOTTY_CLOUDFLARE_DEPLOY_APPROVAL: `deploy:${topology.installationName}:${topology.workerName}`,
@@ -872,9 +979,11 @@ export async function executeProductionDeploySteps(
   {
     readControlPlane = readProductionContainerControlPlane,
     waitForRollout = waitForProductionContainerRollout,
+    auditTopology = auditProductionHatchEvidenceTopology,
     environment = process.env,
   } = {},
 ) {
+  const topology = resolveProductionTopology(environment);
   const verificationEnv = sanitizedLocalEnvironment(environment);
   const productionEnv = productionEnvironment(environment);
   await execute(PRODUCTION_DEPLOY_STEPS[0], verificationEnv);
@@ -908,11 +1017,19 @@ export async function executeProductionDeploySteps(
     auditError = error;
   }
 
-  const errors = [deployError, rolloutError, auditError].filter(Boolean);
+  let topologyAuditError;
+  try {
+    process.stdout.write("\n==> Audit deployed Hatch and Evidence topology\n");
+    await auditTopology(topology, productionEnv);
+  } catch (error) {
+    topologyAuditError = error;
+  }
+
+  const errors = [deployError, rolloutError, auditError, topologyAuditError].filter(Boolean);
   if (errors.length > 1) {
     throw new AggregateError(
       errors,
-      "Production deploy, Container rollout settlement, or post-deploy audit had multiple failures.",
+      "Production deploy, rollout settlement, or post-deploy audits had multiple failures.",
     );
   }
   if (errors.length === 1) throw errors[0];
