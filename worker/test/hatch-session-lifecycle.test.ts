@@ -165,7 +165,7 @@ describe("authoritative Hatch session lifecycle", () => {
 
         const route = yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute());
         assert.ok(route);
-        assert.match(route.routeNonce, /^h-[a-z0-9]{14}$/u);
+        assert.match(route.routeNonce, /^h[a-z0-9]{14}$/u);
         const cookieSecret = "c".repeat(64);
         const digest = yield* Effect.promise(() => sha256Hex(cookieSecret));
         const permit = yield* Effect.promise(() =>

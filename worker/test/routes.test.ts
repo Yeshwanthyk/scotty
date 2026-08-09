@@ -466,7 +466,7 @@ describe("real Hono boundary", () => {
       hatchId: "hatch-primary",
       generation: 1,
       port: 4_173,
-      routeNonce: "h-0123456789abcd",
+      routeNonce: "h0123456789abcd",
       runtimeEpoch: "epoch-current",
     });
     auth.issueHatchHandoff.mockResolvedValue({
@@ -484,11 +484,11 @@ describe("real Hono boundary", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("content-security-policy")).toBe(
-      "default-src 'none'; script-src 'unsafe-inline'; form-action https://4173-a0b1c2d3e4f5-h-0123456789abcd.preview.example.test; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'unsafe-inline'; form-action https://4173-a0b1c2d3e4f5-h0123456789abcd.preview.example.test; base-uri 'none'; frame-ancestors 'none'",
     );
     const html = await response.text();
     expect(html).toContain(
-      'action="https://4173-a0b1c2d3e4f5-h-0123456789abcd.preview.example.test/_scotty/hatch/handoff"',
+      'action="https://4173-a0b1c2d3e4f5-h0123456789abcd.preview.example.test/_scotty/hatch/handoff"',
     );
     expect(html).toContain('method="post"');
     expect(html).toContain("scotty_hatch.bbbbbbbbbbbb");
