@@ -415,6 +415,11 @@ See
 
 ## E2E
 
+After an evidence-runtime change, production proof requires two consecutive jobs against one fresh
+sandbox: a non-video baseline followed by the same flow with real WebM enabled. Both jobs must pass,
+both browsers must close definitively, Hatch must remain running, and the Showcase must open. A
+single successful job does not prove browser lifecycle reuse.
+
 ```sh
 node e2e/scripts/run.mjs
 ```

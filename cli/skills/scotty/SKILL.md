@@ -51,12 +51,18 @@ Observation is complete when the final record and its stopping reason are known.
 
 ## Hatch and browser evidence
 
+- Inspect the current application source before naming selectors or exact text in a browser flow.
+  Install the repository's locked dependencies before starting either server. Do not carry selectors
+  forward from an older sandbox or summary.
 - Ask the sandbox agent to start the permanent app with `scotty_hatch ensure` on one allowed,
   non-reserved port. Keep that Hatch process running.
 - Define at most three observable acceptance checks and one bounded declarative browser flow.
 - Run `scotty_browser_test` against a separate temporary app server before the change with
   `capture.video: false`. Make the change, then rerun the exact same viewport, steps, and assertions
   with `capture.video: true`. This produces matched screenshots and one actual WebM recording.
+- Hatch is the human live application view. It does not capture screenshots or video. Both evidence
+  runs use one managed Cloudflare Browser Run adapter; the agent never launches or reconciles a
+  separate sessionless browser.
 - Stop only the temporary server afterward. Do not restart or replace the permanent Hatch process
   for evidence collection. Do not repeat a failed run unless the failure cause or session state
   changed.

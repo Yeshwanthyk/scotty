@@ -67,6 +67,7 @@ const makeRuntime = (
     readonly newPageFails?: () => boolean;
     readonly pageCount?: () => number;
     readonly sessionId?: string;
+    readonly sessionless?: boolean;
     readonly videoBytes?: Uint8Array;
   } = {},
 ): KitesurfRuntimeLauncher => {
@@ -179,10 +180,8 @@ const makeRuntime = (
       return context;
     },
     sessionId: () => {
-      state.events.push(
-        options.sessionId === undefined ? "browser:sessionless" : "browser:session",
-      );
-      return options.sessionId;
+      state.events.push("browser:session");
+      return options.sessionless === true ? undefined : (options.sessionId ?? "session-test");
     },
   });
 };
@@ -235,7 +234,7 @@ const apiResponse = (status: number, headers: Readonly<Record<string, string>> =
   }) as APIResponse;
 
 describe("Kitesurf client", () => {
-  it.effect("launches screenshot jobs with the sessionless Kitesurf selector", () =>
+  it.effect("launches screenshot jobs in a managed Browser Run session", () =>
     Effect.gen(function* () {
       const state = runtimeState();
       playwright.launch.mockImplementationOnce(makeRuntime(state));
@@ -250,7 +249,30 @@ describe("Kitesurf client", () => {
       );
 
       assert.strictEqual(playwright.launch.mock.calls.length, 1);
-      assert.deepStrictEqual(playwright.launch.mock.calls[0], [binding, { browser: "kitesurf" }]);
+      assert.deepStrictEqual(playwright.launch.mock.calls[0], [binding]);
+    }),
+  );
+
+  it.effect("rejects the old sessionless browser path before creating a context", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const client = makeKitesurfClient(binding, makeRuntime(state, { sessionless: true }));
+      const result = yield* client
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          () => Effect.void,
+        )
+        .pipe(Effect.result);
+
+      assert.deepInclude(failureOf(result), {
+        operation: "verify_session",
+        reason: "unsupported",
+      });
+      assert.notInclude(state.events, "context:open");
+      assert.include(state.events, "browser:close");
     }),
   );
 
@@ -280,7 +302,7 @@ describe("Kitesurf client", () => {
     }),
   );
 
-  it.effect("installs exact-origin policy and cookie in one sessionless isolated page", () =>
+  it.effect("installs exact-origin policy and cookie in one managed isolated page", () =>
     Effect.gen(function* () {
       const state = runtimeState();
       const secret = "private-cookie-secret";
@@ -329,7 +351,7 @@ describe("Kitesurf client", () => {
         format: "png",
         captureBeyondViewport: false,
       });
-      assert.include(state.events, "browser:sessionless");
+      assert.include(state.events, "browser:session");
       assert.include(state.events, `locator:click:${KITESURF_NAVIGATION_TIMEOUT_MILLIS}`);
       assert.notInclude(state.events, "page:screenshot");
       const captureEvents = state.events.slice(
@@ -991,7 +1013,7 @@ describe("Kitesurf client", () => {
                   route: async () => undefined,
                   routeWebSocket: async () => undefined,
                 }),
-                sessionId: () => undefined,
+                sessionId: () => "session-timeout",
               };
             },
             0,
@@ -1103,7 +1125,7 @@ describe("Kitesurf client", () => {
                 return browserClose.promise;
               },
               newContext: async () => context,
-              sessionId: () => undefined,
+              sessionId: () => "session-cleanup",
             }),
             0,
           );

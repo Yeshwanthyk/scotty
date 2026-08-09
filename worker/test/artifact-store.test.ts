@@ -3,6 +3,7 @@ import { Effect, Fiber, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import {
+  ARTIFACT_PUT_MAX_ATTEMPTS,
   ARTIFACT_PUT_RETRY_DELAY_MILLIS,
   ArtifactStore,
   artifactStoreLayer,
@@ -258,20 +259,69 @@ describe("ArtifactStore", () => {
     }),
   );
 
+  it.effect("recovers a transient R2 put on the final bounded attempt", () =>
+    Effect.gen(function* () {
+      const test = makeMemoryCapabilities();
+      let attempts = 0;
+      let headCalls = 0;
+      let signalFirstHead: (() => void) | undefined;
+      let signalSecondHead: (() => void) | undefined;
+      const firstHead = new Promise<void>((resolve) => {
+        signalFirstHead = resolve;
+      });
+      const secondHead = new Promise<void>((resolve) => {
+        signalSecondHead = resolve;
+      });
+      const capabilities: ArtifactStoreCapabilities = {
+        ...test.capabilities,
+        put: (key, bytes, metadata) => {
+          attempts += 1;
+          return attempts < ARTIFACT_PUT_MAX_ATTEMPTS
+            ? Promise.reject(new Error("put: Unspecified error (0)"))
+            : test.capabilities.put(key, bytes, metadata);
+        },
+        head: (key) => {
+          headCalls += 1;
+          if (headCalls === 1) signalFirstHead?.();
+          if (headCalls === 2) signalSecondHead?.();
+          return test.capabilities.head(key);
+        },
+      };
+      const fiber = yield* putFrame(capabilities).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.promise(() => firstHead);
+      yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
+      yield* Effect.promise(() => secondHead);
+      yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
+      const artifact = yield* Fiber.join(fiber);
+
+      assert.strictEqual(artifact.status, "available");
+      assert.strictEqual(attempts, ARTIFACT_PUT_MAX_ATTEMPTS);
+      assert.strictEqual(test.headCalls(), ARTIFACT_PUT_MAX_ATTEMPTS - 1);
+    }),
+  );
+
   it.effect("logs a safe actionable R2 failure without exposing a long token", () =>
     Effect.gen(function* () {
       const token = "a".repeat(48);
       const test = makeMemoryCapabilities();
+      let headCalls = 0;
       let signalFirstHead: (() => void) | undefined;
+      let signalSecondHead: (() => void) | undefined;
       const firstHead = new Promise<void>((resolve) => {
         signalFirstHead = resolve;
+      });
+      const secondHead = new Promise<void>((resolve) => {
+        signalSecondHead = resolve;
       });
       const capabilities: ArtifactStoreCapabilities = {
         ...test.capabilities,
         put: () => Promise.reject(new TypeError(`R2 write rejected ${token}`)),
         head: () => {
-          signalFirstHead?.();
-          signalFirstHead = undefined;
+          headCalls += 1;
+          if (headCalls === 1) signalFirstHead?.();
+          if (headCalls === 2) signalSecondHead?.();
           return Promise.resolve(undefined);
         },
       };
@@ -281,6 +331,8 @@ describe("ArtifactStore", () => {
         Effect.forkChild({ startImmediately: true }),
       );
       yield* Effect.promise(() => firstHead);
+      yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
+      yield* Effect.promise(() => secondHead);
       yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
       const result = yield* Fiber.join(fiber);
       const calls = error.mock.calls;

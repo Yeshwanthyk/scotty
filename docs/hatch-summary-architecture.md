@@ -40,9 +40,24 @@ Use a transcript-projected Summary and a distinct Sandbox-Durable-Object-owned H
 - Summary is derived. Pi messages and structured tool results remain its persisted source.
 - Evidence state and R2 remain authoritative for screenshots and WebM recordings.
 - The Sandbox Durable Object owns Hatch desired state, runtime fencing, exposure, browser permits, cleanup, and retries.
+- Every evidence job uses one managed Cloudflare Browser Run session for both PNG screenshots and
+  the optional real WebM. Scotty does not use the sessionless Kitesurf launch overload for evidence.
 - The Pi extension owns the local child process only as a scoped host adapter. Process memory and files are never authoritative.
 - Hatch state is separate from `SessionRecord` and `EvidenceState`; do not migrate `SessionRecord` merely to add the application view.
 - A Hatch holds the global session operation lease only during bounded mutations such as ensure, expose, close, or restore. An open Hatch does not hold the lease.
+
+Evidence and Hatch remain separate. Hatch provides authenticated, interactive access to the live
+development server in the user's browser. The evidence adapter opens its own short managed browser
+session, runs the bounded declarative flow, captures PNG/WebM bytes, and closes before the job may
+publish success. An ambiguous browser close is not success. Scotty retries that idempotent close once;
+if it still cannot prove cleanup, the job is interrupted. A fresh browser acquisition may retry once
+only before the first user action. Clicks, fills, presses, and navigation are never replayed after the
+flow starts.
+
+Artifact writes use a deterministic immutable R2 key. A failed put is retried only after `head`
+proves that exact object is missing; a matching head receipt completes the write, while conflicting or
+unreadable metadata fails closed. Transient missing puts receive at most three attempts with bounded
+delay.
 
 ## Summary projection
 
