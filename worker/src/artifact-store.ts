@@ -160,6 +160,10 @@ const metadataMatches = (
   metadata.customMetadata.frame === expected.frameId &&
   metadata.customMetadata.sha256 === expected.sha256;
 
+const reportArtifactStorageFailure = (operation: "put" | "head", cause: unknown): void => {
+  console.error("Evidence artifact storage failed", { operation, cause });
+};
+
 export const artifactStoreLayer = (
   capabilities: ArtifactStoreCapabilities,
 ): Layer.Layer<ArtifactStore> => Layer.succeed(ArtifactStore)(makeArtifactStore(capabilities));
@@ -232,15 +236,19 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
             contentType: artifact.mediaType,
             customMetadata,
           }),
-        catch: (cause) =>
-          new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
+        catch: (cause) => {
+          reportArtifactStorageFailure("put", cause);
+          return new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause });
+        },
       }),
     );
     const headResult = yield* Effect.result(
       Effect.tryPromise({
         try: () => capabilities.head(key),
-        catch: (cause) =>
-          new EvidenceArtifactError({ operation: "head", reason: "upstream", cause }),
+        catch: (cause) => {
+          reportArtifactStorageFailure("head", cause);
+          return new EvidenceArtifactError({ operation: "head", reason: "upstream", cause });
+        },
       }),
     );
     const expected = {
