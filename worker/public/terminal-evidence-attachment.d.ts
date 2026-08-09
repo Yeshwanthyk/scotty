@@ -1,16 +1,17 @@
 export interface BrowserEvidencePaths {
   readonly summary: string;
-  readonly replay: string;
+  readonly detail: string;
   readonly frame: (frameId: string) => string | undefined;
 }
 
 export interface BrowserEvidenceAttachment {
   readonly kind: "evidence";
-  readonly version: 1;
+  readonly version: 2;
   readonly jobId: string;
   readonly status: "succeeded" | "failed" | "interrupted" | "unsupported";
   readonly completedSteps: number;
   readonly frameCount: number;
+  readonly video: boolean;
   readonly failure?: { readonly code: string; readonly step?: number };
   readonly paths: BrowserEvidencePaths;
 }

@@ -1,4 +1,4 @@
-export interface ReplayFrame {
+export interface EvidenceFrame {
   readonly frameId: string;
   readonly sha256: string;
   readonly bytes: number;
@@ -11,6 +11,5 @@ export interface ReplayFrame {
 
 export function isTerminalEvidenceStatus(status: unknown): boolean;
 export function shouldPollEvidence(payload: unknown, detail: boolean): boolean;
-export function orderedReplayFrames(summary: unknown): ReadonlyArray<ReplayFrame>;
-export function replayDelayMillis(frames: ReadonlyArray<ReplayFrame>, index: number): number;
+export function orderedEvidenceFrames(summary: unknown): ReadonlyArray<EvidenceFrame>;
 export function evidenceStatusLabel(status: unknown): string;

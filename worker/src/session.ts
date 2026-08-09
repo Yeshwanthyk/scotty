@@ -45,22 +45,23 @@ import {
   EvidenceStateError,
   decodeBrowserEvidenceJobEffect,
   decodeCompleteEvidenceStepPublication,
+  decodeCompleteEvidenceVideoPublication,
   decodeEvidenceIdentifier,
   decodeEvidencePreviewAdmission,
   decodeEvidencePreviewIngressBytes,
   decodeEvidencePreviewRequestId,
   publicEvidenceSummaryProjection,
-  type BrowserEvidenceJobV1,
-  type BrowserEvidenceResultV1,
-  type EvidenceActiveJobV1,
-  type EvidenceArtifactV1,
-  type EvidenceJobSummaryV1,
-  type EvidencePreviewAdmissionV1,
-  type EvidencePreviewPermitAdmissionV1,
+  type BrowserEvidenceJobV2,
+  type BrowserEvidenceResultV2,
+  type EvidenceActiveJobV2,
+  type EvidenceArtifactV2,
+  type EvidenceJobSummaryV2,
+  type EvidencePreviewAdmissionV2,
+  type EvidencePreviewPermitAdmissionV2,
   type EvidenceStepResult,
   type EvidenceTerminalStatus,
-  type ExposedEvidencePreviewV1,
-  type PublicEvidenceJobSummaryV1,
+  type ExposedEvidencePreviewV2,
+  type PublicEvidenceJobSummaryV2,
 } from "./evidence-contracts";
 import type { Bindings } from "./bindings";
 import {
@@ -954,7 +955,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly acceptDecodedScottyEvidenceJobProgram = Effect.fnUntraced(function* (
     this: Sandbox,
-    job: BrowserEvidenceJobV1,
+    job: BrowserEvidenceJobV2,
   ) {
     if (!this.evidenceEnabled)
       return yield* new EvidenceStateError({ reason: "preview_unavailable" });
@@ -984,6 +985,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     )
       return yield* conflict("Evidence cannot expose the active Hatch service port");
     const operationNonce = randomToken(12);
+    const flowHash = yield* Effect.tryPromise({
+      try: () => sha256Hex(JSON.stringify({ viewport: job.viewport, steps: job.steps })),
+      catch: () => new EvidenceStateError({ reason: "storage" }),
+    });
     const evidence = yield* EvidenceStore;
     const capacityDeletes = yield* evidence.prepareJobCapacity;
     if (capacityDeletes.length > 0) {
@@ -997,6 +1002,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       runtimeEpoch,
       routeNonce: randomToken(8),
       deadlineAt,
+      flowHash,
       job,
     });
     const scheduled = yield* Effect.result(
@@ -1208,7 +1214,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       origin: canonicalOrigin,
       cookieSecret,
       expiresAt: published.success.deadlineAt,
-    } satisfies ExposedEvidencePreviewV1;
+    } satisfies ExposedEvidencePreviewV2;
   });
 
   private readonly admitScottyEvidencePreviewProgram = Effect.fnUntraced(function* (
@@ -1312,12 +1318,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly deleteEvidenceArtifactsProgram = Effect.fnUntraced(function* (
-    artifacts: ReadonlyArray<EvidenceArtifactV1>,
+    artifacts: ReadonlyArray<EvidenceArtifactV2>,
   ) {
     const evidence = yield* EvidenceStore;
     const artifactStore = yield* ArtifactStore;
     for (const artifact of artifacts) {
-      yield* artifactStore.deleteFrame(artifact);
+      yield* artifactStore.deleteArtifact(artifact);
       yield* evidence.confirmDelete(artifact.objectKey);
     }
   });
@@ -1347,7 +1353,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly nextEvidenceRetentionAtProgram = Effect.fnUntraced(function* (
-    promoting?: EvidenceArtifactV1,
+    promoting?: EvidenceArtifactV2,
   ) {
     const evidence = yield* EvidenceStore;
     const state = yield* evidence.read;
@@ -1370,7 +1376,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly armEvidenceRetentionProgram = Effect.fnUntraced(function* (
     this: Sandbox,
-    promoting?: EvidenceArtifactV1,
+    promoting?: EvidenceArtifactV2,
   ) {
     const expiresAt = yield* this.nextEvidenceRetentionAtProgram(promoting);
     if (expiresAt === undefined || (yield* this.hasScheduledEvidenceRetentionProgram())) return;
@@ -1502,7 +1508,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         : yield* Effect.result(artifactStore.prepareFrame(frameInput));
     if (Result.isFailure(preparedResult) && !failedAssertion) return yield* preparedResult.failure;
     const prepared = Result.isSuccess(preparedResult) ? preparedResult.success : undefined;
-    let artifact: EvidenceArtifactV1 | undefined;
+    let artifact: EvidenceArtifactV2 | undefined;
     let artifactFailure: EvidenceArtifactError | undefined = Result.isFailure(preparedResult)
       ? preparedResult.failure
       : undefined;
@@ -1585,6 +1591,57 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return yield* completed.failure;
   });
 
+  private readonly completeScottyEvidenceVideoProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+    value: unknown,
+  ) {
+    if (Option.isNone(decodeEvidenceIdentifier(nonce)))
+      return yield* badRequest("Evidence operation nonce is invalid");
+    const input = yield* decodeCompleteEvidenceVideoPublication(value).pipe(
+      Effect.mapError(() => badRequest("Evidence video publication is invalid")),
+    );
+    const evidence = yield* EvidenceStore;
+    const state = yield* evidence.read;
+    const active = state.activeJob;
+    if (active?.operationNonce !== nonce)
+      return yield* new EvidenceStateError({ reason: "lease_changed" });
+    const record = yield* this.requireRecordProgram();
+    if (record.operation?.kind !== "evidence" || record.operation.nonce !== nonce)
+      return yield* new EvidenceStateError({ reason: "lease_changed" });
+    const artifactStore = yield* ArtifactStore;
+    const prepared = yield* artifactStore.prepareVideo({
+      sessionId: record.id,
+      jobId: active.jobId,
+      artifactId: input.artifactId,
+      bytes: input.bytes,
+      capturedAt: input.capturedAt,
+      offsetMillis: input.offsetMillis,
+    });
+    yield* evidence.prepareVideoUpload(nonce, prepared.artifact);
+    const published = yield* Effect.result(
+      this.armEvidenceRetentionProgram().pipe(
+        Effect.andThen(artifactStore.writeArtifact(prepared)),
+        Effect.tap((artifact) => this.armEvidenceRetentionProgram(artifact)),
+        Effect.flatMap((artifact) => evidence.completeVideo(nonce, { artifact })),
+      ),
+    );
+    if (Result.isSuccess(published)) return published.success;
+    const pending = yield* evidence.requestVerifiedDelete(prepared.artifact, "abandoned");
+    if (pending !== undefined) {
+      const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
+      if (Result.isFailure(deleted))
+        yield* Effect.sync(() =>
+          console.error("Unpublished evidence video deletion remains authoritative and pending", {
+            jobId: active.jobId,
+            error: errorName(deleted.failure),
+          }),
+        );
+    }
+    yield* this.armEvidenceRetentionFailClosedProgram();
+    return yield* published.failure;
+  });
+
   private readonly finalizeScottyEvidenceJobProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     nonce: string,
@@ -1641,6 +1698,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
             (error) =>
               new EvidenceWorkflowControlError({
                 operation: "complete_step",
+                failureCode: evidenceControlFailureCode(error),
+              }),
+          ),
+          Effect.provide(this.layer),
+        ),
+      completeVideo: (active, input) =>
+        this.completeScottyEvidenceVideoProgram(active.operationNonce, input).pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            (error) =>
+              new EvidenceWorkflowControlError({
+                operation: "complete_video",
                 failureCode: evidenceControlFailureCode(error),
               }),
           ),
@@ -3335,21 +3404,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.retryHatchCleanupProgram(payload.value));
   }
 
-  async [SANDBOX_TEST_ACCEPT_EVIDENCE](value: unknown): Promise<EvidenceActiveJobV1> {
+  async [SANDBOX_TEST_ACCEPT_EVIDENCE](value: unknown): Promise<EvidenceActiveJobV2> {
     return this.#run(this.acceptScottyEvidenceJobProgram(value));
   }
 
-  async runScottyEvidenceJob(value: unknown): Promise<BrowserEvidenceResultV1> {
+  async runScottyEvidenceJob(value: unknown): Promise<BrowserEvidenceResultV2> {
     return this.#run(this.runScottyEvidenceJobProgram(value));
   }
 
-  async [SANDBOX_TEST_EXPOSE_EVIDENCE](nonce: string): Promise<ExposedEvidencePreviewV1> {
+  async [SANDBOX_TEST_EXPOSE_EVIDENCE](nonce: string): Promise<ExposedEvidencePreviewV2> {
     return this.#run(this.exposeScottyEvidencePreviewProgram(nonce));
   }
 
   async admitScottyEvidencePreview(
-    input: EvidencePreviewAdmissionV1,
-  ): Promise<EvidencePreviewPermitAdmissionV1 | undefined> {
+    input: EvidencePreviewAdmissionV2,
+  ): Promise<EvidencePreviewPermitAdmissionV2 | undefined> {
     return this.#run(this.admitScottyEvidencePreviewProgram(input));
   }
 
@@ -3387,11 +3456,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   async [SANDBOX_TEST_FINALIZE_EVIDENCE](
     nonce: string,
     status: EvidenceTerminalStatus,
-  ): Promise<EvidenceJobSummaryV1> {
+  ): Promise<EvidenceJobSummaryV2> {
     return this.#run(this.finalizeScottyEvidenceJobProgram(nonce, status));
   }
 
-  async listScottyEvidence(): Promise<ReadonlyArray<PublicEvidenceJobSummaryV1>> {
+  async listScottyEvidence(): Promise<ReadonlyArray<PublicEvidenceJobSummaryV2>> {
     return this.#run(
       Effect.map(
         Effect.flatMap(EvidenceStore, (store) => store.list),
@@ -3400,7 +3469,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
-  async getScottyEvidence(jobId: string): Promise<PublicEvidenceJobSummaryV1> {
+  async getScottyEvidence(jobId: string): Promise<PublicEvidenceJobSummaryV2> {
     return this.#run(
       Effect.map(
         Effect.flatMap(EvidenceStore, (store) => store.getJob(jobId)),
@@ -3409,7 +3478,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   }
 
-  async getScottyEvidenceArtifact(jobId: string, frameId: string): Promise<EvidenceArtifactV1> {
+  async getScottyEvidenceArtifact(jobId: string, frameId: string): Promise<EvidenceArtifactV2> {
     return this.#run(Effect.flatMap(EvidenceStore, (store) => store.getArtifact(jobId, frameId)));
   }
 

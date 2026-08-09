@@ -22,7 +22,7 @@ const TARGET_ID = "b0b1c2d3e4f5";
 const SOURCE_CONTAINER_ID = "a".repeat(64);
 
 const evidenceJob = () => ({
-  version: 1 as const,
+  version: 2 as const,
   port: 4_173,
   viewport: { width: 1_280, height: 720 },
   steps: [
@@ -32,16 +32,17 @@ const evidenceJob = () => ({
       expect: [{ kind: "visible" as const, locator: { kind: "testId" as const, value: "home" } }],
     },
   ],
-  capture: { screenshots: "after-each-step" as const, replay: true },
+  capture: { screenshots: "after-each-step" as const, video: false },
 });
 
 const evidenceResult = () => ({
-  version: 1 as const,
+  version: 2 as const,
   jobId: "job-abcd1234",
   status: "succeeded" as const,
   summaryUrl: `/s/${SESSION_ID}/evidence/job-abcd1234`,
   completedSteps: 1,
   frameCount: 1,
+  video: false,
 });
 
 const evidenceRequest = (

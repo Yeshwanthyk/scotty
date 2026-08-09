@@ -129,7 +129,7 @@
   color: var(--danger);
 }
 
-.replay-panel {
+.evidence-frames-panel {
   position: sticky;
   top: 84px;
   min-width: 0;
@@ -138,100 +138,44 @@
   box-shadow: var(--ring);
 }
 
-.replay-stage {
-  display: grid;
-  min-height: 300px;
-  place-items: center;
-  overflow: hidden;
-  background: #02080c;
+.evidence-frames-title {
+  margin: 0 0 14px;
+  font-size: 0.86rem;
 }
 
-.replay-stage img {
-  display: block;
-  width: 100%;
-  height: auto;
-  max-height: 62vh;
-  object-fit: contain;
-}
-
-.replay-empty {
-  max-width: 34ch;
-  padding: 40px 20px;
+.evidence-frames-empty {
+  padding: 30px 12px;
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.5;
   text-align: center;
 }
 
-.replay-toolbar {
+.evidence-frames-grid {
   display: grid;
-  grid-template-columns: auto minmax(100px, 1fr) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  align-items: center;
-  margin-top: 14px;
 }
 
-.replay-toolbar .button {
-  min-height: 36px;
+.evidence-frames-grid figure {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  background: #02080c;
+  box-shadow: var(--ring);
 }
 
-.replay-scrubber {
-  width: 100%;
-  accent-color: var(--beam);
-}
-
-.replay-time {
-  min-width: 68px;
-  color: var(--muted);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 0.7rem;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.replay-caption {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 38px;
-  padding-top: 12px;
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.replay-strip {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-top: 12px;
-  border-top: 1px solid var(--line-soft);
-}
-
-.replay-frame {
-  width: 92px;
-  flex: 0 0 92px;
-  padding: 3px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  opacity: 0.58;
-  cursor: pointer;
-}
-
-.replay-frame[aria-current="true"] {
-  box-shadow: 0 0 0 1px var(--focus);
-  opacity: 1;
-}
-
-.replay-frame:hover {
-  opacity: 1;
-}
-
-.replay-frame img {
+.evidence-frames-grid img {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 10;
-  object-fit: cover;
+  object-fit: contain;
+}
+
+.evidence-frames-grid figcaption {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 @media (max-width: 820px) {
@@ -239,7 +183,7 @@
     grid-template-columns: 1fr;
   }
 
-  .replay-panel {
+  .evidence-frames-panel {
     position: static;
     grid-row: 1;
   }
@@ -258,19 +202,12 @@
     display: none;
   }
 
-  .replay-panel {
+  .evidence-frames-panel {
     margin-inline: -8px;
     padding: 10px;
   }
 
-  .replay-stage {
-    min-height: 210px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .evidence-list-item,
-  .replay-frame {
-    transition: none;
+  .evidence-frames-grid {
+    grid-template-columns: 1fr;
   }
 }

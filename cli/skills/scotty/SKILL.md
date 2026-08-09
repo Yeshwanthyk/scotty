@@ -53,11 +53,13 @@ Observation is complete when the final record and its stopping reason are known.
 
 - Ask the sandbox agent to start the permanent app with `scotty_hatch ensure` on one allowed,
   non-reserved port. Keep that Hatch process running.
-- Run `scotty_browser_test` against one separate temporary app server on a different port. Stop only
-  that temporary server afterward. Do not restart or replace the permanent Hatch process for
-  evidence collection.
-- Use one bounded evidence attempt with stable declarative assertions. Do not repeat a failed run
-  unless the failure cause or session state changed.
+- Define at most three observable acceptance checks and one bounded declarative browser flow.
+- Run `scotty_browser_test` against a separate temporary app server before the change with
+  `capture.video: false`. Make the change, then rerun the exact same viewport, steps, and assertions
+  with `capture.video: true`. This produces matched screenshots and one actual WebM recording.
+- Stop only the temporary server afterward. Do not restart or replace the permanent Hatch process
+  for evidence collection. Do not repeat a failed run unless the failure cause or session state
+  changed.
 - In the sandbox agent's final update, include each exact structured `scotty-hatch:<hatchId>` and
   `scotty-evidence:<jobId>` reference at most once. The result must belong to the current
   conversation. After a steer or follow-up, call Hatch status or evidence again before publishing
@@ -65,9 +67,11 @@ Observation is complete when the final record and its stopping reason are known.
 - Open Hatch only from the paired session shell's **Open Hatch** control or the returned session URL
   plus `/hatch/open`. Never copy, guess, or publish the wildcard preview origin, handoff token,
   route nonce, or Hatch cookie. `scotty attach ID --json` opens the session shell, not Hatch itself.
-- Summary shows Hatch and screenshots only when the latest same-conversation update contains the
-  matching structured references. Treat a retained frame as useful evidence even when a later step
-  failed, but report the job's actual terminal status.
+- Summary shows Hatch and evidence only when the latest same-conversation update contains the
+  matching structured references. A successful non-video before reference plus successful video
+  after reference creates one private Showcase link. The server accepts it only when both runs have
+  the same flow hash and viewport and every assertion and screenshot passed. Treat a retained frame
+  as useful evidence even when a later step failed, but report the job's actual terminal status.
 
 ## Final response
 

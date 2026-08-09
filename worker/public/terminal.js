@@ -348,10 +348,10 @@ function renderProjection({ restoreScroll = false } = {}) {
   });
 }
 
-function summaryReplayLink(evidence) {
-  const link = textElement("a", "summary-replay-link", "Replay");
-  link.href = evidence.paths.replay;
-  link.dataset.summaryFocusKey = `evidence:${evidence.jobId}:replay`;
+function summaryEvidenceLink(evidence) {
+  const link = textElement("a", "summary-proof-link", "View proof");
+  link.href = evidence.paths.detail;
+  link.dataset.summaryFocusKey = `evidence:${evidence.jobId}:detail`;
   return link;
 }
 
@@ -371,7 +371,7 @@ function summaryEvidenceMeta(status, assertionCopy) {
 function summaryEvidenceActions(evidence) {
   const actions = document.createElement("div");
   actions.className = "summary-evidence-actions";
-  actions.append(summaryReplayLink(evidence));
+  actions.append(summaryEvidenceLink(evidence));
   return actions;
 }
 
@@ -780,6 +780,32 @@ function renderSummary() {
   }
   fragment.append(hatchSection);
 
+  if (projection.showcase) {
+    const showcaseSection = document.createElement("section");
+    showcaseSection.className = "summary-showcase-section";
+    showcaseSection.setAttribute("aria-labelledby", "summary-showcase-title");
+    const showcaseTitle = textElement("h2", "summary-section-title", "Showcase");
+    showcaseTitle.id = "summary-showcase-title";
+    const card = document.createElement("article");
+    card.className = "summary-showcase-card";
+    card.append(
+      textElement("strong", "", "Before, after, and real video"),
+      textElement(
+        "p",
+        "",
+        "Review matched screenshots, passed checks, and the recorded after flow in one private link.",
+      ),
+    );
+    const open = textElement("a", "summary-hatch-primary", "Open Showcase");
+    open.href = projection.showcase.path;
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.dataset.summaryFocusKey = `showcase:${projection.showcase.beforeJobId}:${projection.showcase.afterJobId}`;
+    card.append(open);
+    showcaseSection.append(showcaseTitle, card);
+    fragment.append(showcaseSection);
+  }
+
   const evidenceSection = document.createElement("section");
   evidenceSection.className = "summary-evidence-section";
   evidenceSection.setAttribute("aria-labelledby", "summary-evidence-title");
@@ -1050,16 +1076,16 @@ function evidenceHeader(status, passedAssertions, totalAssertions) {
   return header;
 }
 
-function replayLink(evidence) {
-  const link = textElement("a", "browser-evidence-link", "Open Replay");
-  link.href = evidence.paths.replay;
-  link.setAttribute("data-worklog-focus-key", `evidence:${evidence.jobId}:replay`);
+function proofLink(evidence) {
+  const link = textElement("a", "browser-evidence-link", "Open proof");
+  link.href = evidence.paths.detail;
+  link.setAttribute("data-worklog-focus-key", `evidence:${evidence.jobId}:proof`);
   return link;
 }
 
 function renderBrowserEvidenceLoading(attachment, evidence) {
   attachment.dataset.status = evidence.status;
-  attachment.replaceChildren(evidenceHeader(evidence.status), replayLink(evidence));
+  attachment.replaceChildren(evidenceHeader(evidence.status), proofLink(evidence));
   if (evidence.frameCount === 0)
     attachment.append(
       textElement("p", "browser-evidence-no-frame", browserEvidenceNoFrameCopy(evidence.status)),
@@ -1088,7 +1114,7 @@ async function loadBrowserEvidenceSummary(attachment, evidence) {
         "browser-evidence-unavailable",
         "The authenticated evidence summary is not available.",
       ),
-      replayLink(evidence),
+      proofLink(evidence),
     );
     return;
   }
@@ -1117,7 +1143,7 @@ async function loadBrowserEvidenceSummary(attachment, evidence) {
       textElement("p", "browser-evidence-no-frame", browserEvidenceNoFrameCopy(summary.status)),
     );
   }
-  attachment.append(replayLink(evidence));
+  attachment.append(proofLink(evidence));
 }
 
 function secondaryActivityTool(tool) {

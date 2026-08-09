@@ -1,5 +1,6 @@
 import type {
   BrowserContext,
+  BrowserContextOptions,
   BrowserWorker,
   CDPSession,
   Locator,
@@ -7,11 +8,14 @@ import type {
   Request as PlaywrightRequest,
   Route,
   SessionlessBrowser,
+  Video,
   WebSocketRoute,
 } from "@cloudflare/playwright";
 import { Context, Effect, Exit, Schema } from "effect";
+import { readFile, stat, unlink } from "node:fs/promises";
 import {
   EVIDENCE_MAX_FRAME_BYTES,
+  EVIDENCE_MAX_VIDEO_BYTES,
   EvidenceKitesurfOperationSchema,
   EvidenceKitesurfReasonSchema,
   type EvidenceLocator,
@@ -21,6 +25,7 @@ import { EVIDENCE_PREVIEW_COOKIE } from "./evidence-preview";
 export const KITESURF_OPERATION_TIMEOUT_MILLIS = 5_000;
 export const KITESURF_SCREENSHOT_TIMEOUT_MILLIS = 15_000;
 export const KITESURF_RESOURCE_TIMEOUT_MILLIS = 15_000;
+export const KITESURF_VIDEO_TIMEOUT_MILLIS = 30_000;
 const KITESURF_MAX_SAME_ORIGIN_REDIRECTS = 10;
 const KITESURF_MAX_CSS_SELECTOR_LENGTH = 512;
 const KITESURF_MAX_SCREENSHOT_BASE64_LENGTH = Math.ceil(EVIDENCE_MAX_FRAME_BYTES / 3) * 4;
@@ -62,11 +67,20 @@ export interface KitesurfPageOptions {
   readonly viewport?: { readonly width: number; readonly height: number };
 }
 
+export interface KitesurfPageResult<A> {
+  readonly value: A;
+  readonly video?: Uint8Array;
+}
+
 export interface KitesurfClientShape {
   readonly withPage: <A, E, R>(
     options: KitesurfPageOptions,
     use: (page: KitesurfPage) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | KitesurfClientError, R>;
+  readonly withRecordedPage?: <A, E, R>(
+    options: KitesurfPageOptions,
+    use: (page: KitesurfPage) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<KitesurfPageResult<A>, E | KitesurfClientError, R>;
 }
 
 export class KitesurfClient extends Context.Service<KitesurfClient, KitesurfClientShape>()(
@@ -94,6 +108,11 @@ interface KitesurfRuntimePage {
   readonly goto: Page["goto"];
   readonly locator: (value: string) => KitesurfRuntimeLocator;
   readonly url: Page["url"];
+  readonly video: () => KitesurfRuntimeVideo | null;
+}
+
+interface KitesurfRuntimeVideo {
+  readonly saveAs: Video["saveAs"];
 }
 
 interface KitesurfCaptureSession extends Pick<CDPSession, "detach"> {
@@ -105,7 +124,9 @@ interface KitesurfCaptureSession extends Pick<CDPSession, "detach"> {
 
 interface KitesurfRuntimeContext {
   readonly addCookies: BrowserContext["addCookies"];
-  newCDPSession(page: KitesurfRuntimePage): Promise<KitesurfCaptureSession>;
+  readonly close: BrowserContext["close"];
+  newCDPSession(): Promise<KitesurfCaptureSession>;
+  readonly newPage: () => Promise<KitesurfRuntimePage>;
   readonly pages: () => ReadonlyArray<KitesurfRuntimePage>;
   readonly route?: BrowserContext["route"];
   readonly routeWebSocket?: BrowserContext["routeWebSocket"];
@@ -113,37 +134,50 @@ interface KitesurfRuntimeContext {
 
 interface KitesurfRuntimeBrowser {
   readonly close: SessionlessBrowser["close"];
-  readonly newPage: (
-    options: Parameters<SessionlessBrowser["newPage"]>[0],
-  ) => Promise<KitesurfRuntimePage>;
+  readonly newContext: (options: BrowserContextOptions) => Promise<KitesurfRuntimeContext>;
   readonly sessionId: () => string | undefined;
 }
 
 export type KitesurfRuntimeLauncher = (binding: BrowserWorker) => Promise<KitesurfRuntimeBrowser>;
 
-const runtimePage = (page: Page): KitesurfRuntimePage => {
-  const context = page.context();
-  let ownedPage: KitesurfRuntimePage;
+const runtimeContext = (context: BrowserContext): KitesurfRuntimeContext => {
+  const pages = new Map<Page, KitesurfRuntimePage>();
+  const wrapPage = (page: Page): KitesurfRuntimePage => {
+    const existing = pages.get(page);
+    if (existing !== undefined) return existing;
+    const wrapped: KitesurfRuntimePage = {
+      close: page.close.bind(page),
+      context: () => ownedContext,
+      evaluate: page.evaluate.bind(page),
+      getByTestId: page.getByTestId.bind(page),
+      goto: page.goto.bind(page),
+      locator: page.locator.bind(page),
+      url: page.url.bind(page),
+      video: () => {
+        const video = page.video();
+        return video === null ? null : { saveAs: video.saveAs.bind(video) };
+      },
+    };
+    pages.set(page, wrapped);
+    return wrapped;
+  };
   const ownedContext: KitesurfRuntimeContext = {
     addCookies: context.addCookies.bind(context),
-    newCDPSession: () => context.newCDPSession(page),
-    pages: () => {
-      const pages = context.pages();
-      return pages.length === 1 && pages[0] === page ? [ownedPage] : [];
+    close: context.close.bind(context),
+    newCDPSession: () => {
+      const page = context.pages()[0];
+      if (page !== undefined) return context.newCDPSession(page);
+      // oxlint-disable-next-line scotty/no-promise-reject -- boundary: Playwright cannot create a CDP session without the lifecycle-owned page
+      return Promise.reject(
+        new KitesurfClientError({ operation: "create_page", reason: "unsupported" }),
+      );
     },
+    newPage: () => context.newPage().then(wrapPage),
+    pages: () => context.pages().map(wrapPage),
     route: context.route.bind(context),
     routeWebSocket: context.routeWebSocket.bind(context),
   };
-  ownedPage = {
-    close: page.close.bind(page),
-    context: () => ownedContext,
-    evaluate: page.evaluate.bind(page),
-    getByTestId: page.getByTestId.bind(page),
-    goto: page.goto.bind(page),
-    locator: page.locator.bind(page),
-    url: page.url.bind(page),
-  };
-  return ownedPage;
+  return ownedContext;
 };
 
 const launchRuntimeKitesurf: KitesurfRuntimeLauncher = async (binding) => {
@@ -151,7 +185,7 @@ const launchRuntimeKitesurf: KitesurfRuntimeLauncher = async (binding) => {
   const browser = await launch(binding, { browser: "kitesurf" });
   return {
     close: browser.close.bind(browser),
-    newPage: (options) => browser.newPage(options).then(runtimePage),
+    newContext: (options) => browser.newContext(options).then(runtimeContext),
     sessionId: browser.sessionId.bind(browser),
   };
 };
@@ -436,7 +470,7 @@ const captureScreenshot = (
         boundedRuntimeEffect(
           "screenshot",
           "ambiguous",
-          () => context.newCDPSession(page),
+          () => context.newCDPSession(),
           KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
           (session) =>
             nativePromiseTimeout(
@@ -622,65 +656,152 @@ const installContextPolicy = (
     );
   });
 
+const saveRecordedVideo = (
+  video: KitesurfRuntimeVideo,
+  resourceTimeoutMillis: number,
+): Effect.Effect<Uint8Array, KitesurfClientError> => {
+  const path = `/tmp/scotty-evidence-${crypto.randomUUID()}.webm`;
+  const cleanup = runtimeEffect("save_video", "cleanup", () =>
+    unlink(path).then(
+      () => undefined,
+      () => undefined,
+    ),
+  ).pipe(Effect.ignore);
+  return Effect.gen(function* () {
+    yield* boundedRuntimeEffect(
+      "save_video",
+      "unsupported",
+      () => video.saveAs(path),
+      KITESURF_VIDEO_TIMEOUT_MILLIS,
+    );
+    const metadata = yield* boundedRuntimeEffect(
+      "save_video",
+      "ambiguous",
+      () => stat(path),
+      resourceTimeoutMillis,
+    );
+    if (metadata.size <= 0 || metadata.size > EVIDENCE_MAX_VIDEO_BYTES)
+      return yield* new KitesurfClientError({ operation: "save_video", reason: "unsupported" });
+    const bytes = yield* boundedRuntimeEffect(
+      "save_video",
+      "ambiguous",
+      () => readFile(path),
+      resourceTimeoutMillis,
+    );
+    if (bytes.byteLength !== metadata.size)
+      return yield* new KitesurfClientError({ operation: "save_video", reason: "ambiguous" });
+    return Uint8Array.from(bytes);
+  }).pipe(Effect.ensuring(cleanup));
+};
+
 export const makeKitesurfClient = (
   binding: BrowserWorker,
   launchBrowser: KitesurfRuntimeLauncher = launchRuntimeKitesurf,
   resourceTimeoutMillis = KITESURF_RESOURCE_TIMEOUT_MILLIS,
-): KitesurfClientShape =>
-  KitesurfClient.of({
-    withPage: (options, use) => {
-      const origin = exactOrigin(options.origin);
-      if (origin === undefined)
-        return Effect.fail(
-          new KitesurfClientError({ operation: "install_network_guard", reason: "unsupported" }),
-        );
-      return Effect.acquireUseRelease(
-        boundedRuntimeEffect(
-          "launch",
-          "ambiguous",
-          () => launchBrowser(binding),
-          resourceTimeoutMillis,
-          (browser) =>
-            compensateLateResource("close_browser", () => browser.close(), resourceTimeoutMillis),
-        ),
+): KitesurfClientShape => {
+  const runPage = <A, E, R>(
+    options: KitesurfPageOptions & { readonly recordVideo: boolean },
+    use: (page: KitesurfPage) => Effect.Effect<A, E, R>,
+  ): Effect.Effect<KitesurfPageResult<A>, E | KitesurfClientError, R> => {
+    const origin = exactOrigin(options.origin);
+    if (origin === undefined)
+      return Effect.fail(
+        new KitesurfClientError({ operation: "install_network_guard", reason: "unsupported" }),
+      );
+    return Effect.acquireUseRelease(
+      boundedRuntimeEffect(
+        "launch",
+        "ambiguous",
+        () => launchBrowser(binding),
+        resourceTimeoutMillis,
         (browser) =>
-          Effect.gen(function* () {
-            const sessionId = yield* Effect.try({
-              try: () => browser.sessionId(),
-              catch: () =>
-                new KitesurfClientError({
-                  operation: "verify_sessionless",
-                  reason: "unsupported",
-                }),
-            });
-            if (sessionId !== undefined)
-              return yield* new KitesurfClientError({
+          compensateLateResource("close_browser", () => browser.close(), resourceTimeoutMillis),
+      ),
+      (browser) =>
+        Effect.gen(function* () {
+          const sessionId = yield* Effect.try({
+            try: () => browser.sessionId(),
+            catch: () =>
+              new KitesurfClientError({
                 operation: "verify_sessionless",
                 reason: "unsupported",
-              });
-            const page = yield* boundedRuntimeEffect(
-              "create_page",
-              "ambiguous",
-              () =>
-                browser.newPage({
-                  serviceWorkers: "block",
-                  ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
-                }),
-              resourceTimeoutMillis,
-              (page) =>
-                compensateLateResource("close_page", () => page.close(), resourceTimeoutMillis),
-            );
-            const context = yield* Effect.try({
-              try: () => page.context(),
-              catch: () =>
-                new KitesurfClientError({ operation: "create_page", reason: "unsupported" }),
+              }),
+          });
+          if (sessionId !== undefined)
+            return yield* new KitesurfClientError({
+              operation: "verify_sessionless",
+              reason: "unsupported",
             });
-            yield* installContextPolicy(context, origin, options.cookieSecret);
-            yield* singlePage(context, page);
-            return yield* use(makePage(origin, context, page));
-          }),
-        (browser, exit) =>
-          releaseResource("close_browser", () => browser.close(), resourceTimeoutMillis, exit),
-      );
-    },
+          const context = yield* boundedRuntimeEffect(
+            "create_context",
+            "ambiguous",
+            () =>
+              browser.newContext({
+                serviceWorkers: "block",
+                ...(options.viewport === undefined ? {} : { viewport: options.viewport }),
+                ...(options.recordVideo
+                  ? {
+                      recordVideo: {
+                        dir: "/tmp",
+                        ...(options.viewport === undefined ? {} : { size: options.viewport }),
+                      },
+                    }
+                  : {}),
+              }),
+            resourceTimeoutMillis,
+            (context) =>
+              compensateLateResource("close_context", () => context.close(), resourceTimeoutMillis),
+          );
+          let closed = false;
+          return yield* Effect.acquireUseRelease(
+            Effect.succeed(context),
+            (ownedContext) =>
+              Effect.gen(function* () {
+                yield* installContextPolicy(ownedContext, origin, options.cookieSecret);
+                const page = yield* boundedRuntimeEffect(
+                  "create_page",
+                  "ambiguous",
+                  () => ownedContext.newPage(),
+                  resourceTimeoutMillis,
+                );
+                yield* singlePage(ownedContext, page);
+                const value = yield* use(makePage(origin, ownedContext, page));
+                const video = options.recordVideo ? page.video() : null;
+                if (options.recordVideo && video === null)
+                  return yield* new KitesurfClientError({
+                    operation: "save_video",
+                    reason: "unsupported",
+                  });
+                yield* closeEffect(
+                  "close_context",
+                  () => ownedContext.close(),
+                  resourceTimeoutMillis,
+                );
+                closed = true;
+                const bytes =
+                  video === null
+                    ? undefined
+                    : yield* saveRecordedVideo(video, resourceTimeoutMillis);
+                return { value, ...(bytes === undefined ? {} : { video: bytes }) };
+              }),
+            (ownedContext, exit) =>
+              closed
+                ? Effect.void
+                : releaseResource(
+                    "close_context",
+                    () => ownedContext.close(),
+                    resourceTimeoutMillis,
+                    exit,
+                  ),
+          );
+        }),
+      (browser, exit) =>
+        releaseResource("close_browser", () => browser.close(), resourceTimeoutMillis, exit),
+    );
+  };
+  return KitesurfClient.of({
+    withPage: (options, use) =>
+      runPage({ ...options, recordVideo: false }, use).pipe(Effect.map((result) => result.value)),
+    withRecordedPage: (options, use) => runPage({ ...options, recordVideo: true }, use),
   });
+};

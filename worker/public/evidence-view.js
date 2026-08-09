@@ -16,7 +16,7 @@ export function shouldPollEvidence(payload, detail) {
     : false;
 }
 
-export function orderedReplayFrames(summary) {
+export function orderedEvidenceFrames(summary) {
   if (!summary || !Array.isArray(summary.steps)) return [];
   return summary.steps
     .flatMap((step) => {
@@ -34,13 +34,6 @@ export function orderedReplayFrames(summary) {
     .sort(
       (left, right) => left.offsetMillis - right.offsetMillis || left.stepIndex - right.stepIndex,
     );
-}
-
-export function replayDelayMillis(frames, index) {
-  const current = frames[index];
-  const next = frames[index + 1];
-  if (!current || !next) return 1_000;
-  return Math.min(3_000, Math.max(250, next.offsetMillis - current.offsetMillis));
 }
 
 export function evidenceStatusLabel(status) {

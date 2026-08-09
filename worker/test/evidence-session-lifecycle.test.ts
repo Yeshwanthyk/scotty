@@ -4,14 +4,15 @@ import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import {
   EVIDENCE_MAX_RETAINED_ARTIFACTS,
+  EVIDENCE_MAX_ARTIFACTS_PER_JOB,
   EVIDENCE_MAX_RETAINED_JOBS,
   EVIDENCE_MAX_STEPS,
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
   EVIDENCE_PREVIEW_PRIVATE_REQUEST_HEADER,
   EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
-  type EvidenceArtifactV1,
-  type EvidenceJobSummaryV1,
-  type EvidenceStateV1,
+  type EvidenceArtifactV2,
+  type EvidenceJobSummaryV2,
+  type EvidenceStateV2,
 } from "../src/evidence-contracts";
 import { sha256Hex } from "../src/digest";
 import { KitesurfClient, KitesurfClientError } from "../src/kitesurf-client";
@@ -97,15 +98,15 @@ const previewForwardingRequest = (
   });
 
 const fullHistory = (): {
-  readonly state: EvidenceStateV1;
-  readonly artifacts: ReadonlyArray<EvidenceArtifactV1>;
+  readonly state: EvidenceStateV2;
+  readonly artifacts: ReadonlyArray<EvidenceArtifactV2>;
 } => {
-  const jobs: EvidenceJobSummaryV1[] = [];
-  const artifacts: EvidenceArtifactV1[] = [];
+  const jobs: EvidenceJobSummaryV2[] = [];
+  const artifacts: EvidenceArtifactV2[] = [];
   for (let jobIndex = EVIDENCE_MAX_RETAINED_JOBS - 1; jobIndex >= 0; jobIndex -= 1) {
     const jobId = `retained-${jobIndex}`;
     jobs.push({
-      version: 1,
+      version: 2,
       sequence: jobIndex,
       jobId,
       status: "succeeded",
@@ -113,18 +114,27 @@ const fullHistory = (): {
       completedAt: "2026-08-05T12:00:01.000Z",
       totalSteps: EVIDENCE_MAX_STEPS,
       completedSteps: EVIDENCE_MAX_STEPS,
-      replay: true,
+      viewport: { width: 1_280, height: 720 },
+      recordVideo: true,
+      flowHash: "a".repeat(64),
+      video: {
+        artifactId: "recording",
+        sha256: jobIndex.toString(16).padStart(2, "0").repeat(32),
+        bytes: 4,
+        capturedAt: "2026-08-05T12:00:01.000Z",
+        offsetMillis: EVIDENCE_MAX_STEPS,
+      },
       steps: [],
       frameCount: EVIDENCE_MAX_STEPS,
     });
     for (let frameIndex = 0; frameIndex < EVIDENCE_MAX_STEPS; frameIndex += 1) {
       const frameId = `frame-${frameIndex}`;
       artifacts.push({
-        version: 1,
+        version: 2,
         sessionId: SESSION_ID,
         jobId,
         frameId,
-        objectKey: `evidence/v1/${SESSION_ID}/${jobId}/${frameId}.png`,
+        objectKey: `evidence/v2/${SESSION_ID}/${jobId}/${frameId}.png`,
         mediaType: "image/png",
         sha256: jobIndex.toString(16).padStart(2, "0").repeat(32),
         bytes: PNG.byteLength,
@@ -134,11 +144,25 @@ const fullHistory = (): {
         status: "available",
       });
     }
+    artifacts.push({
+      version: 2,
+      sessionId: SESSION_ID,
+      jobId,
+      frameId: "recording",
+      objectKey: `evidence/v2/${SESSION_ID}/${jobId}/recording.webm`,
+      mediaType: "video/webm",
+      sha256: jobIndex.toString(16).padStart(2, "0").repeat(32),
+      bytes: 4,
+      capturedAt: "2026-08-05T12:00:01.000Z",
+      offsetMillis: EVIDENCE_MAX_STEPS,
+      expiresAt: "2026-08-12T12:00:01.000Z",
+      status: "available",
+    });
   }
   return {
     artifacts,
     state: {
-      version: 1,
+      version: 2,
       nextSequence: EVIDENCE_MAX_RETAINED_JOBS,
       jobs,
       artifacts,
@@ -149,9 +173,10 @@ const fullHistory = (): {
 };
 
 const job = {
-  version: 1,
+  version: 2,
   port: 4_173,
-  capture: { screenshots: "after-each-step", replay: true },
+  viewport: { width: 1_280, height: 720 },
+  capture: { screenshots: "after-each-step", video: false },
   steps: [
     {
       name: "Open the app",
@@ -215,7 +240,7 @@ describe("evidence session lifecycle", () => {
         assert.deepStrictEqual(browserEvents, ["browser:open", "browser:close"]);
         assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
         assert.lengthOf(harness.artifactKeys(), 1);
-        const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+        const state = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
         assert.strictEqual(state?.activeJob, undefined);
         assert.strictEqual(state?.jobs[0]?.status, "succeeded");
         assert.strictEqual(state?.jobs[0]?.frameCount, 1);
@@ -253,7 +278,7 @@ describe("evidence session lifecycle", () => {
         previewBase: "preview.scotty.example",
       });
       inspectPersistedBeforeCleanup = () => {
-        assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+        assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob, {
           failure: { code: "interrupted", step: 0 },
           diagnostic: {
             operation: "screenshot",
@@ -276,7 +301,7 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(result.frameCount, 0);
       assert.deepStrictEqual(harness.artifactKeys(), []);
       assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.jobs[0], {
         status: "interrupted",
         completedSteps: 0,
         frameCount: 0,
@@ -368,7 +393,7 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(result.completedSteps, 1);
       assert.strictEqual(result.frameCount, 0);
       assert.deepStrictEqual(harness.artifactKeys(), []);
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.jobs[0], {
         status: "failed",
         completedSteps: 1,
         frameCount: 0,
@@ -376,7 +401,7 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("publishes a verified failed-assertion screenshot in Replay", () =>
+  it.effect("publishes a verified failed-assertion screenshot", () =>
     Effect.gen(function* () {
       let assertionAttempts = 0;
       const kitesurfClient = KitesurfClient.of({
@@ -417,7 +442,7 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(result.completedSteps, 1);
       assert.strictEqual(result.frameCount, 1);
       assert.lengthOf(harness.artifactKeys(), 1);
-      const summary = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0];
+      const summary = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.jobs[0];
       assert.deepInclude(summary, {
         status: "failed",
         completedSteps: 1,
@@ -476,7 +501,7 @@ describe("evidence session lifecycle", () => {
           assert.deepStrictEqual(result.failure, { code: "assertion_mismatch", step: 0 });
           assert.strictEqual(result.completedSteps, 1);
           assert.strictEqual(result.frameCount, 0);
-          const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+          const state = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
           assert.deepInclude(state?.jobs[0], {
             status: "failed",
             completedSteps: 1,
@@ -527,7 +552,7 @@ describe("evidence session lifecycle", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const clock = yield* Clock.Clock;
-      const malformedEvidence = { version: 1, activeJob: "malformed" };
+      const malformedEvidence = { version: 2, activeJob: "malformed" };
       const malformedRuntimeEpoch = { epoch: "malformed" };
       const harness = yield* Effect.promise(() =>
         createSessionHarness({
@@ -587,7 +612,7 @@ describe("evidence session lifecycle", () => {
           deadlineAt: accepted.deadlineAt,
         }),
       );
-      const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      const state = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
       assert.strictEqual(state?.activeJob, undefined);
       assert.deepInclude(state?.jobs[0], {
         jobId: accepted.jobId,
@@ -601,16 +626,19 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("evicts 12 artifacts at the 100x12 boundary before acceptance", () =>
+  it.effect("evicts one full job of artifacts at the retention boundary before acceptance", () =>
     Effect.gen(function* () {
       const harness = yield* createFullHistoryHarness();
 
       yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
 
-      const accepted = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      const accepted = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
       assert.ok(accepted?.activeJob !== undefined);
       assert.lengthOf(accepted.jobs, EVIDENCE_MAX_RETAINED_JOBS - 1);
-      assert.lengthOf(accepted.artifacts, EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_STEPS);
+      assert.lengthOf(
+        accepted.artifacts,
+        EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_ARTIFACTS_PER_JOB,
+      );
       assert.deepStrictEqual(accepted.pendingDeletes, []);
     }),
   );
@@ -628,11 +656,11 @@ describe("evidence session lifecycle", () => {
       );
 
       assert.ok(Result.isFailure(firstAcceptance));
-      const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      const pending = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
       assert.strictEqual(pending?.activeJob, undefined);
       assert.lengthOf(pending?.jobs ?? [], EVIDENCE_MAX_RETAINED_JOBS - 1);
       assert.lengthOf(pending?.artifacts ?? [], EVIDENCE_MAX_RETAINED_ARTIFACTS);
-      assert.lengthOf(pending?.pendingDeletes ?? [], EVIDENCE_MAX_STEPS);
+      assert.lengthOf(pending?.pendingDeletes ?? [], EVIDENCE_MAX_ARTIFACTS_PER_JOB);
       assert.isTrue(pending?.pendingDeletes.every(({ reason }) => reason === "history_evicted"));
       assert.strictEqual(harness.readRecord()?.operation, null);
       assert.lengthOf(
@@ -642,10 +670,13 @@ describe("evidence session lifecycle", () => {
 
       harness.clearFailure("artifactDeleteAmbiguous");
       yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
-      const accepted = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      const accepted = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
       assert.ok(accepted?.activeJob !== undefined);
       assert.lengthOf(accepted.jobs, EVIDENCE_MAX_RETAINED_JOBS - 1);
-      assert.lengthOf(accepted.artifacts, EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_STEPS);
+      assert.lengthOf(
+        accepted.artifacts,
+        EVIDENCE_MAX_RETAINED_ARTIFACTS - EVIDENCE_MAX_ARTIFACTS_PER_JOB,
+      );
       assert.deepStrictEqual(accepted.pendingDeletes, []);
     }),
   );
@@ -701,7 +732,7 @@ describe("evidence session lifecycle", () => {
       yield* TestClock.setTime(Date.parse(expiresAt));
       yield* Effect.promise(() => harness.sandbox.expireRetainedEvidence({ expiresAt }));
 
-      const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      const state = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
       assert.deepStrictEqual(state?.artifacts, []);
       assert.deepStrictEqual(state?.pendingDeletes, []);
       assert.strictEqual(state?.retainedBytes, 0);
@@ -826,7 +857,7 @@ describe("evidence session lifecycle", () => {
 
       assert.ok(Result.isFailure(failed));
       assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob, {
         operationNonce: accepted.operationNonce,
         frameCount: 0,
       });
@@ -886,7 +917,7 @@ describe("evidence session lifecycle", () => {
           yield* expiration;
         }
 
-        const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+        const pending = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
         assert.deepInclude(pending?.artifacts[0], { status: "delete_pending" });
         assert.deepInclude(pending?.pendingDeletes[0], { reason: "expired" });
         assert.deepStrictEqual(harness.artifactKeys(), []);
@@ -904,7 +935,7 @@ describe("evidence session lifecycle", () => {
         harness.clearFailure(scheduleFailure);
         yield* TestClock.setTime(Date.parse(retryAt));
         yield* Effect.promise(() => harness.sandbox.expireRetainedEvidence({ expiresAt: retryAt }));
-        const reconciled = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+        const reconciled = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
         assert.deepStrictEqual(reconciled?.artifacts, []);
         assert.deepStrictEqual(reconciled?.pendingDeletes, []);
       }),
@@ -948,7 +979,7 @@ describe("evidence session lifecycle", () => {
         harness.schedules.filter(({ callback }) => callback === "expireRetainedEvidence"),
         1,
       );
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.jobs[0], {
         status: "interrupted",
         frameCount: 1,
       });
@@ -990,7 +1021,7 @@ describe("evidence session lifecycle", () => {
       const nonce = harness.readRecord()?.operation?.nonce;
       assert.strictEqual(harness.readRecord()?.operation?.kind, "vaporize");
       assert.ok(nonce !== undefined);
-      const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      const pending = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
       assert.deepInclude(pending?.artifacts[0], { status: "delete_pending" });
       assert.deepInclude(pending?.pendingDeletes[0], { reason: "vaporize" });
       assert.strictEqual(harness.artifactKeys().length, 1);
@@ -998,7 +1029,7 @@ describe("evidence session lifecycle", () => {
       harness.clearFailure("artifactDelete");
       yield* Effect.promise(() => harness.sandbox.retryVaporizeSession({ id: SESSION_ID, nonce }));
       assert.strictEqual(harness.readRecord()?.status, "gone");
-      assert.strictEqual(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence), undefined);
+      assert.strictEqual(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence), undefined);
       assert.deepStrictEqual(harness.artifactKeys(), []);
     }),
   );
@@ -1026,7 +1057,7 @@ describe("evidence session lifecycle", () => {
       const gone = yield* Effect.promise(() => harness.sandbox.vaporizeScottySession());
       const cleanupEvents = harness.events.slice(eventStart);
       assert.deepStrictEqual(gone, { id: SESSION_ID, status: "gone" });
-      assert.strictEqual(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence), undefined);
+      assert.strictEqual(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence), undefined);
       assert.include(harness.deletedSchedules, "expireEvidenceJob");
       assert.include(harness.deletedSchedules, "expireRetainedEvidence");
       assert.isBelow(
@@ -1050,7 +1081,7 @@ describe("evidence session lifecycle", () => {
         }),
       );
       assert.ok(Result.isFailure(unavailable));
-      assert.strictEqual(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence), undefined);
+      assert.strictEqual(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence), undefined);
 
       yield* Effect.promise(() => harness.startRuntime());
       const runtimeEpoch = harness.read<string>(sessionHarnessKeys.runtimeEpoch);
@@ -1099,7 +1130,7 @@ describe("evidence session lifecycle", () => {
       );
       assert.ok(Result.isFailure(exposed));
       assert.notInclude(harness.events, `host:preview:expose:${job.port}`);
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob, {
         exposure: "not_exposed",
         previewCookieDigest: null,
       });
@@ -1121,7 +1152,7 @@ describe("evidence session lifecycle", () => {
           `https://${job.port}-${SESSION_ID}-${accepted.routeNonce}.preview.scotty.example`,
         );
         assert.match(exposed.cookieSecret, /^[0-9a-f]{64}$/u);
-        const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+        const state = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
         assert.strictEqual(
           state?.activeJob?.previewCookieDigest,
           yield* Effect.promise(() => sha256Hex(exposed.cookieSecret)),
@@ -1175,7 +1206,7 @@ describe("evidence session lifecycle", () => {
       );
       assert.strictEqual(admissions.filter(Predicate.isNotUndefined).length, 4);
       assert.strictEqual(
-        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting
+        harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting
           .permits.length,
         4,
       );
@@ -1229,7 +1260,7 @@ describe("evidence session lifecycle", () => {
         harness.sandbox.fetch(previewForwardingRequest(permit.requestId, accepted.routeNonce)),
       );
       assert.strictEqual(
-        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting
+        harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting
           .permits[0]?.state,
         "claimed",
       );
@@ -1243,7 +1274,7 @@ describe("evidence session lifecycle", () => {
         Uint8Array.of(1, 2, 3, 4, 5),
       );
       assert.deepStrictEqual(
-        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
+        harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
         { consumedBytes: 12, consumedRequestMillis: 0, permits: [] },
       );
     }),
@@ -1294,7 +1325,7 @@ describe("evidence session lifecycle", () => {
       }
       assert.strictEqual(forwarded, 0);
       assert.deepStrictEqual(
-        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
+        harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
         { consumedBytes: 0, consumedRequestMillis: 0, permits: [] },
       );
     }),
@@ -1327,7 +1358,7 @@ describe("evidence session lifecycle", () => {
       );
       assert.strictEqual(response.status, 404);
       assert.deepStrictEqual(
-        harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
+        harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
         {
           consumedBytes: EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
           consumedRequestMillis: 30_000,
@@ -1390,7 +1421,7 @@ describe("evidence session lifecycle", () => {
         assert.ok(Result.isFailure(readOverLimit));
         assert.strictEqual(sourceCanceled, 1);
         assert.deepInclude(
-          harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
+          harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob?.previewAccounting,
           { consumedBytes: EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES, permits: [] },
         );
 
@@ -1416,7 +1447,7 @@ describe("evidence session lifecycle", () => {
           cleanupEvents.indexOf(`host:preview:unexpose:${job.port}`),
         );
         assert.strictEqual(
-          harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob,
+          harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob,
           undefined,
         );
       }),
@@ -1447,7 +1478,7 @@ describe("evidence session lifecycle", () => {
       assert.strictEqual(harness.read<string>(sessionHarnessKeys.runtimeEpoch), undefined);
       assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
       assert.strictEqual(harness.readRecord()?.operation, null);
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.jobs[0], {
         status: "interrupted",
       });
       assert.isBelow(
@@ -1481,7 +1512,7 @@ describe("evidence session lifecycle", () => {
           () => {
             assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
             assert.deepInclude(
-              harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob,
+              harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob,
               { status: "interrupted", exposure: "closed" },
             );
           },
@@ -1493,7 +1524,7 @@ describe("evidence session lifecycle", () => {
         harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "interrupted"),
       );
       assert.strictEqual(harness.readRecord()?.operation, null);
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.jobs[0], {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.jobs[0], {
         status: "interrupted",
       });
       assert.isBelow(
@@ -1531,7 +1562,7 @@ describe("evidence session lifecycle", () => {
       );
       assert.ok(Result.isFailure(exposed));
       assert.isTrue(Predicate.isTagged(exposed.failure, "HostOperationFailure"));
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob, {
         status: "interrupted",
         exposure: "unexpose_pending",
       });
@@ -1544,7 +1575,7 @@ describe("evidence session lifecycle", () => {
           () => {
             assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
             assert.deepInclude(
-              harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob,
+              harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob,
               { status: "interrupted", exposure: "closed" },
             );
           },
@@ -1579,12 +1610,12 @@ describe("evidence session lifecycle", () => {
       );
       assert.ok(Result.isFailure(exposed));
       assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
-      const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      const pending = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
       assert.deepInclude(pending?.activeJob, { status: "interrupted", exposure: "closed" });
       yield* Effect.promise(() =>
         harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "interrupted"),
       );
-      const state = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence);
+      const state = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
       assert.strictEqual(state?.activeJob, undefined);
       assert.deepInclude(state?.jobs[0], { status: "interrupted" });
       assert.isBelow(
@@ -1612,7 +1643,7 @@ describe("evidence session lifecycle", () => {
         }),
       );
       assert.ok(Result.isFailure(finalized));
-      const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob;
+      const pending = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob;
       assert.strictEqual(pending?.previewCookieDigest, null);
       assert.strictEqual(pending?.exposure, "unexpose_pending");
       assert.strictEqual(pending?.status, "finalizing");
@@ -1646,7 +1677,7 @@ describe("evidence session lifecycle", () => {
         }),
       );
       assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob, {
         status: "interrupted",
         exposure: "unexpose_pending",
         previewCookieDigest: null,
@@ -1691,7 +1722,7 @@ describe("evidence session lifecycle", () => {
       assert.ok(Result.isFailure(enforced));
       assert.include(harness.events, "host:destroy");
       assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob, {
         status: "interrupted",
         exposure: "unexpose_pending",
         previewCookieDigest: null,
@@ -1782,7 +1813,7 @@ describe("evidence session lifecycle", () => {
       assert.ok(Result.isFailure(vaporized));
       assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
       assert.notInclude(harness.events, "host:destroy");
-      const pending = harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob;
+      const pending = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob;
       assert.strictEqual(pending?.previewCookieDigest, null);
       assert.strictEqual(pending?.exposure, "unexpose_pending");
       assert.deepStrictEqual(pending?.previewAccounting, {
@@ -1810,7 +1841,7 @@ describe("evidence session lifecycle", () => {
         },
       );
       assert.strictEqual(harness.readRecord()?.operation?.kind, "evidence");
-      assert.deepInclude(harness.read<EvidenceStateV1>(sessionHarnessKeys.evidence)?.activeJob, {
+      assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob, {
         status: "interrupted",
         exposure: "unexpose_pending",
         previewCookieDigest: null,

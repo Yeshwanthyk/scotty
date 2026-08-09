@@ -6,13 +6,14 @@ shaping: true
 
 ## Outcome
 
-A configured Scotty Session can expose one authenticated, interactive application service through a Hatch. The session UI has a separate Summary surface that shows the latest agent update, real evidence screenshots, assertion status, Replay, and the current Hatch state.
+A configured Scotty Session can expose one authenticated, interactive application service through a Hatch. The session UI has a separate Summary surface that shows the latest agent update, real evidence screenshots, assertion status, an actual browser-recorded WebM, matched before/after proof, and the current Hatch state.
 
 ## Canonical language
 
 - **Service**: the repository application process listening on an approved port.
 - **Hatch**: authenticated interactive access to that Service while its Session runtime is available.
-- **Evidence**: retained screenshots and browser-test results.
+- **Evidence**: retained screenshots, a bounded WebM, and browser-test results.
+- **Showcase**: a private matched before/after view built from one passing baseline and one passing recorded result that used the exact same flow and viewport.
 
 A Hatch is not the Session runtime, a deployment, or retained evidence. Do not use Portal, preview, or live view for this product concept.
 
@@ -29,14 +30,15 @@ A Hatch is not the Session runtime, a deployment, or retained evidence. Do not u
 | R6  | Hatch cleanup orders correctly with snapshot, sleep, resume, hard cap, and vaporize | Must-have |
 | R7  | Evidence remains available when Hatch is offline                                    | Must-have |
 | R8  | Summary is a desktop side surface and a coordinated compact drawer                  | Must-have |
-| R9  | V1 has at most one primary Hatch per Session                                        | Must-have |
+| R9  | A Session has at most one primary Hatch                                             | Must-have |
+| R10 | Showcase uses actual browser video, not a stitched screenshot sequence              | Must-have |
 
 ## Selected shape
 
 Use a transcript-projected Summary and a distinct Sandbox-Durable-Object-owned Hatch record.
 
 - Summary is derived. Pi messages and structured tool results remain its persisted source.
-- Evidence state and R2 remain authoritative for screenshots.
+- Evidence state and R2 remain authoritative for screenshots and WebM recordings.
 - The Sandbox Durable Object owns Hatch desired state, runtime fencing, exposure, browser permits, cleanup, and retries.
 - The Pi extension owns the local child process only as a scoped host adapter. Process memory and files are never authoritative.
 - Hatch state is separate from `SessionRecord` and `EvidenceState`; do not migrate `SessionRecord` merely to add the application view.
@@ -52,7 +54,8 @@ The browser rebuilds Summary from the current session projection:
 4. Cross-check evidence references against structured `scotty_browser_test` results from the same conversation.
 5. Fetch evidence summaries and frame bytes through existing browser-cookie-authenticated routes.
 6. Fetch public Hatch status through a browser-cookie-authenticated session route.
-7. Construct all same-origin routes locally. Never trust a URL, R2 key, cookie, route nonce, or frame path in assistant text.
+7. When one referenced passing result has video disabled and another has video enabled, construct a private Showcase path locally. The server revalidates matching flow hashes, viewports, complete screenshots, and passing assertions.
+8. Construct all same-origin routes locally. Never trust a URL, R2 key, cookie, route nonce, frame path, or video path in assistant text.
 
 A syntactically valid reference without same-conversation provenance renders as unavailable.
 
@@ -141,7 +144,8 @@ The first-party `scotty_hatch` Pi package has one session-local manager. It star
 ## Summary places
 
 - **Session work log**: current messages and composer.
-- **Summary side surface**: latest update, Hatch status/actions, evidence screenshots, assertion totals, Replay.
+- **Summary side surface**: latest update, Hatch status/actions, evidence screenshots, assertion totals, and one Showcase link.
+- **Showcase surface**: matched before/after screenshots plus the actual WebM from the passing after run.
 - **Hatch application**: separate exact-host application origin.
 - **Activity drawer**: existing tasks, subagents, and workflows; remains independent.
 
@@ -160,6 +164,8 @@ Desktop Summary is a collapsible right column. Compact Summary is coordinated th
 
 - Summary appears without opening Worked or Activity.
 - Actual frame bytes load only through browser-cookie-authenticated routes.
+- Actual WebM bytes load only through browser-cookie-authenticated routes and remain separate from Hatch authority.
+- Showcase fails closed unless both runs passed the same bounded flow at the same viewport.
 - Refresh and session switching preserve Summary and focus.
 - Cross-session and cross-conversation references fail closed.
 - Hatch URL knowledge alone grants no access.

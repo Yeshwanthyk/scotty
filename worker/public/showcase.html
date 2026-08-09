@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#01060c" />
+    <meta name="referrer" content="same-origin" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <title>Scotty Showcase</title>
+    <link rel="stylesheet" href="/sessions.css" />
+    <link rel="stylesheet" href="/scotty-ui.css" />
+    <link rel="stylesheet" href="/showcase.css" />
+  </head>
+  <body class="scotty-ui app-page showcase-page">
+    <header class="masthead">
+      <div class="masthead-inner">
+        <a class="identity" href="/sessions" aria-label="Scotty sessions">
+          <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
+          <span class="wordmark">SCOTTY</span>
+        </a>
+        <nav class="masthead-nav" aria-label="Showcase navigation">
+          <a class="button" id="session-link" href="/sessions">Session</a>
+          <a
+            class="button showcase-hatch"
+            id="hatch-link"
+            href="/sessions"
+            target="_blank"
+            rel="noopener"
+            >Open Hatch</a
+          >
+        </nav>
+      </div>
+    </header>
+    <main>
+      <div class="page-heading">
+        <div>
+          <div class="showcase-kicker">VERIFIED SHOWCASE</div>
+          <h1>Before and after</h1>
+          <p class="subtitle" id="subtitle">Loading matched browser proof…</p>
+        </div>
+        <div class="showcase-status" id="status">Checking</div>
+      </div>
+      <div class="notice" id="notice" role="alert" hidden>
+        <span id="notice-text"></span>
+        <button class="button" id="retry" type="button">Retry</button>
+      </div>
+      <section id="content" aria-busy="true" aria-live="polite">
+        <div class="state"><strong>Loading Showcase</strong>Contacting Scotty…</div>
+      </section>
+    </main>
+    <script type="module" src="/showcase.js"></script>
+  </body>
+</html>

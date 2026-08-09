@@ -1,18 +1,17 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Option, Result } from "effect";
 import {
-  EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
   EVIDENCE_PREVIEW_AGGREGATE_BYTES,
   EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
   EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
   decodeBrowserEvidenceJob,
   decodeBrowserEvidenceToolResult,
   decodeEvidenceStateResult,
-  decodeStoredEvidenceStateResult,
   emptyEvidencePreviewAccounting,
   emptyEvidenceState,
+  evidenceShowcaseProjection,
   publicEvidenceSummaryProjection,
-  type EvidenceJobSummaryV1,
+  type EvidenceJobSummaryV2,
 } from "../src/evidence-contracts";
 
 const step = {
@@ -28,8 +27,8 @@ const diagnostic = {
   kitesurf: { operation: "screenshot", reason: "ambiguous" },
 } as const;
 
-const internalSummary: EvidenceJobSummaryV1 = {
-  version: 1,
+const internalSummary: EvidenceJobSummaryV2 = {
+  version: 2,
   sequence: 0,
   jobId: "job-diagnostic",
   status: "interrupted",
@@ -37,32 +36,40 @@ const internalSummary: EvidenceJobSummaryV1 = {
   completedAt: "2026-08-06T12:00:01.000Z",
   totalSteps: 1,
   completedSteps: 0,
-  replay: true,
+  viewport: { width: 1_280, height: 720 },
+  recordVideo: false,
+  flowHash: "a".repeat(64),
   steps: [],
   frameCount: 0,
   failure: { code: "interrupted", step: 0 },
   diagnostic,
 };
 
-const legacyActiveState = {
-  version: 1,
+const activeState = {
+  version: 2,
   nextSequence: 1,
   activeJob: {
-    version: 1,
+    version: 2,
     sequence: 0,
-    jobId: "legacy-job",
+    jobId: "current-job",
     status: "accepted",
     acceptedAt: "2026-08-06T12:00:00.000Z",
     totalSteps: 1,
     completedSteps: 0,
-    replay: false,
+    viewport: { width: 1_280, height: 720 },
+    recordVideo: false,
+    flowHash: "a".repeat(64),
     steps: [],
     frameCount: 0,
-    operationNonce: "legacy-operation",
+    operationNonce: "current-operation",
     port: 4_173,
     runtimeEpoch: "legacy-runtime",
     deadlineAt: "2026-08-06T12:05:00.000Z",
     stepPlan: [{ name: "Open the app", action: "goto", assertions: ["urlPath"] }],
+    routeNonce: "0123456789abcdef",
+    previewCookieDigest: "a".repeat(64),
+    exposure: "active",
+    previewAccounting: emptyEvidencePreviewAccounting(),
   },
   jobs: [],
   artifacts: [],
@@ -73,10 +80,10 @@ const legacyActiveState = {
 describe("evidence contracts", () => {
   it("decodes the bounded declarative job without retaining excess input", () => {
     const decoded = decodeBrowserEvidenceJob({
-      version: 1,
+      version: 2,
       port: 4_173,
       viewport: { width: 1_280, height: 720 },
-      capture: { screenshots: "after-each-step", replay: true },
+      capture: { screenshots: "after-each-step", video: false },
       steps: [step],
     });
     assert.ok(Option.isSome(decoded));
@@ -85,16 +92,16 @@ describe("evidence contracts", () => {
 
   it("rejects invalid ports, arbitrary paths, excess fields, and oversized graphs", () => {
     for (const input of [
-      { version: 1, port: 80, steps: [step] },
-      { version: 1, port: 3_000, steps: [step] },
-      { version: 1, port: 43_117, steps: [step] },
+      { version: 2, port: 80, steps: [step] },
+      { version: 2, port: 3_000, steps: [step] },
+      { version: 2, port: 43_117, steps: [step] },
       {
-        version: 1,
+        version: 2,
         port: 4_173,
         steps: [{ ...step, action: { kind: "goto", path: "https://example.com" } }],
       },
-      { version: 1, port: 4_173, steps: [step], targetOrigin: "https://example.com" },
-      { version: 1, port: 4_173, steps: Array.from({ length: 13 }, () => step) },
+      { version: 2, port: 4_173, steps: [step], targetOrigin: "https://example.com" },
+      { version: 2, port: 4_173, steps: Array.from({ length: 13 }, () => step) },
     ]) {
       assert.ok(Option.isNone(decodeBrowserEvidenceJob(input)));
     }
@@ -102,12 +109,13 @@ describe("evidence contracts", () => {
 
   it("bounds the container tool result to safe metadata and one authenticated summary path", () => {
     const result = {
-      version: 1,
+      version: 2,
       jobId: "job-abcd1234",
       status: "failed",
       summaryUrl: "/s/abcdef123456/evidence/job-abcd1234",
       completedSteps: 1,
       frameCount: 1,
+      video: false,
       failure: { code: "assertion_mismatch", step: 0 },
     } as const;
     assert.ok(Option.isSome(decodeBrowserEvidenceToolResult(result)));
@@ -127,7 +135,7 @@ describe("evidence contracts", () => {
     }
   });
 
-  it("decodes old records and closes durable diagnostics to declared enums and fields", () => {
+  it("accepts only Evidence v2 records and closes diagnostics to declared enums and fields", () => {
     const empty = emptyEvidenceState();
     assert.ok(Result.isSuccess(decodeEvidenceStateResult(empty)));
     assert.ok(
@@ -159,59 +167,86 @@ describe("evidence contracts", () => {
         decodeEvidenceStateResult({ ...empty, retainedBytes: -1, previewCookie: "secret" }),
       ),
     );
+    assert.ok(Result.isFailure(decodeEvidenceStateResult({ ...empty, version: 1 })));
+  });
+
+  it("projects a Showcase only from matched passing before and recorded after runs", () => {
+    const successfulSummary = (jobId: string, recordVideo: boolean) =>
+      publicEvidenceSummaryProjection({
+        version: 2,
+        sequence: recordVideo ? 1 : 0,
+        jobId,
+        status: "succeeded",
+        acceptedAt: "2026-08-06T12:00:00.000Z",
+        completedAt: "2026-08-06T12:00:01.000Z",
+        totalSteps: 1,
+        completedSteps: 1,
+        viewport: { width: 1_280, height: 720 },
+        recordVideo,
+        flowHash: "c".repeat(64),
+        ...(recordVideo
+          ? {
+              video: {
+                artifactId: "recording" as const,
+                sha256: "d".repeat(64),
+                bytes: 12,
+                capturedAt: "2026-08-06T12:00:01.000Z",
+                offsetMillis: 1_000,
+              },
+            }
+          : {}),
+        steps: [
+          {
+            index: 0,
+            name: "Open the app",
+            action: "goto",
+            status: "passed",
+            assertions: [{ kind: "urlPath", passed: true, expected: "/", actual: "/" }],
+            startedAt: "2026-08-06T12:00:00.000Z",
+            completedAt: "2026-08-06T12:00:01.000Z",
+            offsetMillis: 1_000,
+            frame: {
+              frameId: "frame-1",
+              sha256: "e".repeat(64),
+              bytes: 12,
+              capturedAt: "2026-08-06T12:00:01.000Z",
+              offsetMillis: 1_000,
+            },
+          },
+        ],
+        frameCount: 1,
+      } satisfies EvidenceJobSummaryV2);
+    const before = successfulSummary("before-job", false);
+    const after = successfulSummary("after-job", true);
+
+    assert.deepInclude(evidenceShowcaseProjection("abcdef123456", before, after), {
+      version: 2,
+      paths: {
+        hatch: "/s/abcdef123456/hatch/open",
+        video: "/s/abcdef123456/evidence/after-job/video.webm",
+      },
+    });
+    assert.isUndefined(
+      evidenceShowcaseProjection("abcdef123456", before, {
+        ...after,
+        viewport: { width: 390, height: 844 },
+      }),
+    );
+    assert.isUndefined(
+      evidenceShowcaseProjection("abcdef123456", before, {
+        ...after,
+        flowHash: "f".repeat(64),
+      }),
+    );
+    assert.isUndefined(
+      evidenceShowcaseProjection("abcdef123456", before, { ...after, video: undefined }),
+    );
   });
 
   it("explicitly omits internal diagnostics from the public summary projection", () => {
     const projected = publicEvidenceSummaryProjection(internalSummary);
     assert.notProperty(projected, "diagnostic");
     assert.isFalse(JSON.stringify(projected).includes("kitesurf"));
-  });
-
-  it("normalizes only the legacy active storage shape into closed preview authority", () => {
-    assert.ok(Result.isFailure(decodeEvidenceStateResult(legacyActiveState)));
-    const stored = decodeStoredEvidenceStateResult(legacyActiveState);
-    assert.ok(Result.isSuccess(stored));
-    assert.deepInclude(stored.success.activeJob, {
-      status: "interrupted",
-      failure: { code: "interrupted" },
-      routeNonce: EVIDENCE_COMPATIBILITY_ROUTE_NONCE,
-      previewCookieDigest: null,
-      exposure: "closed",
-      previewAccounting: emptyEvidencePreviewAccounting(),
-    });
-    assert.ok(Result.isSuccess(decodeEvidenceStateResult(stored.success)));
-    assert.ok(
-      Result.isFailure(
-        decodeStoredEvidenceStateResult({
-          ...legacyActiveState,
-          activeJob: { ...legacyActiveState.activeJob, routeNonce: "partially_migrated" },
-        }),
-      ),
-    );
-  });
-
-  it("closes the storage-only unaccounted preview shape without reopening its authority", () => {
-    const unaccounted = {
-      ...legacyActiveState,
-      activeJob: {
-        ...legacyActiveState.activeJob,
-        routeNonce: "0123456789abcdef",
-        previewCookieDigest: "a".repeat(64),
-        exposure: "active",
-      },
-    };
-    assert.ok(Result.isFailure(decodeEvidenceStateResult(unaccounted)));
-    const stored = decodeStoredEvidenceStateResult(unaccounted);
-    assert.ok(Result.isSuccess(stored));
-    assert.deepInclude(stored.success.activeJob, {
-      status: "interrupted",
-      failure: { code: "interrupted" },
-      routeNonce: "0123456789abcdef",
-      previewCookieDigest: null,
-      exposure: "unexpose_pending",
-      previewAccounting: emptyEvidencePreviewAccounting(),
-    });
-    assert.ok(Result.isSuccess(decodeEvidenceStateResult(stored.success)));
   });
 
   it("rejects duplicate or overcommitted persisted permit accounting", () => {
@@ -224,10 +259,7 @@ describe("evidence contracts", () => {
       expiresAt: "2026-08-06T12:00:30.000Z",
     } as const;
     const active = {
-      ...legacyActiveState.activeJob,
-      routeNonce: "0123456789abcdef",
-      previewCookieDigest: "a".repeat(64),
-      exposure: "active",
+      ...activeState.activeJob,
     } as const;
     for (const previewAccounting of [
       { consumedBytes: 0, consumedRequestMillis: 0, permits: [permit, permit] },
@@ -246,7 +278,7 @@ describe("evidence contracts", () => {
       assert.ok(
         Result.isFailure(
           decodeEvidenceStateResult({
-            ...legacyActiveState,
+            ...activeState,
             activeJob: { ...active, previewAccounting },
           }),
         ),

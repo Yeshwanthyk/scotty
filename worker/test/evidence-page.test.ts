@@ -2,8 +2,7 @@ import { assert, describe, it } from "vitest";
 import {
   evidenceStatusLabel,
   isTerminalEvidenceStatus,
-  orderedReplayFrames,
-  replayDelayMillis,
+  orderedEvidenceFrames,
   shouldPollEvidence,
 } from "../public/evidence-view.js";
 import evidenceHtml from "../public/evidence.html?raw";
@@ -17,8 +16,8 @@ describe("evidence page", () => {
     assert.include(evidenceHtml, '<script type="module" src="/evidence.js"></script>');
   });
 
-  it("orders Replay by monotonic frame offset and clamps playback timing", () => {
-    const frames = orderedReplayFrames({
+  it("orders verified screenshots by monotonic frame offset", () => {
+    const frames = orderedEvidenceFrames({
       steps: [
         {
           index: 1,
@@ -38,7 +37,6 @@ describe("evidence page", () => {
       frames.map((frame) => frame.frameId),
       ["first", "second"],
     );
-    assert.strictEqual(replayDelayMillis(frames, 0), 3_000);
     assert.strictEqual(evidenceStatusLabel("failed"), "Failed");
   });
 
@@ -55,9 +53,9 @@ describe("evidence page", () => {
     assert.include(evidenceScript, "schedulePoll(shouldPollEvidence(payload, true))");
   });
 
-  it("exposes standard Replay controls without unsafe HTML or video claims", () => {
-    assert.include(evidenceScript, 'scrubber.type = "range"');
-    assert.include(evidenceScript, 'toggle.addEventListener("click", toggleReplay)');
+  it("renders verified screenshots without a synthetic replay or unsafe HTML", () => {
+    assert.include(evidenceScript, 'panel.className = "evidence-frames-panel"');
+    assert.notInclude(evidenceScript, "toggleReplay");
     assert.notInclude(evidenceScript, ".innerHTML");
     assert.notInclude(evidenceHtml, "<video");
   });

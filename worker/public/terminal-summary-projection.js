@@ -158,6 +158,14 @@ export function projectSessionSummary(messages, tools, sessionId) {
       const update = assistantUpdate(conversation.assistants[assistantIndex]);
       if (!update) continue;
       const provenance = conversationTools(conversation, tools);
+      const evidence = conversationReferences(conversation, assistantEvidenceReferences).map(
+        (jobId) => evidenceProjection(jobId, provenance, sessionId),
+      );
+      const passed = evidence.filter(
+        (item) => item.kind === "evidence" && item.status === "succeeded",
+      );
+      const before = passed.find((item) => item.video === false);
+      const after = passed.find((item) => item.video === true);
       return {
         kind: "summary",
         conversationKey: conversation.key,
@@ -165,9 +173,16 @@ export function projectSessionSummary(messages, tools, sessionId) {
         hatches: conversationReferences(conversation, assistantHatchReferences).map((hatchId) =>
           hatchProjection(hatchId, provenance, sessionId),
         ),
-        evidence: conversationReferences(conversation, assistantEvidenceReferences).map((jobId) =>
-          evidenceProjection(jobId, provenance, sessionId),
-        ),
+        evidence,
+        ...(before === undefined || after === undefined
+          ? {}
+          : {
+              showcase: {
+                beforeJobId: before.jobId,
+                afterJobId: after.jobId,
+                path: `/s/${encodeURIComponent(sessionId)}/showcase/${encodeURIComponent(before.jobId)}/${encodeURIComponent(after.jobId)}`,
+              },
+            }),
       };
     }
   }

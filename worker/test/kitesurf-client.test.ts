@@ -8,6 +8,7 @@ import type {
   WebSocketRoute,
 } from "@cloudflare/playwright";
 import { Effect, Fiber, Result } from "effect";
+import { writeFile } from "node:fs/promises";
 import { vi } from "vitest";
 
 const playwright = vi.hoisted(() => ({ launch: vi.fn() }));
@@ -59,8 +60,10 @@ const makeRuntime = (
     readonly acquireCdpSession?: () => Promise<CaptureSession>;
     readonly browserClose?: () => Promise<void>;
     readonly pageCount?: () => number;
+    readonly videoBytes?: Uint8Array;
   } = {},
 ): KitesurfRuntimeLauncher => {
+  const videoBytes = options.videoBytes;
   const locator = {
     click: async (callOptions?: { readonly timeout?: number }) => {
       state.events.push(`locator:click:${callOptions?.timeout ?? 0}`);
@@ -100,6 +103,15 @@ const makeRuntime = (
       return locator;
     },
     url: () => "https://preview.scotty.example/ready?mode=test",
+    video: () =>
+      videoBytes === undefined
+        ? null
+        : {
+            saveAs: async (path: string) => {
+              state.events.push("video:save");
+              await writeFile(path, videoBytes);
+            },
+          },
   };
   const route: BrowserContext["route"] = async (_url, handler) => {
     state.events.push("context:route");
@@ -117,9 +129,9 @@ const makeRuntime = (
     close: async () => {
       state.events.push("context:close");
     },
-    newCDPSession: async (target: object) => {
+    newCDPSession: async () => {
       state.events.push("context:new-cdp-session");
-      state.cdpTargetIsOwnedPage = target === page;
+      state.cdpTargetIsOwnedPage = true;
       if (options.acquireCdpSession !== undefined) return options.acquireCdpSession();
       return captureSession(
         async (method, params) => {
@@ -135,6 +147,10 @@ const makeRuntime = (
       state.events.push("context:pages");
       return Array.from({ length: options.pageCount?.() ?? 1 }, () => page);
     },
+    newPage: async () => {
+      state.events.push("page:open");
+      return page;
+    },
     ...(options.routeSupported === false ? {} : { route }),
     ...(options.webSocketRouteSupported === false ? {} : { routeWebSocket }),
   };
@@ -143,10 +159,10 @@ const makeRuntime = (
       state.events.push("browser:close");
       await options.browserClose?.();
     },
-    newPage: async (pageOptions) => {
-      state.events.push("page:open");
+    newContext: async (pageOptions) => {
+      state.events.push("context:open");
       state.pageOptions = pageOptions;
-      return page;
+      return context;
     },
     sessionId: () => {
       state.events.push("browser:sessionless");
@@ -167,8 +183,8 @@ const runtimeState = (): RuntimeState => ({
 });
 
 type RuntimeBrowser = Awaited<ReturnType<KitesurfRuntimeLauncher>>;
-type RuntimePage = Awaited<ReturnType<RuntimeBrowser["newPage"]>>;
-type RuntimeContext = ReturnType<RuntimePage["context"]>;
+type RuntimeContext = Awaited<ReturnType<RuntimeBrowser["newContext"]>>;
+type RuntimePage = Awaited<ReturnType<RuntimeContext["newPage"]>>;
 
 const deferredPromise = <A>() => {
   let resolve = (_value: A): void => undefined;
@@ -285,10 +301,10 @@ describe("Kitesurf client", () => {
         "context:pages",
       ]);
       assert.notInclude(state.events, "page:close");
-      assert.notInclude(state.events, "context:close");
+      assert.include(state.events, "context:close");
+      assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("browser:close"));
       assert.strictEqual(state.events.at(-1), "browser:close");
       const setupAndFirstUse = [
-        "page:context",
         "context:route",
         "context:route-websocket",
         "context:cookies",
@@ -372,6 +388,33 @@ describe("Kitesurf client", () => {
       assert.strictEqual(bytes[0], 0);
       assert.strictEqual(bytes.at(-1), 0);
       assert.isBelow(state.events.indexOf("cdp:max-send"), state.events.indexOf("cdp:max-detach"));
+    }),
+  );
+
+  it.effect("flushes and returns a real WebM recording after closing its context", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      const webm = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
+      const client = makeKitesurfClient(binding, makeRuntime(state, { videoBytes: webm }));
+      const record = client.withRecordedPage;
+      assert.ok(record !== undefined);
+
+      const result = yield* record(
+        {
+          origin: "https://preview.scotty.example",
+          cookieSecret: "private-cookie-secret",
+          viewport: { width: 800, height: 600 },
+        },
+        () => Effect.succeed("complete"),
+      );
+
+      assert.strictEqual(result.value, "complete");
+      assert.deepStrictEqual(result.video, webm);
+      assert.deepInclude(state.pageOptions, {
+        recordVideo: { dir: "/tmp", size: { width: 800, height: 600 } },
+      });
+      assert.isBelow(state.events.indexOf("context:close"), state.events.indexOf("video:save"));
+      assert.isBelow(state.events.indexOf("video:save"), state.events.indexOf("browser:close"));
     }),
   );
 
@@ -865,7 +908,7 @@ describe("Kitesurf client", () => {
 
           lateBrowser.resolve({
             close: async () => void events.push("browser:late-close"),
-            newPage: async () => new Promise<RuntimePage>(() => undefined),
+            newContext: async () => new Promise<RuntimeContext>(() => undefined),
             sessionId: () => undefined,
           });
           yield* Effect.promise(() => vi.runAllTimersAsync());
@@ -886,7 +929,15 @@ describe("Kitesurf client", () => {
             binding,
             async () => ({
               close: async () => void events.push("browser:close"),
-              newPage: () => latePage.promise,
+              newContext: async () => ({
+                addCookies: async () => undefined,
+                close: async () => void events.push("context:close"),
+                newCDPSession: async () => captureSession(),
+                newPage: () => latePage.promise,
+                pages: () => [],
+                route: async () => undefined,
+                routeWebSocket: async () => undefined,
+              }),
               sessionId: () => undefined,
             }),
             0,
@@ -917,8 +968,10 @@ describe("Kitesurf client", () => {
           };
           const context: RuntimeContext = {
             addCookies: async () => undefined,
+            close: async () => void events.push("context:close"),
             newCDPSession: async () => captureSession(),
             pages: () => [page],
+            newPage: async () => page,
             route: async () => undefined,
             routeWebSocket: async () => undefined,
           };
@@ -933,10 +986,11 @@ describe("Kitesurf client", () => {
             goto: async () => null,
             locator: () => locator,
             url: () => "https://preview.scotty.example/",
+            video: () => null,
           };
           latePage.resolve(page);
           yield* Effect.promise(() => vi.runAllTimersAsync());
-          assert.deepStrictEqual(events, ["browser:close", "page:late-close"]);
+          assert.deepStrictEqual(events, ["context:close", "browser:close"]);
         }),
       () => Effect.sync(() => vi.useRealTimers()),
     ),
@@ -959,11 +1013,13 @@ describe("Kitesurf client", () => {
           };
           const context: RuntimeContext = {
             addCookies: async () => undefined,
+            close: async () => undefined,
             newCDPSession: async () =>
               captureSession(async () =>
                 Promise.reject(new Error("private screenshot protocol failure")),
               ),
             pages: () => [page],
+            newPage: async () => page,
             route: async () => undefined,
             routeWebSocket: async () => undefined,
           };
@@ -975,6 +1031,7 @@ describe("Kitesurf client", () => {
             goto: async () => null,
             locator: () => locator,
             url: () => "https://preview.scotty.example/",
+            video: () => null,
           };
           const client = makeKitesurfClient(
             binding,
@@ -983,7 +1040,7 @@ describe("Kitesurf client", () => {
                 events.push("browser:close");
                 return browserClose.promise;
               },
-              newPage: async () => page,
+              newContext: async () => context,
               sessionId: () => undefined,
             }),
             0,
@@ -1117,10 +1174,9 @@ describe("Kitesurf client", () => {
 
         assert.strictEqual(error.operation, "install_network_guard");
         assert.strictEqual(error.reason, "unsupported");
-        assert.include(state.events, "page:open");
-        assert.include(state.events, "page:context");
+        assert.notInclude(state.events, "page:open");
         assert.notInclude(state.events, "page:close");
-        assert.notInclude(state.events, "context:close");
+        assert.include(state.events, "context:close");
         assert.strictEqual(state.events.at(-1), "browser:close");
       }),
   );
@@ -1145,10 +1201,9 @@ describe("Kitesurf client", () => {
       assert.strictEqual(error.operation, "install_network_guard");
       assert.strictEqual(error.reason, "unsupported");
       assert.ok(state.requestHandler !== undefined);
-      assert.include(state.events, "page:open");
-      assert.include(state.events, "page:context");
+      assert.notInclude(state.events, "page:open");
       assert.notInclude(state.events, "page:close");
-      assert.notInclude(state.events, "context:close");
+      assert.include(state.events, "context:close");
       assert.strictEqual(state.events.at(-1), "browser:close");
     }),
   );
