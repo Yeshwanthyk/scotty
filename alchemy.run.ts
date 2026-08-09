@@ -44,35 +44,21 @@ if (adoptionPath) {
   adoption = decoded.value;
 }
 
-const previewBase = process.env.SCOTTY_PREVIEW_BASE?.trim();
-const previewZoneId = process.env.SCOTTY_PREVIEW_ZONE_ID?.trim();
-let preview: InstallationPreviewConfiguration | undefined;
-if (previewBase !== undefined || previewZoneId !== undefined) {
-  const decoded = decodeInstallationPreviewConfiguration({
-    base: previewBase,
-    zoneId: previewZoneId,
-  });
-  if (Option.isNone(decoded)) {
-    // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects partial or malformed explicit preview topology
-    throw new Error(
-      "SCOTTY_PREVIEW_BASE and SCOTTY_PREVIEW_ZONE_ID must both name the explicit preview topology.",
-    );
-  }
-  preview = decoded.value;
+const previewBase = required("SCOTTY_PREVIEW_BASE");
+const previewZoneId = required("SCOTTY_PREVIEW_ZONE_ID");
+const decodedPreview = decodeInstallationPreviewConfiguration({
+  base: previewBase,
+  zoneId: previewZoneId,
+});
+if (Option.isNone(decodedPreview)) {
+  // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects partial or malformed explicit preview topology
+  throw new Error(
+    "SCOTTY_PREVIEW_BASE and SCOTTY_PREVIEW_ZONE_ID must both name the explicit preview topology.",
+  );
 }
+const preview: InstallationPreviewConfiguration = decodedPreview.value;
 
-const evidenceGate = process.env.SCOTTY_EVIDENCE_ENABLED?.trim();
-if (evidenceGate !== undefined && evidenceGate !== "true" && evidenceGate !== "false") {
-  // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects an ambiguous deployment feature gate
-  throw new Error("SCOTTY_EVIDENCE_ENABLED must be exactly true or false when set.");
-}
-const evidenceEnabled = evidenceGate === "true";
-if (evidenceEnabled && preview === undefined) {
-  // oxlint-disable-next-line scotty/no-error-constructor, scotty/no-try-catch-or-throw -- boundary: local Alchemy entry point rejects an enabled bridge without explicit preview authority
-  throw new Error("SCOTTY_EVIDENCE_ENABLED requires the explicit preview topology.");
-}
-
-const installation = makeInstallationTopology(installationName, adoption, preview, evidenceEnabled);
+const installation = makeInstallationTopology(installationName, adoption, preview, true);
 
 export default Alchemy.Stack(
   installation.stackName,
