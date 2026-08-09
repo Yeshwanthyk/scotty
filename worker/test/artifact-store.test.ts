@@ -227,6 +227,10 @@ describe("ArtifactStore", () => {
     Effect.gen(function* () {
       const test = makeMemoryCapabilities();
       let attempts = 0;
+      let signalFirstHead: (() => void) | undefined;
+      const firstHead = new Promise<void>((resolve) => {
+        signalFirstHead = resolve;
+      });
       const capabilities: ArtifactStoreCapabilities = {
         ...test.capabilities,
         put: (key, bytes, metadata) => {
@@ -235,11 +239,16 @@ describe("ArtifactStore", () => {
             ? Promise.reject(new Error("put: Unspecified error (0)"))
             : test.capabilities.put(key, bytes, metadata);
         },
+        head: (key) => {
+          signalFirstHead?.();
+          signalFirstHead = undefined;
+          return test.capabilities.head(key);
+        },
       };
       const fiber = yield* putFrame(capabilities).pipe(
         Effect.forkChild({ startImmediately: true }),
       );
-      yield* Effect.yieldNow;
+      yield* Effect.promise(() => firstHead);
       yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
       const artifact = yield* Fiber.join(fiber);
 
@@ -253,17 +262,25 @@ describe("ArtifactStore", () => {
     Effect.gen(function* () {
       const token = "a".repeat(48);
       const test = makeMemoryCapabilities();
+      let signalFirstHead: (() => void) | undefined;
+      const firstHead = new Promise<void>((resolve) => {
+        signalFirstHead = resolve;
+      });
       const capabilities: ArtifactStoreCapabilities = {
         ...test.capabilities,
         put: () => Promise.reject(new TypeError(`R2 write rejected ${token}`)),
-        head: () => Promise.resolve(undefined),
+        head: () => {
+          signalFirstHead?.();
+          signalFirstHead = undefined;
+          return Promise.resolve(undefined);
+        },
       };
       const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
       const fiber = yield* Effect.result(putFrame(capabilities)).pipe(
         Effect.forkChild({ startImmediately: true }),
       );
-      yield* Effect.yieldNow;
+      yield* Effect.promise(() => firstHead);
       yield* TestClock.adjust(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
       const result = yield* Fiber.join(fiber);
       const calls = error.mock.calls;
