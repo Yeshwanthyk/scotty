@@ -38,7 +38,7 @@ import { handleHatchRequest, hatchPreviewFormAction, parseHatchHost } from "../s
 
 const BASE = "preview.example.test";
 const SESSION_ID = "a0b1c2d3e4f5";
-const ROUTE_NONCE = "h_0123456789abcd";
+const ROUTE_NONCE = "h-0123456789abcd";
 const HOST = `4173-${SESSION_ID}-${ROUTE_NONCE}.${BASE}`;
 const COOKIE_SECRET = "a".repeat(64);
 const future = (): string => {
@@ -153,6 +153,10 @@ describe("Hatch exact-host gateway", () => {
     });
     expect(parseHatchHost(`4173-${SESSION_ID}-0123456789abcdef.${BASE}`, BASE)).toEqual({
       kind: "not_hatch",
+    });
+    expect(parseHatchHost(`4173-${SESSION_ID}-h_0123456789abcd.${BASE}`, BASE)).toEqual({
+      kind: "hatch",
+      route: { port: 4_173, sessionId: SESSION_ID, routeNonce: "h_0123456789abcd" },
     });
     for (const host of [HOST.toUpperCase(), `3000-${SESSION_ID}-${ROUTE_NONCE}.${BASE}`, BASE]) {
       expect(parseHatchHost(host, BASE).kind).toBe("invalid_hatch");
