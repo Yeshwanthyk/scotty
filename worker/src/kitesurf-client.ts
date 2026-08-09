@@ -1,13 +1,13 @@
 import type {
   BrowserContext,
   BrowserContextOptions,
+  Browser,
   BrowserWorker,
   CDPSession,
   Locator,
   Page,
   Request as PlaywrightRequest,
   Route,
-  SessionlessBrowser,
   Video,
   WebSocketRoute,
 } from "@cloudflare/playwright";
@@ -139,7 +139,7 @@ interface KitesurfRuntimeContext {
 }
 
 interface KitesurfRuntimeBrowser {
-  readonly close: SessionlessBrowser["close"];
+  readonly close: Browser["close"];
   readonly newContext: (options: BrowserContextOptions) => Promise<KitesurfRuntimeContext>;
   readonly sessionId: () => string | undefined;
 }
@@ -189,11 +189,9 @@ const runtimeContext = (context: BrowserContext): KitesurfRuntimeContext => {
   return ownedContext;
 };
 
-const launchRuntimeKitesurf: KitesurfRuntimeLauncher = async (binding, options) => {
+const launchRuntimeKitesurf: KitesurfRuntimeLauncher = async (binding) => {
   const { launch } = await import("@cloudflare/playwright");
-  const browser = options.recordVideo
-    ? await launch(binding)
-    : await launch(binding, { browser: "kitesurf" });
+  const browser = await launch(binding);
   return {
     close: browser.close.bind(browser),
     newContext: (options) => browser.newContext(options).then(runtimeContext),
@@ -743,16 +741,13 @@ export const makeKitesurfClient = (
             try: () => browser.sessionId(),
             catch: () =>
               new KitesurfClientError({
-                operation: "verify_sessionless",
+                operation: "verify_session",
                 reason: "unsupported",
               }),
           });
-          if (
-            (options.recordVideo && sessionId === undefined) ||
-            (!options.recordVideo && sessionId !== undefined)
-          )
+          if (sessionId === undefined)
             return yield* new KitesurfClientError({
-              operation: "verify_sessionless",
+              operation: "verify_session",
               reason: "unsupported",
             });
           const context = yield* boundedRuntimeEffect(

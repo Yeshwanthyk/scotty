@@ -214,7 +214,7 @@ export const EvidenceWorkflowReasonSchema = Schema.Literals([
 ]);
 export const EvidenceKitesurfOperationSchema = Schema.Literals([
   "launch",
-  "verify_sessionless",
+  "verify_session",
   "create_context",
   "install_network_guard",
   "install_cookie",

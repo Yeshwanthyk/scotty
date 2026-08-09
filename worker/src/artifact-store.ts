@@ -12,7 +12,8 @@ import { sha256BytesHex } from "./digest";
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10] as const;
 const WEBM_SIGNATURE = [0x1a, 0x45, 0xdf, 0xa3] as const;
-export const ARTIFACT_PUT_RETRY_DELAY_MILLIS = 100;
+export const ARTIFACT_PUT_RETRY_DELAY_MILLIS = 1_000;
+export const ARTIFACT_PUT_MAX_ATTEMPTS = 3;
 type ArtifactMediaType = EvidenceArtifactV2["mediaType"];
 
 export interface ArtifactObjectMetadata {
@@ -268,55 +269,39 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       try: () => capabilities.head(key),
       catch: (cause) => new EvidenceArtifactError({ operation: "head", reason: "upstream", cause }),
     });
-    const putResult = yield* Effect.result(put);
-    if (Result.isSuccess(putResult)) {
-      if (metadataMatches(putResult.success, expected))
+    for (let attempt = 1; attempt <= ARTIFACT_PUT_MAX_ATTEMPTS; attempt += 1) {
+      const putResult = yield* Effect.result(put);
+      if (Result.isSuccess(putResult)) {
+        if (metadataMatches(putResult.success, expected))
+          return { ...artifact, status: "available" as const };
+        reportArtifactVerificationFailure("put", "metadata_mismatch");
+        return yield* new EvidenceArtifactError({
+          operation: "put",
+          reason: "metadata_mismatch",
+        });
+      }
+      const headResult = yield* Effect.result(head);
+      if (Result.isFailure(headResult)) {
+        reportArtifactStorageFailure("put", putResult.failure.cause);
+        reportArtifactStorageFailure("head", headResult.failure.cause);
+        return yield* putResult.failure;
+      }
+      if (metadataMatches(headResult.success, expected))
         return { ...artifact, status: "available" as const };
-      reportArtifactVerificationFailure("put", "metadata_mismatch");
-      return yield* new EvidenceArtifactError({
-        operation: "put",
-        reason: "metadata_mismatch",
-      });
-    }
-    const headResult = yield* Effect.result(head);
-    if (Result.isFailure(headResult)) {
+      if (headResult.success !== undefined) {
+        reportArtifactStorageFailure("put", putResult.failure.cause);
+        reportArtifactVerificationFailure("head", "metadata_mismatch");
+        return yield* putResult.failure;
+      }
+      if (attempt < ARTIFACT_PUT_MAX_ATTEMPTS) {
+        yield* Effect.sleep(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
+        continue;
+      }
       reportArtifactStorageFailure("put", putResult.failure.cause);
-      reportArtifactStorageFailure("head", headResult.failure.cause);
+      reportArtifactVerificationFailure("head", "missing");
       return yield* putResult.failure;
     }
-    if (metadataMatches(headResult.success, expected))
-      return { ...artifact, status: "available" as const };
-    if (headResult.success !== undefined) {
-      reportArtifactStorageFailure("put", putResult.failure.cause);
-      reportArtifactVerificationFailure("head", "metadata_mismatch");
-      return yield* putResult.failure;
-    }
-
-    yield* Effect.sleep(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
-    const retryPutResult = yield* Effect.result(put);
-    if (Result.isSuccess(retryPutResult)) {
-      if (metadataMatches(retryPutResult.success, expected))
-        return { ...artifact, status: "available" as const };
-      reportArtifactVerificationFailure("put", "metadata_mismatch");
-      return yield* new EvidenceArtifactError({
-        operation: "put",
-        reason: "metadata_mismatch",
-      });
-    }
-    const retryHeadResult = yield* Effect.result(head);
-    if (Result.isFailure(retryHeadResult)) {
-      reportArtifactStorageFailure("put", retryPutResult.failure.cause);
-      reportArtifactStorageFailure("head", retryHeadResult.failure.cause);
-      return yield* retryPutResult.failure;
-    }
-    if (metadataMatches(retryHeadResult.success, expected))
-      return { ...artifact, status: "available" as const };
-    reportArtifactStorageFailure("put", retryPutResult.failure.cause);
-    reportArtifactVerificationFailure(
-      "head",
-      retryHeadResult.success === undefined ? "missing" : "metadata_mismatch",
-    );
-    return yield* retryPutResult.failure;
+    return yield* new EvidenceArtifactError({ operation: "put", reason: "put_unknown" });
   });
   const openArtifact = Effect.fnUntraced(function* (artifact: EvidenceArtifactV2) {
     if (artifact.status !== "available" || !canonicalArtifact(artifact))
