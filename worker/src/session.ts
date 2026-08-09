@@ -882,7 +882,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
     authority: HatchCleanupAuthority,
   ) {
     const hatch = yield* HatchStore;
-    const current = yield* hatch.read;
+    const currentResult = yield* Effect.result(hatch.read);
+    if (Result.isFailure(currentResult)) {
+      if (target === "gone" && authority === "operation") {
+        yield* hatch.clearUnreadableAfterVaporize(operationNonce);
+        return true;
+      }
+      return yield* currentResult.failure;
+    }
+    const current = currentResult.success;
     if (current.primary === undefined) return false;
     const pending = yield* hatch.beginCleanup(operationNonce, target, closeDesired, authority);
     if (pending === undefined) return false;

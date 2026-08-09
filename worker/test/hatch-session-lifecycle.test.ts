@@ -843,4 +843,38 @@ describe("authoritative Hatch session lifecycle", () => {
       assert.strictEqual(harness.readRecord()?.status, "gone");
     }),
   );
+
+  it.effect("removes an unreadable legacy Hatch record under the vaporize lease", () =>
+    Effect.gen(function* () {
+      const running = yield* createHarness();
+      yield* Effect.promise(() => running.sandbox.ensureScottyHatch({ version: 1, service }));
+      const activeHatch = hatchState(running);
+      assert.ok(activeHatch?.primary !== undefined);
+      const legacyHatch = {
+        version: 1,
+        primary: { ...activeHatch.primary, routeNonce: "legacy-hyphen" },
+      };
+
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          previewBase: "preview.example.test",
+          rawPiContainerRunning: false,
+          initialEntries: {
+            [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
+            [sessionHarnessKeys.credential]: makeStoredCredential(),
+            [sessionHarnessKeys.hatch]: legacyHatch,
+          },
+          initialProjections: {
+            [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
+          },
+        }),
+      );
+
+      const result = yield* Effect.promise(() => harness.sandbox.vaporizeScottySession());
+
+      assert.deepStrictEqual(result, { id: SESSION_ID, status: "gone" });
+      assert.strictEqual(harness.read(sessionHarnessKeys.hatch), undefined);
+      assert.strictEqual(harness.readRecord()?.status, "gone");
+    }),
+  );
 });

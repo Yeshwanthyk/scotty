@@ -164,6 +164,9 @@ interface HatchStoreShape {
     operationNonce: string,
     target: HatchCleanupTarget,
   ) => Effect.Effect<void, HatchStateError>;
+  readonly clearUnreadableAfterVaporize: (
+    operationNonce: string,
+  ) => Effect.Effect<void, HatchStateError>;
   readonly clearAfterVaporize: (operationNonce: string) => Effect.Effect<void, HatchStateError>;
 }
 
@@ -876,6 +879,27 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           },
         });
         return Result.succeed(undefined);
+      }),
+    clearUnreadableAfterVaporize: (operationNonce) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            storage.transaction<Result.Result<void, HatchStateError>>(async (transaction) => {
+              if (Result.isSuccess(decodeState(await transaction.getHatch())))
+                return Result.fail(changed());
+              const record = decodeRecord(await transaction.getRecord());
+              if (
+                Result.isFailure(record) ||
+                record.success.operation?.kind !== "vaporize" ||
+                record.success.operation.nonce !== operationNonce
+              )
+                return Result.fail(Result.isFailure(record) ? record.failure : changed());
+              await transaction.deleteHatch();
+              return Result.succeed(undefined);
+            }),
+          catch: storageFailure,
+        });
+        return yield* Effect.fromResult(result);
       }),
     clearAfterVaporize: (operationNonce) =>
       transact(async (transaction, state) => {
