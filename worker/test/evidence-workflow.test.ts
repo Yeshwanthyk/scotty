@@ -679,4 +679,24 @@ describe("Kitesurf evidence workflow", () => {
       );
     }),
   );
+
+  it.effect("allows a first navigation to take longer than a generic action", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const state = emptyState();
+      const fiber = yield* execute(
+        defaultJob,
+        makePage({ goto: () => Effect.sleep(5_001) }),
+        state,
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(5_001);
+      const result = yield* Fiber.join(fiber);
+
+      assert.strictEqual(result.status, "succeeded");
+      assert.include(state.events, "step:0");
+      assert.include(state.events, "terminal:succeeded");
+    }),
+  );
 });

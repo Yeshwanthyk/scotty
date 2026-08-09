@@ -18,6 +18,7 @@ import {
   type ExposedEvidencePreviewV2,
 } from "./evidence-contracts";
 import {
+  KITESURF_NAVIGATION_TIMEOUT_MILLIS,
   KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
   KitesurfClient,
   type KitesurfClientError,
@@ -220,7 +221,12 @@ const executeAction = (
         : action.kind === "fill"
           ? page.fill(action.locator, action.value)
           : page.press(action.locator, action.key);
-  return boundedClientEffect(effect, "action", step, EVIDENCE_ACTION_TIMEOUT_MILLIS);
+  return boundedClientEffect(
+    effect,
+    "action",
+    step,
+    action.kind === "goto" ? KITESURF_NAVIGATION_TIMEOUT_MILLIS : EVIDENCE_ACTION_TIMEOUT_MILLIS,
+  );
 };
 
 const assertionEffect = (

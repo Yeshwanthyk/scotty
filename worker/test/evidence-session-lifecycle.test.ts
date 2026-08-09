@@ -704,7 +704,7 @@ describe("evidence session lifecycle", () => {
       yield* Effect.promise(() =>
         harness.sandbox.finalizeScottyEvidenceJob(accepted.operationNonce, "succeeded"),
       );
-      const guardAt = "2026-08-06T12:00:05.000Z";
+      const guardAt = accepted.deadlineAt;
       const guardIndex = harness.schedules.findIndex(
         ({ callback }) => callback === "expireRetainedEvidence",
       );
@@ -777,8 +777,8 @@ describe("evidence session lifecycle", () => {
         );
         assert.lengthOf(retention, 1);
         assert.deepInclude(retention[0], {
-          when: new Date("2026-08-06T12:00:05.000Z"),
-          payload: { expiresAt: "2026-08-06T12:00:05.000Z" },
+          when: new Date(accepted.deadlineAt),
+          payload: { expiresAt: accepted.deadlineAt },
         });
         assert.notInclude(harness.deletedSchedules, "expireRetainedEvidence");
       }
@@ -970,7 +970,7 @@ describe("evidence session lifecycle", () => {
       assert.deepInclude(
         harness.schedules.find(({ callback }) => callback === "expireRetainedEvidence"),
         {
-          when: new Date("2026-08-06T12:00:05.000Z"),
+          when: new Date(accepted.deadlineAt),
           callback: "expireRetainedEvidence",
         },
       );

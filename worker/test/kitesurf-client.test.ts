@@ -17,6 +17,7 @@ vi.mock("@cloudflare/playwright", () => playwright);
 import { EVIDENCE_MAX_FRAME_BYTES } from "../src/evidence-contracts";
 import { EVIDENCE_PREVIEW_COOKIE } from "../src/evidence-preview";
 import {
+  KITESURF_NAVIGATION_TIMEOUT_MILLIS,
   KITESURF_OPERATION_TIMEOUT_MILLIS,
   KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
   makeKitesurfClient,
@@ -94,8 +95,13 @@ const makeRuntime = (
       state.events.push(`page:test-id:${value}`);
       return locator;
     },
-    goto: async (url: string) => {
-      state.events.push(`page:goto:${url}`);
+    goto: async (
+      url: string,
+      callOptions?: { readonly timeout?: number; readonly waitUntil?: string },
+    ) => {
+      state.events.push(
+        `page:goto:${url}:${callOptions?.timeout ?? 0}:${callOptions?.waitUntil ?? ""}`,
+      );
       return null;
     },
     locator: (value: string) => {
@@ -309,7 +315,7 @@ describe("Kitesurf client", () => {
         "context:route-websocket",
         "context:cookies",
         "context:pages",
-        "page:goto:https://preview.scotty.example/ready?mode=test",
+        `page:goto:https://preview.scotty.example/ready?mode=test:${KITESURF_NAVIGATION_TIMEOUT_MILLIS}:load`,
       ];
       let previousEventIndex = -1;
       for (const event of setupAndFirstUse) {
