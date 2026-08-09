@@ -33,7 +33,8 @@ export const hatchPreviewFormAction = (previewBase: string | undefined): string 
   previewBase !== undefined && BASE_PATTERN.test(previewBase)
     ? `https://*.${previewBase}`
     : "'none'";
-const HATCH_LABEL_PATTERN = /^([1-9][0-9]{3,4})-([0-9a-f]{12})-(h_[a-z0-9_]{14})$/u;
+const HATCH_LABEL_PATTERN =
+  /^([1-9][0-9]{3,4})-([0-9a-f]{12})-((?:h-[a-z0-9]{14})|(?:h_[a-z0-9_]{14}))$/u;
 const COOKIE_SECRET_PATTERN = /^[0-9a-f]{64}$/u;
 const CONTENT_LENGTH_PATTERN = /^(?:0|[1-9][0-9]*)$/u;
 const WEBSOCKET_KEY_PATTERN = /^[A-Za-z0-9+/]{22}==$/u;
@@ -77,7 +78,9 @@ export const parseHatchHost = (host: string, previewBase: string): HatchHostPars
   if (label.includes(".")) return { kind: "invalid_hatch" };
   const match = HATCH_LABEL_PATTERN.exec(label);
   if (match === null) {
-    return label.includes("-h_") ? { kind: "invalid_hatch" } : { kind: "not_hatch" };
+    return label.includes("-h_") || label.includes("-h-")
+      ? { kind: "invalid_hatch" }
+      : { kind: "not_hatch" };
   }
   const port = Number(match[1]);
   const sessionId = match[2];

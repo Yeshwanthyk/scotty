@@ -44,7 +44,11 @@ const PortSchema = Schema.Int.check(
     expected: "a Hatch service port that is not reserved by Scotty or Sandbox",
   }),
 );
-const RouteNonceSchema = Schema.String.check(Schema.isPattern(/^h_[a-z0-9_]{14}$/u));
+// New route nonces use a DNS/CSP-safe hyphen. Keep the underscore form readable so existing
+// persisted Hatch records can still be stopped or replaced after an upgrade.
+const RouteNonceSchema = Schema.String.check(
+  Schema.isPattern(/^(?:h-[a-z0-9]{14}|h_[a-z0-9_]{14})$/u),
+);
 const CookieSecretSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const RequestIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u));
 const WebSocketIdSchema = RequestIdSchema;
