@@ -29,7 +29,9 @@ Run these only after explicit production approval:
 
 1. Confirm the protected root-token copy works and the updated CLI is installed on the intended
    owner laptop.
-2. Run the guarded production deploy with `npm run deploy:production`.
+2. Run the guarded production deploy with `npm run deploy:production`. It must prove the Container
+   is a no-op. If this cutover intentionally creates or changes the Container, review the plan and
+   rerun it once with `npm run deploy:production -- --container`.
 3. Do not open any historical `?t=` links. They must now fail.
 4. On the intended primary laptop, recover the named installation through the approved Cloudflare
    profile, then recover browser ownership:

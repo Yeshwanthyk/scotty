@@ -11,16 +11,19 @@ import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mj
 import {
   assessContainerSettlement,
   auditProductionHatchEvidenceTopology,
+  assertContainerPlanAuthorized,
   assertSettledContainerBaseline,
   CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
   createProductionDeploymentProgressReporter,
   executeProductionDeploySteps,
+  parseProductionDeployOptions,
   persistProductionDeploymentFailureDiagnostic,
   PRODUCTION_DEPLOY_DIAGNOSTIC_PATH,
   PRODUCTION_DEPLOY_STEPS,
   productionDeploymentFailureHint,
   projectAlchemyDeploymentOutput,
   readAlchemyContainerAction,
+  readAlchemyContainerPlanAction,
   redactProductionDeploymentOutput,
   resolveProductionDockerEnvironment,
   resolveProductionTopology,
@@ -192,6 +195,8 @@ describe("production deployment ownership", () => {
     assert.match(readme, /exit code 139/u);
     assert.match(readme, /rerun the same guarded command once/u);
     assert.match(readme, /There is no automatic retry/u);
+    assert.match(readme, /npm run deploy:production -- --container/u);
+    assert.match(readme, /does not open Docker/u);
   });
 
   it("checks, audits, deploys through Alchemy, and audits again", () => {
@@ -214,6 +219,7 @@ describe("production deployment ownership", () => {
         "Check repository",
         "Audit current runtime inventory",
         "Prepare isolated Container context",
+        "Plan production through Alchemy",
         "Deploy production through Alchemy",
         "Audit deployed runtime inventory",
       ],
@@ -221,8 +227,9 @@ describe("production deployment ownership", () => {
     const commands = PRODUCTION_DEPLOY_STEPS.map(
       ({ command, args }) => `${command} ${args.join(" ")}`,
     );
+    assert.equal(commands[3], "npx --no-install alchemy plan alchemy.run.ts --stage production");
     assert.equal(
-      commands[3],
+      commands[4],
       "npx --no-install alchemy deploy alchemy.run.ts --stage production --yes",
     );
     assert.equal(commands.filter((command) => command === "npm run audit:containers").length, 2);
@@ -235,11 +242,14 @@ describe("production deployment ownership", () => {
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].capture, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].tee, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].projectOutput, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[3].reportProgress, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[3].explainFailure, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[3].failureDiagnostic, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].capture, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].tee, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].projectOutput, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].reportProgress, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].explainFailure, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[4].failureDiagnostic, true);
     assert.match(PRODUCTION_DEPLOY_DIAGNOSTIC_PATH, /scotty-production-deploy-failure\.log$/u);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[4].redact, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[5].redact, true);
     assert.equal(readAlchemyContainerAction("[SandboxContainer] updated\n"), "updated");
     assert.equal(
       readAlchemyContainerAction("\u001B[32m[SandboxContainer] noop\u001B[0m\n"),
@@ -535,6 +545,7 @@ describe("production deployment ownership", () => {
   it("waits for Container settlement and audits after an Alchemy failure", async () => {
     const executed = [];
     const environments = new Map();
+    let resolvedDockerEnvironment = false;
     const deployFailure = new Error("simulated partial Alchemy failure");
     const controlPlaneBeforeDeploy = snapshot();
     await assert.rejects(
@@ -542,6 +553,9 @@ describe("production deployment ownership", () => {
         async (step, env, options) => {
           executed.push(step.name);
           environments.set(step.name, { env, options });
+          if (step.name === "Plan production through Alchemy") {
+            return "[SandboxContainer] noop\n";
+          }
           if (step.name === "Deploy production through Alchemy") throw deployFailure;
         },
         async () => {
@@ -562,10 +576,10 @@ describe("production deployment ownership", () => {
             executed.push("Audit deployed Hatch and Evidence topology");
             environments.set("Audit deployed Hatch and Evidence topology", { topology, env });
           },
-          resolveDockerEnvironment: async (env) => ({
-            ...env,
-            DOCKER_HOST: "unix:///test/docker.sock",
-          }),
+          resolveDockerEnvironment: async () => {
+            resolvedDockerEnvironment = true;
+            assert.fail("Container no-op must not require Docker.");
+          },
         },
       ),
       deployFailure,
@@ -575,6 +589,7 @@ describe("production deployment ownership", () => {
       "Audit current runtime inventory",
       "Prepare isolated Container context",
       "Revalidate release state",
+      "Plan production through Alchemy",
       "Read Container baseline",
       "Deploy production through Alchemy",
       "Wait for Container rollout",
@@ -589,6 +604,7 @@ describe("production deployment ownership", () => {
     assert.equal(verificationEnv.SCOTTY_E2E_EXPLICIT, undefined);
     for (const name of [
       "Audit current runtime inventory",
+      "Plan production through Alchemy",
       "Deploy production through Alchemy",
       "Read Container baseline",
       "Wait for Container rollout",
@@ -603,9 +619,7 @@ describe("production deployment ownership", () => {
       assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
       assert.equal(env.SCOTTY_RUNNER_TOKEN, undefined);
       assert.equal(env.SCOTTY_TOKEN, undefined);
-      if (name === "Deploy production through Alchemy") {
-        assert.equal(env.DOCKER_HOST, "unix:///test/docker.sock");
-      }
+      assert.equal(env.DOCKER_HOST, undefined);
       assert.equal(
         env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
         [
@@ -633,6 +647,37 @@ describe("production deployment ownership", () => {
     });
     assert.equal(environments.get("Wait for Container rollout").before, controlPlaneBeforeDeploy);
     assert.equal(environments.get("Wait for Container rollout").options.containerAction, "unknown");
+    assert.equal(resolvedDockerEnvironment, false);
+  });
+
+  it("resolves Docker only for an explicitly authorized Container release", async () => {
+    let resolvedDockerEnvironment = false;
+    let deployEnvironment;
+    await executeProductionDeploySteps(
+      async (step, env) => {
+        if (step.name === "Plan production through Alchemy") {
+          return "[SandboxContainer] update\n";
+        }
+        if (step.name === "Deploy production through Alchemy") {
+          deployEnvironment = env;
+          return "[SandboxContainer] updated\n";
+        }
+      },
+      async () => {},
+      {
+        environment: PRODUCTION_TOPOLOGY_ENVIRONMENT,
+        allowContainerRollout: true,
+        readControlPlane: async () => snapshot(),
+        waitForRollout: async () => {},
+        auditTopology: async () => {},
+        resolveDockerEnvironment: async (env) => {
+          resolvedDockerEnvironment = true;
+          return { ...env, DOCKER_HOST: "unix:///test/docker.sock" };
+        },
+      },
+    );
+    assert.equal(resolvedDockerEnvironment, true);
+    assert.equal(deployEnvironment.DOCKER_HOST, "unix:///test/docker.sock");
   });
 
   it("requires the exact new rollout to complete and converge", () => {
@@ -888,6 +933,26 @@ describe("production deployment ownership", () => {
       () => readAlchemyContainerAction("[SandboxContainer] created\n"),
       /one terminal/u,
     );
+  });
+
+  it("requires explicit authorization before an Alchemy plan may change the Container", () => {
+    assert.equal(readAlchemyContainerPlanAction("[SandboxContainer] noop\n"), "noop");
+    assert.equal(readAlchemyContainerPlanAction("[SandboxContainer] update\n"), "update");
+    assert.doesNotThrow(() => assertContainerPlanAuthorized("[SandboxContainer] noop\n", false));
+    assert.throws(
+      () => assertContainerPlanAuthorized("[SandboxContainer] update\n", false),
+      /--container/u,
+    );
+    assert.doesNotThrow(() => assertContainerPlanAuthorized("[SandboxContainer] update\n", true));
+    assert.throws(
+      () => assertContainerPlanAuthorized("[SandboxContainer] delete\n", true),
+      /refuses to delete/u,
+    );
+    assert.deepEqual(parseProductionDeployOptions([]), { allowContainerRollout: false });
+    assert.deepEqual(parseProductionDeployOptions(["--container"]), {
+      allowContainerRollout: true,
+    });
+    assert.throws(() => parseProductionDeployOptions(["--force"]), /Unknown/u);
   });
 
   it("decodes only the allow-listed Container control-plane snapshot", async () => {
