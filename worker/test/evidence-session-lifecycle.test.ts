@@ -23,6 +23,7 @@ import {
   SANDBOX_TEST_FINALIZE_EVIDENCE,
   Sandbox,
 } from "../src/session";
+import { EVIDENCE_ASSERTION_TIMEOUT_MILLIS } from "../src/evidence-workflow";
 import {
   createSessionHarness,
   injectedHarnessFailure,
@@ -385,7 +386,7 @@ describe("evidence session lifecycle", () => {
           timeout: 1_000,
         }),
       );
-      yield* TestClock.adjust(5_000);
+      yield* TestClock.adjust(EVIDENCE_ASSERTION_TIMEOUT_MILLIS);
       const result = yield* Effect.promise(() => pending);
 
       assert.strictEqual(result.status, "failed");
@@ -434,7 +435,7 @@ describe("evidence session lifecycle", () => {
           timeout: 1_000,
         }),
       );
-      yield* TestClock.adjust(5_000);
+      yield* TestClock.adjust(EVIDENCE_ASSERTION_TIMEOUT_MILLIS);
       const result = yield* Effect.promise(() => pending);
 
       assert.strictEqual(result.status, "failed");
@@ -494,7 +495,7 @@ describe("evidence session lifecycle", () => {
               timeout: 1_000,
             }),
           );
-          yield* TestClock.adjust(5_000);
+          yield* TestClock.adjust(EVIDENCE_ASSERTION_TIMEOUT_MILLIS);
           const result = yield* Effect.promise(() => pending);
 
           assert.strictEqual(result.status, "failed");
