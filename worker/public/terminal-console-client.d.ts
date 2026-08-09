@@ -1,19 +1,43 @@
+import type {
+  PiConsoleCommandErrorV1,
+  PiConsoleCommandReceiptV1,
+  PiConsoleCommandV1,
+  PiConsoleStaleCommandV1,
+  PiConsoleUnavailableV1,
+} from "../../protocol/pi-console";
+
 export const PI_CONSOLE_PROTOCOL_VERSION: 1;
 
-export type ConsoleCommandEnvelope = {
-  readonly version: 1;
-  readonly epoch: string;
-  readonly commandId: string;
-  readonly expectedSessionRevision: number;
-  readonly intent: Readonly<Record<string, unknown>>;
-};
+export type ConsoleCommandEnvelope = PiConsoleCommandV1;
 
-export type ConsoleCommandTransportResult = {
-  readonly ok: boolean;
-  readonly status: number;
-  readonly readable: boolean;
-  readonly body: unknown;
-};
+export type ConsoleJson =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly ConsoleJson[]
+  | { readonly [key: string]: ConsoleJson };
+
+export type ConsoleCommandResponseBody =
+  | PiConsoleCommandReceiptV1
+  | PiConsoleCommandErrorV1
+  | PiConsoleStaleCommandV1
+  | PiConsoleUnavailableV1
+  | ConsoleJson;
+
+export type ConsoleCommandTransportResult =
+  | {
+      readonly ok: boolean;
+      readonly status: number;
+      readonly readable: true;
+      readonly body: ConsoleCommandResponseBody;
+    }
+  | {
+      readonly ok: boolean;
+      readonly status: number;
+      readonly readable: false;
+      readonly body: undefined;
+    };
 
 export function consoleUrl(sessionId: string, operation: string): string;
 

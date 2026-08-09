@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { ScottyError } from "../src/contracts";
 import {
   createSessionHarness,
+  type InitialStorageEntries,
   makeResumeBackup,
   makeStoredCredential,
   type HarnessFailureStage,
@@ -21,7 +22,7 @@ const sleepingRecord = () =>
     codexThreadId: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
   });
 
-const resumeEntries = (): Readonly<Record<string, unknown>> => ({
+const resumeEntries = (): InitialStorageEntries => ({
   [sessionHarnessKeys.record]: sleepingRecord(),
   [sessionHarnessKeys.credential]: makeStoredCredential(),
 });

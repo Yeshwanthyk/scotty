@@ -19,6 +19,7 @@ import noMatchOrelse from "./oxlint-plugin-scotty/rules/no-match-orelse.js";
 import noPromiseCatch from "./oxlint-plugin-scotty/rules/no-promise-catch.js";
 import noPromiseClientSurface from "./oxlint-plugin-scotty/rules/no-promise-client-surface.js";
 import noPromiseReject from "./oxlint-plugin-scotty/rules/no-promise-reject.js";
+import noRecordStringUnknown from "./oxlint-plugin-scotty/rules/no-record-string-unknown.js";
 import noRawErrorThrow from "./oxlint-plugin-scotty/rules/no-raw-error-throw.js";
 import noRawFetch from "./oxlint-plugin-scotty/rules/no-raw-fetch.js";
 import noRawWallClock from "./oxlint-plugin-scotty/rules/no-raw-wall-clock.js";
@@ -60,6 +61,7 @@ export default {
     "no-promise-catch": noPromiseCatch,
     "no-promise-client-surface": noPromiseClientSurface,
     "no-promise-reject": noPromiseReject,
+    "no-record-string-unknown": noRecordStringUnknown,
     "no-raw-error-throw": noRawErrorThrow,
     "no-raw-fetch": noRawFetch,
     "no-raw-wall-clock": noRawWallClock,

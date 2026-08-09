@@ -1,6 +1,7 @@
 import { assert, describe, it } from "vitest";
 import {
   focusKeyNeedsStableDraft,
+  normalizeSessionListItem,
   sessionPrimaryTiming,
   sessionsRenderSignature,
   sleepingProjectFocusKey,
@@ -10,6 +11,39 @@ import sessionsHtml from "../public/sessions.html?raw";
 import sessionsScript from "../public/sessions.js?raw";
 
 describe("sessions page", () => {
+  it("normalizes the current session projection shape at the fetch boundary", () => {
+    const session = normalizeSessionListItem({
+      version: 1,
+      id: "session-1",
+      title: "Accessibility",
+      status: "warm",
+      provider: "cloudflare",
+      repo: "openai/scotty",
+      branch: "scotty/session-1",
+      createdAt: "2026-08-04T14:00:00.000Z",
+      hardCapAt: "2026-08-04T18:00:00.000Z",
+      capRemainingSeconds: 5_430,
+      failure: { code: "internal", message: "hidden", recoverable: true },
+    });
+    assert.deepStrictEqual(session, {
+      id: "session-1",
+      title: "Accessibility",
+      status: "warm",
+      provider: "cloudflare",
+      repo: "openai/scotty",
+      branch: "scotty/session-1",
+      createdAt: "2026-08-04T14:00:00.000Z",
+      hardCapAt: "2026-08-04T18:00:00.000Z",
+      capRemainingSeconds: 5_430,
+      failure: { code: "internal", message: "hidden", recoverable: true },
+    });
+    assert.deepStrictEqual(
+      normalizeSessionListItem({ id: "legacy-session", status: "paused", provider: "future" }),
+      { id: "legacy-session", status: "paused", provider: "future" },
+    );
+    assert.isUndefined(normalizeSessionListItem({ status: "warm" }));
+  });
+
   it("keeps browser session creation Cloudflare-only", () => {
     assert.notInclude(sessionsHtml, "session-provider");
     assert.notInclude(sessionsScript, "/api/runners");
@@ -45,6 +79,13 @@ describe("sessions page", () => {
   it("summarizes the next relevant session event", () => {
     const session = {
       id: "session-1",
+      title: "Session one",
+      branch: "scotty/session-1",
+      provider: "cloudflare" as const,
+      status: "warm" as const,
+      repo: "openai/scotty",
+      createdAt: "2026-08-04T14:00:00.000Z",
+      hardCapAt: "2026-08-04T18:00:00.000Z",
       capRemainingSeconds: 5_430,
       backupId: "backup-1",
     };
@@ -81,8 +122,11 @@ describe("sessions page", () => {
       id: "session-1",
       repo: "openai/scotty",
       title: "Accessibility",
-      status: "warm",
+      status: "warm" as const,
+      provider: "cloudflare" as const,
+      branch: "scotty/session-1",
       createdAt: "2026-08-04T14:00:00.000Z",
+      hardCapAt: "2026-08-04T18:00:00.000Z",
       capRemainingSeconds: 5_430,
     };
     const signature = sessionsRenderSignature([session], true, now);

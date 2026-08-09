@@ -11,15 +11,7 @@ import {
   Param,
 } from "effect/unstable/cli";
 import { handleDown } from "./archive";
-import {
-  CliError,
-  EXIT,
-  VERSION,
-  type ExitCode,
-  type GlobalOptions,
-  type JsonObject,
-  type Writer,
-} from "./core";
+import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
 import {
   clearPendingUp,
   credentials,
@@ -40,6 +32,10 @@ import {
   decodeSteerResponse,
   decodeVaporizeResponse,
   STANDARD_TOOLSET,
+  type AttachOutput,
+  type BeamUpRequest,
+  type SessionOperationOutput,
+  type VaporizeOutput,
 } from "./schemas";
 import { readLocalPiAuth } from "./pi-auth";
 import {
@@ -1068,11 +1064,16 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           return yield* usage("--title must be between 1 and 120 characters");
         if (!REPOSITORY_PATTERN.test(repo)) return yield* usage("--repo must be OWNER/NAME");
         const auth = yield* credentials(options);
-        const body: JsonObject = { title: normalizedTitle, prompt, provider, repo };
-        if (Option.isSome(cap)) {
-          body.cap = cap.value;
-          body.hardCapSeconds = yield* Effect.fromResult(durationSeconds(cap.value));
-        }
+        const hardCapSeconds = Option.isSome(cap)
+          ? yield* Effect.fromResult(durationSeconds(cap.value))
+          : undefined;
+        const body: BeamUpRequest = {
+          title: normalizedTitle,
+          prompt,
+          provider,
+          repo,
+          ...(Option.isSome(cap) ? { cap: cap.value, hardCapSeconds } : {}),
+        };
         const pending = yield* pendingUpRequest(auth.host, body);
         const requested = yield* Effect.result(
           requestJson(auth, "/api/sessions", {
@@ -1093,7 +1094,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             yield* Effect.fromResult(browserUrl(decoded.sessionUrl, auth.host, result.id)),
           );
         if (autoJson) outputJson(runtime.stdout, result);
-        else runtime.stdout(humanResult("beam up", result));
+        else runtime.stdout(humanResult({ command: "beam up", value: result }));
       }),
   ).pipe(
     Command.withDescription("Start an agent session"),
@@ -1234,9 +1235,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const safeUrl = `${auth.host}/s/${encodeURIComponent(sessionId)}`;
         const targetUrl = yield* Effect.fromResult(browserUrl(undefined, auth.host, sessionId));
         yield* browser.open(targetUrl);
-        const result = { id: sessionId, url: safeUrl, opened: true };
+        const result: AttachOutput = { id: sessionId, url: safeUrl, opened: true };
         if (autoJson) outputJson(runtime.stdout, result);
-        else runtime.stdout(humanResult("attach", result));
+        else runtime.stdout(humanResult({ command: "attach", value: result }));
       }),
   ).pipe(Command.withDescription("Open a session"));
 
@@ -1824,7 +1825,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     const path = `/api/sessions/${encodeURIComponent(sessionId)}${command === "vaporize" ? "" : `/${command}`}`;
     const method = command === "vaporize" ? "DELETE" : "POST";
     const raw = yield* requestJson(auth, path, { method });
-    let result: JsonObject;
     if (command === "vaporize") {
       const decoded = decodeVaporizeResponse(raw);
       if (Option.isNone(decoded) || decoded.value.id !== sessionId)
@@ -1834,23 +1834,29 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           "Inspect the Worker before assuming resources were deleted.",
           EXIT.GENERIC,
         );
-      result = { id: sessionId, status: "gone" };
-    } else {
-      const decoded = decodeOperationResponse(raw);
-      if (Option.isNone(decoded)) return yield* invalidResponse();
-      result = {
-        id: optionalString(decoded.value.id) ?? sessionId,
-        status: decoded.value.status,
-      };
-      const url = optionalString(decoded.value.url);
-      const branch = optionalString(decoded.value.branch);
-      const backupId = optionalString(decoded.value.backupId);
-      if (url) result.url = yield* Effect.fromResult(sanitizeUrl(url, auth.host, sessionId));
-      if (branch) result.branch = branch;
-      if (backupId) result.backupId = backupId;
+      const result: VaporizeOutput = { id: sessionId, status: "gone" };
+      if (autoJson) outputJson(runtime.stdout, result);
+      else runtime.stdout(humanResult({ command: "vaporize", value: result }));
+      return;
     }
+    const decoded = decodeOperationResponse(raw);
+    if (Option.isNone(decoded)) return yield* invalidResponse();
+    const operationId = optionalString(decoded.value.id) ?? sessionId;
+    const url = optionalString(decoded.value.url);
+    const branch = optionalString(decoded.value.branch);
+    const backupId = optionalString(decoded.value.backupId);
+    const sanitizedUrl = url
+      ? yield* Effect.fromResult(sanitizeUrl(url, auth.host, sessionId))
+      : undefined;
+    const result: SessionOperationOutput = {
+      id: operationId,
+      status: decoded.value.status,
+      ...(sanitizedUrl === undefined ? {} : { url: sanitizedUrl }),
+      ...(branch === undefined ? {} : { branch }),
+      ...(backupId === undefined ? {} : { backupId }),
+    };
     if (autoJson) outputJson(runtime.stdout, result);
-    else runtime.stdout(humanResult(command, result));
+    else runtime.stdout(humanResult({ command, value: result }));
   });
 
   const snapshot = Command.make(
@@ -1888,7 +1894,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const sessionId = yield* validateSessionId(id);
         const result = yield* handleDown(sessionId, options);
         if (autoJson) outputJson(runtime.stdout, result);
-        else runtime.stdout(humanResult("down", result));
+        else runtime.stdout(humanResult({ command: "down", value: result }));
       }),
   ).pipe(Command.withDescription("Fetch the branch and install the local rollout"));
 

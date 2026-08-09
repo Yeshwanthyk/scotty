@@ -5,6 +5,8 @@ import {
   sendUiResponseForProjection,
   uiResponseCardState,
 } from "../public/terminal-ui-response.js";
+import type { PiConsoleCommandReceiptV1, PiConsoleRemoteIntentV1 } from "../../protocol/pi-console";
+import type { UiResponseProjection } from "../public/terminal-ui-response.js";
 
 const deferred = <A>() => {
   let resolve = (_value: A): void => undefined;
@@ -14,15 +16,26 @@ const deferred = <A>() => {
   return { promise, resolve };
 };
 
-const projectionWithRequest = (requestId: string, epoch = "epoch-a") => ({
+const projectionWithRequest = (requestId: string, epoch = "epoch-a"): UiResponseProjection => ({
   epoch,
-  pendingUi: new Map([[requestId, { id: requestId, method: "input" }]]),
+  pendingUi: new Map([[requestId, { id: requestId, method: "input", title: "Question" }]]),
   deliveredUiResponses: new Set<string>(),
+});
+
+const commandReceipt = (
+  status: PiConsoleCommandReceiptV1["status"],
+): PiConsoleCommandReceiptV1 => ({
+  version: 1,
+  epoch: "epoch-a",
+  commandId: "123e4567-e89b-42d3-a456-426614174000",
+  commandDigest: "0".repeat(64),
+  status,
+  response: null,
 });
 
 const pendingState =
   (tracker: ReturnType<typeof createUiResponseTracker>) =>
-  (sessionId: string, projection: { epoch?: unknown }, requestId: string, pending: boolean) => {
+  (sessionId: string, projection: { epoch?: string }, requestId: string, pending: boolean) => {
     if (pending) tracker.begin(sessionId, projection.epoch, requestId);
     else tracker.finish(sessionId, projection.epoch, requestId);
   };
@@ -32,12 +45,12 @@ describe("terminal UI responses", () => {
     const requestId = "shared-request-id";
     const projectionA = projectionWithRequest(requestId);
     const projectionB = projectionWithRequest(requestId);
-    const command = deferred<{ status: string }>();
+    const command = deferred<PiConsoleCommandReceiptV1>();
     const tracker = createUiResponseTracker();
     let currentSessionId = "session-a";
     let currentProjection = projectionA;
     const cardStates: string[] = [];
-    const sent: Array<{ intent: unknown; label: string }> = [];
+    const sent: Array<{ intent: PiConsoleRemoteIntentV1; label: string }> = [];
 
     const response = sendUiResponseForProjection({
       sessionId: "session-a",
@@ -68,7 +81,7 @@ describe("terminal UI responses", () => {
 
     currentSessionId = "session-b";
     currentProjection = projectionB;
-    command.resolve({ status: "delivered" });
+    command.resolve(commandReceipt("delivered"));
     await response;
 
     assert.deepStrictEqual(sent, [
@@ -90,7 +103,7 @@ describe("terminal UI responses", () => {
     const tracker = createUiResponseTracker();
     let currentProjection = original;
     const cardStates: string[] = [];
-    const command = deferred<{ status: string }>();
+    const command = deferred<PiConsoleCommandReceiptV1>();
 
     const response = sendUiResponseForProjection({
       sessionId: "session-a",
@@ -111,7 +124,7 @@ describe("terminal UI responses", () => {
     });
 
     currentProjection = replacement;
-    command.resolve({ status: "rejected" });
+    command.resolve(commandReceipt("rejected"));
     await response;
 
     assert.isFalse(tracker.hasPending("session-a"));
@@ -130,7 +143,7 @@ describe("terminal UI responses", () => {
       projection,
       requestId,
       value: "duplicate",
-      sendCommand: async () => ({ status: "rejected" }),
+      sendCommand: async () => commandReceipt("rejected"),
       hasCurrentRequest: (_sessionId, _projection, targetRequestId) =>
         projection.pendingUi.has(targetRequestId) &&
         !projection.deliveredUiResponses.has(targetRequestId),
@@ -152,7 +165,7 @@ describe("terminal UI responses", () => {
     const requestId = "request-1";
     const original = projectionWithRequest(requestId);
     const refreshed = projectionWithRequest(requestId);
-    const command = deferred<{ status: string }>();
+    const command = deferred<PiConsoleCommandReceiptV1>();
     const tracker = createUiResponseTracker();
     let currentProjection = original;
     const cardStates: string[] = [];
@@ -188,7 +201,7 @@ describe("terminal UI responses", () => {
       disabled: true,
       label: "Sending…",
     });
-    command.resolve({ status: "delivered" });
+    command.resolve(commandReceipt("delivered"));
     await response;
 
     assert.deepStrictEqual([...refreshed.deliveredUiResponses], [requestId]);

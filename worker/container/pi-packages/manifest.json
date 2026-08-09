@@ -77,7 +77,7 @@
     {
       "name": "scotty-hatch",
       "order": 9,
-      "sourceSha256": "f7f8a176d861d311e167272f0a10ac1eff33309976ec90d91298015a6afcc285",
+      "sourceSha256": "49301b5c43dfb594a682635bfe70414b3c64ec99b85e13a06faf275bb452ea94",
       "sourcePath": "worker/container/pi-packages/sources/scotty-hatch",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-hatch"
     }

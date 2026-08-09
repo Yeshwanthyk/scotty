@@ -1,6 +1,18 @@
+import type {
+  PiConsoleCommandReceiptV1,
+  PiConsoleRemoteIntentV1,
+  PiConsoleRelaySnapshotV1,
+} from "../../protocol/pi-console";
+
+export type UiResponseRequest = PiConsoleRelaySnapshotV1["pendingUi"][number];
+export type ExtensionUiResponseIntent = Extract<
+  PiConsoleRemoteIntentV1,
+  { readonly type: "extension_ui_response" }
+>;
+
 export interface UiResponseProjection {
-  readonly epoch?: unknown;
-  readonly pendingUi: ReadonlyMap<string, { readonly method?: unknown }>;
+  readonly epoch?: string;
+  readonly pendingUi: ReadonlyMap<string, UiResponseRequest>;
   readonly deliveredUiResponses: Set<string>;
 }
 
@@ -32,9 +44,9 @@ export function sendUiResponseForProjection(options: {
   readonly value: unknown;
   readonly cancelled?: boolean;
   readonly sendCommand: (
-    intent: Readonly<Record<string, unknown>>,
+    intent: ExtensionUiResponseIntent,
     label: string,
-  ) => Promise<{ readonly status?: unknown }>;
+  ) => Promise<PiConsoleCommandReceiptV1>;
   readonly hasCurrentRequest: (
     sessionId: string,
     projection: UiResponseProjection,

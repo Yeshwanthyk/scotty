@@ -1,16 +1,22 @@
 import { basename } from "node:path";
 import { Option, Result } from "effect";
 import scottySkill from "../skills/scotty/SKILL.md" with { type: "text" };
-import { CliError, EXIT, type ExitCode, type JsonObject, type Writer } from "./core";
+import { CliError, EXIT, type ExitCode, type Writer } from "./core";
 import {
   decodeNonEmptyString,
   decodeRawSessionFailure,
   decodeRecoveryGrantResponse,
   decodeString,
   decodeUpResponse,
+  type AttachOutput,
+  type BeamUpOutput,
+  type DownOutput,
   type InspectResponse,
   type SessionResponse,
+  type SessionOperationOutput,
+  type StableSession,
   type SteerResponse,
+  type VaporizeOutput,
 } from "./schemas";
 
 export const EMBEDDED_SKILL = scottySkill;
@@ -149,14 +155,7 @@ export function stableUp(
   host: string,
 ): Result.Result<
   {
-    output: {
-      id: string;
-      title: string;
-      url: string;
-      branch: string;
-      provider: "cloudflare" | "runner";
-      status: string;
-    };
+    output: BeamUpOutput;
     sessionUrl: string;
   },
   CliError
@@ -178,8 +177,13 @@ export function stableUp(
   });
 }
 
-export function stableSession(record: SessionResponse): JsonObject {
-  const result: JsonObject = {
+export function stableSession(record: SessionResponse): StableSession {
+  const projectedAt = optionalString(record.projectedAt);
+  const codexThreadId = optionalString(record.codexThreadId);
+  const agentState = optionalString(record.agentState);
+  const lastAgentEventAt = optionalString(record.lastAgentEventAt);
+  const failure = decodeRawSessionFailure(record.failure);
+  return {
     id: record.id,
     title: record.title,
     status: record.status,
@@ -192,24 +196,20 @@ export function stableSession(record: SessionResponse): JsonObject {
     hardCapAt: record.hardCapAt,
     ageSeconds: record.ageSeconds,
     capRemainingSeconds: record.capRemainingSeconds,
+    ...(projectedAt ? { projectedAt } : {}),
+    ...(codexThreadId ? { codexThreadId } : {}),
+    ...(agentState ? { agentState } : {}),
+    ...(lastAgentEventAt ? { lastAgentEventAt } : {}),
+    ...(Option.isSome(failure)
+      ? {
+          failure: {
+            code: Option.getOrUndefined(decodeString(failure.value.code)) ?? "unknown",
+            message: Option.getOrUndefined(decodeString(failure.value.message)) ?? "Session failed",
+            recoverable: failure.value.recoverable === true,
+          },
+        }
+      : {}),
   };
-  const projectedAt = optionalString(record.projectedAt);
-  const codexThreadId = optionalString(record.codexThreadId);
-  const agentState = optionalString(record.agentState);
-  const lastAgentEventAt = optionalString(record.lastAgentEventAt);
-  if (projectedAt) result.projectedAt = projectedAt;
-  if (codexThreadId) result.codexThreadId = codexThreadId;
-  if (agentState) result.agentState = agentState;
-  if (lastAgentEventAt) result.lastAgentEventAt = lastAgentEventAt;
-  const failure = decodeRawSessionFailure(record.failure);
-  if (Option.isSome(failure)) {
-    result.failure = {
-      code: Option.getOrUndefined(decodeString(failure.value.code)) ?? "unknown",
-      message: Option.getOrUndefined(decodeString(failure.value.message)) ?? "Session failed",
-      recoverable: failure.value.recoverable === true,
-    };
-  }
-  return result;
 }
 
 export function humanInspect(id: string, snapshot: InspectResponse): string {
@@ -240,7 +240,7 @@ export function humanSteer(result: SteerResponse): string {
   return `Steer outcome is ambiguous for ${result.id}: ${result.reason}; do not retry automatically.\n`;
 }
 
-export function humanSession(record: JsonObject): string {
+export function humanSession(record: StableSession): string {
   const id = String(record.id ?? "-");
   const title = String(record.title ?? "-");
   const status = String(record.status ?? "-");
@@ -280,7 +280,15 @@ export function probeOutput(stdout: string, stderr: string): string {
   return combined.split("\n")[0]?.slice(0, 512) ?? "";
 }
 
-export function humanResult(command: string, value: JsonObject): string {
+type HumanResultInput =
+  | { readonly command: "beam up"; readonly value: BeamUpOutput }
+  | { readonly command: "attach"; readonly value: AttachOutput }
+  | { readonly command: "snapshot" | "resume"; readonly value: SessionOperationOutput }
+  | { readonly command: "vaporize"; readonly value: VaporizeOutput }
+  | { readonly command: "down"; readonly value: DownOutput };
+
+const formatHumanResult = (input: HumanResultInput): string => {
+  const { command, value } = input;
   if (command === "beam up")
     return `${String(value.id)}  ${String(value.status)}  ${String(value.branch)}\n${String(value.url)}\n`;
   if (command === "attach") return `Opened ${String(value.url)}\n`;
@@ -291,6 +299,7 @@ export function humanResult(command: string, value: JsonObject): string {
     return value.resumeCmd
       ? `${String(value.resumeCmd)}\n`
       : `Fetched ${String(value.branch)} at ${String(value.sha)}; no usable rollout was included.\n`;
-  if (command === "vaporize") return `Vaporized ${String(value.id)}\n`;
-  return `${JSON.stringify(value)}\n`;
-}
+  return `Vaporized ${String(value.id)}\n`;
+};
+
+export const humanResult = (input: HumanResultInput): string => formatHumanResult(input);

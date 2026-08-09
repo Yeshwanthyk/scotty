@@ -19,6 +19,7 @@ const MAX_ARGV_LENGTH = 64;
 const MAX_CWD_LENGTH = 1_024;
 const MAX_HEALTH_PATH_LENGTH = 2_048;
 const RESERVED_PORTS = [3_000, 43_117] as const;
+const ANSI_ESCAPE_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "gu");
 const SAFE_ENVIRONMENT_NAMES = [
   "HOME",
   "LANG",
@@ -170,12 +171,9 @@ const ErrorEnvelopeSchema = Type.Object(
 );
 
 type HatchStatus = Static<typeof HatchStatusSchema>;
-type ConfiguredStatus = Static<typeof ConfiguredStatusSchema>;
+export type ConfiguredStatus = Static<typeof ConfiguredStatusSchema>;
 type RestoreDescriptor = Static<typeof RestoreDescriptorSchema>;
-type HatchTransport = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
+type HatchTransport = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 type ProcessSignal = "SIGTERM" | "SIGKILL";
 
 export interface HatchChildProcess {
@@ -296,7 +294,7 @@ function validateStatus(value: unknown): HatchStatus | undefined {
 
 function sanitizeText(value: string): string {
   return value
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(ANSI_ESCAPE_SEQUENCE, "")
     .replace(/\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"']+/giu, "[url redacted]")
     .replace(/\bscotty-hatch:[A-Za-z0-9_-]+\b/gu, "[reference redacted]")
     .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/giu, "$1 [credential redacted]")
@@ -358,12 +356,7 @@ function defaultSpawnProcess(
 }
 
 function missingProcessGroup(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ESRCH"
-  );
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
 }
 
 function defaultSignalProcessGroup(pid: number, signal: ProcessSignal): void {
@@ -381,12 +374,7 @@ function defaultProcessGroupExists(pid: number): boolean {
     return true;
   } catch (error) {
     if (missingProcessGroup(error)) return false;
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "EPERM"
-    )
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "EPERM")
       return true;
     throw error;
   }
@@ -471,9 +459,7 @@ async function requestAuthority(
   try {
     response = await transport(SCOTTY_HATCH_ROUTE, {
       method,
-      ...(body === undefined
-        ? {}
-        : { headers: { "content-type": "application/json" }, body }),
+      ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body }),
       signal: controller.signal,
     });
     text = await readBoundedResponse(response);
@@ -531,7 +517,10 @@ async function requestRestoreDescriptor(
   return value;
 }
 
-async function resolveWorkingDirectory(workspaceRoot: string, relativeCwd: string): Promise<string> {
+async function resolveWorkingDirectory(
+  workspaceRoot: string,
+  relativeCwd: string,
+): Promise<string> {
   if (
     isAbsolute(relativeCwd) ||
     relativeCwd.includes("\\") ||
@@ -546,7 +535,8 @@ async function resolveWorkingDirectory(workspaceRoot: string, relativeCwd: strin
   const rootPrefix = workspaceRoot.endsWith(sep) ? workspaceRoot : `${workspaceRoot}${sep}`;
   if (candidate !== workspaceRoot && !candidate.startsWith(rootPrefix))
     throw new Error("Hatch cwd resolves outside the workspace");
-  if (!(await stat(candidate)).isDirectory()) throw new Error("Hatch cwd must resolve to a directory");
+  if (!(await stat(candidate)).isDirectory())
+    throw new Error("Hatch cwd must resolve to a directory");
   return candidate;
 }
 
@@ -611,8 +601,7 @@ function ensureAuthorityBody(input: EnsureInput, workingDirectory: string): stri
 }
 
 function processProjection(owned: OwnedProcess | undefined): ScottyHatchResultV1["process"] {
-  if (owned === undefined)
-    return { status: "not_owned", stdoutTail: "", stderrTail: "" };
+  if (owned === undefined) return { status: "not_owned", stdoutTail: "", stderrTail: "" };
   return {
     status: processExited(owned.child) ? "stopped" : "running",
     stdoutTail: owned.stdout.value(),
@@ -640,8 +629,7 @@ export class ScottyHatchManager {
     this.#spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
     this.#signalProcessGroup = options.signalProcessGroup ?? defaultSignalProcessGroup;
     this.#processGroupExists = options.processGroupExists ?? defaultProcessGroupExists;
-    this.#readyTimeoutMillis =
-      options.readyTimeoutMillis ?? SCOTTY_HATCH_READY_TIMEOUT_MILLIS;
+    this.#readyTimeoutMillis = options.readyTimeoutMillis ?? SCOTTY_HATCH_READY_TIMEOUT_MILLIS;
     this.#termTimeoutMillis = options.termTimeoutMillis ?? 3_000;
     this.#killTimeoutMillis = options.killTimeoutMillis ?? 1_000;
   }
@@ -786,7 +774,11 @@ export class ScottyHatchManager {
   #startOwned(service: HatchServiceProcess, name: string): OwnedProcess {
     let child: HatchChildProcess;
     try {
-      child = this.#spawnProcess(service.argv, service.workingDirectory, safeEnvironment(process.env));
+      child = this.#spawnProcess(
+        service.argv,
+        service.workingDirectory,
+        safeEnvironment(process.env),
+      );
     } catch {
       throw new Error("Hatch service process could not be started");
     }
@@ -813,12 +805,7 @@ export class ScottyHatchManager {
   }
 
   async #status(signal?: AbortSignal): Promise<ScottyHatchResultV1> {
-    const status = await requestAuthority(
-      "status",
-      undefined,
-      signal,
-      this.#authorityTransport,
-    );
+    const status = await requestAuthority("status", undefined, signal, this.#authorityTransport);
     return this.#result("status", status, this.#owned);
   }
 
@@ -884,7 +871,11 @@ function renderResult(result: ScottyHatchResultV1): string {
   if (result.reference === undefined) return "Hatch is not configured.";
   const status =
     result.hatch.status === "configured" ? result.hatch.observedStatus : "not_configured";
-  const lines = [result.reference, `Hatch status: ${status}`, `Local process: ${result.process.status}`];
+  const lines = [
+    result.reference,
+    `Hatch status: ${status}`,
+    `Local process: ${result.process.status}`,
+  ];
   if (result.process.stdoutTail) lines.push(`stdout tail:\n${result.process.stdoutTail}`);
   if (result.process.stderrTail) lines.push(`stderr tail:\n${result.process.stderrTail}`);
   return lines.join("\n");

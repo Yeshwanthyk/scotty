@@ -9,7 +9,14 @@
     "vendor/**",
     "work/**",
     "worker/container/skills/bundled/**",
-    "worker/container/pi-packages/sources/**",
+    "worker/container/pi-packages/sources/pi-amp-ui/**",
+    "worker/container/pi-packages/sources/pi-askuser/**",
+    "worker/container/pi-packages/sources/pi-background-terminals/**",
+    "worker/container/pi-packages/sources/pi-subagents/**",
+    "worker/container/pi-packages/sources/pi-tasks/**",
+    "worker/container/pi-packages/sources/pi-web-access/**",
+    "worker/container/pi-packages/sources/pi-workflows/**",
+    "worker/container/pi-packages/sources/scotty-browser-test/**",
     "worker/public/vendor/**"
   ],
   "options": {
@@ -28,6 +35,7 @@
     "scotty/no-manual-tag-check": "error",
     "scotty/no-match-orelse": "error",
     "scotty/no-promise-client-surface": "error",
+    "scotty/no-record-string-unknown": "error",
     "scotty/no-raw-error-throw": "error",
     "scotty/no-redundant-error-factory": "error",
     "scotty/no-redundant-primitive-cast": "error",

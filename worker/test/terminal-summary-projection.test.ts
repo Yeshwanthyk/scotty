@@ -5,6 +5,7 @@ import {
   browserHatchStatus,
   hatchActions,
 } from "../public/terminal-hatch-reference.js";
+import type { PublicHatchStatusV1 } from "../src/hatch-contracts";
 import {
   assistantEvidenceReferences,
   assistantHatchReferences,
@@ -34,7 +35,9 @@ const evidenceTool = (jobId = JOB_ID, video = false, id = "tool-1") => ({
   },
 });
 
-const hatchStatus = (overrides: Readonly<Record<string, unknown>> = {}) => ({
+type ConfiguredHatchStatus = Extract<PublicHatchStatusV1, { readonly status: "configured" }>;
+
+const hatchStatus = (overrides: Partial<ConfiguredHatchStatus> = {}) => ({
   version: 1 as const,
   status: "configured" as const,
   hatchId: HATCH_ID,

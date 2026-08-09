@@ -1,5 +1,17 @@
 import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
+import { Schema } from "effect";
 import { formatRemoteValue, redactRemoteString, redactRemoteValue } from "./redaction.ts";
+import {
+  decodeJsonObject,
+  decodeRemoteAssistantMessage,
+  decodeRemoteToolResultMessage,
+  decodeRemoteUserMessage,
+  type RemoteAssistantContent,
+  type RemoteToolArguments,
+  type RemoteToolCallContent,
+  type RemoteToolResultMessage,
+  type RemoteUserMessage,
+} from "./schemas.ts";
 
 const MAX_FALLBACK_LENGTH = 2_000;
 type PiAssistantMessage = NonNullable<ConstructorParameters<typeof AssistantMessageComponent>[0]>;
@@ -10,7 +22,7 @@ export interface RemoteToolCall {
   readonly id: string;
   readonly name: string;
   readonly presentationName: string;
-  readonly arguments: Record<string, unknown>;
+  readonly arguments: RemoteToolArguments;
 }
 
 export interface RemoteToolResult {
@@ -29,9 +41,6 @@ export type RemoteTranscriptEntry =
     }
   | { readonly kind: "tool_result"; readonly result: RemoteToolResult }
   | { readonly kind: "fallback"; readonly text: string };
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const finiteNumber = (value: unknown, fallback = 0): number =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -57,25 +66,18 @@ const fallback = (value: unknown): RemoteTranscriptEntry => ({
   text: formatRemoteValue(value, MAX_FALLBACK_LENGTH),
 });
 
-const textFromUserContent = (value: unknown): string | undefined => {
+const jsonObject = (value: Schema.Json): Schema.JsonObject | undefined => decodeJsonObject(value);
+
+const textFromUserContent = (message: RemoteUserMessage): string | undefined => {
+  const value = message.content;
   if (typeof value === "string") return redactRemoteString(value);
-  if (!Array.isArray(value)) return undefined;
-  const text: string[] = [];
-  for (const block of value) {
-    if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string")
-      return undefined;
-    text.push(redactRemoteString(block.text));
-  }
-  return text.join("\n\n");
+  return value.map(({ text }) => redactRemoteString(text)).join("\n\n");
 };
 
-const toolCallFromContent = (value: Record<string, unknown>): RemoteToolCall | undefined => {
-  if (typeof value.id !== "string" || typeof value.name !== "string" || !isRecord(value.arguments))
-    return undefined;
+const toolCallFromContent = (value: RemoteToolCallContent): RemoteToolCall => {
   const id = redactRemoteString(value.id);
   const name = redactRemoteString(value.name);
-  const sanitized = redactRemoteValue(value.arguments);
-  if (!isRecord(sanitized)) return undefined;
+  const sanitized = jsonObject(redactRemoteValue(value.arguments)) ?? {};
   return {
     id,
     name,
@@ -85,23 +87,21 @@ const toolCallFromContent = (value: Record<string, unknown>): RemoteToolCall | u
 };
 
 const assistantContent = (
-  values: ReadonlyArray<unknown>,
+  values: ReadonlyArray<RemoteAssistantContent>,
 ): { readonly content: PiAssistantContent[]; readonly tools: RemoteToolCall[] } | undefined => {
   const content: PiAssistantContent[] = [];
   const tools: RemoteToolCall[] = [];
   for (const value of values) {
-    if (!isRecord(value) || typeof value.type !== "string") return undefined;
-    if (value.type === "text" && typeof value.text === "string") {
+    if (value.type === "text") {
       content.push({ type: "text", text: redactRemoteString(value.text) });
       continue;
     }
-    if (value.type === "thinking" && typeof value.thinking === "string") {
+    if (value.type === "thinking") {
       content.push({ type: "thinking", thinking: redactRemoteString(value.thinking) });
       continue;
     }
     if (value.type === "toolCall") {
       const tool = toolCallFromContent(value);
-      if (tool === undefined) return undefined;
       tools.push(tool);
       content.push({
         type: "toolCall",
@@ -125,20 +125,8 @@ const zeroUsage = (): PiAssistantMessage["usage"] => ({
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 });
 
-const toolResultFromMessage = (value: Record<string, unknown>): RemoteToolResult | undefined => {
-  if (
-    typeof value.toolCallId !== "string" ||
-    typeof value.toolName !== "string" ||
-    typeof value.isError !== "boolean" ||
-    !Array.isArray(value.content)
-  )
-    return undefined;
-  const text: string[] = [];
-  for (const block of value.content) {
-    if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string")
-      return undefined;
-    text.push(redactRemoteString(block.text));
-  }
+const toolResultFromMessage = (value: RemoteToolResultMessage): RemoteToolResult => {
+  const text = value.content.map(({ text: value }) => redactRemoteString(value));
   return {
     toolCallId: redactRemoteString(value.toolCallId),
     toolName: redactRemoteString(value.toolName),
@@ -148,31 +136,28 @@ const toolResultFromMessage = (value: Record<string, unknown>): RemoteToolResult
 };
 
 export const adaptRemoteMessage = (value: unknown): RemoteTranscriptEntry => {
-  if (!isRecord(value) || typeof value.role !== "string") return fallback(value);
-  if (value.role === "user") {
-    const text = textFromUserContent(value.content);
-    return text === undefined ? fallback(value) : { kind: "user", text };
-  }
-  if (value.role === "toolResult") {
-    const result = toolResultFromMessage(value);
-    return result === undefined ? fallback(value) : { kind: "tool_result", result };
-  }
-  if (value.role !== "assistant" || !Array.isArray(value.content)) return fallback(value);
+  const user = decodeRemoteUserMessage(value);
+  if (user !== undefined) return { kind: "user", text: textFromUserContent(user) ?? "" };
+  const toolResult = decodeRemoteToolResultMessage(value);
+  if (toolResult !== undefined)
+    return { kind: "tool_result", result: toolResultFromMessage(toolResult) };
+  const assistant = decodeRemoteAssistantMessage(value);
+  if (assistant === undefined) return fallback(value);
 
-  const adapted = assistantContent(value.content);
+  const adapted = assistantContent(assistant.content);
   if (adapted === undefined) return fallback(value);
   const message: PiAssistantMessage = {
     role: "assistant",
     content: adapted.content,
-    api: optionalString(value.api) ?? "pi-messages",
-    provider: optionalString(value.provider) ?? "remote",
-    model: optionalString(value.model) ?? "remote",
+    api: optionalString(assistant.api) ?? "pi-messages",
+    provider: optionalString(assistant.provider) ?? "remote",
+    model: optionalString(assistant.model) ?? "remote",
     usage: zeroUsage(),
-    stopReason: stopReason(value.stopReason),
-    timestamp: finiteNumber(value.timestamp),
-    ...(optionalString(value.errorMessage) === undefined
+    stopReason: stopReason(assistant.stopReason),
+    timestamp: finiteNumber(assistant.timestamp),
+    ...(optionalString(assistant.errorMessage) === undefined
       ? {}
-      : { errorMessage: optionalString(value.errorMessage) }),
+      : { errorMessage: optionalString(assistant.errorMessage) }),
   };
   return { kind: "assistant", message, tools: adapted.tools };
 };
@@ -180,12 +165,12 @@ export const adaptRemoteMessage = (value: unknown): RemoteTranscriptEntry => {
 export const adaptRemoteTool = (value: {
   readonly id: string;
   readonly name: string;
-  readonly arguments?: unknown;
-  readonly partialResult?: unknown;
+  readonly arguments?: Schema.Json;
+  readonly partialResult?: Schema.Json;
 }): RemoteToolCall & { readonly partialText?: string } => {
   const name = redactRemoteString(value.name);
   const sanitized = redactRemoteValue(value.arguments);
-  const arguments_ = isRecord(sanitized) ? sanitized : {};
+  const arguments_ = jsonObject(sanitized) ?? {};
   return {
     id: redactRemoteString(value.id),
     name,

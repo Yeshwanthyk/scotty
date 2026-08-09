@@ -17,6 +17,8 @@ import {
 import {
   cloudflareWriteOnlySecretDestinationLayer,
   cloudflareWriteOnlySecretProviderLayer,
+  type CloudflareResultInfo,
+  type CloudflareSecretWire,
 } from "./write-only-secret-cloudflare.ts";
 
 interface CapturedRequest {
@@ -32,7 +34,7 @@ interface CapturedRequest {
 const isDestinationError = (value: unknown): value is WriteOnlySecretDestinationError =>
   Predicate.isTagged(value, "WriteOnlySecretDestinationError");
 
-const secret = (overrides: Record<string, unknown> = {}) => ({
+const secret = (overrides: Partial<CloudflareSecretWire> = {}): CloudflareSecretWire => ({
   id: "secret-1",
   name: "SYNTHETIC_TOKEN",
   status: "active",
@@ -42,7 +44,9 @@ const secret = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const envelope = (result: unknown, extra: Record<string, unknown> = {}): string =>
+type EnvelopeExtra = { readonly result_info?: CloudflareResultInfo };
+
+const envelope = (result: unknown, extra: EnvelopeExtra = {}): string =>
   JSON.stringify({ success: true, result, ...extra });
 
 const makeLayer = (

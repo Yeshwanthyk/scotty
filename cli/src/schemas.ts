@@ -110,6 +110,30 @@ export const UpResponseSchema = Schema.Struct({
   provider: ProviderSchema,
   status: Schema.NonEmptyString,
 });
+const BeamUpRequestFields = {
+  title: Schema.NonEmptyString,
+  prompt: Schema.String,
+  provider: ProviderSchema,
+  repo: Schema.NonEmptyString,
+};
+export const BeamUpRequestSchema = Schema.Union([
+  Schema.Struct({
+    ...BeamUpRequestFields,
+    cap: Schema.NonEmptyString,
+    hardCapSeconds: Schema.Finite,
+  }),
+  Schema.Struct(BeamUpRequestFields),
+]);
+export type BeamUpRequest = typeof BeamUpRequestSchema.Type;
+export const BeamUpOutputSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  title: Schema.NonEmptyString,
+  url: Schema.NonEmptyString,
+  branch: Schema.NonEmptyString,
+  provider: ProviderSchema,
+  status: Schema.NonEmptyString,
+});
+export type BeamUpOutput = typeof BeamUpOutputSchema.Type;
 export const RecoveryGrantResponseSchema = Schema.Struct({
   url: Schema.NonEmptyString,
   expiresAt: Schema.NonEmptyString,
@@ -146,6 +170,31 @@ export const SessionResponseSchema = Schema.Struct({
   failure: Schema.optionalKey(Schema.Unknown),
 });
 export const SessionsResponseSchema = Schema.Array(SessionResponseSchema);
+const StableSessionFailureSchema = Schema.Struct({
+  code: Schema.NonEmptyString,
+  message: Schema.NonEmptyString,
+  recoverable: Schema.Boolean,
+});
+export const StableSessionSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  title: Schema.NonEmptyString,
+  status: Schema.NonEmptyString,
+  provider: ProviderSchema,
+  repo: Schema.NonEmptyString,
+  defaultBranch: Schema.NonEmptyString,
+  branch: Schema.NonEmptyString,
+  createdAt: Schema.NonEmptyString,
+  updatedAt: Schema.NonEmptyString,
+  hardCapAt: Schema.NonEmptyString,
+  ageSeconds: Schema.Finite,
+  capRemainingSeconds: Schema.Finite,
+  projectedAt: Schema.optionalKey(Schema.NonEmptyString),
+  codexThreadId: Schema.optionalKey(Schema.NonEmptyString),
+  agentState: Schema.optionalKey(Schema.NonEmptyString),
+  lastAgentEventAt: Schema.optionalKey(Schema.NonEmptyString),
+  failure: Schema.optionalKey(StableSessionFailureSchema),
+});
+export type StableSession = typeof StableSessionSchema.Type;
 export const InspectResponseSchema = PiConsoleSnapshotV1Schema;
 export type InspectResponse = typeof InspectResponseSchema.Type;
 const SteerAcceptedResponseSchema = Schema.Struct({
@@ -216,6 +265,32 @@ export const VaporizeResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   status: Schema.Literal("gone"),
 });
+export const AttachOutputSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  url: Schema.NonEmptyString,
+  opened: Schema.Literal(true),
+});
+export type AttachOutput = typeof AttachOutputSchema.Type;
+export const SessionOperationOutputSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.NonEmptyString,
+  url: Schema.optionalKey(Schema.NonEmptyString),
+  branch: Schema.optionalKey(Schema.NonEmptyString),
+  backupId: Schema.optionalKey(Schema.NonEmptyString),
+});
+export type SessionOperationOutput = typeof SessionOperationOutputSchema.Type;
+export const VaporizeOutputSchema = Schema.Struct({
+  id: Schema.NonEmptyString,
+  status: Schema.Literal("gone"),
+});
+export type VaporizeOutput = typeof VaporizeOutputSchema.Type;
+export const DownOutputSchema = Schema.Struct({
+  branch: Schema.NonEmptyString,
+  sha: Schema.NonEmptyString,
+  rolloutPath: Schema.NullOr(Schema.String),
+  resumeCmd: Schema.NullOr(Schema.String),
+});
+export type DownOutput = typeof DownOutputSchema.Type;
 export const PiProviderMetadataSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   type: Schema.Literals(["api_key", "oauth"]),

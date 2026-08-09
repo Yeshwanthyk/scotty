@@ -25,13 +25,13 @@ const deferred = <A>() => {
 const accepted = (envelope: ConsoleCommandEnvelope, commandDigest: string) => ({
   ok: true,
   status: 202,
-  readable: true,
+  readable: true as const,
   body: {
     version: 1,
     epoch: envelope.epoch,
     commandId: envelope.commandId,
     commandDigest,
-    status: "accepted",
+    status: "accepted" as const,
     response: { success: true },
   },
 });
@@ -145,7 +145,11 @@ describe("browser command lane", () => {
     const lane = createCommandLane({
       send: async (sessionId, envelope) => {
         sends.push({ sessionId, envelope });
-        if (sessionId === "session-a" && envelope.intent.message === "stale")
+        if (
+          sessionId === "session-a" &&
+          envelope.intent.type === "prompt" &&
+          envelope.intent.message === "stale"
+        )
           return staleResponse.promise;
         return accepted(envelope, await commandIntentDigest(envelope.intent));
       },
@@ -223,7 +227,10 @@ describe("browser command lane", () => {
     });
     assert.strictEqual((await fresh.outcome).status, "accepted");
     assert.deepStrictEqual(
-      sends.map(({ sessionId, envelope }) => [sessionId, envelope.intent.message]),
+      sends.map(({ sessionId, envelope }) => [
+        sessionId,
+        envelope.intent.type === "prompt" ? envelope.intent.message : envelope.intent.type,
+      ]),
       [
         ["session-a", "stale"],
         ["session-b", "session B continues"],
@@ -280,7 +287,9 @@ describe("browser command lane", () => {
 
     assert.strictEqual(entry.draft, "stale prompt\n\nheld prompt");
     assert.deepStrictEqual(
-      sends.map((envelope) => envelope.intent.message),
+      sends.map((envelope) =>
+        envelope.intent.type === "prompt" ? envelope.intent.message : envelope.intent.type,
+      ),
       ["stale prompt"],
     );
   });
@@ -289,7 +298,10 @@ describe("browser command lane", () => {
     const sends: Array<{ sessionId: string; label: unknown }> = [];
     const lane = createCommandLane({
       send: async (sessionId, envelope) => {
-        sends.push({ sessionId, label: envelope.intent.message ?? envelope.intent.type });
+        sends.push({
+          sessionId,
+          label: envelope.intent.type === "prompt" ? envelope.intent.message : envelope.intent.type,
+        });
         if (sessionId === "session-a") throw new TypeError("network interrupted");
         return accepted(envelope, await commandIntentDigest(envelope.intent));
       },

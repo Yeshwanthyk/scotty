@@ -33,6 +33,7 @@ const SecretWireSchema = Schema.Struct({
   comment: Schema.optional(Schema.Union([Schema.String, Schema.Null])),
   scopes: Schema.optional(Schema.Union([Schema.Array(Schema.String), Schema.Null])),
 });
+export type CloudflareSecretWire = typeof SecretWireSchema.Type;
 
 const ResultInfoSchema = Schema.Struct({
   page: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
@@ -41,6 +42,7 @@ const ResultInfoSchema = Schema.Struct({
   total_count: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   total_pages: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
 });
+export type CloudflareResultInfo = typeof ResultInfoSchema.Type;
 
 const SecretEnvelopeSchema = Schema.Struct({
   success: Schema.Literal(true),

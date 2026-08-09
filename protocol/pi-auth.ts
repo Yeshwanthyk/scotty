@@ -18,7 +18,7 @@ export const PiOAuthCredentialSchema = Schema.StructWithRest(
     expires: Schema.Finite,
     accountId: Schema.optionalKey(Schema.NonEmptyString),
   }),
-  [Schema.Record(Schema.String, Schema.Unknown)],
+  [Schema.Record(Schema.String, Schema.Json)],
 );
 
 export const PiCredentialSchema = Schema.Union([PiApiKeyCredentialSchema, PiOAuthCredentialSchema]);

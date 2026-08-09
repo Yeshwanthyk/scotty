@@ -540,7 +540,7 @@ function mediaType(value: string | null): string {
   return value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
 }
 
-function formBody(value: Readonly<Record<string, unknown>>): string {
+function formBody(value: OAuthRefreshRequest): string {
   const body = new URLSearchParams();
   for (const [key, item] of Object.entries(value)) {
     if (typeof item === "string") body.set(key, item);

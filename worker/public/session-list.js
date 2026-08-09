@@ -1,5 +1,41 @@
 import { groupSessionsByRepository, sessionDisplayStatus, sessionTitle } from "./session-form.js";
 
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function normalizeSessionListItem(value) {
+  if (!isObject(value) || typeof value.id !== "string") return undefined;
+
+  const failure = isObject(value.failure)
+    ? {
+        ...(typeof value.failure.code === "string" ? { code: value.failure.code } : {}),
+        ...(typeof value.failure.message === "string" ? { message: value.failure.message } : {}),
+        ...(typeof value.failure.recoverable === "boolean"
+          ? { recoverable: value.failure.recoverable }
+          : {}),
+      }
+    : undefined;
+
+  return {
+    id: value.id,
+    ...(typeof value.title === "string" ? { title: value.title } : {}),
+    ...(typeof value.branch === "string" ? { branch: value.branch } : {}),
+    ...(typeof value.provider === "string" ? { provider: value.provider } : {}),
+    ...(typeof value.runner === "string" ? { runner: value.runner } : {}),
+    ...(typeof value.status === "string" ? { status: value.status } : {}),
+    ...(typeof value.deleting === "boolean" ? { deleting: value.deleting } : {}),
+    ...(typeof value.backupId === "string" ? { backupId: value.backupId } : {}),
+    ...(Number.isFinite(value.capRemainingSeconds)
+      ? { capRemainingSeconds: value.capRemainingSeconds }
+      : {}),
+    ...(typeof value.hardCapAt === "string" ? { hardCapAt: value.hardCapAt } : {}),
+    ...(typeof value.createdAt === "string" ? { createdAt: value.createdAt } : {}),
+    ...(typeof value.repo === "string" ? { repo: value.repo } : {}),
+    ...(failure === undefined || Object.keys(failure).length === 0 ? {} : { failure }),
+  };
+}
+
 export function formatSessionDuration(value) {
   const seconds = Math.max(0, Number.isFinite(value) ? Math.floor(value) : 0);
   if (seconds < 60) return `${seconds}s`;
