@@ -1000,6 +1000,22 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         return scheduled;
       },
     },
+    listSchedules: {
+      value: async (callback: string) =>
+        schedules
+          .filter((schedule) => schedule.callback === callback)
+          .map((schedule, index) => {
+            if (!(schedule.when instanceof Date))
+              throw injectedHarnessFailure("retention schedule must use an absolute time");
+            return {
+              taskId: `schedule-${index}`,
+              callback: schedule.callback,
+              payload: schedule.payload,
+              type: "scheduled" as const,
+              time: Math.floor(schedule.when.getTime() / 1_000),
+            };
+          }),
+    },
     deleteSchedules: {
       value: (callback: string): void => {
         deletedSchedules.push(callback);
