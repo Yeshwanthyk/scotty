@@ -891,7 +891,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       for (const controller of this.hatchRequests.values()) controller.abort();
       this.hatchRequests.clear();
     });
-    if (pending.exposure === "unexpose_pending")
+    if (pending.exposure === "unexpose_pending" && this.rawContainer?.running === true)
       yield* hostEffect("unexpose", () => this.unexposePort(pending.service.port));
     yield* hatch.completeCleanup(operationNonce, target);
     return true;

@@ -811,4 +811,36 @@ describe("authoritative Hatch session lifecycle", () => {
       assert.strictEqual(harness.readRecord()?.status, "gone");
     }),
   );
+
+  it.effect("settles Hatch cleanup during vaporize when the runtime is already absent", () =>
+    Effect.gen(function* () {
+      const running = yield* createHarness();
+      yield* Effect.promise(() => running.sandbox.ensureScottyHatch({ version: 1, service }));
+      const activeHatch = hatchState(running);
+      assert.ok(activeHatch?.primary?.exposure === "active");
+
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          previewBase: "preview.example.test",
+          rawPiContainerRunning: false,
+          initialEntries: {
+            [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
+            [sessionHarnessKeys.credential]: makeStoredCredential(),
+            [sessionHarnessKeys.hatch]: activeHatch,
+          },
+          initialProjections: {
+            [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
+          },
+        }),
+      );
+
+      const result = yield* Effect.promise(() => harness.sandbox.vaporizeScottySession());
+
+      assert.deepStrictEqual(result, { id: SESSION_ID, status: "gone" });
+      assert.ok(!harness.events.includes("host:preview:unexpose:4173"));
+      assert.ok(!harness.events.includes("host:destroy"));
+      assert.strictEqual(hatchState(harness), undefined);
+      assert.strictEqual(harness.readRecord()?.status, "gone");
+    }),
+  );
 });
