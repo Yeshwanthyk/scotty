@@ -22,6 +22,7 @@ import {
   projectAlchemyDeploymentOutput,
   readAlchemyContainerAction,
   redactProductionDeploymentOutput,
+  resolveProductionDockerEnvironment,
   resolveProductionTopology,
   runCommand,
   runProductionDeployStep,
@@ -86,6 +87,26 @@ const snapshot = ({ application: applicationOverrides = {}, rollouts = [] } = {}
 });
 
 describe("production deployment ownership", () => {
+  it("preserves an explicit Docker host and resolves the active context otherwise", async () => {
+    const explicit = { DOCKER_HOST: "unix:///explicit/docker.sock" };
+    assert.equal(await resolveProductionDockerEnvironment(explicit), explicit);
+
+    const resolved = await resolveProductionDockerEnvironment(
+      { PATH: "/usr/bin" },
+      async (command, args) => {
+        assert.equal(command, "docker");
+        assert.deepEqual(args, [
+          "context",
+          "inspect",
+          "--format",
+          "{{json .Endpoints.docker.Host}}",
+        ]);
+        return '"unix:///Users/test/.colima/default/docker.sock"\n';
+      },
+    );
+    assert.equal(resolved.DOCKER_HOST, "unix:///Users/test/.colima/default/docker.sock");
+  });
+
   it("keeps the pinned Alchemy deployment backports installed and deterministic", async () => {
     const rootPackage = JSON.parse(read("package.json"));
     const patch = read("patches/alchemy+2.0.0-beta.67.patch");
@@ -290,7 +311,6 @@ describe("production deployment ownership", () => {
               type: "r2_bucket",
               bucket_name: "scotty-test-artifacts",
             },
-            { name: "BROWSER", type: "browser" },
           ],
         },
       });
@@ -542,6 +562,10 @@ describe("production deployment ownership", () => {
             executed.push("Audit deployed Hatch and Evidence topology");
             environments.set("Audit deployed Hatch and Evidence topology", { topology, env });
           },
+          resolveDockerEnvironment: async (env) => ({
+            ...env,
+            DOCKER_HOST: "unix:///test/docker.sock",
+          }),
         },
       ),
       deployFailure,
@@ -579,6 +603,9 @@ describe("production deployment ownership", () => {
       assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
       assert.equal(env.SCOTTY_RUNNER_TOKEN, undefined);
       assert.equal(env.SCOTTY_TOKEN, undefined);
+      if (name === "Deploy production through Alchemy") {
+        assert.equal(env.DOCKER_HOST, "unix:///test/docker.sock");
+      }
       assert.equal(
         env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
         [

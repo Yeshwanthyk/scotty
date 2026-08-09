@@ -888,15 +888,13 @@ export async function auditProductionHatchEvidenceTopology(
   const evidence = deployedBinding(version, "SCOTTY_EVIDENCE_ENABLED");
   const preview = deployedBinding(version, "SCOTTY_PREVIEW_BASE");
   const artifactBucket = deployedBinding(version, "ARTIFACT_BUCKET");
-  const browser = deployedBinding(version, "BROWSER");
   if (
     evidence?.type !== "plain_text" ||
     evidence.text !== "true" ||
     preview?.type !== "plain_text" ||
     preview.text !== topology.previewBase ||
     artifactBucket?.type !== "r2_bucket" ||
-    artifactBucket.bucket_name !== topology.artifactBucketName ||
-    browser?.type !== "browser"
+    artifactBucket.bucket_name !== topology.artifactBucketName
   ) {
     throw new Error("The active Worker is missing required Hatch or Evidence bindings.");
   }
@@ -950,6 +948,28 @@ function productionEnvironment(environment = process.env) {
   };
 }
 
+export async function resolveProductionDockerEnvironment(
+  environment = process.env,
+  inspect = runCommand,
+) {
+  if (environment.DOCKER_HOST?.trim()) return environment;
+  const output = await inspect(
+    "docker",
+    ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"],
+    { capture: true, timeoutMs: 30_000 },
+  );
+  let endpoint;
+  try {
+    endpoint = JSON.parse(output.trim());
+  } catch {
+    throw new Error("The active Docker context returned an invalid engine endpoint.");
+  }
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    throw new Error("The active Docker context has no engine endpoint.");
+  }
+  return { ...environment, DOCKER_HOST: endpoint };
+}
+
 export async function runProductionDeployStep(step, env = process.env, options = {}) {
   process.stdout.write(`\n==> ${step.name}\n`);
   const { failureDiagnosticPath = PRODUCTION_DEPLOY_DIAGNOSTIC_PATH, ...commandOptions } = options;
@@ -980,6 +1000,7 @@ export async function executeProductionDeploySteps(
     readControlPlane = readProductionContainerControlPlane,
     waitForRollout = waitForProductionContainerRollout,
     auditTopology = auditProductionHatchEvidenceTopology,
+    resolveDockerEnvironment = resolveProductionDockerEnvironment,
     environment = process.env,
   } = {},
 ) {
@@ -992,11 +1013,12 @@ export async function executeProductionDeploySteps(
   await revalidate();
   const controlPlaneBeforeDeploy = await readControlPlane(productionEnv);
   assertSettledContainerBaseline(controlPlaneBeforeDeploy);
+  const deployEnv = await resolveDockerEnvironment(productionEnv);
 
   let deployError;
   let containerAction = "unknown";
   try {
-    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[3], productionEnv);
+    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[3], deployEnv);
     containerAction = readAlchemyContainerAction(deployOutput);
   } catch (error) {
     deployError = error;

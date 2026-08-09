@@ -89,6 +89,7 @@ export type HarnessFailureStage =
 export interface HarnessOptions {
   readonly clock?: SandboxEffectOptions["clock"];
   readonly commandStdout?: (command: string) => string | undefined;
+  readonly containerEvidenceRecorder?: SandboxEffectOptions["containerEvidenceRecorder"];
   readonly crashAfterInitialRecordCommit?: boolean;
   readonly destroyBehavior?: "pending" | "reject" | "success";
   readonly evidenceEnabled?: boolean;
@@ -96,7 +97,6 @@ export interface HarnessOptions {
   readonly failureStage?: HarnessFailureStage;
   readonly initialEntries?: Readonly<Record<string, unknown>>;
   readonly initialArtifactObjects?: ReadonlyArray<EvidenceArtifactV2>;
-  readonly kitesurfClient?: SandboxEffectOptions["kitesurfClient"];
   readonly runnerDispatch?: Bindings["RUNNERS"]["getByName"] extends (name: string) => infer Stub
     ? Stub extends { dispatch: infer Dispatch }
       ? Dispatch
@@ -723,7 +723,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           throw injectedHarnessFailure("injected ambiguous artifact delete failure");
       },
     } as never,
-    BROWSER: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
     PI_AUTH_JSON: JSON.stringify({
@@ -742,8 +741,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
 
   const sandbox = new Sandbox(ctx, env, {
     clock: options.clock,
+    containerEvidenceRecorder: options.containerEvidenceRecorder,
     evidencePreviewHostTimeoutMillis: options.evidencePreviewHostTimeoutMillis,
-    kitesurfClient: options.kitesurfClient,
     passivePiConsoleRelay: options.passivePiConsoleRelay,
     previewRequestForwarder: options.previewRequestForwarder,
     hatchRequestForwarder: options.hatchRequestForwarder,

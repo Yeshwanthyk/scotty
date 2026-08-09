@@ -149,7 +149,6 @@ function env(
     SESSIONS: emptySessionsNamespace(),
     BACKUP_BUCKET: {} as R2Bucket,
     ARTIFACT_BUCKET: options.artifactBucket ?? ({} as R2Bucket),
-    BROWSER: undefined as never,
   };
 }
 
@@ -2608,7 +2607,6 @@ describe("real Hono boundary", () => {
                 operation: "screenshot",
                 reason: "ambiguous",
                 step: 1,
-                kitesurf: { operation: "screenshot", reason: "ambiguous" },
               },
             }
           : summary,
@@ -2674,7 +2672,6 @@ describe("real Hono boundary", () => {
     expect(serializedSummary).not.toContain("undeclared page text");
     expect(serializedSummary).not.toContain('"actual"');
     expect(serializedSummary).not.toContain("diagnostic");
-    expect(serializedSummary).not.toContain("kitesurf");
     expect(orderedEvidenceFrames(summaryBody).map((frame) => frame.frameId)).toEqual([
       "frame-1",
       "frame-2",

@@ -179,14 +179,6 @@ test(
     const config = await configResponse.json();
     assert.equal(config.githubStatus, 200, "the disposable Worker must have valid GitHub egress");
     assert.ok(config.githubTokenBytes >= 20, "the disposable GitHub credential is malformed");
-    const kitesurfResponse = await canaryRequest("/__e2e/kitesurf");
-    const kitesurf = await kitesurfResponse.json();
-    assert.equal(kitesurf.browser, "kitesurf");
-    assert.equal(kitesurf.domReady, true);
-    assert.equal(kitesurf.screenshotPng, true);
-    assert.equal(kitesurf.sessionless, true);
-    assert.equal(kitesurf.sessionId, undefined);
-    assert.ok(kitesurf.screenshotBytes >= 24, "Kitesurf returned an invalid PNG screenshot");
     t.after(async () => {
       const current = await runCli(["ls", "--json"], { env, cwd });
       const cleanupIds = new Set([id, peerTargetId, sourceId].filter(Boolean));

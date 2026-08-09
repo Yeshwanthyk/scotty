@@ -39,7 +39,6 @@ const DIAGNOSTIC = {
   operation: "screenshot",
   reason: "ambiguous",
   step: 0,
-  kitesurf: { operation: "screenshot", reason: "ambiguous" },
 } as const;
 
 const JOB: BrowserEvidenceJobV2 = {

@@ -74,7 +74,11 @@ function pushTextReferences(value, references, rule) {
 function visitTokens(tokens, references, rule) {
   for (const token of tokens ?? []) {
     if (!token || typeof token !== "object") continue;
-    if (token.type === "code" || token.type === "codespan" || token.type === "html") continue;
+    if (token.type === "code" || token.type === "html") continue;
+    if (token.type === "codespan") {
+      pushExactReference(token.text, references, rule);
+      continue;
+    }
     if (token.type === "image") continue;
     if (token.type === "link") {
       pushExactReference(token.href, references, rule);

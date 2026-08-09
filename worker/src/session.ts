@@ -106,7 +106,6 @@ import {
   type PublicHatchStatusV1,
 } from "./hatch-contracts";
 import { sha256Hex } from "./digest";
-import { KitesurfClient, makeKitesurfClient, type KitesurfClientShape } from "./kitesurf-client";
 import {
   EvidenceWorkflowControl,
   EvidenceWorkflowControlError,
@@ -300,8 +299,8 @@ export interface PassivePiConsoleRelay {
 
 export interface SandboxEffectOptions {
   readonly clock?: Clock.Clock;
+  readonly containerEvidenceRecorder?: ContainerEvidenceRecorder["Service"];
   readonly evidencePreviewHostTimeoutMillis?: number;
-  readonly kitesurfClient?: KitesurfClientShape;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly previewRequestForwarder?: (request: Request) => Promise<Response>;
   readonly hatchRequestForwarder?: (request: Request) => Promise<Response>;
@@ -545,7 +544,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly authoritativeStorage: SessionRecordStorage;
   private readonly evidenceEnabled: boolean;
   private readonly evidencePreviewHostTimeoutMillis: number;
-  private readonly kitesurfClient: KitesurfClientShape;
   private readonly previewBase: string | undefined;
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
@@ -563,7 +561,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.evidenceEnabled = env.SCOTTY_EVIDENCE_ENABLED === "true";
     this.evidencePreviewHostTimeoutMillis =
       options.evidencePreviewHostTimeoutMillis ?? EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS;
-    this.kitesurfClient = options.kitesurfClient ?? makeKitesurfClient(env.BROWSER);
     this.previewBase =
       env.SCOTTY_PREVIEW_BASE !== undefined &&
       EVIDENCE_PREVIEW_BASE_PATTERN.test(env.SCOTTY_PREVIEW_BASE)
@@ -636,6 +633,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
       },
       runtimeAccess,
     );
+    const evidenceRecorder =
+      options.containerEvidenceRecorder === undefined
+        ? containerEvidenceRecorderLayer.pipe(Layer.provide(runtime))
+        : Layer.succeed(ContainerEvidenceRecorder)(options.containerEvidenceRecorder);
 
     this.layer = Layer.mergeAll(
       store,
@@ -648,7 +649,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       rolloutDiscoveryLayer.pipe(Layer.provide(runtime)),
       workspaceLayer.pipe(Layer.provide(runtime)),
       containerAuthLayer.pipe(Layer.provide(runtime)),
-      containerEvidenceRecorderLayer.pipe(Layer.provide(runtime)),
+      evidenceRecorder,
     );
   }
 
@@ -1786,10 +1787,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       active,
       job,
       summaryUrl: `/s/${record.id}/evidence/${active.jobId}`,
-    }).pipe(
-      Effect.provideService(KitesurfClient, this.kitesurfClient),
-      Effect.provideService(EvidenceWorkflowControl, this.evidenceWorkflowControl()),
-    );
+    }).pipe(Effect.provideService(EvidenceWorkflowControl, this.evidenceWorkflowControl()));
   });
 
   private readonly assertRuntimeAccessProgram = Effect.fnUntraced(function* (this: Sandbox) {

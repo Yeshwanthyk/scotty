@@ -242,36 +242,16 @@ describe("Cloudflare stack topology", () => {
 });
 
 describe("Cloudflare stack source contract", () => {
-  it("pins the exact Kitesurf client and declares the native browser binding", () => {
-    assert.match(workerPackageSource, /"@cloudflare\/playwright": "1\.3\.5"/u);
-    assert.match(
-      packageLockSource,
-      /"node_modules\/@cloudflare\/playwright": \{[\s\S]*?"version": "1\.3\.5"/u,
-    );
-    assert.match(source, /BROWSER: Cloudflare\.Browser\("BROWSER"\)/u);
+  it("omits the managed browser dependency and binding", () => {
+    assert.notMatch(workerPackageSource, /@cloudflare\/playwright/u);
+    assert.notMatch(packageLockSource, /node_modules\/@cloudflare\/playwright/u);
+    assert.notMatch(source, /Cloudflare\.Browser/u);
     assert.match(source, /ARTIFACT_BUCKET: artifacts/u);
   });
 
-  it("bundles the Worker and full-stack canary with the Kitesurf runtime and no credentials", () => {
+  it("bundles the Worker and full-stack canary without managed browser code or credentials", () => {
     const root = new URL("../../", import.meta.url);
-    const electronSource = readFileSync(
-      new URL(
-        "../../node_modules/@cloudflare/playwright/lib/playwright-core/src/server/electron/electron.js",
-        import.meta.url,
-      ),
-      "utf8",
-    );
-    const launchAppSource = readFileSync(
-      new URL(
-        "../../node_modules/@cloudflare/playwright/lib/playwright-core/src/server/launchApp.js",
-        import.meta.url,
-      ),
-      "utf8",
-    );
-    assert.match(electronSource, /require\.resolve\("\.\/loader"\)/u);
-    assert.match(launchAppSource, /require\.resolve\("\.\/chromium\/appIcon\.png"\)/u);
-
-    const outputDirectory = mkdtempSync(join(tmpdir(), "scotty-playwright-bundle-"));
+    const outputDirectory = mkdtempSync(join(tmpdir(), "scotty-worker-bundle-"));
     const syntheticMaterial = randomBytes(48).toString("base64url");
     const entries = [
       ["worker/src/index.ts", "worker.js"],
@@ -281,15 +261,7 @@ describe("Cloudflare stack source contract", () => {
       const bundlePath = join(outputDirectory, outputName);
       execFileSync(
         "bun",
-        [
-          "build",
-          entry,
-          "--target=node",
-          "--external=cloudflare:*",
-          "--external=*/loader",
-          "--external=*/chromium/appIcon.png",
-          `--outfile=${bundlePath}`,
-        ],
+        ["build", entry, "--target=node", "--external=cloudflare:*", `--outfile=${bundlePath}`],
         {
           cwd: root,
           stdio: "pipe",
@@ -302,11 +274,7 @@ describe("Cloudflare stack source contract", () => {
         },
       );
       const bundle = readFileSync(bundlePath, "utf8");
-      assert.match(
-        bundle,
-        /node_modules\/@cloudflare\/playwright\/lib\/cloudflare\/wrapClientApis\.js/u,
-      );
-      assert.notMatch(bundle, /from ["']@cloudflare\/playwright["']/u);
+      assert.notMatch(bundle, /@cloudflare\/playwright/u);
       assert.notInclude(bundle, syntheticMaterial);
     }
     rmSync(outputDirectory, { recursive: true, force: true });
