@@ -163,7 +163,7 @@ describe("Hatch exact-host gateway", () => {
     }
   });
 
-  it("consumes a one-use form handoff and installs only an exact-host strict cookie", async () => {
+  it("consumes a one-use form handoff and installs an exact-host cookie usable by its redirect", async () => {
     const response = await handleHatchRequest(
       new Request(`https://${HOST}${HATCH_HANDOFF_PATH}`, {
         method: "POST",
@@ -181,7 +181,8 @@ describe("Hatch exact-host gateway", () => {
     expect(cookie).toContain(`${HATCH_COOKIE}=`);
     expect(cookie).toContain("Secure");
     expect(cookie).toContain("HttpOnly");
-    expect(cookie).toContain("SameSite=Strict");
+    expect(cookie).toContain("SameSite=Lax");
+    expect(cookie).not.toContain("SameSite=Strict");
     expect(cookie).not.toContain("Domain=");
     expect(cookie).not.toContain("scotty_hatch.");
     expect(consumeHandoff).toHaveBeenCalledWith(
