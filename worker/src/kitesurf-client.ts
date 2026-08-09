@@ -88,6 +88,11 @@ export class KitesurfClient extends Context.Service<KitesurfClient, KitesurfClie
   "scotty/KitesurfClient",
 ) {}
 
+export const KITESURF_CLEANUP_RETRY_DELAY_MILLIS = 100;
+export const KITESURF_ACQUISITION_RETRY_DELAY_MILLIS = 1_000;
+
+class RetryKitesurfPageAcquisition extends KitesurfClientError {}
+
 type KitesurfRuntimeLocator = Pick<
   Locator,
   "click" | "count" | "fill" | "isVisible" | "press" | "textContent"
@@ -346,8 +351,16 @@ const releaseResource = (
   useExit: Exit.Exit<unknown, unknown>,
 ): Effect.Effect<void, KitesurfClientError> => {
   const release = closeEffect(operation, close, timeoutMillis);
-  if (Exit.isSuccess(useExit) && operation !== "close_browser") return release;
-  return release.pipe(
+  const reconciledRelease =
+    Exit.isSuccess(useExit) && operation === "close_browser"
+      ? release.pipe(
+          Effect.catch(() =>
+            Effect.sleep(KITESURF_CLEANUP_RETRY_DELAY_MILLIS).pipe(Effect.andThen(release)),
+          ),
+        )
+      : release;
+  if (Exit.isSuccess(useExit)) return reconciledRelease;
+  return reconciledRelease.pipe(
     Effect.catch((error) =>
       Effect.sync(() =>
         console.error(
@@ -708,6 +721,7 @@ export const makeKitesurfClient = (
   const runPage = <A, E, R>(
     options: KitesurfPageOptions & { readonly recordVideo: boolean },
     use: (page: KitesurfPage) => Effect.Effect<A, E, R>,
+    retryCreatePageAmbiguity = true,
   ): Effect.Effect<KitesurfPageResult<A>, E | KitesurfClientError, R> => {
     const origin = exactOrigin(options.origin);
     if (origin === undefined)
@@ -772,6 +786,14 @@ export const makeKitesurfClient = (
                   "ambiguous",
                   () => ownedContext.newPage(),
                   resourceTimeoutMillis,
+                ).pipe(
+                  Effect.mapError((error) =>
+                    retryCreatePageAmbiguity &&
+                    error.operation === "create_page" &&
+                    error.reason === "ambiguous"
+                      ? new RetryKitesurfPageAcquisition(error)
+                      : error,
+                  ),
                 );
                 yield* singlePage(ownedContext, page);
                 const value = yield* use(makePage(origin, ownedContext, page));
@@ -806,6 +828,14 @@ export const makeKitesurfClient = (
         }),
       (browser, exit) =>
         releaseResource("close_browser", () => browser.close(), resourceTimeoutMillis, exit),
+    ).pipe(
+      Effect.catch((error) =>
+        error instanceof RetryKitesurfPageAcquisition
+          ? Effect.sleep(KITESURF_ACQUISITION_RETRY_DELAY_MILLIS).pipe(
+              Effect.andThen(runPage(options, use, false)),
+            )
+          : Effect.fail(error),
+      ),
     );
   };
   return KitesurfClient.of({

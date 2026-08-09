@@ -8,6 +8,7 @@ import type {
   WebSocketRoute,
 } from "@cloudflare/playwright";
 import { Effect, Fiber, Result } from "effect";
+import { TestClock } from "effect/testing";
 import { writeFile } from "node:fs/promises";
 import { vi } from "vitest";
 
@@ -17,9 +18,12 @@ vi.mock("@cloudflare/playwright", () => playwright);
 import { EVIDENCE_MAX_FRAME_BYTES } from "../src/evidence-contracts";
 import { EVIDENCE_PREVIEW_COOKIE } from "../src/evidence-preview";
 import {
+  KITESURF_ACQUISITION_RETRY_DELAY_MILLIS,
+  KITESURF_CLEANUP_RETRY_DELAY_MILLIS,
   KITESURF_NAVIGATION_TIMEOUT_MILLIS,
   KITESURF_OPERATION_TIMEOUT_MILLIS,
   KITESURF_SCREENSHOT_TIMEOUT_MILLIS,
+  KitesurfClientError,
   makeKitesurfClient,
   type KitesurfRuntimeLauncher,
 } from "../src/kitesurf-client";
@@ -60,6 +64,7 @@ const makeRuntime = (
     readonly webSocketRouteSupported?: boolean;
     readonly acquireCdpSession?: () => Promise<CaptureSession>;
     readonly browserClose?: () => Promise<void>;
+    readonly newPageFails?: () => boolean;
     readonly pageCount?: () => number;
     readonly sessionId?: string;
     readonly videoBytes?: Uint8Array;
@@ -156,6 +161,8 @@ const makeRuntime = (
     },
     newPage: async () => {
       state.events.push("page:open");
+      if (options.newPageFails?.() === true)
+        return Promise.reject(new Error("private page acquisition failure"));
       return page;
     },
     ...(options.routeSupported === false ? {} : { route }),
@@ -963,21 +970,30 @@ describe("Kitesurf client", () => {
         Effect.gen(function* () {
           const events: string[] = [];
           const latePage = deferredPromise<RuntimePage>();
+          let launches = 0;
+          let signalSecondLaunch: (() => void) | undefined;
+          const secondLaunch = new Promise<void>((resolve) => {
+            signalSecondLaunch = resolve;
+          });
           const client = makeKitesurfClient(
             binding,
-            async () => ({
-              close: async () => void events.push("browser:close"),
-              newContext: async () => ({
-                addCookies: async () => undefined,
-                close: async () => void events.push("context:close"),
-                newCDPSession: async () => captureSession(),
-                newPage: () => latePage.promise,
-                pages: () => [],
-                route: async () => undefined,
-                routeWebSocket: async () => undefined,
-              }),
-              sessionId: () => undefined,
-            }),
+            async () => {
+              launches += 1;
+              if (launches === 2) signalSecondLaunch?.();
+              return {
+                close: async () => void events.push("browser:close"),
+                newContext: async () => ({
+                  addCookies: async () => undefined,
+                  close: async () => void events.push("context:close"),
+                  newCDPSession: async () => captureSession(),
+                  newPage: () => latePage.promise,
+                  pages: () => [],
+                  route: async () => undefined,
+                  routeWebSocket: async () => undefined,
+                }),
+                sessionId: () => undefined,
+              };
+            },
             0,
           );
           const fiber = yield* client
@@ -989,6 +1005,9 @@ describe("Kitesurf client", () => {
               () => Effect.void,
             )
             .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
+          yield* TestClock.adjust(KITESURF_ACQUISITION_RETRY_DELAY_MILLIS);
+          yield* Effect.promise(() => secondLaunch);
           yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
           const result = yield* Fiber.join(fiber);
           assert.deepInclude(failureOf(result), {
@@ -1028,7 +1047,12 @@ describe("Kitesurf client", () => {
           };
           latePage.resolve(page);
           yield* Effect.promise(() => vi.runAllTimersAsync());
-          assert.deepStrictEqual(events, ["context:close", "browser:close"]);
+          assert.deepStrictEqual(events, [
+            "context:close",
+            "browser:close",
+            "context:close",
+            "browser:close",
+          ]);
         }),
       () => Effect.sync(() => vi.useRealTimers()),
     ),
@@ -1107,91 +1131,197 @@ describe("Kitesurf client", () => {
     ),
   );
 
-  it.effect("preserves successful use when browser cleanup rejects", () =>
-    Effect.acquireUseRelease(
-      Effect.sync(() => vi.spyOn(console, "error").mockImplementation(() => undefined)),
-      (cleanupLog) =>
-        Effect.gen(function* () {
-          const state = runtimeState();
-          const result = yield* makeKitesurfClient(
-            binding,
-            makeRuntime(state, {
-              browserClose: async () =>
-                Promise.reject(new Error("private browser cleanup rejection")),
-            }),
-          ).withPage(
-            {
-              origin: "https://preview.scotty.example",
-              cookieSecret: "private-cookie-secret",
-            },
-            () => Effect.succeed("published"),
-          );
-
-          assert.strictEqual(result, "published");
-          assert.include(state.events, "browser:close");
-          assert.deepStrictEqual(cleanupLog.mock.calls, [
-            [
-              "Kitesurf cleanup failed after successful evidence use",
-              { operation: "close_browser", reason: "cleanup" },
-            ],
-          ]);
-          assert.notInclude(
-            JSON.stringify(cleanupLog.mock.calls),
-            "private browser cleanup rejection",
-          );
+  it.effect("retries browser cleanup once before publishing successful use", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      let closeCalls = 0;
+      let signalFirstClose: (() => void) | undefined;
+      const firstClose = new Promise<void>((resolve) => {
+        signalFirstClose = resolve;
+      });
+      const client = makeKitesurfClient(
+        binding,
+        makeRuntime(state, {
+          browserClose: () => {
+            closeCalls += 1;
+            if (closeCalls === 1) {
+              signalFirstClose?.();
+              return Promise.reject(new Error("private browser cleanup rejection"));
+            }
+            return Promise.resolve();
+          },
         }),
-      (cleanupLog) => Effect.sync(() => cleanupLog.mockRestore()),
-    ),
+      );
+      const fiber = yield* client
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          () => Effect.succeed("published"),
+        )
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.promise(() => firstClose);
+      yield* TestClock.adjust(KITESURF_CLEANUP_RETRY_DELAY_MILLIS);
+      const result = yield* Fiber.join(fiber);
+
+      assert.strictEqual(result, "published");
+      assert.strictEqual(closeCalls, 2);
+      assert.strictEqual(state.events.filter((event) => event === "browser:close").length, 2);
+    }),
   );
 
-  it.effect("preserves a successful screenshot when browser cleanup times out", () =>
-    Effect.acquireUseRelease(
-      Effect.sync(() => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        return vi.spyOn(console, "error").mockImplementation(() => undefined);
-      }),
-      (cleanupLog) =>
-        Effect.gen(function* () {
-          const state = runtimeState();
-          const browserClose = deferredPromise<void>();
-          const client = makeKitesurfClient(
-            binding,
-            makeRuntime(state, { browserClose: () => browserClose.promise }),
-            0,
-          );
-          const fiber = yield* client
-            .withPage(
-              {
-                origin: "https://preview.scotty.example",
-                cookieSecret: "private-cookie-secret",
-                viewport: { width: 1_280, height: 800 },
-              },
-              (page) => page.screenshot,
-            )
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
-          const bytes = yield* Fiber.join(fiber);
+  it.effect("fails successful use when browser cleanup stays ambiguous", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      let closeCalls = 0;
+      let useCalls = 0;
+      let signalFirstClose: (() => void) | undefined;
+      const firstClose = new Promise<void>((resolve) => {
+        signalFirstClose = resolve;
+      });
+      const client = makeKitesurfClient(
+        binding,
+        makeRuntime(state, {
+          browserClose: () => {
+            closeCalls += 1;
+            signalFirstClose?.();
+            signalFirstClose = undefined;
+            return Promise.reject(new Error("private browser cleanup rejection"));
+          },
+        }),
+      );
+      const fiber = yield* client
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          () =>
+            Effect.sync(() => {
+              useCalls += 1;
+              return "published";
+            }),
+        )
+        .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+      yield* Effect.promise(() => firstClose);
+      yield* TestClock.adjust(KITESURF_CLEANUP_RETRY_DELAY_MILLIS);
+      const result = yield* Fiber.join(fiber);
 
-          assert.deepStrictEqual(bytes, PNG);
-          assert.deepStrictEqual(state.pageOptions, {
-            serviceWorkers: "block",
-            viewport: { width: 1_280, height: 800 },
-          });
-          assert.include(state.events, "browser:close");
-          assert.deepStrictEqual(cleanupLog.mock.calls, [
-            [
-              "Kitesurf cleanup failed after successful evidence use",
-              { operation: "close_browser", reason: "cleanup" },
-            ],
-          ]);
-          browserClose.resolve();
-        }),
-      (cleanupLog) =>
-        Effect.sync(() => {
-          cleanupLog.mockRestore();
-          vi.useRealTimers();
-        }),
-    ),
+      assert.deepInclude(failureOf(result), {
+        operation: "close_browser",
+        reason: "cleanup",
+      });
+      assert.strictEqual(useCalls, 1);
+      assert.strictEqual(closeCalls, 2);
+      assert.notInclude(JSON.stringify(result), "private browser cleanup rejection");
+    }),
+  );
+
+  it.effect("retries one fresh pre-use page acquisition without replaying the user flow", () =>
+    Effect.gen(function* () {
+      const failedState = runtimeState();
+      const recoveredState = runtimeState();
+      let launches = 0;
+      let useCalls = 0;
+      let signalFailedPage: (() => void) | undefined;
+      const failedPage = new Promise<void>((resolve) => {
+        signalFailedPage = resolve;
+      });
+      const failedLaunch = makeRuntime(failedState, {
+        newPageFails: () => {
+          signalFailedPage?.();
+          signalFailedPage = undefined;
+          return true;
+        },
+      });
+      const recoveredLaunch = makeRuntime(recoveredState);
+      const client = makeKitesurfClient(binding, (browserBinding, options) => {
+        launches += 1;
+        return launches === 1
+          ? failedLaunch(browserBinding, options)
+          : recoveredLaunch(browserBinding, options);
+      });
+      const fiber = yield* client
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          () =>
+            Effect.sync(() => {
+              useCalls += 1;
+              return "published";
+            }),
+        )
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.promise(() => failedPage);
+      yield* TestClock.adjust(KITESURF_ACQUISITION_RETRY_DELAY_MILLIS);
+      const result = yield* Fiber.join(fiber);
+
+      assert.strictEqual(result, "published");
+      assert.strictEqual(launches, 2);
+      assert.strictEqual(useCalls, 1);
+      assert.include(failedState.events, "context:close");
+      assert.include(failedState.events, "browser:close");
+      assert.include(recoveredState.events, "context:close");
+      assert.include(recoveredState.events, "browser:close");
+    }),
+  );
+
+  it.effect("never retries a browser-shaped failure after the user flow starts", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      let launches = 0;
+      let useCalls = 0;
+      const client = makeKitesurfClient(binding, (browserBinding, options) => {
+        launches += 1;
+        return makeRuntime(state)(browserBinding, options);
+      });
+      const result = yield* client
+        .withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          () => {
+            useCalls += 1;
+            return Effect.fail(
+              new KitesurfClientError({ operation: "create_page", reason: "ambiguous" }),
+            );
+          },
+        )
+        .pipe(Effect.result);
+
+      assert.deepInclude(failureOf(result), { operation: "create_page", reason: "ambiguous" });
+      assert.strictEqual(launches, 1);
+      assert.strictEqual(useCalls, 1);
+    }),
+  );
+
+  it.effect("closes both browsers across two consecutive successful jobs", () =>
+    Effect.gen(function* () {
+      const state = runtimeState();
+      let useCalls = 0;
+      const client = makeKitesurfClient(binding, makeRuntime(state));
+      const run = () =>
+        client.withPage(
+          {
+            origin: "https://preview.scotty.example",
+            cookieSecret: "private-cookie-secret",
+          },
+          () =>
+            Effect.sync(() => {
+              useCalls += 1;
+              return "published";
+            }),
+        );
+
+      assert.strictEqual(yield* run(), "published");
+      assert.strictEqual(yield* run(), "published");
+      assert.strictEqual(useCalls, 2);
+      assert.strictEqual(state.events.filter((event) => event === "browser:close").length, 2);
+    }),
   );
 
   it.effect(

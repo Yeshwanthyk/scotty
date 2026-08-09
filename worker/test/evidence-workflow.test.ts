@@ -108,6 +108,7 @@ const makeClient = (
   page: KitesurfPage,
   events: Array<string>,
   options: {
+    readonly closeBrowserFails?: boolean;
     readonly closePageFails?: boolean;
     readonly closePageInterrupts?: boolean;
     readonly videoBytes?: Uint8Array;
@@ -142,7 +143,16 @@ const makeClient = (
             ),
           () => Effect.sync(() => events.push("context:close")),
         ),
-      () => Effect.sync(() => events.push("browser:close")),
+      () =>
+        Effect.sync(() => events.push("browser:close")).pipe(
+          Effect.andThen(
+            options.closeBrowserFails === true
+              ? Effect.fail(
+                  new KitesurfClientError({ operation: "close_browser", reason: "cleanup" }),
+                )
+              : Effect.void,
+          ),
+        ),
     );
   return KitesurfClient.of({
     withPage: (_pageOptions, use) => withLifecycle(use),
@@ -265,6 +275,7 @@ const execute = (
   page: KitesurfPage,
   state: ControlState,
   options: {
+    readonly closeBrowserFails?: boolean;
     readonly closePageFails?: boolean;
     readonly closePageInterrupts?: boolean;
     readonly exposeFailsAtDeadline?: boolean;
@@ -602,6 +613,24 @@ describe("Kitesurf evidence workflow", () => {
         state.events.indexOf("preview:unexpose"),
       );
       assert.isNotTrue(state.events.includes("terminal:succeeded"));
+    }),
+  );
+
+  it.effect("does not report success when browser cleanup remains ambiguous", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const state = emptyState();
+      const result = yield* execute(defaultJob, makePage(), state, { closeBrowserFails: true });
+
+      assert.strictEqual(result.status, "interrupted");
+      assert.deepStrictEqual(result.failure, { code: "interrupted" });
+      assert.deepInclude(state.diagnostic, {
+        operation: "browser",
+        reason: "cleanup",
+        kitesurf: { operation: "close_browser", reason: "cleanup" },
+      });
+      assert.include(state.events, "browser:close");
+      assert.notInclude(state.events, "terminal:succeeded");
     }),
   );
 
