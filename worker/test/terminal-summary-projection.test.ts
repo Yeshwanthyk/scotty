@@ -117,7 +117,7 @@ describe("terminal Summary projection", () => {
       { role: "toolResult", id: after.id, toolCallId: after.id, content: after.result },
       {
         role: "assistant",
-        content: `Verified scotty-evidence:job-before and scotty-evidence:job-after`,
+        content: `Verified \`scotty-evidence:job-before\` and \`scotty-evidence:job-after\``,
       },
     ];
 
@@ -176,7 +176,7 @@ describe("terminal Summary projection", () => {
         content: [
           {
             type: "text",
-            text: `Ready: scotty-hatch:${HATCH_ID} and [open](scotty-hatch:${HATCH_ID})`,
+            text: `Ready: \`scotty-hatch:${HATCH_ID}\` and [open](scotty-hatch:${HATCH_ID})`,
           },
         ],
       },
@@ -286,7 +286,7 @@ describe("terminal Summary projection", () => {
     );
   });
 
-  it("parses only exact Hatch references outside code and untrusted URLs", () => {
+  it("parses exact Hatch references in text, links, and inline code but not code blocks", () => {
     const source = [
       `scotty-hatch:${HATCH_ID}`,
       `[same](scotty-hatch:${HATCH_ID})`,
@@ -297,7 +297,7 @@ describe("terminal Summary projection", () => {
       "scotty-hatch:hatch?nonce=secret",
       "https://example.com/scotty-hatch:remote",
     ].join("\n\n");
-    assert.deepStrictEqual(assistantHatchReferences(source), [HATCH_ID]);
+    assert.deepStrictEqual(assistantHatchReferences(source), [HATCH_ID, "code-only"]);
   });
 
   it("accepts current authenticated status only for the exact referenced Hatch", () => {
@@ -352,7 +352,7 @@ describe("terminal Summary projection", () => {
     );
   });
 
-  it("parses only exact evidence references outside code and deduplicates them", () => {
+  it("parses exact evidence references in text, links, and inline code but not code blocks", () => {
     const markdown = [
       `scotty-evidence:${JOB_ID}`,
       `[same](scotty-evidence:${JOB_ID})`,
@@ -364,7 +364,7 @@ describe("terminal Summary projection", () => {
       "https://example.com/scotty-evidence:remote",
     ].join("\n\n");
 
-    assert.deepStrictEqual(assistantEvidenceReferences(markdown), [JOB_ID]);
+    assert.deepStrictEqual(assistantEvidenceReferences(markdown), [JOB_ID, "code-only"]);
   });
 
   it("does not treat a custom scheme as a generally safe URL", () => {
