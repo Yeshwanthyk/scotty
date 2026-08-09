@@ -169,6 +169,26 @@ describe("evidence contracts", () => {
     assert.ok(Result.isFailure(decodeEvidenceStateResult({ ...empty, version: 1 })));
   });
 
+  it("temporarily decodes the removed provider diagnostic for authoritative vaporize", () => {
+    assert.ok(
+      Result.isSuccess(
+        decodeEvidenceStateResult({
+          ...emptyEvidenceState(),
+          nextSequence: 1,
+          jobs: [
+            {
+              ...internalSummary,
+              diagnostic: {
+                ...diagnostic,
+                kitesurf: { operation: "text_exact", reason: "ambiguous" },
+              },
+            },
+          ],
+        }),
+      ),
+    );
+  });
+
   it("projects a Showcase only from matched passing before and recorded after runs", () => {
     const successfulSummary = (jobId: string, recordVideo: boolean) =>
       publicEvidenceSummaryProjection({
