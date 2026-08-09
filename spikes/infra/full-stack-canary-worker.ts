@@ -16,7 +16,6 @@ import {
 } from "../../worker/src/contracts";
 import { denyOutbound, makeOutboundByHost } from "../../worker/src/egress";
 import app from "../../worker/src/index";
-import { runKitesurfCanary } from "../../worker/src/kitesurf-launch";
 import { SESSION_SCHEDULE_CALLBACKS } from "../../worker/src/session-lifecycle";
 import { Sandbox } from "../../worker/src/session";
 import { shellQuote } from "../../worker/src/sandbox-runtime";
@@ -266,11 +265,6 @@ export default {
         githubStatus: github.status,
         githubTokenBytes: new TextEncoder().encode(env.GH_TOKEN).byteLength,
       });
-    }
-    if (url.pathname === "/__e2e/kitesurf") {
-      if (!canaryAuthorized(request, env)) return jsonError(401, "unauthorized");
-      if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-      return Response.json(await runKitesurfCanary(env.BROWSER));
     }
     const route = /^\/__e2e\/(probe|reconstruct|peer)\/([^/]+)$/u.exec(url.pathname);
     if (route === null) return app.fetch(request, env, ctx);

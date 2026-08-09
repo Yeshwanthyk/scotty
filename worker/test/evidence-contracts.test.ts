@@ -24,7 +24,6 @@ const diagnostic = {
   operation: "screenshot",
   reason: "ambiguous",
   step: 0,
-  kitesurf: { operation: "screenshot", reason: "ambiguous" },
 } as const;
 
 const internalSummary: EvidenceJobSummaryV2 = {
@@ -150,7 +149,7 @@ describe("evidence contracts", () => {
     for (const invalidDiagnostic of [
       { ...diagnostic, detail: "private page data" },
       { ...diagnostic, reason: "native_timeout" },
-      { ...diagnostic, kitesurf: { ...diagnostic.kitesurf, cause: "private cause" } },
+      { ...diagnostic, provider: { cause: "private cause" } },
     ]) {
       assert.ok(
         Result.isFailure(
@@ -246,7 +245,6 @@ describe("evidence contracts", () => {
   it("explicitly omits internal diagnostics from the public summary projection", () => {
     const projected = publicEvidenceSummaryProjection(internalSummary);
     assert.notProperty(projected, "diagnostic");
-    assert.isFalse(JSON.stringify(projected).includes("kitesurf"));
   });
 
   it("rejects duplicate or overcommitted persisted permit accounting", () => {

@@ -212,42 +212,12 @@ export const EvidenceWorkflowReasonSchema = Schema.Literals([
   "state",
   "upstream",
 ]);
-export const EvidenceKitesurfOperationSchema = Schema.Literals([
-  "launch",
-  "verify_session",
-  "create_context",
-  "install_network_guard",
-  "install_cookie",
-  "create_page",
-  "goto",
-  "click",
-  "fill",
-  "press",
-  "visible",
-  "text_exact",
-  "count",
-  "url_path",
-  "screenshot",
-  "close_page",
-  "close_context",
-  "close_browser",
-]);
-export const EvidenceKitesurfReasonSchema = Schema.Literals([
-  "ambiguous",
-  "cleanup",
-  "unsupported",
-]);
-export const EvidenceKitesurfDiagnosticSchema = Schema.Struct({
-  operation: EvidenceKitesurfOperationSchema,
-  reason: EvidenceKitesurfReasonSchema,
-});
 export const EvidenceDiagnosticSchema = Schema.Struct({
   operation: EvidenceWorkflowOperationSchema,
   reason: EvidenceWorkflowReasonSchema,
   step: Schema.optionalKey(
     NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(EVIDENCE_MAX_STEPS - 1)),
   ),
-  kitesurf: Schema.optionalKey(EvidenceKitesurfDiagnosticSchema),
 });
 export type EvidenceDiagnostic = typeof EvidenceDiagnosticSchema.Type;
 

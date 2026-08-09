@@ -61,10 +61,10 @@ Observation is complete when the final record and its stopping reason are known.
   `capture.video: false`. Make the change, then rerun the exact same viewport, steps, and assertions
   with `capture.video: true`. This produces matched screenshots and one actual WebM recording.
 - Hatch is the human live application view. It does not capture screenshots or video. The baseline
-  screenshot run uses the managed browser adapter. A video run uses Scotty's fixed local evidence
-  runner: headed Chromium on an isolated X display with ffmpeg recording real pixels to WebM. The
-  runner is Worker-controlled; the agent does not launch it, receive browser authority, or fabricate
-  video from screenshots or rrweb events.
+  screenshot run and the video run use Scotty's fixed local evidence runner: headed Chromium on an
+  isolated X display captures each step as PNG, with ffmpeg recording the same real pixels to WebM
+  when requested. The runner is Worker-controlled; the agent does not launch it, receive browser
+  authority, or fabricate video from screenshots or rrweb events.
 - Stop only the temporary server afterward. Do not restart or replace the permanent Hatch process
   for evidence collection. Do not repeat a failed run unless the failure cause or session state
   changed.

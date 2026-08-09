@@ -361,11 +361,11 @@ wildcard preview URL, handoff token, route nonce, or Hatch cookie.
 
 Browser evidence uses a separate temporary server on a different port from Hatch. Before changing
 visible behavior, define one bounded flow with at most three observable checks. Run that exact
-viewport, action, and assertion graph once with video disabled. That baseline uses the managed
-browser screenshot adapter. Make the change, then run the same graph with video enabled. The
-recorded run uses headed Chromium on an isolated X display inside the sandbox and ffmpeg captures
-its live pixels as WebM; it does not stitch screenshots or use rrweb replay. Stop only the temporary
-server and leave Hatch running.
+viewport, action, and assertion graph once with video disabled. Make the change, then run the same
+graph with video enabled. Both runs use Scotty's fixed local evidence runner with headed Chromium on
+an isolated X display inside the sandbox. It captures each step as PNG and, when requested, ffmpeg
+records the same live pixels as WebM; it does not stitch screenshots or use rrweb replay. Stop only
+the temporary server and leave Hatch running.
 
 The agent's latest update must include the exact structured `scotty-hatch:<hatchId>` reference and
 both `scotty-evidence:<jobId>` references from the same conversation. Summary then shows the live
@@ -420,8 +420,8 @@ See
 
 After an evidence-runtime change, production proof requires two consecutive jobs against one fresh
 sandbox: a non-video baseline followed by the same flow with real WebM enabled. Both jobs must pass,
-the managed browser and local recorder processes must close definitively, Hatch must remain running,
-and the Showcase must open. A single successful job does not prove recorder cleanup or reuse.
+the local browser and recorder processes must close definitively, Hatch must remain running, and the
+Showcase must open. A single successful job does not prove recorder cleanup or reuse.
 
 ```sh
 node e2e/scripts/run.mjs

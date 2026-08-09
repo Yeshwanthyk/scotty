@@ -14,8 +14,12 @@ import {
   type EvidenceJobSummaryV2,
   type EvidenceStateV2,
 } from "../src/evidence-contracts";
+import {
+  ContainerEvidenceRecorder,
+  ContainerEvidenceRecorderError,
+  type ContainerEvidenceRecording,
+} from "../src/container-evidence-recorder";
 import { sha256Hex } from "../src/digest";
-import { KitesurfClient, KitesurfClientError } from "../src/kitesurf-client";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
   SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
@@ -23,7 +27,6 @@ import {
   SANDBOX_TEST_FINALIZE_EVIDENCE,
   Sandbox,
 } from "../src/session";
-import { EVIDENCE_ASSERTION_TIMEOUT_MILLIS } from "../src/evidence-workflow";
 import {
   createSessionHarness,
   injectedHarnessFailure,
@@ -187,6 +190,34 @@ const job = {
   ],
 } as const;
 
+const recordingFor = (
+  options: { readonly bytes?: Uint8Array; readonly passed?: boolean } = {},
+): ContainerEvidenceRecording => {
+  const passed = options.passed ?? true;
+  return {
+    status: passed ? "succeeded" : "failed",
+    completedSteps: 1,
+    steps: [
+      {
+        index: 0,
+        startedAt: new Date(NOW).toISOString(),
+        completedAt: new Date(NOW + 1).toISOString(),
+        offsetMillis: 1,
+        assertions: [{ kind: "urlPath", passed }],
+        frame: {
+          bytes: options.bytes ?? PNG,
+          capturedAt: new Date(NOW + 1).toISOString(),
+          offsetMillis: 1,
+        },
+      },
+    ],
+    ...(passed ? {} : { failure: { code: "assertion_mismatch" as const, step: 0 } }),
+  };
+};
+
+const recorderFor = (recording: ContainerEvidenceRecording): ContainerEvidenceRecorder["Service"] =>
+  ContainerEvidenceRecorder.of({ record: () => Effect.succeed(recording) });
+
 describe("evidence session lifecycle", () => {
   it("does not expose low-level evidence mutation methods over Durable Object RPC", () => {
     const publicNames = Object.getOwnPropertyNames(Sandbox.prototype);
@@ -206,28 +237,8 @@ describe("evidence session lifecycle", () => {
     "runs one accepted job through the scoped RPC and existing artifact publication path",
     () =>
       Effect.gen(function* () {
-        const browserEvents: Array<string> = [];
-        const kitesurfClient = KitesurfClient.of({
-          withPage: (_options, use) =>
-            Effect.acquireUseRelease(
-              Effect.sync(() => browserEvents.push("browser:open")),
-              () =>
-                use({
-                  goto: () => Effect.void,
-                  click: () => Effect.void,
-                  fill: () => Effect.void,
-                  press: () => Effect.void,
-                  isVisible: () => Effect.succeed(true),
-                  textContent: () => Effect.succeed("Ready"),
-                  count: () => Effect.succeed(1),
-                  urlPath: Effect.succeed("/"),
-                  screenshot: Effect.succeed(PNG),
-                }),
-              () => Effect.sync(() => browserEvents.push("browser:close")),
-            ),
-        });
         const harness = yield* createHarness({
-          kitesurfClient,
+          containerEvidenceRecorder: recorderFor(recordingFor()),
           previewBase: "preview.scotty.example",
         });
         yield* Effect.promise(() => harness.startRuntime());
@@ -238,7 +249,6 @@ describe("evidence session lifecycle", () => {
         assert.strictEqual(result.completedSteps, 1);
         assert.strictEqual(result.frameCount, 1);
         assert.match(result.summaryUrl, new RegExp(`^/s/${SESSION_ID}/evidence/job-`, "u"));
-        assert.deepStrictEqual(browserEvents, ["browser:open", "browser:close"]);
         assert.deepStrictEqual(harness.exposedPreviewPorts(), []);
         assert.lengthOf(harness.artifactKeys(), 1);
         const state = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
@@ -249,54 +259,23 @@ describe("evidence session lifecycle", () => {
       }),
   );
 
-  it.effect("persists screenshot ambiguity before cleanup and retains it internally", () =>
+  it.effect("retains bounded local-recorder ambiguity internally", () =>
     Effect.gen(function* () {
-      let inspectPersistedBeforeCleanup = (): void => undefined;
-      let diagnosticObservedBeforeCleanup = false;
-      const kitesurfClient = KitesurfClient.of({
-        withPage: (_options, use) =>
-          Effect.acquireUseRelease(
-            Effect.void,
-            () =>
-              use({
-                goto: () => Effect.void,
-                click: () => Effect.void,
-                fill: () => Effect.void,
-                press: () => Effect.void,
-                isVisible: () => Effect.succeed(true),
-                textContent: () => Effect.succeed("Ready"),
-                count: () => Effect.succeed(1),
-                urlPath: Effect.succeed("/"),
-                screenshot: Effect.fail(
-                  new KitesurfClientError({ operation: "screenshot", reason: "ambiguous" }),
-                ),
-              }),
-            () => Effect.sync(inspectPersistedBeforeCleanup),
-          ),
-      });
       const harness = yield* createHarness({
-        kitesurfClient,
+        containerEvidenceRecorder: ContainerEvidenceRecorder.of({
+          record: () =>
+            Effect.fail(
+              new ContainerEvidenceRecorderError({ operation: "run", reason: "ambiguous" }),
+            ),
+        }),
         previewBase: "preview.scotty.example",
       });
-      inspectPersistedBeforeCleanup = () => {
-        assert.deepInclude(harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence)?.activeJob, {
-          failure: { code: "interrupted", step: 0 },
-          diagnostic: {
-            operation: "screenshot",
-            reason: "ambiguous",
-            step: 0,
-            kitesurf: { operation: "screenshot", reason: "ambiguous" },
-          },
-        });
-        diagnosticObservedBeforeCleanup = true;
-      };
       yield* Effect.promise(() => harness.startRuntime());
 
       const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
 
-      assert.isTrue(diagnosticObservedBeforeCleanup);
       assert.strictEqual(result.status, "interrupted");
-      assert.deepStrictEqual(result.failure, { code: "interrupted", step: 0 });
+      assert.deepStrictEqual(result.failure, { code: "interrupted" });
       assert.notProperty(result, "diagnostic");
       assert.strictEqual(result.completedSteps, 0);
       assert.strictEqual(result.frameCount, 0);
@@ -306,12 +285,10 @@ describe("evidence session lifecycle", () => {
         status: "interrupted",
         completedSteps: 0,
         frameCount: 0,
-        failure: { code: "interrupted", step: 0 },
+        failure: { code: "interrupted" },
         diagnostic: {
           operation: "screenshot",
           reason: "ambiguous",
-          step: 0,
-          kitesurf: { operation: "screenshot", reason: "ambiguous" },
         },
       });
       assert.strictEqual(harness.readRecord()?.operation, null);
@@ -320,22 +297,10 @@ describe("evidence session lifecycle", () => {
 
   it.effect("fails an invalid screenshot without publishing an artifact", () =>
     Effect.gen(function* () {
-      const kitesurfClient = KitesurfClient.of({
-        withPage: (_options, use) =>
-          use({
-            goto: () => Effect.void,
-            click: () => Effect.void,
-            fill: () => Effect.void,
-            press: () => Effect.void,
-            isVisible: () => Effect.succeed(true),
-            textContent: () => Effect.succeed("Ready"),
-            count: () => Effect.succeed(1),
-            urlPath: Effect.succeed("/"),
-            screenshot: Effect.succeed(Uint8Array.from([0, 1, 2, 3])),
-          }),
-      });
       const harness = yield* createHarness({
-        kitesurfClient,
+        containerEvidenceRecorder: recorderFor(
+          recordingFor({ bytes: Uint8Array.from([0, 1, 2, 3]) }),
+        ),
         previewBase: "preview.scotty.example",
       });
       yield* Effect.promise(() => harness.startRuntime());
@@ -354,40 +319,14 @@ describe("evidence session lifecycle", () => {
 
   it.effect("preserves assertion_mismatch when failed-frame retention arming fails", () =>
     Effect.gen(function* () {
-      let assertionAttempts = 0;
-      const kitesurfClient = KitesurfClient.of({
-        withPage: (_options, use) =>
-          use({
-            goto: () => Effect.void,
-            click: () => Effect.void,
-            fill: () => Effect.void,
-            press: () => Effect.void,
-            isVisible: () => Effect.succeed(true),
-            textContent: () => Effect.succeed("Ready"),
-            count: () => Effect.succeed(1),
-            urlPath: Effect.sync(() => {
-              assertionAttempts += 1;
-              return "/not-ready";
-            }),
-            screenshot: Effect.succeed(PNG),
-          }),
-      });
       const harness = yield* createHarness({
+        containerEvidenceRecorder: recorderFor(recordingFor({ passed: false })),
         failureStage: "evidenceRetentionSchedulePreInsert",
-        kitesurfClient,
         previewBase: "preview.scotty.example",
       });
       yield* Effect.promise(() => harness.startRuntime());
 
-      const pending = harness.sandbox.runScottyEvidenceJob(job);
-      yield* Effect.promise(() =>
-        vi.waitFor(() => assert.isAtLeast(assertionAttempts, 1), {
-          interval: 1,
-          timeout: 1_000,
-        }),
-      );
-      yield* TestClock.adjust(EVIDENCE_ASSERTION_TIMEOUT_MILLIS);
-      const result = yield* Effect.promise(() => pending);
+      const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
 
       assert.strictEqual(result.status, "failed");
       assert.deepStrictEqual(result.failure, { code: "assertion_mismatch", step: 0 });
@@ -404,39 +343,13 @@ describe("evidence session lifecycle", () => {
 
   it.effect("publishes a verified failed-assertion screenshot", () =>
     Effect.gen(function* () {
-      let assertionAttempts = 0;
-      const kitesurfClient = KitesurfClient.of({
-        withPage: (_options, use) =>
-          use({
-            goto: () => Effect.void,
-            click: () => Effect.void,
-            fill: () => Effect.void,
-            press: () => Effect.void,
-            isVisible: () => Effect.succeed(true),
-            textContent: () => Effect.succeed("Ready"),
-            count: () => Effect.succeed(1),
-            urlPath: Effect.sync(() => {
-              assertionAttempts += 1;
-              return "/not-ready";
-            }),
-            screenshot: Effect.succeed(PNG),
-          }),
-      });
       const harness = yield* createHarness({
-        kitesurfClient,
+        containerEvidenceRecorder: recorderFor(recordingFor({ passed: false })),
         previewBase: "preview.scotty.example",
       });
       yield* Effect.promise(() => harness.startRuntime());
 
-      const pending = harness.sandbox.runScottyEvidenceJob(job);
-      yield* Effect.promise(() =>
-        vi.waitFor(() => assert.isAtLeast(assertionAttempts, 1), {
-          interval: 1,
-          timeout: 1_000,
-        }),
-      );
-      yield* TestClock.adjust(EVIDENCE_ASSERTION_TIMEOUT_MILLIS);
-      const result = yield* Effect.promise(() => pending);
+      const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
 
       assert.strictEqual(result.status, "failed");
       assert.deepStrictEqual(result.failure, { code: "assertion_mismatch", step: 0 });
@@ -462,41 +375,15 @@ describe("evidence session lifecycle", () => {
           ["artifactDelete", true],
           ["artifactDeleteAmbiguous", false],
         ] as const) {
-          let assertionAttempts = 0;
-          const kitesurfClient = KitesurfClient.of({
-            withPage: (_options, use) =>
-              use({
-                goto: () => Effect.void,
-                click: () => Effect.void,
-                fill: () => Effect.void,
-                press: () => Effect.void,
-                isVisible: () => Effect.succeed(true),
-                textContent: () => Effect.succeed("Ready"),
-                count: () => Effect.succeed(1),
-                urlPath: Effect.sync(() => {
-                  assertionAttempts += 1;
-                  return "/not-ready";
-                }),
-                screenshot: Effect.succeed(PNG),
-              }),
-          });
           const harness = yield* createHarness({
+            containerEvidenceRecorder: recorderFor(recordingFor({ passed: false })),
             failureStage: "artifactPutAmbiguous",
-            kitesurfClient,
             previewBase: "preview.scotty.example",
           });
           harness.injectFailure(deleteFailure);
           yield* Effect.promise(() => harness.startRuntime());
 
-          const pending = harness.sandbox.runScottyEvidenceJob(job);
-          yield* Effect.promise(() =>
-            vi.waitFor(() => assert.isAtLeast(assertionAttempts, 1), {
-              interval: 1,
-              timeout: 1_000,
-            }),
-          );
-          yield* TestClock.adjust(EVIDENCE_ASSERTION_TIMEOUT_MILLIS);
-          const result = yield* Effect.promise(() => pending);
+          const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
 
           assert.strictEqual(result.status, "failed");
           assert.deepStrictEqual(result.failure, { code: "assertion_mismatch", step: 0 });
