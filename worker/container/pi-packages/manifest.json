@@ -14,8 +14,8 @@
       "name": "pi-subagents",
       "order": 1,
       "repository": "https://github.com/Yeshwanthyk/pi-subagents.git",
-      "commit": "4b6c2d885a8ccfbb927df1332e6ca01e23e56414",
-      "sourceSha256": "791e04057c69104db88830a4ce649af106945a093910f1bdd9c4f8a18f549f7f",
+      "commit": "692835531bb64b7626e4b901b355a5940efc81ba",
+      "sourceSha256": "0055b278f67208efe2ad34a24bb85a3febbdd7711a73529967a99cf3b47650db",
       "sourcePath": "worker/container/pi-packages/sources/pi-subagents",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-subagents"
     },
@@ -23,8 +23,8 @@
       "name": "pi-workflows",
       "order": 2,
       "repository": "https://github.com/Yeshwanthyk/pi-workflows.git",
-      "commit": "ee05d0d2cc0666b61b440746020b81f5967cf40c",
-      "sourceSha256": "1375f97df915e3bc3c59f34a56b471eb3e65f9378f8fc346b6efb3e9d2a98ccc",
+      "commit": "56656723c52377cec95a3b5d4ecf4061136a1601",
+      "sourceSha256": "3080662537f1c0500cf442b19b68a998e0b90c231cb5880058eca82742e8718b",
       "sourcePath": "worker/container/pi-packages/sources/pi-workflows",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-workflows"
     },
