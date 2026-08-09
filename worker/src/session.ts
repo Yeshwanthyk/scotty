@@ -1395,39 +1395,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     afterMillis?: number,
   ) {
-    return yield* Effect.try({
-      try: () =>
-        [
-          // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: inspect the pinned Container host's SDK-owned rows so publication never amplifies an actionable retention callback
-          ...this.ctx.storage.sql.exec<{ readonly id: string }>(
-            afterMillis === undefined
-              ? "SELECT id FROM container_schedules WHERE callback = ? LIMIT 1"
-              : "SELECT id FROM container_schedules WHERE callback = ? AND time > ? LIMIT 1",
-            "expireRetainedEvidence",
-            ...(afterMillis === undefined ? [] : [Math.floor(afterMillis / 1_000)]),
-          ),
-        ].length > 0,
+    const schedules = yield* Effect.tryPromise({
+      try: () => this.listSchedules<EvidenceRetentionPayload>("expireRetainedEvidence"),
       catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
     });
+    return schedules.some(
+      (schedule) => afterMillis === undefined || schedule.time * 1_000 > afterMillis,
+    );
   });
 
   private readonly hasScheduledEvidenceRetentionAtProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     expiresAt: string,
   ) {
-    return yield* Effect.try({
-      // Containers 0.3.7 inserts this row before scheduleNextAlarm; preserve that exact future retry.
-      try: () =>
-        [
-          // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: reconcile the pinned Container host's SDK-owned schedule row after scheduleNextAlarm fails
-          ...this.ctx.storage.sql.exec<{ readonly id: string }>(
-            "SELECT id FROM container_schedules WHERE callback = ? AND time = ? LIMIT 1",
-            "expireRetainedEvidence",
-            Math.floor(Date.parse(expiresAt) / 1_000),
-          ),
-        ].length > 0,
+    const schedules = yield* Effect.tryPromise({
+      try: () => this.listSchedules<EvidenceRetentionPayload>("expireRetainedEvidence"),
       catch: (cause) => new HostOperationFailure({ operation: "schedule", cause }),
     });
+    const expectedTime = Math.floor(Date.parse(expiresAt) / 1_000);
+    return schedules.some((schedule) => schedule.time === expectedTime);
   });
 
   private readonly armEvidenceRetentionFailClosedProgram = Effect.fnUntraced(
