@@ -138,6 +138,9 @@ describe("Sandbox beam-down orchestration", () => {
 });
 
 describe("Sandbox vaporize orchestration", () => {
+  const createVaporizeHarness = (options: HarnessOptions) =>
+    createSessionHarness({ rawPiContainerRunning: true, ...options });
+
   const vaporizeRecord = (overrides: Partial<SessionRecord> = {}): SessionRecord =>
     warmRecord({
       backup: { current: makeResumeBackup() },
@@ -159,7 +162,7 @@ describe("Sandbox vaporize orchestration", () => {
   ];
 
   it("cancels schedules in order, deduplicates backups, deletes credentials, and writes gone", async () => {
-    const harness = await createSessionHarness({
+    const harness = await createVaporizeHarness({
       initialEntries: authorityEntries(vaporizeRecord()),
       initialProjections: {
         [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
@@ -213,6 +216,26 @@ describe("Sandbox vaporize orchestration", () => {
     assert.ok(goneIndex < projectionIndex);
   });
 
+  it("finishes durable cleanup when the Cloudflare runtime is already absent", async () => {
+    const harness = await createVaporizeHarness({
+      rawPiContainerRunning: false,
+      initialEntries: authorityEntries(
+        vaporizeRecord({ ownedBackupIds: [], backup: undefined, backupExpiresAt: undefined }),
+      ),
+      initialProjections: {
+        [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
+      },
+    });
+
+    const result = await harness.sandbox.vaporizeScottySession();
+
+    assert.deepStrictEqual(result, { id: SESSION_ID, status: "gone" });
+    assert.strictEqual(harness.readRecord()?.status, "gone");
+    assert.strictEqual(harness.read(sessionHarnessKeys.credential), undefined);
+    assert.ok(!harness.events.includes("host:destroy"));
+    assert.ok(harness.events.includes(`projection:delete:session:${SESSION_ID}`));
+  });
+
   it("retryVaporizeSession is idempotent after the gone tombstone is durable", async () => {
     const gone = vaporizeRecord({
       status: "gone",
@@ -222,7 +245,7 @@ describe("Sandbox vaporize orchestration", () => {
       ownedBackupIds: [],
       failure: undefined,
     });
-    const harness = await createSessionHarness({
+    const harness = await createVaporizeHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: gone,
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
@@ -263,7 +286,7 @@ describe("Sandbox vaporize orchestration", () => {
       ownedBackupIds: [],
       failure: undefined,
     });
-    const harness = await createSessionHarness({
+    const harness = await createVaporizeHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: gone,
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
@@ -298,7 +321,7 @@ describe("Sandbox vaporize orchestration", () => {
         startedAt: lifecycleWallClock.nowIso(),
       },
     };
-    const harness = await createSessionHarness({
+    const harness = await createVaporizeHarness({
       initialEntries: authorityEntries(original),
       onStorageGet: (key, count, memory) => {
         if (key === sessionHarnessKeys.record && count === 1)
@@ -320,7 +343,7 @@ describe("Sandbox vaporize orchestration", () => {
   it("aborts and re-arms retry when destroy exceeds its deadline", async () => {
     vi.useFakeTimers();
     try {
-      const harness = await createSessionHarness({
+      const harness = await createVaporizeHarness({
         destroyBehavior: "pending",
         initialEntries: authorityEntries(vaporizeRecord()),
       });
@@ -350,7 +373,7 @@ describe("Sandbox vaporize orchestration", () => {
       ownedBackupIds: [],
       failure: undefined,
     });
-    const harness = await createSessionHarness({
+    const harness = await createVaporizeHarness({
       failureStage: "projectionDelete",
       initialEntries: { [sessionHarnessKeys.record]: gone },
       initialProjections: {
@@ -400,7 +423,7 @@ describe("Sandbox vaporize orchestration", () => {
     readonly options: HarnessOptions;
   }>) {
     it(`keeps a durable vaporize lease and retry after injected ${testCase.name} failure`, async () => {
-      const harness = await createSessionHarness(testCase.options);
+      const harness = await createVaporizeHarness(testCase.options);
 
       const error = await rejection(harness.sandbox.vaporizeScottySession());
 
@@ -422,7 +445,7 @@ describe("Sandbox vaporize orchestration", () => {
   }
 
   it("retries safely after credential deletion fails", async () => {
-    const harness = await createSessionHarness({
+    const harness = await createVaporizeHarness({
       initialEntries: authorityEntries(vaporizeRecord({ ownedBackupIds: [], backup: undefined })),
       transactionFailureCountdown: 1,
     });
@@ -439,7 +462,7 @@ describe("Sandbox vaporize orchestration", () => {
   });
 
   it("retries safely after gone-tombstone persistence fails", async () => {
-    const harness = await createSessionHarness({
+    const harness = await createVaporizeHarness({
       initialEntries: authorityEntries(vaporizeRecord({ ownedBackupIds: [], backup: undefined })),
       transactionFailureCountdown: 2,
     });
@@ -457,7 +480,7 @@ describe("Sandbox vaporize orchestration", () => {
   });
 
   it("releases the vaporize lease when initial retry arming fails so a later call can resume", async () => {
-    const harness = await createSessionHarness({
+    const harness = await createVaporizeHarness({
       failureStage: "vaporizeRetrySchedule",
       initialEntries: authorityEntries(vaporizeRecord()),
     });
