@@ -12,6 +12,7 @@ import { sha256BytesHex } from "./digest";
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10] as const;
 const WEBM_SIGNATURE = [0x1a, 0x45, 0xdf, 0xa3] as const;
+export const ARTIFACT_PUT_RETRY_DELAY_MILLIS = 100;
 type ArtifactMediaType = EvidenceArtifactV2["mediaType"];
 
 export interface ArtifactObjectMetadata {
@@ -245,19 +246,6 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       return yield* new EvidenceArtifactError({ operation: "validate", reason: "invalid_state" });
     const key = evidenceArtifactObjectKey(artifact);
     const customMetadata = expectedMetadata(artifact, artifact.sha256);
-    const putResult = yield* Effect.result(
-      Effect.tryPromise({
-        try: () =>
-          capabilities.put(key, prepared.bytes, {
-            contentType: artifact.mediaType,
-            customMetadata,
-          }),
-        catch: (cause) => {
-          reportArtifactStorageFailure("put", cause);
-          return new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause });
-        },
-      }),
-    );
     const expected = {
       key,
       bytes: artifact.bytes,
@@ -267,6 +255,20 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       frameId: artifact.frameId,
       mediaType: artifact.mediaType,
     };
+    const put = Effect.tryPromise({
+      try: () =>
+        capabilities.put(key, prepared.bytes, {
+          contentType: artifact.mediaType,
+          customMetadata,
+        }),
+      catch: (cause) =>
+        new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
+    });
+    const head = Effect.tryPromise({
+      try: () => capabilities.head(key),
+      catch: (cause) => new EvidenceArtifactError({ operation: "head", reason: "upstream", cause }),
+    });
+    const putResult = yield* Effect.result(put);
     if (Result.isSuccess(putResult)) {
       if (metadataMatches(putResult.success, expected))
         return { ...artifact, status: "available" as const };
@@ -276,24 +278,45 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
         reason: "metadata_mismatch",
       });
     }
-    const headResult = yield* Effect.result(
-      Effect.tryPromise({
-        try: () => capabilities.head(key),
-        catch: (cause) => {
-          reportArtifactStorageFailure("head", cause);
-          return new EvidenceArtifactError({ operation: "head", reason: "upstream", cause });
-        },
-      }),
-    );
-    if (Result.isFailure(headResult)) return yield* putResult.failure;
-    if (!metadataMatches(headResult.success, expected)) {
-      reportArtifactVerificationFailure(
-        "head",
-        headResult.success === undefined ? "missing" : "metadata_mismatch",
-      );
+    const headResult = yield* Effect.result(head);
+    if (Result.isFailure(headResult)) {
+      reportArtifactStorageFailure("put", putResult.failure.cause);
+      reportArtifactStorageFailure("head", headResult.failure.cause);
       return yield* putResult.failure;
     }
-    return { ...artifact, status: "available" as const };
+    if (metadataMatches(headResult.success, expected))
+      return { ...artifact, status: "available" as const };
+    if (headResult.success !== undefined) {
+      reportArtifactStorageFailure("put", putResult.failure.cause);
+      reportArtifactVerificationFailure("head", "metadata_mismatch");
+      return yield* putResult.failure;
+    }
+
+    yield* Effect.sleep(ARTIFACT_PUT_RETRY_DELAY_MILLIS);
+    const retryPutResult = yield* Effect.result(put);
+    if (Result.isSuccess(retryPutResult)) {
+      if (metadataMatches(retryPutResult.success, expected))
+        return { ...artifact, status: "available" as const };
+      reportArtifactVerificationFailure("put", "metadata_mismatch");
+      return yield* new EvidenceArtifactError({
+        operation: "put",
+        reason: "metadata_mismatch",
+      });
+    }
+    const retryHeadResult = yield* Effect.result(head);
+    if (Result.isFailure(retryHeadResult)) {
+      reportArtifactStorageFailure("put", retryPutResult.failure.cause);
+      reportArtifactStorageFailure("head", retryHeadResult.failure.cause);
+      return yield* retryPutResult.failure;
+    }
+    if (metadataMatches(retryHeadResult.success, expected))
+      return { ...artifact, status: "available" as const };
+    reportArtifactStorageFailure("put", retryPutResult.failure.cause);
+    reportArtifactVerificationFailure(
+      "head",
+      retryHeadResult.success === undefined ? "missing" : "metadata_mismatch",
+    );
+    return yield* retryPutResult.failure;
   });
   const openArtifact = Effect.fnUntraced(function* (artifact: EvidenceArtifactV2) {
     if (artifact.status !== "available" || !canonicalArtifact(artifact))
