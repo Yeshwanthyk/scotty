@@ -674,7 +674,15 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         events.push(`artifact:put:${key}`);
         if (failures.has("artifactPutAmbiguous"))
           throw injectedHarnessFailure("injected ambiguous artifact put failure");
-        return {};
+        const object = artifactObjects.get(key);
+        if (object === undefined)
+          throw injectedHarnessFailure("artifact disappeared after successful put");
+        return {
+          key,
+          size: object.bytes.byteLength,
+          httpMetadata: { contentType: object.contentType },
+          customMetadata: object.customMetadata,
+        };
       },
       head: async (key: string) => {
         if (failures.has("artifactPutAmbiguous"))

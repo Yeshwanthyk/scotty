@@ -33,7 +33,7 @@ export interface ArtifactStoreCapabilities {
       readonly contentType: ArtifactMediaType;
       readonly customMetadata: Readonly<Record<string, string>>;
     },
-  ) => Promise<void>;
+  ) => Promise<ArtifactObjectMetadata>;
   readonly head: (key: string) => Promise<ArtifactObjectMetadata | undefined>;
   readonly get: (key: string) => Promise<ArtifactObjectBody | undefined>;
   readonly delete: (key: string) => Promise<void>;
@@ -164,8 +164,11 @@ const reportArtifactStorageFailure = (operation: "put" | "head", cause: unknown)
   console.error("Evidence artifact storage failed", { operation, cause });
 };
 
-const reportArtifactVerificationFailure = (reason: "missing" | "metadata_mismatch"): void => {
-  console.error("Evidence artifact verification failed", { operation: "head", reason });
+const reportArtifactVerificationFailure = (
+  operation: "put" | "head",
+  reason: "missing" | "metadata_mismatch",
+): void => {
+  console.error("Evidence artifact verification failed", { operation, reason });
 };
 
 export const artifactStoreLayer = (
@@ -246,15 +249,6 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
         },
       }),
     );
-    const headResult = yield* Effect.result(
-      Effect.tryPromise({
-        try: () => capabilities.head(key),
-        catch: (cause) => {
-          reportArtifactStorageFailure("head", cause);
-          return new EvidenceArtifactError({ operation: "head", reason: "upstream", cause });
-        },
-      }),
-    );
     const expected = {
       key,
       bytes: artifact.bytes,
@@ -264,24 +258,31 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
       frameId: artifact.frameId,
       mediaType: artifact.mediaType,
     };
-    if (Result.isFailure(headResult))
-      return yield* Result.isFailure(putResult)
-        ? putResult.failure
-        : new EvidenceArtifactError({
-            operation: "head",
-            reason: "put_unknown",
-            cause: headResult.failure,
-          });
+    if (Result.isSuccess(putResult)) {
+      if (metadataMatches(putResult.success, expected))
+        return { ...artifact, status: "available" as const };
+      reportArtifactVerificationFailure("put", "metadata_mismatch");
+      return yield* new EvidenceArtifactError({
+        operation: "put",
+        reason: "metadata_mismatch",
+      });
+    }
+    const headResult = yield* Effect.result(
+      Effect.tryPromise({
+        try: () => capabilities.head(key),
+        catch: (cause) => {
+          reportArtifactStorageFailure("head", cause);
+          return new EvidenceArtifactError({ operation: "head", reason: "upstream", cause });
+        },
+      }),
+    );
+    if (Result.isFailure(headResult)) return yield* putResult.failure;
     if (!metadataMatches(headResult.success, expected)) {
       reportArtifactVerificationFailure(
+        "head",
         headResult.success === undefined ? "missing" : "metadata_mismatch",
       );
-      return yield* Result.isFailure(putResult)
-        ? putResult.failure
-        : new EvidenceArtifactError({
-            operation: "head",
-            reason: headResult.success === undefined ? "put_unknown" : "metadata_mismatch",
-          });
+      return yield* putResult.failure;
     }
     return { ...artifact, status: "available" as const };
   });
@@ -370,7 +371,7 @@ export const r2ArtifactStoreCapabilities = (bucket: R2Bucket): ArtifactStoreCapa
         httpMetadata: { contentType: metadata.contentType },
         customMetadata: { ...metadata.customMetadata },
       })
-      .then(() => undefined),
+      .then(r2Metadata),
   head: (key) =>
     bucket.head(key).then((object) => (object === null ? undefined : r2Metadata(object))),
   get: (key) =>

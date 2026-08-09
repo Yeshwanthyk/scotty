@@ -34,19 +34,25 @@ const bodyFor = (stored: StoredObject): ArtifactObjectBody => ({
 const makeMemoryCapabilities = (ambiguousPut = false) => {
   const objects = new Map<string, StoredObject>();
   let putCalls = 0;
+  let headCalls = 0;
   const capabilities: ArtifactStoreCapabilities = {
     put: async (key, bytes, metadata) => {
       putCalls += 1;
-      objects.set(key, {
+      const object = {
         key,
         size: bytes.byteLength,
         contentType: metadata.contentType,
         customMetadata: metadata.customMetadata,
         bytes: Uint8Array.from(bytes),
-      });
+      };
+      objects.set(key, object);
       if (ambiguousPut) throw "put response lost";
+      return object;
     },
-    head: async (key) => objects.get(key),
+    head: async (key) => {
+      headCalls += 1;
+      return objects.get(key);
+    },
     get: async (key) => {
       const stored = objects.get(key);
       return stored === undefined ? undefined : bodyFor(stored);
@@ -55,7 +61,7 @@ const makeMemoryCapabilities = (ambiguousPut = false) => {
       objects.delete(key);
     },
   };
-  return { capabilities, objects, putCalls: () => putCalls };
+  return { capabilities, objects, putCalls: () => putCalls, headCalls: () => headCalls };
 };
 
 const r2Object = (stored: StoredObject, includeBody: boolean): R2Object | R2ObjectBody => {
@@ -125,6 +131,7 @@ const makeR2Capabilities = () => {
     capabilities: r2ArtifactStoreCapabilities(bucketShape as R2Bucket),
     objects: memory.objects,
     putCalls: memory.putCalls,
+    headCalls: memory.headCalls,
   };
 };
 
@@ -179,6 +186,7 @@ describe("ArtifactStore", () => {
         assert.match(artifact.sha256, /^[0-9a-f]{64}$/u);
         assert.strictEqual(artifact.objectKey, "evidence/v2/a0b1c2d3e4f5/job-1/frame-1.png");
         assert.strictEqual(test.putCalls(), 1);
+        assert.strictEqual(test.headCalls(), 0);
 
         const opened = yield* Effect.flatMap(ArtifactStore, (store) =>
           store.openFrame(artifact),
@@ -208,6 +216,25 @@ describe("ArtifactStore", () => {
       const artifact = yield* putFrame(test.capabilities);
       assert.strictEqual(artifact.status, "available");
       assert.strictEqual(test.objects.size, 1);
+      assert.strictEqual(test.headCalls(), 1);
+    }),
+  );
+
+  it.effect("rejects mismatched successful put metadata without issuing a head", () =>
+    Effect.gen(function* () {
+      const test = makeMemoryCapabilities();
+      const capabilities: ArtifactStoreCapabilities = {
+        ...test.capabilities,
+        put: async (key, bytes, metadata) => {
+          const receipt = await test.capabilities.put(key, bytes, metadata);
+          return { ...receipt, contentType: "application/octet-stream" };
+        },
+      };
+      const result = yield* Effect.result(putFrame(capabilities));
+
+      assert.deepInclude(failure(result), { operation: "put", reason: "metadata_mismatch" });
+      assert.strictEqual(test.putCalls(), 1);
+      assert.strictEqual(test.headCalls(), 0);
     }),
   );
 
