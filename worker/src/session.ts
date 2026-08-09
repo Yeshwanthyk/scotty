@@ -463,6 +463,20 @@ const evidenceControlFailureCode = (error: unknown) => {
   return "interrupted" as const;
 };
 
+const reportEvidenceControlFailure = (operation: string, error: unknown): void => {
+  const artifactError = decodeEvidenceArtifactError(error);
+  console.error("Evidence control failed", {
+    operation,
+    error: errorName(error),
+    ...(Option.isNone(artifactError)
+      ? {}
+      : {
+          artifactOperation: artifactError.value.operation,
+          artifactReason: artifactError.value.reason,
+        }),
+  });
+};
+
 const classifyCheckpointExit = <A, E>(exit: Exit.Exit<A, E>): CheckpointExitClassification => ({
   failed: Exit.isFailure(exit),
   hasDefect: Exit.hasDies(exit),
@@ -1363,8 +1377,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         artifact.objectKey !== promoting?.objectKey &&
         (artifact.status === "delete_pending" || Date.parse(artifact.expiresAt) <= nowMillis),
     );
+    const activeDeadlineMillis = Date.parse(state.activeJob?.deadlineAt ?? "");
     const nextAtMillis = needsRetry
-      ? nowMillis + EVIDENCE_CLEANUP_RETRY_SECONDS * 1_000
+      ? Number.isFinite(activeDeadlineMillis) && activeDeadlineMillis > nowMillis
+        ? activeDeadlineMillis
+        : nowMillis + EVIDENCE_CLEANUP_RETRY_SECONDS * 1_000
       : Math.min(
           ...state.artifacts
             .filter((artifact) => artifact.status === "available")
@@ -1418,6 +1435,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly armEvidenceRetentionFailClosedProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
+      const firstAttempt = yield* Effect.result(this.armEvidenceRetentionProgram());
+      if (Result.isSuccess(firstAttempt)) return;
+      yield* Effect.sync(() => reportEvidenceControlFailure("retention", firstAttempt.failure));
+      yield* Effect.sleep("1 second");
       yield* this.armEvidenceRetentionProgram().pipe(
         Effect.retry({ schedule: Schedule.spaced("1 second") }),
       );
@@ -1426,6 +1447,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly armFutureEvidenceRetentionFailClosedProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
+      const firstAttempt = yield* Effect.result(this.armFutureEvidenceRetentionProgram());
+      if (Result.isSuccess(firstAttempt)) return;
+      yield* Effect.sync(() =>
+        reportEvidenceControlFailure("future_retention", firstAttempt.failure),
+      );
+      yield* Effect.sleep("1 second");
       yield* this.armFutureEvidenceRetentionProgram().pipe(
         Effect.retry({ schedule: Schedule.spaced("1 second") }),
       );
@@ -1680,6 +1707,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
       completeStep: (active, input) =>
         this.completeScottyEvidenceStepProgram(active.operationNonce, input).pipe(
           Effect.asVoid,
+          Effect.tapError((error) =>
+            Effect.sync(() => reportEvidenceControlFailure("complete_step", error)),
+          ),
           Effect.mapError(
             (error) =>
               new EvidenceWorkflowControlError({
@@ -1692,6 +1722,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
       completeVideo: (active, input) =>
         this.completeScottyEvidenceVideoProgram(active.operationNonce, input).pipe(
           Effect.asVoid,
+          Effect.tapError((error) =>
+            Effect.sync(() => reportEvidenceControlFailure("complete_video", error)),
+          ),
           Effect.mapError(
             (error) =>
               new EvidenceWorkflowControlError({
@@ -1717,6 +1750,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
         ),
       finalize: (active, status) =>
         this.finalizeScottyEvidenceJobProgram(active.operationNonce, status).pipe(
+          Effect.tapError((error) =>
+            Effect.sync(() => reportEvidenceControlFailure("finalize", error)),
+          ),
           Effect.mapError(
             () =>
               new EvidenceWorkflowControlError({

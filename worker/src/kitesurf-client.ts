@@ -23,6 +23,7 @@ import {
 import { EVIDENCE_PREVIEW_COOKIE } from "./evidence-preview";
 
 export const KITESURF_OPERATION_TIMEOUT_MILLIS = 5_000;
+export const KITESURF_NAVIGATION_TIMEOUT_MILLIS = 15_000;
 export const KITESURF_SCREENSHOT_TIMEOUT_MILLIS = 15_000;
 export const KITESURF_RESOURCE_TIMEOUT_MILLIS = 15_000;
 export const KITESURF_VIDEO_TIMEOUT_MILLIS = 30_000;
@@ -525,7 +526,7 @@ const makePage = (
         ? Effect.fail(new KitesurfClientError({ operation: "goto", reason: "unsupported" }))
         : checked("goto", () =>
             page
-              .goto(url, { timeout: KITESURF_OPERATION_TIMEOUT_MILLIS, waitUntil: "load" })
+              .goto(url, { timeout: KITESURF_NAVIGATION_TIMEOUT_MILLIS, waitUntil: "load" })
               .then(() => undefined),
           );
     },

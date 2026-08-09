@@ -164,6 +164,10 @@ const reportArtifactStorageFailure = (operation: "put" | "head", cause: unknown)
   console.error("Evidence artifact storage failed", { operation, cause });
 };
 
+const reportArtifactVerificationFailure = (reason: "missing" | "metadata_mismatch"): void => {
+  console.error("Evidence artifact verification failed", { operation: "head", reason });
+};
+
 export const artifactStoreLayer = (
   capabilities: ArtifactStoreCapabilities,
 ): Layer.Layer<ArtifactStore> => Layer.succeed(ArtifactStore)(makeArtifactStore(capabilities));
@@ -268,13 +272,17 @@ const makeArtifactStore = (capabilities: ArtifactStoreCapabilities): ArtifactSto
             reason: "put_unknown",
             cause: headResult.failure,
           });
-    if (!metadataMatches(headResult.success, expected))
+    if (!metadataMatches(headResult.success, expected)) {
+      reportArtifactVerificationFailure(
+        headResult.success === undefined ? "missing" : "metadata_mismatch",
+      );
       return yield* Result.isFailure(putResult)
         ? putResult.failure
         : new EvidenceArtifactError({
             operation: "head",
             reason: headResult.success === undefined ? "put_unknown" : "metadata_mismatch",
           });
+    }
     return { ...artifact, status: "available" as const };
   });
   const openArtifact = Effect.fnUntraced(function* (artifact: EvidenceArtifactV2) {
