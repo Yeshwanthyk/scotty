@@ -420,6 +420,7 @@ describe("configuration and transport", () => {
       mode: "fresh",
     });
     expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
+    expect(request?.githubToken).toBe("0123456789abcdef0123456789abcdef01234567");
     const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
     expect((await stat(join(home, ".scotty.json"))).mode & 0o777).toBe(0o600);
     expect(config).toEqual({
@@ -678,7 +679,13 @@ describe("configuration and transport", () => {
           accountId: result.accountId,
           hasExistingResources: plans > 1,
           fingerprint: plans === 1 ? "create-plan" : "resume-plan",
-          changes: plans === 1 ? [{ id: "Scotty-home/Worker", action: "create" }] : [],
+          changes:
+            plans === 1
+              ? [{ id: "Scotty-home/Worker", action: "create" }]
+              : [
+                  { id: "Scotty-home/Worker", action: "update" },
+                  { id: "Scotty-home/Worker/SESSIONS", action: "binding-update" },
+                ],
         };
       },
       createInstallation: async (request) => {
