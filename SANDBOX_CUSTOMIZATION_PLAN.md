@@ -502,7 +502,7 @@ unique. Point both `$CODEX_HOME/skills` and `$PI_CODING_AGENT_DIR/skills` at the
 Generate Pi settings from:
 
 ```ts
-packages: [...PI_PACKAGES, ...verifiedInstallationPackagePaths]
+packages: [...PI_PACKAGES, ...verifiedInstallationPackagePaths];
 ```
 
 Do not mutate `/opt/scotty/skills`, `/opt/scotty/pi-packages`, or the checked-in image package
@@ -698,7 +698,7 @@ Acceptance:
 - A sync failure after successful deployment gives an exact retry command and does not corrupt the
   installation pointer.
 - After initial deployment, adding a harmless Skill and Pi extension and running only `scotty sandbox
-  sync` makes them available to a newly created live sandbox.
+sync` makes them available to a newly created live sandbox.
 - Updating/removing them and syncing again affects a later new sandbox without Worker/image deploy.
 
 ## Verification matrix
@@ -797,4 +797,3 @@ At final handoff, explicitly classify:
 - Never use KV or a local file as remote authority.
 - Never report synchronization success from archive upload alone; the Sandbox Configuration DO
   commit is the terminal authority.
-
