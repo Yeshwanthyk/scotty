@@ -64,8 +64,7 @@ import {
   sandboxConfigPath,
   saveSandboxConfig,
 } from "./sandbox-config";
-import { buildSandboxBundle } from "./sandbox-prepare";
-import { synchronizeSandboxBundle } from "./sandbox-sync";
+import { synchronizeLocalSandbox, type SandboxSyncTarget } from "./sandbox-sync";
 import {
   addPiPackageSource,
   addSkillSource,
@@ -190,6 +189,24 @@ const tuiFailure = (error: unknown): CliError => {
     EXIT.GENERIC,
   );
 };
+
+const synchronizeInstallationSandbox = Effect.fnUntraced(function* (
+  home: string,
+  target: SandboxSyncTarget,
+) {
+  return yield* synchronizeLocalSandbox({ home, target }).pipe(
+    Effect.mapError((failure) =>
+      failure.hint.includes("sandbox sync")
+        ? failure
+        : new CliError(
+            failure.code,
+            failure.message,
+            "Retry scotty sandbox sync.",
+            failure.exitCode,
+          ),
+    ),
+  );
+});
 
 const runnerChildEnvironment = (
   environment: Readonly<Record<string, string | undefined>>,
@@ -646,7 +663,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               host,
               rootTokenRotated: true,
             };
-            yield* loadSandboxConfig(sandboxConfigPath(runtime.home), true);
+            yield* synchronizeInstallationSandbox(runtime.home, { host, token });
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
@@ -1033,6 +1050,20 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             changes: [],
             rootTokenRotated: false,
           };
+          if (config.host === undefined)
+            return yield* usage(
+              "Scotty host is not configured",
+              "Run scotty init or pass --host / SCOTTY_HOST.",
+            );
+          if (config.token === undefined)
+            return yield* usage(
+              "Scotty token is not configured",
+              "Run scotty init or pass --token-file / SCOTTY_TOKEN.",
+            );
+          yield* synchronizeInstallationSandbox(runtime.home, {
+            host: yield* Effect.fromResult(normalizeHost(config.host)),
+            token: config.token,
+          });
           if (autoJson) outputJson(runtime.stdout, result);
           else runtime.stdout(`${config.installationName} is already up to date.\n`);
           return;
@@ -1079,6 +1110,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           changes: plan.changes,
           rootTokenRotated: false,
         };
+        yield* synchronizeInstallationSandbox(runtime.home, { host, token: config.token });
         if (autoJson) outputJson(runtime.stdout, result);
         else
           runtime.stdout(
@@ -1603,16 +1635,18 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Effect.gen(function* () {
       yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
-      const path = sandboxConfigPath(runtime.home);
-      const fileSystem = yield* CliFileSystem;
-      const config = yield* fileSystem.withLock(path, loadSandboxConfig(path, true));
-      const built = yield* buildSandboxBundle(config);
       const target = yield* credentials(options);
-      const remote = yield* synchronizeSandboxBundle({ target, built });
+      const synced = yield* synchronizeInstallationSandbox(runtime.home, target);
       emitSandboxSync(
         autoJson,
         runtime,
-        sandboxSyncOutput(config, built.digest, built.bytes, built.fileCount, remote),
+        sandboxSyncOutput(
+          synced.config,
+          synced.built.digest,
+          synced.built.bytes,
+          synced.built.fileCount,
+          synced.remote,
+        ),
       );
     }),
   ).pipe(Command.withDescription("Prepare the local sandbox bundle and synchronize it"));

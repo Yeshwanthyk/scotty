@@ -1,13 +1,14 @@
 import { Effect, Schema } from "effect";
 import { CliError, EXIT } from "./core";
 import { invalidResponse } from "./pure";
-import { SandboxDigestSchema } from "./sandbox-config";
+import { loadSandboxConfig, sandboxConfigPath, SandboxDigestSchema } from "./sandbox-config";
 import {
   sandboxArchiveInvalid,
   sandboxBundleTooLarge,
   type SandboxRemoteSnapshot,
 } from "./sandbox-bundle";
-import type { BuiltSandboxBundle } from "./sandbox-prepare";
+import { buildSandboxBundle, type BuiltSandboxBundle } from "./sandbox-prepare";
+import { FileSystem } from "./services";
 import { type ApiRequestTarget, apiRequest, decodeJson, requestJson } from "./transport";
 
 export const SandboxRemoteConfigStatusSchema = Schema.Struct({
@@ -101,4 +102,16 @@ export const synchronizeSandboxBundle = Effect.fnUntraced(function* (input: {
     return remoteSnapshot(input.built, configuration);
   const uploaded = yield* uploadSandboxBundle(input.target, input.built, configuration.revision);
   return remoteSnapshot(input.built, uploaded);
+});
+
+export const synchronizeLocalSandbox = Effect.fnUntraced(function* (input: {
+  readonly home: string;
+  readonly target: SandboxSyncTarget;
+}) {
+  const path = sandboxConfigPath(input.home);
+  const fileSystem = yield* FileSystem;
+  const config = yield* fileSystem.withLock(path, loadSandboxConfig(path, true));
+  const built = yield* buildSandboxBundle(config);
+  const remote = yield* synchronizeSandboxBundle({ target: input.target, built });
+  return { config, built, remote };
 });
