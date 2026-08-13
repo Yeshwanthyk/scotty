@@ -3,14 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
-import {
-  EMBEDDED_SKILL,
-  EXIT,
-  main,
-  STANDARD_TOOLSET,
-  VERSION,
-  type CliDependencies,
-} from "../scotty";
+import { EXIT, main, STANDARD_TOOLSET, VERSION, type CliDependencies } from "../scotty";
 
 const temporaryDirectories: string[] = [];
 
@@ -57,6 +50,24 @@ function harness(overrides: Partial<CliDependencies> = {}) {
     prompts: () => prompts,
     json: () => JSON.parse(stdout.join("")),
     error: () => JSON.parse(stderr.join("")),
+  };
+}
+
+function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
+  let revision = 0;
+  let activeDigest: string | null = null;
+  return async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.pathname === "/api/sandbox/configuration")
+      return Response.json({ schemaVersion: 1, revision, activeDigest });
+    const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
+    if (match && request.method === "PUT") {
+      revision += 1;
+      activeDigest = match[1] ?? null;
+      return Response.json({ schemaVersion: 1, revision, activeDigest });
+    }
+    return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
   };
 }
 
@@ -382,8 +393,29 @@ describe("configuration and transport", () => {
   test("init creates a required named installation and stores a portable pointer", async () => {
     const home = await temporaryDirectory();
     let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
+    let putCount = 0;
+    let putAuthorization: string | null = null;
+    let putOrigin: string | undefined;
     const h = harness({
       home,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+        const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
+        if (match && request.method === "PUT") {
+          putCount++;
+          putAuthorization = request.headers.get("authorization");
+          putOrigin = url.origin;
+          return Response.json({
+            schemaVersion: 1,
+            revision: 1,
+            activeDigest: match[1],
+          });
+        }
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
       planCreateInstallation: async () => ({
         installationName: "home",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -420,6 +452,7 @@ describe("configuration and transport", () => {
       mode: "fresh",
     });
     expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
+    expect(request?.githubToken).toBe("0123456789abcdef0123456789abcdef01234567");
     const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
     expect((await stat(join(home, ".scotty.json"))).mode & 0o777).toBe(0o600);
     expect(config).toEqual({
@@ -438,6 +471,12 @@ describe("configuration and transport", () => {
       token: request?.token,
     });
     expect(h.stdout.join("")).not.toContain(request?.token ?? "impossible");
+    expect((await stat(join(home, ".scotty", "sandbox.json"))).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(join(home, ".scotty", "sandbox.json"), "utf8"))).toEqual({
+      schemaVersion: 1,
+      skills: [],
+      piPackages: [],
+    });
     expect(h.json()).toEqual({
       configPath: join(home, ".scotty.json"),
       installationName: "home",
@@ -447,6 +486,160 @@ describe("configuration and transport", () => {
       host: "https://scotty-home-worker.example.workers.dev",
       rootTokenRotated: true,
     });
+    expect(putCount).toBe(1);
+    expect(putOrigin).toBe("https://scotty-home-worker.example.workers.dev");
+    expect(putAuthorization).toBe(`Bearer ${config.token}`);
+    expect(config.token).not.toBe("secret");
+  });
+
+  test("init synchronizes a populated local sandbox config after saving the pointer", async () => {
+    const home = await temporaryDirectory();
+    const skillRoot = await temporaryDirectory();
+    const skillPath = join(skillRoot, "release-notes");
+    await mkdir(skillPath);
+    await writeFile(
+      join(skillPath, "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Release notes\n",
+    );
+    await mkdir(join(home, ".scotty"), { recursive: true });
+    await writeFile(
+      join(home, ".scotty", "sandbox.json"),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          skills: [{ name: "release-notes", path: skillPath }],
+          piPackages: [],
+        },
+        null,
+        2,
+      )}\n`,
+      { mode: 0o600 },
+    );
+    let uploadedDigest: string | undefined;
+    const h = harness({
+      home,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({
+            schemaVersion: 1,
+            revision: uploadedDigest === undefined ? 0 : 1,
+            activeDigest: uploadedDigest ?? null,
+          });
+        const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
+        if (match && request.method === "PUT") {
+          uploadedDigest = match[1];
+          return Response.json({
+            schemaVersion: 1,
+            revision: 1,
+            activeDigest: uploadedDigest,
+          });
+        }
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+      planCreateInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: false,
+        fingerprint: "create-plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "create" }],
+      }),
+      createInstallation: async (input) => ({
+        installationName: input.installationName,
+        profile: input.profile,
+        stackName: "Scotty-home",
+        stage: "production",
+        accountId: "0123456789abcdef0123456789abcdef",
+        workerName: "scotty-home-worker",
+        runnerWorkerName: "scotty-home-runner",
+        containerName: "scotty-home-sandbox",
+        kvTitle: "scotty-home-sessions",
+        backupBucketName: "scotty-home-backups",
+        host: "https://scotty-home-worker.example.workers.dev/",
+      }),
+    });
+
+    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(uploadedDigest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(JSON.parse(await readFile(join(home, ".scotty", "sandbox.json"), "utf8"))).toMatchObject(
+      {
+        skills: [{ name: "release-notes", path: skillPath }],
+      },
+    );
+
+    let secondPutCount = 0;
+    const second = harness({
+      home,
+      env: {},
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({
+            schemaVersion: 1,
+            revision: 1,
+            activeDigest: uploadedDigest,
+          });
+        if (url.pathname.startsWith("/api/sandbox/bundles/")) secondPutCount++;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+    });
+    expect(await main(["sandbox", "sync"], second.deps)).toBe(EXIT.OK);
+    expect(second.json().digest).toBe(uploadedDigest);
+    expect(second.json().skills).toEqual([{ name: "release-notes", path: skillPath }]);
+    expect(secondPutCount).toBe(0);
+  });
+
+  test("init keeps the installation pointer when sandbox sync fails", async () => {
+    const home = await temporaryDirectory();
+    const h = harness({
+      home,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json(
+            {
+              error: {
+                code: "upstream",
+                message: "Sandbox configuration is unavailable",
+                hint: "Retry later.",
+              },
+            },
+            { status: 502 },
+          );
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+      planCreateInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: false,
+        fingerprint: "create-plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "create" }],
+      }),
+      createInstallation: async (input) => ({
+        installationName: input.installationName,
+        profile: input.profile,
+        stackName: "Scotty-home",
+        stage: "production",
+        accountId: "0123456789abcdef0123456789abcdef",
+        workerName: "scotty-home-worker",
+        runnerWorkerName: "scotty-home-runner",
+        containerName: "scotty-home-sandbox",
+        kvTitle: "scotty-home-sessions",
+        backupBucketName: "scotty-home-backups",
+        host: "https://scotty-home-worker.example.workers.dev/",
+      }),
+    });
+
+    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error().error.code).toBe("sandbox_bundle_upload_failed");
+    expect(h.error().error.hint).toBe("Retry scotty sandbox sync.");
+    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect(config.host).toBe("https://scotty-home-worker.example.workers.dev");
+    expect(config.token).toMatch(/^[0-9a-f]{64}$/u);
+    expect((await stat(join(home, ".scotty.json"))).mode & 0o777).toBe(0o600);
   });
 
   test("init persists explicit preview topology without changing its public JSON contract", async () => {
@@ -454,6 +647,7 @@ describe("configuration and transport", () => {
     let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
     const h = harness({
       home,
+      fetch: acceptingSandboxSyncFetch(),
       planCreateInstallation: async (input) => {
         expect(input).toMatchObject({
           previewBase: "preview.scotty.example",
@@ -561,6 +755,7 @@ describe("configuration and transport", () => {
     };
     const h = harness({
       home,
+      fetch: acceptingSandboxSyncFetch(),
       planCreateInstallation: async (input) => {
         expect(input.evidenceEnabled).toBe(true);
         return {
@@ -671,6 +866,7 @@ describe("configuration and transport", () => {
     } as const;
     const h = harness({
       home,
+      fetch: acceptingSandboxSyncFetch(),
       planCreateInstallation: async () => {
         plans += 1;
         return {
@@ -678,7 +874,13 @@ describe("configuration and transport", () => {
           accountId: result.accountId,
           hasExistingResources: plans > 1,
           fingerprint: plans === 1 ? "create-plan" : "resume-plan",
-          changes: plans === 1 ? [{ id: "Scotty-home/Worker", action: "create" }] : [],
+          changes:
+            plans === 1
+              ? [{ id: "Scotty-home/Worker", action: "create" }]
+              : [
+                  { id: "Scotty-home/Worker", action: "update" },
+                  { id: "Scotty-home/Worker/SESSIONS", action: "binding-update" },
+                ],
         };
       },
       createInstallation: async (request) => {
@@ -778,8 +980,26 @@ describe("configuration and transport", () => {
       { mode: 0o600 },
     );
     let request: Parameters<NonNullable<CliDependencies["deployInstallation"]>>[0] | undefined;
+    let putAuthorization: string | null = null;
+    let putOrigin: string | undefined;
     const h = harness({
       home,
+      fetch: async (input, init) => {
+        const req = new Request(input, init);
+        const url = new URL(req.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+        if (url.pathname.startsWith("/api/sandbox/bundles/") && req.method === "PUT") {
+          putAuthorization = req.headers.get("authorization");
+          putOrigin = url.origin;
+          return Response.json({
+            schemaVersion: 1,
+            revision: 1,
+            activeDigest: url.pathname.split("/").at(-1),
+          });
+        }
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
       planInstallation: async () => ({
         installationName: "home",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -817,6 +1037,65 @@ describe("configuration and transport", () => {
     expect(config.token).toBe("root-secret");
     expect(config.host).toBe("https://new.example");
     expect(h.json().rootTokenRotated).toBe(false);
+    expect(putOrigin).toBe("https://new.example");
+    expect(putAuthorization).toBe("Bearer root-secret");
+  });
+
+  test("deploy keeps the rewritten pointer when sandbox sync fails", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "0123456789abcdef0123456789abcdef",
+        host: "https://old.example",
+        token: "root-secret",
+      }),
+      { mode: 0o600 },
+    );
+    const h = harness({
+      home,
+      fetch: async () =>
+        Response.json(
+          {
+            error: {
+              code: "upstream",
+              message: "Sandbox configuration is unavailable",
+              hint: "Retry later.",
+            },
+          },
+          { status: 502 },
+        ),
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async (input) => ({
+        installationName: input.installationName,
+        profile: input.profile,
+        stackName: "Scotty-home",
+        stage: "production",
+        accountId: "0123456789abcdef0123456789abcdef",
+        workerName: "scotty-home-worker",
+        runnerWorkerName: "scotty-home-runner",
+        containerName: "scotty-home-sandbox",
+        kvTitle: "scotty-home-sessions",
+        backupBucketName: "scotty-home-backups",
+        host: "https://new.example/",
+      }),
+    });
+
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error().error.code).toBe("sandbox_bundle_upload_failed");
+    expect(h.error().error.hint).toBe("Retry scotty sandbox sync.");
+    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect(config.host).toBe("https://new.example");
+    expect(config.token).toBe("root-secret");
   });
 
   test("deploy skips confirmation and apply when the plan has no changes", async () => {
@@ -828,13 +1107,32 @@ describe("configuration and transport", () => {
         installationName: "home",
         profile: "default",
         accountId: "0123456789abcdef0123456789abcdef",
+        host: "https://worker.example",
         token: "root-secret",
       }),
       { mode: 0o600 },
     );
     let applied = false;
+    let putCount = 0;
+    let putAuthorization: string | null = null;
     const h = harness({
       home,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+        if (url.pathname.startsWith("/api/sandbox/bundles/") && request.method === "PUT") {
+          putCount++;
+          putAuthorization = request.headers.get("authorization");
+          return Response.json({
+            schemaVersion: 1,
+            revision: 1,
+            activeDigest: url.pathname.split("/").at(-1),
+          });
+        }
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
       planInstallation: async () => ({
         installationName: "home",
         accountId: "0123456789abcdef0123456789abcdef",
@@ -850,6 +1148,8 @@ describe("configuration and transport", () => {
 
     expect(await main(["deploy"], h.deps)).toBe(EXIT.OK);
     expect(applied).toBe(false);
+    expect(putCount).toBe(1);
+    expect(putAuthorization).toBe("Bearer root-secret");
     expect(h.json()).toEqual({
       installationName: "home",
       changed: false,
@@ -1903,7 +2203,7 @@ describe("commands and schemas", () => {
   });
 
   test("removed commands and top-level lifecycle aliases fail as unknown commands", async () => {
-    for (const command of ["pr", "publish", "up", "down", "vaporize"]) {
+    for (const command of ["pr", "publish", "up", "down", "vaporize", "skills"]) {
       const h = harness();
       expect(await main([command, "s1"], h.deps)).toBe(EXIT.USAGE);
       expect(h.error().error.code).toBe("bad_usage");
@@ -2326,7 +2626,7 @@ function tarFile(entries: Array<[string, Uint8Array]>): Uint8Array {
   return result;
 }
 
-describe("beam down and embedded skill", () => {
+describe("beam down and sandbox configuration", () => {
   test("down fetches the branch and writes rollout mode 0600", async () => {
     const home = await temporaryDirectory();
     const cwd = await temporaryDirectory();
@@ -2516,26 +2816,249 @@ describe("beam down and embedded skill", () => {
     expect(h.error().error.code).toBe("invalid_archive");
   });
 
-  test("skills prints the exact embedded source as Markdown", async () => {
-    const skills = harness();
-    const source = await readFile(new URL("../skills/scotty/SKILL.md", import.meta.url), "utf8");
-    expect(await main(["skills"], skills.deps)).toBe(EXIT.OK);
-    expect(EMBEDDED_SKILL).toBe(source);
-    expect(skills.stdout.join("")).toBe(EMBEDDED_SKILL);
-    expect(EMBEDDED_SKILL).toContain("## Hatch and browser evidence");
-    expect(EMBEDDED_SKILL).toContain("one actual WebM recording");
-    expect(EMBEDDED_SKILL).toContain("exact same viewport, steps, and assertions");
-    expect(EMBEDDED_SKILL).toContain("plus `/hatch/open`");
-    expect(EMBEDDED_SKILL).toContain("Never copy, guess, or publish the wildcard preview origin");
+  test("sandbox add, list, and remove persist local Skill sources without contacting Cloudflare", async () => {
+    const home = await temporaryDirectory();
+    const skillRoot = await temporaryDirectory();
+    const skillPath = join(skillRoot, "release-notes");
+    await mkdir(skillPath);
+    await writeFile(
+      join(skillPath, "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Release notes\n",
+    );
+    let fetched = false;
+    const h = harness({
+      home,
+      cwd: skillRoot,
+      fetch: async () => {
+        fetched = true;
+        return Response.json({});
+      },
+    });
+
+    expect(await main(["sandbox", "add", "./release-notes"], h.deps)).toBe(EXIT.OK);
+    expect(h.json()).toEqual({
+      schemaVersion: 1,
+      skills: [{ name: "release-notes", path: skillPath }],
+      piPackages: [],
+      remote: { status: "not_queried", activeDigest: null },
+    });
+    expect((await stat(join(home, ".scotty", "sandbox.json"))).mode & 0o777).toBe(0o600);
+
+    const listed = harness({ home });
+    expect(await main(["sandbox", "list"], listed.deps)).toBe(EXIT.OK);
+    expect(listed.json()).toEqual(h.json());
+
+    const removed = harness({ home });
+    expect(await main(["sandbox", "remove", "release-notes"], removed.deps)).toBe(EXIT.OK);
+    expect(removed.json()).toEqual({
+      schemaVersion: 1,
+      skills: [],
+      piPackages: [],
+      remote: { status: "not_queried", activeDigest: null },
+    });
+    expect(fetched).toBe(false);
   });
 
-  test("skills rejects JSON wrapping and filesystem installation", async () => {
-    const json = harness();
-    const install = harness();
-    expect(await main(["skills", "--json"], json.deps)).toBe(EXIT.USAGE);
-    expect(await main(["skills", "install"], install.deps)).toBe(EXIT.USAGE);
-    expect(json.error().error.code).toBe("bad_usage");
-    expect(install.error().error.code).toBe("bad_usage");
+  test("sandbox add persists a resolved Git commit and rejects floating refs", async () => {
+    const home = await temporaryDirectory();
+    const h = harness({
+      home,
+      resolveGitPackage: async (repository, ref) => {
+        expect(repository).toBe("https://github.com/acme/pi-review-tools.git");
+        expect(ref).toBe("v1.2.0");
+        return {
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          name: "pi-review-tools",
+        };
+      },
+    });
+    expect(
+      await main(
+        ["sandbox", "add", "https://github.com/acme/pi-review-tools.git", "--ref", "v1.2.0"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual({
+      schemaVersion: 1,
+      skills: [],
+      piPackages: [
+        {
+          name: "pi-review-tools",
+          repository: "https://github.com/acme/pi-review-tools.git",
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          requestedRef: "v1.2.0",
+        },
+      ],
+      remote: { status: "not_queried", activeDigest: null },
+    });
+
+    const missingRef = harness({ home });
+    expect(
+      await main(
+        ["sandbox", "add", "https://github.com/acme/pi-review-tools.git"],
+        missingRef.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(missingRef.error().error.code).toBe("sandbox_source_invalid");
+  });
+
+  test("sandbox add rejects malformed local JSON without overwriting it", async () => {
+    const home = await temporaryDirectory();
+    await mkdir(join(home, ".scotty"), { mode: 0o700 });
+    const path = join(home, ".scotty", "sandbox.json");
+    await writeFile(path, "{ not json\n", { mode: 0o600 });
+    const skillRoot = await temporaryDirectory();
+    await writeFile(
+      join(skillRoot, "SKILL.md"),
+      "---\nname: release-notes\ndescription: test\n---\n\n# Test\n",
+    );
+    const h = harness({ home, cwd: skillRoot });
+    expect(await main(["sandbox", "add", skillRoot], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error.code).toBe("sandbox_config_invalid");
+    expect(await readFile(path, "utf8")).toBe("{ not json\n");
+  });
+
+  test("sandbox add rejects built-in Skill names and credential-bearing Git URLs", async () => {
+    const home = await temporaryDirectory();
+    const skillRoot = await temporaryDirectory();
+    await writeFile(
+      join(skillRoot, "SKILL.md"),
+      "---\nname: yesh-debug\ndescription: test\n---\n\n# Test\n",
+    );
+    const builtin = harness({ home, cwd: skillRoot });
+    expect(await main(["sandbox", "add", skillRoot], builtin.deps)).toBe(EXIT.USAGE);
+    expect(builtin.error().error.code).toBe("sandbox_name_conflict");
+
+    const credential = harness({ home });
+    expect(
+      await main(
+        ["sandbox", "add", "https://user:token@github.com/acme/pi-review-tools.git", "--ref", "v1"],
+        credential.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(credential.error().error.code).toBe("sandbox_source_invalid");
+    expect(credential.stderr.join("")).not.toContain("token");
+  });
+
+  test("sandbox sync uploads the bundle and reports remote synchronization", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({ host: "https://worker.example", token: "root-token" }),
+      { mode: 0o600 },
+    );
+    const skillRoot = await temporaryDirectory();
+    const skillPath = join(skillRoot, "release-notes");
+    await mkdir(skillPath);
+    await writeFile(
+      join(skillPath, "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Release notes\n",
+    );
+    const added = harness({ home, cwd: skillRoot });
+    expect(await main(["sandbox", "add", "./release-notes"], added.deps)).toBe(EXIT.OK);
+
+    let revision = 0;
+    let activeDigest: string | null = null;
+    const puts: Array<{
+      contentType: string | null;
+      ifMatch: string | null;
+      idempotencyKey: string | null;
+      authorization: string | null;
+      bytes: number;
+    }> = [];
+    const first = harness({
+      home,
+      env: {},
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision, activeDigest });
+        const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
+        if (match && request.method === "PUT") {
+          const body = new Uint8Array(await request.arrayBuffer());
+          puts.push({
+            contentType: request.headers.get("content-type"),
+            ifMatch: request.headers.get("if-match"),
+            idempotencyKey: request.headers.get("idempotency-key"),
+            authorization: request.headers.get("authorization"),
+            bytes: body.byteLength,
+          });
+          revision = 1;
+          activeDigest = match[1] ?? null;
+          return Response.json({ schemaVersion: 1, revision, activeDigest });
+        }
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+    });
+    expect(await main(["sandbox", "sync"], first.deps)).toBe(EXIT.OK);
+    const firstJson = first.json();
+    expect(firstJson.schemaVersion).toBe(1);
+    expect(firstJson.fileCount).toBe(1);
+    expect(firstJson.skills).toEqual([{ name: "release-notes", path: skillPath }]);
+    expect(firstJson.remote).toEqual({ status: "synchronized", activeDigest: firstJson.digest });
+    expect(firstJson.digest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toMatchObject({
+      contentType: "application/gzip",
+      ifMatch: "0",
+      authorization: "Bearer root-token",
+    });
+    expect(puts[0]?.idempotencyKey).toBeTruthy();
+    expect(puts[0]?.bytes).toBeGreaterThan(0);
+    expect(first.stdout.join("") + first.stderr.join("")).not.toContain("root-token");
+
+    let secondPutCount = 0;
+    const second = harness({
+      home,
+      env: {},
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision, activeDigest: firstJson.digest });
+        if (url.pathname.startsWith("/api/sandbox/bundles/")) secondPutCount++;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+    });
+    expect(await main(["sandbox", "sync"], second.deps)).toBe(EXIT.OK);
+    expect(second.json().digest).toBe(firstJson.digest);
+    expect(second.json().remote).toEqual({
+      status: "synchronized",
+      activeDigest: firstJson.digest,
+    });
+    expect(secondPutCount).toBe(0);
+
+    await writeFile(
+      join(skillPath, "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Changed\n",
+    );
+    let thirdIfMatch: string | null = null;
+    const mutated = harness({
+      home,
+      env: {},
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision, activeDigest: firstJson.digest });
+        const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
+        if (match && request.method === "PUT") {
+          thirdIfMatch = request.headers.get("if-match");
+          revision = 2;
+          activeDigest = match[1] ?? null;
+          return Response.json({ schemaVersion: 1, revision, activeDigest });
+        }
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+    });
+    expect(await main(["sandbox", "sync"], mutated.deps)).toBe(EXIT.OK);
+    expect(mutated.json().digest).not.toBe(firstJson.digest);
+    expect(mutated.json().remote).toEqual({
+      status: "synchronized",
+      activeDigest: mutated.json().digest,
+    });
+    expect(thirdIfMatch).toBe("1");
   });
 
   test("tools list returns the checked-in standard manifest without credentials", async () => {

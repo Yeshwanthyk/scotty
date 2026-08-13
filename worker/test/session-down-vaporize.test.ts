@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { ScottyError, type SessionRecord } from "../src/contracts";
+import { sandboxBundleTarGzKey } from "../src/sandbox-bundle-store";
 import { decodeSandboxFileStream } from "../src/session";
 import {
   createSessionHarness,
@@ -213,6 +214,38 @@ describe("Sandbox vaporize orchestration", () => {
     assert.ok(backupIndex < credentialIndex);
     assert.ok(credentialIndex < goneIndex);
     assert.ok(goneIndex < projectionIndex);
+  });
+
+  it("deletes session-owned backups without touching shared sandbox bundle objects", async () => {
+    const digest = "a".repeat(64);
+    const bundleKey = sandboxBundleTarGzKey(digest);
+    const harness = await createVaporizeHarness({
+      initialEntries: authorityEntries(
+        vaporizeRecord({
+          sandboxBundle: { digest, manifestVersion: 1 },
+        }),
+      ),
+      initialProjections: {
+        [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
+      },
+      r2Objects: backupObjects,
+      sandboxConfigStatus: { schemaVersion: 1, revision: 1, activeDigest: digest },
+    });
+
+    assert.deepStrictEqual(harness.sandboxBundleKeys(), [bundleKey]);
+
+    const result = await harness.sandbox.vaporizeScottySession();
+
+    assert.deepStrictEqual(result, { id: SESSION_ID, status: "gone" });
+    assert.strictEqual(harness.readRecord()?.status, "gone");
+    assert.deepStrictEqual(harness.r2DeletedKeys, [
+      ["backups/backup-1/archive", "backups/backup-1/meta.json"],
+      ["backups/backup-2/archive"],
+    ]);
+    assert.ok(harness.r2DeletedKeys.flat().every((key) => !key.includes("sandbox-bundles/")));
+    assert.ok(harness.events.every((event) => !event.includes("sandbox-bundles/")));
+    assert.deepStrictEqual(harness.sandboxBundleDeletedKeys, []);
+    assert.deepStrictEqual(harness.sandboxBundleKeys(), [bundleKey]);
   });
 
   it("finishes durable cleanup when the Cloudflare runtime is already absent", async () => {

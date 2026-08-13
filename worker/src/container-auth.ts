@@ -1,7 +1,8 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Option, Result, Schema } from "effect";
 import type { SessionRecord } from "./contracts";
 import { sha256Hex } from "./digest";
 import { piAuthJson, type StoredCredential } from "./egress";
+import { PiPackageNameSchema, SkillNameSchema } from "./sandbox-config-contracts";
 import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
@@ -55,7 +56,107 @@ plugins = false
 trust_level = "trusted"
 `;
 
-const piSettings = (credential: StoredCredential): string =>
+export const mergedSkillsPath = (id: SessionRecord["id"]): string =>
+  `${sessionRoot(id)}/.scotty/merged-skills`;
+
+const extraPackagePath = (bundleRoot: string, name: string): string =>
+  `${bundleRoot}/pi-packages/${name}`;
+
+const extraSkillSourcePath = (bundleRoot: string, name: string): string =>
+  `${bundleRoot}/skills/${name}`;
+
+const decodeSkillName = Schema.decodeUnknownOption(SkillNameSchema);
+const decodePiPackageName = Schema.decodeUnknownOption(PiPackageNameSchema);
+
+const pathUnderRoot = (root: string, path: string): boolean =>
+  path === root || path.startsWith(`${root}/`);
+
+const extraSkillLinkCommand = (target: string, source: string): string =>
+  `{ [ ! -e ${shellQuote(target)} ] || [ "$(readlink ${shellQuote(target)})" = ${shellQuote(source)} ]; } && ln -sfn ${shellQuote(source)} ${shellQuote(target)}`;
+
+const resolveSeedExtras = (
+  options?: ContainerAuthSeedOptions,
+): Effect.Effect<
+  {
+    readonly extraSkills: ReadonlyArray<{ readonly name: string }>;
+    readonly extraPackagePaths: ReadonlyArray<string>;
+    readonly bundleRoot: string | undefined;
+  },
+  SandboxRuntimeFailure
+> =>
+  Effect.gen(function* () {
+    const extraSkills = options?.extraSkills ?? [];
+    const extraPackages = options?.extraPackages ?? [];
+    const bundleRoot = options?.bundleRoot;
+    if (extraSkills.length === 0 && extraPackages.length === 0)
+      return { extraSkills, extraPackagePaths: [], bundleRoot };
+    if (bundleRoot === undefined)
+      return yield* new SandboxRuntimeFailure({
+        reason: "nonzero_exit",
+        message: "Sandbox bundle root is required when extras are configured",
+      });
+    for (const skill of extraSkills) {
+      if (Option.isNone(decodeSkillName(skill.name)))
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox extra skill name is invalid",
+        });
+    }
+    const extraPackagePaths: string[] = [];
+    for (const pkg of extraPackages) {
+      const packagePath = extraPackagePath(bundleRoot, pkg.name);
+      if (
+        Option.isNone(decodePiPackageName(pkg.name)) ||
+        !pathUnderRoot(bundleRoot, packagePath) ||
+        packagePath.includes(".staging-")
+      )
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox extra package path is outside the bundle root",
+        });
+      extraPackagePaths.push(packagePath);
+    }
+    return { extraSkills, extraPackagePaths, bundleRoot };
+  });
+
+const PiSettingsPackagesSchema = Schema.Struct({
+  packages: Schema.optional(Schema.Array(Schema.String)),
+});
+const decodePiSettingsPackages = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PiSettingsPackagesSchema),
+  { onExcessProperty: "ignore" },
+);
+
+const piSettingsParseFailure = (): SandboxRuntimeFailure =>
+  new SandboxRuntimeFailure({
+    reason: "nonzero_exit",
+    message: "Sandbox Pi settings could not be parsed",
+  });
+
+const existingExtraPackagePaths = Effect.fnUntraced(function* (
+  runtime: SandboxRuntime["Service"],
+  settingsPath: string,
+) {
+  const settingsBytes = yield* runtime
+    .readFile(settingsPath, 65_536)
+    .pipe(Effect.catchTag("SandboxRuntimeFailure", () => Effect.succeed(undefined)));
+  if (settingsBytes === undefined) return [] as ReadonlyArray<string>;
+  const decoded = yield* Effect.result(
+    decodePiSettingsPackages(new TextDecoder().decode(settingsBytes)),
+  );
+  if (Result.isFailure(decoded)) return [] as ReadonlyArray<string>;
+  const packages = decoded.success.packages ?? [];
+  if (packages.length < PI_PACKAGES.length) return [] as ReadonlyArray<string>;
+  for (let index = 0; index < PI_PACKAGES.length; index += 1) {
+    if (packages[index] !== PI_PACKAGES[index]) return [] as ReadonlyArray<string>;
+  }
+  return packages.slice(PI_PACKAGES.length);
+});
+
+const piSettings = (
+  credential: StoredCredential,
+  extraPackagePaths: ReadonlyArray<string> = [],
+): string =>
   JSON.stringify({
     defaultProvider: credential.providers["openai-codex"] ? "openai-codex" : "openai",
     defaultModel: "gpt-5.6-sol",
@@ -70,8 +171,33 @@ const piSettings = (credential: StoredCredential): string =>
       reserveTokens: 40960,
       keepRecentTokens: 20000,
     },
-    packages: PI_PACKAGES,
+    packages: [...PI_PACKAGES, ...extraPackagePaths],
   });
+
+const buildMergedSkillsCommand = (
+  id: SessionRecord["id"],
+  extraSkills: ReadonlyArray<{ readonly name: string }>,
+  bundleRoot: string | undefined,
+): string => {
+  const merged = mergedSkillsPath(id);
+  const codexSkills = `${sessionRoot(id)}/.codex/skills`;
+  const piSkills = `${sessionRoot(id)}/.pi-agent/skills`;
+  const parts = [
+    `mkdir -p ${shellQuote(merged)}`,
+    `ln -sfn /opt/scotty/skills/* ${shellQuote(`${merged}/`)}`,
+  ];
+  for (const skill of extraSkills) {
+    parts.push(
+      extraSkillLinkCommand(
+        `${merged}/${skill.name}`,
+        extraSkillSourcePath(bundleRoot!, skill.name),
+      ),
+    );
+  }
+  parts.push(`ln -sfn ${shellQuote(merged)} ${shellQuote(codexSkills)}`);
+  parts.push(`ln -sfn ${shellQuote(merged)} ${shellQuote(piSkills)}`);
+  return parts.join(" && ");
+};
 
 const piWebSearchConfig = JSON.stringify({
   provider: "openai",
@@ -114,10 +240,18 @@ export const sandboxAgentsInstructions = `- Read and follow the repository AGENT
 
 export interface ContainerAuthSeedOptions {
   readonly initialPrompt?: string;
+  readonly extraSkills?: ReadonlyArray<{ readonly name: string }>;
+  readonly extraPackages?: ReadonlyArray<{ readonly name: string }>;
+  readonly bundleRoot?: string;
 }
 
 interface ContainerAuthShape {
   readonly seed: (
+    id: SessionRecord["id"],
+    credential: StoredCredential,
+    options?: ContainerAuthSeedOptions,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly preflight: (
     id: SessionRecord["id"],
     credential: StoredCredential,
     options?: ContainerAuthSeedOptions,
@@ -157,23 +291,92 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       const settingsPath = `${piHome}/settings.json`;
       yield* runtime.mkdir(piHome, { recursive: true });
       yield* runtime.writeFile(authPath, piAuthJson(credential));
-      yield* runtime.writeFile(settingsPath, piSettings(credential));
+      const extraPackagePaths = yield* existingExtraPackagePaths(runtime, settingsPath);
+      yield* runtime.writeFile(settingsPath, piSettings(credential, extraPackagePaths));
       yield* runtime.execChecked(`chmod 600 ${shellQuote(authPath)} ${shellQuote(settingsPath)}`);
+    });
+    const preflight = Effect.fnUntraced(function* (
+      id: SessionRecord["id"],
+      _credential: StoredCredential,
+      options?: ContainerAuthSeedOptions,
+    ) {
+      const { extraSkills, extraPackagePaths, bundleRoot } = yield* resolveSeedExtras(options);
+      for (const packagePath of PI_PACKAGES)
+        yield* runtime.execChecked(`test -d ${shellQuote(packagePath)}`);
+      for (const packagePath of extraPackagePaths) {
+        if (
+          bundleRoot === undefined ||
+          !pathUnderRoot(bundleRoot, packagePath) ||
+          packagePath.includes(".staging-")
+        )
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Sandbox extra package path is outside the bundle root",
+          });
+        yield* runtime.execChecked(`test -d ${shellQuote(packagePath)}`);
+      }
+      const merged = mergedSkillsPath(id);
+      for (const skill of extraSkills) {
+        if (Option.isNone(decodeSkillName(skill.name)))
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Sandbox extra skill name is invalid",
+          });
+        const skillPath = `${merged}/${skill.name}`;
+        if (skillPath.includes(".staging-"))
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Sandbox configured path references a staging directory",
+          });
+        yield* runtime.execChecked(`test -e ${shellQuote(skillPath)}`);
+      }
+      const settingsBytes = yield* runtime.readFile(
+        `${sessionRoot(id)}/.pi-agent/settings.json`,
+        65_536,
+      );
+      const settings = yield* decodePiSettingsPackages(
+        new TextDecoder().decode(settingsBytes),
+      ).pipe(Effect.mapError(() => piSettingsParseFailure()));
+      const packages = settings.packages ?? [];
+      if (packages.length !== PI_PACKAGES.length + extraPackagePaths.length)
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox Pi settings packages do not match the configured bundle",
+        });
+      for (let index = 0; index < PI_PACKAGES.length; index += 1) {
+        if (packages[index] !== PI_PACKAGES[index])
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Sandbox Pi settings packages do not start with built-in packages",
+          });
+      }
+      for (let index = 0; index < extraPackagePaths.length; index += 1) {
+        const packagePath = extraPackagePaths[index]!;
+        if (packages[PI_PACKAGES.length + index] !== packagePath)
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Sandbox Pi settings packages do not match the configured bundle",
+          });
+        if (packagePath.includes(".staging-"))
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Sandbox configured path references a staging directory",
+          });
+      }
     });
     const seed = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
       credential: StoredCredential,
       options?: ContainerAuthSeedOptions,
     ) {
+      const { extraSkills, extraPackagePaths } = yield* resolveSeedExtras(options);
       const codexHome = `${sessionRoot(id)}/.codex`;
       const piHome = `${sessionRoot(id)}/.pi-agent`;
       const configPath = `${codexHome}/config.toml`;
       const agentsPath = `${codexHome}/AGENTS.md`;
-      const skillsPath = `${codexHome}/skills`;
       const piAuthPath = `${piHome}/auth.json`;
       const piSettingsPath = `${piHome}/settings.json`;
       const piAgentsPath = `${piHome}/AGENTS.md`;
-      const piSkillsPath = `${piHome}/skills`;
       const piWebSearchPath = `${piHome}/web-search.json`;
       const gitConfigPath = `${piHome}/gitconfig`;
       const shellPath = terminalShellPath(id);
@@ -183,7 +386,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       yield* runtime.writeFile(configPath, codexConfig(id));
       yield* runtime.writeFile(agentsPath, sandboxAgentsInstructions);
       yield* runtime.writeFile(piAuthPath, piAuthJson(credential));
-      yield* runtime.writeFile(piSettingsPath, piSettings(credential));
+      yield* runtime.writeFile(piSettingsPath, piSettings(credential, extraPackagePaths));
       yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
       yield* runtime.writeFile(piWebSearchPath, piWebSearchConfig);
       yield* runtime.writeFile(gitConfigPath, gitConfig());
@@ -191,7 +394,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       if (options?.initialPrompt !== undefined)
         yield* runtime.writeFile(promptPath, options.initialPrompt);
       yield* runtime.execChecked(
-        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ln -sfn /opt/scotty/skills ${shellQuote(skillsPath)} && ln -sfn /opt/scotty/skills ${shellQuote(piSkillsPath)}`,
+        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, extraSkills, options?.bundleRoot)}`,
       );
       yield* runtime.setEnvVars(agentEnv(id, credential));
       const root = sessionRoot(id);
@@ -201,6 +404,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
     });
     return ContainerAuth.of({
       seed,
+      preflight,
       ensureTerminal: Effect.fnUntraced(function* (id, credential) {
         const existing = yield* runtime.exec(`test -x ${shellQuote(terminalShellPath(id))}`);
         if (existing.success) return;

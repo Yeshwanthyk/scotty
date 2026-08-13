@@ -75,6 +75,16 @@ export const makeCloudflareStackTopology = (installation: InstallationTopology) 
       bindingName: "ARTIFACT_BUCKET",
       name: installation.artifactBucketName,
     },
+    sandboxBundleR2: {
+      logicalId: "SandboxBundleBucket",
+      bindingName: "SANDBOX_BUNDLE_BUCKET",
+      name: installation.sandboxBundleBucketName,
+    },
+    sandboxConfigDurableObject: {
+      logicalId: "SandboxConfig",
+      bindingName: "SANDBOX_CONFIG",
+      className: "ScottySandboxConfig",
+    },
     preview:
       installation.preview === undefined
         ? undefined
@@ -121,11 +131,12 @@ export const expectedCloudflareResourceConfirmation = (
     installation.installationName,
     `worker=${installation.workerName}`,
     `runnerWorker=${installation.runnerWorkerName}`,
-    "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner",
+    "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig",
     `container=${installation.containerName}`,
     `kv=${installation.kvTitle}`,
     `r2=${installation.backupBucketName}`,
     `artifacts=${installation.artifactBucketName}`,
+    `sandboxBundles=${installation.sandboxBundleBucketName}`,
     ...(installation.preview === undefined
       ? []
       : [`previewBase=${installation.preview.base}`, `previewZone=${installation.preview.zoneId}`]),
@@ -176,6 +187,9 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   const artifacts = yield* Cloudflare.R2.Bucket(topology.artifactR2.logicalId, {
     name: topology.artifactR2.name,
   }).pipe(removalPolicy);
+  const sandboxBundles = yield* Cloudflare.R2.Bucket(topology.sandboxBundleR2.logicalId, {
+    name: topology.sandboxBundleR2.name,
+  }).pipe(removalPolicy);
   const durableObject = Cloudflare.DurableObject(topology.durableObject.logicalId, {
     className: topology.durableObject.className,
   });
@@ -186,6 +200,12 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
     topology.runnerRegistryDurableObject.logicalId,
     {
       className: topology.runnerRegistryDurableObject.className,
+    },
+  );
+  const sandboxConfigDurableObject = Cloudflare.DurableObject(
+    topology.sandboxConfigDurableObject.logicalId,
+    {
+      className: topology.sandboxConfigDurableObject.className,
     },
   );
   const runnerWorker = yield* ScottyRunnerWorker.pipe(
@@ -218,9 +238,11 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
       RUNNER_REGISTRY: runnerRegistryDurableObject,
       RUNNERS: runnerDurableObject,
       SANDBOX: durableObject,
+      SANDBOX_CONFIG: sandboxConfigDurableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,
       ARTIFACT_BUCKET: artifacts,
+      SANDBOX_BUNDLE_BUCKET: sandboxBundles,
       ...topology.vars,
     },
   }).pipe(removalPolicy);

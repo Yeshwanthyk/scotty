@@ -209,6 +209,7 @@ describe("production deployment ownership", () => {
       kvTitle: "scotty-test-sessions",
       backupBucketName: "scotty-test-backups",
       artifactBucketName: "scotty-test-artifacts",
+      sandboxBundleBucketName: "scotty-test-sandbox-bundles",
       previewBase: "preview.scotty.example",
       previewZoneId: "0123456789abcdef0123456789abcdef",
       evidenceEnabled: true,
@@ -267,6 +268,7 @@ describe("production deployment ownership", () => {
       kvTitle: "scotty-test-sessions",
       backupBucketName: "scotty-test-backups",
       artifactBucketName: "scotty-test-artifacts",
+      sandboxBundleBucketName: "scotty-test-sandbox-bundles",
       previewBase: "preview.scotty.example",
       previewZoneId: "0123456789abcdef0123456789abcdef",
       evidenceEnabled: true,
@@ -321,6 +323,11 @@ describe("production deployment ownership", () => {
               type: "r2_bucket",
               bucket_name: "scotty-test-artifacts",
             },
+            {
+              name: "SANDBOX_BUNDLE_BUCKET",
+              type: "r2_bucket",
+              bucket_name: "scotty-test-sandbox-bundles",
+            },
           ],
         },
       });
@@ -366,6 +373,7 @@ describe("production deployment ownership", () => {
         "kv=scotty-test-sessions",
         "r2=scotty-test-backups",
         "artifacts=scotty-test-artifacts",
+        "sandboxBundles=scotty-test-sandbox-bundles",
       ].join(":"),
     };
     const privateOutput = [
@@ -378,7 +386,10 @@ describe("production deployment ownership", () => {
     assert.doesNotMatch(redacted, /0123456789abcdef0123456789abcdef/u);
     assert.doesNotMatch(redacted, /workers\.dev/u);
     assert.doesNotMatch(redacted, /a030af24-612c-4eb0-81cd-873740807d1d/u);
-    assert.doesNotMatch(redacted, /scotty-test-(?:worker|sandbox|backups|artifacts)/u);
+    assert.doesNotMatch(
+      redacted,
+      /scotty-test-(?:worker|sandbox|backups|artifacts|sandbox-bundles)/u,
+    );
     assert.match(redacted, /\[redacted-account-id\]/u);
     assert.match(redacted, /\[redacted-worker-url\]/u);
     assert.match(redacted, /\[redacted-resource-id\]/u);
@@ -627,11 +638,12 @@ describe("production deployment ownership", () => {
           "test",
           "worker=scotty-test-worker",
           "runnerWorker=scotty-test-runner",
-          "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner",
+          "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig",
           `container=${CONTAINER_APPLICATION_NAME}`,
           "kv=scotty-test-sessions",
           "r2=scotty-test-backups",
           "artifacts=scotty-test-artifacts",
+          "sandboxBundles=scotty-test-sandbox-bundles",
           "previewBase=preview.scotty.example",
           "previewZone=0123456789abcdef0123456789abcdef",
           "evidence=enabled",

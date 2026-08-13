@@ -5,11 +5,13 @@ import {
   agentEnv,
   ContainerAuth,
   containerAuthLayer,
+  mergedSkillsPath,
   PI_PACKAGES,
   PI_SESSION_PORT,
   PI_SESSION_PROCESS_ID,
   sandboxAgentsInstructions,
   terminalShellPath,
+  type ContainerAuthSeedOptions,
 } from "../src/container-auth";
 import { piAuthJson, type StoredCredential } from "../src/egress";
 import {
@@ -19,6 +21,7 @@ import {
   type SandboxProcessCapabilities,
   type SandboxProcessOptions,
   type SandboxRuntimeCapabilities,
+  type SandboxWriteContent,
 } from "../src/sandbox-runtime";
 import { sessionRoot } from "../src/workspace";
 
@@ -84,14 +87,40 @@ type ContainerCall =
       readonly headers?: Readonly<Record<string, string>>;
     };
 
+const byteStream = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
+  new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+
+const normalizeWriteContent = (content: SandboxWriteContent): string => {
+  if (typeof content === "string") return content;
+  if (content instanceof Uint8Array) return new TextDecoder().decode(content);
+  return "[stream]";
+};
+
 class CapturingSandboxCapabilities implements SandboxRuntimeCapabilities {
   readonly calls: ContainerCall[] = [];
+  readonly files = new Map<string, Uint8Array>();
   reject?: ContainerCall["operation"];
   terminalShellMissing = false;
+  execFailWhen?: (command: string) => boolean;
 
   exec = (command: string, options?: SandboxExecOptions): Promise<ExecResult> => {
     this.calls.push({ operation: "exec", command, options });
     if (this.reject === "exec") return Promise.reject("provider exec secret");
+    if (this.execFailWhen?.(command))
+      return Promise.resolve({
+        success: false,
+        exitCode: 1,
+        stdout: "",
+        stderr: "collision",
+        command,
+        duration: 1,
+        timestamp: "2026-07-22T01:02:03.000Z",
+      });
     if (this.terminalShellMissing && command.startsWith("test -x "))
       return Promise.resolve({
         success: false,
@@ -113,16 +142,24 @@ class CapturingSandboxCapabilities implements SandboxRuntimeCapabilities {
     });
   };
 
+  readFileStream = (path: string): Promise<ReadableStream<Uint8Array>> => {
+    const bytes = this.files.get(path);
+    if (bytes === undefined) return Promise.reject(new Error(`missing file ${path}`));
+    return Promise.resolve(byteStream(bytes));
+  };
+
   mkdir = (path: string, options?: { readonly recursive?: boolean }): Promise<unknown> => {
     this.calls.push({ operation: "mkdir", path, recursive: options?.recursive });
     if (this.reject === "mkdir") return Promise.reject("provider mkdir secret");
     return Promise.resolve({ success: true, path });
   };
 
-  writeFile = (path: string, content: string): Promise<unknown> => {
-    this.calls.push({ operation: "writeFile", path, content });
+  writeFile = (path: string, content: SandboxWriteContent): Promise<unknown> => {
+    const stored = normalizeWriteContent(content);
+    this.calls.push({ operation: "writeFile", path, content: stored });
+    this.files.set(path, new TextEncoder().encode(stored));
     if (this.reject === "writeFile") return Promise.reject("provider write secret");
-    return Promise.resolve({ success: true, path, bytesWritten: content.length });
+    return Promise.resolve({ success: true, path, bytesWritten: stored.length });
   };
 
   setEnvVars = (envVars: Record<string, string | undefined>): Promise<void> => {
@@ -181,12 +218,34 @@ class ProcessSandboxCapabilities extends CapturingSandboxCapabilities {
 const seedWith = (
   capabilities: SandboxRuntimeCapabilities,
   storedCredential: StoredCredential = credential,
+  options?: ContainerAuthSeedOptions,
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
-  return Effect.flatMap(ContainerAuth, (auth) => auth.seed(ID, storedCredential)).pipe(
+  return Effect.flatMap(ContainerAuth, (auth) => auth.seed(ID, storedCredential, options)).pipe(
     Effect.provide(layer),
   );
+};
+
+const preflightWith = (
+  capabilities: SandboxRuntimeCapabilities,
+  storedCredential: StoredCredential = credential,
+  options?: ContainerAuthSeedOptions,
+) => {
+  const runtimeLayer = sandboxRuntimeLayer(capabilities);
+  const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
+  return Effect.flatMap(ContainerAuth, (auth) =>
+    auth.preflight(ID, storedCredential, options),
+  ).pipe(Effect.provide(layer));
+};
+
+const chmodExecCommand = (calls: ContainerCall[]): string => {
+  const exec = calls.find(
+    (call): call is Extract<ContainerCall, { operation: "exec" }> =>
+      call.operation === "exec" && call.command.includes("chmod 700"),
+  );
+  assert.ok(exec);
+  return exec.command;
 };
 
 const ensureTerminalWith = (
@@ -345,6 +404,159 @@ describe("ContainerAuth", () => {
       assert.ok(writes[7]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
       for (const secret of [REAL_ACCESS, REAL_REFRESH, REAL_GITHUB, REAL_ACCOUNT, REAL_API_KEY])
         assert.ok(!writes[7]?.content.includes(secret));
+
+      const skillsExec = chmodExecCommand(capabilities.calls);
+      const merged = mergedSkillsPath(ID);
+      assert.include(skillsExec, `mkdir -p '${merged}'`);
+      assert.include(skillsExec, `ln -sfn /opt/scotty/skills/* '${merged}/'`);
+      assert.include(skillsExec, `ln -sfn '${merged}' '/workspace/${ID}/.codex/skills'`);
+      assert.include(skillsExec, `ln -sfn '${merged}' '/workspace/${ID}/.pi-agent/skills'`);
+      assert.notInclude(skillsExec, `ln -sfn /opt/scotty/skills '/workspace/${ID}/.codex/skills'`);
+      assert.notInclude(
+        skillsExec,
+        `ln -sfn /opt/scotty/skills '/workspace/${ID}/.pi-agent/skills'`,
+      );
+    }),
+  );
+
+  it.effect("seeds merged skills and additive Pi packages from installation extras", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
+      yield* seedWith(capabilities, credential, {
+        bundleRoot,
+        extraSkills: [{ name: "custom-skill" }],
+        extraPackages: [{ name: "custom-package" }, { name: "@scope/custom-package" }],
+      });
+      const writes = capabilities.calls.filter(
+        (call): call is Extract<ContainerCall, { operation: "writeFile" }> =>
+          call.operation === "writeFile",
+      );
+      assert.deepInclude(JSON.parse(writes[3]?.content ?? ""), {
+        packages: [
+          ...PI_PACKAGES,
+          `${bundleRoot}/pi-packages/custom-package`,
+          `${bundleRoot}/pi-packages/@scope/custom-package`,
+        ],
+      });
+      const skillsExec = chmodExecCommand(capabilities.calls);
+      assert.include(
+        skillsExec,
+        `ln -sfn '${bundleRoot}/skills/custom-skill' '/workspace/${ID}/.scotty/merged-skills/custom-skill'`,
+      );
+    }),
+  );
+
+  it.effect("replays extra skill links when the target already points at the bundle skill", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
+      const options = {
+        bundleRoot,
+        extraSkills: [{ name: "custom-skill" }],
+      };
+      yield* seedWith(capabilities, credential, options);
+      yield* seedWith(capabilities, credential, options);
+      const skillsExec = chmodExecCommand(capabilities.calls);
+      const target = `${mergedSkillsPath(ID)}/custom-skill`;
+      const source = `${bundleRoot}/skills/custom-skill`;
+      assert.include(
+        skillsExec,
+        `{ [ ! -e '${target}' ] || [ "$(readlink '${target}')" = '${source}' ]; } && ln -sfn '${source}' '${target}'`,
+      );
+      assert.notInclude(skillsExec, `test ! -e '${target}'`);
+    }),
+  );
+
+  it.effect("fails closed when an extra skill collides with a merged entry", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
+      const merged = mergedSkillsPath(ID);
+      const collisionCommand = `readlink '${merged}/impeccable'`;
+      capabilities.execFailWhen = (command) => command.includes(collisionCommand);
+      const error = failed(
+        yield* Effect.result(
+          seedWith(capabilities, credential, {
+            bundleRoot,
+            extraSkills: [{ name: "impeccable" }],
+          }),
+        ),
+      );
+      assert.deepStrictEqual(error.reason, "nonzero_exit");
+      assert.include(chmodExecCommand(capabilities.calls), collisionCommand);
+    }),
+  );
+
+  it.effect("preflight accepts settings written by seed", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
+      const options = {
+        bundleRoot,
+        extraSkills: [{ name: "custom-skill" }],
+        extraPackages: [{ name: "@scope/custom-package" }],
+      };
+      yield* seedWith(capabilities, credential, options);
+      yield* preflightWith(capabilities, credential, options);
+    }),
+  );
+
+  it.effect("preserves seeded extra Pi packages when ensurePiSession refreshes auth", () =>
+    Effect.gen(function* () {
+      const capabilities = new ProcessSandboxCapabilities();
+      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
+      yield* seedWith(capabilities, credential, {
+        bundleRoot,
+        extraPackages: [{ name: "custom-package" }],
+      });
+      yield* piSessionWith(capabilities, "ensure");
+      const settingsWrites = capabilities.calls.filter(
+        (call): call is Extract<ContainerCall, { operation: "writeFile" }> =>
+          call.operation === "writeFile" &&
+          call.path === `/workspace/${ID}/.pi-agent/settings.json`,
+      );
+      const lastSettingsWrite = settingsWrites.at(-1);
+      assert.ok(lastSettingsWrite);
+      assert.deepInclude(JSON.parse(lastSettingsWrite.content), {
+        packages: [...PI_PACKAGES, `${bundleRoot}/pi-packages/custom-package`],
+      });
+    }),
+  );
+
+  it.effect("preflight rejects an extra package path outside the bundle root", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
+      const settingsPath = `/workspace/${ID}/.pi-agent/settings.json`;
+      capabilities.files.set(
+        settingsPath,
+        new TextEncoder().encode(
+          JSON.stringify({
+            packages: [...PI_PACKAGES, `${bundleRoot}/pi-packages/custom-package`],
+          }),
+        ),
+      );
+      const error = failed(
+        yield* Effect.result(
+          preflightWith(capabilities, credential, {
+            bundleRoot,
+            extraPackages: [{ name: "../outside" }],
+          }),
+        ),
+      );
+      assert.deepStrictEqual(
+        error,
+        new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox extra package path is outside the bundle root",
+        }),
+      );
+      assert.ok(
+        !capabilities.calls.some(
+          (call) => call.operation === "exec" && call.command.includes("../outside"),
+        ),
+      );
     }),
   );
 

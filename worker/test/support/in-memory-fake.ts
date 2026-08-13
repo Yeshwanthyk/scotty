@@ -273,7 +273,12 @@ export const sandboxRuntimeCapabilitiesFake = (
     memory.invoke("writeFile", [path, content], () => ({
       success: true,
       path,
-      bytesWritten: content.length,
+      bytesWritten:
+        typeof content === "string"
+          ? content.length
+          : content instanceof Uint8Array
+            ? content.byteLength
+            : 0,
     })),
   setEnvVars: (envVars) => memory.invoke("setEnvVars", [envVars]),
 });
