@@ -55,6 +55,7 @@ const PRODUCTION_SANDBOX_CLASS_NAME = "ScottySandbox";
 const PRODUCTION_AUTH_CLASS_NAME = "ScottyAuthRegistry";
 const PRODUCTION_RUNNER_REGISTRY_CLASS_NAME = "ScottyRunnerRegistry";
 const PRODUCTION_RUNNER_CLASS_NAME = "ScottyRunner";
+const PRODUCTION_SANDBOX_CONFIG_CLASS_NAME = "ScottySandboxConfig";
 const DEPLOY_LOCK_PATH = join(tmpdir(), "scotty-production-deploy.lock");
 export const PRODUCTION_DEPLOY_DIAGNOSTIC_PATH = join(
   tmpdir(),
@@ -97,6 +98,7 @@ export function redactProductionDeploymentOutput(value, environment = {}) {
         "kv",
         "r2",
         "artifacts",
+        "sandboxBundles",
         "previewBase",
         "previewZone",
       ].includes(key) ||
@@ -846,6 +848,8 @@ export function resolveProductionTopology(environment = process.env) {
     kvTitle: adoption?.resources?.kvTitle ?? `${prefix}-sessions`,
     backupBucketName: adoption?.resources?.backupBucketName ?? `${prefix}-backups`,
     artifactBucketName: adoption?.resources?.artifactBucketName ?? `${prefix}-artifacts`,
+    sandboxBundleBucketName:
+      adoption?.resources?.sandboxBundleBucketName ?? `${prefix}-sandbox-bundles`,
     previewBase,
     previewZoneId,
     evidenceEnabled: true,
@@ -929,13 +933,16 @@ export async function auditProductionHatchEvidenceTopology(
   const evidence = deployedBinding(version, "SCOTTY_EVIDENCE_ENABLED");
   const preview = deployedBinding(version, "SCOTTY_PREVIEW_BASE");
   const artifactBucket = deployedBinding(version, "ARTIFACT_BUCKET");
+  const sandboxBundleBucket = deployedBinding(version, "SANDBOX_BUNDLE_BUCKET");
   if (
     evidence?.type !== "plain_text" ||
     evidence.text !== "true" ||
     preview?.type !== "plain_text" ||
     preview.text !== topology.previewBase ||
     artifactBucket?.type !== "r2_bucket" ||
-    artifactBucket.bucket_name !== topology.artifactBucketName
+    artifactBucket.bucket_name !== topology.artifactBucketName ||
+    sandboxBundleBucket?.type !== "r2_bucket" ||
+    sandboxBundleBucket.bucket_name !== topology.sandboxBundleBucketName
   ) {
     throw new Error("The active Worker is missing required Hatch or Evidence bindings.");
   }
@@ -966,11 +973,12 @@ function productionEnvironment(environment = process.env) {
     topology.installationName,
     `worker=${topology.workerName}`,
     `runnerWorker=${topology.runnerWorkerName}`,
-    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME},${PRODUCTION_RUNNER_REGISTRY_CLASS_NAME},${PRODUCTION_RUNNER_CLASS_NAME}`,
+    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME},${PRODUCTION_RUNNER_REGISTRY_CLASS_NAME},${PRODUCTION_RUNNER_CLASS_NAME},${PRODUCTION_SANDBOX_CONFIG_CLASS_NAME}`,
     `container=${topology.containerName}`,
     `kv=${topology.kvTitle}`,
     `r2=${topology.backupBucketName}`,
     `artifacts=${topology.artifactBucketName}`,
+    `sandboxBundles=${topology.sandboxBundleBucketName}`,
     `previewBase=${topology.previewBase}`,
     `previewZone=${topology.previewZoneId}`,
     "evidence=enabled",

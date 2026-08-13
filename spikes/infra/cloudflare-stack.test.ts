@@ -71,11 +71,12 @@ describe("Cloudflare stack guard", () => {
         "home",
         "worker=scotty-home-worker",
         "runnerWorker=scotty-home-runner",
-        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner",
+        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig",
         "container=scotty-home-sandbox",
         "kv=scotty-home-sessions",
         "r2=scotty-home-backups",
         "artifacts=scotty-home-artifacts",
+        "sandboxBundles=scotty-home-sandbox-bundles",
       ].join(":"),
     );
   });
@@ -88,11 +89,12 @@ describe("Cloudflare stack guard", () => {
         "home",
         "worker=scotty-home-worker",
         "runnerWorker=scotty-home-runner",
-        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner",
+        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig",
         "container=scotty-home-sandbox",
         "kv=scotty-home-sessions",
         "r2=scotty-home-backups",
         "artifacts=scotty-home-artifacts",
+        "sandboxBundles=scotty-home-sandbox-bundles",
         "previewBase=preview.scotty.example",
         "previewZone=0123456789abcdef0123456789abcdef",
       ].join(":"),
@@ -157,6 +159,7 @@ describe("Cloudflare stack topology", () => {
       kvTitle: "scotty-home-sessions",
       backupBucketName: "scotty-home-backups",
       artifactBucketName: "scotty-home-artifacts",
+      sandboxBundleBucketName: "scotty-home-sandbox-bundles",
       workerLogicalId: "Worker",
     });
     assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["GH_TOKEN", "PI_AUTH_JSON", "SCOTTY_TOKEN"]);
@@ -170,6 +173,16 @@ describe("Cloudflare stack topology", () => {
       logicalId: "ArtifactBucket",
       bindingName: "ARTIFACT_BUCKET",
       name: "scotty-home-artifacts",
+    });
+    assert.deepEqual(topology.sandboxBundleR2, {
+      logicalId: "SandboxBundleBucket",
+      bindingName: "SANDBOX_BUNDLE_BUCKET",
+      name: "scotty-home-sandbox-bundles",
+    });
+    assert.deepEqual(topology.sandboxConfigDurableObject, {
+      logicalId: "SandboxConfig",
+      bindingName: "SANDBOX_CONFIG",
+      className: "ScottySandboxConfig",
     });
     assert.deepEqual(topology.vars, {
       SANDBOX_TRANSPORT: "rpc",
@@ -223,6 +236,7 @@ describe("Cloudflare stack topology", () => {
         kvTitle: "legacy-sessions",
         backupBucketName: "legacy-backups",
         artifactBucketName: "legacy-artifacts",
+        sandboxBundleBucketName: "legacy-sandbox-bundles",
       },
       logicalIds: { worker: "LegacyWorker" },
     } satisfies AdoptionManifest;
@@ -236,6 +250,7 @@ describe("Cloudflare stack topology", () => {
       kvTitle: "legacy-sessions",
       backupBucketName: "legacy-backups",
       artifactBucketName: "legacy-artifacts",
+      sandboxBundleBucketName: "legacy-sandbox-bundles",
       workerLogicalId: "LegacyWorker",
     });
   });
@@ -247,6 +262,7 @@ describe("Cloudflare stack source contract", () => {
     assert.notMatch(packageLockSource, /node_modules\/@cloudflare\/playwright/u);
     assert.notMatch(source, /Cloudflare\.Browser/u);
     assert.match(source, /ARTIFACT_BUCKET: artifacts/u);
+    assert.match(source, /SANDBOX_BUNDLE_BUCKET: sandboxBundles/u);
   });
 
   it("bundles the Worker and full-stack canary without managed browser code or credentials", () => {
@@ -296,7 +312,7 @@ describe("Cloudflare stack source contract", () => {
     assert.match(source, /const removalPolicy = RemovalPolicy\.retain\(\)/u);
     assert.strictEqual(
       source.match(/(?:\.pipe\(removalPolicy\)|^\s+removalPolicy,$)/gmu)?.length,
-      6,
+      7,
     );
     assert.strictEqual(source.match(/\.pipe\(RemovalPolicy\.destroy\(\)\)/gu)?.length, 2);
     assert.notMatch(source, /lifecycleRules/u);
@@ -357,7 +373,7 @@ describe("Cloudflare stack source contract", () => {
     );
     assert.match(
       uninstallSource,
-      /const retainedBuckets = \[\s*installation\.backupBucketName,\s*installation\.artifactBucketName,\s*\]/u,
+      /const retainedBuckets = \[\s*installation\.backupBucketName,\s*installation\.artifactBucketName,\s*installation\.sandboxBundleBucketName,\s*\]/u,
     );
     assert.match(
       uninstallSource,

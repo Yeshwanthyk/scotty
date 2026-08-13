@@ -1,6 +1,5 @@
 import { basename } from "node:path";
 import { Option, Result } from "effect";
-import scottySkill from "../skills/scotty/SKILL.md" with { type: "text" };
 import { CliError, EXIT, type ExitCode, type Writer } from "./core";
 import {
   decodeNonEmptyString,
@@ -18,8 +17,6 @@ import {
   type SteerResponse,
   type VaporizeOutput,
 } from "./schemas";
-
-export const EMBEDDED_SKILL = scottySkill;
 
 export function outputJson(write: Writer, value: unknown): void {
   write(`${JSON.stringify(value)}\n`);
@@ -183,6 +180,13 @@ export function stableSession(record: SessionResponse): StableSession {
   const agentState = optionalString(record.agentState);
   const lastAgentEventAt = optionalString(record.lastAgentEventAt);
   const failure = decodeRawSessionFailure(record.failure);
+  const sandboxBundle =
+    record.sandboxBundle === undefined
+      ? undefined
+      : {
+          digest: record.sandboxBundle.digest,
+          manifestVersion: record.sandboxBundle.manifestVersion,
+        };
   return {
     id: record.id,
     title: record.title,
@@ -209,6 +213,7 @@ export function stableSession(record: SessionResponse): StableSession {
           },
         }
       : {}),
+    ...(sandboxBundle ? { sandboxBundle } : {}),
   };
 }
 

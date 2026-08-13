@@ -29,11 +29,13 @@ export class SandboxRuntimeFailure extends Data.TaggedError("SandboxRuntimeFailu
   readonly message: string;
 }> {}
 
+export type SandboxWriteContent = string | Uint8Array | ReadableStream<Uint8Array>;
+
 export interface SandboxRuntimeCapabilities {
   readonly exec: (command: string, options?: SandboxExecOptions) => Promise<ExecResult>;
   readonly mkdir: (path: string, options?: { readonly recursive?: boolean }) => Promise<unknown>;
   readonly readFileStream?: (path: string) => Promise<ReadableStream<Uint8Array>>;
-  readonly writeFile: (path: string, content: string) => Promise<unknown>;
+  readonly writeFile: (path: string, content: SandboxWriteContent) => Promise<unknown>;
   readonly setEnvVars: (envVars: Record<string, string | undefined>) => Promise<void>;
   readonly startProcess?: (
     command: string,
@@ -80,7 +82,10 @@ interface SandboxRuntimeShape {
     path: string,
     maxBytes: number,
   ) => Effect.Effect<Uint8Array, SandboxRuntimeFailure>;
-  readonly writeFile: (path: string, content: string) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly writeFile: (
+    path: string,
+    content: SandboxWriteContent,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly setEnvVars: (
     envVars: Record<string, string | undefined>,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;

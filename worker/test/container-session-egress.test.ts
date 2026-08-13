@@ -168,6 +168,8 @@ function bindings(namespace: Bindings["SANDBOX"]): Bindings {
     SESSIONS: undefined as never,
     BACKUP_BUCKET: undefined as never,
     ARTIFACT_BUCKET: undefined as never,
+    SANDBOX_BUNDLE_BUCKET: undefined as never,
+    SANDBOX_CONFIG: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "unused",
     PI_AUTH_JSON: "unused",

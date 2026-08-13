@@ -10,6 +10,10 @@ export const CONTAINER_CONTEXT_PATH = ".alchemy/scotty-container-context";
 export const CONTAINER_STATIC_INPUTS = [
   "package.json",
   "package-lock.json",
+  "tui/package.json",
+  "scripts/apply-dependency-patches.mjs",
+  "patches/alchemy+2.0.0-beta.67.patch",
+  "patches/earendil-works+pi-coding-agent+0.84.0.patch",
   "worker/package.json",
   "worker/container",
 ];

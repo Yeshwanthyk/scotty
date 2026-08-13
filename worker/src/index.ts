@@ -9,7 +9,7 @@ import { parsePiAuthJsonOption, piProviderMetadata } from "../../protocol/pi-aut
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
-import { readBoundedUtf8Body } from "./bounded-http";
+import { readBoundedBytes, readBoundedUtf8Body } from "./bounded-http";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
 import { decodeEvidenceIdentifier, evidenceShowcaseProjection } from "./evidence-contracts";
 import { handleEvidencePreviewRequest } from "./evidence-preview";
@@ -18,6 +18,7 @@ import { hatchOrigin } from "./hatch-contracts";
 import { ContainerProxy } from "./container-session-egress";
 import {
   badRequest,
+  conflict,
   decodeJsonValue,
   ApiErrorCodeSchema,
   parseAuthClientId,
@@ -79,10 +80,29 @@ import {
   type RunnerRegistryRpcResult,
   type ScottyRunnerRegistryStub,
 } from "./runner-registry-object";
+import { validateSandboxArchive } from "./sandbox-archive";
+import {
+  SandboxBundleStore,
+  SANDBOX_BUNDLE_MAX_GZIP_BYTES,
+  sandboxBundleStoreLayer,
+  r2SandboxBundleCapabilities,
+} from "./sandbox-bundle-store";
+import {
+  ScottySandboxConfig,
+  SANDBOX_CONFIG_OBJECT_NAME,
+  type SandboxConfigRpcResult,
+  type ScottySandboxConfigStub,
+} from "./sandbox-config-object";
 import { inspectPassiveSession, steerPassiveSession } from "./passive-session";
 import { Sandbox as ScottySandbox } from "./session";
 
-export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandbox };
+export {
+  ContainerProxy,
+  ScottyAuthRegistry,
+  ScottyRunnerRegistry,
+  ScottySandbox,
+  ScottySandboxConfig,
+};
 
 export const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
 const PUBLIC_AUTH_MUTATIONS = new Set([
@@ -92,6 +112,7 @@ const PUBLIC_AUTH_MUTATIONS = new Set([
 ]);
 const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["booting", "warm", "sleeping", "failed"]);
 const RUNNER_REGISTRY_OBJECT_NAME = "account";
+const SANDBOX_BUNDLE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 const RunnerRegistrationInputSchema = Schema.Struct({
   name: Schema.String,
@@ -452,6 +473,67 @@ app.delete("/api/runners/:name", async (c) => {
   await runner.control("disconnect");
   unwrapRunnerRegistryRpc(await runnerRegistry(c.env).remove(name));
   return c.json({ name, status: "removed" as const });
+});
+
+app.get("/api/sandbox/configuration", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  return c.json(unwrapSandboxConfigRpc(await sandboxConfig(c.env).status()));
+});
+
+app.put("/api/sandbox/bundles/:digest", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  const digest = c.req.param("digest");
+  if (!SANDBOX_BUNDLE_DIGEST_PATTERN.test(digest))
+    throw badRequest("Sandbox bundle digest is invalid");
+  const contentType = c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/gzip" && contentType !== "application/x-gzip")
+    throw badRequest("Sandbox bundle content type must be application/gzip");
+  const idempotencyKeyHeader = c.req.header("idempotency-key");
+  if (idempotencyKeyHeader === undefined) throw badRequest("Idempotency-Key header is required");
+  const idempotencyKey = parseIdempotencyKey(idempotencyKeyHeader);
+  const ifMatchHeader = c.req.header("if-match");
+  let expectedRevision: number | null = null;
+  if (ifMatchHeader !== undefined) {
+    const parsed = Number(ifMatchHeader);
+    if (!Number.isInteger(parsed) || parsed < 0)
+      throw badRequest("If-Match revision must be a non-negative integer");
+    expectedRevision = parsed;
+  }
+  const gzipBytes = await readBoundedBytes(c.req.raw, SANDBOX_BUNDLE_MAX_GZIP_BYTES);
+  if (gzipBytes === undefined) throw badRequest("Sandbox bundle body exceeds the size limit");
+  const validated = await Effect.runPromise(
+    validateSandboxArchive(gzipBytes, digest).pipe(Effect.result),
+  );
+  if (Result.isFailure(validated)) throw badRequest(validated.failure.message);
+  await Effect.runPromise(
+    Effect.flatMap(SandboxBundleStore, (store) =>
+      store.putBundle({
+        digest,
+        gzipBytes,
+        manifestJson: validated.success.manifestJson,
+      }),
+    ).pipe(
+      Effect.provide(
+        sandboxBundleStoreLayer(r2SandboxBundleCapabilities(c.env.SANDBOX_BUNDLE_BUCKET)),
+      ),
+      Effect.catchTag("SandboxBundleFailure", (error) =>
+        Effect.fail(
+          new ScottyError(
+            error.reason === "metadata_mismatch" ? "internal" : "upstream",
+            error.reason === "metadata_mismatch"
+              ? "Sandbox bundle storage metadata mismatch"
+              : "Sandbox bundle storage failed",
+            { httpStatus: error.reason === "metadata_mismatch" ? 500 : 502, exitCode: 1 },
+          ),
+        ),
+      ),
+    ),
+  );
+  return c.json(
+    unwrapSandboxConfigRpc(
+      await sandboxConfig(c.env).activate({ digest, idempotencyKey, expectedRevision }),
+    ),
+  );
 });
 
 app.post("/api/runners/:name/:action", async (c) => {
@@ -1059,6 +1141,22 @@ async function configuredRunnerStatuses(env: Bindings) {
 
 function runnerRegistry(env: Bindings): ScottyRunnerRegistryStub {
   return env.RUNNER_REGISTRY.getByName(RUNNER_REGISTRY_OBJECT_NAME);
+}
+
+function sandboxConfig(env: Bindings): ScottySandboxConfigStub {
+  return env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
+}
+
+function unwrapSandboxConfigRpc<A>(result: SandboxConfigRpcResult<A>): A {
+  if (result.ok) return result.value;
+  const { reason, message } = result.error;
+  if (reason === "conflict") throw conflict(message);
+  if (reason === "invalid_input") throw badRequest(message);
+  console.error("Sandbox configuration RPC failed", { reason });
+  throw new ScottyError("internal", "Sandbox configuration failed", {
+    httpStatus: 500,
+    exitCode: 1,
+  });
 }
 
 function unwrapRunnerRegistryRpc<A>(result: RunnerRegistryRpcResult<A>): A {

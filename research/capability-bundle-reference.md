@@ -19,13 +19,13 @@ reseed when an extension's code or dependency set changed.
 
 The first version should support only:
 
-* installation-scoped bundles, not arbitrary per-session package management;
-* explicit add, update, remove, list, and revision/pin selection;
-* skills (`SKILL.md` plus bounded resources) and Pi extensions/packages;
-* immutable content digests and source provenance;
-* fail-closed validation and trust approval before code is loaded;
-* deterministic precedence and duplicate-name rejection;
-* a clear reload/restart status for warm sessions.
+- installation-scoped bundles, not arbitrary per-session package management;
+- explicit add, update, remove, list, and revision/pin selection;
+- skills (`SKILL.md` plus bounded resources) and Pi extensions/packages;
+- immutable content digests and source provenance;
+- fail-closed validation and trust approval before code is loaded;
+- deterministic precedence and duplicate-name rejection;
+- a clear reload/restart status for warm sessions.
 
 This shape reuses the useful part of Amp and Pi while preserving Scotty's
 authoritative Sandbox Durable Object and credential boundaries. It does **not**
@@ -57,7 +57,7 @@ another shell does not reload an existing session; the running session needs a
 reload operation. The current manual documents `amp skills list`, JSON output,
 and `reload_skills`, while the current Amp product note says newer Amp removed
 its own add/remove/update subcommands and expects a separate skills tool for
-management. Therefore, copy the *separation of management from runtime reload*,
+management. Therefore, copy the _separation of management from runtime reload_,
 not a particular Amp CLI command set. [Amp reload behavior](https://ampcode.com/manual#agent-skills),
 [Amp Neo lifecycle note](https://ampcode.com/news/neo)
 
@@ -126,22 +126,22 @@ the installation catalog outside the image.
 
 The current implementation is image-owned and deployment-coupled:
 
-* `DEPLOYMENT_INPUTS` and `CONTAINER_INPUTS` include `worker/container`, so a
+- `DEPLOYMENT_INPUTS` and `CONTAINER_INPUTS` include `worker/container`, so a
   package change currently participates in image/deployment input hashing
   (`cli/src/deployment-inputs.ts:7-32`).
-* The Dockerfile copies skills and Pi packages into `/opt/scotty`, runs
+- The Dockerfile copies skills and Pi packages into `/opt/scotty`, runs
   dependency installation, performs offline Pi package discovery, and makes
   `/opt/scotty/pi-packages` and `/opt/scotty/skills` read-only
   (`worker/container/Dockerfile:122-127,135-165,171-200`).
-* Per-session seeding symlinks both `$CODEX_HOME/skills` and
+- Per-session seeding symlinks both `$CODEX_HOME/skills` and
   `$PI_CODING_AGENT_DIR/skills` to the image's `/opt/scotty/skills`, and writes
   the Pi settings/package list into the session home
   (`worker/src/container-auth.ts:168-195`).
-* The package manifest records repository commits, source SHA-256 digests, image
+- The package manifest records repository commits, source SHA-256 digests, image
   paths, and npm integrity (`worker/container/pi-packages/manifest.json:1-94`).
   This is a strong provenance pattern to retain, but the image manifest is not
   a mutable installation catalog.
-* `Bindings` already separate per-session Sandbox DO authority, KV listing, and
+- `Bindings` already separate per-session Sandbox DO authority, KV listing, and
   R2 buckets (`worker/src/bindings.ts:6-26`). The project instructions state
   that Sandbox DO storage is authoritative, KV is a non-secret list projection,
   and R2 contains immutable backups. A capability catalog should follow that
@@ -177,13 +177,13 @@ network policy.
 Give every item a stable installation-local ID and kind (`skill` or
 `pi-package`), plus:
 
-* source type and locator (registry, git URL, or uploaded archive);
-* immutable version/ref and resolved commit/version;
-* SHA-256 digest of the normalized archive/content;
-* declared name, description, license, compatibility, and resource paths;
-* dependency lock data for Pi packages;
-* trust decision and approving principal;
-* added/updated timestamps and supersession metadata.
+- source type and locator (registry, git URL, or uploaded archive);
+- immutable version/ref and resolved commit/version;
+- SHA-256 digest of the normalized archive/content;
+- declared name, description, license, compatibility, and resource paths;
+- dependency lock data for Pi packages;
+- trust decision and approving principal;
+- added/updated timestamps and supersession metadata.
 
 Validate the Agent Skills frontmatter and relative resource paths, validate Pi
 package manifests against the checked-in/native Pi shape, reject path traversal,
@@ -226,13 +226,13 @@ untouched.
 
 Classify a revision change:
 
-* **Skills-only:** safe to materialize and ask a warm Pi session to reload its
+- **Skills-only:** safe to materialize and ask a warm Pi session to reload its
   resources if the supported runtime exposes that operation. Existing turns
   keep their already-loaded context; later turns see the new resource set.
-* **Extension source/config change:** requires Pi `/reload` (or an equivalent
+- **Extension source/config change:** requires Pi `/reload` (or an equivalent
   supervisor action), with a bounded status/receipt. If reload fails, keep the
   old process and report the old revision as active.
-* **Dependency/runtime/image change:** requires quiesce, reseed, and restart;
+- **Dependency/runtime/image change:** requires quiesce, reseed, and restart;
   never replace a running extension directory underneath the process.
 
 For a sleeping session, do not wake it merely to update capabilities. Record the
@@ -279,31 +279,31 @@ alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
 
 ## What not to copy
 
-* **Do not copy Amp's broad precedence chain.** Compatibility directories,
+- **Do not copy Amp's broad precedence chain.** Compatibility directories,
   built-ins, personal repositories, and extra search paths are useful for a
   local desktop product but create hidden masking in a remote installation.
   Keep Scotty's three explicit layers and reject duplicates.
-* **Do not copy Pi's local-user trust boundary.** Pi warns that packages execute
+- **Do not copy Pi's local-user trust boundary.** Pi warns that packages execute
   with full system access. Scotty must add provenance, digest, approval, and
   archive/path gates before an extension reaches a sandbox.
-* **Do not copy Pi's package manager into every sandbox.** Per-sandbox `pi
-  install`, arbitrary network fetches, mutable npm/git checkouts, and automatic
+- **Do not copy Pi's package manager into every sandbox.** Per-sandbox `pi
+install`, arbitrary network fetches, mutable npm/git checkouts, and automatic
   install-on-startup would bypass installation ownership, make reproducibility
   impossible, and create a new credential/egress review surface.
-* **Do not make R2 or the container authoritative.** A bundle directory is a
+- **Do not make R2 or the container authoritative.** A bundle directory is a
   materialized cache. The installation catalog/revision and session pin belong
   in the control plane; R2 is immutable payload storage.
-* **Do not overwrite `/opt/scotty/skills` or the fixed package list.** Those are
+- **Do not overwrite `/opt/scotty/skills` or the fixed package list.** Those are
   the image's reviewed baseline today (`worker/src/container-auth.ts:8-19`,
   `worker/container/Dockerfile:122-127`). Add a separate installation layer.
-* **Do not infer that a reload succeeded because files changed.** Pi documents
+- **Do not infer that a reload succeeded because files changed.** Pi documents
   reload as an explicit runtime event; Scotty needs a receipt/status tied to the
   session revision. If the extension process did not reload, report the prior
   active revision.
-* **Do not treat Agent Skills metadata as executable safety.** `name`,
+- **Do not treat Agent Skills metadata as executable safety.** `name`,
   `description`, and `license` are discovery/interoperability metadata, not a
   sandbox permission model.
-* **Do not redeploy Cloudflare infrastructure for each capability change.** The
+- **Do not redeploy Cloudflare infrastructure for each capability change.** The
   point of this bundle is to keep the Worker/DO/image stable while changing
   installation-owned, digest-verified content. Image changes remain necessary
   for baseline/runtime/toolchain changes.
@@ -334,14 +334,13 @@ the absence of credential or arbitrary-network leakage.
 
 ## Source index
 
-* Amp Owner's Manual: https://ampcode.com/manual#agent-skills
-* Amp Agent Skills announcement: https://ampcode.com/news/agent-skills
-* Amp current lifecycle note: https://ampcode.com/news/neo
-* Agent Skills specification: https://agentskills.io/specification
-* Pi Packages: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md
-* Pi Extensions: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md
-* Pi security policy: https://github.com/earendil-works/pi/blob/main/SECURITY.md
-* Cloudflare Durable Object rules: https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/
-* Cloudflare Durable Object alarms: https://developers.cloudflare.com/durable-objects/api/alarms/
-* Cloudflare R2 Workers API: https://developers.cloudflare.com/r2/api/workers/workers-api-usage/
-
+- Amp Owner's Manual: https://ampcode.com/manual#agent-skills
+- Amp Agent Skills announcement: https://ampcode.com/news/agent-skills
+- Amp current lifecycle note: https://ampcode.com/news/neo
+- Agent Skills specification: https://agentskills.io/specification
+- Pi Packages: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md
+- Pi Extensions: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md
+- Pi security policy: https://github.com/earendil-works/pi/blob/main/SECURITY.md
+- Cloudflare Durable Object rules: https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/
+- Cloudflare Durable Object alarms: https://developers.cloudflare.com/durable-objects/api/alarms/
+- Cloudflare R2 Workers API: https://developers.cloudflare.com/r2/api/workers/workers-api-usage/

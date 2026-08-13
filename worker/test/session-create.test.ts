@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { ScottyError } from "../src/contracts";
 import { InitialSessionStorageFailure } from "../src/session-store";
 import {
@@ -14,6 +15,15 @@ import {
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
+const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
+  {
+    path: "manifest.json",
+    type: "file",
+    modeClass: "regular",
+    bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+  },
+]).digest;
+
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
   operation.then(
     () => undefined,
@@ -24,6 +34,20 @@ const assertUpstreamFailure = async (operation: Promise<unknown>): Promise<void>
   const error = await rejection(operation);
   assert.ok(error instanceof ScottyError);
   assert.strictEqual(error.code, "upstream");
+};
+
+const hostWriteFileEventIndex = (
+  events: ReadonlyArray<string>,
+  writtenFileIndex: number,
+): number => {
+  let writeEvents = 0;
+  for (let index = 0; index < events.length; index += 1) {
+    if (events[index] === "host:writeFile") {
+      if (writeEvents === writtenFileIndex) return index;
+      writeEvents += 1;
+    }
+  }
+  throw new Error("missing host:writeFile event");
 };
 
 describe("Sandbox create orchestration", () => {
@@ -59,6 +83,8 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(record?.repoExistsAtCreate, true);
     assert.strictEqual(record?.defaultBranch, "main");
     assert.strictEqual(record?.codexThreadId, `pi-${SESSION_ID}`);
+    assert.deepStrictEqual(record?.sandboxBundle, { digest: null, manifestVersion: 1 });
+    assert.deepStrictEqual(created.sandboxBundle, { digest: null, manifestVersion: 1 });
     assert.deepStrictEqual(harness.read(sessionHarnessKeys.createIdempotency), CREATE_IDEMPOTENCY);
 
     const recordIndex = harness.events.indexOf("record:booting");
@@ -555,4 +581,149 @@ describe("Sandbox create orchestration", () => {
       assert.ok(harness.events.indexOf("record:failed") < harness.events.indexOf("host:destroy"));
     });
   }
+
+  it("persists a null sandbox bundle pin on fresh create", async () => {
+    const harness = await createSessionHarness();
+
+    const created = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
+      digest: null,
+      manifestVersion: 1,
+    });
+    assert.deepStrictEqual(created.sandboxBundle, {
+      digest: null,
+      manifestVersion: 1,
+    });
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 1);
+  });
+
+  it("persists the active sandbox digest before workspace setup", async () => {
+    const digest = EMPTY_ADDITIONS_DIGEST;
+    const harness = await createSessionHarness({
+      sandboxConfigStatus: { schemaVersion: 1, revision: 2, activeDigest: digest },
+    });
+
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    const recordIndex = harness.events.indexOf("record:booting");
+    const authIndex = harness.events.indexOf("host:mkdir");
+    assert.ok(recordIndex >= 0);
+    assert.ok(authIndex >= 0);
+    assert.ok(recordIndex < authIndex);
+    assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
+      digest,
+      manifestVersion: 1,
+    });
+  });
+
+  it("keeps the initial sandbox bundle pin across create replay after config changes", async () => {
+    const digestA = EMPTY_ADDITIONS_DIGEST;
+    const digestB = "b".repeat(64);
+    const crashedHarness = await createSessionHarness({
+      crashAfterInitialRecordCommit: true,
+      sandboxConfigStatus: { schemaVersion: 1, revision: 1, activeDigest: digestA },
+    });
+
+    const crash = await rejection(
+      crashedHarness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+    assert.ok(crash instanceof InitialSessionStorageFailure);
+    const committed = crashedHarness.readRecord();
+    assert.ok(committed);
+    assert.deepStrictEqual(committed.sandboxBundle, { digest: digestA, manifestVersion: 1 });
+    assert.strictEqual(crashedHarness.sandboxConfigStatusCallCount(), 1);
+
+    const replayHarness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: committed,
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+      sandboxConfigStatus: { schemaVersion: 1, revision: 2, activeDigest: digestB },
+    });
+
+    const replayed = await replayHarness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.deepStrictEqual(replayHarness.readRecord()?.sandboxBundle, {
+      digest: digestA,
+      manifestVersion: 1,
+    });
+    assert.deepStrictEqual(replayed.sandboxBundle, {
+      digest: digestA,
+      manifestVersion: 1,
+    });
+    assert.strictEqual(replayHarness.sandboxConfigStatusCallCount(), 0);
+  });
+
+  it("materializes the pinned sandbox bundle during create", async () => {
+    const digest = EMPTY_ADDITIONS_DIGEST;
+    const harness = await createSessionHarness({
+      sandboxConfigStatus: { schemaVersion: 1, revision: 2, activeDigest: digest },
+    });
+
+    const created = await harness.sandbox.createScottySession(
+      CREATE_INPUT,
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(created.status, "warm");
+    const mkdirIndex = harness.events.indexOf("host:mkdir");
+    assert.ok(mkdirIndex >= 0);
+    const manifestIndex = harness.writtenFiles.findIndex(
+      (file) => file.path.includes("/.scotty/sandbox/") && file.path.endsWith("/manifest.json"),
+    );
+    const verifiedIndex = harness.writtenFiles.findIndex(
+      (file) => file.path.includes("/.scotty/sandbox/") && file.path.endsWith("/.verified"),
+    );
+    assert.ok(manifestIndex >= 0);
+    assert.ok(verifiedIndex >= 0);
+    assert.ok(hostWriteFileEventIndex(harness.events, manifestIndex) > mkdirIndex);
+    assert.ok(hostWriteFileEventIndex(harness.events, verifiedIndex) > mkdirIndex);
+    assert.ok(harness.events.some((event) => event.startsWith("host:pi:start:")));
+    assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
+      digest,
+      manifestVersion: 1,
+    });
+    assert.deepStrictEqual(created.sandboxBundle, {
+      digest,
+      manifestVersion: 1,
+    });
+  });
+
+  it("does not reach warm when the pinned sandbox bundle is missing", async () => {
+    const digest = "a".repeat(64);
+    const harness = await createSessionHarness({
+      sandboxConfigStatus: { schemaVersion: 1, revision: 2, activeDigest: digest },
+      seedPinnedSandboxBundle: false,
+    });
+
+    await assertUpstreamFailure(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.notStrictEqual(harness.readRecord()?.status, "warm");
+    assert.ok(!harness.events.some((event) => event.startsWith("host:pi:start:")));
+  });
+
+  it("does not commit a session record when sandbox config status fails", async () => {
+    for (const sandboxConfigStatusFailure of ["rpc-error", "throw"] as const) {
+      const harness = await createSessionHarness({ sandboxConfigStatusFailure });
+
+      await assertUpstreamFailure(
+        harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+      );
+
+      assert.strictEqual(harness.readRecord(), undefined);
+      assert.strictEqual(harness.sandboxConfigStatusCallCount(), 1);
+    }
+  });
 });

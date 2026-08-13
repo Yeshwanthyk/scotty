@@ -337,6 +337,52 @@ describe("persisted session schemas", () => {
     }),
   );
 
+  it.effect("decodes legacy records without sandbox bundle pins", () =>
+    Effect.gen(function* () {
+      const decoded = yield* decodeSessionRecord(persistedRecord);
+      assert.notProperty(decoded, "sandboxBundle");
+    }),
+  );
+
+  it.effect("rejects malformed sandbox bundle digests", () =>
+    Effect.gen(function* () {
+      const decoded = yield* Effect.result(
+        decodeSessionRecord({
+          ...persistedRecord,
+          sandboxBundle: { digest: "not-a-digest", manifestVersion: 1 },
+        }),
+      );
+      assert.ok(Result.isFailure(decoded));
+    }),
+  );
+
+  it("derives sandbox bundle pins in projections without exposing bundle contents", () => {
+    const digest = "c".repeat(64);
+    const record: SessionRecord = {
+      version: 1,
+      id: "a0b1c2d3e4f5",
+      title: "Package Pi extensions",
+      status: "warm",
+      operation: null,
+      execution: { provider: "cloudflare" },
+      provider: "cloudflare",
+      repo: "owner/project",
+      repoExistsAtCreate: true,
+      defaultBranch: "dev",
+      branch: "scotty/a0b1c2d3e4f5",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      hardCapAt: "2026-01-01T04:00:00.000Z",
+      hardCapDurationSeconds: 14_400,
+      ownedBackupIds: [],
+      sandboxBundle: { digest, manifestVersion: 1 },
+    };
+    const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));
+    assert.deepStrictEqual(projection.sandboxBundle, { digest, manifestVersion: 1 });
+    assert.ok(!("skills" in projection));
+    assert.ok(!("piPackages" in projection));
+  });
+
   it("strips projection extras and skips malformed projections", () => {
     const projection = {
       version: 1,

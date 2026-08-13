@@ -69,7 +69,7 @@ export const apiRequest = Effect.fnUntraced(function* (
   const headers = new Headers(init.headers);
   if (target.token !== undefined) headers.set("authorization", `Bearer ${target.token}`);
   headers.set("accept", "application/json, application/x-tar, application/octet-stream");
-  if (init.body) headers.set("content-type", "application/json");
+  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
   if (method !== "GET" && !headers.has("idempotency-key"))
     headers.set("idempotency-key", crypto.randomUUID());
   const responseOption = yield* transport

@@ -2,6 +2,7 @@ import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sand
 import { Option, Predicate, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
 import { PiCredentialSchema } from "../../protocol/pi-auth";
+import { SandboxDigestSchema } from "./sandbox-config-contracts";
 
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
 export const MIN_HARD_CAP_SECONDS = 60;
@@ -122,6 +123,12 @@ export const DirectoryBackupSchema = Schema.Struct({
 });
 export type DirectoryBackup = typeof DirectoryBackupSchema.Type;
 
+export const SessionSandboxBundleSchema = Schema.Struct({
+  digest: Schema.NullOr(SandboxDigestSchema),
+  manifestVersion: Schema.Literal(1),
+});
+export type SessionSandboxBundle = typeof SessionSandboxBundleSchema.Type;
+
 type Assert<T extends true> = T;
 export type DirectoryBackupSdkCompatibility = Assert<
   DirectoryBackup extends SandboxDirectoryBackup
@@ -160,6 +167,7 @@ export const SessionRecordSchema = Schema.Struct({
   agentState: Schema.optional(AgentActivityStateSchema),
   lastAgentEventAt: Schema.optional(Schema.String),
   failure: Schema.optional(SessionFailureSchema),
+  sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
 });
 export type SessionRecord = typeof SessionRecordSchema.Type;
 
@@ -212,6 +220,7 @@ export const SessionProjectionSchema = Schema.Struct({
   hardCapAt: Schema.String,
   projectedAt: Schema.String,
   failure: Schema.optionalKey(SessionFailureSchema),
+  sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
 });
 export type SessionProjection = typeof SessionProjectionSchema.Type;
 
@@ -683,6 +692,7 @@ export function toProjection(record: SessionRecord, now: Date): SessionProjectio
     hardCapAt: record.hardCapAt,
     projectedAt: now.toISOString(),
     failure: record.failure,
+    sandboxBundle: record.sandboxBundle,
   };
 }
 
