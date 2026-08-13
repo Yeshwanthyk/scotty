@@ -1,6 +1,6 @@
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
 import { Credentials as DistilledCredentials } from "@distilled.cloud/cloudflare/Credentials";
@@ -41,7 +41,12 @@ import {
   PreviewCleanupOwnershipError,
   readOwnedPreviewTopologyDeletion,
 } from "../../infra/preview-ownership.ts";
-import { CONTAINER_INPUTS, DEPLOYMENT_INPUTS } from "./deployment-inputs.ts";
+import {
+  CONTAINER_INPUTS,
+  DEPLOYMENT_ARCHIVE_NAME,
+  DEPLOYMENT_INPUTS,
+  isDeploymentArchiveFileName,
+} from "./deployment-inputs.ts";
 import type {
   InstallationApplyRequest,
   InstallationCreateRequest,
@@ -57,7 +62,6 @@ import type {
   InstallationUninstallResult,
 } from "./services.ts";
 
-const DEPLOYMENT_ARCHIVE_NAME = "scotty-deployment.tar.gz";
 const CONTAINER_CONTEXT_PATH = ".alchemy/scotty-container-context";
 type WorkerBinding = NonNullable<
   Workers.GetScriptScriptAndVersionSettingResponse["bindings"]
@@ -83,10 +87,8 @@ class InstallationDeploymentError extends Data.TaggedError("InstallationDeployme
 const embeddedDeploymentArchive = (): Blob | undefined =>
   Bun.embeddedFiles.find((file) => {
     const name = Reflect.get(file, "name");
-    return (
-      typeof name === "string" &&
-      (name === DEPLOYMENT_ARCHIVE_NAME || /^scotty-deployment-[a-f0-9]+\.tar\.gz$/u.test(name))
-    );
+    const fileName = typeof name === "string" ? basename(name) : "";
+    return isDeploymentArchiveFileName(fileName);
   });
 
 const sourceRoot = (): string => resolve(import.meta.dir, "../..");
@@ -112,6 +114,7 @@ const prepareDeploymentRoot = async (): Promise<{
   const root = await mkdtemp(join(tmpdir(), "scotty-deployment-"));
   const bytes = await archive.arrayBuffer();
   await new Bun.Archive(bytes).extract(root);
+  await mkdir(join(root, ".alchemy"), { recursive: true });
   return { root, cleanup: () => rm(root, { recursive: true, force: true }) };
 };
 
@@ -234,7 +237,7 @@ const makeStack = (request: InstallationDeployRequest, adoption: AdoptionManifes
       installation,
       resourceConfirmation: expectedCloudflareResourceConfirmation(installation),
       approval: expectedCloudflareStackApproval(installation),
-    }),
+    }).pipe(Alchemy.AdoptPolicy.adopt(adoption !== undefined)),
   );
   return { installation, stack };
 };
@@ -394,9 +397,11 @@ const deployWithProfile = async (
 
 const inspectWithProfile = async (
   request: InstallationInspectRequest,
+  root: string,
   adoption: AdoptionManifest | undefined,
   token?: string,
   expectedAccountId?: string,
+  githubToken?: string,
 ): Promise<InstallationResult> => {
   const installation = makeInstallationTopology(
     request.installationName,
@@ -404,7 +409,7 @@ const inspectWithProfile = async (
     previewConfiguration(request),
     request.evidenceEnabled === true,
   );
-  return runWithProfile(request.profile, sourceRoot(), () =>
+  return runWithProfile(request.profile, root, () =>
     provideAlchemy(
       Effect.gen(function* () {
         const environment = yield* Cloudflare.CloudflareEnvironment;
@@ -540,6 +545,14 @@ const inspectWithProfile = async (
             text: token,
             type: "secret_text",
           });
+        if (githubToken !== undefined)
+          yield* Workers.putScriptSecret({
+            accountId,
+            scriptName: installation.workerName,
+            name: "GH_TOKEN",
+            text: githubToken,
+            type: "secret_text",
+          });
         return {
           installationName: request.installationName,
           profile: request.profile,
@@ -648,7 +661,11 @@ export async function createInstallation(
       );
     const unsafeResumePlan = plan.changes.some(
       (change) =>
-        change.action !== "create" && change.action !== "run" && change.action !== "binding-create",
+        change.action !== "create" &&
+        change.action !== "update" &&
+        change.action !== "run" &&
+        change.action !== "binding-create" &&
+        change.action !== "binding-update",
     );
     if (
       (request.mode === "fresh" && unsafeFreshPlan) ||
@@ -661,7 +678,14 @@ export async function createInstallation(
     }
     const deployed =
       plan.changes.length === 0
-        ? await inspectWithProfile(request, undefined, request.token, request.expectedAccountId)
+        ? await inspectWithProfile(
+            request,
+            deployment.root,
+            undefined,
+            request.token,
+            request.expectedAccountId,
+            request.githubToken,
+          )
         : await deployWithProfile(
             {
               ...deployRequest,
@@ -672,7 +696,14 @@ export async function createInstallation(
             undefined,
           );
     if (plan.changes.length > 0)
-      await inspectWithProfile(request, undefined, request.token, request.expectedAccountId);
+      await inspectWithProfile(
+        request,
+        deployment.root,
+        undefined,
+        request.token,
+        request.expectedAccountId,
+        request.githubToken,
+      );
     return deployed;
   } finally {
     await deployment.cleanup();
@@ -731,7 +762,7 @@ export async function uninstallInstallation(
               );
               if (missingOwnership.length > 0)
                 return yield* new InstallationDeploymentError({
-                  message: "Alchemy state does not prove ownership of every installation resource.",
+                  message: `Alchemy state does not prove ownership of every installation resource: ${missingOwnership.join(", ")}`,
                 });
               const ownedPreviewDeletion =
                 installation.preview === undefined
@@ -781,10 +812,12 @@ export async function uninstallInstallation(
               yield* Workers.deleteScript({
                 accountId,
                 scriptName: installation.runnerWorkerName,
+                force: true,
               }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
               yield* Workers.deleteScript({
                 accountId,
                 scriptName: installation.workerName,
+                force: true,
               }).pipe(Effect.catchTag("WorkerNotFound", () => Effect.void));
 
               const retainedBuckets = [
@@ -942,69 +975,99 @@ const piAuthTargetProgram = Effect.fnUntraced(function* (request: PiAuthTargetRe
 export async function inspectPiAuthTarget(
   request: PiAuthTargetRequest,
 ): Promise<PiAuthTargetResult> {
-  return runWithProfile(request.profile, sourceRoot(), () =>
-    provideAlchemy(piAuthTargetProgram(request).pipe(Effect.provide(cloudflareApiLive()))),
-  );
+  const deployment = await prepareDeploymentRoot();
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone inspection must remove its extracted payload on every exit
+  try {
+    return await runWithProfile(request.profile, deployment.root, () =>
+      provideAlchemy(piAuthTargetProgram(request).pipe(Effect.provide(cloudflareApiLive()))),
+    );
+  } finally {
+    await deployment.cleanup();
+  }
 }
 
 export async function uploadPiAuthSecret(
   request: PiAuthUploadRequest,
 ): Promise<PiAuthTargetResult> {
-  return runWithProfile(request.profile, sourceRoot(), () =>
-    provideAlchemy(
-      Effect.gen(function* () {
-        const target = yield* piAuthTargetProgram(request);
-        yield* Workers.putScriptSecret({
-          accountId: target.accountId,
-          scriptName: target.workerName,
-          name: "PI_AUTH_JSON",
-          text: request.json,
-          type: "secret_text",
-        });
-        return target;
-      }).pipe(Effect.provide(cloudflareApiLive())),
-    ),
-  );
+  const deployment = await prepareDeploymentRoot();
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone secret upload must remove its extracted payload on every exit
+  try {
+    return await runWithProfile(request.profile, deployment.root, () =>
+      provideAlchemy(
+        Effect.gen(function* () {
+          const target = yield* piAuthTargetProgram(request);
+          yield* Workers.putScriptSecret({
+            accountId: target.accountId,
+            scriptName: target.workerName,
+            name: "PI_AUTH_JSON",
+            text: request.json,
+            type: "secret_text",
+          });
+          return target;
+        }).pipe(Effect.provide(cloudflareApiLive())),
+      ),
+    );
+  } finally {
+    await deployment.cleanup();
+  }
 }
 
 export async function inspectInstallation(
   request: InstallationInspectRequest,
 ): Promise<InstallationResult> {
-  const adoption = await readAdoptionManifest(
-    request.adoptionManifestPath,
-    request.installationName,
-  );
-  return inspectWithProfile(request, adoption);
+  const deployment = await prepareDeploymentRoot();
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone inspection must remove its extracted payload on every exit
+  try {
+    const adoption = await readAdoptionManifest(
+      request.adoptionManifestPath,
+      request.installationName,
+    );
+    return await inspectWithProfile(request, deployment.root, adoption);
+  } finally {
+    await deployment.cleanup();
+  }
 }
 
 export async function recoverInstallation(
   request: InstallationRecoverRequest,
 ): Promise<InstallationResult> {
-  const adoption = await readAdoptionManifest(
-    request.adoptionManifestPath,
-    request.installationName,
-  );
-  const installation = makeInstallationTopology(
-    request.installationName,
-    adoption,
-    previewConfiguration(request),
-    request.evidenceEnabled === true,
-  );
-  if (
-    installation.workerName !== request.expectedWorkerName ||
-    installation.runnerWorkerName !== request.expectedRunnerWorkerName ||
-    installation.containerName !== request.expectedContainerName ||
-    installation.kvTitle !== request.expectedKvTitle ||
-    installation.backupBucketName !== request.expectedBackupBucketName ||
-    installation.preview?.base !== request.expectedPreviewBase ||
-    installation.preview?.zoneId !== request.expectedPreviewZoneId
-  ) {
-    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise recovery adapter rejects a mapping that changed after confirmation
-    throw new InstallationDeploymentError({
-      message: "The recovery resource mapping changed after confirmation.",
-    });
+  const deployment = await prepareDeploymentRoot();
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone recovery must remove its extracted payload on every exit
+  try {
+    const adoption = await readAdoptionManifest(
+      request.adoptionManifestPath,
+      request.installationName,
+    );
+    const installation = makeInstallationTopology(
+      request.installationName,
+      adoption,
+      previewConfiguration(request),
+      request.evidenceEnabled === true,
+    );
+    if (
+      installation.workerName !== request.expectedWorkerName ||
+      installation.runnerWorkerName !== request.expectedRunnerWorkerName ||
+      installation.containerName !== request.expectedContainerName ||
+      installation.kvTitle !== request.expectedKvTitle ||
+      installation.backupBucketName !== request.expectedBackupBucketName ||
+      installation.preview?.base !== request.expectedPreviewBase ||
+      installation.preview?.zoneId !== request.expectedPreviewZoneId
+    ) {
+      // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise recovery adapter rejects a mapping that changed after confirmation
+      throw new InstallationDeploymentError({
+        message: "The recovery resource mapping changed after confirmation.",
+      });
+    }
+    return await inspectWithProfile(
+      request,
+      deployment.root,
+      adoption,
+      request.token,
+      request.expectedAccountId,
+    );
+  } finally {
+    await deployment.cleanup();
   }
-  return inspectWithProfile(request, adoption, request.token, request.expectedAccountId);
 }
 
 export { DEPLOYMENT_ARCHIVE_NAME, DEPLOYMENT_INPUTS };

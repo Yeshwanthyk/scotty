@@ -44,6 +44,7 @@ export interface InstallationDeployRequest {
 
 export interface InstallationCreateRequest extends InstallationDeployRequest {
   readonly token: string;
+  readonly githubToken: string;
   readonly expectedAccountId: string;
   readonly expectedPlanFingerprint: string;
   readonly mode: "fresh" | "resume";

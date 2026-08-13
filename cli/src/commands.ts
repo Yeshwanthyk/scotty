@@ -336,6 +336,20 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     );
   });
 
+  const requireGithubToken = Effect.fnUntraced(function* () {
+    const processRunner = yield* ProcessRunner;
+    const result = yield* processRunner.run(["gh", "auth", "token"]);
+    const token = result.stdout.trim();
+    if (result.exitCode !== 0 || token.length === 0 || token.includes("\n") || token.includes("\r"))
+      return yield* new CliError(
+        "github_auth_unavailable",
+        "GitHub CLI is not authenticated",
+        "Run gh auth login, then retry scotty init.",
+        EXIT.GENERIC,
+      );
+    return token;
+  });
+
   const rootToken = (): string =>
     `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
 
@@ -406,6 +420,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
         const evidenceEnabled = enableEvidence ? (true as const) : undefined;
         yield* ensureDocker();
+        const githubToken = yield* requireGithubToken();
         const fileSystem = yield* CliFileSystem;
         const journalPath = join(runtime.home, ".scotty", `init-${installationName}.json`);
         const lockPath = join(runtime.home, ".scotty", "locks", `init-${installationName}`);
@@ -577,6 +592,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const deployed = yield* creator.create({
               ...deploymentTarget,
               token,
+              githubToken,
               expectedAccountId: plan.accountId,
               expectedPlanFingerprint: plan.fingerprint,
               mode: Option.isSome(existingJournal) ? "resume" : "fresh",
