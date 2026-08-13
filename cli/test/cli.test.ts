@@ -2646,8 +2646,13 @@ describe("beam down and sandbox configuration", () => {
     expect(credential.stderr.join("")).not.toContain("token");
   });
 
-  test("sandbox sync prepares a deterministic local bundle without contacting Cloudflare", async () => {
+  test("sandbox sync uploads the bundle and reports remote synchronization", async () => {
     const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({ host: "https://worker.example", token: "root-token" }),
+      { mode: 0o600 },
+    );
     const skillRoot = await temporaryDirectory();
     const skillPath = join(skillRoot, "release-notes");
     await mkdir(skillPath);
@@ -2655,22 +2660,34 @@ describe("beam down and sandbox configuration", () => {
       join(skillPath, "SKILL.md"),
       "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Release notes\n",
     );
-    let fetched = false;
-    const added = harness({
-      home,
-      cwd: skillRoot,
-      fetch: async () => {
-        fetched = true;
-        return Response.json({});
-      },
-    });
+    const added = harness({ home, cwd: skillRoot });
     expect(await main(["sandbox", "add", "./release-notes"], added.deps)).toBe(EXIT.OK);
 
+    let revision = 0;
+    let activeDigest: string | null = null;
+    let putCount = 0;
     const first = harness({
       home,
-      fetch: async () => {
-        fetched = true;
-        return Response.json({});
+      env: {},
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision, activeDigest });
+        const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
+        if (match && request.method === "PUT") {
+          putCount++;
+          expect(request.headers.get("content-type")).toBe("application/gzip");
+          expect(request.headers.get("if-match")).toBe(String(revision));
+          expect(request.headers.get("idempotency-key")).toBeTruthy();
+          expect(request.headers.get("authorization")).toBe("Bearer root-token");
+          const body = new Uint8Array(await request.arrayBuffer());
+          expect(body.byteLength).toBeGreaterThan(0);
+          revision = 1;
+          activeDigest = match[1] ?? null;
+          return Response.json({ schemaVersion: 1, revision, activeDigest });
+        }
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
       },
     });
     expect(await main(["sandbox", "sync"], first.deps)).toBe(EXIT.OK);
@@ -2678,21 +2695,63 @@ describe("beam down and sandbox configuration", () => {
     expect(firstJson.schemaVersion).toBe(1);
     expect(firstJson.fileCount).toBe(1);
     expect(firstJson.skills).toEqual([{ name: "release-notes", path: skillPath }]);
-    expect(firstJson.remote).toEqual({ status: "not_queried", activeDigest: null });
-    expect(firstJson.digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(firstJson.remote).toEqual({ status: "synchronized", activeDigest: firstJson.digest });
+    expect(firstJson.digest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(putCount).toBe(1);
+    expect(first.stdout.join("") + first.stderr.join("")).not.toContain("root-token");
 
-    const second = harness({ home });
+    let secondPutCount = 0;
+    const second = harness({
+      home,
+      env: {},
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision, activeDigest: firstJson.digest });
+        if (url.pathname.startsWith("/api/sandbox/bundles/")) secondPutCount++;
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+    });
     expect(await main(["sandbox", "sync"], second.deps)).toBe(EXIT.OK);
     expect(second.json().digest).toBe(firstJson.digest);
+    expect(second.json().remote).toEqual({
+      status: "synchronized",
+      activeDigest: firstJson.digest,
+    });
+    expect(secondPutCount).toBe(0);
 
     await writeFile(
       join(skillPath, "SKILL.md"),
       "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Changed\n",
     );
-    const mutated = harness({ home });
+    let thirdPutCount = 0;
+    const mutated = harness({
+      home,
+      env: {},
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.pathname === "/api/sandbox/configuration")
+          return Response.json({ schemaVersion: 1, revision, activeDigest: firstJson.digest });
+        const match = url.pathname.match(/^\/api\/sandbox\/bundles\/([0-9a-f]{64})$/u);
+        if (match && request.method === "PUT") {
+          thirdPutCount++;
+          expect(request.headers.get("if-match")).toBe(String(revision));
+          revision = 2;
+          activeDigest = match[1] ?? null;
+          return Response.json({ schemaVersion: 1, revision, activeDigest });
+        }
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+      },
+    });
     expect(await main(["sandbox", "sync"], mutated.deps)).toBe(EXIT.OK);
     expect(mutated.json().digest).not.toBe(firstJson.digest);
-    expect(fetched).toBe(false);
+    expect(mutated.json().remote).toEqual({
+      status: "synchronized",
+      activeDigest: mutated.json().digest,
+    });
+    expect(thirdPutCount).toBe(1);
   });
 
   test("tools list returns the checked-in standard manifest without credentials", async () => {

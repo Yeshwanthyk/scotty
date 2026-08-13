@@ -148,11 +148,16 @@ export const encodeBundleManifestJson = (manifest: SandboxBundleManifest): strin
 
 export const decodeBundleManifestText = decodeSandboxBundleManifestJson;
 
+export type SandboxRemoteSnapshot = SandboxSyncOutput["remote"] & {
+  readonly status: "synchronized" | "diverged";
+};
+
 export const sandboxSyncOutput = (
   config: SandboxConfig,
   digest: string,
   bytes: number,
   fileCount: number,
+  remote: SandboxRemoteSnapshot,
 ): SandboxSyncOutput => ({
   schemaVersion: SANDBOX_CONFIG_SCHEMA_VERSION,
   digest,
@@ -160,14 +165,14 @@ export const sandboxSyncOutput = (
   fileCount,
   skills: config.skills,
   piPackages: config.piPackages,
-  remote: { status: "not_queried", activeDigest: null },
+  remote,
 });
 
 export const encodeSandboxSyncJson = (output: SandboxSyncOutput): unknown =>
   encodeSandboxSyncOutput(output);
 
 export const formatSandboxSync = (output: SandboxSyncOutput): string =>
-  `Prepared sandbox bundle ${output.digest} (${output.bytes} bytes, ${output.fileCount} files). Not uploaded.\n${formatSandboxStatus(
+  `Prepared sandbox bundle ${output.digest} (${output.bytes} bytes, ${output.fileCount} files).\n${formatSandboxStatus(
     {
       schemaVersion: output.schemaVersion,
       skills: output.skills,

@@ -65,6 +65,7 @@ import {
   saveSandboxConfig,
 } from "./sandbox-config";
 import { buildSandboxBundle } from "./sandbox-prepare";
+import { synchronizeSandboxBundle } from "./sandbox-sync";
 import {
   addPiPackageSource,
   addSkillSource,
@@ -1601,15 +1602,17 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const sandboxSync = Command.make("sync", { trailing: trailingArguments }, ({ trailing }) =>
     Effect.gen(function* () {
       yield* rejectTrailingArguments(trailing);
-      const { autoJson, runtime } = yield* commandContext();
+      const { autoJson, options, runtime } = yield* commandContext();
       const path = sandboxConfigPath(runtime.home);
       const fileSystem = yield* CliFileSystem;
       const config = yield* fileSystem.withLock(path, loadSandboxConfig(path, true));
       const built = yield* buildSandboxBundle(config);
+      const target = yield* credentials(options);
+      const remote = yield* synchronizeSandboxBundle({ target, built });
       emitSandboxSync(
         autoJson,
         runtime,
-        sandboxSyncOutput(config, built.digest, built.bytes, built.fileCount),
+        sandboxSyncOutput(config, built.digest, built.bytes, built.fileCount, remote),
       );
     }),
   ).pipe(Command.withDescription("Prepare the local sandbox bundle and synchronize it"));
