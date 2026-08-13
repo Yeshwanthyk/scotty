@@ -429,9 +429,11 @@ const inspectWithProfile = async (
           "RUNNER_REGISTRY",
           "RUNNERS",
           "SANDBOX",
+          "SANDBOX_CONFIG",
           "SESSIONS",
           "BACKUP_BUCKET",
           "ARTIFACT_BUCKET",
+          "SANDBOX_BUNDLE_BUCKET",
         ];
         const sandboxBinding = bindings
           .filter(isDurableObjectBinding)
@@ -445,6 +447,9 @@ const inspectWithProfile = async (
         const artifactBinding = bindings
           .filter(isR2Binding)
           .find((binding) => binding.name === "ARTIFACT_BUCKET");
+        const sandboxBundleBinding = bindings
+          .filter(isR2Binding)
+          .find((binding) => binding.name === "SANDBOX_BUNDLE_BUCKET");
         const previewBaseBinding = bindings
           .filter(isPlainTextBinding)
           .find((binding) => binding.name === "SCOTTY_PREVIEW_BASE");
@@ -457,6 +462,7 @@ const inspectWithProfile = async (
           sessionsBinding?.namespaceId === undefined ||
           backupBinding?.bucketName !== installation.backupBucketName ||
           artifactBinding?.bucketName !== installation.artifactBucketName ||
+          sandboxBundleBinding?.bucketName !== installation.sandboxBundleBucketName ||
           (installation.preview === undefined
             ? previewBaseBinding !== undefined
             : previewBaseBinding?.text !== installation.preview.base) ||
@@ -498,6 +504,10 @@ const inspectWithProfile = async (
         yield* R2.getBucket({
           accountId,
           bucketName: installation.artifactBucketName,
+        }).pipe(Effect.asVoid);
+        yield* R2.getBucket({
+          accountId,
+          bucketName: installation.sandboxBundleBucketName,
         }).pipe(Effect.asVoid);
         if (installation.preview !== undefined) {
           const records = Array.from(
@@ -823,6 +833,7 @@ export async function uninstallInstallation(
               const retainedBuckets = [
                 installation.backupBucketName,
                 installation.artifactBucketName,
+                installation.sandboxBundleBucketName,
               ];
               const retainedData = [installation.kvTitle, ...retainedBuckets];
               const deletedData: string[] = [];
