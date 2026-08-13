@@ -62,11 +62,17 @@ const runnerRegistry = vi.hoisted(() => ({
   remove: vi.fn(),
 }));
 
+const sandboxConfig = vi.hoisted(() => ({
+  status: vi.fn(),
+  activate: vi.fn(),
+}));
+
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@cloudflare/sandbox")>()),
   getSandbox: vi.fn(() => sandboxTarget.current),
 }));
 
+import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
@@ -109,6 +115,83 @@ function runnerRegistryNamespace(): import("../src/runner-registry-object").Scot
   return { getByName: () => runnerRegistry };
 }
 
+function sandboxConfigNamespace(): import("../src/sandbox-config-object").ScottySandboxConfigNamespace {
+  return { getByName: () => sandboxConfig };
+}
+
+function sandboxBundleBucket(): R2Bucket {
+  const objects = new Map<
+    string,
+    {
+      readonly size: number;
+      readonly contentType: string;
+      readonly customMetadata: Record<string, string>;
+    }
+  >();
+  return {
+    put: async (
+      key: string,
+      value: ArrayBuffer | ArrayBufferView | Blob | ReadableStream | string | null,
+      options?: R2PutOptions,
+    ) => {
+      if (!(value instanceof Uint8Array)) throw new Error("expected Uint8Array body");
+      if (
+        options?.onlyIf !== undefined &&
+        !(options.onlyIf instanceof Headers) &&
+        options.onlyIf.etagDoesNotMatch === "*" &&
+        objects.has(String(key))
+      )
+        return null;
+      objects.set(String(key), {
+        size: value.byteLength,
+        contentType:
+          options?.httpMetadata instanceof Headers
+            ? (options.httpMetadata.get("content-type") ?? "")
+            : (options?.httpMetadata?.contentType ?? ""),
+        customMetadata: { ...(options?.customMetadata ?? {}) },
+      });
+      return {
+        key: String(key),
+        version: "1",
+        size: value.byteLength,
+        etag: "etag",
+        httpEtag: '"etag"',
+        checksums: { toJSON: () => ({}) },
+        uploaded: new Date("2026-08-06T12:00:00.000Z"),
+        httpMetadata: {
+          contentType:
+            options?.httpMetadata instanceof Headers
+              ? (options.httpMetadata.get("content-type") ?? undefined)
+              : options?.httpMetadata?.contentType,
+        },
+        customMetadata: { ...(options?.customMetadata ?? {}) },
+        storageClass: "Standard",
+        writeHttpMetadata: () => undefined,
+      } as R2Object;
+    },
+    head: async (key: string) => {
+      const stored = objects.get(String(key));
+      if (stored === undefined) return null;
+      return {
+        key: String(key),
+        version: "1",
+        size: stored.size,
+        etag: "etag",
+        httpEtag: '"etag"',
+        checksums: { toJSON: () => ({}) },
+        uploaded: new Date("2026-08-06T12:00:00.000Z"),
+        httpMetadata: { contentType: stored.contentType },
+        customMetadata: stored.customMetadata,
+        storageClass: "Standard",
+        writeHttpMetadata: () => undefined,
+      } as R2Object;
+    },
+    get: async () => null,
+    delete: async () => undefined,
+    list: async () => ({ objects: [], truncated: false, delimitedPrefixes: [] }),
+  } as unknown as R2Bucket;
+}
+
 function emptySessionsNamespace(): KVNamespace {
   return {
     list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
@@ -149,6 +232,8 @@ function env(
     SESSIONS: emptySessionsNamespace(),
     BACKUP_BUCKET: {} as R2Bucket,
     ARTIFACT_BUCKET: options.artifactBucket ?? ({} as R2Bucket),
+    SANDBOX_BUNDLE_BUCKET: sandboxBundleBucket(),
+    SANDBOX_CONFIG: sandboxConfigNamespace(),
   };
 }
 
@@ -414,6 +499,14 @@ describe("real Hono boundary", () => {
       lastSeenAt: "2026-07-27T12:00:00.000Z",
     });
     runner.fetch.mockResolvedValue(new Response(null, { status: 204 }));
+    sandboxConfig.status.mockResolvedValue({
+      ok: true,
+      value: { schemaVersion: 1, revision: 0, activeDigest: null },
+    });
+    sandboxConfig.activate.mockResolvedValue({
+      ok: true,
+      value: { schemaVersion: 1, revision: 1, activeDigest: "a".repeat(64) },
+    });
   });
 
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
@@ -769,6 +862,128 @@ describe("real Hono boundary", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({ name: "browser-runner" }),
+      },
+      env(),
+    );
+    expect(ownerBrowser.status).toBe(401);
+  });
+
+  it("reads and uploads sandbox bundles only with the CLI root credential", async () => {
+    const configuration = await app.request(
+      "/api/sandbox/configuration",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(configuration.status).toBe(200);
+    await expect(configuration.json()).resolves.toEqual({
+      schemaVersion: 1,
+      revision: 0,
+      activeDigest: null,
+    });
+    expect(sandboxConfig.status).toHaveBeenCalled();
+
+    const built = createDeterministicTarGz([
+      {
+        path: "manifest.json",
+        type: "file",
+        modeClass: "regular",
+        bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+      },
+    ]);
+    const uploaded = await app.request(
+      `/api/sandbox/bundles/${built.digest}`,
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/gzip",
+          "idempotency-key": "sandbox-sync-key-001",
+          "if-match": "0",
+        },
+        body: built.archive,
+      },
+      env(),
+    );
+    expect(uploaded.status).toBe(200);
+    await expect(uploaded.json()).resolves.toEqual({
+      schemaVersion: 1,
+      revision: 1,
+      activeDigest: "a".repeat(64),
+    });
+    expect(sandboxConfig.activate).toHaveBeenCalledWith({
+      digest: built.digest,
+      idempotencyKey: "sandbox-sync-key-001",
+      expectedRevision: 0,
+    });
+
+    const invalidDigest = await app.request(
+      "/api/sandbox/bundles/not-a-digest",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/gzip",
+          "idempotency-key": "sandbox-sync-key-002",
+        },
+        body: built.archive,
+      },
+      env(),
+    );
+    expect(invalidDigest.status).toBe(400);
+
+    sandboxConfig.activate.mockResolvedValueOnce({
+      ok: false,
+      error: { reason: "conflict", message: "Sandbox configuration revision conflict" },
+    });
+    const stale = await app.request(
+      `/api/sandbox/bundles/${built.digest}`,
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/gzip",
+          "idempotency-key": "sandbox-sync-key-003",
+          "if-match": "0",
+        },
+        body: built.archive,
+      },
+      env(),
+    );
+    expect(stale.status).toBe(409);
+
+    sandboxConfig.activate.mockResolvedValueOnce({
+      ok: true,
+      value: { schemaVersion: 1, revision: 1, activeDigest: built.digest },
+    });
+    const replay = await app.request(
+      `/api/sandbox/bundles/${built.digest}`,
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/gzip",
+          "idempotency-key": "sandbox-sync-key-001",
+          "if-match": "0",
+        },
+        body: built.archive,
+      },
+      env(),
+    );
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toEqual({
+      schemaVersion: 1,
+      revision: 1,
+      activeDigest: built.digest,
+    });
+
+    const ownerBrowser = await app.request(
+      "/api/sandbox/configuration",
+      {
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
       },
       env(),
     );

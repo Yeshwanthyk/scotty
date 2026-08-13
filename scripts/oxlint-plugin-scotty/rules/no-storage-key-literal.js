@@ -4,6 +4,7 @@ const allowedFiles = new Set([
   "worker/src/auth-registry.ts",
   "worker/src/credential-vault.ts",
   "worker/src/runner-registry.ts",
+  "worker/src/sandbox-config-store.ts",
   "worker/src/session-store.ts",
 ]);
 
