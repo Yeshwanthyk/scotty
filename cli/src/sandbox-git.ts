@@ -29,6 +29,12 @@ const sandboxPackageUnsupported = (message: string, hint: string): CliError =>
 const redactGitText = (value: string): string =>
   value.replace(/https:\/\/[^/\s]*@/gu, "https://").replace(/ssh:\/\/[^@/\s]+@/gu, "ssh://git@");
 
+export const SANDBOX_GIT_ENV = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_ASKPASS: "true",
+  GIT_CONFIG_NOSYSTEM: "1",
+} as const;
+
 const runGit = async (
   args: ReadonlyArray<string>,
   cwd?: string,
@@ -39,9 +45,7 @@ const runGit = async (
     stderr: "pipe",
     env: {
       ...process.env,
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_ASKPASS: "true",
-      GIT_CONFIG_NOSYSTEM: "1",
+      ...SANDBOX_GIT_ENV,
     },
   });
   const [stdout, stderr, exitCode] = await Promise.all([
@@ -52,7 +56,7 @@ const runGit = async (
   return { exitCode, stdout, stderr };
 };
 
-const failFromGit = (stderr: string, fallback: CliError): CliError => {
+export const mapSandboxGitFailure = (stderr: string, fallback: CliError): CliError => {
   const redacted = redactGitText(stderr).toLowerCase();
   if (
     redacted.includes("authentication") ||
@@ -98,7 +102,7 @@ export async function resolveGitPackage(
   const listed = await runGit(["ls-remote", "--exit-code", repository, requestedRef]);
   if (listed.exitCode !== 0 && explicitCommit === undefined) {
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise Git adapter maps ls-remote failure to a typed CLI error
-    throw failFromGit(
+    throw mapSandboxGitFailure(
       listed.stderr,
       sandboxGitRefInvalid(
         `Git ref ${requestedRef} did not resolve to a commit`,
@@ -133,7 +137,7 @@ export async function resolveGitPackage(
     );
     if (fetched.exitCode !== 0) {
       // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise Git adapter maps fetch failure to a typed CLI error
-      throw failFromGit(
+      throw mapSandboxGitFailure(
         fetched.stderr,
         sandboxGitRefInvalid(
           `Git commit ${commit} could not be fetched`,

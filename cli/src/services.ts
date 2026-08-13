@@ -18,7 +18,10 @@ export interface CliDependencies {
   stderr: Writer;
   prompt: (label: string) => string | null;
   openBrowser: (url: string) => Promise<void>;
-  run: (command: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  run: (
+    command: string[],
+    options?: ProcessRunOptions,
+  ) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
   createInstallation: (request: InstallationCreateRequest) => Promise<InstallationResult>;
   planCreateInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
   planInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
@@ -200,9 +203,15 @@ export class HttpTransport extends Context.Service<HttpTransport, HttpTransportS
   "scotty/cli/HttpTransport",
 ) {}
 
+export interface ProcessRunOptions {
+  readonly cwd?: string;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+}
+
 interface ProcessRunnerShape {
   readonly run: (
     command: ReadonlyArray<string>,
+    options?: ProcessRunOptions,
   ) => Effect.Effect<{ exitCode: number; stdout: string; stderr: string }, CliError>;
 }
 
@@ -503,8 +512,13 @@ export const defaultDependencies = (): CliDependencies => ({
       );
     }
   },
-  run: async (command) => {
-    const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe", cwd: process.cwd() });
+  run: async (command, options) => {
+    const child = Bun.spawn(command, {
+      stdout: "pipe",
+      stderr: "pipe",
+      cwd: options?.cwd ?? process.cwd(),
+      env: { ...process.env, ...options?.env },
+    });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
@@ -595,9 +609,9 @@ export const cliLayer = (
         }),
     }),
     Layer.succeed(ProcessRunner)({
-      run: (command) =>
+      run: (command, options) =>
         Effect.tryPromise({
-          try: () => dependencies.run([...command]),
+          try: () => dependencies.run([...command], options),
           catch: unexpected,
         }),
     }),

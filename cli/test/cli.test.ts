@@ -2646,6 +2646,55 @@ describe("beam down and sandbox configuration", () => {
     expect(credential.stderr.join("")).not.toContain("token");
   });
 
+  test("sandbox sync prepares a deterministic local bundle without contacting Cloudflare", async () => {
+    const home = await temporaryDirectory();
+    const skillRoot = await temporaryDirectory();
+    const skillPath = join(skillRoot, "release-notes");
+    await mkdir(skillPath);
+    await writeFile(
+      join(skillPath, "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Release notes\n",
+    );
+    let fetched = false;
+    const added = harness({
+      home,
+      cwd: skillRoot,
+      fetch: async () => {
+        fetched = true;
+        return Response.json({});
+      },
+    });
+    expect(await main(["sandbox", "add", "./release-notes"], added.deps)).toBe(EXIT.OK);
+
+    const first = harness({
+      home,
+      fetch: async () => {
+        fetched = true;
+        return Response.json({});
+      },
+    });
+    expect(await main(["sandbox", "sync"], first.deps)).toBe(EXIT.OK);
+    const firstJson = first.json();
+    expect(firstJson.schemaVersion).toBe(1);
+    expect(firstJson.fileCount).toBe(1);
+    expect(firstJson.skills).toEqual([{ name: "release-notes", path: skillPath }]);
+    expect(firstJson.remote).toEqual({ status: "not_queried", activeDigest: null });
+    expect(firstJson.digest).toMatch(/^[0-9a-f]{64}$/);
+
+    const second = harness({ home });
+    expect(await main(["sandbox", "sync"], second.deps)).toBe(EXIT.OK);
+    expect(second.json().digest).toBe(firstJson.digest);
+
+    await writeFile(
+      join(skillPath, "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Changed\n",
+    );
+    const mutated = harness({ home });
+    expect(await main(["sandbox", "sync"], mutated.deps)).toBe(EXIT.OK);
+    expect(mutated.json().digest).not.toBe(firstJson.digest);
+    expect(fetched).toBe(false);
+  });
+
   test("tools list returns the checked-in standard manifest without credentials", async () => {
     let fetched = false;
     const h = harness({

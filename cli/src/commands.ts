@@ -56,6 +56,7 @@ import {
   stableUp,
   usage,
 } from "./pure";
+import { encodeSandboxSyncJson, formatSandboxSync, sandboxSyncOutput } from "./sandbox-bundle";
 import {
   formatSandboxStatus,
   loadSandboxConfig,
@@ -63,6 +64,7 @@ import {
   sandboxConfigPath,
   saveSandboxConfig,
 } from "./sandbox-config";
+import { buildSandboxBundle } from "./sandbox-prepare";
 import {
   addPiPackageSource,
   addSkillSource,
@@ -1491,6 +1493,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     }
   };
 
+  const emitSandboxSync = (
+    autoJson: boolean,
+    runtime: { readonly stdout: (text: string) => void },
+    output: ReturnType<typeof sandboxSyncOutput>,
+  ): void => {
+    if (autoJson) outputJson(runtime.stdout, encodeSandboxSyncJson(output));
+    else runtime.stdout(formatSandboxSync(output));
+  };
+
   const sandboxAdd = Command.make(
     "add",
     {
@@ -1594,14 +1605,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       const path = sandboxConfigPath(runtime.home);
       const fileSystem = yield* CliFileSystem;
       const config = yield* fileSystem.withLock(path, loadSandboxConfig(path, true));
-      emitSandboxStatus(
+      const built = yield* buildSandboxBundle(config);
+      emitSandboxSync(
         autoJson,
         runtime,
-        localSandboxStatus(config),
-        "Local sandbox configuration is valid. Remote synchronization is not implemented yet.",
+        sandboxSyncOutput(config, built.digest, built.bytes, built.fileCount),
       );
     }),
-  ).pipe(Command.withDescription("Synchronize local sandbox configuration to the installation"));
+  ).pipe(Command.withDescription("Prepare the local sandbox bundle and synchronize it"));
 
   const sandbox = Command.make("sandbox").pipe(
     Command.withDescription("Manage installation sandbox Skills and Pi packages"),
