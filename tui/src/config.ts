@@ -3,32 +3,29 @@ import { chmod, lstat, mkdir, open, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { PiScottyError } from "./errors.ts";
-import { decodeConfigJson, type PiScottyConfig } from "./schemas.ts";
+import { TuiError } from "./errors.ts";
+import { decodeConfigJson, type TuiConfig } from "./schemas.ts";
 
 export const defaultStateDirectory = (): string => {
   const base = process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state");
-  return join(base, "pi-scotty");
+  return join(base, "scotty", "tui");
 };
 
 export const defaultConfigPath = (): string => {
   const base = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
-  return join(base, "pi-scotty", "config.json");
+  return join(base, "scotty", "tui.json");
 };
 
 export const normalizeOrigin = (input: string): string => {
   if (!URL.canParse(input))
-    throw new PiScottyError("input_invalid", "Origin must be a valid absolute URL");
+    throw new TuiError("input_invalid", "Origin must be a valid absolute URL");
   const url = new URL(input);
   const localHttp =
     url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
   if (url.protocol !== "https:" && !localHttp)
-    throw new PiScottyError("input_invalid", "Origin must use HTTPS (or localhost HTTP)");
+    throw new TuiError("input_invalid", "Origin must use HTTPS (or localhost HTTP)");
   if (url.username || url.password || url.pathname !== "/" || url.search || url.hash)
-    throw new PiScottyError(
-      "input_invalid",
-      "Origin must not contain credentials, a path, or query",
-    );
+    throw new TuiError("input_invalid", "Origin must not contain credentials, a path, or query");
   return url.origin;
 };
 
@@ -37,13 +34,13 @@ const errorCode = (error: unknown): string | undefined =>
     ? error.code
     : undefined;
 
-const configAccessError = (path: string, error: unknown): PiScottyError =>
+const configAccessError = (path: string, error: unknown): TuiError =>
   errorCode(error) === "ENOENT"
-    ? new PiScottyError(
+    ? new TuiError(
         "config_missing",
-        `No paired-client config found at ${path}. Pair this device with: pi-scotty pair <origin>`,
+        `No paired-client config found at ${path}. Pair this device with: scotty tui pair <origin>`,
       )
-    : new PiScottyError("config_invalid", `Paired-client config could not be read: ${path}`);
+    : new TuiError("config_invalid", `Paired-client config could not be read: ${path}`);
 
 const readPrivateConfig = async (path: string): Promise<string> => {
   const pathMetadata = await lstat(path).catch((error: unknown) => {
@@ -56,7 +53,7 @@ const readPrivateConfig = async (path: string): Promise<string> => {
       ((pathMetadata.mode & 0o077) !== 0 ||
         (typeof process.geteuid === "function" && pathMetadata.uid !== process.geteuid())))
   )
-    throw new PiScottyError(
+    throw new TuiError(
       "config_permissions",
       `Paired-client config must be a non-symlinked mode-0600 file: ${path}`,
     );
@@ -75,7 +72,7 @@ const readPrivateConfig = async (path: string): Promise<string> => {
       openedMetadata.dev !== pathMetadata.dev ||
       openedMetadata.ino !== pathMetadata.ino
     )
-      throw new PiScottyError(
+      throw new TuiError(
         "config_permissions",
         `Paired-client config must be a non-symlinked mode-0600 file: ${path}`,
       );
@@ -85,18 +82,15 @@ const readPrivateConfig = async (path: string): Promise<string> => {
   }
 };
 
-export const loadConfig = async (path = defaultConfigPath()): Promise<PiScottyConfig> => {
+export const loadConfig = async (path = defaultConfigPath()): Promise<TuiConfig> => {
   const decoded = decodeConfigJson(await readPrivateConfig(path));
   if (decoded === undefined || normalizeOrigin(decoded.origin) !== decoded.origin)
-    throw new PiScottyError("config_invalid", `Paired-client config is invalid: ${path}`);
+    throw new TuiError("config_invalid", `Paired-client config is invalid: ${path}`);
   return decoded;
 };
 
-export const saveConfig = async (
-  config: PiScottyConfig,
-  path = defaultConfigPath(),
-): Promise<void> => {
-  const normalized: PiScottyConfig = {
+export const saveConfig = async (config: TuiConfig, path = defaultConfigPath()): Promise<void> => {
+  const normalized: TuiConfig = {
     version: 1,
     origin: normalizeOrigin(config.origin),
     credential: config.credential,

@@ -495,7 +495,7 @@ describe("FleetConsoleController", () => {
     await controller.submitDraft();
     expect(controller.state.sessionsPicker).toMatchObject({
       status: "error",
-      message: "pi-scotty failed",
+      message: "scotty tui failed",
     });
     expect(transport.commands).toEqual([]);
     controller.stop();

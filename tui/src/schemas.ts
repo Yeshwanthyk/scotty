@@ -31,12 +31,12 @@ const PairingCredentialSchema = Schema.String.check(
   Schema.isPattern(/^scotty_pair\.[0-9a-f]{12}\.[A-Za-z0-9_-]{32,128}$/u),
 );
 
-export const PiScottyConfigSchema = Schema.Struct({
+export const TuiConfigSchema = Schema.Struct({
   version: Schema.Literal(1),
   origin: ShortStringSchema,
   credential: ClientCredentialSchema,
 });
-export type PiScottyConfig = typeof PiScottyConfigSchema.Type;
+export type TuiConfig = typeof TuiConfigSchema.Type;
 
 const SessionStatusSchema = Schema.Literals(["booting", "warm", "sleeping", "failed", "gone"]);
 const ProviderSchema = Schema.Literals(["cloudflare", "runner"]);
@@ -340,10 +340,9 @@ const StreamingStateSchema = Schema.Struct({
   isActive: Schema.optionalKey(Schema.Boolean),
 });
 
-const decodeConfigJsonOption = Schema.decodeUnknownOption(
-  Schema.fromJsonString(PiScottyConfigSchema),
-  { onExcessProperty: "error" },
-);
+const decodeConfigJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(TuiConfigSchema), {
+  onExcessProperty: "error",
+});
 const decodeFleetOption = Schema.decodeUnknownOption(FleetResponseSchema, {
   onExcessProperty: "error",
 });
@@ -388,7 +387,7 @@ const decodeEventTypeOption = Schema.decodeUnknownOption(EventTypeSchema);
 const decodeExtensionUiEventOption = Schema.decodeUnknownOption(ExtensionUiEventSchema);
 const decodeStreamingStateOption = Schema.decodeUnknownOption(StreamingStateSchema);
 
-export const decodeConfigJson = (value: unknown): PiScottyConfig | undefined =>
+export const decodeConfigJson = (value: unknown): TuiConfig | undefined =>
   Option.getOrUndefined(decodeConfigJsonOption(value));
 export const decodeFleet = (value: unknown): ReadonlyArray<FleetSession> | undefined =>
   Option.getOrUndefined(decodeFleetOption(value));

@@ -8,7 +8,7 @@ import {
   type PiConsoleStaleCommandV1,
   type PiConsoleUnavailableV1,
 } from "../../protocol/pi-console.ts";
-import { PiScottyError } from "./errors.ts";
+import { TuiError } from "./errors.ts";
 import {
   decodeApiErrorMessage,
   decodeClientCredential,
@@ -26,7 +26,7 @@ import {
   type ConsoleSnapshotResult,
   type CreateSessionResult,
   type FleetSession,
-  type PiScottyConfig,
+  type TuiConfig,
   type SelectedSession,
 } from "./schemas.ts";
 import { redactRemoteString } from "./redaction.ts";
@@ -93,7 +93,7 @@ export interface HttpConsoleTransportOptions {
 export const readBoundedText = async (response: Response, maxBytes: number): Promise<string> => {
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > maxBytes)
-    throw new PiScottyError("response_too_large", "Scotty response exceeded its size limit");
+    throw new TuiError("response_too_large", "Scotty response exceeded its size limit");
   if (response.body === null) return "";
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -105,7 +105,7 @@ export const readBoundedText = async (response: Response, maxBytes: number): Pro
     bytes += next.value.byteLength;
     if (bytes > maxBytes) {
       await reader.cancel();
-      throw new PiScottyError("response_too_large", "Scotty response exceeded its size limit");
+      throw new TuiError("response_too_large", "Scotty response exceeded its size limit");
     }
     text += decoder.decode(next.value, { stream: true });
   }
@@ -115,7 +115,7 @@ export const readBoundedText = async (response: Response, maxBytes: number): Pro
 const responseJson = async (response: Response, maxBytes: number): Promise<unknown> => {
   const decoded = decodeJsonText(await readBoundedText(response, maxBytes));
   if (decoded === undefined)
-    throw new PiScottyError("response_invalid", "Scotty returned invalid JSON", response.status);
+    throw new TuiError("response_invalid", "Scotty returned invalid JSON", response.status);
   return decoded;
 };
 
@@ -131,7 +131,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
   readonly #fetch: FetchImplementation;
   readonly #onCredential: ((credential: string) => Promise<void>) | undefined;
 
-  constructor(config: PiScottyConfig, options: HttpConsoleTransportOptions = {}) {
+  constructor(config: TuiConfig, options: HttpConsoleTransportOptions = {}) {
     this.#origin = config.origin;
     this.#credential = config.credential;
     this.#fetch = options.fetch ?? fetch;
@@ -141,7 +141,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
   readonly #url = (path: string): URL => {
     const url = new URL(path, this.#origin);
     if (url.origin !== this.#origin)
-      throw new PiScottyError("transport_failed", "Refused a cross-origin Scotty request");
+      throw new TuiError("transport_failed", "Refused a cross-origin Scotty request");
     return url;
   };
 
@@ -174,7 +174,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
           : AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
     });
     if (response.url && new URL(response.url).origin !== this.#origin)
-      throw new PiScottyError("transport_failed", "Refused a cross-origin Scotty response");
+      throw new TuiError("transport_failed", "Refused a cross-origin Scotty response");
     await this.#refreshCredential(response);
     return response;
   };
@@ -199,12 +199,12 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (response.url && new URL(response.url).origin !== this.#origin)
-      throw new PiScottyError("transport_failed", "Refused a cross-origin Scotty response");
+      throw new TuiError("transport_failed", "Refused a cross-origin Scotty response");
     await this.#refreshCredential(response);
     const json = await responseJson(response, PI_CONSOLE_MAX_RESPONSE_BYTES);
     if (!response.ok) {
       const message = decodeApiErrorMessage(json);
-      throw new PiScottyError(
+      throw new TuiError(
         "transport_failed",
         message === undefined
           ? `Sandbox operation failed with HTTP ${response.status}`
@@ -218,14 +218,10 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
   readonly listFleet = async (): Promise<ReadonlyArray<FleetSession>> => {
     const response = await this.#get("/api/sessions");
     if (!response.ok)
-      throw new PiScottyError(
-        "transport_failed",
-        "Fleet inventory request failed",
-        response.status,
-      );
+      throw new TuiError("transport_failed", "Fleet inventory request failed", response.status);
     const decoded = decodeFleet(await responseJson(response, PI_CONSOLE_MAX_RESPONSE_BYTES));
     if (decoded === undefined)
-      throw new PiScottyError("response_invalid", "Fleet inventory response was invalid");
+      throw new TuiError("response_invalid", "Fleet inventory response was invalid");
     return decoded;
   };
 
@@ -239,14 +235,14 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
       signal,
     );
     if (!response.ok)
-      throw new PiScottyError(
+      throw new TuiError(
         "transport_failed",
         "Selected-session metadata request failed",
         response.status,
       );
     const decoded = decodeSelected(await responseJson(response, PI_CONSOLE_MAX_RESPONSE_BYTES));
     if (decoded === undefined)
-      throw new PiScottyError("response_invalid", "Selected-session metadata was invalid");
+      throw new TuiError("response_invalid", "Selected-session metadata was invalid");
     return decoded;
   };
 
@@ -262,7 +258,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
     );
     const result = decodeCreateSessionResult(json);
     if (result === undefined)
-      throw new PiScottyError("response_invalid", "Create-sandbox response was invalid");
+      throw new TuiError("response_invalid", "Create-sandbox response was invalid");
     return result;
   };
 
@@ -276,7 +272,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
     });
     const result = decodeSelected(json);
     if (result === undefined || result.id !== sessionId)
-      throw new PiScottyError("response_invalid", "Rename-sandbox response was invalid");
+      throw new TuiError("response_invalid", "Rename-sandbox response was invalid");
     return result;
   };
 
@@ -290,7 +286,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
     );
     const result = decodeSelected(json);
     if (result === undefined || result.id !== sessionId)
-      throw new PiScottyError("response_invalid", "Snapshot response was invalid");
+      throw new TuiError("response_invalid", "Snapshot response was invalid");
     return result;
   };
 
@@ -304,7 +300,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
     );
     const result = decodeSelected(json);
     if (result === undefined || result.id !== sessionId)
-      throw new PiScottyError("response_invalid", "Resume response was invalid");
+      throw new TuiError("response_invalid", "Resume response was invalid");
     return result;
   };
 
@@ -312,7 +308,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
     const json = await this.#mutate(`/api/sessions/${encodeURIComponent(sessionId)}`, "DELETE");
     const result = decodeVaporizeSessionResult(json);
     if (result === undefined || result.id !== sessionId)
-      throw new PiScottyError("response_invalid", "Vaporize response was invalid");
+      throw new TuiError("response_invalid", "Vaporize response was invalid");
   };
 
   readonly getSnapshot = async (
@@ -328,14 +324,10 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
     const unavailable = decodeUnavailable(json);
     if (unavailable !== undefined) return unavailable;
     if (!response.ok)
-      throw new PiScottyError(
-        "transport_failed",
-        "Console snapshot request failed",
-        response.status,
-      );
+      throw new TuiError("transport_failed", "Console snapshot request failed", response.status);
     const snapshot = decodeSnapshot(json);
     if (snapshot === undefined)
-      throw new PiScottyError("response_invalid", "Console snapshot response was invalid");
+      throw new TuiError("response_invalid", "Console snapshot response was invalid");
     return snapshot;
   };
 
@@ -360,7 +352,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
       },
     );
     if (response.url && new URL(response.url).origin !== this.#origin)
-      throw new PiScottyError("transport_failed", "Refused a cross-origin Scotty response");
+      throw new TuiError("transport_failed", "Refused a cross-origin Scotty response");
     await this.#refreshCredential(response);
     const json = await responseJson(response, PI_CONSOLE_MAX_RESPONSE_BYTES);
     const stale = decodeStaleCommand(json);
@@ -377,7 +369,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
       receipt.epoch !== command.epoch ||
       receipt.commandDigest !== expectedDigest
     )
-      throw new PiScottyError(
+      throw new TuiError(
         "response_invalid",
         "Console command outcome could not be verified",
         response.status,
@@ -404,14 +396,10 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
       },
     );
     if (response.url && new URL(response.url).origin !== this.#origin)
-      throw new PiScottyError("transport_failed", "Refused a cross-origin Scotty response");
+      throw new TuiError("transport_failed", "Refused a cross-origin Scotty response");
     await this.#refreshCredential(response);
     if (!response.ok || response.body === null)
-      throw new PiScottyError(
-        "transport_failed",
-        "Console event stream unavailable",
-        response.status,
-      );
+      throw new TuiError("transport_failed", "Console event stream unavailable", response.status);
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -422,7 +410,7 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
         if (next.done) break;
         buffer += decoder.decode(next.value, { stream: true }).replaceAll("\r\n", "\n");
         if (encoder.encode(buffer).byteLength > MAX_SSE_BUFFER_BYTES)
-          throw new PiScottyError("stream_invalid", "Console event buffer exceeded its limit");
+          throw new TuiError("stream_invalid", "Console event buffer exceeded its limit");
         let boundary = buffer.indexOf("\n\n");
         while (boundary >= 0) {
           const block = buffer.slice(0, boundary);
@@ -436,10 +424,10 @@ export class HttpConsoleTransport implements DesktopManagementTransport {
             const json = decodeJsonText(data);
             const envelope = json === undefined ? undefined : decodeEnvelope(json);
             if (envelope === undefined)
-              throw new PiScottyError("stream_invalid", "Console event payload was invalid");
+              throw new TuiError("stream_invalid", "Console event payload was invalid");
             yield envelope;
           } else if (data) {
-            throw new PiScottyError("stream_invalid", "Console event exceeded its size limit");
+            throw new TuiError("stream_invalid", "Console event exceeded its size limit");
           }
           boundary = buffer.indexOf("\n\n");
         }

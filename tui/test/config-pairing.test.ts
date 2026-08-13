@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { defaultStateDirectory, loadConfig, saveConfig } from "../src/config.ts";
+import { defaultConfigPath, defaultStateDirectory, loadConfig, saveConfig } from "../src/config.ts";
 import { consumePairing } from "../src/pairing.ts";
 import { readSecretLine } from "../src/secret-input.ts";
 import type { FetchImplementation } from "../src/transport.ts";
@@ -12,19 +12,24 @@ const CLIENT_CREDENTIAL = `scotty_client.0123456789ab.${"c".repeat(32)}`;
 const PAIRING_CREDENTIAL = `scotty_pair.abcdef012345.${"p".repeat(32)}`;
 
 describe("paired-client config", () => {
-  it("owns its XDG state directory independently of Pi", () => {
-    const previous = process.env.XDG_STATE_HOME;
+  it("uses Scotty-owned XDG config and state paths independently of Pi", () => {
+    const previousState = process.env.XDG_STATE_HOME;
+    const previousConfig = process.env.XDG_CONFIG_HOME;
     process.env.XDG_STATE_HOME = "/tmp/scotty-xdg-state";
+    process.env.XDG_CONFIG_HOME = "/tmp/scotty-xdg-config";
     try {
-      expect(defaultStateDirectory()).toBe("/tmp/scotty-xdg-state/pi-scotty");
+      expect(defaultStateDirectory()).toBe("/tmp/scotty-xdg-state/scotty/tui");
+      expect(defaultConfigPath()).toBe("/tmp/scotty-xdg-config/scotty/tui.json");
     } finally {
-      if (previous === undefined) delete process.env.XDG_STATE_HOME;
-      else process.env.XDG_STATE_HOME = previous;
+      if (previousState === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previousState;
+      if (previousConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousConfig;
     }
   });
 
   it("stores only the exact origin and standard-client cookie with mode 0600", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-scotty-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "scotty-tui-config-"));
     const path = join(directory, "config.json");
     await saveConfig(
       { version: 1, origin: "https://scotty.example", credential: CLIENT_CREDENTIAL },
@@ -44,17 +49,17 @@ describe("paired-client config", () => {
   });
 
   it("explains how to pair when config is missing", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-scotty-missing-"));
+    const directory = await mkdtemp(join(tmpdir(), "scotty-tui-missing-"));
     const path = join(directory, "config.json");
 
     await expect(loadConfig(path)).rejects.toMatchObject({
       code: "config_missing",
-      message: `No paired-client config found at ${path}. Pair this device with: pi-scotty pair <origin>`,
+      message: `No paired-client config found at ${path}. Pair this device with: scotty tui pair <origin>`,
     });
   });
 
   it("rejects a symlinked config", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-scotty-symlink-"));
+    const directory = await mkdtemp(join(tmpdir(), "scotty-tui-symlink-"));
     const target = join(directory, "target.json");
     const path = join(directory, "config.json");
     await saveConfig(
@@ -67,7 +72,7 @@ describe("paired-client config", () => {
   });
 
   it("rejects group/world-readable config", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-scotty-mode-"));
+    const directory = await mkdtemp(join(tmpdir(), "scotty-tui-mode-"));
     const path = join(directory, "config.json");
     await saveConfig(
       { version: 1, origin: "https://scotty.example", credential: CLIENT_CREDENTIAL },

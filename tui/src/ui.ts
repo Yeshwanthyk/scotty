@@ -58,7 +58,7 @@ export const safeTerminalTitle = (title: string | undefined): string => {
     .replaceAll(/\s+/gu, " ")
     .trim()
     .slice(0, 120);
-  return remote ? `pi-scotty — ${remote}` : "pi-scotty";
+  return remote ? `scotty tui — ${remote}` : "scotty tui";
 };
 
 const isBlockingMethod = (method: string): method is "select" | "confirm" | "input" | "editor" =>
@@ -263,7 +263,7 @@ export class FleetConsoleComponent implements Component {
         : state.cache(state.selectedSessionId).live?.extensionSurface.title;
     this.#updateTerminalTitle(selectedTitle);
     const lines = [
-      `${color.accent("pi-scotty")} ${color.muted("Scotty fleet console")}`,
+      `${color.accent("scotty tui")} ${color.muted("Scotty fleet console")}`,
       color.muted(
         state.selectedSessionId === undefined
           ? "↑/↓ or j/k move · Enter open warm session · q quit"

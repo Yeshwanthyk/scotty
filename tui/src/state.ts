@@ -8,7 +8,7 @@ import {
   type PiConsoleUnavailableV1,
 } from "../../protocol/pi-console.ts";
 import { Schema } from "effect";
-import { PiScottyError } from "./errors.ts";
+import { TuiError } from "./errors.ts";
 import { redactRemoteString, redactRemoteValue } from "./redaction.ts";
 import {
   decodeEventType,
@@ -507,7 +507,7 @@ export const hydrateSnapshot = (snapshot: PiConsoleSnapshotV1): LiveProjection =
         envelope.sequence === snapshot.baseSequence + index + 1,
     );
   if (!contiguous)
-    throw new PiScottyError("response_invalid", "Console snapshot overlap was not contiguous");
+    throw new TuiError("response_invalid", "Console snapshot overlap was not contiguous");
 
   const tools = new Map<string, ToolProjection>();
   for (const tool of snapshot.activeTools) {
@@ -550,7 +550,7 @@ export const hydrateSnapshot = (snapshot: PiConsoleSnapshotV1): LiveProjection =
   for (const envelope of overlap) {
     const reduced = reduceEvent(live, envelope);
     if (reduced.result !== "applied")
-      throw new PiScottyError("response_invalid", "Console snapshot overlap could not be reduced");
+      throw new TuiError("response_invalid", "Console snapshot overlap could not be reduced");
     live = reduced.state;
   }
   live.messageProjection.overlap.splice(0);

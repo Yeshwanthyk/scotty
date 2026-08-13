@@ -125,7 +125,7 @@ for (const path of sourceFiles) {
     if (pattern.test(source)) failures.push(`${path.slice(root.length)}: forbidden ${label}`);
 }
 
-const sidecarMain = await readFile(join(root, "pi-scotty/src/desktop-sidecar-main.ts"), "utf8");
+const sidecarMain = await readFile(join(root, "tui/src/desktop-sidecar-main.ts"), "utf8");
 const sidecarClient = await readFile(
   join(root, "desktop/crates/scotty-desktop/src/sidecar.rs"),
   "utf8",
