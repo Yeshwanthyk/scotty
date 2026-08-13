@@ -11,10 +11,15 @@ export const DEPLOYMENT_INPUTS = [
   "cli/src",
   "infra",
   "protocol",
+  "tui/package.json",
+  "tui/src",
   "worker/package.json",
   "worker/src",
   "worker/public",
   "worker/container",
+  "scripts/apply-dependency-patches.mjs",
+  "patches/alchemy+2.0.0-beta.67.patch",
+  "patches/earendil-works+pi-coding-agent+0.84.0.patch",
 ] as const;
 
 export const CONTAINER_INPUTS = [
@@ -24,7 +29,12 @@ export const CONTAINER_INPUTS = [
   "cli/src",
   "infra",
   "protocol",
+  "tui/package.json",
+  "tui/src",
   "worker/package.json",
   "worker/src",
   "worker/container",
+  "scripts/apply-dependency-patches.mjs",
+  "patches/alchemy+2.0.0-beta.67.patch",
+  "patches/earendil-works+pi-coding-agent+0.84.0.patch",
 ] as const;
