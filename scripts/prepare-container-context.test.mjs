@@ -52,6 +52,14 @@ test("the Container context contains only static runtime assets and CLI graph in
         code: "ENOENT",
       },
     );
+    for (const input of [
+      "tui/package.json",
+      "scripts/apply-dependency-patches.mjs",
+      "patches/alchemy+2.0.0-beta.67.patch",
+      "patches/earendil-works+pi-coding-agent+0.84.0.patch",
+    ]) {
+      assert.equal(await readFile(join(root, CONTAINER_CONTEXT_PATH, input), "utf8"), `${input}\n`);
+    }
     assert.equal(
       await readFile(join(root, CONTAINER_CONTEXT_PATH, workerCliInput), "utf8"),
       `${workerCliInput}\n`,
