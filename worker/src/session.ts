@@ -176,7 +176,14 @@ import {
   SandboxRuntimeFailure,
   sandboxRuntimeLayer,
   shellQuote,
+  type SandboxWriteContent,
 } from "./sandbox-runtime";
+import {
+  sandboxBundleMaterializerLayer,
+  SandboxBundleMaterializer,
+} from "./sandbox-bundle-materializer";
+import { r2SandboxBundleCapabilities, sandboxBundleStoreLayer } from "./sandbox-bundle-store";
+import { SANDBOX_CONFIG_OBJECT_NAME } from "./sandbox-config-object";
 import {
   kvSessionProjectionStorage,
   projectSessionBestEffort,
@@ -204,6 +211,15 @@ const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
 const SANDBOX_PREVIEW_SANDBOX_ID_HEADER = "x-sandbox-preview-sandbox-id";
 const PREVIEW_PORT_PATTERN = /^(?:[1-9][0-9]{3,4})$/u;
+
+const adaptSandboxWriteFile = (
+  sandbox: Pick<Sandbox, "writeFile">,
+  path: string,
+  content: SandboxWriteContent,
+): Promise<unknown> =>
+  content instanceof Uint8Array
+    ? sandbox.writeFile(path, new Blob([content]).stream())
+    : sandbox.writeFile(path, content);
 
 const deniedEvidencePreviewResponse = (): Response =>
   new Response("Not found", {
@@ -260,6 +276,7 @@ type SandboxServices =
   | EvidenceStore
   | HatchStore
   | RolloutDiscovery
+  | SandboxBundleMaterializer
   | SandboxRuntime
   | SessionProjection
   | SessionStore
@@ -601,7 +618,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         mkdir: (path, mkdirOptions) => this.mkdir(path, mkdirOptions),
         readFileStream: (path) =>
           this.readFile(path, { encoding: "none" }).then((result) => result.content),
-        writeFile: (path, content) => this.writeFile(path, content),
+        writeFile: (path, content) => adaptSandboxWriteFile(this, path, content),
         setEnvVars: (envVars) => this.setEnvVars(envVars),
         startProcess: (command, processOptions) => this.startProcess(command, processOptions),
         getProcess: (processId) => this.getProcess(processId),
@@ -637,6 +654,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       options.containerEvidenceRecorder === undefined
         ? containerEvidenceRecorderLayer.pipe(Layer.provide(runtime))
         : Layer.succeed(ContainerEvidenceRecorder)(options.containerEvidenceRecorder);
+    const bundleStore = sandboxBundleStoreLayer(
+      r2SandboxBundleCapabilities(env.SANDBOX_BUNDLE_BUCKET),
+    );
+    const materializer = sandboxBundleMaterializerLayer.pipe(
+      Layer.provide(Layer.merge(runtime, bundleStore)),
+    );
 
     this.layer = Layer.mergeAll(
       store,
@@ -650,6 +673,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       workspaceLayer.pipe(Layer.provide(runtime)),
       containerAuthLayer.pipe(Layer.provide(runtime)),
       evidenceRecorder,
+      materializer,
     );
   }
 
@@ -1923,7 +1947,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const containerAuth = yield* ContainerAuth;
     const piPhase = Effect.gen({ self: this }, function* () {
       const credential = yield* vault.require;
-      yield* containerAuth.seed(record.id, credential, { initialPrompt: prompt });
+      const materializer = yield* SandboxBundleMaterializer;
+      const materialized = yield* materializer.materialize({
+        sessionId: record.id,
+        digest: record.sandboxBundle?.digest ?? null,
+      });
+      const seedOptions = {
+        initialPrompt: prompt,
+        extraSkills: materialized.extraSkills,
+        extraPackages: materialized.extraPackages,
+        bundleRoot: materialized.bundleRoot,
+      };
+      yield* containerAuth.seed(record.id, credential, seedOptions);
+      yield* containerAuth.preflight(record.id, credential, seedOptions);
       yield* containerAuth.ensurePiSession(record.id, credential);
       const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
       return yield* this.updateForOperationProgram(nonce, (current) => ({
@@ -2116,16 +2152,31 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (decisionBeforeSchedule.kind === "replay")
       return yield* this.replayCreateProgram(decisionBeforeSchedule.record, input.prompt);
 
+    const sandboxConfigStatus = yield* Effect.tryPromise({
+      try: () => this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).status(),
+      catch: (cause) => this.upstreamError("Session setup failed", cause, id),
+    });
+    if (!sandboxConfigStatus.ok)
+      return yield* this.upstreamError("Session setup failed", sandboxConfigStatus.error, id);
+
+    const initialWithBundle: SessionRecord = {
+      ...initial,
+      sandboxBundle: {
+        digest: sandboxConfigStatus.value.activeDigest,
+        manifestVersion: 1,
+      },
+    };
+
     const hardCapSchedule = yield* Effect.result(
       hostEffect("schedule", () =>
-        this.schedule(new Date(initial.hardCapAt), "enforceHardCap", {
-          hardCapAt: initial.hardCapAt,
+        this.schedule(new Date(initialWithBundle.hardCapAt), "enforceHardCap", {
+          hardCapAt: initialWithBundle.hardCapAt,
         } satisfies HardCapPayload),
       ),
     );
     const recordToCommit: SessionRecord = Result.isFailure(hardCapSchedule)
       ? {
-          ...initial,
+          ...initialWithBundle,
           status: "failed",
           operation: null,
           failure: {
@@ -2134,7 +2185,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             recoverable: false,
           },
         }
-      : initial;
+      : initialWithBundle;
 
     const committed = yield* Effect.result(store.createInitial(recordToCommit, idempotency));
     if (Result.isFailure(committed)) return yield* committed.failure;
@@ -2153,7 +2204,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
 
     const setup = yield* Effect.result(
-      this.prepareCloudflarePiCreateProgram(initial, input.prompt, nonce, nowIso),
+      this.prepareCloudflarePiCreateProgram(initialWithBundle, input.prompt, nonce, nowIso),
     );
     if (Result.isFailure(setup))
       return yield* this.failCreateSetupProgram(initial.id, nonce, setup.failure);

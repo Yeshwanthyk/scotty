@@ -180,6 +180,13 @@ export function stableSession(record: SessionResponse): StableSession {
   const agentState = optionalString(record.agentState);
   const lastAgentEventAt = optionalString(record.lastAgentEventAt);
   const failure = decodeRawSessionFailure(record.failure);
+  const sandboxBundle =
+    record.sandboxBundle === undefined
+      ? undefined
+      : {
+          digest: record.sandboxBundle.digest,
+          manifestVersion: record.sandboxBundle.manifestVersion,
+        };
   return {
     id: record.id,
     title: record.title,
@@ -206,6 +213,7 @@ export function stableSession(record: SessionResponse): StableSession {
           },
         }
       : {}),
+    ...(sandboxBundle ? { sandboxBundle } : {}),
   };
 }
 

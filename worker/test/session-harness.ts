@@ -5,7 +5,8 @@ import type {
   ExecResult,
   RestoreBackupResult,
 } from "@cloudflare/sandbox";
-import { Data, Match } from "effect";
+import { Data, Match, Result } from "effect";
+import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
 import type {
@@ -16,6 +17,9 @@ import type {
 } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
+import type { SandboxConfigStatus } from "../src/sandbox-config-contracts";
+import type { SandboxConfigRpcResult } from "../src/sandbox-config-object";
+import { sandboxBundleTarGzKey } from "../src/sandbox-bundle-store";
 import { HATCH_STATE_KEY, SESSION_CONTROL_REVISION_KEY } from "../src/session-store";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
@@ -32,6 +36,116 @@ import { InMemoryFaultInjectableFake } from "./support";
 const RECORD_KEY = "scotty:session";
 const CREDENTIAL_KEY = "scotty:credential";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
+const SANDBOX_BUNDLE_CONTENT_TYPE = "application/gzip";
+
+interface StoredSandboxBundleObject {
+  readonly bytes: Uint8Array;
+  readonly contentType: string;
+  readonly customMetadata: Readonly<Record<string, string>>;
+}
+
+const emptyAdditionsBundleGzip = (): Uint8Array =>
+  createDeterministicTarGz([
+    {
+      path: "manifest.json",
+      type: "file",
+      modeClass: "regular",
+      bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+    },
+  ]).archive;
+
+const seedSandboxBundleObject = (
+  objects: Map<string, StoredSandboxBundleObject>,
+  digest: string,
+  gzip: Uint8Array,
+): void => {
+  objects.set(sandboxBundleTarGzKey(digest), {
+    bytes: Uint8Array.from(gzip),
+    contentType: SANDBOX_BUNDLE_CONTENT_TYPE,
+    customMetadata: { digest },
+  });
+};
+
+const makeSandboxBundleBucket = (
+  initialObjects: ReadonlyMap<string, StoredSandboxBundleObject>,
+): R2Bucket => {
+  const objects = new Map(initialObjects);
+  const r2Object = (
+    key: string,
+    object: StoredSandboxBundleObject,
+    includeBody: boolean,
+  ): R2Object | R2ObjectBody => {
+    const base = {
+      key,
+      version: "1",
+      size: object.bytes.byteLength,
+      etag: "etag",
+      httpEtag: '"etag"',
+      checksums: { toJSON: () => ({}) },
+      uploaded: new Date("2026-08-06T12:00:00.000Z"),
+      httpMetadata: { contentType: object.contentType },
+      customMetadata: { ...object.customMetadata },
+      storageClass: "Standard",
+      writeHttpMetadata: () => undefined,
+    };
+    if (!includeBody) return base as R2Object;
+    return {
+      ...base,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(object.bytes);
+          controller.close();
+        },
+      }),
+      bodyUsed: false,
+      arrayBuffer: () => Promise.resolve(object.bytes.buffer.slice(0)),
+      bytes: () => Promise.resolve(Uint8Array.from(object.bytes)),
+      text: () => Promise.resolve(""),
+      json: <T>() => Promise.resolve({} as T),
+      blob: () => Promise.resolve(new Blob([object.bytes], { type: object.contentType })),
+    } as R2ObjectBody;
+  };
+
+  return {
+    put: async (
+      key: string,
+      value: ArrayBuffer | ArrayBufferView | Blob | ReadableStream | string | null,
+      options?: R2PutOptions,
+    ) => {
+      if (!(value instanceof Uint8Array))
+        throw injectedHarnessFailure("sandbox bundle value was not bytes");
+      if (
+        options?.onlyIf !== undefined &&
+        !(options.onlyIf instanceof Headers) &&
+        options.onlyIf.etagDoesNotMatch === "*" &&
+        objects.has(String(key))
+      )
+        return null;
+      const contentType =
+        options?.httpMetadata instanceof Headers
+          ? (options.httpMetadata.get("content-type") ?? SANDBOX_BUNDLE_CONTENT_TYPE)
+          : (options?.httpMetadata?.contentType ?? SANDBOX_BUNDLE_CONTENT_TYPE);
+      const stored: StoredSandboxBundleObject = {
+        bytes: Uint8Array.from(value),
+        contentType,
+        customMetadata: { ...options?.customMetadata },
+      };
+      objects.set(String(key), stored);
+      return r2Object(String(key), stored, false);
+    },
+    head: async (key: string) => {
+      const object = objects.get(String(key));
+      return object === undefined ? null : r2Object(String(key), object, false);
+    },
+    get: async (key: string) => {
+      const object = objects.get(String(key));
+      return object === undefined ? null : r2Object(String(key), object, true);
+    },
+    delete: async () => undefined,
+    list: async () => ({ objects: [], truncated: false, delimitedPrefixes: [] }),
+  } as never;
+};
 
 class InjectedHarnessFailure extends Data.TaggedError("InjectedHarnessFailure")<{
   readonly message: string;
@@ -39,6 +153,28 @@ class InjectedHarnessFailure extends Data.TaggedError("InjectedHarnessFailure")<
 
 export const injectedHarnessFailure = (message: string): InjectedHarnessFailure =>
   new InjectedHarnessFailure({ message });
+
+const readHarnessWriteStream = async (stream: ReadableStream<Uint8Array>): Promise<string> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    length += next.value.byteLength;
+    chunks.push(next.value);
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return Result.getOrElse(
+    Result.try(() => new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)),
+    () => `[binary:${bytes.byteLength}]`,
+  );
+};
 
 interface StatusProjection {
   readonly id?: string;
@@ -142,6 +278,13 @@ export interface HarnessOptions {
   ) => void | Promise<void>;
   readonly r2Objects?: ReadonlyArray<string>;
   readonly sandboxNamespace?: Bindings["SANDBOX"];
+  readonly sandboxConfigStatus?: SandboxConfigStatus;
+  readonly sandboxConfigStatusFailure?: "rpc-error" | "throw";
+  readonly sandboxBundleObjects?: ReadonlyArray<{
+    readonly digest: string;
+    readonly gzip: Uint8Array;
+  }>;
+  readonly seedPinnedSandboxBundle?: boolean;
   readonly stopCallsOnStop?: boolean;
   readonly transactionFailureCountdown?: number;
 }
@@ -186,6 +329,7 @@ export interface SessionHarness {
   readonly clearFailure: (stage?: HarnessFailureStage) => void;
   readonly read: <A>(key: string) => A | undefined;
   readonly readRecord: () => SessionRecord | undefined;
+  readonly sandboxConfigStatusCallCount: () => number;
 }
 
 class HarnessStorage {
@@ -452,6 +596,27 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   let rawPiContainerRunning = false;
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
+  let sandboxConfigStatusCalls = 0;
+  const defaultSandboxConfigStatus: SandboxConfigStatus = {
+    schemaVersion: 1,
+    revision: 0,
+    activeDigest: null,
+  };
+  const sandboxConfigStatus = options.sandboxConfigStatus ?? defaultSandboxConfigStatus;
+  const sandboxBundleObjectMap = new Map<string, StoredSandboxBundleObject>();
+  for (const { digest, gzip } of options.sandboxBundleObjects ?? [])
+    seedSandboxBundleObject(sandboxBundleObjectMap, digest, gzip);
+  const pinnedDigest = options.initialEntries?.[RECORD_KEY]?.sandboxBundle?.digest;
+  const activeDigest = sandboxConfigStatus.activeDigest;
+  const seedDigest = (digest: string | null | undefined): void => {
+    if (typeof digest !== "string" || !SHA256_HEX.test(digest)) return;
+    if (sandboxBundleObjectMap.has(sandboxBundleTarGzKey(digest))) return;
+    seedSandboxBundleObject(sandboxBundleObjectMap, digest, emptyAdditionsBundleGzip());
+  };
+  if (options.seedPinnedSandboxBundle ?? true) {
+    seedDigest(activeDigest);
+    seedDigest(pinnedDigest);
+  }
   const storage = new HarnessStorage(
     events,
     schedules,
@@ -656,6 +821,28 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       }),
     },
     SANDBOX: options.sandboxNamespace ?? (undefined as never),
+    SANDBOX_CONFIG: {
+      getByName: () => ({
+        status: async (): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> => {
+          sandboxConfigStatusCalls += 1;
+          if (options.sandboxConfigStatusFailure === "throw")
+            throw injectedHarnessFailure("injected sandbox config status failure");
+          if (options.sandboxConfigStatusFailure === "rpc-error")
+            return {
+              ok: false,
+              error: { reason: "storage", message: "injected sandbox config status failure" },
+            };
+          return {
+            ok: true,
+            value: sandboxConfigStatus,
+          };
+        },
+        activate: async () => ({
+          ok: true,
+          value: { schemaVersion: 1, revision: 1, activeDigest: null },
+        }),
+      }),
+    },
     SESSIONS: sessions,
     BACKUP_BUCKET: {
       list: async (listOptions?: { readonly prefix?: string }) => {
@@ -743,6 +930,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           throw injectedHarnessFailure("injected ambiguous artifact delete failure");
       },
     } as never,
+    SANDBOX_BUNDLE_BUCKET: makeSandboxBundleBucket(sandboxBundleObjectMap),
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
     PI_AUTH_JSON: JSON.stringify({
@@ -902,11 +1090,34 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     },
     writeFile: {
-      value: async (path: string, content: string): Promise<void> => {
-        writtenFiles.push({ path, content });
+      value: async (
+        path: string,
+        content: string | Uint8Array | ReadableStream<Uint8Array>,
+      ): Promise<void> => {
+        const stored =
+          typeof content === "string"
+            ? content
+            : content instanceof Uint8Array
+              ? Result.getOrElse(
+                  Result.try(() =>
+                    new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(content),
+                  ),
+                  () => `[binary:${content.byteLength}]`,
+                )
+              : await readHarnessWriteStream(content);
+        writtenFiles.push({ path, content: stored });
         events.push("host:writeFile");
         if (failures.has("downWriteManifest") && path === "/tmp/metadata.json")
           throw injectedHarnessFailure("injected manifest write failure");
+      },
+    },
+    readFile: {
+      value: async (path: string, _options?: { readonly encoding?: string }) => {
+        const latest = writtenFiles.filter((file) => file.path === path).at(-1);
+        if (latest === undefined) throw injectedHarnessFailure(`missing harness file ${path}`);
+        return {
+          content: new Blob([new TextEncoder().encode(latest.content)]).stream(),
+        };
       },
     },
     mkdir: {
@@ -1096,6 +1307,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     },
     read: <A>(key: string) => storage.read<A>(key),
     readRecord: () => storage.read<SessionRecord>(RECORD_KEY),
+    sandboxConfigStatusCallCount: () => sandboxConfigStatusCalls,
   };
 }
 
