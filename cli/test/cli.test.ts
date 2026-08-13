@@ -3,14 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
-import {
-  EMBEDDED_SKILL,
-  EXIT,
-  main,
-  STANDARD_TOOLSET,
-  VERSION,
-  type CliDependencies,
-} from "../scotty";
+import { EXIT, main, STANDARD_TOOLSET, VERSION, type CliDependencies } from "../scotty";
 
 const temporaryDirectories: string[] = [];
 
@@ -439,6 +432,12 @@ describe("configuration and transport", () => {
       token: request?.token,
     });
     expect(h.stdout.join("")).not.toContain(request?.token ?? "impossible");
+    expect((await stat(join(home, ".scotty", "sandbox.json"))).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(join(home, ".scotty", "sandbox.json"), "utf8"))).toEqual({
+      schemaVersion: 1,
+      skills: [],
+      piPackages: [],
+    });
     expect(h.json()).toEqual({
       configPath: join(home, ".scotty.json"),
       installationName: "home",
@@ -1910,7 +1909,7 @@ describe("commands and schemas", () => {
   });
 
   test("removed commands and top-level lifecycle aliases fail as unknown commands", async () => {
-    for (const command of ["pr", "publish", "up", "down", "vaporize"]) {
+    for (const command of ["pr", "publish", "up", "down", "vaporize", "skills"]) {
       const h = harness();
       expect(await main([command, "s1"], h.deps)).toBe(EXIT.USAGE);
       expect(h.error().error.code).toBe("bad_usage");
@@ -2333,7 +2332,7 @@ function tarFile(entries: Array<[string, Uint8Array]>): Uint8Array {
   return result;
 }
 
-describe("beam down and embedded skill", () => {
+describe("beam down and sandbox configuration", () => {
   test("down fetches the branch and writes rollout mode 0600", async () => {
     const home = await temporaryDirectory();
     const cwd = await temporaryDirectory();
@@ -2523,26 +2522,128 @@ describe("beam down and embedded skill", () => {
     expect(h.error().error.code).toBe("invalid_archive");
   });
 
-  test("skills prints the exact embedded source as Markdown", async () => {
-    const skills = harness();
-    const source = await readFile(new URL("../skills/scotty/SKILL.md", import.meta.url), "utf8");
-    expect(await main(["skills"], skills.deps)).toBe(EXIT.OK);
-    expect(EMBEDDED_SKILL).toBe(source);
-    expect(skills.stdout.join("")).toBe(EMBEDDED_SKILL);
-    expect(EMBEDDED_SKILL).toContain("## Hatch and browser evidence");
-    expect(EMBEDDED_SKILL).toContain("one actual WebM recording");
-    expect(EMBEDDED_SKILL).toContain("exact same viewport, steps, and assertions");
-    expect(EMBEDDED_SKILL).toContain("plus `/hatch/open`");
-    expect(EMBEDDED_SKILL).toContain("Never copy, guess, or publish the wildcard preview origin");
+  test("sandbox add, list, and remove persist local Skill sources without contacting Cloudflare", async () => {
+    const home = await temporaryDirectory();
+    const skillRoot = await temporaryDirectory();
+    const skillPath = join(skillRoot, "release-notes");
+    await mkdir(skillPath);
+    await writeFile(
+      join(skillPath, "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\n\n# Release notes\n",
+    );
+    let fetched = false;
+    const h = harness({
+      home,
+      cwd: skillRoot,
+      fetch: async () => {
+        fetched = true;
+        return Response.json({});
+      },
+    });
+
+    expect(await main(["sandbox", "add", "./release-notes"], h.deps)).toBe(EXIT.OK);
+    expect(h.json()).toEqual({
+      schemaVersion: 1,
+      skills: [{ name: "release-notes", path: skillPath }],
+      piPackages: [],
+      remote: { status: "not_queried", activeDigest: null },
+    });
+    expect((await stat(join(home, ".scotty", "sandbox.json"))).mode & 0o777).toBe(0o600);
+
+    const listed = harness({ home });
+    expect(await main(["sandbox", "list"], listed.deps)).toBe(EXIT.OK);
+    expect(listed.json()).toEqual(h.json());
+
+    const removed = harness({ home });
+    expect(await main(["sandbox", "remove", "release-notes"], removed.deps)).toBe(EXIT.OK);
+    expect(removed.json()).toEqual({
+      schemaVersion: 1,
+      skills: [],
+      piPackages: [],
+      remote: { status: "not_queried", activeDigest: null },
+    });
+    expect(fetched).toBe(false);
   });
 
-  test("skills rejects JSON wrapping and filesystem installation", async () => {
-    const json = harness();
-    const install = harness();
-    expect(await main(["skills", "--json"], json.deps)).toBe(EXIT.USAGE);
-    expect(await main(["skills", "install"], install.deps)).toBe(EXIT.USAGE);
-    expect(json.error().error.code).toBe("bad_usage");
-    expect(install.error().error.code).toBe("bad_usage");
+  test("sandbox add persists a resolved Git commit and rejects floating refs", async () => {
+    const home = await temporaryDirectory();
+    const h = harness({
+      home,
+      resolveGitPackage: async (repository, ref) => {
+        expect(repository).toBe("https://github.com/acme/pi-review-tools.git");
+        expect(ref).toBe("v1.2.0");
+        return {
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          name: "pi-review-tools",
+        };
+      },
+    });
+    expect(
+      await main(
+        ["sandbox", "add", "https://github.com/acme/pi-review-tools.git", "--ref", "v1.2.0"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual({
+      schemaVersion: 1,
+      skills: [],
+      piPackages: [
+        {
+          name: "pi-review-tools",
+          repository: "https://github.com/acme/pi-review-tools.git",
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          requestedRef: "v1.2.0",
+        },
+      ],
+      remote: { status: "not_queried", activeDigest: null },
+    });
+
+    const missingRef = harness({ home });
+    expect(
+      await main(
+        ["sandbox", "add", "https://github.com/acme/pi-review-tools.git"],
+        missingRef.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(missingRef.error().error.code).toBe("sandbox_source_invalid");
+  });
+
+  test("sandbox add rejects malformed local JSON without overwriting it", async () => {
+    const home = await temporaryDirectory();
+    await mkdir(join(home, ".scotty"), { mode: 0o700 });
+    const path = join(home, ".scotty", "sandbox.json");
+    await writeFile(path, "{ not json\n", { mode: 0o600 });
+    const skillRoot = await temporaryDirectory();
+    await writeFile(
+      join(skillRoot, "SKILL.md"),
+      "---\nname: release-notes\ndescription: test\n---\n\n# Test\n",
+    );
+    const h = harness({ home, cwd: skillRoot });
+    expect(await main(["sandbox", "add", skillRoot], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error.code).toBe("sandbox_config_invalid");
+    expect(await readFile(path, "utf8")).toBe("{ not json\n");
+  });
+
+  test("sandbox add rejects built-in Skill names and credential-bearing Git URLs", async () => {
+    const home = await temporaryDirectory();
+    const skillRoot = await temporaryDirectory();
+    await writeFile(
+      join(skillRoot, "SKILL.md"),
+      "---\nname: yesh-debug\ndescription: test\n---\n\n# Test\n",
+    );
+    const builtin = harness({ home, cwd: skillRoot });
+    expect(await main(["sandbox", "add", skillRoot], builtin.deps)).toBe(EXIT.USAGE);
+    expect(builtin.error().error.code).toBe("sandbox_name_conflict");
+
+    const credential = harness({ home });
+    expect(
+      await main(
+        ["sandbox", "add", "https://user:token@github.com/acme/pi-review-tools.git", "--ref", "v1"],
+        credential.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(credential.error().error.code).toBe("sandbox_source_invalid");
+    expect(credential.stderr.join("")).not.toContain("token");
   });
 
   test("tools list returns the checked-in standard manifest without credentials", async () => {

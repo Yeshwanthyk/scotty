@@ -60,6 +60,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
+        assert.include(rootHelp, "sandbox");
         assert.include(rootHelp, "runner");
         assert.include(rootHelp, "tui");
         assert.include(rootHelp, "--version, -V");
@@ -97,7 +98,6 @@ describe("Effect command tree", () => {
         assert.include(auth.stdout.join(""), "sync");
         assert.include(auth.stdout.join(""), "reseed");
         assert.strictEqual(auth.stderr.join(""), "");
-
         const tui = run(["tui", "--help"]);
         assert.strictEqual(yield* tui.effect, EXIT.OK);
         const tuiHelp = tui.stdout.join("");
@@ -115,6 +115,15 @@ describe("Effect command tree", () => {
         assert.include(pairHelp, "--config");
         assert.notInclude(pairHelp, "__scotty_trailing__");
         assert.strictEqual(pair.stderr.join(""), "");
+
+        const sandbox = run(["sandbox", "--help"]);
+        assert.strictEqual(yield* sandbox.effect, EXIT.OK);
+        assert.include(sandbox.stdout.join(""), "scotty sandbox <subcommand> [flags]");
+        assert.include(sandbox.stdout.join(""), "add");
+        assert.include(sandbox.stdout.join(""), "remove");
+        assert.include(sandbox.stdout.join(""), "list");
+        assert.include(sandbox.stdout.join(""), "sync");
+        assert.strictEqual(sandbox.stderr.join(""), "");
       }),
   );
 

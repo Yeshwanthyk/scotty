@@ -2,7 +2,7 @@ import { chmod, lstat, mkdir, open, readFile, rename, stat, unlink } from "node:
 import { constants, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { Context, Data, Effect, Layer, Option } from "effect";
+import { Context, Data, Effect, Layer, Option, Result, Schema } from "effect";
 import lockfile from "proper-lockfile";
 import { decodePreviewCleanupOwnershipError } from "../../infra/preview-ownership.ts";
 import { CliError, EXIT, type Writer } from "./core";
@@ -31,6 +31,12 @@ export interface CliDependencies {
   upgradeCli: (request: CliUpgradeRequest) => Promise<CliUpgradeResult>;
   inspectPiAuthTarget: (request: PiAuthTargetRequest) => Promise<PiAuthTargetResult>;
   uploadPiAuthSecret: (request: PiAuthUploadRequest) => Promise<PiAuthTargetResult>;
+  resolveGitPackage: (repository: string, ref: string) => Promise<GitPackageResolution>;
+}
+
+export interface GitPackageResolution {
+  readonly commit: string;
+  readonly name: string;
 }
 
 export interface InstallationDeployRequest {
@@ -204,6 +210,17 @@ export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerS
   "scotty/cli/ProcessRunner",
 ) {}
 
+interface GitResolverShape {
+  readonly resolvePackage: (
+    repository: string,
+    ref: string,
+  ) => Effect.Effect<GitPackageResolution, CliError>;
+}
+
+export class GitResolver extends Context.Service<GitResolver, GitResolverShape>()(
+  "scotty/cli/GitResolver",
+) {}
+
 interface BrowserLauncherShape {
   readonly open: (url: string) => Effect.Effect<void, CliError>;
 }
@@ -310,6 +327,31 @@ interface FileSystemShape {
 export class FileSystem extends Context.Service<FileSystem, FileSystemShape>()(
   "scotty/cli/FileSystem",
 ) {}
+
+const ThrownCliErrorSchema = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  hint: Schema.String,
+  exitCode: Schema.Literals([1, 2, 3, 4, 5]),
+});
+const decodeThrownCliError = Schema.decodeUnknownResult(ThrownCliErrorSchema);
+
+const gitPackageFailure = (cause: unknown): CliError => {
+  const decoded = decodeThrownCliError(cause);
+  if (Result.isFailure(decoded))
+    return new CliError(
+      "sandbox_source_invalid",
+      "Could not resolve the Git package",
+      "Check the repository URL and --ref, then retry.",
+      EXIT.GENERIC,
+    );
+  return new CliError(
+    decoded.success.code,
+    decoded.success.message,
+    decoded.success.hint,
+    decoded.success.exitCode,
+  );
+};
 
 const unexpected = (): CliError =>
   new CliError(
@@ -510,6 +552,10 @@ export const defaultDependencies = (): CliDependencies => ({
     const { uploadPiAuthSecret } = await import("./installation-deployment.ts");
     return uploadPiAuthSecret(request);
   },
+  resolveGitPackage: async (repository, ref) => {
+    const { resolveGitPackage } = await import("./sandbox-git.ts");
+    return resolveGitPackage(repository, ref);
+  },
 });
 
 export const cliLayer = (
@@ -518,6 +564,7 @@ export const cliLayer = (
   | CliRuntime
   | HttpTransport
   | ProcessRunner
+  | GitResolver
   | BrowserLauncher
   | PiAuthSecretManager
   | FileSystem
@@ -552,6 +599,13 @@ export const cliLayer = (
         Effect.tryPromise({
           try: () => dependencies.run([...command]),
           catch: unexpected,
+        }),
+    }),
+    Layer.succeed(GitResolver)({
+      resolvePackage: (repository, ref) =>
+        Effect.tryPromise({
+          try: () => dependencies.resolveGitPackage(repository, ref),
+          catch: gitPackageFailure,
         }),
     }),
     Layer.succeed(BrowserLauncher)({

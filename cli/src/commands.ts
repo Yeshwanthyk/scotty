@@ -41,7 +41,6 @@ import { readLocalPiAuth } from "./pi-auth";
 import {
   browserUrl,
   durationSeconds,
-  EMBEDDED_SKILL,
   humanInspect,
   humanResult,
   humanSession,
@@ -58,10 +57,26 @@ import {
   usage,
 } from "./pure";
 import {
+  formatSandboxStatus,
+  loadSandboxConfig,
+  localSandboxStatus,
+  sandboxConfigPath,
+  saveSandboxConfig,
+} from "./sandbox-config";
+import {
+  addPiPackageSource,
+  addSkillSource,
+  classifySandboxSource,
+  mutateSandboxConfig,
+  readSkillDirectoryName,
+  removeSandboxSource,
+} from "./sandbox-sources";
+import {
   BrowserLauncher,
   CliRuntime,
   CliUpgrader,
   FileSystem as CliFileSystem,
+  GitResolver,
   InstallationCreator,
   InstallationDeployer,
   InstallationRecovery,
@@ -628,6 +643,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               host,
               rootTokenRotated: true,
             };
+            yield* loadSandboxConfig(sandboxConfigPath(runtime.home), true);
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
@@ -1462,18 +1478,135 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([authStatus, authSync, authReseed]),
   );
 
-  const skills = Command.make("skills", { trailing: trailingArguments }, ({ trailing }) =>
+  const emitSandboxStatus = (
+    autoJson: boolean,
+    runtime: { readonly stdout: (text: string) => void },
+    status: ReturnType<typeof localSandboxStatus>,
+    prefix?: string,
+  ): void => {
+    if (autoJson) outputJson(runtime.stdout, status);
+    else {
+      if (prefix !== undefined) runtime.stdout(`${prefix}\n`);
+      runtime.stdout(formatSandboxStatus(status));
+    }
+  };
+
+  const sandboxAdd = Command.make(
+    "add",
+    {
+      source: Argument.string("source").pipe(
+        Argument.withDescription("Local Skill directory or Git repository URL"),
+      ),
+      ref: Flag.string("ref").pipe(
+        Flag.optional,
+        Flag.withDescription("Git tag or commit for a Pi package repository"),
+      ),
+      trailing: trailingArguments,
+    },
+    ({ ref, source, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, runtime } = yield* commandContext();
+        const requestedRef = Option.getOrUndefined(ref);
+        const classified = yield* classifySandboxSource(source, runtime.cwd, requestedRef);
+        const path = sandboxConfigPath(runtime.home);
+        if (classified.kind === "skill") {
+          const name = yield* readSkillDirectoryName(classified.path);
+          const saved = yield* mutateSandboxConfig(path, (config) =>
+            addSkillSource(config, { name, path: classified.path }),
+          );
+          emitSandboxStatus(
+            autoJson,
+            runtime,
+            localSandboxStatus(saved),
+            `Added skill ${name} to the local sandbox configuration.`,
+          );
+          return;
+        }
+        if (requestedRef === undefined) return yield* usage("Git package sources require --ref");
+        const git = yield* GitResolver;
+        const resolved = yield* git.resolvePackage(classified.repository, requestedRef);
+        const saved = yield* mutateSandboxConfig(path, (config) =>
+          addPiPackageSource(config, {
+            name: resolved.name,
+            repository: classified.repository,
+            commit: resolved.commit,
+            requestedRef,
+          }),
+        );
+        emitSandboxStatus(
+          autoJson,
+          runtime,
+          localSandboxStatus(saved),
+          `Added Pi package ${resolved.name} to the local sandbox configuration.`,
+        );
+      }),
+  ).pipe(Command.withDescription("Add a Skill directory or Git-backed Pi package"));
+
+  const sandboxRemove = Command.make(
+    "remove",
+    {
+      name: Argument.string("name").pipe(
+        Argument.withDescription("Configured Skill or Pi package name"),
+      ),
+      trailing: trailingArguments,
+    },
+    ({ name, trailing }) =>
+      Effect.gen(function* () {
+        yield* rejectTrailingArguments(trailing);
+        const { autoJson, runtime } = yield* commandContext();
+        const path = sandboxConfigPath(runtime.home);
+        const fileSystem = yield* CliFileSystem;
+        const removed = yield* fileSystem.withLock(
+          path,
+          Effect.gen(function* () {
+            const current = yield* loadSandboxConfig(path, true);
+            const next = yield* Effect.fromResult(removeSandboxSource(current, name));
+            const saved = yield* saveSandboxConfig(path, next.config);
+            return { kind: next.kind, saved };
+          }),
+        );
+        const label = removed.kind === "skill" ? "skill" : "Pi package";
+        emitSandboxStatus(
+          autoJson,
+          runtime,
+          localSandboxStatus(removed.saved),
+          `Removed ${label} ${name} from the local sandbox configuration.`,
+        );
+      }),
+  ).pipe(Command.withDescription("Remove a configured Skill or Pi package"));
+
+  const sandboxList = Command.make("list", { trailing: trailingArguments }, ({ trailing }) =>
     Effect.gen(function* () {
       yield* rejectTrailingArguments(trailing);
-      const { options, runtime } = yield* commandContext();
-      if (options.json)
-        return yield* usage(
-          "scotty skills emits Markdown and does not support --json",
-          "Run scotty skills without flags.",
-        );
-      runtime.stdout(EMBEDDED_SKILL);
+      const { autoJson, runtime } = yield* commandContext();
+      const path = sandboxConfigPath(runtime.home);
+      const fileSystem = yield* CliFileSystem;
+      const config = yield* fileSystem.withLock(path, loadSandboxConfig(path, true));
+      emitSandboxStatus(autoJson, runtime, localSandboxStatus(config));
     }),
-  ).pipe(Command.withDescription("Print the embedded agent skill"));
+  ).pipe(Command.withDescription("List local sandbox sources and remote status"));
+
+  const sandboxSync = Command.make("sync", { trailing: trailingArguments }, ({ trailing }) =>
+    Effect.gen(function* () {
+      yield* rejectTrailingArguments(trailing);
+      const { autoJson, runtime } = yield* commandContext();
+      const path = sandboxConfigPath(runtime.home);
+      const fileSystem = yield* CliFileSystem;
+      const config = yield* fileSystem.withLock(path, loadSandboxConfig(path, true));
+      emitSandboxStatus(
+        autoJson,
+        runtime,
+        localSandboxStatus(config),
+        "Local sandbox configuration is valid. Remote synchronization is not implemented yet.",
+      );
+    }),
+  ).pipe(Command.withDescription("Synchronize local sandbox configuration to the installation"));
+
+  const sandbox = Command.make("sandbox").pipe(
+    Command.withDescription("Manage installation sandbox Skills and Pi packages"),
+    Command.withSubcommands([sandboxAdd, sandboxRemove, sandboxList, sandboxSync]),
+  );
 
   const toolsList = Command.make("list", { trailing: trailingArguments }, ({ trailing }) =>
     Effect.gen(function* () {
@@ -2015,7 +2148,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       owner,
       snapshot,
       resume,
-      skills,
+      sandbox,
       tools,
       runner,
       tui,
