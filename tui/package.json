@@ -1,10 +1,9 @@
 {
-  "name": "@scotty/pi-scotty",
+  "name": "@scotty/tui",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node ../scripts/build-pi-scotty.mjs",
     "build:sidecar": "node ../scripts/build-scotty-desktop-sidecar.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run test"

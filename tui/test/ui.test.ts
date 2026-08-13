@@ -91,7 +91,7 @@ class UiTransport implements ConsoleTransport {
 
 const componentFixture = (selected = false) => {
   const terminal = new FakeTerminal();
-  const tui = new TuiMainScreen(terminal, false, "/tmp/pi-scotty-test-state");
+  const tui = new TuiMainScreen(terminal, false, "/tmp/scotty-tui-test-state");
   const transport = new UiTransport();
   const state = new FleetConsoleState();
   state.setFleet([session(SESSION_A)]);
@@ -531,8 +531,8 @@ describe("composer key routing", () => {
     expect(rendered.indexOf("above widget")).toBeLessThan(rendered.indexOf("PROMPT"));
     expect(rendered.indexOf("below widget")).toBeGreaterThan(rendered.indexOf("PROMPT"));
     expect(rendered).not.toContain("\r");
-    expect(fixture.terminal.title).toBe("pi-scotty — [sentinel]");
+    expect(fixture.terminal.title).toBe("scotty tui — [sentinel]");
     expect(fixture.terminal.title).not.toContain("\u001b");
-    expect(safeTerminalTitle("line\nnext")).toBe("pi-scotty — line next");
+    expect(safeTerminalTitle("line\nnext")).toBe("scotty tui — line next");
   });
 });

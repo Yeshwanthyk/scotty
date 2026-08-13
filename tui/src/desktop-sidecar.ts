@@ -7,7 +7,7 @@ import {
   type DesktopFrame,
   type DesktopManagementAction,
 } from "./desktop-protocol.ts";
-import { PiScottyError, safeErrorMessage } from "./errors.ts";
+import { TuiError, safeErrorMessage } from "./errors.ts";
 import type { SelectedSession } from "./schemas.ts";
 import type { DesktopManagementTransport } from "./transport.ts";
 
@@ -252,8 +252,7 @@ export class DesktopSidecar {
     } catch (error) {
       this.#inFlightRequests.delete(command.requestId);
       if (this.#stopped) return;
-      const status =
-        error instanceof PiScottyError && error.status !== undefined ? "failed" : "unknown";
+      const status = error instanceof TuiError && error.status !== undefined ? "failed" : "unknown";
       await this.#controller.loadFleet();
       if (this.#stopped) return;
       this.#write({
@@ -273,7 +272,7 @@ export class DesktopSidecar {
 
   #assertSelected(sessionId: string): void {
     if (this.#controller.state.selectedSessionId !== sessionId)
-      throw new PiScottyError("input_invalid", "Desktop selection changed; retry the command");
+      throw new TuiError("input_invalid", "Desktop selection changed; retry the command");
   }
 
   #assertFence(command: FencedDesktopCommand): void {
@@ -284,7 +283,7 @@ export class DesktopSidecar {
       live.epoch !== command.expectedEpoch ||
       live.sessionRevision !== command.expectedSessionRevision
     )
-      throw new PiScottyError("input_invalid", "Desktop session changed; retry the command");
+      throw new TuiError("input_invalid", "Desktop session changed; retry the command");
   }
 
   #setDraft(sessionId: string, text: string): void {

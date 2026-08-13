@@ -43,13 +43,14 @@ accepted. Local paths and file names never leave the Rust process.
 
 ## Pair this device
 
-The desktop app uses the paired-client config at `~/.config/pi-scotty/config.json`.
+The desktop app uses the same paired-client config as `scotty tui` at
+`~/.config/scotty/tui.json`.
 It does not use the root token.
 
 1. Finish `scotty init`, `scotty auth sync`, and `scotty doctor --json`.
 2. Run `scotty owner recover` on the browser that will own the installation.
 3. Open `/devices` in that owner browser and create a one-use pairing link.
-4. Run `pi-scotty pair ORIGIN` on the desktop device.
+4. Run `scotty tui pair ORIGIN` on the desktop device.
 5. Paste the link at the hidden prompt.
 6. Build and open the desktop app.
 
@@ -79,8 +80,8 @@ SCOTTY_DESKTOP_SIDECAR="$PWD/desktop/fixtures/fake-sidecar.mjs" \
 ## Verification
 
 ```sh
-npm run test:pi-scotty
-npm run typecheck:pi-scotty
+npm run test:tui
+npm run typecheck:tui
 cargo fmt --manifest-path desktop/Cargo.toml --all -- --check
 cargo clippy --manifest-path desktop/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path desktop/Cargo.toml

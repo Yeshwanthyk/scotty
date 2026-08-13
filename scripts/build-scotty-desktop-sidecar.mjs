@@ -13,7 +13,7 @@ const result = await new Promise((resolveResult, reject) => {
     process.env.BUN_BINARY ?? "bun",
     [
       "build",
-      "pi-scotty/src/desktop-sidecar-main.ts",
+      "tui/src/desktop-sidecar-main.ts",
       "--compile",
       "--no-compile-autoload-dotenv",
       "--no-compile-autoload-bunfig",

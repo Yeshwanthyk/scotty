@@ -4,7 +4,12 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { detectPiThemeName, loadPiPresentationTheme } from "../src/theme.ts";
+import { embeddedThemeSource } from "../src/theme-assets.ts";
+import {
+  detectPiThemeName,
+  loadEmbeddedPiPresentationTheme,
+  loadPiPresentationTheme,
+} from "../src/theme.ts";
 
 const entry = new URL(import.meta.resolve("@earendil-works/pi-coding-agent"));
 const themeDirectory = join(dirname(fileURLToPath(entry)), "modes", "interactive", "theme");
@@ -17,7 +22,7 @@ const publishedTheme = (): Schema.JsonObject =>
   decodePublishedTheme(readFileSync(join(themeDirectory, "dark.json"), "utf8"));
 
 const expectThemeError = (payload: Schema.Json, message: string): void => {
-  const directory = mkdtempSync(join(tmpdir(), "pi-scotty-theme-"));
+  const directory = mkdtempSync(join(tmpdir(), "scotty-tui-theme-"));
   try {
     writeFileSync(join(directory, "dark.json"), JSON.stringify(payload));
     expect(() => loadPiPresentationTheme("dark", directory, "truecolor")).toThrow(message);
@@ -28,8 +33,8 @@ const expectThemeError = (payload: Schema.Json, message: string): void => {
 
 describe("exact Pi 0.84 presentation theme", () => {
   it("preserves semantic colors in the published dark and light assets", () => {
-    const dark = loadPiPresentationTheme("dark", themeDirectory, "truecolor");
-    const light = loadPiPresentationTheme("light", themeDirectory, "truecolor");
+    const dark = loadEmbeddedPiPresentationTheme("dark", "truecolor");
+    const light = loadEmbeddedPiPresentationTheme("light", "truecolor");
 
     expect(dark.getFgAnsi("accent")).toBe("\u001b[38;2;138;190;183m");
     expect(dark.getFgAnsi("success")).toBe("\u001b[38;2;181;189;104m");
@@ -41,6 +46,17 @@ describe("exact Pi 0.84 presentation theme", () => {
     expect(light.getFgAnsi("error")).toBe("\u001b[38;2;170;85;85m");
     expect(light.getFgAnsi("warning")).toBe("\u001b[38;2;154;115;38m");
     expect(light.getFgAnsi("muted")).toBe("\u001b[38;2;108;108;108m");
+    expect(dark.sourcePath).toBe("embedded:scotty-tui/dark.json");
+    expect(light.sourcePath).toBe("embedded:scotty-tui/light.json");
+  });
+
+  it("embeds the exact pinned Pi theme JSON instead of reading runtime assets", () => {
+    for (const name of ["dark", "light"] as const) {
+      const published = decodePublishedTheme(
+        readFileSync(join(themeDirectory, `${name}.json`), "utf8"),
+      );
+      expect(decodePublishedTheme(embeddedThemeSource(name))).toEqual(published);
+    }
   });
 
   it("matches Pi 0.84 COLORFGBG light and dark selection", () => {

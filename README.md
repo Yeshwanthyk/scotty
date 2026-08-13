@@ -76,8 +76,9 @@ it has the native Pi RPC worklog transport.
 
 - `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, direct Pi RPC
   lifecycle and worklog, and trusted-runner control plane.
-- `cli/` — Effect-native Bun CLI and embedded `scotty skills` guide.
-- `pi-scotty/` — passive terminal fleet console and shared desktop sidecar.
+- `cli/` — Effect-native Bun CLI, embedded `scotty tui`, and embedded `scotty skills` guide.
+- `tui/` — internal terminal fleet console and shared desktop-sidecar source modules; these
+  compile into Scotty artifacts and are not a separately installed product.
 - `desktop/` — macOS GPUI viewport for switching among existing warm Scotty sessions.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
@@ -97,7 +98,7 @@ bound to one existing target browser, and root recovery revokes every browser cr
 creating a fresh owner. Raw client, pairing, transfer, and recovery secrets are never persisted.
 For each paired device, the Auth Durable Object retains a server client ID, credential digest,
 neutral or user-supplied label, scopes, created, expiry, and last-seen times, optional user agent,
-and revocation time. The default `pi-scotty` label contains no hostname.
+and revocation time. The default `scotty tui` label contains no hostname.
 
 The browser never receives container credentials. For Cloudflare sessions, the Worker authenticates
 the terminal WebSocket and attaches it to the Sandbox native PTY running Pi. Pi and Codex receive
@@ -131,8 +132,8 @@ npm run build:desktop
 open dist/Scotty.app
 ```
 
-Desktop uses the same mode-0600 paired-client config as `pi-scotty` at
-`~/.config/pi-scotty/config.json`. See [`desktop/README.md`](desktop/README.md) for fixture testing,
+Desktop uses the same mode-0600 paired-client config as `scotty tui` at
+`~/.config/scotty/tui.json`. See [`desktop/README.md`](desktop/README.md) for fixture testing,
 pairing, platform requirements, and distribution limitations.
 
 For a fresh Linux agent environment, [`.agents/setup`](.agents/setup) installs the pinned Node
@@ -217,8 +218,8 @@ For a clean first run:
 3. Run `scotty doctor --json`.
 4. Run `scotty owner recover` on the browser that will own the installation.
 5. Open `/devices` in that owner browser and create a one-use pairing link.
-6. On each terminal or desktop device, run `pi-scotty pair ORIGIN` and paste the link when asked.
-7. Run `pi-scotty`, or build and open the desktop app.
+6. On each terminal or desktop device, run `scotty tui pair ORIGIN` and paste the link when asked.
+7. Run `scotty tui`, or build and open the desktop app.
 
 `auth sync` uses the account, Worker name, and origin saved by `init`. It fails before reading local
 Pi credentials if Cloudflare does not match that saved installation. The pairing prompt does not

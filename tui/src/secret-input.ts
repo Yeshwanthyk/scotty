@@ -1,4 +1,4 @@
-import { PiScottyError } from "./errors.ts";
+import { TuiError } from "./errors.ts";
 
 interface SecretInput {
   readonly isTTY?: boolean;
@@ -29,9 +29,7 @@ export const readSecretLine = async (
   return new Promise<string>((resolve, reject) => {
     let value = "";
     let settled = false;
-    const finish = (
-      result: { readonly value: string } | { readonly error: PiScottyError },
-    ): void => {
+    const finish = (result: { readonly value: string } | { readonly error: TuiError }): void => {
       if (settled) return;
       settled = true;
       let cleanupFailed = false;
@@ -50,7 +48,7 @@ export const readSecretLine = async (
       cleanup(() => input.pause());
       cleanup(() => output.write("\n"));
       if (cleanupFailed)
-        reject(new PiScottyError("input_invalid", "Pairing input could not be restored safely"));
+        reject(new TuiError("input_invalid", "Pairing input could not be restored safely"));
       else if ("error" in result) reject(result.error);
       else resolve(result.value);
     };
@@ -59,7 +57,7 @@ export const readSecretLine = async (
         value.length > 0
           ? { value }
           : {
-              error: new PiScottyError(
+              error: new TuiError(
                 "input_invalid",
                 "Pairing input ended before a credential was entered",
               ),
@@ -67,7 +65,7 @@ export const readSecretLine = async (
       );
     const onEnd = (): void => ended();
     const onError = (): void =>
-      finish({ error: new PiScottyError("input_invalid", "Pairing input could not be read") });
+      finish({ error: new TuiError("input_invalid", "Pairing input could not be read") });
     const onData = (chunk: Buffer | string): void => {
       for (const character of chunk.toString("utf8")) {
         if (character === "\r" || character === "\n") {
@@ -75,7 +73,7 @@ export const readSecretLine = async (
           return;
         }
         if (character === "\u0003") {
-          finish({ error: new PiScottyError("input_invalid", "Pairing cancelled") });
+          finish({ error: new TuiError("input_invalid", "Pairing cancelled") });
           return;
         }
         if (character === "\u0004") {
@@ -94,7 +92,7 @@ export const readSecretLine = async (
       if (useRawMode) input.setRawMode?.(true);
       input.resume();
     } catch {
-      finish({ error: new PiScottyError("input_invalid", "Pairing input could not be read") });
+      finish({ error: new TuiError("input_invalid", "Pairing input could not be read") });
     }
   });
 };

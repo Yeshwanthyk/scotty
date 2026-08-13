@@ -61,10 +61,15 @@ jobs:
           node-version: 22.22.2
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Build standalone CLI
+      - name: Build sole standalone terminal artifact
         env:
           SCOTTY_COMPILE_TARGET: ${{ matrix.target }}
         run: bun scripts/build-cli.mjs dist/release/scotty-${{ matrix.platform }}-${{ matrix.architecture }}
+      - name: Verify release artifact has no sidecars
+        run: |
+          test -f dist/release/scotty-${{ matrix.platform }}-${{ matrix.architecture }}
+          test ! -e dist/release/theme
+          test "$(find dist/release -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: scotty-${{ matrix.platform }}-${{ matrix.architecture }}

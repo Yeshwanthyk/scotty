@@ -61,6 +61,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
         assert.include(rootHelp, "runner");
+        assert.include(rootHelp, "tui");
         assert.include(rootHelp, "--version, -V");
         assert.notInclude(rootHelp, "--wizard");
         assert.notInclude(rootHelp, "--completions");
@@ -96,7 +97,43 @@ describe("Effect command tree", () => {
         assert.include(auth.stdout.join(""), "sync");
         assert.include(auth.stdout.join(""), "reseed");
         assert.strictEqual(auth.stderr.join(""), "");
+
+        const tui = run(["tui", "--help"]);
+        assert.strictEqual(yield* tui.effect, EXIT.OK);
+        const tuiHelp = tui.stdout.join("");
+        assert.include(tuiHelp, "scotty tui");
+        assert.include(tuiHelp, "--config");
+        assert.include(tuiHelp, "pair");
+        assert.notInclude(tuiHelp, "__scotty_trailing__");
+        assert.strictEqual(tui.stderr.join(""), "");
+
+        const pair = run(["tui", "pair", "--help"]);
+        assert.strictEqual(yield* pair.effect, EXIT.OK);
+        const pairHelp = pair.stdout.join("");
+        assert.include(pairHelp, "scotty tui pair [flags] <origin>");
+        assert.include(pairHelp, "--label");
+        assert.include(pairHelp, "--config");
+        assert.notInclude(pairHelp, "__scotty_trailing__");
+        assert.strictEqual(pair.stderr.join(""), "");
       }),
+  );
+
+  it.effect("validates tui pair grammar before starting an interactive flow", () =>
+    Effect.gen(function* () {
+      const missingOrigin = run(["tui", "pair"]);
+      const missingOriginError = failure(yield* Effect.result(missingOrigin.effect));
+      assert.strictEqual(missingOriginError.code, "bad_usage");
+      assert.include(missingOriginError.message, "origin");
+      assert.strictEqual(missingOrigin.stdout.join(""), "");
+      assert.strictEqual(missingOrigin.stderr.join(""), "");
+
+      const trailing = run(["tui", "pair", "https://scotty.example", "unexpected"]);
+      const trailingError = failure(yield* Effect.result(trailing.effect));
+      assert.strictEqual(trailingError.code, "bad_usage");
+      assert.strictEqual(trailingError.message, "Unexpected argument: unexpected");
+      assert.strictEqual(trailing.stdout.join(""), "");
+      assert.strictEqual(trailing.stderr.join(""), "");
+    }),
   );
 
   it.effect("lists and removes runners through authenticated control-plane routes", () =>

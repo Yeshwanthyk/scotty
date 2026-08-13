@@ -1,14 +1,9 @@
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  getMarkdownTheme,
-  initTheme,
-  Theme,
-  type ThemeColor,
-} from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { setThemeInstance, Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { Option, Schema } from "effect";
+import { embeddedThemeSource, type EmbeddedThemeName } from "./theme-assets.ts";
 
 const BACKGROUND_KEYS = [
   "selectedBg",
@@ -67,7 +62,7 @@ const FOREGROUND_KEYS = [
   "thinkingMax",
   "bashMode",
 ] as const satisfies ReadonlyArray<ThemeColor>;
-type ThemeName = "dark" | "light";
+type ThemeName = EmbeddedThemeName;
 type ColorValue = string | number;
 
 const ColorValueSchema = Schema.Union([
@@ -167,12 +162,12 @@ const resolveColors = <const Keys extends ReadonlyArray<keyof ThemeColors>>(
     readonly [Key in Keys[number]]: ColorValue;
   };
 
-export const loadPiPresentationTheme = (
+const parsePiPresentationTheme = (
   name: ThemeName,
-  themeDirectory: string,
-  mode: "truecolor" | "256color" = getCapabilities().trueColor ? "truecolor" : "256color",
+  source: string,
+  sourcePath: string,
+  mode: "truecolor" | "256color",
 ): Theme => {
-  const source = readFileSync(join(themeDirectory, `${name}.json`), "utf8");
   const json = Option.getOrUndefined(decodeThemeJsonOption(source));
   if (json === undefined) {
     JSON.parse(source);
@@ -236,9 +231,29 @@ export const loadPiPresentationTheme = (
   const background = resolveColors(BACKGROUND_KEYS, colors, typedVariables);
   return new Theme(foreground, background, mode, {
     name,
-    sourcePath: join(themeDirectory, `${name}.json`),
+    sourcePath,
   });
 };
+
+export const loadPiPresentationTheme = (
+  name: ThemeName,
+  themeDirectory: string,
+  mode: "truecolor" | "256color" = getCapabilities().trueColor ? "truecolor" : "256color",
+): Theme => {
+  const sourcePath = join(themeDirectory, `${name}.json`);
+  return parsePiPresentationTheme(name, readFileSync(sourcePath, "utf8"), sourcePath, mode);
+};
+
+export const loadEmbeddedPiPresentationTheme = (
+  name: ThemeName,
+  mode: "truecolor" | "256color" = getCapabilities().trueColor ? "truecolor" : "256color",
+): Theme =>
+  parsePiPresentationTheme(
+    name,
+    embeddedThemeSource(name),
+    `embedded:scotty-tui/${name}.json`,
+    mode,
+  );
 
 const ansiRgb = (index: number): readonly [number, number, number] => {
   const basic = [
@@ -278,16 +293,6 @@ export const detectPiThemeName = (environment: NodeJS.ProcessEnv = process.env):
   return "dark";
 };
 
-const sourceThemeDirectory = (): string => {
-  const entry = new URL(import.meta.resolve("@earendil-works/pi-coding-agent"));
-  return join(dirname(fileURLToPath(entry)), "modes", "interactive", "theme");
-};
-
-const runtimeThemeDirectory = (): string =>
-  /(?:\$bunfs|~BUN|%7EBUN)/u.test(import.meta.url)
-    ? join(dirname(process.execPath), "theme")
-    : sourceThemeDirectory();
-
 export interface PiPresentationTheme {
   readonly theme: Theme;
   readonly markdown: MarkdownTheme;
@@ -295,11 +300,28 @@ export interface PiPresentationTheme {
 
 let presentation: PiPresentationTheme | undefined;
 
+const markdownTheme = (theme: Theme): MarkdownTheme => ({
+  heading: (text) => theme.fg("mdHeading", text),
+  link: (text) => theme.fg("mdLink", text),
+  linkUrl: (text) => theme.fg("mdLinkUrl", text),
+  code: (text) => theme.fg("mdCode", text),
+  codeBlock: (text) => theme.fg("mdCodeBlock", text),
+  codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+  quote: (text) => theme.fg("mdQuote", text),
+  quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
+  hr: (text) => theme.fg("mdHr", text),
+  listBullet: (text) => theme.fg("mdListBullet", text),
+  bold: (text) => theme.bold(text),
+  italic: (text) => theme.italic(text),
+  strikethrough: (text) => theme.strikethrough(text),
+  underline: (text) => theme.underline(text),
+});
+
 export const initializePiPresentation = (): PiPresentationTheme => {
   if (presentation !== undefined) return presentation;
   const name = detectPiThemeName();
-  const theme = loadPiPresentationTheme(name, runtimeThemeDirectory());
-  initTheme(name, false);
-  presentation = { theme, markdown: getMarkdownTheme() };
+  const theme = loadEmbeddedPiPresentationTheme(name);
+  setThemeInstance(theme);
+  presentation = { theme, markdown: markdownTheme(theme) };
   return presentation;
 };

@@ -1,4 +1,4 @@
-export type PiScottyErrorCode =
+export type TuiErrorCode =
   | "config_missing"
   | "config_invalid"
   | "config_permissions"
@@ -9,17 +9,17 @@ export type PiScottyErrorCode =
   | "stream_invalid"
   | "pairing_failed";
 
-export class PiScottyError extends Error {
-  readonly code: PiScottyErrorCode;
+export class TuiError extends Error {
+  readonly code: TuiErrorCode;
   readonly status: number | undefined;
 
-  constructor(code: PiScottyErrorCode, message: string, status?: number) {
+  constructor(code: TuiErrorCode, message: string, status?: number) {
     super(message);
-    this.name = "PiScottyError";
+    this.name = "TuiError";
     this.code = code;
     this.status = status;
   }
 }
 
 export const safeErrorMessage = (error: unknown): string =>
-  error instanceof PiScottyError ? error.message : "pi-scotty failed";
+  error instanceof TuiError ? error.message : "scotty tui failed";
