@@ -139,7 +139,9 @@ export const gunzipSandboxArchive = (
   Effect.gen(function* () {
     const uncompressed = yield* Effect.tryPromise({
       try: async () => {
-        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+        const stream = new Blob([Uint8Array.from(bytes)])
+          .stream()
+          .pipeThrough(new DecompressionStream("gzip"));
         return await readBoundedUncompressed(stream);
       },
       catch: () => sandboxArchiveInvalid("Sandbox archive is not valid gzip"),

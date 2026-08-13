@@ -10,7 +10,7 @@ import {
   SkillNameSchema,
   formatSandboxStatus,
   type SandboxConfig,
-} from "./sandbox-config";
+} from "./sandbox-config-contracts";
 
 export const SANDBOX_BUNDLE_SCHEMA_VERSION = 1 as const;
 
@@ -98,7 +98,8 @@ const decodeSandboxBundleManifestJson = Schema.decodeUnknownResult(
   { onExcessProperty: "error" },
 );
 
-export { sandboxSourceInvalid } from "./sandbox-sources";
+export const sandboxSourceInvalid = (message: string, hint: string): CliError =>
+  new CliError("sandbox_source_invalid", message, hint, EXIT.USAGE);
 
 export const sandboxPackageUnsupported = (message: string, hint: string): CliError =>
   new CliError("sandbox_package_unsupported", message, hint, EXIT.USAGE);

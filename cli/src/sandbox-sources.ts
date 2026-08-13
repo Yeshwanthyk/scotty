@@ -2,6 +2,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { Effect, Result, Schema } from "effect";
 import { CliError, EXIT } from "./core";
+import { sandboxSourceInvalid } from "./sandbox-bundle";
 import {
   BUILTIN_PI_PACKAGE_NAMES,
   BUILTIN_SKILL_NAMES,
@@ -15,9 +16,6 @@ import {
   sandboxNameConflict,
 } from "./sandbox-config";
 import { FileSystem } from "./services";
-
-export const sandboxSourceInvalid = (message: string, hint: string): CliError =>
-  new CliError("sandbox_source_invalid", message, hint, EXIT.USAGE);
 
 const decodeSkillName = Schema.decodeUnknownResult(SkillNameSchema);
 const decodePackageManifestJson = Schema.decodeUnknownResult(

@@ -218,7 +218,7 @@ const adaptSandboxWriteFile = (
   content: SandboxWriteContent,
 ): Promise<unknown> =>
   content instanceof Uint8Array
-    ? sandbox.writeFile(path, new Blob([content]).stream())
+    ? sandbox.writeFile(path, new Blob([Uint8Array.from(content)]).stream())
     : sandbox.writeFile(path, content);
 
 const deniedEvidencePreviewResponse = (): Response =>

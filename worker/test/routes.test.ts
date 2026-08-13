@@ -128,6 +128,7 @@ function sandboxBundleBucket(): R2Bucket {
       readonly customMetadata: Record<string, string>;
     }
   >();
+  // lint-allow-double-cast: boundary: focused-test-r2-adapter
   return {
     put: async (
       key: string,
@@ -148,7 +149,7 @@ function sandboxBundleBucket(): R2Bucket {
           options?.httpMetadata instanceof Headers
             ? (options.httpMetadata.get("content-type") ?? "")
             : (options?.httpMetadata?.contentType ?? ""),
-        customMetadata: { ...(options?.customMetadata ?? {}) },
+        customMetadata: { ...options?.customMetadata },
       });
       return {
         key: String(key),
@@ -164,7 +165,7 @@ function sandboxBundleBucket(): R2Bucket {
               ? (options.httpMetadata.get("content-type") ?? undefined)
               : options?.httpMetadata?.contentType,
         },
-        customMetadata: { ...(options?.customMetadata ?? {}) },
+        customMetadata: { ...options?.customMetadata },
         storageClass: "Standard",
         writeHttpMetadata: () => undefined,
       } as R2Object;
