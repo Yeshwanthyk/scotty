@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { ScottyError } from "../src/contracts";
 import {
   createSessionHarness,
@@ -12,7 +13,16 @@ import {
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
-const sleepingRecord = () =>
+const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
+  {
+    path: "manifest.json",
+    type: "file",
+    modeClass: "regular",
+    bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+  },
+]).digest;
+
+const sleepingRecord = (overrides: Parameters<typeof makeSessionRecord>[0] = {}) =>
   makeSessionRecord({
     id: SESSION_ID,
     status: "sleeping",
@@ -20,6 +30,7 @@ const sleepingRecord = () =>
     backup: { current: makeResumeBackup() },
     ownedBackupIds: ["backup-1"],
     codexThreadId: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
+    ...overrides,
   });
 
 const resumeEntries = (): InitialStorageEntries => ({
@@ -64,6 +75,69 @@ describe("Sandbox resume orchestration", () => {
       ["enforceHardCap"],
     );
     assert.deepStrictEqual(harness.aborts, []);
+  });
+
+  it("rematerializes the pinned sandbox bundle after backup restore", async () => {
+    const digest = EMPTY_ADDITIONS_DIGEST;
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: sleepingRecord({
+          sandboxBundle: { digest, manifestVersion: 1 },
+        }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+      },
+    });
+
+    const resumed = await harness.sandbox.resumeScottySession();
+
+    assert.strictEqual(resumed.status, "warm");
+    const restoreIndex = harness.events.indexOf("host:restoreBackup");
+    const mkdirIndex = harness.events.indexOf("host:mkdir");
+    assert.ok(restoreIndex >= 0);
+    assert.ok(mkdirIndex > restoreIndex);
+    assert.ok(
+      harness.writtenFiles.some(
+        (file) => file.path.includes("/.scotty/sandbox/") && file.path.endsWith("/manifest.json"),
+      ),
+    );
+    assert.ok(
+      harness.writtenFiles.some(
+        (file) => file.path.includes("/.scotty/sandbox/") && file.path.endsWith("/.verified"),
+      ),
+    );
+    assert.ok(harness.events.some((event) => event.startsWith("host:pi:start:")));
+    assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
+      digest,
+      manifestVersion: 1,
+    });
+    assert.deepStrictEqual(resumed.sandboxBundle, { digest, manifestVersion: 1 });
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
+  });
+
+  it("does not reach warm when the pinned sandbox bundle is missing", async () => {
+    const digest = "a".repeat(64);
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: sleepingRecord({
+          sandboxBundle: { digest, manifestVersion: 1 },
+        }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+      },
+      seedPinnedSandboxBundle: false,
+    });
+
+    await assertUpstreamFailure(harness.sandbox.resumeScottySession());
+
+    const failed = harness.readRecord();
+    assert.notStrictEqual(failed?.status, "warm");
+    assert.deepStrictEqual(failed?.failure, {
+      code: "resume_failed",
+      message: "Session restore failed",
+      recoverable: true,
+    });
+    assert.deepStrictEqual(failed?.sandboxBundle, { digest, manifestVersion: 1 });
+    assert.ok(!harness.events.some((event) => event.startsWith("host:pi:start:")));
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
   });
 
   it("rejects resume without a current backup and releases the lease", async () => {

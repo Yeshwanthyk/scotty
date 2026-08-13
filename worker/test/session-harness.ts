@@ -68,9 +68,9 @@ const seedSandboxBundleObject = (
 };
 
 const makeSandboxBundleBucket = (
-  initialObjects: ReadonlyMap<string, StoredSandboxBundleObject>,
+  objects: Map<string, StoredSandboxBundleObject>,
+  deletedKeys: string[],
 ): R2Bucket => {
-  const objects = new Map(initialObjects);
   const r2Object = (
     key: string,
     object: StoredSandboxBundleObject,
@@ -142,7 +142,11 @@ const makeSandboxBundleBucket = (
       const object = objects.get(String(key));
       return object === undefined ? null : r2Object(String(key), object, true);
     },
-    delete: async () => undefined,
+    delete: async (keys: string | string[]) => {
+      const deleted = typeof keys === "string" ? [keys] : keys;
+      deletedKeys.push(...deleted.map(String));
+      for (const key of deleted) objects.delete(String(key));
+    },
     list: async () => ({ objects: [], truncated: false, delimitedPrefixes: [] }),
   } as never;
 };
@@ -320,6 +324,8 @@ export interface SessionHarness {
   readonly r2DeletedKeys: ReadonlyArray<ReadonlyArray<string>>;
   readonly artifactDeletedKeys: ReadonlyArray<string>;
   readonly artifactKeys: () => ReadonlyArray<string>;
+  readonly sandboxBundleKeys: () => ReadonlyArray<string>;
+  readonly sandboxBundleDeletedKeys: ReadonlyArray<string>;
   readonly exposedPreviewPorts: () => ReadonlyArray<number>;
   readonly stopHatchProcess: (generation: number) => void;
   readonly startRuntime: () => Promise<void>;
@@ -571,6 +577,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
   const artifactDeletedKeys: string[] = [];
+  const sandboxBundleDeletedKeys: string[] = [];
   const exposedPreviewPorts = new Set<number>();
   const artifactObjects = new Map<
     string,
@@ -930,7 +937,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           throw injectedHarnessFailure("injected ambiguous artifact delete failure");
       },
     } as never,
-    SANDBOX_BUNDLE_BUCKET: makeSandboxBundleBucket(sandboxBundleObjectMap),
+    SANDBOX_BUNDLE_BUCKET: makeSandboxBundleBucket(
+      sandboxBundleObjectMap,
+      sandboxBundleDeletedKeys,
+    ),
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
     PI_AUTH_JSON: JSON.stringify({
@@ -1282,6 +1292,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     r2DeletedKeys,
     artifactDeletedKeys,
     artifactKeys: () => [...artifactObjects.keys()],
+    sandboxBundleKeys: () => [...sandboxBundleObjectMap.keys()],
+    sandboxBundleDeletedKeys,
     exposedPreviewPorts: () => [...exposedPreviewPorts],
     stopHatchProcess: (generation) => {
       failures.add("hatchHealth");

@@ -1937,6 +1937,28 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return yield* this.continueCloudflarePiCreateProgram(record, prompt, nonce);
   });
 
+  private readonly materializeAndSeedSandboxProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    credential: StoredCredential,
+    options?: { readonly initialPrompt?: string },
+  ) {
+    const containerAuth = yield* ContainerAuth;
+    const materializer = yield* SandboxBundleMaterializer;
+    const materialized = yield* materializer.materialize({
+      sessionId: record.id,
+      digest: record.sandboxBundle?.digest ?? null,
+    });
+    const seedOptions = {
+      ...(options?.initialPrompt === undefined ? {} : { initialPrompt: options.initialPrompt }),
+      extraSkills: materialized.extraSkills,
+      extraPackages: materialized.extraPackages,
+      bundleRoot: materialized.bundleRoot,
+    };
+    yield* containerAuth.seed(record.id, credential, seedOptions);
+    yield* containerAuth.preflight(record.id, credential, seedOptions);
+  });
+
   private readonly continueCloudflarePiCreateProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     record: SessionRecord,
@@ -1947,19 +1969,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const containerAuth = yield* ContainerAuth;
     const piPhase = Effect.gen({ self: this }, function* () {
       const credential = yield* vault.require;
-      const materializer = yield* SandboxBundleMaterializer;
-      const materialized = yield* materializer.materialize({
-        sessionId: record.id,
-        digest: record.sandboxBundle?.digest ?? null,
-      });
-      const seedOptions = {
-        initialPrompt: prompt,
-        extraSkills: materialized.extraSkills,
-        extraPackages: materialized.extraPackages,
-        bundleRoot: materialized.bundleRoot,
-      };
-      yield* containerAuth.seed(record.id, credential, seedOptions);
-      yield* containerAuth.preflight(record.id, credential, seedOptions);
+      yield* this.materializeAndSeedSandboxProgram(record, credential, { initialPrompt: prompt });
       yield* containerAuth.ensurePiSession(record.id, credential);
       const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
       return yield* this.updateForOperationProgram(nonce, (current) => ({
@@ -2397,7 +2407,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* hostEffect("schedule", () => this.scheduleHardCap(hardCapAt));
         yield* backups.restore(backup);
         const credential = yield* vault.require;
-        yield* containerAuth.seed(record.id, credential);
+        yield* this.materializeAndSeedSandboxProgram(record, credential);
         yield* this.restorePiAndHatchProgram(
           operation.nonce,
           containerAuth.ensurePiSession(record.id, credential),
