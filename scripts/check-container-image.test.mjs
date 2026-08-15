@@ -144,7 +144,7 @@ describe("final container image gate", () => {
     assert.ok(args.includes(`type=gha,scope=${CONTAINER_IMAGE_CACHE_SCOPE}`));
   });
 
-  it("is invoked from PR CI beside the smaller CLI-stage gate", () => {
+  it("keeps the explicit full-image command available without running it in PR CI", () => {
     const pkg = JSON.parse(read("package.json"));
     const ci = read(".github/workflows/ci.yml");
 
@@ -153,10 +153,8 @@ describe("final container image gate", () => {
     assert.doesNotMatch(pkg.scripts.check, /check:container-image/u);
     assert.doesNotMatch(pkg.scripts.check, /check:cli-clean-room/u);
     assert.match(ci, /npm run check:cli-clean-room/u);
-    assert.match(ci, /npm run check:container-image/u);
     assert.match(ci, /cli-clean-room:/u);
-    assert.match(ci, /container-image:/u);
-    assert.match(ci, /timeout-minutes: 90/u);
-    assert.doesNotMatch(ci, /needs:\s*cli-clean-room/u);
+    assert.doesNotMatch(ci, /container-image:/u);
+    assert.doesNotMatch(ci, /npm run check:container-image/u);
   });
 });
