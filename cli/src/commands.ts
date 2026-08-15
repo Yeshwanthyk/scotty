@@ -24,6 +24,9 @@ import {
   decodeOperationResponse,
   decodePiAuthReseedResponse,
   decodePiAuthStatusResponse,
+  decodeRepositoriesResponse,
+  decodeRepositoryRemovalResponse,
+  decodeRepositoryResponse,
   decodeRunnerRegistrationResponse,
   decodeRunnerRemovalResponse,
   decodeRunnerStatusesResponse,
@@ -1155,6 +1158,89 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ]),
   );
 
+  const repoAdd = Command.make(
+    "add",
+    {
+      repo: Argument.string("repo").pipe(
+        Argument.withDescription("GitHub repository as OWNER/NAME"),
+      ),
+    },
+    ({ repo }) =>
+      Effect.gen(function* () {
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (!isRepositoryIdentity(repo)) return yield* usage("Repository must be OWNER/NAME");
+        const auth = yield* credentials(options);
+        const decoded = decodeRepositoryResponse(
+          yield* requestJson(auth, "/api/repos", {
+            method: "POST",
+            body: JSON.stringify({ repo }),
+          }),
+        );
+        if (Option.isNone(decoded))
+          return yield* invalidResponse("Server returned an invalid repository registration");
+        if (autoJson) outputJson(runtime.stdout, decoded.value);
+        else runtime.stdout(`Added ${decoded.value.repo} (${decoded.value.defaultBranch}).\n`);
+      }),
+  ).pipe(Command.withDescription("Verify and register a GitHub repository"));
+
+  const repoList = Command.make("list", {}, () =>
+    Effect.gen(function* () {
+      const { autoJson, options, runtime } = yield* commandContext();
+      const auth = yield* credentials(options);
+      const decoded = decodeRepositoriesResponse(yield* requestJson(auth, "/api/repos"));
+      if (Option.isNone(decoded))
+        return yield* invalidResponse("Server returned an invalid repository list");
+      if (autoJson) outputJson(runtime.stdout, decoded.value);
+      else if (decoded.value.length === 0) runtime.stdout("No repositories.\n");
+      else
+        runtime.stdout(
+          `${decoded.value
+            .map(
+              (entry) =>
+                `${entry.repo}\t${entry.defaultBranch}\t${entry.addedAt}\t${entry.lastUsedAt}`,
+            )
+            .join("\n")}\n`,
+        );
+    }),
+  ).pipe(Command.withAlias("ls"), Command.withDescription("List registered repositories"));
+
+  const repoRemove = Command.make(
+    "remove",
+    {
+      repo: Argument.string("repo").pipe(
+        Argument.withDescription("Registered repository as OWNER/NAME"),
+      ),
+    },
+    ({ repo }) =>
+      Effect.gen(function* () {
+        const { autoJson, options, runtime } = yield* commandContext();
+        if (!isRepositoryIdentity(repo)) return yield* usage("Repository must be OWNER/NAME");
+        const auth = yield* credentials(options);
+        const [owner, name] = repo.split("/");
+        const decoded = decodeRepositoryRemovalResponse(
+          yield* requestJson(
+            auth,
+            `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+            { method: "DELETE" },
+          ),
+        );
+        if (Option.isNone(decoded))
+          return yield* invalidResponse("Server returned an invalid repository removal result");
+        if (autoJson) outputJson(runtime.stdout, decoded.value);
+        else
+          runtime.stdout(
+            decoded.value.removed
+              ? `Removed ${decoded.value.repo}.\n`
+              : `Repository ${decoded.value.repo} was not registered.\n`,
+          );
+      }),
+  ).pipe(Command.withDescription("Remove a repository from the catalogue"));
+
+  const repo = Command.make("repo").pipe(
+    Command.withDescription("Manage registered GitHub repositories"),
+    Command.withSubcommands([repoAdd, repoList, repoRemove]),
+  );
+
   const list = Command.make("ls", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
@@ -2137,6 +2223,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       deployInstallationCommand,
       upgrade,
       uninstall,
+      repo,
       beam,
       list,
       inspect,

@@ -97,6 +97,14 @@ describe("Effect command tree", () => {
         assert.include(runner.stdout.join(""), "remove");
         assert.strictEqual(runner.stderr.join(""), "");
 
+        const repo = run(["repo", "--help"]);
+        assert.strictEqual(yield* repo.effect, EXIT.OK);
+        assert.include(repo.stdout.join(""), "scotty repo <subcommand> [flags]");
+        assert.include(repo.stdout.join(""), "add");
+        assert.include(repo.stdout.join(""), "list");
+        assert.include(repo.stdout.join(""), "remove");
+        assert.strictEqual(repo.stderr.join(""), "");
+
         const auth = run(["auth", "--help"]);
         assert.strictEqual(yield* auth.effect, EXIT.OK);
         assert.include(auth.stdout.join(""), "status");
@@ -210,6 +218,106 @@ describe("Effect command tree", () => {
           },
         ],
       );
+    }),
+  );
+
+  it.effect("adds, lists, and removes repositories in text and JSON modes", () =>
+    Effect.gen(function* () {
+      const entry = {
+        repo: "owner/project",
+        defaultBranch: "main",
+        addedAt: "2026-08-15T12:00:00.000Z",
+        lastUsedAt: "2026-08-15T12:00:01.000Z",
+      };
+      const requests: Request[] = [];
+      const bodies: unknown[] = [];
+      const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        if (request.method === "POST") bodies.push(JSON.parse(await request.clone().text()));
+        if (request.method === "POST") return Response.json(entry);
+        if (request.method === "DELETE")
+          return Response.json({ repo: entry.repo, removed: true, forgotten: true });
+        return Response.json([entry]);
+      };
+      const shared = {
+        env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root-secret" },
+        fetch,
+      };
+
+      const add = run(["repo", "add", entry.repo], { ...shared, stdoutIsTTY: true });
+      assert.strictEqual(yield* add.effect, EXIT.OK);
+      assert.strictEqual(add.stdout.join(""), `Added ${entry.repo} (main).\n`);
+
+      const listed = run(["--json", "repo", "list"], shared);
+      assert.strictEqual(yield* listed.effect, EXIT.OK);
+      assert.deepStrictEqual(JSON.parse(listed.stdout.join("")), [entry]);
+
+      const removed = run(["repo", "remove", entry.repo], {
+        ...shared,
+        stdoutIsTTY: true,
+      });
+      assert.strictEqual(yield* removed.effect, EXIT.OK);
+      assert.strictEqual(removed.stdout.join(""), `Removed ${entry.repo}.\n`);
+
+      const removedJson = run(["--json", "repo", "remove", entry.repo], shared);
+      assert.strictEqual(yield* removedJson.effect, EXIT.OK);
+      assert.deepStrictEqual(JSON.parse(removedJson.stdout.join("")), {
+        repo: entry.repo,
+        removed: true,
+        forgotten: true,
+      });
+      assert.deepStrictEqual(
+        requests.map((request) => ({
+          method: request.method,
+          pathname: new URL(request.url).pathname,
+          authorization: request.headers.get("authorization"),
+        })),
+        [
+          { method: "POST", pathname: "/api/repos", authorization: "Bearer root-secret" },
+          { method: "GET", pathname: "/api/repos", authorization: "Bearer root-secret" },
+          {
+            method: "DELETE",
+            pathname: "/api/repos/owner/project",
+            authorization: "Bearer root-secret",
+          },
+          {
+            method: "DELETE",
+            pathname: "/api/repos/owner/project",
+            authorization: "Bearer root-secret",
+          },
+        ],
+      );
+      assert.deepStrictEqual(bodies, [{ repo: entry.repo }]);
+    }),
+  );
+
+  it.effect("rejects invalid repository grammar and malformed server responses", () =>
+    Effect.gen(function* () {
+      const invalid = run(["repo", "add", "../project"]);
+      const invalidError = failure(yield* Effect.result(invalid.effect));
+      assert.strictEqual(invalidError.code, "bad_usage");
+      assert.strictEqual(invalidError.message, "Repository must be OWNER/NAME");
+
+      const malformed = run(["--json", "repo", "list"], {
+        env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root-secret" },
+        fetch: async () => Response.json({ repos: [] }),
+      });
+      const malformedError = failure(yield* Effect.result(malformed.effect));
+      assert.strictEqual(malformedError.code, "invalid_response");
+      assert.strictEqual(malformedError.exitCode, EXIT.GENERIC);
+
+      const failed = run(["repo", "add", "owner/project"], {
+        env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root-secret" },
+        fetch: async () =>
+          Response.json(
+            { error: { code: "not_found", message: "GitHub repository was not found" } },
+            { status: 404 },
+          ),
+      });
+      const failedError = failure(yield* Effect.result(failed.effect));
+      assert.strictEqual(failedError.code, "not_found");
+      assert.strictEqual(failedError.exitCode, EXIT.NOT_FOUND);
     }),
   );
 

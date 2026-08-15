@@ -6,6 +6,7 @@ import {
 import type { RuntimeContext } from "alchemy";
 import { Effect } from "effect";
 import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
+import type { RepositoryRegistryEntry } from "../../protocol/repository";
 import {
   InstallationPiAuthStore,
   type InstallationPiAuthFailure,
@@ -20,11 +21,20 @@ import {
   durableObjectSandboxConfigAuthorityStorage,
   sandboxConfigStoreLayer,
 } from "./sandbox-config-store";
+import {
+  InstallationRepoStore,
+  type InstallationRepoFailure,
+  durableObjectInstallationRepoStorage,
+  installationRepoStoreLayer,
+} from "./installation-repo-store";
 
 export const SANDBOX_CONFIG_OBJECT_NAME = "account";
 
 export interface SandboxConfigRpcError {
-  readonly reason: SandboxConfigFailure["reason"] | InstallationPiAuthFailureReason;
+  readonly reason:
+    | SandboxConfigFailure["reason"]
+    | InstallationPiAuthFailureReason
+    | InstallationRepoFailure["reason"];
   readonly message: string;
 }
 
@@ -35,7 +45,10 @@ export type SandboxConfigRpcResult<A> =
 const sandboxConfigRpcError = ({
   reason,
   message,
-}: SandboxConfigFailure | InstallationPiAuthFailure): SandboxConfigRpcError => ({
+}:
+  | SandboxConfigFailure
+  | InstallationPiAuthFailure
+  | InstallationRepoFailure): SandboxConfigRpcError => ({
   reason,
   message,
 });
@@ -57,6 +70,17 @@ interface ScottySandboxConfigShape extends DurableObjectShape {
   readonly writePiAuth: (
     input: InstallationPiAuthRecord,
   ) => Effect.Effect<SandboxConfigRpcResult<InstallationPiAuthRecord>, never, RuntimeContext>;
+  readonly listRepos: () => Effect.Effect<
+    SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>,
+    never,
+    RuntimeContext
+  >;
+  readonly addRepo: (
+    input: unknown,
+  ) => Effect.Effect<SandboxConfigRpcResult<RepositoryRegistryEntry>, never, RuntimeContext>;
+  readonly removeRepo: (
+    repo: unknown,
+  ) => Effect.Effect<SandboxConfigRpcResult<boolean>, never, RuntimeContext>;
 }
 
 export class ScottySandboxConfig extends DurableObject<
@@ -72,6 +96,9 @@ export default ScottySandboxConfig.make<never>(
     );
     const piAuthLayer = installationPiAuthStoreLayer(
       durableObjectInstallationPiAuthStorage(state.raw.storage),
+    );
+    const repoLayer = installationRepoStoreLayer(
+      durableObjectInstallationRepoStorage(state.raw.storage),
     );
 
     const run = <A>(
@@ -99,6 +126,17 @@ export default ScottySandboxConfig.make<never>(
         }),
       );
 
+    const runRepo = <A>(
+      operation: Effect.Effect<A, InstallationRepoFailure, InstallationRepoStore>,
+    ): Effect.Effect<SandboxConfigRpcResult<A>, never, RuntimeContext> =>
+      operation.pipe(
+        Effect.provide(repoLayer),
+        Effect.match({
+          onFailure: (error) => ({ ok: false as const, error: sandboxConfigRpcError(error) }),
+          onSuccess: (value) => ({ ok: true as const, value }),
+        }),
+      );
+
     return Effect.succeed({
       status: () => run(Effect.flatMap(SandboxConfigStore, (store) => store.status())),
       activate: (input: SandboxActivateInput) =>
@@ -106,6 +144,11 @@ export default ScottySandboxConfig.make<never>(
       piAuth: () => runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.read)),
       writePiAuth: (input: InstallationPiAuthRecord) =>
         runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.write(input))),
+      listRepos: () => runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.list)),
+      addRepo: (input: unknown) =>
+        runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.upsert(input))),
+      removeRepo: (repo: unknown) =>
+        runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.remove(repo))),
     });
   }),
 );
@@ -119,6 +162,9 @@ export type ScottySandboxConfigStub = {
   readonly writePiAuth: (
     input: InstallationPiAuthRecord,
   ) => Promise<SandboxConfigRpcResult<InstallationPiAuthRecord>>;
+  readonly listRepos: () => Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>>;
+  readonly addRepo: (input: unknown) => Promise<SandboxConfigRpcResult<RepositoryRegistryEntry>>;
+  readonly removeRepo: (repo: unknown) => Promise<SandboxConfigRpcResult<boolean>>;
 };
 
 export interface ScottySandboxConfigNamespace {

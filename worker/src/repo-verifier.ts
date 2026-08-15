@@ -1,43 +1,11 @@
 import { Context, Data, Effect, Layer, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { isRepositoryIdentity } from "../../protocol/repository";
+import { isRepositoryIdentity, RepositoryDefaultBranchSchema } from "../../protocol/repository";
 
 const GITHUB_API_ORIGIN = "https://api.github.com";
 const GITHUB_API_VERSION = "2022-11-28";
-const INVALID_DEFAULT_BRANCH_CHARACTERS = new Set(["~", "^", ":", "?", "*", "[", "\\"]);
-
-const isValidDefaultBranch = (branch: string): boolean => {
-  const hasInvalidCharacter = [...branch].some((character) => {
-    const codePoint = character.codePointAt(0);
-    return (
-      (codePoint !== undefined && (codePoint <= 0x20 || codePoint === 0x7f)) ||
-      INVALID_DEFAULT_BRANCH_CHARACTERS.has(character)
-    );
-  });
-  if (
-    branch.length === 0 ||
-    branch.trim() !== branch ||
-    branch.startsWith("-") ||
-    branch === "@" ||
-    branch.endsWith(".") ||
-    branch.includes("..") ||
-    branch.includes("@{") ||
-    hasInvalidCharacter
-  )
-    return false;
-  return branch
-    .split("/")
-    .every(
-      (segment) => segment.length > 0 && !segment.startsWith(".") && !segment.endsWith(".lock"),
-    );
-};
-
 const GitHubRepositorySchema = Schema.Struct({
-  default_branch: Schema.String.check(
-    Schema.makeFilter(isValidDefaultBranch, {
-      expected: "a valid non-empty GitHub default branch",
-    }),
-  ),
+  default_branch: RepositoryDefaultBranchSchema,
 });
 const decodeGitHubRepository = Schema.decodeUnknownEffect(GitHubRepositorySchema, {
   onExcessProperty: "ignore",

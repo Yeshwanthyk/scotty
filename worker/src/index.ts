@@ -39,6 +39,7 @@ import {
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
+import { FetchHttpClient } from "effect/unstable/http";
 import { sha256Hex } from "./digest";
 import {
   authRegistry,
@@ -66,10 +67,16 @@ import {
 import {
   forgetRepoProjection,
   kvRepoProjectionStorage,
-  listRepoProjections,
+  projectRepoEntryBestEffort,
+  rebuildRepoProjection,
+  repoProjectionMatches,
   repoProjectionLayer,
-  trackRepoBestEffort,
 } from "./repo-projection";
+import {
+  decodeRepositoryRegistryRequest,
+  type RepositoryRegistryEntry,
+} from "../../protocol/repository";
+import { RepoVerifier, repoVerifierLayer } from "./repo-verifier";
 import {
   kvStatsProjectionStorage,
   readStats,
@@ -614,26 +621,46 @@ app.post("/api/sessions", async (c) => {
 
 app.get("/api/repos", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
-  const result = await Effect.runPromise(
-    listRepoProjections.pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped, Effect.result),
-  );
-  return c.json(
-    Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (repositories) => repositories,
+  const repositories = unwrapSandboxConfigRpc(await sandboxConfig(c.env).listRepos());
+  await repairRepoProjection(c.env, repositories);
+  return c.json(repositories);
+});
+
+app.post("/api/repos", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  requireJsonContentType(c.req.raw);
+  const decoded = decodeRepositoryRegistryRequest(await readJsonBody(c.req.raw));
+  if (Option.isNone(decoded)) throw badRequest("repo must be OWNER/NAME");
+
+  const verified = await verifyRepository(c.env, decoded.value.repo);
+  if (!verified.exists)
+    throw new ScottyError("not_found", `GitHub repository ${decoded.value.repo} was not found`, {
+      httpStatus: 404,
+      exitCode: 3,
+    });
+
+  const entry = unwrapSandboxConfigRpc(
+    await sandboxConfig(c.env).addRepo({
+      repo: decoded.value.repo,
+      defaultBranch: verified.defaultBranch,
     }),
   );
+  await Effect.runPromise(
+    projectRepoEntryBestEffort(entry).pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped),
+  );
+  return c.json(entry);
 });
 
 app.delete("/api/repos/:owner/:name", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const repo = parseRepo(`${c.req.param("owner")}/${c.req.param("name")}`);
+  const removed = unwrapSandboxConfigRpc(await sandboxConfig(c.env).removeRepo(repo));
   await Effect.runPromise(
     forgetRepoProjection(repo).pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped),
   );
-  return c.json({ repo, forgotten: true });
+  // `forgotten` is the legacy browser acknowledgement; keep it while exposing
+  // the authority's actual no-op/removal result to newer clients.
+  return c.json({ repo, removed, forgotten: true });
 });
 
 app.get("/api/sessions", async (c) => {
@@ -1373,13 +1400,60 @@ async function createTrackedSession(
         createdAt: session.createdAt,
       }).pipe(Effect.provide(projectionLayers(env)), Effect.scoped),
     );
-  await Effect.runPromise(
-    trackRepoBestEffort(session.repo, session.defaultBranch).pipe(
-      Effect.provide(projectionLayers(env)),
-      Effect.scoped,
+  if (session.status !== "failed" && session.status !== "gone") {
+    const entry = unwrapSandboxConfigRpc(
+      await sandboxConfig(env).addRepo({
+        repo: session.repo,
+        defaultBranch: session.defaultBranch,
+      }),
+    );
+    await Effect.runPromise(
+      projectRepoEntryBestEffort(entry).pipe(Effect.provide(projectionLayers(env)), Effect.scoped),
+    );
+  }
+  return { id, session };
+}
+
+async function verifyRepository(
+  env: Bindings,
+  repo: string,
+): Promise<{ readonly exists: true; readonly defaultBranch: string } | { readonly exists: false }> {
+  const result = await Effect.runPromise(
+    Effect.flatMap(RepoVerifier, (verifier) => verifier.verify(repo, env.GH_TOKEN)).pipe(
+      Effect.provide(repoVerifierLayer.pipe(Layer.provide(FetchHttpClient.layer))),
+      Effect.result,
     ),
   );
-  return { id, session };
+  if (Result.isFailure(result)) {
+    console.error("Repository verification failed", { reason: result.failure.reason });
+    throw new ScottyError("upstream", "Repository verification failed", {
+      httpStatus: 502,
+      exitCode: 1,
+      hint: "GitHub repository verification did not complete; retry the request",
+    });
+  }
+  return result.success;
+}
+
+async function repairRepoProjection(
+  env: Bindings,
+  repositories: ReadonlyArray<RepositoryRegistryEntry>,
+): Promise<void> {
+  const matches = await Effect.runPromise(
+    repoProjectionMatches(repositories).pipe(
+      Effect.provide(projectionLayers(env)),
+      Effect.scoped,
+      Effect.result,
+    ),
+  );
+  if (Result.isSuccess(matches) && matches.success) return;
+  await Effect.runPromise(
+    rebuildRepoProjection(repositories).pipe(
+      Effect.provide(projectionLayers(env)),
+      Effect.scoped,
+      Effect.ignore,
+    ),
+  );
 }
 
 function projectionLayers(env: Bindings) {

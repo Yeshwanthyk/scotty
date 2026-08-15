@@ -1,5 +1,9 @@
 import { Clock, Context, Data, DateTime, Effect, Layer, Option } from "effect";
 import {
+  compareRepositoryRegistryEntries,
+  type RepositoryRegistryEntry,
+} from "../../protocol/repository";
+import {
   decodeJsonValue,
   decodeRepoProjection,
   REPO_KV_PREFIX,
@@ -32,6 +36,15 @@ interface RepoProjectionShape {
     repo: string,
     defaultBranch: string,
   ) => Effect.Effect<void, RepoProjectionFailure>;
+  readonly upsertEntry: (
+    entry: RepositoryRegistryEntry,
+  ) => Effect.Effect<void, RepoProjectionFailure>;
+  readonly rebuild: (
+    entries: ReadonlyArray<RepositoryRegistryEntry>,
+  ) => Effect.Effect<void, RepoProjectionFailure>;
+  readonly matches: (
+    entries: ReadonlyArray<RepositoryRegistryEntry>,
+  ) => Effect.Effect<boolean, RepoProjectionFailure>;
   readonly list: Effect.Effect<ReadonlyArray<RepoView>, RepoProjectionFailure>;
 }
 
@@ -60,6 +73,21 @@ export const trackRepoBestEffort = (
   Effect.flatMap(RepoProjection, (projection) => projection.upsert(repo, defaultBranch)).pipe(
     Effect.ignore,
   );
+
+export const projectRepoEntryBestEffort = (
+  entry: RepositoryRegistryEntry,
+): Effect.Effect<void, never, RepoProjection> =>
+  Effect.flatMap(RepoProjection, (projection) => projection.upsertEntry(entry)).pipe(Effect.ignore);
+
+export const rebuildRepoProjection = (
+  entries: ReadonlyArray<RepositoryRegistryEntry>,
+): Effect.Effect<void, RepoProjectionFailure, RepoProjection> =>
+  Effect.flatMap(RepoProjection, (projection) => projection.rebuild(entries));
+
+export const repoProjectionMatches = (
+  entries: ReadonlyArray<RepositoryRegistryEntry>,
+): Effect.Effect<boolean, RepoProjectionFailure, RepoProjection> =>
+  Effect.flatMap(RepoProjection, (projection) => projection.matches(entries));
 
 export const listRepoProjections: Effect.Effect<
   ReadonlyArray<RepoView>,
@@ -119,11 +147,90 @@ const makeRepoProjection = (storage: RepoProjectionStorage): RepoProjectionShape
         catch: () => failure("put"),
       });
     }),
+    upsertEntry: Effect.fnUntraced(function* (entry) {
+      const projection: RepoProjectionRecord = {
+        version: 1,
+        ...entry,
+      };
+      yield* Effect.tryPromise({
+        try: () => storage.put(`${REPO_KV_PREFIX}${entry.repo}`, JSON.stringify(projection)),
+        catch: () => failure("put"),
+      });
+    }),
+    rebuild: Effect.fnUntraced(function* (entries) {
+      const keys: Array<string> = [];
+      let cursor: string | undefined;
+      do {
+        const page = yield* Effect.tryPromise({
+          try: () => storage.list(cursor),
+          catch: () => failure("list"),
+        });
+        for (const key of page.keys) if (key.startsWith(REPO_KV_PREFIX)) keys.push(key);
+        cursor = page.cursor;
+      } while (cursor !== undefined);
+
+      yield* Effect.forEach(
+        keys,
+        (key) =>
+          Effect.tryPromise({
+            try: () => storage.delete(key),
+            catch: () => failure("delete"),
+          }),
+        { concurrency: "unbounded", discard: true },
+      );
+
+      yield* Effect.forEach(
+        [...entries].sort(compareRepositoryRegistryEntries),
+        (entry) => {
+          const projection: RepoProjectionRecord = { version: 1, ...entry };
+          return Effect.tryPromise({
+            try: () => storage.put(`${REPO_KV_PREFIX}${entry.repo}`, JSON.stringify(projection)),
+            catch: () => failure("put"),
+          });
+        },
+        { concurrency: "unbounded", discard: true },
+      );
+    }),
+    matches: Effect.fnUntraced(function* (entries) {
+      const expected = new Map(entries.map((entry) => [entry.repo, entry]));
+      const keys: Array<string> = [];
+      let cursor: string | undefined;
+      do {
+        const page = yield* Effect.tryPromise({
+          try: () => storage.list(cursor),
+          catch: () => failure("list"),
+        });
+        for (const key of page.keys) {
+          if (!key.startsWith(REPO_KV_PREFIX)) continue;
+          keys.push(key);
+        }
+        cursor = page.cursor;
+      } while (cursor !== undefined);
+      if (keys.length !== entries.length) return false;
+      for (const key of keys) {
+        const expectedEntry = expected.get(key.slice(REPO_KV_PREFIX.length));
+        if (expectedEntry === undefined) return false;
+        const value = yield* Effect.tryPromise({
+          try: () => storage.get(key),
+          catch: () => failure("get"),
+        });
+        const decoded = decodeProjection(key, value);
+        if (
+          decoded === undefined ||
+          decoded.repo !== expectedEntry.repo ||
+          decoded.defaultBranch !== expectedEntry.defaultBranch ||
+          decoded.lastUsedAt !== expectedEntry.lastUsedAt ||
+          decoded.addedAt !== expectedEntry.addedAt
+        )
+          return false;
+      }
+      return true;
+    }),
     list: Effect.gen(function* () {
       const projections = yield* listProjectionValues({
         storage,
         decode: decodeProjection,
-        compare: (left, right) => Date.parse(right.lastUsedAt) - Date.parse(left.lastUsedAt),
+        compare: compareRepositoryRegistryEntries,
         onGetError: () => failure("get"),
         onListError: () => failure("list"),
       });
@@ -150,5 +257,6 @@ const decodeProjection = (key: string, value: unknown): RepoProjectionRecord | u
 const toRepoView = (projection: RepoProjectionRecord): RepoView => ({
   repo: projection.repo,
   defaultBranch: projection.defaultBranch,
+  ...(projection.addedAt === undefined ? {} : { addedAt: projection.addedAt }),
   lastUsedAt: projection.lastUsedAt,
 });

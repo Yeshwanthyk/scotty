@@ -1,6 +1,10 @@
 import { Effect, Option, Schema } from "effect";
 import { PiAuthDigestSchema, PiAuthUpdatedAtSchema } from "../../protocol/pi-auth";
 import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
+import {
+  RepositoryRegistryEntrySchema,
+  RepositoryRegistryRemovalResponseSchema,
+} from "../../protocol/repository";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
@@ -339,6 +343,10 @@ export const RunnerRemovalResponseSchema = Schema.Struct({
   status: Schema.Literal("removed"),
 });
 
+export const RepositoryResponseSchema = RepositoryRegistryEntrySchema;
+export const RepositoriesResponseSchema = Schema.Array(RepositoryResponseSchema);
+export const RepositoryRemovalResponseSchema = RepositoryRegistryRemovalResponseSchema;
+
 export type SessionResponse = typeof SessionResponseSchema.Type;
 
 export const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
@@ -387,6 +395,16 @@ export const decodeRunnerStatusesResponse = Schema.decodeUnknownOption(
   RunnerStatusesResponseSchema,
 );
 export const decodeRunnerRemovalResponse = Schema.decodeUnknownOption(RunnerRemovalResponseSchema);
+export const decodeRepositoryResponse = Schema.decodeUnknownOption(RepositoryResponseSchema, {
+  onExcessProperty: "error",
+});
+export const decodeRepositoriesResponse = Schema.decodeUnknownOption(RepositoriesResponseSchema, {
+  onExcessProperty: "error",
+});
+export const decodeRepositoryRemovalResponse = Schema.decodeUnknownOption(
+  RepositoryRemovalResponseSchema,
+  { onExcessProperty: "error" },
+);
 export const decodeString = Schema.decodeUnknownOption(Schema.String);
 export const decodeTrue = Schema.decodeUnknownOption(Schema.Literal(true));
 export const decodeNonEmptyString = Schema.decodeUnknownOption(Schema.NonEmptyString);

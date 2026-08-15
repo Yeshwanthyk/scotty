@@ -2,7 +2,12 @@ import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sand
 import { Effect, Option, Predicate, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
 import { InstallationPiAuthRecordSchema, PiCredentialSchema } from "../../protocol/pi-auth";
-import { isRepositoryIdentity } from "../../protocol/repository";
+import {
+  RepositoryDefaultBranchSchema,
+  RepositoryIdentitySchema,
+  RepositoryTimestampSchema,
+  isRepositoryIdentity,
+} from "../../protocol/repository";
 import { SandboxDigestSchema } from "./sandbox-config-contracts";
 
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
@@ -27,9 +32,7 @@ export const ExecutionBindingSchema = Schema.Union([
 export type ExecutionBinding = typeof ExecutionBindingSchema.Type;
 
 const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/));
-const RepositoryIdentitySchema = Schema.String.check(
-  Schema.makeFilter(isRepositoryIdentity, { expected: "a safe owner/name repository identity" }),
-);
+const SessionRepositoryIdentitySchema = RepositoryIdentitySchema;
 const ShortHexIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u));
 const IdempotencyKeySchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{16,128}$/u));
 const decodeSessionId = Schema.decodeUnknownOption(SessionIdSchema);
@@ -236,7 +239,7 @@ export type SessionView = typeof SessionViewSchema.Type;
 
 export const WorkspaceCreationMarkerSchema = Schema.Struct({
   sessionId: SessionIdSchema,
-  repository: RepositoryIdentitySchema,
+  repository: SessionRepositoryIdentitySchema,
   provider: ProviderSchema,
   createdAt: Schema.String,
 });
@@ -271,18 +274,20 @@ export const decodeStatsResponse = Schema.decodeUnknownOption(StatsResponseSchem
 
 export const RepoProjectionSchema = Schema.Struct({
   version: Schema.Literal(1),
-  repo: Schema.String,
-  defaultBranch: Schema.String,
-  lastUsedAt: Schema.String,
+  repo: RepositoryIdentitySchema,
+  defaultBranch: RepositoryDefaultBranchSchema,
+  addedAt: Schema.optionalKey(RepositoryTimestampSchema),
+  lastUsedAt: RepositoryTimestampSchema,
 });
 export type RepoProjection = typeof RepoProjectionSchema.Type;
 
 export const decodeRepoProjection = Schema.decodeUnknownOption(RepoProjectionSchema);
 
 export const RepoViewSchema = Schema.Struct({
-  repo: Schema.String,
-  defaultBranch: Schema.String,
-  lastUsedAt: Schema.String,
+  repo: RepositoryIdentitySchema,
+  defaultBranch: RepositoryDefaultBranchSchema,
+  addedAt: Schema.optionalKey(RepositoryTimestampSchema),
+  lastUsedAt: RepositoryTimestampSchema,
 });
 export type RepoView = typeof RepoViewSchema.Type;
 

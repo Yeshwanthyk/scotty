@@ -867,6 +867,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
             };
           return { ok: true, value: record };
         },
+        listRepos: async () => ({ ok: true, value: [] }),
+        addRepo: async () => ({
+          ok: true,
+          value: {
+            repo: "owner/project",
+            defaultBranch: "main",
+            addedAt: "2026-08-15T12:00:00.000Z",
+            lastUsedAt: "2026-08-15T12:00:00.000Z",
+          },
+        }),
+        removeRepo: async () => ({ ok: true, value: true }),
       }),
     },
     SESSIONS: sessions,
