@@ -14,8 +14,10 @@
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/apply-dependency-patches.mjs",
-    "check": "npm run check:effect-version && npm run check:pi-packages && npm run check:patches && npm run check:tui && npm run check:desktop && npm run fmt:check && npm run lint && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
+    "check": "npm run check:effect-version && npm run check:pi-packages && npm run check:patches && npm run check:wrangler-bindings && npm run check:cli-compiled && npm run check:tui && npm run check:desktop && npm run fmt:check && npm run lint && npm run typecheck && npm run test:all && node e2e/scripts/scan.mjs",
+    "check:cli-compiled": "node scripts/check-cli-compiled.mjs",
     "check:patches": "node scripts/apply-dependency-patches.mjs --check",
+    "check:wrangler-bindings": "node scripts/check-wrangler-bindings.mjs",
     "check:cli-clean-room": "node scripts/check-cli-clean-room.mjs",
     "check:container-image": "node scripts/check-container-image.mjs",
     "check:effect-version": "node e2e/scripts/check-effect-version.mjs",

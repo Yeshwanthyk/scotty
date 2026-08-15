@@ -11,3 +11,5 @@
 !worker/package.json
 !worker/container/
 !worker/container/**
+**/node_modules
+**/.git

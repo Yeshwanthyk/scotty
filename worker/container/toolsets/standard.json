@@ -178,15 +178,6 @@
       "probe": ["pkg-config", "--version"]
     },
     {
-      "name": "Codex",
-      "category": "scotty",
-      "commands": ["codex"],
-      "source": "npm",
-      "versionPolicy": "pinned",
-      "expectedVersion": "0.144.6",
-      "probe": ["codex", "--version"]
-    },
-    {
       "name": "Pi",
       "category": "scotty",
       "commands": ["pi"],

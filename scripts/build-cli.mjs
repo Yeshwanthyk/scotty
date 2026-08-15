@@ -1,7 +1,7 @@
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEPLOYMENT_INPUTS } from "../cli/src/deployment-inputs.ts";
+import { DEPLOYMENT_INPUTS, listPackagedFiles } from "../cli/src/deployment-packaging.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const buildDirectory = join(root, ".scotty-build");
@@ -10,24 +10,11 @@ const entryPath = join(buildDirectory, "standalone.ts");
 const output = resolve(process.argv[2] ?? join(root, "dist", "scotty"));
 const compileTarget = process.env.SCOTTY_COMPILE_TARGET;
 
-async function collect(path, files) {
-  const entries = await readdir(path, { withFileTypes: true });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    const child = join(path, entry.name);
-    if (entry.isDirectory()) await collect(child, files);
-    else if (entry.isFile()) files[relative(root, child).replaceAll("\\", "/")] = Bun.file(child);
-  }
-}
-
 await rm(buildDirectory, { recursive: true, force: true });
 await mkdir(buildDirectory, { recursive: true });
 const files = {};
-for (const input of DEPLOYMENT_INPUTS) {
-  const path = join(root, input);
-  const entry = Bun.file(path);
-  if (await entry.exists()) files[input] = entry;
-  else await collect(path, files);
+for (const relativePath of await listPackagedFiles(root, DEPLOYMENT_INPUTS)) {
+  files[relativePath] = Bun.file(join(root, relativePath));
 }
 await Bun.Archive.write(archivePath, files, { compress: "gzip", level: 9 });
 

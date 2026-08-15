@@ -1186,6 +1186,121 @@ describe("configuration and transport", () => {
     expect(h.error().error.message).toBe("deploy requires --yes when the plan contains changes");
   });
 
+  test("init create failures keep the public envelope and persist a redacted diagnostic", async () => {
+    const home = await temporaryDirectory();
+    const secret = "ghp_syntheticInitSecretTokenValue";
+    const account = "0123456789abcdef0123456789abcdef";
+    const h = harness({
+      home,
+      env: { SCOTTY_TOKEN: secret, CLOUDFLARE_API_TOKEN: secret },
+      planCreateInstallation: async () => ({
+        installationName: "home",
+        accountId: account,
+        hasExistingResources: false,
+        fingerprint: "create-plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "create" }],
+      }),
+      createInstallation: async () => {
+        throw Object.assign(new Error(`Alchemy failed for ${account} with ${secret}`), {
+          _tag: "InstallationDeploymentError",
+          cause: { message: `nested ${secret}` },
+        });
+      },
+    });
+
+    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    const envelope = h.error();
+    expect(Object.keys(envelope)).toEqual(["error"]);
+    expect(Object.keys(envelope.error).sort()).toEqual(["code", "hint", "message"]);
+    expect(envelope.error).toMatchObject({
+      code: "installation_create_failed",
+      message: "Could not create the Scotty installation",
+    });
+    expect(envelope.error.hint).toMatch(
+      /^Check Cloudflare authentication, Docker, and permissions, then retry scotty init\./u,
+    );
+    expect(envelope.error.hint).toContain(
+      `Diagnostic: ${join(home, ".scotty/diagnostics/init-create.json")}`,
+    );
+    expect(h.stderr.join("")).not.toContain(secret);
+    expect(envelope.error.hint).not.toContain(secret);
+    expect(envelope).not.toHaveProperty("cause");
+    expect(envelope.error).not.toHaveProperty("cause");
+    expect(envelope.error).not.toHaveProperty("diagnostic");
+
+    const diagnosticPath = join(home, ".scotty", "diagnostics", "init-create.json");
+    expect((await stat(diagnosticPath)).mode & 0o777).toBe(0o600);
+    const diagnostic = await readFile(diagnosticPath, "utf8");
+    expect(diagnostic).not.toContain(secret);
+    expect(diagnostic).not.toContain(account);
+    expect(diagnostic).toContain("[redacted-secret]");
+    expect(diagnostic).toContain("[redacted-account-id]");
+    expect(diagnostic).toContain('"operation": "init"');
+    expect(diagnostic).toContain('"phase": "create"');
+    expect(diagnostic).toContain('"installationName": "home"');
+    expect(diagnostic).toContain("Alchemy failed");
+    expect(diagnostic).toContain("nested");
+  });
+
+  test("deploy apply failures keep the public envelope and persist a redacted diagnostic", async () => {
+    const home = await temporaryDirectory();
+    const secret = "synthetic-deploy-environment-secret";
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "0123456789abcdef0123456789abcdef",
+        host: "https://old.example",
+        token: "root-secret",
+      }),
+      { mode: 0o600 },
+    );
+    const h = harness({
+      home,
+      env: { SCOTTY_TOKEN: secret, CLOUDFLARE_API_TOKEN: secret },
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async () => {
+        throw Object.assign(new Error(`image push failed ${secret}`), {
+          _tag: "InstallationDeploymentError",
+          cause: { message: `authorization: Bearer ${secret}` },
+        });
+      },
+    });
+
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    const envelope = h.error();
+    expect(Object.keys(envelope)).toEqual(["error"]);
+    expect(Object.keys(envelope.error).sort()).toEqual(["code", "hint", "message"]);
+    expect(envelope.error).toMatchObject({
+      code: "installation_deploy_failed",
+      message: "Could not deploy the Scotty installation",
+    });
+    expect(envelope.error.hint).toMatch(
+      /^Check Cloudflare authentication and Docker, then retry scotty deploy\./u,
+    );
+    expect(envelope.error.hint).toContain(
+      `Diagnostic: ${join(home, ".scotty/diagnostics/deploy-apply.json")}`,
+    );
+    expect(h.stderr.join("")).not.toContain(secret);
+
+    const diagnosticPath = join(home, ".scotty", "diagnostics", "deploy-apply.json");
+    expect((await stat(diagnosticPath)).mode & 0o777).toBe(0o600);
+    const diagnostic = await readFile(diagnosticPath, "utf8");
+    expect(diagnostic).not.toContain(secret);
+    expect(diagnostic).toContain("[redacted-secret]");
+    expect(diagnostic).toContain('"operation": "deploy"');
+    expect(diagnostic).toContain('"phase": "apply"');
+    expect(diagnostic).toContain("image push failed");
+  });
+
   test("upgrade delegates to the signed updater and returns stable JSON", async () => {
     let request: Parameters<NonNullable<CliDependencies["upgradeCli"]>>[0] | undefined;
     const h = harness({
@@ -3077,6 +3192,8 @@ describe("beam down and sandbox configuration", () => {
     expect(toolNames).not.toContain("duckdb");
     expect(toolNames).not.toContain("agent-browser");
     expect(toolNames).not.toContain("Chromium");
+    expect(toolNames).toContain("Go");
+    expect(toolNames).not.toContain("Codex");
     expect(toolNames).toContain("build-essential");
     expect(toolNames).toContain("pkg-config");
     expect(toolNames).toContain("scotty-browser-test");

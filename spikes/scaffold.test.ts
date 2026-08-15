@@ -46,10 +46,14 @@ describe("pinned Task 4 contracts", () => {
     const dockerignore = await readFile(new URL(".dockerignore", root), "utf8");
 
     expect(dockerfile).toContain("cloudflare/sandbox:0.12.3@sha256:");
-    expect(dockerfile).toContain("ARG CODEX_VERSION=0.144.6");
+    expect(dockerfile).not.toContain("ARG CODEX_VERSION=");
+    expect(dockerfile).toContain("ARG GO_VERSION=1.26.1");
+    expect(dockerfile).not.toContain("@openai/codex");
     expect(dockerfile).toContain("COPY protocol protocol");
     expect(dockerignore).toContain("!protocol/");
     expect(dockerignore).toContain("!protocol/**");
+    expect(dockerignore).toContain("**/node_modules");
+    expect(dockerignore).toContain("**/.git");
     expect(dockerfile).not.toContain("AGENT_BROWSER");
     expect(dockerfile).not.toContain("agent-browser");
     expect(dockerfile).not.toMatch(/(?:TOKEN|SECRET|PASSWORD)=\S+/);

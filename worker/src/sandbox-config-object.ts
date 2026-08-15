@@ -4,7 +4,7 @@ import {
   type DurableObjectShape,
 } from "alchemy/Cloudflare/Workers";
 import type { RuntimeContext } from "alchemy";
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
 import type { SandboxActivateInput, SandboxConfigStatus } from "./sandbox-config-contracts";
 import {
   SandboxConfigStore,
@@ -23,6 +23,11 @@ export interface SandboxConfigRpcError {
 export type SandboxConfigRpcResult<A> =
   | { readonly ok: true; readonly value: A }
   | { readonly ok: false; readonly error: SandboxConfigRpcError };
+
+const sandboxConfigRpcError = ({
+  reason,
+  message,
+}: SandboxConfigFailure): SandboxConfigRpcError => ({ reason, message });
 
 interface ScottySandboxConfigShape extends DurableObjectShape {
   readonly status: () => Effect.Effect<
@@ -52,16 +57,13 @@ export default ScottySandboxConfig.make<never>(
     ): Effect.Effect<SandboxConfigRpcResult<A>, never, RuntimeContext> =>
       operation.pipe(
         Effect.provide(layer),
-        Effect.result,
-        Effect.map(
-          Result.match({
-            onFailure: (error) => ({
-              ok: false as const,
-              error: { reason: error.reason, message: error.message },
-            }),
-            onSuccess: (value) => ({ ok: true as const, value }),
+        Effect.match({
+          onFailure: (error) => ({
+            ok: false as const,
+            error: sandboxConfigRpcError(error),
           }),
-        ),
+          onSuccess: (value) => ({ ok: true as const, value }),
+        }),
       );
 
     return Effect.succeed({

@@ -4,7 +4,7 @@ import {
   type DurableObjectShape,
 } from "alchemy/Cloudflare/Workers";
 import type { RuntimeContext } from "alchemy";
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
 import {
   type IssuedRunnerCredential,
   RunnerRegistry,
@@ -22,6 +22,11 @@ export interface RunnerRegistryRpcError {
 export type RunnerRegistryRpcResult<A> =
   | { readonly ok: true; readonly value: A }
   | { readonly ok: false; readonly error: RunnerRegistryRpcError };
+
+const runnerRegistryRpcError = ({
+  reason,
+  message,
+}: RunnerRegistryFailure): RunnerRegistryRpcError => ({ reason, message });
 
 interface ScottyRunnerRegistryShape extends DurableObjectShape {
   readonly authenticate: (
@@ -60,16 +65,13 @@ export default ScottyRunnerRegistry.make<never>(
     ): Effect.Effect<RunnerRegistryRpcResult<A>, never, RuntimeContext> =>
       operation.pipe(
         Effect.provide(layer),
-        Effect.result,
-        Effect.map(
-          Result.match({
-            onFailure: (error) => ({
-              ok: false as const,
-              error: { reason: error.reason, message: error.message },
-            }),
-            onSuccess: (value) => ({ ok: true as const, value }),
+        Effect.match({
+          onFailure: (error) => ({
+            ok: false as const,
+            error: runnerRegistryRpcError(error),
           }),
-        ),
+          onSuccess: (value) => ({ ok: true as const, value }),
+        }),
       );
 
     return Effect.succeed({
@@ -101,9 +103,7 @@ export type ScottyRunnerRegistryStub = {
     credential: string,
   ) => Promise<RunnerRegistryRpcResult<RunnerRegistrationView>>;
   readonly get: (name: string) => Promise<RunnerRegistryRpcResult<RunnerRegistrationView>>;
-  readonly list: () => Promise<
-    RunnerRegistryRpcResult<ReadonlyArray<RunnerRegistrationView>>
-  >;
+  readonly list: () => Promise<RunnerRegistryRpcResult<ReadonlyArray<RunnerRegistrationView>>>;
   readonly register: (
     name: string,
     replace: boolean,

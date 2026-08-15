@@ -1,6 +1,6 @@
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
 import { Credentials as DistilledCredentials } from "@distilled.cloud/cloudflare/Credentials";
@@ -46,7 +46,8 @@ import {
   DEPLOYMENT_ARCHIVE_NAME,
   DEPLOYMENT_INPUTS,
   isDeploymentArchiveFileName,
-} from "./deployment-inputs.ts";
+  prepareContainerContext,
+} from "./deployment-packaging.mjs";
 import type {
   InstallationApplyRequest,
   InstallationCreateRequest,
@@ -62,7 +63,6 @@ import type {
   InstallationUninstallResult,
 } from "./services.ts";
 
-const CONTAINER_CONTEXT_PATH = ".alchemy/scotty-container-context";
 type WorkerBinding = NonNullable<
   Workers.GetScriptScriptAndVersionSettingResponse["bindings"]
 >[number];
@@ -93,18 +93,6 @@ const embeddedDeploymentArchive = (): Blob | undefined =>
 
 const sourceRoot = (): string => resolve(import.meta.dir, "../..");
 
-const copyInputs = async (
-  root: string,
-  destination: string,
-  inputs: ReadonlyArray<string>,
-): Promise<void> => {
-  for (const input of inputs) {
-    const output = join(destination, input);
-    await mkdir(dirname(output), { recursive: true });
-    await cp(join(root, input), output, { recursive: true });
-  }
-};
-
 const prepareDeploymentRoot = async (): Promise<{
   readonly root: string;
   readonly cleanup: () => Promise<void>;
@@ -118,10 +106,8 @@ const prepareDeploymentRoot = async (): Promise<{
   return { root, cleanup: () => rm(root, { recursive: true, force: true }) };
 };
 
-const prepareContainerContext = async (root: string): Promise<void> => {
-  const context = join(root, CONTAINER_CONTEXT_PATH);
-  await rm(context, { recursive: true, force: true });
-  await copyInputs(root, context, CONTAINER_INPUTS);
+const prepareInstallationContainerContext = async (root: string): Promise<void> => {
+  await prepareContainerContext(root, { inputs: CONTAINER_INPUTS });
 };
 
 const readAdoptionManifest = async (
@@ -598,7 +584,7 @@ export async function planInstallation(
       request.adoptionManifestPath,
       request.installationName,
     );
-    await prepareContainerContext(deployment.root);
+    await prepareInstallationContainerContext(deployment.root);
     return await planWithProfile(request, deployment.root, adoption);
   } finally {
     await deployment.cleanup();
@@ -615,7 +601,7 @@ export async function deployInstallation(
       request.adoptionManifestPath,
       request.installationName,
     );
-    await prepareContainerContext(deployment.root);
+    await prepareInstallationContainerContext(deployment.root);
     return await deployWithProfile(request, deployment.root, adoption);
   } finally {
     await deployment.cleanup();
@@ -628,7 +614,7 @@ export async function planCreateInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
   try {
-    await prepareContainerContext(deployment.root);
+    await prepareInstallationContainerContext(deployment.root);
     return await planWithProfile(request, deployment.root, undefined);
   } finally {
     await deployment.cleanup();
@@ -641,7 +627,7 @@ export async function createInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
   try {
-    await prepareContainerContext(deployment.root);
+    await prepareInstallationContainerContext(deployment.root);
     const deployRequest = {
       installationName: request.installationName,
       profile: request.profile,
@@ -730,7 +716,7 @@ export async function uninstallInstallation(
       request.adoptionManifestPath,
       request.installationName,
     );
-    await prepareContainerContext(deployment.root);
+    await prepareInstallationContainerContext(deployment.root);
     const installation = makeInstallationTopology(
       request.installationName,
       adoption,

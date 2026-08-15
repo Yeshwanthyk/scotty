@@ -8,6 +8,8 @@ COPY package.json package-lock.json ./
 COPY worker/package.json worker/package.json
 COPY tui/package.json tui/package.json
 COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs
+COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
+COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs
 COPY patches/alchemy+2.0.0-beta.67.patch patches/alchemy+2.0.0-beta.67.patch
 COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
@@ -20,12 +22,13 @@ COPY tui/src tui/src
 COPY worker/src worker/src
 COPY worker/container/toolsets/standard.json worker/container/toolsets/standard.json
 RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
+  && chmod 0755 /out/scotty \
+  && test "$(stat -c '%a' /out/scotty)" = "755" \
   && /out/scotty --version
 
 FROM docker.io/cloudflare/sandbox:0.12.3@sha256:23f67e16131b780865a5fa5aa3c8607408a730105c248836409f4e02bb6bf042 AS scotty-package-image
 
 ARG AST_GREP_VERSION=0.45.0
-ARG CODEX_VERSION=0.144.6
 ARG COREPACK_VERSION=0.35.0
 ARG FD_VERSION=10.4.2
 ARG FD_SHA256=0e44eb5fca93f09bc6f5430b90acdf44c8e069d0a903700aeb4820629337b67b
@@ -98,7 +101,6 @@ RUN apt-get update \
   && npm install --global --ignore-scripts --no-audit --no-fund \
     "@ast-grep/cli@${AST_GREP_VERSION}" \
     "@earendil-works/pi-coding-agent@${PI_VERSION}" \
-    "@openai/codex@${CODEX_VERSION}" \
     "corepack@${COREPACK_VERSION}" \
   && corepack enable \
   && corepack install --global "pnpm@${PNPM_VERSION}" \
@@ -118,6 +120,7 @@ ENV LANG=en_US.UTF-8 \
   GOPROXY=https://proxy.golang.org \
   GOSUMDB=sum.golang.org \
   PATH=/usr/local/go/bin:${PATH} \
+  PI_VERSION=${PI_VERSION} \
   PLAYWRIGHT_BROWSERS_PATH=/opt/scotty/playwright-browsers \
   UV_PYTHON_INSTALL_DIR=/opt/uv/python \
   UV_PYTHON_BIN_DIR=/usr/local/bin
@@ -137,8 +140,10 @@ COPY worker/container/scotty-pi-session.mjs /usr/local/bin/scotty-pi-session
 COPY worker/container/scotty-jsonl.mjs /usr/local/bin/scotty-jsonl.mjs
 COPY worker/container/scotty-pi-protocol.mjs /usr/local/bin/scotty-pi-protocol.mjs
 COPY protocol/pi-console-shared.mjs /usr/protocol/pi-console-shared.mjs
+COPY scripts/project-container-pi-install.mjs /tmp/project-container-pi-install.mjs
 RUN set -eu; \
-  npm ci \
+  node /tmp/project-container-pi-install.mjs --pi-packages /opt/scotty/pi-packages \
+  && npm ci \
       --prefix /opt/scotty/pi-packages/npm \
       --omit=dev \
       --ignore-scripts \
@@ -159,11 +164,18 @@ RUN set -eu; \
         --no-fund \
         --legacy-peer-deps; \
   done \
+  && node /tmp/project-container-pi-install.mjs --assert-image --pi-packages /opt/scotty/pi-packages \
+  && rm -f /tmp/project-container-pi-install.mjs \
   && test "$(node --input-type=module -e "import('/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/package.json', { with: { type: 'json' } }).then(({ default: packageJson }) => process.stdout.write(packageJson.version))")" = "${PLAYWRIGHT_VERSION}" \
   && node \
     /opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/cli.js \
     install --with-deps chromium \
   && test -z "$(find /opt/scotty/pi-packages/sources -mindepth 2 -maxdepth 2 -name .git -print -quit)" \
+  && chmod 0755 \
+    /usr/local/bin/scotty-runner-bootstrap \
+    /usr/local/bin/scotty-pi-shell \
+    /usr/local/bin/scotty-pi-session \
+  && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills \
   && npm cache clean --force \
   && rm -rf /root/.cache /tmp/* \
   && apt-get clean \
@@ -173,7 +185,8 @@ FROM scotty-package-image
 
 EXPOSE 43117
 
-RUN mkdir -p /tmp/scotty-pi-agent \
+RUN set -eu; \
+  mkdir -p /tmp/scotty-pi-agent \
   && cp /opt/scotty/pi-packages/settings.json /tmp/scotty-pi-agent/settings.json \
   && PI_CODING_AGENT_DIR=/tmp/scotty-pi-agent PI_OFFLINE=1 pi list >/tmp/scotty-pi-packages.list \
   && PI_CODING_AGENT_DIR=/tmp/scotty-pi-agent PI_OFFLINE=1 pi --offline --help >/tmp/scotty-pi-help \
@@ -194,20 +207,18 @@ RUN mkdir -p /tmp/scotty-pi-agent \
       grep -F "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \
     done \
   && rm -rf /tmp/scotty-pi-agent /tmp/scotty-pi-help /tmp/scotty-pi-packages.list \
-  && chmod 0755 \
-    /usr/local/bin/scotty-runner-bootstrap \
-    /usr/local/bin/scotty-pi-shell \
-    /usr/local/bin/scotty-pi-session \
-    /usr/local/bin/scotty \
-  && chmod -R a-w /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills \
   && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-pi-shell \
   && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
+  && test "$(stat -c '%a' /usr/local/bin/scotty)" = "755" \
+  && test -z "$(find /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills ! -type l -perm /222 -print -quit)" \
   && test "$(pi --version)" = "${PI_VERSION}" \
   && scotty tools list --json >/dev/null \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck ffmpeg Xvfb \
-    node npm bun corepack cc pkg-config codex pi scotty-pi-session scotty-pi-shell scotty-runner-bootstrap; do \
+    node npm bun corepack cc pkg-config pi scotty-pi-session scotty-pi-shell scotty-runner-bootstrap; do \
       command -v "${command_name}" >/dev/null || exit 1; \
-    done
+    done \
+  && if command -v codex >/dev/null; then exit 1; fi \
+  && rm -rf /root/.cache /root/.npm /tmp/*
 
 # The SDK base image supplies /container-server/sandbox as its ENTRYPOINT.
