@@ -5,9 +5,10 @@ import type {
   ExecResult,
   RestoreBackupResult,
 } from "@cloudflare/sandbox";
-import { Data, Match, Result } from "effect";
+import { Data, Effect, Match, Result } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import type { RunnerOperation } from "../../protocol/runner";
+import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
 import type { Bindings } from "../src/bindings";
 import type {
   CreateSessionInput,
@@ -17,6 +18,7 @@ import type {
 } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
+import type { RepoVerifier } from "../src/repo-verifier";
 import type { SandboxConfigStatus } from "../src/sandbox-config-contracts";
 import type { SandboxConfigRpcResult } from "../src/sandbox-config-object";
 import { sandboxBundleTarGzKey } from "../src/sandbox-bundle-store";
@@ -210,6 +212,7 @@ export const CREATE_INPUT: CreateSessionInput = {
   prompt: "Investigate the failing build",
   provider: "cloudflare",
   repo: "owner/project",
+  newRepo: false,
   hardCapSeconds: 14_400,
 };
 export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
@@ -270,6 +273,7 @@ export interface HarnessOptions {
   readonly previewExposeGate?: Promise<void>;
   readonly previewRequestForwarder?: SandboxEffectOptions["previewRequestForwarder"];
   readonly hatchRequestForwarder?: SandboxEffectOptions["hatchRequestForwarder"];
+  readonly repoVerifier?: SandboxEffectOptions["repoVerifier"];
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
@@ -284,6 +288,8 @@ export interface HarnessOptions {
   readonly sandboxNamespace?: Bindings["SANDBOX"];
   readonly sandboxConfigStatus?: SandboxConfigStatus;
   readonly sandboxConfigStatusFailure?: "rpc-error" | "throw";
+  readonly installationPiAuthRecord?: InstallationPiAuthRecord;
+  readonly installationPiAuthWriteFailure?: boolean;
   readonly sandboxBundleObjects?: ReadonlyArray<{
     readonly digest: string;
     readonly gzip: Uint8Array;
@@ -336,6 +342,7 @@ export interface SessionHarness {
   readonly read: <A>(key: string) => A | undefined;
   readonly readRecord: () => SessionRecord | undefined;
   readonly sandboxConfigStatusCallCount: () => number;
+  readonly installationPiAuthWrites: ReadonlyArray<InstallationPiAuthRecord>;
 }
 
 class HarnessStorage {
@@ -566,6 +573,7 @@ export const lifecycleWallClock = {
 
 export async function createSessionHarness(options: HarnessOptions = {}): Promise<SessionHarness> {
   const events: string[] = [];
+  const installationPiAuthWrites: InstallationPiAuthRecord[] = [];
   const schedules: RecordedSchedule[] = [];
   const deletedSchedules: string[] = [];
   const aborts: string[] = [];
@@ -848,6 +856,28 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           ok: true,
           value: { schemaVersion: 1, revision: 1, activeDigest: null },
         }),
+        piAuth: async () => ({ ok: true, value: options.installationPiAuthRecord ?? null }),
+        writePiAuth: async (record) => {
+          events.push("installation-pi-auth:write");
+          installationPiAuthWrites.push(record);
+          if (options.installationPiAuthWriteFailure)
+            return {
+              ok: false,
+              error: { reason: "storage" as const, message: "injected write failure" },
+            };
+          return { ok: true, value: record };
+        },
+        listRepos: async () => ({ ok: true, value: [] }),
+        addRepo: async () => ({
+          ok: true,
+          value: {
+            repo: "owner/project",
+            defaultBranch: "main",
+            addedAt: "2026-08-15T12:00:00.000Z",
+            lastUsedAt: "2026-08-15T12:00:00.000Z",
+          },
+        }),
+        removeRepo: async () => ({ ok: true, value: true }),
       }),
     },
     SESSIONS: sessions,
@@ -964,6 +994,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     passivePiConsoleRelay: options.passivePiConsoleRelay,
     previewRequestForwarder: options.previewRequestForwarder,
     hatchRequestForwarder: options.hatchRequestForwarder,
+    repoVerifier:
+      options.repoVerifier ??
+      ({
+        verify: () => Effect.succeed({ exists: true, defaultBranch: "main" }),
+      } satisfies RepoVerifier["Service"]),
   });
   await Promise.all(constructorWork);
   rawPiContainerRunning = options.rawPiContainerRunning ?? false;
@@ -1018,15 +1053,18 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     exec: {
       value: async (command: string, _execOptions?: ExecOptions): Promise<ExecResult> => {
         commands.push(command);
-        const stage = command.startsWith("gh repo view")
-          ? "workspace"
-          : command.includes("rev-parse HEAD")
-            ? "downSha"
-            : command.startsWith("find ") && command.includes("*.jsonl")
-              ? "downRollout"
-              : command.startsWith("tar -cf ")
-                ? "downTar"
-                : "exec";
+        const stage =
+          command.startsWith("rm -rf ") ||
+          command.startsWith("git init -b ") ||
+          command.startsWith("git -c http.extraHeader=")
+            ? "workspace"
+            : command.includes("rev-parse HEAD")
+              ? "downSha"
+              : command.startsWith("find ") && command.includes("*.jsonl")
+                ? "downRollout"
+                : command.startsWith("tar -cf ")
+                  ? "downTar"
+                  : "exec";
         events.push(`host:exec:${stage === "downRollout" ? "exec" : stage}`);
         if (failures.has("workspacePrepare") && stage === "workspace")
           throw injectedHarnessFailure("injected workspace failure");
@@ -1047,9 +1085,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         )
           throw injectedHarnessFailure(`injected ${stage} failure`);
         const configured = options.commandStdout?.(command);
-        const stdout =
-          configured ??
-          (stage === "workspace" ? "main\n" : stage === "downSha" ? "deadbeef\n" : "");
+        const stdout = configured ?? (stage === "downSha" ? "deadbeef\n" : "");
         return successfulExec(command, stdout);
       },
     },
@@ -1320,6 +1356,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     read: <A>(key: string) => storage.read<A>(key),
     readRecord: () => storage.read<SessionRecord>(RECORD_KEY),
     sandboxConfigStatusCallCount: () => sandboxConfigStatusCalls,
+    installationPiAuthWrites,
   };
 }
 

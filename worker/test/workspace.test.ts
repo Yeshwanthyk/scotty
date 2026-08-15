@@ -9,6 +9,7 @@ import {
   type SandboxExecOptions,
   type SandboxRuntimeCapabilities,
 } from "../src/sandbox-runtime";
+import type { VerifiedRepository } from "../src/repo-verifier";
 import { sessionRoot, Workspace, workspaceLayer } from "../src/workspace";
 import { makeSessionRecord } from "./support";
 
@@ -60,16 +61,14 @@ const prepareWith = (
     operation: { kind: "create", nonce: "nonce", startedAt: "2026-07-22T00:00:00.000Z" },
   }),
   sentinel = SENTINEL,
+  verified?: VerifiedRepository,
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = workspaceLayer.pipe(Layer.provide(runtimeLayer));
-  return Effect.flatMap(Workspace, (workspace) => workspace.prepare(session, sentinel)).pipe(
-    Effect.provide(layer),
-  );
+  return Effect.flatMap(Workspace, (workspace) =>
+    workspace.prepare(session, sentinel, verified),
+  ).pipe(Effect.provide(layer));
 };
-
-const repoViewCommand = (repo: string): string =>
-  `gh repo view ${shellQuote(repo)} --json defaultBranchRef --jq '.defaultBranchRef.name'`;
 
 const resetCommand = `rm -rf ${shellQuote(ROOT)} && mkdir -p '/workspace'`;
 
@@ -80,10 +79,12 @@ describe("Workspace", () => {
   it.effect("clones a self-contained repository so backup restore retains Git metadata", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
-      capabilities.results.push(execResult("view", { stdout: "trunk\n" }));
       const repo = "acme/widgets";
 
-      const prepared = yield* prepareWith(capabilities, makeSessionRecord({ repo }));
+      const prepared = yield* prepareWith(
+        capabilities,
+        makeSessionRecord({ repo, defaultBranch: "trunk", repoExistsAtCreate: true }),
+      );
       const basic = btoa(`x-access-token:${SENTINEL}`);
 
       assert.deepStrictEqual(prepared, {
@@ -91,7 +92,7 @@ describe("Workspace", () => {
         defaultBranch: "trunk",
         repoExists: true,
       });
-      assert.deepStrictEqual(capabilities.calls.slice(2, 4), [
+      assert.deepStrictEqual(capabilities.calls.slice(1, 3), [
         {
           command: `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch 'trunk' --single-branch 'https://github.com/${repo}.git' '${ROOT}'`,
           options: { env: ENV, timeout: 180_000 },
@@ -105,16 +106,15 @@ describe("Workspace", () => {
     }),
   );
 
-  it.effect("treats an ordinary nonzero repo view as a confirmed missing repository", () =>
+  it.effect("initializes only when the verifier explicitly reports a missing repository", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
-      capabilities.results.push(
-        execResult("view", { success: false, stderr: "repository not found" }),
-      );
 
       const prepared = yield* prepareWith(
         capabilities,
         makeSessionRecord({ repo: "acme/new-project" }),
+        SENTINEL,
+        { exists: false },
       );
 
       assert.deepStrictEqual(prepared, {
@@ -123,10 +123,6 @@ describe("Workspace", () => {
         repoExists: false,
       });
       assert.deepStrictEqual(capabilities.calls, [
-        {
-          command: repoViewCommand("acme/new-project"),
-          options: { env: ENV, timeout: 60_000 },
-        },
         { command: resetCommand, options: undefined },
         {
           command: `git init -b main '${ROOT}' && git -C '${ROOT}' remote add origin 'https://github.com/acme/new-project.git' && git -C '${ROOT}' checkout -b 'scotty/${ID}'`,
@@ -137,23 +133,15 @@ describe("Workspace", () => {
     }),
   );
 
-  it.effect("fails on repo-view transport rejection without falling back to main", () =>
+  it.effect("does not probe GitHub from the workspace adapter", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
-      capabilities.rejection = new Error(`provider leaked ${REAL_GITHUB}`);
+      yield* prepareWith(capabilities);
 
-      const result = yield* Effect.result(prepareWith(capabilities));
-
-      assert.ok(Result.isFailure(result));
-      assert.deepStrictEqual(
-        result.failure,
-        new SandboxRuntimeFailure({
-          reason: "transport",
-          message: "Sandbox command transport failed",
-        }),
+      assert.strictEqual(
+        capabilities.calls.some(({ command }) => command.startsWith("gh ")),
+        false,
       );
-      assert.strictEqual(capabilities.calls.length, 1);
-      assert.ok(!JSON.stringify(result.failure).includes(REAL_GITHUB));
     }),
   );
 
@@ -161,7 +149,6 @@ describe("Workspace", () => {
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
       capabilities.results.push(
-        execResult("view", { stdout: "main\n" }),
         execResult("reset"),
         execResult("clone", { success: false, stderr: "clone failed" }),
       );
@@ -181,21 +168,26 @@ describe("Workspace", () => {
     }),
   );
 
-  it.effect("quotes hostile repository, branch, and discovered branch input", () =>
+  it.effect("quotes hostile repository, branch, and verified branch input", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
       const hostileRepo = "owner/repo'; $(touch /tmp/repo-pwned) #";
       const hostileBranch = "scotty/id'; $(touch /tmp/branch-pwned) #";
       const hostileDefault = "dev'; $(touch /tmp/default-pwned) #";
-      capabilities.results.push(execResult("view", { stdout: `${hostileDefault}\n` }));
 
       yield* prepareWith(
         capabilities,
-        makeSessionRecord({ repo: hostileRepo, branch: hostileBranch }),
+        makeSessionRecord({
+          repo: hostileRepo,
+          branch: hostileBranch,
+          defaultBranch: hostileDefault,
+          repoExistsAtCreate: true,
+        }),
+        SENTINEL,
+        { exists: true, defaultBranch: hostileDefault },
       );
       const surfaces = capabilities.calls.map(({ command }) => command).join("\n");
 
-      assert.ok(surfaces.includes(repoViewCommand(hostileRepo)));
       assert.ok(surfaces.includes(shellQuote(`https://github.com/${hostileRepo}.git`)));
       assert.ok(surfaces.includes(shellQuote(hostileBranch)));
       assert.ok(surfaces.includes(shellQuote(hostileDefault)));
@@ -207,16 +199,20 @@ describe("Workspace", () => {
     Effect.gen(function* () {
       const first = new FakeWorkspaceCapabilities();
       const second = new FakeWorkspaceCapabilities();
-      first.results.push(execResult("view", { stdout: "dev\n" }));
-      second.results.push(execResult("view", { success: false, stderr: "not found" }));
 
-      const existing = yield* prepareWith(first);
-      const missing = yield* prepareWith(second);
+      const existing = yield* prepareWith(
+        first,
+        makeSessionRecord({ repoExistsAtCreate: true, defaultBranch: "dev" }),
+      );
+      const missing = yield* prepareWith(
+        second,
+        makeSessionRecord({ repoExistsAtCreate: false, defaultBranch: "main" }),
+      );
 
       assert.strictEqual(existing.repoExists, true);
       assert.strictEqual(missing.repoExists, false);
-      assert.strictEqual(first.calls.length, 5);
-      assert.strictEqual(second.calls.length, 4);
+      assert.strictEqual(first.calls.length, 4);
+      assert.strictEqual(second.calls.length, 3);
       assert.notStrictEqual(first.calls, second.calls);
     }),
   );
@@ -224,8 +220,10 @@ describe("Workspace", () => {
   it.effect("keeps real credentials out of every command, environment, and failure", () =>
     Effect.gen(function* () {
       const capabilities = new FakeWorkspaceCapabilities();
-      capabilities.results.push(execResult("view", { stdout: "dev\n" }));
-      yield* prepareWith(capabilities);
+      yield* prepareWith(
+        capabilities,
+        makeSessionRecord({ repoExistsAtCreate: true, defaultBranch: "dev" }),
+      );
 
       const surfaces = JSON.stringify(capabilities.calls);
       assert.ok(!surfaces.includes(REAL_GITHUB));

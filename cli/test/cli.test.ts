@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { EXIT, main, STANDARD_TOOLSET, VERSION, type CliDependencies } from "../scotty";
+import { BeamUpRequestSchema } from "../src/schemas";
+import { Schema } from "effect";
 
 const temporaryDirectories: string[] = [];
 
@@ -52,6 +54,12 @@ function harness(overrides: Partial<CliDependencies> = {}) {
     error: () => JSON.parse(stderr.join("")),
   };
 }
+
+function rejected<T = never>(message: string): Promise<T> {
+  return new Promise((_, reject) => reject(new Error(message)));
+}
+
+const decodeBeamUpRequest = Schema.decodeUnknownSync(BeamUpRequestSchema);
 
 function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
   let revision = 0;
@@ -237,6 +245,65 @@ describe("configuration and transport", () => {
     expect(invalid.error().error.code).toBe("bad_usage");
   });
 
+  test("beam up forwards --new-repo and defaults the request field to false", async () => {
+    let body: typeof BeamUpRequestSchema.Type | undefined;
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        body = decodeBeamUpRequest(await request.json());
+        return Response.json({
+          id: "s1",
+          title: "Fix build",
+          url: "https://worker.example/s/s1",
+          branch: "scotty/s1",
+          provider: "cloudflare",
+          status: "warm",
+        });
+      },
+    });
+    expect(
+      await main(
+        [
+          "beam",
+          "up",
+          "fix it",
+          "--title",
+          "Fix build",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
+          "--new-repo",
+          "--detach",
+          "--host",
+          "https://worker.example",
+        ],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(body?.newRepo).toBe(true);
+  });
+
+  test("beam up rejects URL-normalizing repository path segments", async () => {
+    const args = [
+      "beam",
+      "up",
+      "fix it",
+      "--title",
+      "Fix build",
+      "--provider",
+      "cloudflare",
+      "--detach",
+      "--host",
+      "https://worker.example",
+    ];
+    for (const repo of ["./project", "../project", "owner/.", "owner/.."]) {
+      const h = harness();
+      expect(await main([...args, "--repo", repo], h.deps)).toBe(EXIT.USAGE);
+      expect(h.error().error.message).toBe("--repo must be OWNER/NAME");
+    }
+  });
+
   test("beam up reuses a pending idempotency key after an ambiguous network failure", async () => {
     const home = await temporaryDirectory();
     const keys: string[] = [];
@@ -245,7 +312,7 @@ describe("configuration and transport", () => {
       const request = new Request(input, init);
       keys.push(request.headers.get("idempotency-key") ?? "");
       requests += 1;
-      if (requests === 1) throw new Error("connection dropped after create");
+      if (requests === 1) return rejected("connection dropped after create");
       return Response.json({
         id: "s1",
         title: "Fix build",
@@ -885,7 +952,7 @@ describe("configuration and transport", () => {
       },
       createInstallation: async (request) => {
         requests.push(request);
-        if (requests.length === 1) throw new Error("ambiguous apply result");
+        if (requests.length === 1) return rejected("ambiguous apply result");
         return result;
       },
     });
@@ -1142,7 +1209,7 @@ describe("configuration and transport", () => {
       }),
       deployInstallation: async () => {
         applied = true;
-        throw new Error("must not apply a no-op plan");
+        return rejected("must not apply a no-op plan");
       },
     });
 
@@ -1184,6 +1251,121 @@ describe("configuration and transport", () => {
 
     expect(await main(["deploy"], h.deps)).toBe(EXIT.USAGE);
     expect(h.error().error.message).toBe("deploy requires --yes when the plan contains changes");
+  });
+
+  test("init create failures keep the public envelope and persist a redacted diagnostic", async () => {
+    const home = await temporaryDirectory();
+    const secret = "ghp_syntheticInitSecretTokenValue";
+    const account = "0123456789abcdef0123456789abcdef";
+    const h = harness({
+      home,
+      env: { SCOTTY_TOKEN: secret, CLOUDFLARE_API_TOKEN: secret },
+      planCreateInstallation: async () => ({
+        installationName: "home",
+        accountId: account,
+        hasExistingResources: false,
+        fingerprint: "create-plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "create" }],
+      }),
+      createInstallation: async () => {
+        throw Object.assign(new Error(`Alchemy failed for ${account} with ${secret}`), {
+          _tag: "InstallationDeploymentError",
+          cause: { message: `nested ${secret}` },
+        });
+      },
+    });
+
+    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    const envelope = h.error();
+    expect(Object.keys(envelope)).toEqual(["error"]);
+    expect(Object.keys(envelope.error).sort()).toEqual(["code", "hint", "message"]);
+    expect(envelope.error).toMatchObject({
+      code: "installation_create_failed",
+      message: "Could not create the Scotty installation",
+    });
+    expect(envelope.error.hint).toMatch(
+      /^Check Cloudflare authentication, Docker, and permissions, then retry scotty init\./u,
+    );
+    expect(envelope.error.hint).toContain(
+      `Diagnostic: ${join(home, ".scotty/diagnostics/init-create.json")}`,
+    );
+    expect(h.stderr.join("")).not.toContain(secret);
+    expect(envelope.error.hint).not.toContain(secret);
+    expect(envelope).not.toHaveProperty("cause");
+    expect(envelope.error).not.toHaveProperty("cause");
+    expect(envelope.error).not.toHaveProperty("diagnostic");
+
+    const diagnosticPath = join(home, ".scotty", "diagnostics", "init-create.json");
+    expect((await stat(diagnosticPath)).mode & 0o777).toBe(0o600);
+    const diagnostic = await readFile(diagnosticPath, "utf8");
+    expect(diagnostic).not.toContain(secret);
+    expect(diagnostic).not.toContain(account);
+    expect(diagnostic).toContain("[redacted-secret]");
+    expect(diagnostic).toContain("[redacted-account-id]");
+    expect(diagnostic).toContain('"operation": "init"');
+    expect(diagnostic).toContain('"phase": "create"');
+    expect(diagnostic).toContain('"installationName": "home"');
+    expect(diagnostic).toContain("Alchemy failed");
+    expect(diagnostic).toContain("nested");
+  });
+
+  test("deploy apply failures keep the public envelope and persist a redacted diagnostic", async () => {
+    const home = await temporaryDirectory();
+    const secret = "synthetic-deploy-environment-secret";
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "0123456789abcdef0123456789abcdef",
+        host: "https://old.example",
+        token: "root-secret",
+      }),
+      { mode: 0o600 },
+    );
+    const h = harness({
+      home,
+      env: { SCOTTY_TOKEN: secret, CLOUDFLARE_API_TOKEN: secret },
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async () => {
+        throw Object.assign(new Error(`image push failed ${secret}`), {
+          _tag: "InstallationDeploymentError",
+          cause: { message: `authorization: Bearer ${secret}` },
+        });
+      },
+    });
+
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    const envelope = h.error();
+    expect(Object.keys(envelope)).toEqual(["error"]);
+    expect(Object.keys(envelope.error).sort()).toEqual(["code", "hint", "message"]);
+    expect(envelope.error).toMatchObject({
+      code: "installation_deploy_failed",
+      message: "Could not deploy the Scotty installation",
+    });
+    expect(envelope.error.hint).toMatch(
+      /^Check Cloudflare authentication and Docker, then retry scotty deploy\./u,
+    );
+    expect(envelope.error.hint).toContain(
+      `Diagnostic: ${join(home, ".scotty/diagnostics/deploy-apply.json")}`,
+    );
+    expect(h.stderr.join("")).not.toContain(secret);
+
+    const diagnosticPath = join(home, ".scotty", "diagnostics", "deploy-apply.json");
+    expect((await stat(diagnosticPath)).mode & 0o777).toBe(0o600);
+    const diagnostic = await readFile(diagnosticPath, "utf8");
+    expect(diagnostic).not.toContain(secret);
+    expect(diagnostic).toContain("[redacted-secret]");
+    expect(diagnostic).toContain('"operation": "deploy"');
+    expect(diagnostic).toContain('"phase": "apply"');
+    expect(diagnostic).toContain("image push failed");
   });
 
   test("upgrade delegates to the signed updater and returns stable JSON", async () => {
@@ -1379,7 +1561,7 @@ describe("configuration and transport", () => {
   test("network and malformed responses fail without leaking implementation errors", async () => {
     const network = harness({
       fetch: async () => {
-        throw new Error("socket exploded with secret details");
+        return rejected("socket exploded with secret details");
       },
     });
     expect(await main(["ls", "--host", "https://worker.example"], network.deps)).toBe(EXIT.GENERIC);
@@ -1501,7 +1683,7 @@ describe("configuration and transport", () => {
 });
 
 describe("Pi auth commands", () => {
-  test("sync uploads only allowlisted Pi providers and fields", async () => {
+  test("sync posts one canonical record, skips secret upload and polling, and reports warm reconciliation failures", async () => {
     const home = await temporaryDirectory();
     const authDirectory = join(home, ".pi", "agent");
     const authPath = join(authDirectory, "auth.json");
@@ -1516,7 +1698,8 @@ describe("Pi auth commands", () => {
           refresh: "local-refresh",
           expires: 0,
           accountId: "local-account",
-          unknownOAuthField: "must-not-upload",
+          idToken: "local-id-token",
+          oauthExtension: { nested: "must-preserve" },
         },
         anthropic: {
           type: "oauth",
@@ -1544,7 +1727,8 @@ describe("Pi auth commands", () => {
       }),
       { mode: 0o600 },
     );
-    let uploaded: string | undefined;
+    let secretUploads = 0;
+    let postedRecord = "";
     const requests: Request[] = [];
     const targets: unknown[] = [];
     const target = {
@@ -1560,28 +1744,59 @@ describe("Pi auth commands", () => {
         return target;
       },
       uploadPiAuthSecret: async (request) => {
-        targets.push(request);
-        uploaded = request.json;
-        return target;
+        secretUploads += 1;
+        return rejected(`must not upload ${request.json}`);
       },
       fetch: async (input, init) => {
         const request = new Request(input, init);
         requests.push(request);
-        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(uploaded));
-        return Response.json({
-          sourceDigest: Array.from(new Uint8Array(digest), (byte) =>
-            byte.toString(16).padStart(2, "0"),
-          ).join(""),
-          providers: [
-            { id: "openai", type: "api_key", adapter: "supported" },
-            { id: "openai-codex", type: "oauth", adapter: "supported" },
-          ],
-        });
+        const path = new URL(request.url).pathname;
+        if (path === "/api/auth/pi") {
+          postedRecord = await request.text();
+          return Response.json({
+            source: "sync",
+            sourceDigest: "a".repeat(64),
+            updatedAt: "2026-08-15T12:00:00.000Z",
+            providers: [
+              { id: "openai", type: "api_key", adapter: "supported" },
+              { id: "openai-codex", type: "oauth", adapter: "supported" },
+            ],
+          });
+        }
+        if (path === "/api/sessions")
+          return Response.json(
+            ["warm-ok", "warm-failed", "sleeping"].map((id) => ({
+              id,
+              title: id,
+              status: id === "sleeping" ? "sleeping" : "warm",
+              provider: "cloudflare",
+              repo: "owner/repo",
+              defaultBranch: "main",
+              branch: `scotty/${id}`,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              hardCapAt: "2026-01-01T04:00:00.000Z",
+              ageSeconds: 1,
+              capRemainingSeconds: 1,
+            })),
+          );
+        if (path.endsWith("/warm-failed/auth/reseed"))
+          return Response.json({ error: { code: "internal", message: "failed" } }, { status: 500 });
+        return Response.json({ id: "warm-ok", updatedAt: "now", providers: [] });
       },
     });
 
     expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.OK);
-    expect(targets).toHaveLength(2);
+    expect(targets).toHaveLength(1);
+    expect(secretUploads).toBe(0);
+    const normalized = JSON.parse(postedRecord);
+    expect(normalized.providers.openai.key).toBe("resolved-openai-key");
+    expect(normalized.providers["openai-codex"].accountId).toBe("local-account");
+    expect(normalized.providers["openai-codex"].idToken).toBe("local-id-token");
+    expect(normalized.providers["openai-codex"].oauthExtension).toEqual({
+      nested: "must-preserve",
+    });
+    expect(normalized.providers.anthropic).toBeUndefined();
     const expectedTarget = {
       profile: "personal",
       expectedAccountId: "a".repeat(32),
@@ -1593,12 +1808,6 @@ describe("Pi auth commands", () => {
       expectedHost: "https://scotty-home-worker.example.workers.dev",
     };
     expect(targets[0]).toEqual(expectedTarget);
-    expect(targets[1]).toMatchObject(expectedTarget);
-    const normalized = JSON.parse(uploaded ?? "{}");
-    expect(normalized.openai.key).toBe("resolved-openai-key");
-    expect(normalized["openai-codex"].accountId).toBe("local-account");
-    expect(normalized["openai-codex"].unknownOAuthField).toBeUndefined();
-    expect(normalized.anthropic).toBeUndefined();
     expect(h.json()).toMatchObject({
       synchronized: true,
       worker: "scotty-home-worker",
@@ -1606,9 +1815,19 @@ describe("Pi auth commands", () => {
         { id: "openai", adapter: "supported" },
         { id: "openai-codex", adapter: "supported" },
       ],
+      reconciled: ["warm-ok"],
+      failed: ["warm-failed"],
+      partial: true,
     });
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.headers.get("authorization")).toBe("Bearer worker-token");
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/api/auth/pi",
+      "/api/sessions",
+      "/api/sessions/warm-ok/auth/reseed",
+      "/api/sessions/warm-failed/auth/reseed",
+    ]);
+    expect(
+      requests.every((request) => request.headers.get("authorization") === "Bearer worker-token"),
+    ).toBe(true);
     expect(JSON.stringify(h.json())).not.toContain("local-access");
     expect(JSON.stringify(h.json())).not.toContain("resolved-openai-key");
   });
@@ -1636,11 +1855,11 @@ describe("Pi auth commands", () => {
     const h = harness({
       home,
       inspectPiAuthTarget: async () => {
-        throw new Error("wrong account");
+        return rejected("wrong account");
       },
       uploadPiAuthSecret: async () => {
         uploaded = true;
-        throw new Error("must not upload");
+        return rejected("must not upload");
       },
     });
 
@@ -3077,6 +3296,8 @@ describe("beam down and sandbox configuration", () => {
     expect(toolNames).not.toContain("duckdb");
     expect(toolNames).not.toContain("agent-browser");
     expect(toolNames).not.toContain("Chromium");
+    expect(toolNames).toContain("Go");
+    expect(toolNames).not.toContain("Codex");
     expect(toolNames).toContain("build-essential");
     expect(toolNames).toContain("pkg-config");
     expect(toolNames).toContain("scotty-browser-test");

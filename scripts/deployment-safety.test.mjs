@@ -424,6 +424,23 @@ describe("production deployment ownership", () => {
     ]);
   });
 
+  it("redacts secret env values before overlapping resource names and matches secret keys case-insensitively", () => {
+    const overlapping = "scotty-test-worker";
+    const redacted = redactProductionDeploymentOutput(
+      `token ${overlapping} building scotty-test-sandbox`,
+      {
+        SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED:
+          "worker=scotty-test-worker:container=scotty-test-sandbox",
+        cloudflare_api_token: overlapping,
+      },
+    );
+    assert.equal(redacted.includes(overlapping), false);
+    assert.equal(redacted.includes("scotty-test-sandbox"), false);
+    assert.match(redacted, /\[redacted-secret\]/u);
+    assert.match(redacted, /\[redacted-container\]/u);
+    assert.doesNotMatch(redacted, /\[redacted-worker\]/u);
+  });
+
   it("persists only a redacted mode-0600 diagnostic for failed Alchemy deploys", async () => {
     const directory = await mkdtemp(join(tmpdir(), "scotty-deploy-diagnostic-"));
     const diagnosticPath = join(directory, "failure.log");

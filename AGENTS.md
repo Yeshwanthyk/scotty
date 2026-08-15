@@ -6,8 +6,8 @@ Read this before changing Scotty.
 
 - Preserve public HTTP routes and error envelopes, CLI JSON shapes and exit codes, persisted session semantics, workspace and branch conventions, browser handoff, and credential isolation unless the user explicitly approves a contract change.
 - Installation and runner names are user-supplied. Never infer them from a username, machine, repository, or Cloudflare account. Local config is a pointer, not deployment authority. Repository state contains no account identity, deployed resource identifier, or real credential.
-- The Sandbox Durable Object owns the session record, operation lease, credentials, backup handles, and hard-cap metadata. KV is a non-secret list projection. R2 contains immutable backups. Container files and Effect runtime memory are never authoritative.
-- The Auth Durable Object owns one browser owner, standard clients, pairing, transfer, recovery, revocation, and terminal tickets. It stores credential digests only. The root token is bearer and recovery authority only, never a cookie or URL. Root recovery revokes every browser credential.
+- The session Sandbox Durable Object owns the session record, operation lease, per-session credential vault and rotation, backup handles, and hard-cap metadata. The installation-scoped SandboxConfig Durable Object owns the Pi seed record and repository registry; it does not own the GitHub credential or session sentinels. KV is a non-secret list projection. R2 contains immutable backups. Container files and Effect runtime memory are never authoritative.
+- The Auth Durable Object owns one browser owner, standard clients, pairing, transfer, recovery, and revocation. It stores credential digests only. The root token is bearer and recovery authority only, never a cookie or URL. Root recovery revokes every browser credential.
 - Only one operation lease may mutate a session. Create arms the hard cap before commit. Snapshot stops Pi before sync and backup. Resume requires the current backup. Vaporize retries until owned state is gone. Interrupted work retains retry state or publishes a typed failure. Never report success from ambiguous provider state.
 - Real Codex/GitHub credentials must never enter container env/files/process args/logs/Git config/KV/R2/API responses or Alchemy props, outputs, and state. Containers receive session-bound sentinels only. OAuth rotation commits before the sanitized response returns.
 - Runner registration is available. Runner-backed session creation remains disabled until native Pi RPC transport and deployed lifecycle proof exist.
@@ -18,7 +18,7 @@ Effect is pinned for this repository at `vendor/effect`, commit `dff25449dfc927f
 
 Before adding or changing any non-trivial Effect pattern:
 
-1. Read `vendor/effect/AGENTS.md`.
+1. Read `vendor/effect/.agents/AGENTS.md`.
 2. Read the relevant pattern in `vendor/effect/.patterns/`, especially `effect.md` and `testing.md`.
 3. Search `vendor/effect/ai-docs/src/` and `vendor/effect/migration/` for orientation.
 4. Inspect the actual implementation in `vendor/effect/packages/effect/src/` and its tests. Source and tests outrank remembered APIs or third-party examples.

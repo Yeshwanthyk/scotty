@@ -1,4 +1,4 @@
-import { Clock, Context, Data, Effect, Layer, Result } from "effect";
+import { Clock, Context, Data, Effect, Layer, Option, Result, Schema } from "effect";
 import {
   decodeCredentialPatchResult,
   decodeCredentialReseedResult,
@@ -8,15 +8,22 @@ import {
   type CredentialRefreshLease,
   type StoredCredential,
 } from "./contracts";
-import { Option } from "effect";
 import {
+  InstallationPiAuthRecordSchema,
+  digestPiAuthProviders,
   parsePiAuthJsonOption,
+  serializePiAuthProviders,
   supportedPiProvider,
+  type InstallationPiAuthRecord,
   type PiAuthStore,
 } from "../../protocol/pi-auth";
 
 const CREDENTIAL_KEY = "scotty:credential";
 const REFRESH_LEASE_MILLIS = 60_000;
+const decodeInstallationPiAuthRecordResult = Schema.decodeUnknownResult(
+  InstallationPiAuthRecordSchema,
+  { onExcessProperty: "error" },
+);
 
 type CredentialVaultFailureReason =
   | "invalid_authority"
@@ -48,6 +55,10 @@ export interface CredentialVaultStorage {
 export interface CredentialVaultShape {
   readonly seed: (seed: unknown) => Effect.Effect<StoredCredential, CredentialVaultFailure>;
   readonly reseed: (seed: unknown) => Effect.Effect<StoredCredential, CredentialVaultFailure>;
+  readonly reconcile: (
+    record: unknown,
+    providerSentinelSeed: string,
+  ) => Effect.Effect<StoredCredential, CredentialVaultFailure>;
   readonly require: Effect.Effect<StoredCredential, CredentialVaultFailure>;
   readonly readForProxy: (
     sentinel: unknown,
@@ -139,6 +150,13 @@ const makeCredentialVault = (
     return Result.succeed(decoded.value);
   };
 
+  const decodeInstallationRecord = (
+    value: unknown,
+  ): Result.Result<InstallationPiAuthRecord, CredentialVaultFailure> =>
+    Result.mapError(decodeInstallationPiAuthRecordResult(value), () =>
+      failure("invalid_seed", "Installation Pi credential record is invalid"),
+    );
+
   const storedProviders = (
     providers: PiAuthStore,
     sentinelSeed: string,
@@ -168,13 +186,19 @@ const makeCredentialVault = (
           failure("invalid_seed", "GH_TOKEN is missing or invalid"),
         );
         if (Result.isFailure(github)) return Result.fail(github.failure);
-        const providers = decodeProviderStore(decodedSeed.success.piAuthJson);
+        const providers =
+          "installationRecord" in decodedSeed.success
+            ? Result.succeed(decodedSeed.success.installationRecord.providers)
+            : decodeProviderStore(decodedSeed.success.piAuthJson);
         if (Result.isFailure(providers)) return Result.fail(providers.failure);
         const credential: StoredCredential = {
           providers: storedProviders(providers.success, decodedSeed.success.providerSentinelSeed),
           githubToken: github.success,
           githubSentinel: decodedSeed.success.githubSentinel,
-          updatedAt: now,
+          updatedAt:
+            "installationRecord" in decodedSeed.success
+              ? decodedSeed.success.installationRecord.updatedAt
+              : now,
         };
         await transaction.put(credential);
         return Result.succeed(credential);
@@ -203,6 +227,48 @@ const makeCredentialVault = (
         };
         await transaction.put(credential);
         return Result.succeed(credential);
+      });
+    }),
+    reconcile: Effect.fnUntraced(function* (recordValue, providerSentinelSeed) {
+      const decoded = decodeInstallationRecord(recordValue);
+      if (Result.isFailure(decoded)) return yield* decoded.failure;
+      const expectedDigest = yield* Effect.tryPromise({
+        try: () => digestPiAuthProviders(decoded.success.providers),
+        catch: () => failure("invalid_seed", "Installation Pi credential record is invalid"),
+      });
+      if (expectedDigest !== decoded.success.digest)
+        return yield* failure("invalid_seed", "Installation Pi credential record is invalid");
+      return yield* transact(async (transaction) => {
+        const current = await requireFrom(transaction);
+        if (Result.isFailure(current)) return Result.fail(current.failure);
+        const comparison = decoded.success.updatedAt.localeCompare(current.success.updatedAt);
+        if (comparison < 0) return Result.succeed(current.success);
+        if (comparison === 0) {
+          const currentProviders = Object.fromEntries(
+            Object.entries(current.success.providers).map(([id, provider]) => [
+              id,
+              provider.credential,
+            ]),
+          );
+          if (
+            serializePiAuthProviders(currentProviders) !==
+            serializePiAuthProviders(decoded.success.providers)
+          )
+            return Result.fail(failure("invalid_authority", "Credential freshness conflict"));
+          return Result.succeed(current.success);
+        }
+        const { refreshLease: _refreshLease, ...withoutLease } = current.success;
+        const next: StoredCredential = {
+          ...withoutLease,
+          providers: storedProviders(
+            decoded.success.providers,
+            providerSentinelSeed,
+            current.success,
+          ),
+          updatedAt: decoded.success.updatedAt,
+        };
+        await transaction.put(next);
+        return Result.succeed(next);
       });
     }),
     require: transact(requireFrom),

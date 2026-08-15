@@ -1,5 +1,10 @@
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
+import { PiAuthDigestSchema, PiAuthUpdatedAtSchema } from "../../protocol/pi-auth";
 import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
+import {
+  RepositoryRegistryEntrySchema,
+  RepositoryRegistryRemovalResponseSchema,
+} from "../../protocol/repository";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
@@ -115,6 +120,7 @@ const BeamUpRequestFields = {
   prompt: Schema.String,
   provider: ProviderSchema,
   repo: Schema.NonEmptyString,
+  newRepo: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 };
 export const BeamUpRequestSchema = Schema.Union([
   Schema.Struct({
@@ -124,7 +130,7 @@ export const BeamUpRequestSchema = Schema.Union([
   }),
   Schema.Struct(BeamUpRequestFields),
 ]);
-export type BeamUpRequest = typeof BeamUpRequestSchema.Type;
+export type BeamUpRequest = Schema.Codec.Encoded<typeof BeamUpRequestSchema>;
 export const BeamUpOutputSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   title: Schema.NonEmptyString,
@@ -303,7 +309,9 @@ export const PiProviderMetadataSchema = Schema.Struct({
   adapter: Schema.Literals(["supported", "unsupported"]),
 });
 export const PiAuthStatusResponseSchema = Schema.Struct({
-  sourceDigest: Schema.NonEmptyString,
+  source: Schema.Literals(["bootstrap", "sync", "rotation"]),
+  sourceDigest: PiAuthDigestSchema,
+  updatedAt: Schema.NullOr(PiAuthUpdatedAtSchema),
   providers: Schema.Array(PiProviderMetadataSchema),
 });
 export type PiAuthStatusResponse = typeof PiAuthStatusResponseSchema.Type;
@@ -334,6 +342,10 @@ export const RunnerRemovalResponseSchema = Schema.Struct({
   name: Schema.NonEmptyString,
   status: Schema.Literal("removed"),
 });
+
+export const RepositoryResponseSchema = RepositoryRegistryEntrySchema;
+export const RepositoriesResponseSchema = Schema.Array(RepositoryResponseSchema);
+export const RepositoryRemovalResponseSchema = RepositoryRegistryRemovalResponseSchema;
 
 export type SessionResponse = typeof SessionResponseSchema.Type;
 
@@ -383,6 +395,16 @@ export const decodeRunnerStatusesResponse = Schema.decodeUnknownOption(
   RunnerStatusesResponseSchema,
 );
 export const decodeRunnerRemovalResponse = Schema.decodeUnknownOption(RunnerRemovalResponseSchema);
+export const decodeRepositoryResponse = Schema.decodeUnknownOption(RepositoryResponseSchema, {
+  onExcessProperty: "error",
+});
+export const decodeRepositoriesResponse = Schema.decodeUnknownOption(RepositoriesResponseSchema, {
+  onExcessProperty: "error",
+});
+export const decodeRepositoryRemovalResponse = Schema.decodeUnknownOption(
+  RepositoryRemovalResponseSchema,
+  { onExcessProperty: "error" },
+);
 export const decodeString = Schema.decodeUnknownOption(Schema.String);
 export const decodeTrue = Schema.decodeUnknownOption(Schema.Literal(true));
 export const decodeNonEmptyString = Schema.decodeUnknownOption(Schema.NonEmptyString);

@@ -4,5 +4,5 @@
     "lib": ["ESNext", "DOM"],
     "types": ["bun", "node"]
   },
-  "include": ["scotty.ts", "src/**/*.ts", "*.d.ts"]
+  "include": ["scotty.ts", "src/**/*.ts", "src/**/*.d.mts", "*.d.ts"]
 }

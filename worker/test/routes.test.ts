@@ -65,6 +65,11 @@ const runnerRegistry = vi.hoisted(() => ({
 const sandboxConfig = vi.hoisted(() => ({
   status: vi.fn(),
   activate: vi.fn(),
+  piAuth: vi.fn(),
+  writePiAuth: vi.fn(),
+  listRepos: vi.fn(),
+  addRepo: vi.fn(),
+  removeRepo: vi.fn(),
 }));
 
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
@@ -76,6 +81,7 @@ import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
+import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { conflict } from "../src/contracts";
 import type { EvidenceStateV2 } from "../src/evidence-contracts";
 import { orderedEvidenceFrames } from "../public/evidence-view.js";
@@ -193,11 +199,15 @@ function sandboxBundleBucket(): R2Bucket {
   } as unknown as R2Bucket;
 }
 
-function emptySessionsNamespace(): KVNamespace {
+function emptySessionsNamespace(values = new Map<string, unknown>()): KVNamespace {
+  const textValue = (name: string): string | null => {
+    const value = values.get(name);
+    return value === undefined ? null : typeof value === "string" ? value : JSON.stringify(value);
+  };
   return {
     list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
     get: async (name: string | string[]) =>
-      Array.isArray(name) ? new Map(name.map((key) => [key, null])) : null,
+      Array.isArray(name) ? new Map(name.map((key) => [key, textValue(key)])) : textValue(name),
     getWithMetadata: async (name: string | string[]) => {
       const missing = { value: null, metadata: null, cacheStatus: null };
       return Array.isArray(name) ? new Map(name.map((key) => [key, missing])) : missing;
@@ -508,6 +518,19 @@ describe("real Hono boundary", () => {
       ok: true,
       value: { schemaVersion: 1, revision: 1, activeDigest: "a".repeat(64) },
     });
+    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: null });
+    sandboxConfig.writePiAuth.mockImplementation(async (record) => ({ ok: true, value: record }));
+    sandboxConfig.listRepos.mockResolvedValue({ ok: true, value: [] });
+    sandboxConfig.addRepo.mockImplementation(async (input) => ({
+      ok: true,
+      value: {
+        repo: input.repo,
+        defaultBranch: input.defaultBranch,
+        addedAt: "2026-08-15T12:00:00.000Z",
+        lastUsedAt: "2026-08-15T12:00:00.000Z",
+      },
+    }));
+    sandboxConfig.removeRepo.mockResolvedValue({ ok: true, value: true });
   });
 
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
@@ -1070,6 +1093,8 @@ describe("real Hono boundary", () => {
     expect(status.status).toBe(200);
     const statusBody = await status.json();
     expect(statusBody).toMatchObject({
+      source: "bootstrap",
+      updatedAt: null,
       providers: [
         { id: "anthropic", type: "oauth", adapter: "unsupported" },
         { id: "openai-codex", type: "oauth", adapter: "supported" },
@@ -1091,6 +1116,76 @@ describe("real Hono boundary", () => {
       updatedAt: "2026-07-29T12:00:00.000Z",
       providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
     });
+  });
+
+  it("keeps Pi credential writes root-only, schema-decoded, and metadata-only", async () => {
+    const record = await makeInstallationPiAuthRecord(
+      {
+        "openai-codex": {
+          type: "oauth",
+          access: "honeypot-access",
+          refresh: "honeypot-refresh",
+          expires: 0,
+        },
+      },
+      "2026-08-15T12:00:00.000Z",
+      "sync",
+    );
+    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: record });
+    const preferred = await app.request(
+      "/api/auth/pi",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(await preferred.json()).toEqual({
+      source: "sync",
+      sourceDigest: record.digest,
+      updatedAt: record.updatedAt,
+      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
+    });
+
+    const ownerRejected = await app.request(
+      "/api/auth/pi",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+        body: JSON.stringify(record),
+      },
+      env(),
+    );
+    expect(ownerRejected.status).toBe(401);
+    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
+
+    const malformed = await app.request(
+      "/api/auth/pi",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ ...record, githubToken: "honeypot-github" }),
+      },
+      env(),
+    );
+    expect(malformed.status).toBe(400);
+    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
+
+    const written = await app.request(
+      "/api/auth/pi",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(record),
+      },
+      env(),
+    );
+    expect(written.status).toBe(200);
+    expect(sandboxConfig.writePiAuth).toHaveBeenCalledWith(record);
+    const serialized = JSON.stringify(await written.json());
+    expect(serialized).not.toContain("honeypot");
   });
 
   it("allows only the owner browser to control the configured runner", async () => {
@@ -1222,6 +1317,30 @@ describe("real Hono boundary", () => {
     );
   });
 
+  it("rejects an invalid newRepo request field before invoking the sandbox", async () => {
+    const response = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Ship dashboard",
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+          newRepo: "true",
+        }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "newRepo must be a boolean" },
+    });
+    expect(sandbox.createScottySession).not.toHaveBeenCalled();
+  });
+
   it("maps repeated create keys to one Sandbox identity", async () => {
     const harness = await createSessionHarness();
     useRealSandbox(harness);
@@ -1263,9 +1382,71 @@ describe("real Hono boundary", () => {
     expect(
       harness.writtenFiles.filter((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
     ).toHaveLength(1);
+    expect(sandboxConfig.addRepo).toHaveBeenCalledTimes(2);
   });
 
-  it("tracks the returned repository without making the recents projection authoritative", async () => {
+  it("preserves legacy idempotency for omitted/false newRepo and separates true", async () => {
+    const harness = await createSessionHarness();
+    useRealSandbox(harness);
+    const headers = {
+      authorization: `Bearer ${TOKEN}`,
+      "content-type": "application/json",
+      "idempotency-key": "01234567-89ab-4cde-8fab-0123456789ab",
+    };
+    const first = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: "Ship project",
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+        }),
+      },
+      env(),
+    );
+    expect(first.status).toBe(200);
+    const second = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: "Ship project",
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+          newRepo: false,
+        }),
+      },
+      env(),
+    );
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toEqual(await first.clone().json());
+    const third = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: "Ship project",
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+          newRepo: true,
+        }),
+      },
+      env(),
+    );
+    expect(third.status).toBe(409);
+    await expect(third.json()).resolves.toMatchObject({
+      error: { code: "conflict" },
+    });
+  });
+
+  it("upserts the returned repository authority and best-effort projection", async () => {
     const trackedHarness = await createSessionHarness();
     useRealSandbox(trackedHarness);
     const put = vi.fn(async (_key: string, _value: string) => undefined);
@@ -1284,9 +1465,15 @@ describe("real Hono boundary", () => {
       { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
     );
     expect(tracked.status).toBe(200);
+    expect(sandboxConfig.addRepo).toHaveBeenCalledWith({
+      repo: "owner/repo",
+      defaultBranch: "main",
+    });
     expect(put).toHaveBeenCalledWith(
       "repo:owner/repo",
-      expect.stringContaining('"repo":"owner/repo","defaultBranch":"main","lastUsedAt":'),
+      expect.stringContaining(
+        '"repo":"owner/repo","defaultBranch":"main","addedAt":"2026-08-15T12:00:00.000Z"',
+      ),
     );
 
     put.mockImplementation(async (key: string) => {
@@ -1309,6 +1496,45 @@ describe("real Hono boundary", () => {
       { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
     );
     expect(unavailable.status).toBe(200);
+  });
+
+  it("retries repository authority registration safely on an idempotent create replay", async () => {
+    const harness = await createSessionHarness();
+    useRealSandbox(harness);
+    const entry = {
+      repo: "owner/repo",
+      defaultBranch: "main",
+      addedAt: "2026-08-15T12:00:00.000Z",
+      lastUsedAt: "2026-08-15T12:00:00.000Z",
+    };
+    sandboxConfig.addRepo
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { reason: "storage", message: "Repository authority unavailable" },
+      })
+      .mockResolvedValueOnce({ ok: true, value: entry });
+    const request = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        "idempotency-key": "01234567-89ab-4cde-8fab-0123456789ab",
+      },
+      body: JSON.stringify({
+        title: "Retry repository registration",
+        prompt: "ship it",
+        provider: "cloudflare",
+        repo: "owner/repo",
+      }),
+    };
+    const first = await app.request("/api/sessions", request, env());
+    expect(first.status).toBe(500);
+    expect(harness.readRecord()).toMatchObject({ status: "warm", repo: "owner/repo" });
+
+    const second = await app.request("/api/sessions", request, env());
+    expect(second.status).toBe(200);
+    expect(sandboxConfig.addRepo).toHaveBeenCalledTimes(2);
+    await expect(second.json()).resolves.toMatchObject({ status: "warm" });
   });
 
   it("requires the creation marker write before reporting create success", async () => {
@@ -2069,7 +2295,22 @@ describe("real Hono boundary", () => {
     });
   });
 
-  it("lists tracked repositories most-recent first without storage-only fields", async () => {
+  it("lists authoritative repositories and repairs a stale projection", async () => {
+    const repositories = [
+      {
+        repo: "owner/newer",
+        defaultBranch: "dev",
+        addedAt: "2026-07-20T12:00:00.000Z",
+        lastUsedAt: "2026-07-23T12:00:00.000Z",
+      },
+      {
+        repo: "owner/older",
+        defaultBranch: "main",
+        addedAt: "2026-07-19T12:00:00.000Z",
+        lastUsedAt: "2026-07-22T12:00:00.000Z",
+      },
+    ];
+    sandboxConfig.listRepos.mockResolvedValue({ ok: true, value: repositories });
     const values = new Map<string, unknown>([
       [
         "repo:owner/older",
@@ -2100,13 +2341,21 @@ describe("real Hono boundary", () => {
         },
       ],
     ]);
+    const put = vi.fn(async (name: string, value: string) => {
+      values.set(name, JSON.parse(value));
+    });
+    const deleteKey = vi.fn(async (name: string) => {
+      values.delete(name);
+    });
     const sessions = {
+      ...emptySessionsNamespace(values),
       list: async () => ({
         keys: [...values.keys()].map((name) => ({ name })),
         list_complete: true,
         cacheStatus: null,
       }),
-      get: async (name: string) => values.get(name) ?? null,
+      put,
+      delete: deleteKey,
     } as KVNamespace;
 
     const response = await app.request(
@@ -2115,18 +2364,122 @@ describe("real Hono boundary", () => {
       { ...env(), SESSIONS: sessions },
     );
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual([
+    await expect(response.json()).resolves.toEqual([repositories[0], repositories[1]]);
+    expect(sandboxConfig.listRepos).toHaveBeenCalledTimes(1);
+    expect(deleteKey).toHaveBeenCalledWith("repo:owner/older");
+    expect(deleteKey).toHaveBeenCalledWith("repo:owner/newer");
+    expect(deleteKey).toHaveBeenCalledWith("repo:owner/malformed");
+    expect(put).toHaveBeenCalledWith(
+      "repo:owner/newer",
+      JSON.stringify({ version: 1, ...repositories[0] }),
+    );
+    expect(put).toHaveBeenCalledWith(
+      "repo:owner/older",
+      JSON.stringify({ version: 1, ...repositories[1] }),
+    );
+    const putCountAfterRepair = put.mock.calls.length;
+    const deleteCountAfterRepair = deleteKey.mock.calls.length;
+    const matching = await app.request(
+      "/api/repos",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: sessions },
+    );
+    expect(matching.status).toBe(200);
+    expect(put).toHaveBeenCalledTimes(putCountAfterRepair);
+    expect(deleteKey).toHaveBeenCalledTimes(deleteCountAfterRepair);
+  });
+
+  it("verifies a repository through GitHub before adding authority", async () => {
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ default_branch: "trunk" }, { status: 200 }));
+    const entry = {
+      repo: "owner/project",
+      defaultBranch: "trunk",
+      addedAt: "2026-08-15T12:00:00.000Z",
+      lastUsedAt: "2026-08-15T12:00:00.000Z",
+    };
+    sandboxConfig.addRepo.mockResolvedValue({ ok: true, value: entry });
+
+    const response = await app.request(
+      "/api/repos",
       {
-        repo: "owner/newer",
-        defaultBranch: "dev",
-        lastUsedAt: "2026-07-23T12:00:00.000Z",
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ repo: "owner/project" }),
       },
+      env(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(entry);
+    expect(sandboxConfig.addRepo).toHaveBeenCalledWith({
+      repo: "owner/project",
+      defaultBranch: "trunk",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const request = fetch.mock.calls[0]?.[0];
+    expect(request instanceof Request ? request.url : String(request)).toBe(
+      "https://api.github.com/repos/owner/project",
+    );
+  });
+
+  it("does not register a repository when GitHub verification fails", async () => {
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 404 }));
+    const put = vi.fn(async (_key: string, _value: string) => undefined);
+
+    const response = await app.request(
+      "/api/repos",
       {
-        repo: "owner/older",
-        defaultBranch: "main",
-        lastUsedAt: "2026-07-22T12:00:00.000Z",
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ repo: "owner/missing" }),
       },
-    ]);
+      { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalledWith("repo:owner/missing", expect.any(String));
+    fetch.mockResolvedValue(new Response(null, { status: 503 }));
+    const upstream = await app.request(
+      "/api/repos",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ repo: "owner/unavailable" }),
+      },
+      { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
+    );
+    expect(upstream.status).toBe(502);
+    expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalledWith("repo:owner/unavailable", expect.any(String));
+    fetch.mockRestore();
+  });
+
+  it("does not register a repository when session creation fails", async () => {
+    const harness = await createSessionHarness({ failureStage: "workspacePrepare" });
+    useRealSandbox(harness);
+
+    const response = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Failed repository",
+          prompt: "fail it",
+          provider: "cloudflare",
+          repo: "owner/project",
+        }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(502);
+    expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
   });
 
   it("forgets only the requested repository projection", async () => {
@@ -2157,8 +2510,10 @@ describe("real Hono boundary", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       repo: "owner/project",
+      removed: true,
       forgotten: true,
     });
+    expect(sandboxConfig.removeRepo).toHaveBeenCalledWith("owner/project");
     expect(deleteKey).toHaveBeenCalledWith("repo:owner/project");
     expect(deleteKey).toHaveBeenCalledWith("repo:OWNER/PROJECT");
     expect(deleteKey).not.toHaveBeenCalledWith("stats:workspace-created:a0b1c2d3e4f5");
@@ -2195,6 +2550,31 @@ describe("real Hono boundary", () => {
       reason: "delete",
     });
     logged.mockRestore();
+  });
+
+  it("does not mutate the projection when repository authority removal fails", async () => {
+    sandboxConfig.removeRepo.mockResolvedValueOnce({
+      ok: false,
+      error: { reason: "storage", message: "Repository authority unavailable" },
+    });
+    const deleteKey = vi.fn(async (_name: string) => undefined);
+    const sessions = {
+      ...emptySessionsNamespace(),
+      list: async () => ({
+        keys: [{ name: "repo:owner/project" }],
+        list_complete: true,
+        cacheStatus: null,
+      }),
+      delete: deleteKey,
+    } as KVNamespace;
+
+    const response = await app.request(
+      "/api/repos/owner/project",
+      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: sessions },
+    );
+    expect(response.status).toBe(500);
+    expect(deleteKey).not.toHaveBeenCalled();
   });
 
   it("preserves the generic internal response for provider-level KV list failure", async () => {

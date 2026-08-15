@@ -32,6 +32,14 @@
         "name": "AUTH",
         "class_name": "ScottyAuthRegistry",
       },
+      {
+        "name": "RUNNER_REGISTRY",
+        "class_name": "ScottyRunnerRegistry",
+      },
+      {
+        "name": "SANDBOX_CONFIG",
+        "class_name": "ScottySandboxConfig",
+      },
     ],
   },
   "migrations": [
@@ -42,6 +50,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["ScottyAuthRegistry"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["ScottyRunnerRegistry", "ScottySandboxConfig"],
     },
   ],
   "containers": [
@@ -62,6 +74,14 @@
     {
       "binding": "BACKUP_BUCKET",
       "bucket_name": "scotty-backups",
+    },
+    {
+      "binding": "ARTIFACT_BUCKET",
+      "bucket_name": "scotty-artifacts",
+    },
+    {
+      "binding": "SANDBOX_BUNDLE_BUCKET",
+      "bucket_name": "scotty-sandbox-bundles",
     },
   ],
   "vars": {

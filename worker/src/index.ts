@@ -5,7 +5,12 @@ import {
   PI_CONSOLE_PUBLIC_PATH_SEGMENT,
   PI_CONSOLE_PROXY_PREFIX,
 } from "../../protocol/pi-console";
-import { parsePiAuthJsonOption, piProviderMetadata } from "../../protocol/pi-auth";
+import {
+  InstallationPiAuthRecordSchema,
+  digestPiAuthProviders,
+  parsePiAuthJsonOption,
+  piProviderMetadata,
+} from "../../protocol/pi-auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
@@ -34,6 +39,7 @@ import {
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
+import { FetchHttpClient } from "effect/unstable/http";
 import { sha256Hex } from "./digest";
 import {
   authRegistry,
@@ -52,6 +58,7 @@ import {
   unwrapAuthRpc,
 } from "./auth";
 import { ScottyAuthRegistry } from "./auth-object";
+import ScottyRunnerRegistryLive from "./runner-registry-object.ts";
 import {
   kvSessionProjectionStorage,
   listSessionProjections,
@@ -60,10 +67,16 @@ import {
 import {
   forgetRepoProjection,
   kvRepoProjectionStorage,
-  listRepoProjections,
+  projectRepoEntryBestEffort,
+  rebuildRepoProjection,
+  repoProjectionMatches,
   repoProjectionLayer,
-  trackRepoBestEffort,
 } from "./repo-projection";
+import {
+  decodeRepositoryRegistryRequest,
+  type RepositoryRegistryEntry,
+} from "../../protocol/repository";
+import { RepoVerifier, repoVerifierLayer } from "./repo-verifier";
 import {
   kvStatsProjectionStorage,
   readStats,
@@ -93,6 +106,7 @@ import {
   type SandboxConfigRpcResult,
   type ScottySandboxConfigStub,
 } from "./sandbox-config-object";
+import ScottySandboxConfigLive from "./sandbox-config-object.ts";
 import { inspectPassiveSession, steerPassiveSession } from "./passive-session";
 import { Sandbox as ScottySandbox } from "./session";
 
@@ -103,6 +117,9 @@ export {
   ScottySandbox,
   ScottySandboxConfig,
 };
+
+void ScottyRunnerRegistryLive;
+void ScottySandboxConfigLive;
 
 export const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
 const PUBLIC_AUTH_MUTATIONS = new Set([
@@ -119,6 +136,9 @@ const RunnerRegistrationInputSchema = Schema.Struct({
   replace: Schema.optionalKey(Schema.Boolean),
 });
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
+  onExcessProperty: "error",
+});
+const decodeInstallationPiAuthRecord = Schema.decodeUnknownOption(InstallationPiAuthRecordSchema, {
   onExcessProperty: "error",
 });
 const WorkerErrorSchema = Schema.Struct({
@@ -407,6 +427,14 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
 
 app.get("/api/auth/pi", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
+  const authority = unwrapSandboxConfigRpc(await sandboxConfig(c.env).piAuth());
+  if (authority !== null)
+    return c.json({
+      source: authority.source,
+      sourceDigest: authority.digest,
+      updatedAt: authority.updatedAt,
+      providers: piProviderMetadata(authority.providers),
+    });
   const providers = parsePiAuthJsonOption(c.env.PI_AUTH_JSON);
   if (Option.isNone(providers))
     throw new ScottyError("internal", "PI_AUTH_JSON is missing or invalid", {
@@ -414,8 +442,25 @@ app.get("/api/auth/pi", async (c) => {
       exitCode: 1,
     });
   return c.json({
-    sourceDigest: await sha256Hex(c.env.PI_AUTH_JSON),
+    source: "bootstrap" as const,
+    sourceDigest: await digestPiAuthProviders(providers.value),
+    updatedAt: null,
     providers: piProviderMetadata(providers.value),
+  });
+});
+
+app.post("/api/auth/pi", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  requireJsonContentType(c.req.raw);
+  const decoded = decodeInstallationPiAuthRecord(await readJsonBody(c.req.raw));
+  if (Option.isNone(decoded)) throw badRequest("Pi credential record is invalid");
+  if (decoded.value.source !== "sync") throw badRequest("Pi credential record source is invalid");
+  const authority = unwrapSandboxConfigRpc(await sandboxConfig(c.env).writePiAuth(decoded.value));
+  return c.json({
+    source: authority.source,
+    sourceDigest: authority.digest,
+    updatedAt: authority.updatedAt,
+    providers: piProviderMetadata(authority.providers),
   });
 });
 
@@ -576,26 +621,46 @@ app.post("/api/sessions", async (c) => {
 
 app.get("/api/repos", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
-  const result = await Effect.runPromise(
-    listRepoProjections.pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped, Effect.result),
-  );
-  return c.json(
-    Result.match(result, {
-      onFailure: (error) => {
-        throw error;
-      },
-      onSuccess: (repositories) => repositories,
+  const repositories = unwrapSandboxConfigRpc(await sandboxConfig(c.env).listRepos());
+  await repairRepoProjection(c.env, repositories);
+  return c.json(repositories);
+});
+
+app.post("/api/repos", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  requireJsonContentType(c.req.raw);
+  const decoded = decodeRepositoryRegistryRequest(await readJsonBody(c.req.raw));
+  if (Option.isNone(decoded)) throw badRequest("repo must be OWNER/NAME");
+
+  const verified = await verifyRepository(c.env, decoded.value.repo);
+  if (!verified.exists)
+    throw new ScottyError("not_found", `GitHub repository ${decoded.value.repo} was not found`, {
+      httpStatus: 404,
+      exitCode: 3,
+    });
+
+  const entry = unwrapSandboxConfigRpc(
+    await sandboxConfig(c.env).addRepo({
+      repo: decoded.value.repo,
+      defaultBranch: verified.defaultBranch,
     }),
   );
+  await Effect.runPromise(
+    projectRepoEntryBestEffort(entry).pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped),
+  );
+  return c.json(entry);
 });
 
 app.delete("/api/repos/:owner/:name", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const repo = parseRepo(`${c.req.param("owner")}/${c.req.param("name")}`);
+  const removed = unwrapSandboxConfigRpc(await sandboxConfig(c.env).removeRepo(repo));
   await Effect.runPromise(
     forgetRepoProjection(repo).pipe(Effect.provide(projectionLayers(c.env)), Effect.scoped),
   );
-  return c.json({ repo, forgotten: true });
+  // `forgotten` is the legacy browser acknowledgement; keep it while exposing
+  // the authority's actual no-op/removal result to newer clients.
+  return c.json({ repo, removed, forgotten: true });
 });
 
 app.get("/api/sessions", async (c) => {
@@ -1150,7 +1215,7 @@ function sandboxConfig(env: Bindings): ScottySandboxConfigStub {
 function unwrapSandboxConfigRpc<A>(result: SandboxConfigRpcResult<A>): A {
   if (result.ok) return result.value;
   const { reason, message } = result.error;
-  if (reason === "conflict") throw conflict(message);
+  if (reason === "conflict" || reason === "stale") throw conflict(message);
   if (reason === "invalid_input") throw badRequest(message);
   console.error("Sandbox configuration RPC failed", { reason });
   throw new ScottyError("internal", "Sandbox configuration failed", {
@@ -1335,13 +1400,60 @@ async function createTrackedSession(
         createdAt: session.createdAt,
       }).pipe(Effect.provide(projectionLayers(env)), Effect.scoped),
     );
-  await Effect.runPromise(
-    trackRepoBestEffort(session.repo, session.defaultBranch).pipe(
-      Effect.provide(projectionLayers(env)),
-      Effect.scoped,
+  if (session.status !== "failed" && session.status !== "gone") {
+    const entry = unwrapSandboxConfigRpc(
+      await sandboxConfig(env).addRepo({
+        repo: session.repo,
+        defaultBranch: session.defaultBranch,
+      }),
+    );
+    await Effect.runPromise(
+      projectRepoEntryBestEffort(entry).pipe(Effect.provide(projectionLayers(env)), Effect.scoped),
+    );
+  }
+  return { id, session };
+}
+
+async function verifyRepository(
+  env: Bindings,
+  repo: string,
+): Promise<{ readonly exists: true; readonly defaultBranch: string } | { readonly exists: false }> {
+  const result = await Effect.runPromise(
+    Effect.flatMap(RepoVerifier, (verifier) => verifier.verify(repo, env.GH_TOKEN)).pipe(
+      Effect.provide(repoVerifierLayer.pipe(Layer.provide(FetchHttpClient.layer))),
+      Effect.result,
     ),
   );
-  return { id, session };
+  if (Result.isFailure(result)) {
+    console.error("Repository verification failed", { reason: result.failure.reason });
+    throw new ScottyError("upstream", "Repository verification failed", {
+      httpStatus: 502,
+      exitCode: 1,
+      hint: "GitHub repository verification did not complete; retry the request",
+    });
+  }
+  return result.success;
+}
+
+async function repairRepoProjection(
+  env: Bindings,
+  repositories: ReadonlyArray<RepositoryRegistryEntry>,
+): Promise<void> {
+  const matches = await Effect.runPromise(
+    repoProjectionMatches(repositories).pipe(
+      Effect.provide(projectionLayers(env)),
+      Effect.scoped,
+      Effect.result,
+    ),
+  );
+  if (Result.isSuccess(matches) && matches.success) return;
+  await Effect.runPromise(
+    rebuildRepoProjection(repositories).pipe(
+      Effect.provide(projectionLayers(env)),
+      Effect.scoped,
+      Effect.ignore,
+    ),
+  );
 }
 
 function projectionLayers(env: Bindings) {
@@ -1369,15 +1481,27 @@ async function createSessionIdempotency(
     sha256Hex(
       JSON.stringify(
         input.provider === "runner"
-          ? [
-              input.title,
-              input.prompt,
-              input.provider,
-              input.runner,
-              input.repo,
-              input.hardCapSeconds,
-            ]
-          : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds],
+          ? input.newRepo
+            ? [
+                input.title,
+                input.prompt,
+                input.provider,
+                input.runner,
+                input.repo,
+                true,
+                input.hardCapSeconds,
+              ]
+            : [
+                input.title,
+                input.prompt,
+                input.provider,
+                input.runner,
+                input.repo,
+                input.hardCapSeconds,
+              ]
+          : input.newRepo
+            ? [input.title, input.prompt, input.provider, input.repo, true, input.hardCapSeconds]
+            : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds],
       ),
     ),
   ]);

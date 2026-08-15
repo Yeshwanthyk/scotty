@@ -12,7 +12,11 @@ import {
   type PiConsoleUnavailableV1,
 } from "../../protocol/pi-console";
 import { RUNNER_PROTOCOL_VERSION, type RunnerOperation } from "../../protocol/runner";
-import { piProviderMetadata } from "../../protocol/pi-auth";
+import {
+  makeInstallationPiAuthRecord,
+  piProviderMetadata,
+  type InstallationPiAuthRecord,
+} from "../../protocol/pi-auth";
 import {
   type Cause,
   Clock,
@@ -26,6 +30,7 @@ import {
   Schedule,
   Schema,
 } from "effect";
+import { FetchHttpClient } from "effect/unstable/http";
 import { BackupStore, backupStoreLayer } from "./backup-store";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
 import {
@@ -192,6 +197,12 @@ import {
   sessionProjectionLayer,
 } from "./session-projection";
 import { RolloutDiscovery, rolloutDiscoveryLayer } from "./rollout-discovery";
+import {
+  RepoVerifier,
+  RepoVerifierFailure,
+  repoVerifierLayer,
+  type VerifiedRepository,
+} from "./repo-verifier";
 import { sessionRoot, Workspace, workspaceLayer } from "./workspace";
 
 const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -280,6 +291,7 @@ type SandboxServices =
   | SandboxRuntime
   | SessionProjection
   | SessionStore
+  | RepoVerifier
   | Workspace;
 
 interface HardCapPayload {
@@ -321,6 +333,7 @@ export interface SandboxEffectOptions {
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly previewRequestForwarder?: (request: Request) => Promise<Response>;
   readonly hatchRequestForwarder?: (request: Request) => Promise<Response>;
+  readonly repoVerifier?: RepoVerifier["Service"];
 }
 
 export const SANDBOX_TEST_ACCEPT_EVIDENCE = Symbol("scotty.test.acceptEvidence");
@@ -361,6 +374,10 @@ type HostOperation = "destroy" | "expose" | "schedule" | "stop" | "unexpose";
 class HostOperationFailure extends Data.TaggedError("HostOperationFailure")<{
   readonly operation: HostOperation;
   readonly cause: unknown;
+}> {}
+
+class InstallationPiAuthRpcFailure extends Data.TaggedError("InstallationPiAuthRpcFailure")<{
+  readonly message: string;
 }> {}
 
 interface InFlightCreate {
@@ -660,6 +677,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const materializer = sandboxBundleMaterializerLayer.pipe(
       Layer.provide(Layer.merge(runtime, bundleStore)),
     );
+    const repoVerifier =
+      options.repoVerifier === undefined
+        ? repoVerifierLayer.pipe(Layer.provide(FetchHttpClient.layer))
+        : Layer.succeed(RepoVerifier)(options.repoVerifier);
 
     this.layer = Layer.mergeAll(
       store,
@@ -674,6 +695,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       containerAuthLayer.pipe(Layer.provide(runtime)),
       evidenceRecorder,
       materializer,
+      repoVerifier,
     );
   }
 
@@ -685,6 +707,39 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly readRecordProgram = Effect.fnUntraced(function* () {
     const store = yield* SessionStore;
     return Option.getOrUndefined(yield* store.read);
+  });
+
+  private readonly readInstallationPiAuthProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const result = yield* Effect.tryPromise({
+      try: () => this.env.SANDBOX_CONFIG.getByName("account").piAuth(),
+      catch: () =>
+        new InstallationPiAuthRpcFailure({
+          message: "Installation Pi credential authority is unavailable",
+        }),
+    });
+    if (!result.ok)
+      return yield* new InstallationPiAuthRpcFailure({
+        message: "Installation Pi credential authority is unavailable",
+      });
+    return result.value;
+  });
+
+  private readonly writeInstallationPiAuthProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: InstallationPiAuthRecord,
+  ) {
+    const result = yield* Effect.tryPromise({
+      try: () => this.env.SANDBOX_CONFIG.getByName("account").writePiAuth(record),
+      catch: () =>
+        new InstallationPiAuthRpcFailure({
+          message: "Installation Pi credential write-back failed",
+        }),
+    });
+    if (!result.ok)
+      return yield* new InstallationPiAuthRpcFailure({
+        message: "Installation Pi credential write-back failed",
+      });
+    return result.value;
   });
 
   private readonly deleteRuntimeEpochProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -1914,15 +1969,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
     prompt: string,
     nonce: string,
     startedAt: string,
+    verified: VerifiedRepository = record.repoExistsAtCreate
+      ? { exists: true, defaultBranch: record.defaultBranch }
+      : { exists: false },
   ) {
     const vault = yield* CredentialVault;
     const workspace = yield* Workspace;
+    const installationRecord = yield* this.readInstallationPiAuthProgram();
     const credential = yield* vault.seed({
-      piAuthJson: this.env.PI_AUTH_JSON,
+      ...(installationRecord === null
+        ? { piAuthJson: this.env.PI_AUTH_JSON }
+        : { installationRecord }),
       providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
       githubSentinel: `${GITHUB_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
     });
-    const worktree = yield* workspace.prepare(record, credential.githubSentinel);
+    const worktree = yield* workspace.prepare(record, credential.githubSentinel, verified);
     yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       operation: {
@@ -2134,6 +2195,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         { httpStatus: 400, exitCode: 2 },
       );
     const store = yield* SessionStore;
+    const verifier = yield* RepoVerifier;
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
     const nonce = crypto.randomUUID();
@@ -2146,8 +2208,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       execution: { provider: "cloudflare" },
       provider: "cloudflare",
       repo: input.repo,
-      repoExistsAtCreate: true,
-      defaultBranch: "dev",
+      repoExistsAtCreate: false,
+      defaultBranch: "main",
       branch: `scotty/${id}`,
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -2162,6 +2224,29 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (decisionBeforeSchedule.kind === "replay")
       return yield* this.replayCreateProgram(decisionBeforeSchedule.record, input.prompt);
 
+    const verified = yield* verifier.verify(input.repo, this.env.GH_TOKEN).pipe(
+      Effect.mapError(
+        (_failure: RepoVerifierFailure) =>
+          new ScottyError("upstream", "Repository verification failed", {
+            httpStatus: 502,
+            exitCode: 1,
+            hint: "GitHub repository verification did not complete; retry the request",
+          }),
+      ),
+    );
+    if (!verified.exists && !input.newRepo)
+      return yield* new ScottyError(
+        "not_found",
+        `GitHub repository ${input.repo} was not found; pass --new-repo to initialize it`,
+        { httpStatus: 404, exitCode: 3 },
+      );
+
+    const verifiedInitial: SessionRecord = {
+      ...initial,
+      repoExistsAtCreate: verified.exists,
+      defaultBranch: verified.exists ? verified.defaultBranch : "main",
+    };
+
     const sandboxConfigStatus = yield* Effect.tryPromise({
       try: () => this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).status(),
       catch: (cause) => this.upstreamError("Session setup failed", cause, id),
@@ -2170,7 +2255,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* this.upstreamError("Session setup failed", sandboxConfigStatus.error, id);
 
     const initialWithBundle: SessionRecord = {
-      ...initial,
+      ...verifiedInitial,
       sandboxBundle: {
         digest: sandboxConfigStatus.value.activeDigest,
         manifestVersion: 1,
@@ -2214,10 +2299,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
 
     const setup = yield* Effect.result(
-      this.prepareCloudflarePiCreateProgram(initialWithBundle, input.prompt, nonce, nowIso),
+      this.prepareCloudflarePiCreateProgram(
+        initialWithBundle,
+        input.prompt,
+        nonce,
+        nowIso,
+        verified,
+      ),
     );
     if (Result.isFailure(setup))
-      return yield* this.failCreateSetupProgram(initial.id, nonce, setup.failure);
+      return yield* this.failCreateSetupProgram(verifiedInitial.id, nonce, setup.failure);
     const completedAt = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(setup.success, new Date(completedAt)), completedAt);
   });
@@ -2243,11 +2334,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
     const currentCredential = yield* vault.require;
+    const installationRecord = yield* this.readInstallationPiAuthProgram();
     yield* containerAuth.quiescePiSession(record.id, currentCredential);
-    const credential = yield* vault.reseed({
-      piAuthJson: this.env.PI_AUTH_JSON,
-      providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-    });
+    const sentinelSeed = `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`;
+    const credential =
+      installationRecord === null
+        ? yield* vault.reseed({
+            piAuthJson: this.env.PI_AUTH_JSON,
+            providerSentinelSeed: sentinelSeed,
+          })
+        : yield* vault.reconcile(installationRecord, sentinelSeed);
     yield* containerAuth.refreshPiAuth(record.id, credential);
     yield* containerAuth.stopPiSession();
     yield* containerAuth.ensurePiSession(record.id, credential);
@@ -2406,7 +2502,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }));
         yield* hostEffect("schedule", () => this.scheduleHardCap(hardCapAt));
         yield* backups.restore(backup);
-        const credential = yield* vault.require;
+        const installationRecord = yield* this.readInstallationPiAuthProgram();
+        const credential =
+          installationRecord === null
+            ? yield* vault.require
+            : yield* vault.reconcile(
+                installationRecord,
+                `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
+              );
         yield* this.materializeAndSeedSandboxProgram(record, credential);
         yield* this.restorePiAndHatchProgram(
           operation.nonce,
@@ -4242,7 +4345,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
     nonce: string,
   ): Promise<void> {
     await this.#run(
-      Effect.flatMap(CredentialVault, (vault) => vault.persistRotation(sentinel, patch, nonce)),
+      Effect.gen({ self: this }, function* () {
+        const vault = yield* CredentialVault;
+        yield* vault.persistRotation(sentinel, patch, nonce);
+        const credential = yield* vault.require;
+        const providers = Object.fromEntries(
+          Object.entries(credential.providers).map(([providerId, provider]) => [
+            providerId,
+            provider.credential,
+          ]),
+        );
+        const record = yield* Effect.tryPromise({
+          try: () => makeInstallationPiAuthRecord(providers, credential.updatedAt, "rotation"),
+          catch: () =>
+            new InstallationPiAuthRpcFailure({
+              message: "Installation Pi credential write-back failed",
+            }),
+        });
+        yield* this.writeInstallationPiAuthProgram(record);
+      }),
     );
   }
 

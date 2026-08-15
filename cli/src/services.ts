@@ -6,6 +6,7 @@ import { Context, Data, Effect, Layer, Option, Result, Schema } from "effect";
 import lockfile from "proper-lockfile";
 import { decodePreviewCleanupOwnershipError } from "../../infra/preview-ownership.ts";
 import { CliError, EXIT, type Writer } from "./core";
+import { InstallationHostFailure, installationCommandFailure } from "./installation-diagnostics.ts";
 
 export interface CliDependencies {
   fetch: typeof fetch;
@@ -589,6 +590,7 @@ export const cliLayer = (
   | CliUpgrader
 > => {
   const dependencies = { ...defaultDependencies(), ...overrides };
+  const failInstallation = installationCommandFailure(dependencies.home, dependencies.env);
   return Layer.mergeAll(
     Layer.succeed(CliRuntime)({
       hostFetch: (request) => dependencies.fetch(request),
@@ -657,49 +659,73 @@ export const cliLayer = (
       plan: (request) =>
         Effect.tryPromise({
           try: () => dependencies.planCreateInstallation(request),
-          catch: () =>
-            new CliError(
-              "installation_create_plan_failed",
-              "Could not plan the Scotty installation",
-              "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
-              EXIT.GENERIC,
-            ),
-        }),
+          catch: (cause) => new InstallationHostFailure({ cause }),
+        }).pipe(
+          Effect.catchTag("InstallationHostFailure", ({ cause }) =>
+            failInstallation(cause, {
+              code: "installation_create_plan_failed",
+              message: "Could not plan the Scotty installation",
+              hint: "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
+              operation: "init",
+              phase: "plan",
+              installationName: request.installationName,
+              profile: request.profile,
+            }),
+          ),
+        ),
       create: (request) =>
         Effect.tryPromise({
           try: () => dependencies.createInstallation(request),
-          catch: () =>
-            new CliError(
-              "installation_create_failed",
-              "Could not create the Scotty installation",
-              "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
-              EXIT.GENERIC,
-            ),
-        }),
+          catch: (cause) => new InstallationHostFailure({ cause }),
+        }).pipe(
+          Effect.catchTag("InstallationHostFailure", ({ cause }) =>
+            failInstallation(cause, {
+              code: "installation_create_failed",
+              message: "Could not create the Scotty installation",
+              hint: "Check Cloudflare authentication, Docker, and permissions, then retry scotty init.",
+              operation: "init",
+              phase: "create",
+              installationName: request.installationName,
+              profile: request.profile,
+            }),
+          ),
+        ),
     }),
     Layer.succeed(InstallationDeployer)({
       plan: (request) =>
         Effect.tryPromise({
           try: () => dependencies.planInstallation(request),
-          catch: () =>
-            new CliError(
-              "installation_plan_failed",
-              "Could not plan the Scotty deployment",
-              "Check Cloudflare authentication and Docker, then retry scotty deploy.",
-              EXIT.GENERIC,
-            ),
-        }),
+          catch: (cause) => new InstallationHostFailure({ cause }),
+        }).pipe(
+          Effect.catchTag("InstallationHostFailure", ({ cause }) =>
+            failInstallation(cause, {
+              code: "installation_plan_failed",
+              message: "Could not plan the Scotty deployment",
+              hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
+              operation: "deploy",
+              phase: "plan",
+              installationName: request.installationName,
+              profile: request.profile,
+            }),
+          ),
+        ),
       deploy: (request) =>
         Effect.tryPromise({
           try: () => dependencies.deployInstallation(request),
-          catch: () =>
-            new CliError(
-              "installation_deploy_failed",
-              "Could not deploy the Scotty installation",
-              "Check Cloudflare authentication and Docker, then retry scotty deploy.",
-              EXIT.GENERIC,
-            ),
-        }),
+          catch: (cause) => new InstallationHostFailure({ cause }),
+        }).pipe(
+          Effect.catchTag("InstallationHostFailure", ({ cause }) =>
+            failInstallation(cause, {
+              code: "installation_deploy_failed",
+              message: "Could not deploy the Scotty installation",
+              hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
+              operation: "deploy",
+              phase: "apply",
+              installationName: request.installationName,
+              profile: request.profile,
+            }),
+          ),
+        ),
     }),
     Layer.succeed(CliUpgrader)({
       upgrade: (request) =>

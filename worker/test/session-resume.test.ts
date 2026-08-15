@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
+import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { ScottyError } from "../src/contracts";
 import {
   createSessionHarness,
@@ -75,6 +76,61 @@ describe("Sandbox resume orchestration", () => {
       ["enforceHardCap"],
     );
     assert.deepStrictEqual(harness.aborts, []);
+  });
+
+  it("applies only installation Pi authority newer than the session vault", async () => {
+    for (const [updatedAt, expectedAccess] of [
+      ["2025-12-31T00:00:00.000Z", "stored-access-token"],
+      ["2026-01-02T00:00:00.000Z", "installation-access"],
+    ] as const) {
+      const installationPiAuthRecord = await makeInstallationPiAuthRecord(
+        {
+          "openai-codex": {
+            type: "oauth",
+            access: "installation-access",
+            refresh: "installation-refresh",
+            expires: 1,
+          },
+        },
+        updatedAt,
+        "sync",
+      );
+      const harness = await createSessionHarness({
+        initialEntries: resumeEntries(),
+        installationPiAuthRecord,
+      });
+      await harness.sandbox.resumeScottySession();
+      const stored = harness.read<ReturnType<typeof makeStoredCredential>>(
+        sessionHarnessKeys.credential,
+      );
+      assert.strictEqual(
+        stored?.providers["openai-codex"]?.credential.type === "oauth"
+          ? stored.providers["openai-codex"].credential.access
+          : undefined,
+        expectedAccess,
+      );
+    }
+  });
+
+  it("treats an equal matching installation record as idempotent on resume", async () => {
+    const current = makeStoredCredential();
+    const providers = Object.fromEntries(
+      Object.entries(current.providers).map(([id, provider]) => [id, provider.credential]),
+    );
+    const installationPiAuthRecord = await makeInstallationPiAuthRecord(
+      providers,
+      current.updatedAt,
+      "rotation",
+    );
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: sleepingRecord(),
+        [sessionHarnessKeys.credential]: current,
+      },
+      installationPiAuthRecord,
+    });
+    await harness.sandbox.resumeScottySession();
+    assert.deepStrictEqual(harness.read(sessionHarnessKeys.credential), current);
   });
 
   it("rematerializes the pinned sandbox bundle after backup restore", async () => {

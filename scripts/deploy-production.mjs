@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import {
+  FAILURE_OUTPUT_TAIL_CHARACTERS,
+  redactProductionDeploymentOutput,
+} from "../cli/src/deployment-redaction.ts";
 import { parseContainerControlPlaneSnapshot } from "./container-control-plane.mjs";
 export const PRODUCTION_DEPLOY_STEPS = [
   {
@@ -72,58 +76,9 @@ const signaledChildren = new WeakSet();
 let interruptedSignal;
 
 const ANSI_ESCAPE = new RegExp(`${String.fromCodePoint(27)}\\[[0-?]*[ -/]*[@-~]`, "gu");
-const CLOUDFLARE_ACCOUNT_ID = /\b[0-9a-f]{32}\b/giu;
-const CLOUDFLARE_WORKER_URL = /https:\/\/[^\s'"`]+\.workers\.dev(?:\/[^\s'"`]*)?/giu;
-const RESOURCE_ID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
-const AUTHORIZATION_VALUE =
-  /(["']?\b(?:authorization|cf-aig-authorization)\b["']?\s*[:=]\s*)["']?(?:Bearer|Basic)\s+[^\s"',}\]]+["']?/giu;
-const CREDENTIAL_VALUE =
-  /(["']?\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|api[_-]?token|access[_-]?key|access[_-]?token|auth|key|password|refresh[_-]?token|secret(?:[_-]?access)?[_-]?key|token)\b["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}[\]]+)/giu;
-const FAILURE_OUTPUT_TAIL_CHARACTERS = 64 * 1_024;
 const stripAnsi = (value) => value.replaceAll("\r", "\n").replaceAll(ANSI_ESCAPE, "");
 
-export function redactProductionDeploymentOutput(value, environment = {}) {
-  let redacted = String(value);
-  const confirmation = environment.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED ?? "";
-  for (const field of confirmation.split(":")) {
-    const separator = field.indexOf("=");
-    if (separator === -1) continue;
-    const key = field.slice(0, separator);
-    const resourceName = field.slice(separator + 1);
-    if (
-      ![
-        "worker",
-        "runnerWorker",
-        "container",
-        "kv",
-        "r2",
-        "artifacts",
-        "sandboxBundles",
-        "previewBase",
-        "previewZone",
-      ].includes(key) ||
-      !resourceName
-    ) {
-      continue;
-    }
-    redacted = redacted.replaceAll(resourceName, `[redacted-${key}]`);
-  }
-  for (const [key, secret] of Object.entries(environment)) {
-    if (
-      /(?:AUTH|KEY|PASSWORD|SECRET|TOKEN)/u.test(key) &&
-      typeof secret === "string" &&
-      secret.length > 0
-    ) {
-      redacted = redacted.replaceAll(secret, "[redacted-secret]");
-    }
-  }
-  return redacted
-    .replaceAll(AUTHORIZATION_VALUE, "$1[redacted-secret]")
-    .replaceAll(CREDENTIAL_VALUE, "$1[redacted-secret]")
-    .replaceAll(CLOUDFLARE_WORKER_URL, "[redacted-worker-url]")
-    .replaceAll(CLOUDFLARE_ACCOUNT_ID, "[redacted-account-id]")
-    .replaceAll(RESOURCE_ID, "[redacted-resource-id]");
-}
+export { FAILURE_OUTPUT_TAIL_CHARACTERS, redactProductionDeploymentOutput };
 
 export async function persistProductionDeploymentFailureDiagnostic(
   { stdout = "", stderr = "" } = {},

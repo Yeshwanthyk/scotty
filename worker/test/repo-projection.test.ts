@@ -4,8 +4,11 @@ import { TestClock } from "effect/testing";
 import {
   forgetRepoProjection,
   listRepoProjections,
+  projectRepoEntryBestEffort,
   RepoProjection,
   RepoProjectionFailure,
+  rebuildRepoProjection,
+  repoProjectionMatches,
   repoProjectionLayer,
   trackRepoBestEffort,
 } from "../src/repo-projection";
@@ -173,6 +176,83 @@ describe("RepoProjection", () => {
           lastUsedAt: "2026-07-23T12:34:56.000Z",
         },
       ]);
+    }),
+  );
+
+  it.effect("matches the authority without writes and detects stale values", () =>
+    Effect.gen(function* () {
+      const storage = new InMemoryFaultInjectableFake();
+      const entry = {
+        repo: "owner/repo",
+        defaultBranch: "main",
+        addedAt: "2026-07-23T12:00:00.000Z",
+        lastUsedAt: "2026-07-23T12:34:56.000Z",
+      };
+      yield* withProjection(storage, projectRepoEntryBestEffort(entry));
+      const putsBefore = storage.calls("put").length;
+      const deletesBefore = storage.calls("delete").length;
+      const matches = yield* withProjection(storage, repoProjectionMatches([entry]));
+      assert.isTrue(matches);
+      assert.strictEqual(storage.calls("put").length, putsBefore);
+      assert.strictEqual(storage.calls("delete").length, deletesBefore);
+
+      const stale = yield* withProjection(
+        storage,
+        repoProjectionMatches([{ ...entry, defaultBranch: "trunk" }]),
+      );
+      assert.isFalse(stale);
+    }),
+  );
+
+  it.effect("rebuilds every repository projection and removes stale repository keys only", () =>
+    Effect.gen(function* () {
+      const storage = new InMemoryFaultInjectableFake();
+      storage.values.set("repo:owner/stale", {
+        version: 1,
+        repo: "owner/stale",
+        defaultBranch: "main",
+        addedAt: "2026-07-20T12:00:00.000Z",
+        lastUsedAt: "2026-07-20T12:00:00.000Z",
+      });
+      storage.values.set("repo:OWNER/KEEP", {
+        version: 1,
+        repo: "OWNER/KEEP",
+        defaultBranch: "main",
+        addedAt: "2026-07-21T12:00:00.000Z",
+        lastUsedAt: "2026-07-21T12:00:00.000Z",
+      });
+      storage.values.set("session:keep", { status: "warm" });
+      const entries = [
+        {
+          repo: "owner/newer",
+          defaultBranch: "trunk",
+          addedAt: "2026-07-22T12:00:00.000Z",
+          lastUsedAt: "2026-07-23T12:00:00.000Z",
+        },
+        {
+          repo: "owner/older",
+          defaultBranch: "main",
+          addedAt: "2026-07-19T12:00:00.000Z",
+          lastUsedAt: "2026-07-20T12:00:00.000Z",
+        },
+      ];
+
+      yield* withProjection(storage, rebuildRepoProjection(entries));
+      assert.isFalse(storage.values.has("repo:owner/stale"));
+      assert.isFalse(storage.values.has("repo:OWNER/KEEP"));
+      assert.deepStrictEqual(storage.values.get("session:keep"), { status: "warm" });
+      assert.deepStrictEqual(storage.values.get("repo:owner/newer"), {
+        version: 1,
+        ...entries[0],
+      });
+      assert.deepStrictEqual(storage.values.get("repo:owner/older"), {
+        version: 1,
+        ...entries[1],
+      });
+      assert.deepStrictEqual(
+        storage.calls("delete").map(([key]) => key),
+        ["repo:owner/stale", "repo:OWNER/KEEP"],
+      );
     }),
   );
 });

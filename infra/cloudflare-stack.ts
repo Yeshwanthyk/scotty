@@ -1,6 +1,7 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
+import { CLOUDFLARE_BINDING_TOPOLOGY } from "../scripts/cloudflare-topology-data.mjs";
 import { makeScottyRunnerWorker, ScottyRunnerWorker } from "../worker/src/runner-worker.ts";
 import { bindExternalSandboxContainer } from "./external-sandbox-container-binding.ts";
 import {
@@ -31,25 +32,11 @@ export const makeCloudflareStackTopology = (installation: InstallationTopology) 
       htmlHandling: "none",
       notFoundHandling: "404-page",
     },
-    durableObject: {
-      logicalId: "Sandbox",
-      bindingName: "SANDBOX",
-      className: "ScottySandbox",
-    },
-    authDurableObject: {
-      logicalId: "AuthRegistry",
-      bindingName: "AUTH",
-      className: "ScottyAuthRegistry",
-    },
-    runnerRegistryDurableObject: {
-      logicalId: "RunnerRegistry",
-      bindingName: "RUNNER_REGISTRY",
-      className: "ScottyRunnerRegistry",
-    },
+    durableObject: CLOUDFLARE_BINDING_TOPOLOGY.durableObject,
+    authDurableObject: CLOUDFLARE_BINDING_TOPOLOGY.authDurableObject,
+    runnerRegistryDurableObject: CLOUDFLARE_BINDING_TOPOLOGY.runnerRegistryDurableObject,
     runnerDurableObject: {
-      logicalId: "Runner",
-      bindingName: "RUNNERS",
-      className: "ScottyRunner",
+      ...CLOUDFLARE_BINDING_TOPOLOGY.runnerDurableObject,
       workerName: installation.runnerWorkerName,
     },
     container: {
@@ -61,30 +48,22 @@ export const makeCloudflareStackTopology = (installation: InstallationTopology) 
       maxInstances: 10,
     },
     kv: {
-      logicalId: "SessionsProjection",
-      bindingName: "SESSIONS",
+      ...CLOUDFLARE_BINDING_TOPOLOGY.kv,
       title: installation.kvTitle,
     },
     r2: {
-      logicalId: "BackupBucket",
-      bindingName: "BACKUP_BUCKET",
+      ...CLOUDFLARE_BINDING_TOPOLOGY.r2,
       name: installation.backupBucketName,
     },
     artifactR2: {
-      logicalId: "ArtifactBucket",
-      bindingName: "ARTIFACT_BUCKET",
+      ...CLOUDFLARE_BINDING_TOPOLOGY.artifactR2,
       name: installation.artifactBucketName,
     },
     sandboxBundleR2: {
-      logicalId: "SandboxBundleBucket",
-      bindingName: "SANDBOX_BUNDLE_BUCKET",
+      ...CLOUDFLARE_BINDING_TOPOLOGY.sandboxBundleR2,
       name: installation.sandboxBundleBucketName,
     },
-    sandboxConfigDurableObject: {
-      logicalId: "SandboxConfig",
-      bindingName: "SANDBOX_CONFIG",
-      className: "ScottySandboxConfig",
-    },
+    sandboxConfigDurableObject: CLOUDFLARE_BINDING_TOPOLOGY.sandboxConfigDurableObject,
     preview:
       installation.preview === undefined
         ? undefined

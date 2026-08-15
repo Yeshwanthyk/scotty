@@ -1,12 +1,12 @@
 import { join } from "node:path";
 import {
+  digestPiAuthProviders,
   parsePiAuthJsonOption,
   piProviderMetadata,
   type PiCredential,
 } from "../../protocol/pi-auth";
 import { Effect, Option } from "effect";
 import { CliError, EXIT } from "./core";
-import { sha256Hex } from "./dependencies";
 import { CliRuntime, FileSystem, ProcessRunner } from "./services";
 
 const authFailure = (message: string, hint: string): CliError =>
@@ -115,6 +115,7 @@ export const readLocalPiAuth = Effect.fnUntraced(function* (path?: string) {
   const codex = decoded.value["openai-codex"];
   if (codex?.type === "oauth")
     normalized["openai-codex"] = {
+      ...codex,
       type: "oauth",
       refresh: codex.refresh,
       access: codex.access,
@@ -126,11 +127,17 @@ export const readLocalPiAuth = Effect.fnUntraced(function* (path?: string) {
       "Pi auth.json has no credential supported by Scotty",
       "Sign in to OpenAI or OpenAI Codex with Pi, then retry scotty auth sync.",
     );
-  const json = JSON.stringify(normalized);
   return {
     path: authPath,
-    json,
-    sourceDigest: yield* sha256Hex(json),
+    providerStore: normalized,
+    sourceDigest: yield* Effect.tryPromise({
+      try: () => digestPiAuthProviders(normalized),
+      catch: () =>
+        authFailure(
+          "Could not digest Pi auth.json",
+          "Retry scotty auth sync. If the problem continues, update your local runtime.",
+        ),
+    }),
     providers: piProviderMetadata(normalized),
   };
 });

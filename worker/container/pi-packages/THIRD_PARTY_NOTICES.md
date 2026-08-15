@@ -20,3 +20,9 @@ The container includes the exact source and npm pins recorded in [`manifest.json
   `sources/scotty-hatch/LICENSE`.
 - `@ogulcancelik/pi-codex-compaction` is MIT licensed. Its package license is installed with the
   pinned npm package in the container image.
+
+The image install projection is Scotty-owned and does not rewrite the Git-tracked vendor
+checkouts. At image build it omits `@anthropic-ai/claude-agent-sdk` from `pi-subagents` and
+peers `pi-tasks`' `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui` onto the
+already-installed global Pi, so Claude Code and Codex CLI backends are not shipped. Keep
+`pi-codex-compaction`; it supports Pi's `openai-codex` provider, not the Codex CLI.

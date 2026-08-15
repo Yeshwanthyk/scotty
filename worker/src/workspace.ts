@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 import { SESSION_ROOT, type SessionRecord } from "./contracts";
+import type { VerifiedRepository } from "./repo-verifier";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 
 export interface PreparedWorkspace {
@@ -12,6 +13,7 @@ interface WorkspaceShape {
   readonly prepare: (
     record: SessionRecord,
     githubSentinel: string,
+    verified?: VerifiedRepository,
   ) => Effect.Effect<PreparedWorkspace, SandboxRuntimeFailure>;
 }
 
@@ -21,19 +23,20 @@ export const workspaceLayer: Layer.Layer<Workspace, never, SandboxRuntime> = Lay
   Workspace,
   Effect.map(SandboxRuntime, (runtime) =>
     Workspace.of({
-      prepare: Effect.fnUntraced(function* (record, githubSentinel) {
+      prepare: Effect.fnUntraced(function* (record, githubSentinel, verified) {
         const root = sessionRoot(record.id);
         const url = `https://github.com/${record.repo}.git`;
         const env = { GH_TOKEN: githubSentinel, GIT_TERMINAL_PROMPT: "0" };
-        const repoView = yield* runtime.exec(
-          `gh repo view ${shellQuote(record.repo)} --json defaultBranchRef --jq '.defaultBranchRef.name'`,
-          { env, timeout: 60_000 },
-        );
+        const repository =
+          verified ??
+          (record.repoExistsAtCreate
+            ? { exists: true as const, defaultBranch: record.defaultBranch }
+            : { exists: false as const });
 
         yield* runtime.execChecked(
           `rm -rf ${shellQuote(root)} && mkdir -p ${shellQuote(SESSION_ROOT)}`,
         );
-        if (!repoView.success || !repoView.stdout.trim()) {
+        if (!repository.exists) {
           yield* runtime.execChecked(
             `git init -b main ${shellQuote(root)} && git -C ${shellQuote(root)} remote add origin ${shellQuote(url)} && git -C ${shellQuote(root)} checkout -b ${shellQuote(record.branch)}`,
             { env },
@@ -42,7 +45,7 @@ export const workspaceLayer: Layer.Layer<Workspace, never, SandboxRuntime> = Lay
           return { root, defaultBranch: "main", repoExists: false };
         }
 
-        const defaultBranch = repoView.stdout.trim();
+        const defaultBranch = repository.defaultBranch;
         const basic = btoa(`x-access-token:${githubSentinel}`);
         yield* runtime.execChecked(
           `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch ${shellQuote(defaultBranch)} --single-branch ${shellQuote(url)} ${shellQuote(root)}`,
