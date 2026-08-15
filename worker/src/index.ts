@@ -58,7 +58,6 @@ import {
   unwrapAuthRpc,
 } from "./auth";
 import { ScottyAuthRegistry } from "./auth-object";
-import ScottyRunnerRegistryLive from "./runner-registry-object.ts";
 import {
   kvSessionProjectionStorage,
   listSessionProjections,
@@ -106,7 +105,6 @@ import {
   type SandboxConfigRpcResult,
   type ScottySandboxConfigStub,
 } from "./sandbox-config-object";
-import ScottySandboxConfigLive from "./sandbox-config-object.ts";
 import { inspectPassiveSession, steerPassiveSession } from "./passive-session";
 import { Sandbox as ScottySandbox } from "./session";
 
@@ -117,9 +115,6 @@ export {
   ScottySandbox,
   ScottySandboxConfig,
 };
-
-void ScottyRunnerRegistryLive;
-void ScottySandboxConfigLive;
 
 export const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
 const PUBLIC_AUTH_MUTATIONS = new Set([

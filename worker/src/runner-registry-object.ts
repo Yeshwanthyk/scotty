@@ -1,10 +1,6 @@
-import {
-  DurableObject,
-  DurableObjectState,
-  type DurableObjectShape,
-} from "alchemy/Cloudflare/Workers";
-import type { RuntimeContext } from "alchemy";
-import { Effect } from "effect";
+import { DurableObject } from "cloudflare:workers";
+import { Effect, Result } from "effect";
+import type { Bindings } from "./bindings";
 import {
   type IssuedRunnerCredential,
   RunnerRegistry,
@@ -28,74 +24,63 @@ const runnerRegistryRpcError = ({
   message,
 }: RunnerRegistryFailure): RunnerRegistryRpcError => ({ reason, message });
 
-interface ScottyRunnerRegistryShape extends DurableObjectShape {
-  readonly authenticate: (
+export class ScottyRunnerRegistry extends DurableObject<Bindings> {
+  private readonly layer;
+
+  constructor(ctx: DurableObjectState, env: Bindings) {
+    super(ctx, env);
+    this.layer = runnerRegistryLayer(durableObjectRunnerAuthorityStorage(ctx.storage));
+  }
+
+  authenticate(
     name: string,
     credential: string,
-  ) => Effect.Effect<RunnerRegistryRpcResult<RunnerRegistrationView>, never, RuntimeContext>;
-  readonly get: (
-    name: string,
-  ) => Effect.Effect<RunnerRegistryRpcResult<RunnerRegistrationView>, never, RuntimeContext>;
-  readonly list: () => Effect.Effect<
-    RunnerRegistryRpcResult<ReadonlyArray<RunnerRegistrationView>>,
-    never,
-    RuntimeContext
-  >;
-  readonly register: (
+  ): Promise<RunnerRegistryRpcResult<RunnerRegistrationView>> {
+    return this.#run(
+      Effect.flatMap(RunnerRegistry, (registry) => registry.authenticate({ name, credential })),
+    );
+  }
+
+  get(name: string): Promise<RunnerRegistryRpcResult<RunnerRegistrationView>> {
+    return this.#run(Effect.flatMap(RunnerRegistry, (registry) => registry.get(name)));
+  }
+
+  list(): Promise<RunnerRegistryRpcResult<ReadonlyArray<RunnerRegistrationView>>> {
+    return this.#run(Effect.flatMap(RunnerRegistry, (registry) => registry.list()));
+  }
+
+  register(
     name: string,
     replace: boolean,
-  ) => Effect.Effect<RunnerRegistryRpcResult<IssuedRunnerCredential>, never, RuntimeContext>;
-  readonly remove: (
-    name: string,
-  ) => Effect.Effect<RunnerRegistryRpcResult<void>, never, RuntimeContext>;
-}
-
-export class ScottyRunnerRegistry extends DurableObject<
-  ScottyRunnerRegistry,
-  ScottyRunnerRegistryShape
->()("ScottyRunnerRegistry") {}
-
-export default ScottyRunnerRegistry.make<never>(
-  Effect.gen(function* () {
-    const state = yield* DurableObjectState;
-    const layer = runnerRegistryLayer(durableObjectRunnerAuthorityStorage(state.raw.storage));
-
-    const run = <A>(
-      operation: Effect.Effect<A, RunnerRegistryFailure, RunnerRegistry>,
-    ): Effect.Effect<RunnerRegistryRpcResult<A>, never, RuntimeContext> =>
-      operation.pipe(
-        Effect.provide(layer),
-        Effect.match({
-          onFailure: (error) => ({
-            ok: false as const,
-            error: runnerRegistryRpcError(error),
-          }),
-          onSuccess: (value) => ({ ok: true as const, value }),
+  ): Promise<RunnerRegistryRpcResult<IssuedRunnerCredential>> {
+    return this.#run(
+      Effect.flatMap(RunnerRegistry, (registry) =>
+        registry.register({
+          name,
+          credential: randomRunnerCredential(),
+          replace,
         }),
-      );
+      ),
+    );
+  }
 
-    return Effect.succeed({
-      authenticate: (name: string, credential: string) =>
-        run(
-          Effect.flatMap(RunnerRegistry, (registry) => registry.authenticate({ name, credential })),
-        ),
-      get: (name: string) => run(Effect.flatMap(RunnerRegistry, (registry) => registry.get(name))),
-      list: () => run(Effect.flatMap(RunnerRegistry, (registry) => registry.list())),
-      register: (name: string, replace: boolean) =>
-        run(
-          Effect.flatMap(RunnerRegistry, (registry) =>
-            registry.register({
-              name,
-              credential: randomRunnerCredential(),
-              replace,
-            }),
-          ),
-        ),
-      remove: (name: string) =>
-        run(Effect.flatMap(RunnerRegistry, (registry) => registry.remove(name))),
+  remove(name: string): Promise<RunnerRegistryRpcResult<void>> {
+    return this.#run(Effect.flatMap(RunnerRegistry, (registry) => registry.remove(name)));
+  }
+
+  async #run<A>(
+    operation: Effect.Effect<A, RunnerRegistryFailure, RunnerRegistry>,
+  ): Promise<RunnerRegistryRpcResult<A>> {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
+    const result = await Effect.runPromise(
+      operation.pipe(Effect.provide(this.layer), Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => ({ ok: false, error: runnerRegistryRpcError(error) }),
+      onSuccess: (value) => ({ ok: true, value }),
     });
-  }),
-);
+  }
+}
 
 export type ScottyRunnerRegistryStub = {
   readonly authenticate: (
