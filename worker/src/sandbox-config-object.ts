@@ -5,6 +5,14 @@ import {
 } from "alchemy/Cloudflare/Workers";
 import type { RuntimeContext } from "alchemy";
 import { Effect } from "effect";
+import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
+import {
+  InstallationPiAuthStore,
+  type InstallationPiAuthFailure,
+  type InstallationPiAuthFailureReason,
+  durableObjectInstallationPiAuthStorage,
+  installationPiAuthStoreLayer,
+} from "./installation-pi-auth-store";
 import type { SandboxActivateInput, SandboxConfigStatus } from "./sandbox-config-contracts";
 import {
   SandboxConfigStore,
@@ -16,7 +24,7 @@ import {
 export const SANDBOX_CONFIG_OBJECT_NAME = "account";
 
 export interface SandboxConfigRpcError {
-  readonly reason: SandboxConfigFailure["reason"];
+  readonly reason: SandboxConfigFailure["reason"] | InstallationPiAuthFailureReason;
   readonly message: string;
 }
 
@@ -27,7 +35,10 @@ export type SandboxConfigRpcResult<A> =
 const sandboxConfigRpcError = ({
   reason,
   message,
-}: SandboxConfigFailure): SandboxConfigRpcError => ({ reason, message });
+}: SandboxConfigFailure | InstallationPiAuthFailure): SandboxConfigRpcError => ({
+  reason,
+  message,
+});
 
 interface ScottySandboxConfigShape extends DurableObjectShape {
   readonly status: () => Effect.Effect<
@@ -38,6 +49,14 @@ interface ScottySandboxConfigShape extends DurableObjectShape {
   readonly activate: (
     input: SandboxActivateInput,
   ) => Effect.Effect<SandboxConfigRpcResult<SandboxConfigStatus>, never, RuntimeContext>;
+  readonly piAuth: () => Effect.Effect<
+    SandboxConfigRpcResult<InstallationPiAuthRecord | null>,
+    never,
+    RuntimeContext
+  >;
+  readonly writePiAuth: (
+    input: InstallationPiAuthRecord,
+  ) => Effect.Effect<SandboxConfigRpcResult<InstallationPiAuthRecord>, never, RuntimeContext>;
 }
 
 export class ScottySandboxConfig extends DurableObject<
@@ -50,6 +69,9 @@ export default ScottySandboxConfig.make<never>(
     const state = yield* DurableObjectState;
     const layer = sandboxConfigStoreLayer(
       durableObjectSandboxConfigAuthorityStorage(state.raw.storage),
+    );
+    const piAuthLayer = installationPiAuthStoreLayer(
+      durableObjectInstallationPiAuthStorage(state.raw.storage),
     );
 
     const run = <A>(
@@ -66,10 +88,24 @@ export default ScottySandboxConfig.make<never>(
         }),
       );
 
+    const runPiAuth = <A>(
+      operation: Effect.Effect<A, InstallationPiAuthFailure, InstallationPiAuthStore>,
+    ): Effect.Effect<SandboxConfigRpcResult<A>, never, RuntimeContext> =>
+      operation.pipe(
+        Effect.provide(piAuthLayer),
+        Effect.match({
+          onFailure: (error) => ({ ok: false as const, error: sandboxConfigRpcError(error) }),
+          onSuccess: (value) => ({ ok: true as const, value }),
+        }),
+      );
+
     return Effect.succeed({
       status: () => run(Effect.flatMap(SandboxConfigStore, (store) => store.status())),
       activate: (input: SandboxActivateInput) =>
         run(Effect.flatMap(SandboxConfigStore, (store) => store.activate(input))),
+      piAuth: () => runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.read)),
+      writePiAuth: (input: InstallationPiAuthRecord) =>
+        runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.write(input))),
     });
   }),
 );
@@ -79,6 +115,10 @@ export type ScottySandboxConfigStub = {
   readonly activate: (
     input: SandboxActivateInput,
   ) => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
+  readonly piAuth: () => Promise<SandboxConfigRpcResult<InstallationPiAuthRecord | null>>;
+  readonly writePiAuth: (
+    input: InstallationPiAuthRecord,
+  ) => Promise<SandboxConfigRpcResult<InstallationPiAuthRecord>>;
 };
 
 export interface ScottySandboxConfigNamespace {

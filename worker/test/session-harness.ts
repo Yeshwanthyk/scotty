@@ -8,6 +8,7 @@ import type {
 import { Data, Match, Result } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import type { RunnerOperation } from "../../protocol/runner";
+import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
 import type { Bindings } from "../src/bindings";
 import type {
   CreateSessionInput,
@@ -284,6 +285,8 @@ export interface HarnessOptions {
   readonly sandboxNamespace?: Bindings["SANDBOX"];
   readonly sandboxConfigStatus?: SandboxConfigStatus;
   readonly sandboxConfigStatusFailure?: "rpc-error" | "throw";
+  readonly installationPiAuthRecord?: InstallationPiAuthRecord;
+  readonly installationPiAuthWriteFailure?: boolean;
   readonly sandboxBundleObjects?: ReadonlyArray<{
     readonly digest: string;
     readonly gzip: Uint8Array;
@@ -336,6 +339,7 @@ export interface SessionHarness {
   readonly read: <A>(key: string) => A | undefined;
   readonly readRecord: () => SessionRecord | undefined;
   readonly sandboxConfigStatusCallCount: () => number;
+  readonly installationPiAuthWrites: ReadonlyArray<InstallationPiAuthRecord>;
 }
 
 class HarnessStorage {
@@ -566,6 +570,7 @@ export const lifecycleWallClock = {
 
 export async function createSessionHarness(options: HarnessOptions = {}): Promise<SessionHarness> {
   const events: string[] = [];
+  const installationPiAuthWrites: InstallationPiAuthRecord[] = [];
   const schedules: RecordedSchedule[] = [];
   const deletedSchedules: string[] = [];
   const aborts: string[] = [];
@@ -848,6 +853,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           ok: true,
           value: { schemaVersion: 1, revision: 1, activeDigest: null },
         }),
+        piAuth: async () => ({ ok: true, value: options.installationPiAuthRecord ?? null }),
+        writePiAuth: async (record) => {
+          events.push("installation-pi-auth:write");
+          installationPiAuthWrites.push(record);
+          if (options.installationPiAuthWriteFailure)
+            return {
+              ok: false,
+              error: { reason: "storage" as const, message: "injected write failure" },
+            };
+          return { ok: true, value: record };
+        },
       }),
     },
     SESSIONS: sessions,
@@ -1320,6 +1336,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     read: <A>(key: string) => storage.read<A>(key),
     readRecord: () => storage.read<SessionRecord>(RECORD_KEY),
     sandboxConfigStatusCallCount: () => sandboxConfigStatusCalls,
+    installationPiAuthWrites,
   };
 }
 

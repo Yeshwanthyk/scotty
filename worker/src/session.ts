@@ -12,7 +12,11 @@ import {
   type PiConsoleUnavailableV1,
 } from "../../protocol/pi-console";
 import { RUNNER_PROTOCOL_VERSION, type RunnerOperation } from "../../protocol/runner";
-import { piProviderMetadata } from "../../protocol/pi-auth";
+import {
+  makeInstallationPiAuthRecord,
+  piProviderMetadata,
+  type InstallationPiAuthRecord,
+} from "../../protocol/pi-auth";
 import {
   type Cause,
   Clock,
@@ -363,6 +367,10 @@ class HostOperationFailure extends Data.TaggedError("HostOperationFailure")<{
   readonly cause: unknown;
 }> {}
 
+class InstallationPiAuthRpcFailure extends Data.TaggedError("InstallationPiAuthRpcFailure")<{
+  readonly message: string;
+}> {}
+
 interface InFlightCreate {
   readonly id: string;
   readonly keyDigest: string | undefined;
@@ -685,6 +693,39 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly readRecordProgram = Effect.fnUntraced(function* () {
     const store = yield* SessionStore;
     return Option.getOrUndefined(yield* store.read);
+  });
+
+  private readonly readInstallationPiAuthProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const result = yield* Effect.tryPromise({
+      try: () => this.env.SANDBOX_CONFIG.getByName("account").piAuth(),
+      catch: () =>
+        new InstallationPiAuthRpcFailure({
+          message: "Installation Pi credential authority is unavailable",
+        }),
+    });
+    if (!result.ok)
+      return yield* new InstallationPiAuthRpcFailure({
+        message: "Installation Pi credential authority is unavailable",
+      });
+    return result.value;
+  });
+
+  private readonly writeInstallationPiAuthProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: InstallationPiAuthRecord,
+  ) {
+    const result = yield* Effect.tryPromise({
+      try: () => this.env.SANDBOX_CONFIG.getByName("account").writePiAuth(record),
+      catch: () =>
+        new InstallationPiAuthRpcFailure({
+          message: "Installation Pi credential write-back failed",
+        }),
+    });
+    if (!result.ok)
+      return yield* new InstallationPiAuthRpcFailure({
+        message: "Installation Pi credential write-back failed",
+      });
+    return result.value;
   });
 
   private readonly deleteRuntimeEpochProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -1917,8 +1958,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const vault = yield* CredentialVault;
     const workspace = yield* Workspace;
+    const installationRecord = yield* this.readInstallationPiAuthProgram();
     const credential = yield* vault.seed({
-      piAuthJson: this.env.PI_AUTH_JSON,
+      ...(installationRecord === null
+        ? { piAuthJson: this.env.PI_AUTH_JSON }
+        : { installationRecord }),
       providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
       githubSentinel: `${GITHUB_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
     });
@@ -2243,11 +2287,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
     const currentCredential = yield* vault.require;
+    const installationRecord = yield* this.readInstallationPiAuthProgram();
     yield* containerAuth.quiescePiSession(record.id, currentCredential);
-    const credential = yield* vault.reseed({
-      piAuthJson: this.env.PI_AUTH_JSON,
-      providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-    });
+    const sentinelSeed = `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`;
+    const credential =
+      installationRecord === null
+        ? yield* vault.reseed({
+            piAuthJson: this.env.PI_AUTH_JSON,
+            providerSentinelSeed: sentinelSeed,
+          })
+        : yield* vault.reconcile(installationRecord, sentinelSeed);
     yield* containerAuth.refreshPiAuth(record.id, credential);
     yield* containerAuth.stopPiSession();
     yield* containerAuth.ensurePiSession(record.id, credential);
@@ -2406,7 +2455,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }));
         yield* hostEffect("schedule", () => this.scheduleHardCap(hardCapAt));
         yield* backups.restore(backup);
-        const credential = yield* vault.require;
+        const installationRecord = yield* this.readInstallationPiAuthProgram();
+        const credential =
+          installationRecord === null
+            ? yield* vault.require
+            : yield* vault.reconcile(
+                installationRecord,
+                `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
+              );
         yield* this.materializeAndSeedSandboxProgram(record, credential);
         yield* this.restorePiAndHatchProgram(
           operation.nonce,
@@ -4242,7 +4298,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
     nonce: string,
   ): Promise<void> {
     await this.#run(
-      Effect.flatMap(CredentialVault, (vault) => vault.persistRotation(sentinel, patch, nonce)),
+      Effect.gen({ self: this }, function* () {
+        const vault = yield* CredentialVault;
+        yield* vault.persistRotation(sentinel, patch, nonce);
+        const credential = yield* vault.require;
+        const providers = Object.fromEntries(
+          Object.entries(credential.providers).map(([providerId, provider]) => [
+            providerId,
+            provider.credential,
+          ]),
+        );
+        const record = yield* Effect.tryPromise({
+          try: () => makeInstallationPiAuthRecord(providers, credential.updatedAt, "rotation"),
+          catch: () =>
+            new InstallationPiAuthRpcFailure({
+              message: "Installation Pi credential write-back failed",
+            }),
+        });
+        yield* this.writeInstallationPiAuthProgram(record);
+      }),
     );
   }
 

@@ -5,7 +5,12 @@ import {
   PI_CONSOLE_PUBLIC_PATH_SEGMENT,
   PI_CONSOLE_PROXY_PREFIX,
 } from "../../protocol/pi-console";
-import { parsePiAuthJsonOption, piProviderMetadata } from "../../protocol/pi-auth";
+import {
+  InstallationPiAuthRecordSchema,
+  digestPiAuthProviders,
+  parsePiAuthJsonOption,
+  piProviderMetadata,
+} from "../../protocol/pi-auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
@@ -124,6 +129,9 @@ const RunnerRegistrationInputSchema = Schema.Struct({
   replace: Schema.optionalKey(Schema.Boolean),
 });
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
+  onExcessProperty: "error",
+});
+const decodeInstallationPiAuthRecord = Schema.decodeUnknownOption(InstallationPiAuthRecordSchema, {
   onExcessProperty: "error",
 });
 const WorkerErrorSchema = Schema.Struct({
@@ -412,6 +420,14 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
 
 app.get("/api/auth/pi", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
+  const authority = unwrapSandboxConfigRpc(await sandboxConfig(c.env).piAuth());
+  if (authority !== null)
+    return c.json({
+      source: authority.source,
+      sourceDigest: authority.digest,
+      updatedAt: authority.updatedAt,
+      providers: piProviderMetadata(authority.providers),
+    });
   const providers = parsePiAuthJsonOption(c.env.PI_AUTH_JSON);
   if (Option.isNone(providers))
     throw new ScottyError("internal", "PI_AUTH_JSON is missing or invalid", {
@@ -419,8 +435,25 @@ app.get("/api/auth/pi", async (c) => {
       exitCode: 1,
     });
   return c.json({
-    sourceDigest: await sha256Hex(c.env.PI_AUTH_JSON),
+    source: "bootstrap" as const,
+    sourceDigest: await digestPiAuthProviders(providers.value),
+    updatedAt: null,
     providers: piProviderMetadata(providers.value),
+  });
+});
+
+app.post("/api/auth/pi", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  requireJsonContentType(c.req.raw);
+  const decoded = decodeInstallationPiAuthRecord(await readJsonBody(c.req.raw));
+  if (Option.isNone(decoded)) throw badRequest("Pi credential record is invalid");
+  if (decoded.value.source !== "sync") throw badRequest("Pi credential record source is invalid");
+  const authority = unwrapSandboxConfigRpc(await sandboxConfig(c.env).writePiAuth(decoded.value));
+  return c.json({
+    source: authority.source,
+    sourceDigest: authority.digest,
+    updatedAt: authority.updatedAt,
+    providers: piProviderMetadata(authority.providers),
   });
 });
 
@@ -1155,7 +1188,7 @@ function sandboxConfig(env: Bindings): ScottySandboxConfigStub {
 function unwrapSandboxConfigRpc<A>(result: SandboxConfigRpcResult<A>): A {
   if (result.ok) return result.value;
   const { reason, message } = result.error;
-  if (reason === "conflict") throw conflict(message);
+  if (reason === "conflict" || reason === "stale") throw conflict(message);
   if (reason === "invalid_input") throw badRequest(message);
   console.error("Sandbox configuration RPC failed", { reason });
   throw new ScottyError("internal", "Sandbox configuration failed", {

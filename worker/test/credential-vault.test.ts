@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { TestClock } from "effect/testing";
+import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import type { StoredCredential } from "../src/contracts";
 import {
   CredentialVault,
@@ -164,6 +165,42 @@ describe("CredentialVault", () => {
     }),
   );
 
+  it.effect("seeds a new session from the installation record instead of bootstrap JSON", () =>
+    Effect.gen(function* () {
+      const record = yield* Effect.promise(() =>
+        makeInstallationPiAuthRecord(
+          {
+            "openai-codex": {
+              type: "oauth",
+              access: "installation-access",
+              refresh: "installation-refresh",
+              expires: 1,
+            },
+          },
+          "2026-04-01T00:00:00.000Z",
+          "sync",
+        ),
+      );
+      const seeded = yield* withVault(
+        makeCredentialVaultStorageFake(),
+        "github-seed",
+        vaultEffect((vault) =>
+          vault.seed({
+            installationRecord: record,
+            providerSentinelSeed: "scotty-pi-installation",
+            githubSentinel: GITHUB_SENTINEL,
+          }),
+        ),
+      );
+      assert.strictEqual(seeded.updatedAt, record.updatedAt);
+      assert.strictEqual(seeded.providers.openai, undefined);
+      assert.deepInclude(seeded.providers["openai-codex"]?.credential, {
+        access: "installation-access",
+        refresh: "installation-refresh",
+      });
+    }),
+  );
+
   it.effect("explicitly reseeds the provider map while preserving session sentinels", () =>
     Effect.gen(function* () {
       const existing = credential({
@@ -206,6 +243,85 @@ describe("CredentialVault", () => {
       assert.strictEqual(reseeded.githubSentinel, existing.githubSentinel);
       assert.strictEqual(reseeded.refreshLease, undefined);
       assert.strictEqual(reseeded.updatedAt, "2026-04-05T06:07:08.000Z");
+    }),
+  );
+
+  it.effect("reconciles only a strictly newer installation record", () =>
+    Effect.gen(function* () {
+      const current = credential({ updatedAt: "2026-04-02T00:00:00.000Z" });
+      const memory = makeCredentialVaultStorageFake(current);
+      const older = yield* Effect.promise(() =>
+        makeInstallationPiAuthRecord(
+          { openai: { type: "api_key", key: "older" } },
+          "2026-04-01T00:00:00.000Z",
+          "sync",
+        ),
+      );
+      const unchanged = yield* withVault(
+        memory,
+        "ignored",
+        vaultEffect((vault) => vault.reconcile(older, "new-sentinel")),
+      );
+      assert.deepStrictEqual(unchanged, current);
+
+      const newer = yield* Effect.promise(() =>
+        makeInstallationPiAuthRecord(
+          { openai: { type: "api_key", key: "newer" } },
+          "2026-04-03T00:00:00.000Z",
+          "sync",
+        ),
+      );
+      const reconciled = yield* withVault(
+        memory,
+        "ignored",
+        vaultEffect((vault) => vault.reconcile(newer, "new-sentinel")),
+      );
+      assert.strictEqual(reconciled.updatedAt, newer.updatedAt);
+      assert.deepInclude(reconciled.providers.openai, {
+        credential: { type: "api_key", key: "newer" },
+        sentinel: "new-sentinel-0",
+      });
+      assert.strictEqual(reconciled.githubToken, current.githubToken);
+      assert.strictEqual(reconciled.githubSentinel, current.githubSentinel);
+    }),
+  );
+
+  it.effect("treats equal matching freshness as idempotent and rejects equal divergence", () =>
+    Effect.gen(function* () {
+      const current = credential();
+      const currentProviders = Object.fromEntries(
+        Object.entries(current.providers).map(([id, provider]) => [id, provider.credential]),
+      );
+      const same = yield* Effect.promise(() =>
+        makeInstallationPiAuthRecord(currentProviders, current.updatedAt, "rotation"),
+      );
+      const memory = makeCredentialVaultStorageFake(current);
+      assert.deepStrictEqual(
+        yield* withVault(
+          memory,
+          "ignored",
+          vaultEffect((vault) => vault.reconcile(same, "unused")),
+        ),
+        current,
+      );
+      const divergent = yield* Effect.promise(() =>
+        makeInstallationPiAuthRecord(
+          { openai: { type: "api_key", key: "different" } },
+          current.updatedAt,
+          "sync",
+        ),
+      );
+      const result = yield* Effect.result(
+        withVault(
+          memory,
+          "ignored",
+          vaultEffect((vault) => vault.reconcile(divergent, "unused")),
+        ),
+      );
+      assert.deepInclude(failure(result), {
+        reason: "invalid_authority",
+        message: "Credential freshness conflict",
+      });
     }),
   );
 

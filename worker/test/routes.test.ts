@@ -65,6 +65,8 @@ const runnerRegistry = vi.hoisted(() => ({
 const sandboxConfig = vi.hoisted(() => ({
   status: vi.fn(),
   activate: vi.fn(),
+  piAuth: vi.fn(),
+  writePiAuth: vi.fn(),
 }));
 
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
@@ -76,6 +78,7 @@ import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
+import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { conflict } from "../src/contracts";
 import type { EvidenceStateV2 } from "../src/evidence-contracts";
 import { orderedEvidenceFrames } from "../public/evidence-view.js";
@@ -508,6 +511,8 @@ describe("real Hono boundary", () => {
       ok: true,
       value: { schemaVersion: 1, revision: 1, activeDigest: "a".repeat(64) },
     });
+    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: null });
+    sandboxConfig.writePiAuth.mockImplementation(async (record) => ({ ok: true, value: record }));
   });
 
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
@@ -1070,6 +1075,8 @@ describe("real Hono boundary", () => {
     expect(status.status).toBe(200);
     const statusBody = await status.json();
     expect(statusBody).toMatchObject({
+      source: "bootstrap",
+      updatedAt: null,
       providers: [
         { id: "anthropic", type: "oauth", adapter: "unsupported" },
         { id: "openai-codex", type: "oauth", adapter: "supported" },
@@ -1091,6 +1098,76 @@ describe("real Hono boundary", () => {
       updatedAt: "2026-07-29T12:00:00.000Z",
       providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
     });
+  });
+
+  it("keeps Pi credential writes root-only, schema-decoded, and metadata-only", async () => {
+    const record = await makeInstallationPiAuthRecord(
+      {
+        "openai-codex": {
+          type: "oauth",
+          access: "honeypot-access",
+          refresh: "honeypot-refresh",
+          expires: 0,
+        },
+      },
+      "2026-08-15T12:00:00.000Z",
+      "sync",
+    );
+    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: record });
+    const preferred = await app.request(
+      "/api/auth/pi",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(await preferred.json()).toEqual({
+      source: "sync",
+      sourceDigest: record.digest,
+      updatedAt: record.updatedAt,
+      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
+    });
+
+    const ownerRejected = await app.request(
+      "/api/auth/pi",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+        body: JSON.stringify(record),
+      },
+      env(),
+    );
+    expect(ownerRejected.status).toBe(401);
+    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
+
+    const malformed = await app.request(
+      "/api/auth/pi",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ ...record, githubToken: "honeypot-github" }),
+      },
+      env(),
+    );
+    expect(malformed.status).toBe(400);
+    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
+
+    const written = await app.request(
+      "/api/auth/pi",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(record),
+      },
+      env(),
+    );
+    expect(written.status).toBe(200);
+    expect(sandboxConfig.writePiAuth).toHaveBeenCalledWith(record);
+    const serialized = JSON.stringify(await written.json());
+    expect(serialized).not.toContain("honeypot");
   });
 
   it("allows only the owner browser to control the configured runner", async () => {

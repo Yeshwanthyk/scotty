@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
+import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { ScottyError } from "../src/contracts";
 import { InitialSessionStorageFailure } from "../src/session-store";
 import {
@@ -113,6 +114,25 @@ describe("Sandbox create orchestration", () => {
       },
     );
     assert.deepStrictEqual(harness.aborts, []);
+  });
+
+  it("seeds a new session from installation Pi authority", async () => {
+    const installationPiAuthRecord = await makeInstallationPiAuthRecord(
+      { openai: { type: "api_key", key: "installation-key" } },
+      "2026-07-24T11:00:00.000Z",
+      "sync",
+    );
+    const harness = await createSessionHarness({ installationPiAuthRecord });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const stored = harness.read<ReturnType<typeof makeStoredCredential>>(
+      sessionHarnessKeys.credential,
+    );
+    assert.strictEqual(stored?.updatedAt, installationPiAuthRecord.updatedAt);
+    assert.deepInclude(stored?.providers.openai?.credential, {
+      type: "api_key",
+      key: "installation-key",
+    });
+    assert.strictEqual(stored?.providers["openai-codex"], undefined);
   });
 
   it("recovers a committed booting record through the pre-armed hard-cap schedule after a crash", async () => {

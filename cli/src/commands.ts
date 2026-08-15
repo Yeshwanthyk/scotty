@@ -37,6 +37,7 @@ import {
   type VaporizeOutput,
 } from "./schemas";
 import { readLocalPiAuth } from "./pi-auth";
+import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import {
   browserUrl,
   durationSeconds,
@@ -1374,36 +1375,64 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         yield* secretManager.inspect(targetRequest);
         const local = yield* readLocalPiAuth(Option.getOrUndefined(authFile));
         const workerAuth = { host, token: config.token };
-        const uploaded = yield* secretManager.upload({ ...targetRequest, json: local.json });
-        let remote;
-        for (let attempt = 0; attempt < 10; attempt += 1) {
-          const status = yield* Effect.result(readPiAuthStatus(workerAuth));
-          if (Result.isSuccess(status) && status.success.sourceDigest === local.sourceDigest) {
-            remote = status.success;
-            break;
-          }
-          if (attempt < 9) yield* Effect.sleep("1 second");
-        }
-        if (remote === undefined)
-          return yield* new CliError(
-            "auth_sync_unconfirmed",
-            "PI_AUTH_JSON was uploaded but the Worker digest did not converge",
-            "Wait for the Worker secret version to become active, then run scotty auth status.",
-            EXIT.GENERIC,
+        const now = new Date(yield* Clock.currentTimeMillis).toISOString();
+        const record = yield* Effect.tryPromise({
+          try: () => makeInstallationPiAuthRecord(local.providerStore, now, "sync"),
+          catch: () =>
+            new CliError(
+              "pi_auth_sync_failed",
+              "Could not prepare the Pi credential record",
+              "Retry scotty auth sync.",
+              EXIT.GENERIC,
+            ),
+        });
+        const remoteRaw = yield* requestJson(workerAuth, "/api/auth/pi", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(record),
+        });
+        const remote = decodePiAuthStatusResponse(remoteRaw);
+        if (Option.isNone(remote))
+          return yield* invalidResponse("Server response is not a valid Pi auth status");
+        const sessionsRaw = yield* requestJson(workerAuth, "/api/sessions");
+        const sessions = decodeSessionsResponse(sessionsRaw);
+        if (Option.isNone(sessions))
+          return yield* invalidResponse("Server response is not a valid session array");
+        const warmIds = sessions.value
+          .filter((session) => session.provider === "cloudflare" && session.status === "warm")
+          .map((session) => session.id);
+        const reconciled: string[] = [];
+        const failed: string[] = [];
+        for (const sessionId of warmIds) {
+          const outcome = yield* Effect.result(
+            requestJson(workerAuth, `/api/sessions/${encodeURIComponent(sessionId)}/auth/reseed`, {
+              method: "POST",
+            }),
           );
+          if (Result.isSuccess(outcome)) reconciled.push(sessionId);
+          else failed.push(sessionId);
+        }
         const result = {
           synchronized: true,
           sourceDigest: local.sourceDigest,
-          worker: uploaded.workerName,
-          providers: remote.providers,
+          worker: targetRequest.expectedWorkerName,
+          providers: remote.value.providers,
+          reconciled,
+          failed,
+          partial: failed.length > 0,
         };
         if (autoJson) outputJson(runtime.stdout, result);
-        else
+        else {
           runtime.stdout(
             `Synchronized ${result.providers.length} Pi provider credentials to ${result.worker}.\n`,
           );
+          if (result.failed.length > 0)
+            runtime.stdout(
+              `Reconciled ${result.reconciled.length} warm sessions; ${result.failed.length} failed: ${result.failed.join(", ")}.\n`,
+            );
+        }
       }),
-  ).pipe(Command.withDescription("Validate and upload local Pi credentials"));
+  ).pipe(Command.withDescription("Synchronize local Pi credentials"));
 
   const authReseed = Command.make(
     "reseed",
@@ -1453,7 +1482,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (autoJson) outputJson(runtime.stdout, result);
         else runtime.stdout(`Reseeded ${results.length} warm Cloudflare sessions.\n`);
       }),
-  ).pipe(Command.withDescription("Explicitly replace session Pi credentials"));
+  ).pipe(Command.withDescription("Explicitly replace session Pi credentials"), Command.withHidden);
 
   const auth = Command.make("auth").pipe(
     Command.withDescription("Manage Pi credentials"),

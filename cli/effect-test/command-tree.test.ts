@@ -96,7 +96,7 @@ describe("Effect command tree", () => {
         assert.strictEqual(yield* auth.effect, EXIT.OK);
         assert.include(auth.stdout.join(""), "status");
         assert.include(auth.stdout.join(""), "sync");
-        assert.include(auth.stdout.join(""), "reseed");
+        assert.notInclude(auth.stdout.join(""), "reseed");
         assert.strictEqual(auth.stderr.join(""), "");
         const tui = run(["tui", "--help"]);
         assert.strictEqual(yield* tui.effect, EXIT.OK);

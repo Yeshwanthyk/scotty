@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import {
   createSessionHarness,
   makeStoredCredential,
@@ -54,5 +55,23 @@ describe("Sandbox Pi auth reseed", () => {
     assert.ok(credentialWrite > quiesce);
     assert.ok(processStop > credentialWrite);
     assert.ok(processStart > processStop);
+  });
+
+  it("does not let manual reseed overwrite a newer session rotation", async () => {
+    const current = makeStoredCredential({ updatedAt: "2026-07-24T12:00:00.000Z" });
+    const installationPiAuthRecord = await makeInstallationPiAuthRecord(
+      { openai: { type: "api_key", key: "older-installation-key" } },
+      "2026-07-24T11:00:00.000Z",
+      "sync",
+    );
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
+        [sessionHarnessKeys.credential]: current,
+      },
+      installationPiAuthRecord,
+    });
+    await harness.sandbox.reseedPiAuth();
+    assert.deepStrictEqual(harness.read(sessionHarnessKeys.credential), current);
   });
 });

@@ -1,7 +1,7 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Option, Predicate, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
-import { PiCredentialSchema } from "../../protocol/pi-auth";
+import { InstallationPiAuthRecordSchema, PiCredentialSchema } from "../../protocol/pi-auth";
 import { SandboxDigestSchema } from "./sandbox-config-contracts";
 
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
@@ -335,11 +335,14 @@ export const StoredCredentialSchema = Schema.Struct({
 });
 export type StoredCredential = typeof StoredCredentialSchema.Type;
 
-export const CredentialSeedSchema = Schema.Struct({
-  piAuthJson: Schema.NonEmptyString,
+const CredentialSeedCommon = {
   providerSentinelSeed: Schema.NonEmptyString,
   githubSentinel: Schema.NonEmptyString,
-});
+};
+export const CredentialSeedSchema = Schema.Union([
+  Schema.Struct({ ...CredentialSeedCommon, piAuthJson: Schema.NonEmptyString }),
+  Schema.Struct({ ...CredentialSeedCommon, installationRecord: InstallationPiAuthRecordSchema }),
+]);
 export type CredentialSeed = typeof CredentialSeedSchema.Type;
 
 export const CredentialReseedSchema = Schema.Struct({

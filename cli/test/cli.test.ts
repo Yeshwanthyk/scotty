@@ -1616,7 +1616,7 @@ describe("configuration and transport", () => {
 });
 
 describe("Pi auth commands", () => {
-  test("sync uploads only allowlisted Pi providers and fields", async () => {
+  test("sync posts one canonical record, skips secret upload and polling, and reports warm reconciliation failures", async () => {
     const home = await temporaryDirectory();
     const authDirectory = join(home, ".pi", "agent");
     const authPath = join(authDirectory, "auth.json");
@@ -1631,7 +1631,8 @@ describe("Pi auth commands", () => {
           refresh: "local-refresh",
           expires: 0,
           accountId: "local-account",
-          unknownOAuthField: "must-not-upload",
+          idToken: "local-id-token",
+          oauthExtension: { nested: "must-preserve" },
         },
         anthropic: {
           type: "oauth",
@@ -1659,7 +1660,8 @@ describe("Pi auth commands", () => {
       }),
       { mode: 0o600 },
     );
-    let uploaded: string | undefined;
+    let secretUploads = 0;
+    let postedRecord = "";
     const requests: Request[] = [];
     const targets: unknown[] = [];
     const target = {
@@ -1675,28 +1677,59 @@ describe("Pi auth commands", () => {
         return target;
       },
       uploadPiAuthSecret: async (request) => {
-        targets.push(request);
-        uploaded = request.json;
-        return target;
+        secretUploads += 1;
+        throw new Error(`must not upload ${request.json}`);
       },
       fetch: async (input, init) => {
         const request = new Request(input, init);
         requests.push(request);
-        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(uploaded));
-        return Response.json({
-          sourceDigest: Array.from(new Uint8Array(digest), (byte) =>
-            byte.toString(16).padStart(2, "0"),
-          ).join(""),
-          providers: [
-            { id: "openai", type: "api_key", adapter: "supported" },
-            { id: "openai-codex", type: "oauth", adapter: "supported" },
-          ],
-        });
+        const path = new URL(request.url).pathname;
+        if (path === "/api/auth/pi") {
+          postedRecord = await request.text();
+          return Response.json({
+            source: "sync",
+            sourceDigest: "a".repeat(64),
+            updatedAt: "2026-08-15T12:00:00.000Z",
+            providers: [
+              { id: "openai", type: "api_key", adapter: "supported" },
+              { id: "openai-codex", type: "oauth", adapter: "supported" },
+            ],
+          });
+        }
+        if (path === "/api/sessions")
+          return Response.json(
+            ["warm-ok", "warm-failed", "sleeping"].map((id) => ({
+              id,
+              title: id,
+              status: id === "sleeping" ? "sleeping" : "warm",
+              provider: "cloudflare",
+              repo: "owner/repo",
+              defaultBranch: "main",
+              branch: `scotty/${id}`,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              hardCapAt: "2026-01-01T04:00:00.000Z",
+              ageSeconds: 1,
+              capRemainingSeconds: 1,
+            })),
+          );
+        if (path.endsWith("/warm-failed/auth/reseed"))
+          return Response.json({ error: { code: "internal", message: "failed" } }, { status: 500 });
+        return Response.json({ id: "warm-ok", updatedAt: "now", providers: [] });
       },
     });
 
     expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.OK);
-    expect(targets).toHaveLength(2);
+    expect(targets).toHaveLength(1);
+    expect(secretUploads).toBe(0);
+    const normalized = JSON.parse(postedRecord);
+    expect(normalized.providers.openai.key).toBe("resolved-openai-key");
+    expect(normalized.providers["openai-codex"].accountId).toBe("local-account");
+    expect(normalized.providers["openai-codex"].idToken).toBe("local-id-token");
+    expect(normalized.providers["openai-codex"].oauthExtension).toEqual({
+      nested: "must-preserve",
+    });
+    expect(normalized.providers.anthropic).toBeUndefined();
     const expectedTarget = {
       profile: "personal",
       expectedAccountId: "a".repeat(32),
@@ -1708,12 +1741,6 @@ describe("Pi auth commands", () => {
       expectedHost: "https://scotty-home-worker.example.workers.dev",
     };
     expect(targets[0]).toEqual(expectedTarget);
-    expect(targets[1]).toMatchObject(expectedTarget);
-    const normalized = JSON.parse(uploaded ?? "{}");
-    expect(normalized.openai.key).toBe("resolved-openai-key");
-    expect(normalized["openai-codex"].accountId).toBe("local-account");
-    expect(normalized["openai-codex"].unknownOAuthField).toBeUndefined();
-    expect(normalized.anthropic).toBeUndefined();
     expect(h.json()).toMatchObject({
       synchronized: true,
       worker: "scotty-home-worker",
@@ -1721,9 +1748,19 @@ describe("Pi auth commands", () => {
         { id: "openai", adapter: "supported" },
         { id: "openai-codex", adapter: "supported" },
       ],
+      reconciled: ["warm-ok"],
+      failed: ["warm-failed"],
+      partial: true,
     });
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.headers.get("authorization")).toBe("Bearer worker-token");
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/api/auth/pi",
+      "/api/sessions",
+      "/api/sessions/warm-ok/auth/reseed",
+      "/api/sessions/warm-failed/auth/reseed",
+    ]);
+    expect(
+      requests.every((request) => request.headers.get("authorization") === "Bearer worker-token"),
+    ).toBe(true);
     expect(JSON.stringify(h.json())).not.toContain("local-access");
     expect(JSON.stringify(h.json())).not.toContain("resolved-openai-key");
   });

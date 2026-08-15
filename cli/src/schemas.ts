@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect";
+import { PiAuthDigestSchema, PiAuthUpdatedAtSchema } from "../../protocol/pi-auth";
 import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 
@@ -303,7 +304,9 @@ export const PiProviderMetadataSchema = Schema.Struct({
   adapter: Schema.Literals(["supported", "unsupported"]),
 });
 export const PiAuthStatusResponseSchema = Schema.Struct({
-  sourceDigest: Schema.NonEmptyString,
+  source: Schema.Literals(["bootstrap", "sync", "rotation"]),
+  sourceDigest: PiAuthDigestSchema,
+  updatedAt: Schema.NullOr(PiAuthUpdatedAtSchema),
   providers: Schema.Array(PiProviderMetadataSchema),
 });
 export type PiAuthStatusResponse = typeof PiAuthStatusResponseSchema.Type;
