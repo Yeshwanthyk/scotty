@@ -16,6 +16,8 @@ export type VerifiedRepository =
   | { readonly exists: false };
 
 export type RepoVerifierFailureReason =
+  | "invalid_input"
+  | "missing_credential"
   | "unauthorized"
   | "forbidden"
   | "rate_limit"
@@ -58,8 +60,8 @@ const classifyStatus = (status: number, rateLimitRemaining: string | null) => {
 
 const makeRepoVerifier = (client: HttpClient.HttpClient): RepoVerifierShape => ({
   verify: Effect.fnUntraced(function* (repo, githubToken) {
-    if (!isRepositoryIdentity(repo) || githubToken.length === 0)
-      return yield* failure("unexpected_status");
+    if (!isRepositoryIdentity(repo)) return yield* failure("invalid_input");
+    if (githubToken.length === 0) return yield* failure("missing_credential");
 
     const request = HttpClientRequest.bearerToken(
       HttpClientRequest.get(

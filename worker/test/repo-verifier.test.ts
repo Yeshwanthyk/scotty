@@ -15,6 +15,7 @@ const runWith = (
   response: Response | "transport",
   requestSeen: (request: HttpClientRequest.HttpClientRequest) => void = () => undefined,
   repo = REPO,
+  githubToken = TOKEN,
 ) => {
   const client = HttpClient.make((request) => {
     requestSeen(request);
@@ -26,7 +27,7 @@ const runWith = (
       );
     return Effect.succeed(HttpClientResponse.fromWeb(request, response));
   });
-  return makeRepoVerifierForClient(client).verify(repo, TOKEN);
+  return makeRepoVerifierForClient(client).verify(repo, githubToken);
 };
 
 const failureReason = (result: Result.Result<unknown, RepoVerifierFailure>): RepoVerifierFailure =>
@@ -131,8 +132,20 @@ describe("RepoVerifier", () => {
         const result = yield* Effect.result(
           runWith(Response.json({ default_branch: "main" }), undefined, repo),
         );
-        assert.strictEqual(failureReason(result).reason, "unexpected_status");
+        assert.strictEqual(failureReason(result).reason, "invalid_input");
       }),
     );
   }
+
+  it.effect("classifies an empty GitHub credential as a typed verifier failure", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        runWith(Response.json({ default_branch: "main" }), undefined, REPO, ""),
+      );
+      const error = failureReason(result);
+      assert.strictEqual(error.reason, "missing_credential");
+      assert.strictEqual(error.status, undefined);
+      assert.notInclude(JSON.stringify(error), TOKEN);
+    }),
+  );
 });
