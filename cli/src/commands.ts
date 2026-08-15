@@ -8,7 +8,6 @@ import {
   Command,
   Flag,
   GlobalFlag,
-  Param,
 } from "effect/unstable/cli";
 import { handleDown } from "./archive";
 import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
@@ -117,23 +116,6 @@ const RUNNER_CHILD_ENV_KEYS = [
   "TZ",
   "USER",
 ] as const;
-const TRAILING_ARGUMENT_NAME = "__scotty_trailing__";
-const trailingArguments: Argument.Argument<ReadonlyArray<string>> = Param.withHidden(
-  Argument.variadic(Argument.string(TRAILING_ARGUMENT_NAME)),
-);
-const defaultCliFormatter = CliOutput.defaultFormatter();
-const scottyCliFormatter: CliOutput.Formatter = {
-  ...defaultCliFormatter,
-  formatHelpDoc: (doc) =>
-    defaultCliFormatter.formatHelpDoc({
-      ...doc,
-      usage: doc.usage.replace(` <${TRAILING_ARGUMENT_NAME}...>`, ""),
-      ...(doc.args === undefined
-        ? {}
-        : { args: doc.args.filter((argument) => argument.name !== TRAILING_ARGUMENT_NAME) }),
-    }),
-};
-
 const formatConsoleArguments = (args: ReadonlyArray<unknown>): string =>
   args.map((value) => String(value)).join(" ");
 
@@ -173,9 +155,6 @@ const flushCapturedOutput = (
 
 const validateSessionId = (id: string): Effect.Effect<string, CliError> =>
   SESSION_ID_PATTERN.test(id) ? Effect.succeed(id) : Effect.fail(usage("Invalid session ID"));
-
-const rejectTrailingArguments = (values: ReadonlyArray<string>): Effect.Effect<void, CliError> =>
-  values.length === 0 ? Effect.void : Effect.fail(usage(`Unexpected argument: ${values[0]}`));
 
 const tuiFailure = (error: unknown): CliError => {
   const message = safeErrorMessage(error);
@@ -261,6 +240,8 @@ const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
       return usage("--provider must be cloudflare");
     if (Predicate.isTagged(item, "InvalidValue") && item.option === "isolation")
       return usage("--isolation must be process or docker");
+    if (Predicate.isTagged(item, "UnexpectedArgument") && item.arguments[0] !== undefined)
+      return usage(`Unexpected argument: ${item.arguments[0]}`);
   }
   return usage(error.errors.map((item) => item.message).join("; "));
 };
@@ -441,11 +422,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Explicitly enable the preview-backed evidence deployment gate"),
       ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed installation")),
-      trailing: trailingArguments,
     },
-    ({ enableEvidence, name, previewBase, previewZoneId, profile, trailing, yes }) =>
+    ({ enableEvidence, name, previewBase, previewZoneId, profile, yes }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("init does not accept --host or --token-file");
@@ -706,20 +685,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Explicitly preserve an enabled preview-backed evidence gate"),
       ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed resource mapping")),
-      trailing: trailingArguments,
     },
-    ({
-      adoptionManifest,
-      enableEvidence,
-      name,
-      previewBase,
-      previewZoneId,
-      profile,
-      trailing,
-      yes,
-    }) =>
+    ({ adoptionManifest, enableEvidence, name, previewBase, previewZoneId, profile, yes }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("recover does not accept --host or --token-file");
@@ -872,11 +840,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         ),
       ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm installation removal")),
-      trailing: trailingArguments,
     },
-    ({ deleteData, trailing, yes }) =>
+    ({ deleteData, yes }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("uninstall does not accept --host or --token-file");
@@ -979,9 +945,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Remove Scotty compute and retain data by default"));
 
-  const upgrade = Command.make("upgrade", { trailing: trailingArguments }, ({ trailing }) =>
+  const upgrade = Command.make("upgrade", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
       if (options.host || options.tokenFile)
         return yield* usage("upgrade does not accept --host or --token-file");
@@ -1003,11 +968,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "deploy",
     {
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Apply a deployment with changes")),
-      trailing: trailingArguments,
     },
-    ({ trailing, yes }) =>
+    ({ yes }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("deploy does not accept --host or --token-file");
@@ -1133,11 +1096,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Hard cap such as 30m, 4h, or 1d"),
       ),
       detach: Flag.boolean("detach").pipe(Flag.withDescription("Do not open the session browser")),
-      trailing: trailingArguments,
     },
-    ({ cap, detach, prompt, provider, repo, title, trailing }) =>
+    ({ cap, detach, prompt, provider, repo, title }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         const browser = yield* BrowserLauncher;
         if (!prompt.trim()) return yield* usage("Prompt must not be empty");
@@ -1189,9 +1150,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ]),
   );
 
-  const list = Command.make("ls", { trailing: trailingArguments }, ({ trailing }) =>
+  const list = Command.make("ls", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
       const auth = yield* credentials(options);
       const value = yield* requestJson(auth, "/api/sessions");
@@ -1211,11 +1171,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "inspect",
     {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
-      trailing: trailingArguments,
     },
-    ({ id, trailing }) =>
+    ({ id }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         const sessionId = yield* validateSessionId(id);
         const target = yield* peerControlTarget(options);
@@ -1239,11 +1197,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       message: Argument.string("message").pipe(
         Argument.withDescription("Prompt or steering message"),
       ),
-      trailing: trailingArguments,
     },
-    ({ id, message, trailing }) =>
+    ({ id, message }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         if (!message.trim()) return yield* usage("Message must not be empty");
         if (new TextEncoder().encode(message).byteLength > PI_CONSOLE_MAX_STRING_BYTES)
           return yield* usage(`Message must be at most ${PI_CONSOLE_MAX_STRING_BYTES} UTF-8 bytes`);
@@ -1273,9 +1229,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withDescription("Prompt or steer a warm session or sandbox peer without waking it"),
   );
 
-  const doctor = Command.make("doctor", { trailing: trailingArguments }, ({ trailing }) =>
+  const doctor = Command.make("doctor", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
       const config = yield* readConfig(join(runtime.home, ".scotty.json"));
       const auth = yield* credentials(options);
@@ -1305,11 +1260,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "attach",
     {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
-      trailing: trailingArguments,
     },
-    ({ id, trailing }) =>
+    ({ id }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         const browser = yield* BrowserLauncher;
         const sessionId = yield* validateSessionId(id);
@@ -1323,9 +1276,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Open a session"));
 
-  const ownerRecover = Command.make("recover", { trailing: trailingArguments }, ({ trailing }) =>
+  const ownerRecover = Command.make("recover", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
       const browser = yield* BrowserLauncher;
       const auth = yield* credentials(options);
@@ -1360,9 +1312,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     return decoded.value;
   });
 
-  const authStatus = Command.make("status", { trailing: trailingArguments }, ({ trailing }) =>
+  const authStatus = Command.make("status", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
       const status = yield* readPiAuthStatus(yield* credentials(options));
       if (autoJson) outputJson(runtime.stdout, status);
@@ -1380,11 +1331,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Override ~/.pi/agent/auth.json"),
       ),
-      trailing: trailingArguments,
     },
-    ({ authFile, trailing }) =>
+    ({ authFile }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage(
@@ -1466,11 +1415,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       allActive: Flag.boolean("all-active").pipe(
         Flag.withDescription("Reseed every warm Cloudflare session"),
       ),
-      trailing: trailingArguments,
     },
-    ({ allActive, id, trailing }) =>
+    ({ allActive, id }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (Option.isSome(id) === allActive)
           return yield* usage("Pass exactly one session ID or --all-active");
@@ -1545,11 +1492,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Git tag or commit for a Pi package repository"),
       ),
-      trailing: trailingArguments,
     },
-    ({ ref, source, trailing }) =>
+    ({ ref, source }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, runtime } = yield* commandContext();
         const requestedRef = Option.getOrUndefined(ref);
         const classified = yield* classifySandboxSource(source, runtime.cwd, requestedRef);
@@ -1593,11 +1538,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       name: Argument.string("name").pipe(
         Argument.withDescription("Configured Skill or Pi package name"),
       ),
-      trailing: trailingArguments,
     },
-    ({ name, trailing }) =>
+    ({ name }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, runtime } = yield* commandContext();
         const path = sandboxConfigPath(runtime.home);
         const fileSystem = yield* CliFileSystem;
@@ -1620,9 +1563,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Remove a configured Skill or Pi package"));
 
-  const sandboxList = Command.make("list", { trailing: trailingArguments }, ({ trailing }) =>
+  const sandboxList = Command.make("list", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, runtime } = yield* commandContext();
       const path = sandboxConfigPath(runtime.home);
       const fileSystem = yield* CliFileSystem;
@@ -1631,9 +1573,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     }),
   ).pipe(Command.withDescription("List local sandbox sources and remote status"));
 
-  const sandboxSync = Command.make("sync", { trailing: trailingArguments }, ({ trailing }) =>
+  const sandboxSync = Command.make("sync", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
       const target = yield* credentials(options);
       const synced = yield* synchronizeInstallationSandbox(runtime.home, target);
@@ -1656,9 +1597,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([sandboxAdd, sandboxRemove, sandboxList, sandboxSync]),
   );
 
-  const toolsList = Command.make("list", { trailing: trailingArguments }, ({ trailing }) =>
+  const toolsList = Command.make("list", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, runtime } = yield* commandContext();
       if (autoJson) outputJson(runtime.stdout, STANDARD_TOOLSET);
       else {
@@ -1673,9 +1613,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     }),
   ).pipe(Command.withDescription("Print the standard sandbox tool manifest"));
 
-  const toolsDoctor = Command.make("doctor", { trailing: trailingArguments }, ({ trailing }) =>
+  const toolsDoctor = Command.make("doctor", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, runtime } = yield* commandContext();
       const processRunner = yield* ProcessRunner;
       const tools = [];
@@ -1746,11 +1685,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Absolute host path to GitHub CLI hosts.yml"),
         Flag.optional,
       ),
-      trailing: trailingArguments,
     },
-    ({ codexAuth, githubConfig, image, isolation, name, root, trailing }) =>
+    ({ codexAuth, githubConfig, image, isolation, name, root }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.tokenFile !== undefined)
           return yield* usage(
@@ -1893,11 +1830,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       replace: Flag.boolean("replace").pipe(
         Flag.withDescription("Rotate an existing registration before reinstalling"),
       ),
-      trailing: trailingArguments,
     },
-    ({ codexAuth, image, name, replace, root, sourceBinary, trailing }) =>
+    ({ codexAuth, image, name, replace, root, sourceBinary }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (!RUNNER_NAME_PATTERN.test(name))
           return yield* usage("--name must contain only letters, numbers, underscores, or dashes");
@@ -1942,9 +1877,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Install and start a trusted runner user service"));
 
-  const runnerList = Command.make("list", { trailing: trailingArguments }, ({ trailing }) =>
+  const runnerList = Command.make("list", {}, () =>
     Effect.gen(function* () {
-      yield* rejectTrailingArguments(trailing);
       const { autoJson, options, runtime } = yield* commandContext();
       const decoded = decodeRunnerStatusesResponse(
         yield* requestJson(yield* credentials(options), "/api/runners"),
@@ -1971,11 +1905,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     {
       name: Argument.string("name").pipe(Argument.withDescription("Registered runner name")),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm runner removal")),
-      trailing: trailingArguments,
     },
-    ({ name, trailing, yes }) =>
+    ({ name, yes }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         if (!RUNNER_NAME_PATTERN.test(name))
           return yield* usage(
@@ -2075,33 +2007,25 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     "snapshot",
     {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
-      trailing: trailingArguments,
     },
-    ({ id, trailing }) =>
-      rejectTrailingArguments(trailing).pipe(
-        Effect.andThen(sessionOperation("snapshot", id, false)),
-      ),
+    ({ id }) => sessionOperation("snapshot", id, false),
   ).pipe(Command.withDescription("Checkpoint a warm session"));
 
   const resume = Command.make(
     "resume",
     {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
-      trailing: trailingArguments,
     },
-    ({ id, trailing }) =>
-      rejectTrailingArguments(trailing).pipe(Effect.andThen(sessionOperation("resume", id, false))),
+    ({ id }) => sessionOperation("resume", id, false),
   ).pipe(Command.withDescription("Restore a sleeping session"));
 
   const down = Command.make(
     "down",
     {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
-      trailing: trailingArguments,
     },
-    ({ id, trailing }) =>
+    ({ id }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         const { autoJson, options, runtime } = yield* commandContext();
         const sessionId = yield* validateSessionId(id);
         const result = yield* handleDown(sessionId, options);
@@ -2115,10 +2039,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Skip the TTY confirmation")),
-      trailing: trailingArguments,
     },
-    ({ id, trailing, yes }) =>
-      rejectTrailingArguments(trailing).pipe(Effect.andThen(sessionOperation("vaporize", id, yes))),
+    ({ id, yes }) => sessionOperation("vaporize", id, yes),
   ).pipe(Command.withDescription("Permanently delete a session"));
 
   const beam = Command.make("beam").pipe(
@@ -2140,11 +2062,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Paired-client configuration path"),
       ),
-      trailing: trailingArguments,
     },
-    ({ config, label, origin, trailing }) =>
+    ({ config, label, origin }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         yield* Effect.tryPromise({
           try: () =>
             pairTuiClient({
@@ -2164,11 +2084,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.optional,
         Flag.withDescription("Paired-client configuration path"),
       ),
-      trailing: trailingArguments,
     },
-    ({ config, trailing }) =>
+    ({ config }) =>
       Effect.gen(function* () {
-        yield* rejectTrailingArguments(trailing);
         yield* Effect.tryPromise({
           try: () => runTuiConsole(Option.getOrUndefined(config)),
           catch: tuiFailure,
@@ -2213,7 +2131,7 @@ export const execute = Effect.fnUntraced(function* (rawArgs: ReadonlyArray<strin
   const executed = yield* Effect.result(
     Command.runWith(command, { version: VERSION })(rawArgs).pipe(
       Effect.provide(CliConfig.layer({ builtIns: [GlobalFlag.Help] })),
-      Effect.provideService(CliOutput.Formatter, scottyCliFormatter),
+      Effect.provideService(CliOutput.Formatter, CliOutput.defaultFormatter()),
       Effect.provideService(Console.Console, captureConsole(parserStdout, parserStderr)),
     ),
   );
