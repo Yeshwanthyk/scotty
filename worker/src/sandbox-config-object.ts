@@ -1,10 +1,6 @@
-import {
-  DurableObject,
-  DurableObjectState,
-  type DurableObjectShape,
-} from "alchemy/Cloudflare/Workers";
-import type { RuntimeContext } from "alchemy";
-import { Effect } from "effect";
+import { DurableObject } from "cloudflare:workers";
+import { Effect, Result } from "effect";
+import type { Bindings } from "./bindings";
 import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
 import type { RepositoryRegistryEntry } from "../../protocol/repository";
 import {
@@ -53,105 +49,91 @@ const sandboxConfigRpcError = ({
   message,
 });
 
-interface ScottySandboxConfigShape extends DurableObjectShape {
-  readonly status: () => Effect.Effect<
-    SandboxConfigRpcResult<SandboxConfigStatus>,
-    never,
-    RuntimeContext
-  >;
-  readonly activate: (
-    input: SandboxActivateInput,
-  ) => Effect.Effect<SandboxConfigRpcResult<SandboxConfigStatus>, never, RuntimeContext>;
-  readonly piAuth: () => Effect.Effect<
-    SandboxConfigRpcResult<InstallationPiAuthRecord | null>,
-    never,
-    RuntimeContext
-  >;
-  readonly writePiAuth: (
+export class ScottySandboxConfig extends DurableObject<Bindings> {
+  private readonly configLayer;
+  private readonly piAuthLayer;
+  private readonly repoLayer;
+
+  constructor(ctx: DurableObjectState, env: Bindings) {
+    super(ctx, env);
+    this.configLayer = sandboxConfigStoreLayer(
+      durableObjectSandboxConfigAuthorityStorage(ctx.storage),
+    );
+    this.piAuthLayer = installationPiAuthStoreLayer(
+      durableObjectInstallationPiAuthStorage(ctx.storage),
+    );
+    this.repoLayer = installationRepoStoreLayer(durableObjectInstallationRepoStorage(ctx.storage));
+  }
+
+  status(): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
+    return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.status()));
+  }
+
+  activate(input: SandboxActivateInput): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
+    return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.activate(input)));
+  }
+
+  piAuth(): Promise<SandboxConfigRpcResult<InstallationPiAuthRecord | null>> {
+    return this.#runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.read));
+  }
+
+  writePiAuth(
     input: InstallationPiAuthRecord,
-  ) => Effect.Effect<SandboxConfigRpcResult<InstallationPiAuthRecord>, never, RuntimeContext>;
-  readonly listRepos: () => Effect.Effect<
-    SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>,
-    never,
-    RuntimeContext
-  >;
-  readonly addRepo: (
-    input: unknown,
-  ) => Effect.Effect<SandboxConfigRpcResult<RepositoryRegistryEntry>, never, RuntimeContext>;
-  readonly removeRepo: (
-    repo: unknown,
-  ) => Effect.Effect<SandboxConfigRpcResult<boolean>, never, RuntimeContext>;
-}
+  ): Promise<SandboxConfigRpcResult<InstallationPiAuthRecord>> {
+    return this.#runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.write(input)));
+  }
 
-export class ScottySandboxConfig extends DurableObject<
-  ScottySandboxConfig,
-  ScottySandboxConfigShape
->()("ScottySandboxConfig") {}
+  listRepos(): Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>> {
+    return this.#runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.list));
+  }
 
-export default ScottySandboxConfig.make<never>(
-  Effect.gen(function* () {
-    const state = yield* DurableObjectState;
-    const layer = sandboxConfigStoreLayer(
-      durableObjectSandboxConfigAuthorityStorage(state.raw.storage),
+  addRepo(input: unknown): Promise<SandboxConfigRpcResult<RepositoryRegistryEntry>> {
+    return this.#runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.upsert(input)));
+  }
+
+  removeRepo(repo: unknown): Promise<SandboxConfigRpcResult<boolean>> {
+    return this.#runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.remove(repo)));
+  }
+
+  async #runConfig<A>(
+    operation: Effect.Effect<A, SandboxConfigFailure, SandboxConfigStore>,
+  ): Promise<SandboxConfigRpcResult<A>> {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
+    const result = await Effect.runPromise(
+      operation.pipe(Effect.provide(this.configLayer), Effect.result),
     );
-    const piAuthLayer = installationPiAuthStoreLayer(
-      durableObjectInstallationPiAuthStorage(state.raw.storage),
-    );
-    const repoLayer = installationRepoStoreLayer(
-      durableObjectInstallationRepoStorage(state.raw.storage),
-    );
-
-    const run = <A>(
-      operation: Effect.Effect<A, SandboxConfigFailure, SandboxConfigStore>,
-    ): Effect.Effect<SandboxConfigRpcResult<A>, never, RuntimeContext> =>
-      operation.pipe(
-        Effect.provide(layer),
-        Effect.match({
-          onFailure: (error) => ({
-            ok: false as const,
-            error: sandboxConfigRpcError(error),
-          }),
-          onSuccess: (value) => ({ ok: true as const, value }),
-        }),
-      );
-
-    const runPiAuth = <A>(
-      operation: Effect.Effect<A, InstallationPiAuthFailure, InstallationPiAuthStore>,
-    ): Effect.Effect<SandboxConfigRpcResult<A>, never, RuntimeContext> =>
-      operation.pipe(
-        Effect.provide(piAuthLayer),
-        Effect.match({
-          onFailure: (error) => ({ ok: false as const, error: sandboxConfigRpcError(error) }),
-          onSuccess: (value) => ({ ok: true as const, value }),
-        }),
-      );
-
-    const runRepo = <A>(
-      operation: Effect.Effect<A, InstallationRepoFailure, InstallationRepoStore>,
-    ): Effect.Effect<SandboxConfigRpcResult<A>, never, RuntimeContext> =>
-      operation.pipe(
-        Effect.provide(repoLayer),
-        Effect.match({
-          onFailure: (error) => ({ ok: false as const, error: sandboxConfigRpcError(error) }),
-          onSuccess: (value) => ({ ok: true as const, value }),
-        }),
-      );
-
-    return Effect.succeed({
-      status: () => run(Effect.flatMap(SandboxConfigStore, (store) => store.status())),
-      activate: (input: SandboxActivateInput) =>
-        run(Effect.flatMap(SandboxConfigStore, (store) => store.activate(input))),
-      piAuth: () => runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.read)),
-      writePiAuth: (input: InstallationPiAuthRecord) =>
-        runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.write(input))),
-      listRepos: () => runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.list)),
-      addRepo: (input: unknown) =>
-        runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.upsert(input))),
-      removeRepo: (repo: unknown) =>
-        runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.remove(repo))),
+    return Result.match(result, {
+      onFailure: (error) => ({ ok: false, error: sandboxConfigRpcError(error) }),
+      onSuccess: (value) => ({ ok: true, value }),
     });
-  }),
-);
+  }
+
+  async #runPiAuth<A>(
+    operation: Effect.Effect<A, InstallationPiAuthFailure, InstallationPiAuthStore>,
+  ): Promise<SandboxConfigRpcResult<A>> {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
+    const result = await Effect.runPromise(
+      operation.pipe(Effect.provide(this.piAuthLayer), Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => ({ ok: false, error: sandboxConfigRpcError(error) }),
+      onSuccess: (value) => ({ ok: true, value }),
+    });
+  }
+
+  async #runRepo<A>(
+    operation: Effect.Effect<A, InstallationRepoFailure, InstallationRepoStore>,
+  ): Promise<SandboxConfigRpcResult<A>> {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
+    const result = await Effect.runPromise(
+      operation.pipe(Effect.provide(this.repoLayer), Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => ({ ok: false, error: sandboxConfigRpcError(error) }),
+      onSuccess: (value) => ({ ok: true, value }),
+    });
+  }
+}
 
 export type ScottySandboxConfigStub = {
   readonly status: () => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
