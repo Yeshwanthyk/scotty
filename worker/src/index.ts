@@ -1407,15 +1407,27 @@ async function createSessionIdempotency(
     sha256Hex(
       JSON.stringify(
         input.provider === "runner"
-          ? [
-              input.title,
-              input.prompt,
-              input.provider,
-              input.runner,
-              input.repo,
-              input.hardCapSeconds,
-            ]
-          : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds],
+          ? input.newRepo
+            ? [
+                input.title,
+                input.prompt,
+                input.provider,
+                input.runner,
+                input.repo,
+                true,
+                input.hardCapSeconds,
+              ]
+            : [
+                input.title,
+                input.prompt,
+                input.provider,
+                input.runner,
+                input.repo,
+                input.hardCapSeconds,
+              ]
+          : input.newRepo
+            ? [input.title, input.prompt, input.provider, input.repo, true, input.hardCapSeconds]
+            : [input.title, input.prompt, input.provider, input.repo, input.hardCapSeconds],
       ),
     ),
   ]);

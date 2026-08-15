@@ -45,6 +45,7 @@ describe("request contracts", () => {
         prompt: "ship it",
         provider: "cloudflare",
         repo: "owner/project",
+        newRepo: false,
         hardCapSeconds: 14_400,
       },
     );
@@ -91,6 +92,18 @@ describe("request contracts", () => {
         }),
       /prompt/u,
     );
+    for (const repo of ["./project", "../project", "owner/.", "owner/.."]) {
+      assert.throws(
+        () =>
+          parseCreateInput({
+            title: "Ship dashboard",
+            prompt: "ship it",
+            provider: "cloudflare",
+            repo,
+          }),
+        /repo must be in owner\/name form/u,
+      );
+    }
     assert.throws(
       () =>
         parseCreateInput({

@@ -5,7 +5,7 @@ import type {
   ExecResult,
   RestoreBackupResult,
 } from "@cloudflare/sandbox";
-import { Data, Match, Result } from "effect";
+import { Data, Effect, Match, Result } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import type { RunnerOperation } from "../../protocol/runner";
 import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
@@ -18,6 +18,7 @@ import type {
 } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
+import type { RepoVerifier } from "../src/repo-verifier";
 import type { SandboxConfigStatus } from "../src/sandbox-config-contracts";
 import type { SandboxConfigRpcResult } from "../src/sandbox-config-object";
 import { sandboxBundleTarGzKey } from "../src/sandbox-bundle-store";
@@ -211,6 +212,7 @@ export const CREATE_INPUT: CreateSessionInput = {
   prompt: "Investigate the failing build",
   provider: "cloudflare",
   repo: "owner/project",
+  newRepo: false,
   hardCapSeconds: 14_400,
 };
 export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
@@ -271,6 +273,7 @@ export interface HarnessOptions {
   readonly previewExposeGate?: Promise<void>;
   readonly previewRequestForwarder?: SandboxEffectOptions["previewRequestForwarder"];
   readonly hatchRequestForwarder?: SandboxEffectOptions["hatchRequestForwarder"];
+  readonly repoVerifier?: SandboxEffectOptions["repoVerifier"];
   readonly rawPiContainerRunning?: boolean;
   readonly rawPiFetch?: (request: Request, port: number) => Promise<Response>;
   readonly rawPiGetTcpPortError?: unknown;
@@ -980,6 +983,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     passivePiConsoleRelay: options.passivePiConsoleRelay,
     previewRequestForwarder: options.previewRequestForwarder,
     hatchRequestForwarder: options.hatchRequestForwarder,
+    repoVerifier:
+      options.repoVerifier ??
+      ({
+        verify: () => Effect.succeed({ exists: true, defaultBranch: "main" }),
+      } satisfies RepoVerifier["Service"]),
   });
   await Promise.all(constructorWork);
   rawPiContainerRunning = options.rawPiContainerRunning ?? false;
@@ -1034,15 +1042,18 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     exec: {
       value: async (command: string, _execOptions?: ExecOptions): Promise<ExecResult> => {
         commands.push(command);
-        const stage = command.startsWith("gh repo view")
-          ? "workspace"
-          : command.includes("rev-parse HEAD")
-            ? "downSha"
-            : command.startsWith("find ") && command.includes("*.jsonl")
-              ? "downRollout"
-              : command.startsWith("tar -cf ")
-                ? "downTar"
-                : "exec";
+        const stage =
+          command.startsWith("rm -rf ") ||
+          command.startsWith("git init -b ") ||
+          command.startsWith("git -c http.extraHeader=")
+            ? "workspace"
+            : command.includes("rev-parse HEAD")
+              ? "downSha"
+              : command.startsWith("find ") && command.includes("*.jsonl")
+                ? "downRollout"
+                : command.startsWith("tar -cf ")
+                  ? "downTar"
+                  : "exec";
         events.push(`host:exec:${stage === "downRollout" ? "exec" : stage}`);
         if (failures.has("workspacePrepare") && stage === "workspace")
           throw injectedHarnessFailure("injected workspace failure");
@@ -1063,9 +1074,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         )
           throw injectedHarnessFailure(`injected ${stage} failure`);
         const configured = options.commandStdout?.(command);
-        const stdout =
-          configured ??
-          (stage === "workspace" ? "main\n" : stage === "downSha" ? "deadbeef\n" : "");
+        const stdout = configured ?? (stage === "downSha" ? "deadbeef\n" : "");
         return successfulExec(command, stdout);
       },
     },

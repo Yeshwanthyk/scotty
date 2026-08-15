@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { EXIT, main, STANDARD_TOOLSET, VERSION, type CliDependencies } from "../scotty";
+import { BeamUpRequestSchema } from "../src/schemas";
+import { Schema } from "effect";
 
 const temporaryDirectories: string[] = [];
 
@@ -52,6 +54,12 @@ function harness(overrides: Partial<CliDependencies> = {}) {
     error: () => JSON.parse(stderr.join("")),
   };
 }
+
+function rejected<T = never>(message: string): Promise<T> {
+  return new Promise((_, reject) => reject(new Error(message)));
+}
+
+const decodeBeamUpRequest = Schema.decodeUnknownSync(BeamUpRequestSchema);
 
 function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
   let revision = 0;
@@ -237,6 +245,65 @@ describe("configuration and transport", () => {
     expect(invalid.error().error.code).toBe("bad_usage");
   });
 
+  test("beam up forwards --new-repo and defaults the request field to false", async () => {
+    let body: typeof BeamUpRequestSchema.Type | undefined;
+    const h = harness({
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        body = decodeBeamUpRequest(await request.json());
+        return Response.json({
+          id: "s1",
+          title: "Fix build",
+          url: "https://worker.example/s/s1",
+          branch: "scotty/s1",
+          provider: "cloudflare",
+          status: "warm",
+        });
+      },
+    });
+    expect(
+      await main(
+        [
+          "beam",
+          "up",
+          "fix it",
+          "--title",
+          "Fix build",
+          "--repo",
+          "owner/project",
+          "--provider",
+          "cloudflare",
+          "--new-repo",
+          "--detach",
+          "--host",
+          "https://worker.example",
+        ],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(body?.newRepo).toBe(true);
+  });
+
+  test("beam up rejects URL-normalizing repository path segments", async () => {
+    const args = [
+      "beam",
+      "up",
+      "fix it",
+      "--title",
+      "Fix build",
+      "--provider",
+      "cloudflare",
+      "--detach",
+      "--host",
+      "https://worker.example",
+    ];
+    for (const repo of ["./project", "../project", "owner/.", "owner/.."]) {
+      const h = harness();
+      expect(await main([...args, "--repo", repo], h.deps)).toBe(EXIT.USAGE);
+      expect(h.error().error.message).toBe("--repo must be OWNER/NAME");
+    }
+  });
+
   test("beam up reuses a pending idempotency key after an ambiguous network failure", async () => {
     const home = await temporaryDirectory();
     const keys: string[] = [];
@@ -245,7 +312,7 @@ describe("configuration and transport", () => {
       const request = new Request(input, init);
       keys.push(request.headers.get("idempotency-key") ?? "");
       requests += 1;
-      if (requests === 1) throw new Error("connection dropped after create");
+      if (requests === 1) return rejected("connection dropped after create");
       return Response.json({
         id: "s1",
         title: "Fix build",
@@ -885,7 +952,7 @@ describe("configuration and transport", () => {
       },
       createInstallation: async (request) => {
         requests.push(request);
-        if (requests.length === 1) throw new Error("ambiguous apply result");
+        if (requests.length === 1) return rejected("ambiguous apply result");
         return result;
       },
     });
@@ -1142,7 +1209,7 @@ describe("configuration and transport", () => {
       }),
       deployInstallation: async () => {
         applied = true;
-        throw new Error("must not apply a no-op plan");
+        return rejected("must not apply a no-op plan");
       },
     });
 
@@ -1494,7 +1561,7 @@ describe("configuration and transport", () => {
   test("network and malformed responses fail without leaking implementation errors", async () => {
     const network = harness({
       fetch: async () => {
-        throw new Error("socket exploded with secret details");
+        return rejected("socket exploded with secret details");
       },
     });
     expect(await main(["ls", "--host", "https://worker.example"], network.deps)).toBe(EXIT.GENERIC);
@@ -1678,7 +1745,7 @@ describe("Pi auth commands", () => {
       },
       uploadPiAuthSecret: async (request) => {
         secretUploads += 1;
-        throw new Error(`must not upload ${request.json}`);
+        return rejected(`must not upload ${request.json}`);
       },
       fetch: async (input, init) => {
         const request = new Request(input, init);
@@ -1788,11 +1855,11 @@ describe("Pi auth commands", () => {
     const h = harness({
       home,
       inspectPiAuthTarget: async () => {
-        throw new Error("wrong account");
+        return rejected("wrong account");
       },
       uploadPiAuthSecret: async () => {
         uploaded = true;
-        throw new Error("must not upload");
+        return rejected("must not upload");
       },
     });
 

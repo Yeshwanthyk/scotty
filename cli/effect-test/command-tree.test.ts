@@ -77,6 +77,11 @@ describe("Effect command tree", () => {
         assert.include(beam.stdout.join(""), "vaporize");
         assert.strictEqual(beam.stderr.join(""), "");
 
+        const up = run(["beam", "up", "--help"]);
+        assert.strictEqual(yield* up.effect, EXIT.OK);
+        assert.include(up.stdout.join(""), "--new-repo");
+        assert.strictEqual(up.stderr.join(""), "");
+
         const deploy = run(["deploy", "--help"]);
         assert.strictEqual(yield* deploy.effect, EXIT.OK);
         assert.notInclude(deploy.stdout.join(""), "__scotty_trailing__");

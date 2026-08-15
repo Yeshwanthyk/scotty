@@ -1,7 +1,8 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
-import { Option, Predicate, Schema } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
 import { InstallationPiAuthRecordSchema, PiCredentialSchema } from "../../protocol/pi-auth";
+import { isRepositoryIdentity } from "../../protocol/repository";
 import { SandboxDigestSchema } from "./sandbox-config-contracts";
 
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
@@ -27,7 +28,7 @@ export type ExecutionBinding = typeof ExecutionBindingSchema.Type;
 
 const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{5,31}$/));
 const RepositoryIdentitySchema = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+  Schema.makeFilter(isRepositoryIdentity, { expected: "a safe owner/name repository identity" }),
 );
 const ShortHexIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u));
 const IdempotencyKeySchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{16,128}$/u));
@@ -291,6 +292,7 @@ export const CreateSessionInputSchema = Schema.Struct({
   provider: ProviderSchema,
   runner: Schema.optionalKey(Schema.String),
   repo: Schema.String,
+  newRepo: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   hardCapSeconds: Schema.Number,
 });
 export type CreateSessionInput = typeof CreateSessionInputSchema.Type;
@@ -557,6 +559,7 @@ const RawCreateSessionInputSchema = Schema.Struct({
   provider: Schema.optionalKey(Schema.Unknown),
   runner: Schema.optionalKey(Schema.Unknown),
   repo: Schema.optionalKey(Schema.Unknown),
+  newRepo: Schema.optionalKey(Schema.Unknown),
   hardCapSeconds: Schema.optionalKey(Schema.Unknown),
 });
 const decodeRawCreateSessionInput = Schema.decodeUnknownOption(RawCreateSessionInputSchema);
@@ -579,6 +582,8 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest("runner is required for runner");
   const repo = parseRepo(decoded.value.repo);
+  const newRepo =
+    decoded.value.newRepo === undefined ? false : readBoolean(decoded.value.newRepo, "newRepo");
   const hardCapSeconds =
     decoded.value.hardCapSeconds === undefined
       ? DEFAULT_HARD_CAP_SECONDS
@@ -594,6 +599,7 @@ export function parseCreateInput(value: unknown): CreateSessionInput {
     provider,
     ...(runner === undefined ? {} : { runner }),
     repo,
+    newRepo,
     hardCapSeconds,
   };
 }
@@ -660,7 +666,7 @@ export function parseIdempotencyKey(value: string): string {
 
 export function parseRepo(value: unknown): string {
   const repo = readNonEmptyString(value, "repo", 200);
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+  if (!isRepositoryIdentity(repo)) {
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest("repo must be in owner/name form");
   }
@@ -723,6 +729,14 @@ function readInteger(value: unknown, field: string, min: number, max: number): n
   if (!Number.isInteger(value) || typeof value !== "number" || value < min || value > max) {
     // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
     throw badRequest(`${field} must be an integer between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function readBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous Hono request parser preserves the existing thrown ScottyError contract
+    throw badRequest(`${field} must be a boolean`);
   }
   return value;
 }

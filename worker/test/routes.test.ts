@@ -1299,6 +1299,30 @@ describe("real Hono boundary", () => {
     );
   });
 
+  it("rejects an invalid newRepo request field before invoking the sandbox", async () => {
+    const response = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          title: "Ship dashboard",
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+          newRepo: "true",
+        }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "newRepo must be a boolean" },
+    });
+    expect(sandbox.createScottySession).not.toHaveBeenCalled();
+  });
+
   it("maps repeated create keys to one Sandbox identity", async () => {
     const harness = await createSessionHarness();
     useRealSandbox(harness);
@@ -1340,6 +1364,67 @@ describe("real Hono boundary", () => {
     expect(
       harness.writtenFiles.filter((file) => file.path.endsWith("/.pi-agent/initial-prompt")),
     ).toHaveLength(1);
+  });
+
+  it("preserves legacy idempotency for omitted/false newRepo and separates true", async () => {
+    const harness = await createSessionHarness();
+    useRealSandbox(harness);
+    const headers = {
+      authorization: `Bearer ${TOKEN}`,
+      "content-type": "application/json",
+      "idempotency-key": "01234567-89ab-4cde-8fab-0123456789ab",
+    };
+    const first = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: "Ship project",
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+        }),
+      },
+      env(),
+    );
+    expect(first.status).toBe(200);
+    const second = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: "Ship project",
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+          newRepo: false,
+        }),
+      },
+      env(),
+    );
+    expect(second.status).toBe(200);
+    await expect(second.json()).resolves.toEqual(await first.clone().json());
+    const third = await app.request(
+      "/api/sessions",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          title: "Ship project",
+          prompt: "ship it",
+          provider: "cloudflare",
+          repo: "owner/project",
+          newRepo: true,
+        }),
+      },
+      env(),
+    );
+    expect(third.status).toBe(409);
+    await expect(third.json()).resolves.toMatchObject({
+      error: { code: "conflict" },
+    });
   });
 
   it("tracks the returned repository without making the recents projection authoritative", async () => {

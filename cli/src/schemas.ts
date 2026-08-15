@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { PiAuthDigestSchema, PiAuthUpdatedAtSchema } from "../../protocol/pi-auth";
 import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
@@ -116,6 +116,7 @@ const BeamUpRequestFields = {
   prompt: Schema.String,
   provider: ProviderSchema,
   repo: Schema.NonEmptyString,
+  newRepo: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 };
 export const BeamUpRequestSchema = Schema.Union([
   Schema.Struct({
@@ -125,7 +126,7 @@ export const BeamUpRequestSchema = Schema.Union([
   }),
   Schema.Struct(BeamUpRequestFields),
 ]);
-export type BeamUpRequest = typeof BeamUpRequestSchema.Type;
+export type BeamUpRequest = Schema.Codec.Encoded<typeof BeamUpRequestSchema>;
 export const BeamUpOutputSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   title: Schema.NonEmptyString,

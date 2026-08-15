@@ -335,6 +335,27 @@ test("fake protocol matches production cap parsing, floor rounding, and backup h
   });
 });
 
+test("fake protocol rejects URL-normalizing repository path segments", async (t) => {
+  const service = await new FakeWorkerService().start();
+  t.after(() => service.stop());
+  for (const repo of ["./project", "../project", "owner/.", "owner/.."]) {
+    const response = await fetch(`${service.url}/api/sessions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${service.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Contract fixture",
+        prompt: "contract fixture",
+        provider: "cloudflare",
+        repo,
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: { code: "bad_request", message: "repo must be in owner/name form" },
+    });
+  }
+});
+
 test("successful creation tracks a repo and vaporize retains it", async (t) => {
   const service = await new FakeWorkerService().start();
   t.after(() => service.stop());

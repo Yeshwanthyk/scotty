@@ -1,8 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
+import { Effect } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { ScottyError } from "../src/contracts";
 import { InitialSessionStorageFailure } from "../src/session-store";
+import { RepoVerifierFailure } from "../src/repo-verifier";
 import {
   CREATE_IDEMPOTENCY,
   CREATE_INPUT,
@@ -48,10 +50,83 @@ const hostWriteFileEventIndex = (
       writeEvents += 1;
     }
   }
-  throw new Error("missing host:writeFile event");
+  assert.fail("missing host:writeFile event");
 };
 
 describe("Sandbox create orchestration", () => {
+  it("verifies the repository before any session authority or runtime mutation", async () => {
+    const harness = await createSessionHarness({
+      repoVerifier: {
+        verify: () => Effect.fail(new RepoVerifierFailure({ reason: "forbidden", status: 403 })),
+      },
+    });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(harness.readRecord(), undefined);
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
+    assert.deepStrictEqual(harness.commands, []);
+    assert.ok(!harness.events.some((event) => event.startsWith("projection:")));
+    assert.ok(!harness.events.includes("credential:put"));
+  });
+
+  it("rejects an authenticated missing repository unless --new-repo is explicit", async () => {
+    const harness = await createSessionHarness({
+      repoVerifier: { verify: () => Effect.succeed({ exists: false }) },
+    });
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "not_found");
+    assert.include(error.message, "--new-repo");
+    assert.strictEqual(harness.readRecord(), undefined);
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
+    assert.deepStrictEqual(harness.commands, []);
+  });
+
+  it("initializes an intentional new repository with main as its verified branch", async () => {
+    const harness = await createSessionHarness({
+      repoVerifier: { verify: () => Effect.succeed({ exists: false }) },
+    });
+    const created = await harness.sandbox.createScottySession(
+      { ...CREATE_INPUT, newRepo: true },
+      SESSION_ID,
+      CREATE_IDEMPOTENCY,
+    );
+
+    assert.strictEqual(created.status, "warm");
+    assert.deepStrictEqual(
+      harness.readRecord() && {
+        repoExistsAtCreate: harness.readRecord()?.repoExistsAtCreate,
+        defaultBranch: harness.readRecord()?.defaultBranch,
+      },
+      { repoExistsAtCreate: false, defaultBranch: "main" },
+    );
+    assert.ok(harness.commands.some((command) => command.startsWith("git init -b main ")));
+    assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
+  });
+
+  it("uses the verified non-main branch for both the record and clone", async () => {
+    const harness = await createSessionHarness({
+      repoVerifier: {
+        verify: () => Effect.succeed({ exists: true, defaultBranch: "trunk" }),
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    assert.strictEqual(harness.readRecord()?.repoExistsAtCreate, true);
+    assert.strictEqual(harness.readRecord()?.defaultBranch, "trunk");
+    assert.ok(harness.commands.some((command) => command.includes("clone --branch 'trunk'")));
+  });
+
   it("rejects runner-backed session creation until native Pi transport is available", async () => {
     const harness = await createSessionHarness();
     const error = await rejection(
@@ -192,6 +267,7 @@ describe("Sandbox create orchestration", () => {
   });
 
   it("replays the matching idempotency tuple without touching runtime or schedules", async () => {
+    let verifierCalls = 0;
     const existing = makeSessionRecord({
       id: SESSION_ID,
       branch: `scotty/${SESSION_ID}`,
@@ -200,6 +276,12 @@ describe("Sandbox create orchestration", () => {
       initialEntries: {
         [sessionHarnessKeys.record]: existing,
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+      repoVerifier: {
+        verify: () => {
+          verifierCalls += 1;
+          return Effect.fail(new RepoVerifierFailure({ reason: "transport" }));
+        },
       },
     });
 
@@ -214,6 +296,7 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(harness.readRecord(), existing);
     assert.deepStrictEqual(harness.events, []);
     assert.deepStrictEqual(harness.schedules, []);
+    assert.strictEqual(verifierCalls, 0);
   });
 
   it("reconciles a matching booting create through Pi with the same identity and payload", async () => {
@@ -324,7 +407,7 @@ describe("Sandbox create orchestration", () => {
 
     assert.deepStrictEqual(first, second);
     assert.strictEqual(
-      harness.commands.filter((command) => command.startsWith("gh repo view")).length,
+      harness.commands.filter((command) => command.startsWith("rm -rf ")).length,
       1,
     );
     assert.ok(!harness.events.includes("host:destroy"));
@@ -429,7 +512,7 @@ describe("Sandbox create orchestration", () => {
       ["enforceHardCap"],
     );
     assert.strictEqual(
-      harness.commands.filter((command) => command.startsWith("gh repo view")).length,
+      harness.commands.filter((command) => command.startsWith("rm -rf ")).length,
       1,
     );
     assert.ok(!harness.events.includes("host:destroy"));

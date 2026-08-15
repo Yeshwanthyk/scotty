@@ -28,6 +28,17 @@ const PUBLIC_SESSION_FIELDS = [
   "capRemainingSeconds",
   "codexThreadId",
 ];
+const REPOSITORY_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/u;
+
+function isRepositoryIdentity(value) {
+  const segments = value.split("/");
+  return (
+    segments.length === 2 &&
+    segments.every(
+      (segment) => REPOSITORY_SEGMENT_PATTERN.test(segment) && segment !== "." && segment !== "..",
+    )
+  );
+}
 
 function json(response, status = 200, headers = {}) {
   return {
@@ -743,8 +754,10 @@ export class FakeWorkerService {
         return error(400, "bad_request", "prompt must be a non-empty string");
       if (body.provider !== "cloudflare")
         return error(400, "bad_request", "provider must be cloudflare");
-      if (typeof body.repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(body.repo))
+      if (typeof body.repo !== "string" || !isRepositoryIdentity(body.repo))
         return error(400, "bad_request", "repo must be in owner/name form");
+      if (body.newRepo !== undefined && typeof body.newRepo !== "boolean")
+        return error(400, "bad_request", "newRepo must be a boolean");
       const id = `e2e-${String(++this.counter).padStart(4, "0")}`;
       const now = new Date();
       const hardCapSeconds = Number.isInteger(body.hardCapSeconds)

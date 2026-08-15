@@ -38,6 +38,7 @@ import {
 } from "./schemas";
 import { readLocalPiAuth } from "./pi-auth";
 import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
+import { isRepositoryIdentity } from "../../protocol/repository";
 import {
   browserUrl,
   durationSeconds,
@@ -102,7 +103,6 @@ import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const SANDBOX_PEER_HOST = "https://scotty.internal";
-const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const RUNNER_IMAGE_PATTERN = /^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*@)?sha256:[a-f0-9]{64}$/;
 const RUNNER_CONTAINER_PATH = "/usr/local/bin:/usr/bin:/bin";
@@ -1089,6 +1089,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       prompt: Argument.string("prompt").pipe(Argument.withDescription("Initial agent prompt")),
       title: Flag.string("title").pipe(Flag.withDescription("Short task or outcome title")),
       repo: Flag.string("repo").pipe(Flag.withDescription("GitHub repository as OWNER/NAME")),
+      newRepo: Flag.boolean("new-repo").pipe(
+        Flag.withDescription("Create a local workspace when the GitHub repository is missing"),
+      ),
       provider: Flag.choice("provider", ["cloudflare"] as const).pipe(
         Flag.withDescription("Execution provider"),
       ),
@@ -1098,7 +1101,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       ),
       detach: Flag.boolean("detach").pipe(Flag.withDescription("Do not open the session browser")),
     },
-    ({ cap, detach, prompt, provider, repo, title }) =>
+    ({ cap, detach, newRepo, prompt, provider, repo, title }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         const browser = yield* BrowserLauncher;
@@ -1106,7 +1109,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const normalizedTitle = title.trim();
         if (!normalizedTitle || normalizedTitle.length > 120)
           return yield* usage("--title must be between 1 and 120 characters");
-        if (!REPOSITORY_PATTERN.test(repo)) return yield* usage("--repo must be OWNER/NAME");
+        if (!isRepositoryIdentity(repo)) return yield* usage("--repo must be OWNER/NAME");
         const auth = yield* credentials(options);
         const hardCapSeconds = Option.isSome(cap)
           ? yield* Effect.fromResult(durationSeconds(cap.value))
@@ -1116,6 +1119,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           prompt,
           provider,
           repo,
+          ...(newRepo ? { newRepo: true } : {}),
           ...(Option.isSome(cap) ? { cap: cap.value, hardCapSeconds } : {}),
         };
         const pending = yield* pendingUpRequest(auth.host, body);
