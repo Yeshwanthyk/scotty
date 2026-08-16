@@ -120,6 +120,10 @@ describe("production deployment ownership", () => {
     const installedWorkerRuntimeContext = read(
       "node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js",
     );
+    const installedContainerProvider = read(
+      "node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js",
+    );
+    const installedDocker = read("node_modules/alchemy/lib/Docker/Docker.js");
 
     assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.72");
     assert.equal(rootPackage.scripts.postinstall, "node scripts/apply-dependency-patches.mjs");
@@ -136,6 +140,22 @@ describe("production deployment ownership", () => {
     assert.doesNotMatch(installedWorkerProvider, /scriptName: old\.scriptName/u);
     assert.match(patch, /Context is cyclic in Effect v4/u);
     assert.match(installedWorkerRuntimeContext, /if \(phase === "plan"\)/u);
+
+    // Registry credentials are minted for a short window and Docker keeps an
+    // isolated per-deploy DOCKER_CONFIG with a plaintext `auths` entry instead
+    // of running `docker login` (the comments in Docker.js explain why).
+    assert.match(installedContainerProvider, /expirationMinutes: 15/u);
+    assert.doesNotMatch(installedContainerProvider, /expirationMinutes: 60/u);
+    assert.match(installedDocker, /DOCKER_CONFIG/u);
+    assert.match(installedDocker, /auths/u);
+    assert.match(installedDocker, /config\.json/u);
+    // The backported provider pushes through Docker; neither it nor the Scotty
+    // deployment steps hand the release to `wrangler deploy`.
+    assert.doesNotMatch(installedContainerProvider, /"wrangler"/u);
+    const deploymentCommands = PRODUCTION_DEPLOY_STEPS.map(
+      ({ command, args }) => `${command} ${args.join(" ")}`,
+    ).join("\n");
+    assert.doesNotMatch(deploymentCommands, /wrangler\s+deploy/u);
 
     const runtimeContext = makeWorkerRuntimeContext("deployment-props-probe");
     const services = {};

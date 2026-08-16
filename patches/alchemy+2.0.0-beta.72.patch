@@ -115,3 +115,27 @@ diff --git a/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts
        const handlers = yield* Effect.all(listeners, {
          concurrency: "unbounded",
        });
+diff --git a/node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js b/node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js
+--- a/node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js
++++ b/node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js
+@@ -311,7 +311,7 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
+             accountId,
+             registryId,
+             permissions: ["pull", "push"],
+-            expirationMinutes: 60,
++            expirationMinutes: 15,
+         });
+         const username = credentials.username ?? credentials.user;
+         if (!username) {
+diff --git a/node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts b/node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts
+--- a/node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts
++++ b/node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts
+@@ -449,7 +449,7 @@ export const LiveContainerProvider = () =>
+             accountId,
+             registryId,
+             permissions: ["pull", "push"],
+-            expirationMinutes: 60,
++            expirationMinutes: 15,
+           });
+         const username = credentials.username ?? (credentials as any).user;
+         if (!username) {
