@@ -105,6 +105,12 @@ describe("final container image gate", () => {
       dockerfile,
       /node \/tmp\/project-container-pi-install\.mjs --assert-image --pi-packages \/opt\/scotty\/pi-packages/u,
     );
+    assert.match(dockerfile, /RUN mkdir -p \/workspace \/opt\/scotty\/skills/u);
+    assert.doesNotMatch(dockerfile, /COPY worker\/container\/skills\/(?:bundled|licenses)/u);
+    assert.match(
+      dockerfile,
+      /find \/opt\/scotty\/skills -mindepth 1 -maxdepth 1 -type d \| wc -l\)" -eq 0/u,
+    );
     for (const name of CONTAINER_IMAGE_ABSENT_PI_PACKAGES) {
       assert.ok(piPackagesSmokeCommand.includes(`grep -F -- ${JSON.stringify(name)}`));
       assert.ok(

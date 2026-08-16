@@ -89,7 +89,14 @@ const resolveSeedExtras = (
         reason: "nonzero_exit",
         message: "Sandbox bundle root is required when extras are configured",
       });
+    const configuredNames = new Set<string>();
     for (const skill of extraSkills) {
+      if (configuredNames.has(skill.name))
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox configured skill names must be unique",
+        });
+      configuredNames.add(skill.name);
       if (Option.isNone(decodeSkillName(skill.name)))
         return yield* new SandboxRuntimeFailure({
           reason: "nonzero_exit",
@@ -98,6 +105,12 @@ const resolveSeedExtras = (
     }
     const extraPackagePaths: string[] = [];
     for (const pkg of extraPackages) {
+      if (configuredNames.has(pkg.name))
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox configured source names must be unique",
+        });
+      configuredNames.add(pkg.name);
       const packagePath = extraPackagePath(bundleRoot, pkg.name);
       if (
         Option.isNone(decodePiPackageName(pkg.name)) ||
@@ -178,7 +191,7 @@ const buildMergedSkillsCommand = (
   const piSkills = `${sessionRoot(id)}/.pi-agent/skills`;
   const parts = [
     `mkdir -p ${shellQuote(merged)}`,
-    `ln -sfn /opt/scotty/skills/* ${shellQuote(`${merged}/`)}`,
+    `for skill in /opt/scotty/skills/*; do [ -e "$skill" ] || continue; ln -sfn "$skill" ${shellQuote(`${merged}/`)}; done`,
   ];
   for (const skill of extraSkills) {
     parts.push(

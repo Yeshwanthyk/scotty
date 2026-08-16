@@ -348,7 +348,7 @@ describe("container auth values", () => {
 });
 
 describe("ContainerAuth", () => {
-  it.effect("seeds exact paths, contents, modes, environment, and ordering", () =>
+  it.effect("seeds zero built-ins/extras and keeps subagents available", () =>
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       yield* seedWith(capabilities);
@@ -395,6 +395,7 @@ describe("ContainerAuth", () => {
         theme: "dark",
         packages: [...PI_PACKAGES],
       });
+      assert.include(PI_PACKAGES, "/opt/scotty/pi-packages/sources/pi-subagents");
       assert.ok(writes[5]?.content.includes("password=$GITHUB_SENTINEL"));
       assert.ok(writes[6]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
       assert.ok(
@@ -407,7 +408,11 @@ describe("ContainerAuth", () => {
       const skillsExec = chmodExecCommand(capabilities.calls);
       const merged = mergedSkillsPath(ID);
       assert.include(skillsExec, `mkdir -p '${merged}'`);
-      assert.include(skillsExec, `ln -sfn /opt/scotty/skills/* '${merged}/'`);
+      assert.include(
+        skillsExec,
+        `for skill in /opt/scotty/skills/*; do [ -e "$skill" ] || continue; ln -sfn "$skill" '${merged}/'; done`,
+      );
+      assert.notInclude(skillsExec, `ln -sfn /opt/scotty/skills/* '${merged}/'`);
       assert.include(skillsExec, `ln -sfn '${merged}' '/workspace/${ID}/.codex/skills'`);
       assert.include(skillsExec, `ln -sfn '${merged}' '/workspace/${ID}/.pi-agent/skills'`);
       assert.notInclude(skillsExec, `ln -sfn /opt/scotty/skills '/workspace/${ID}/.codex/skills'`);
@@ -424,7 +429,7 @@ describe("ContainerAuth", () => {
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
       yield* seedWith(capabilities, credential, {
         bundleRoot,
-        extraSkills: [{ name: "custom-skill" }],
+        extraSkills: [{ name: "custom-skill" }, { name: "another-skill" }],
         extraPackages: [{ name: "custom-package" }, { name: "@scope/custom-package" }],
       });
       const writes = capabilities.calls.filter(
@@ -443,6 +448,31 @@ describe("ContainerAuth", () => {
         skillsExec,
         `ln -sfn '${bundleRoot}/skills/custom-skill' '/workspace/${ID}/.scotty/merged-skills/custom-skill'`,
       );
+      assert.include(
+        skillsExec,
+        `ln -sfn '${bundleRoot}/skills/another-skill' '/workspace/${ID}/.scotty/merged-skills/another-skill'`,
+      );
+    }),
+  );
+
+  it.effect("fails when installation skill names are configured more than once", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      const result = yield* Effect.result(
+        seedWith(capabilities, credential, {
+          bundleRoot: `/workspace/${ID}/.scotty/sandbox/deadbeef`,
+          extraSkills: [{ name: "duplicate" }, { name: "duplicate" }],
+        }),
+      );
+      const error = failed(result);
+      assert.deepStrictEqual(
+        error,
+        new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox configured skill names must be unique",
+        }),
+      );
+      assert.deepStrictEqual(capabilities.calls, []);
     }),
   );
 

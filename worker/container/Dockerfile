@@ -125,11 +125,9 @@ ENV LANG=en_US.UTF-8 \
   UV_PYTHON_INSTALL_DIR=/opt/uv/python \
   UV_PYTHON_BIN_DIR=/usr/local/bin
 
-RUN mkdir -p /workspace
+RUN mkdir -p /workspace /opt/scotty/skills
 
 COPY --from=scotty-cli-build /out/scotty /usr/local/bin/scotty
-COPY worker/container/skills/bundled /opt/scotty/skills
-COPY worker/container/skills/licenses /opt/scotty/licenses
 COPY worker/container/skills/THIRD_PARTY_NOTICES.md /opt/scotty/THIRD_PARTY_NOTICES.md
 COPY worker/container/skills/skills.lock.json /opt/scotty/skills.lock.json
 COPY worker/container/pi-packages /opt/scotty/pi-packages
@@ -219,7 +217,7 @@ RUN set -eu; \
     done \
   && rm -rf /tmp/scotty-pi-agent /tmp/scotty-pi-help /tmp/scotty-pi-packages.list \
   && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-pi-shell \
-  && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
+  && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 0 \
   && test "$(stat -c '%a' /usr/local/bin/scotty)" = "755" \
   && test -z "$(find /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills ! -type l -perm /222 -print -quit)" \
   && test "$(pi --version)" = "${PI_VERSION}" \
