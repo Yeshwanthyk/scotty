@@ -15,6 +15,7 @@ export interface SessionListItem {
     readonly code?: string;
     readonly message?: string;
     readonly recoverable?: boolean;
+    readonly stage?: string;
   };
 }
 

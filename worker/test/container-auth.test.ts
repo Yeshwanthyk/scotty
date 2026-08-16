@@ -248,6 +248,24 @@ const chmodExecCommand = (calls: ContainerCall[]): string => {
   return exec.command;
 };
 
+const ghIdentityExec = (calls: ContainerCall[]) => {
+  const exec = calls.find(
+    (call): call is Extract<ContainerCall, { operation: "exec" }> =>
+      call.operation === "exec" && call.command.includes("gh api user"),
+  );
+  assert.ok(exec);
+  return exec;
+};
+
+const fallbackIdentityExec = (calls: ContainerCall[]) => {
+  const exec = calls.find(
+    (call): call is Extract<ContainerCall, { operation: "exec" }> =>
+      call.operation === "exec" && call.command.includes('config user.name "Scotty Session"'),
+  );
+  assert.ok(exec);
+  return exec;
+};
+
 const ensureTerminalWith = (
   capabilities: SandboxRuntimeCapabilities,
   storedCredential: StoredCredential = credential,
@@ -303,6 +321,8 @@ describe("container auth values", () => {
       GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
       GH_TOKEN: GITHUB_SENTINEL,
       GITHUB_SENTINEL,
+      GH_PROMPT_DISABLED: "1",
+      GH_NO_UPDATE_NOTIFIER: "1",
       GIT_TERMINAL_PROMPT: "0",
       NODE_OPTIONS: "--use-system-ca",
       GOTOOLCHAIN: "auto",
@@ -419,6 +439,38 @@ describe("ContainerAuth", () => {
       assert.notInclude(
         skillsExec,
         `ln -sfn /opt/scotty/skills '/workspace/${ID}/.pi-agent/skills'`,
+      );
+
+      const expectedEnv = agentEnv(ID, credential);
+      const setEnv = capabilities.calls.find(
+        (call): call is Extract<ContainerCall, { operation: "setEnvVars" }> =>
+          call.operation === "setEnvVars",
+      );
+      assert.deepStrictEqual(setEnv?.envVars, expectedEnv);
+      const ghExec = ghIdentityExec(capabilities.calls);
+      assert.deepStrictEqual(ghExec.options, { env: expectedEnv, timeout: 20_000 });
+      assert.notInclude(
+        capabilities.calls.filter((call) => call.operation === "exec").map((call) => call.command),
+        `config user.name "Scotty Session"`,
+      );
+    }),
+  );
+
+  it.effect("falls back to a deterministic git identity when gh lookup fails", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      capabilities.execFailWhen = (command) => command.includes("gh api user");
+      yield* seedWith(capabilities);
+      const ghExec = ghIdentityExec(capabilities.calls);
+      assert.deepStrictEqual(ghExec.options, { env: agentEnv(ID, credential), timeout: 20_000 });
+      const fallbackExec = fallbackIdentityExec(capabilities.calls);
+      assert.deepStrictEqual(fallbackExec.options, {
+        env: agentEnv(ID, credential),
+        timeout: 10_000,
+      });
+      assert.include(
+        fallbackExec.command,
+        `config user.email "scotty-session-${ID}@users.noreply.github.com"`,
       );
     }),
   );
@@ -800,6 +852,8 @@ describe("ContainerAuth", () => {
         GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
         GH_TOKEN: GITHUB_SENTINEL,
         GITHUB_SENTINEL,
+        GH_PROMPT_DISABLED: "1",
+        GH_NO_UPDATE_NOTIFIER: "1",
         GIT_TERMINAL_PROMPT: "0",
         NODE_OPTIONS: "--use-system-ca",
         GOTOOLCHAIN: "auto",

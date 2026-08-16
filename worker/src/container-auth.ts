@@ -401,11 +401,18 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       yield* runtime.execChecked(
         `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, extraSkills, options?.bundleRoot)}`,
       );
-      yield* runtime.setEnvVars(agentEnv(id, credential));
+      const env = agentEnv(id, credential);
+      yield* runtime.setEnvVars(env);
       const root = sessionRoot(id);
-      yield* runtime.execChecked(
-        `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C ${shellQuote(root)} config user.name "$git_name" && git -C ${shellQuote(root)} config user.email "$git_email"`,
-      );
+      const ghIdentityCommand = `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C ${shellQuote(root)} config user.name "$git_name" && git -C ${shellQuote(root)} config user.email "$git_email"`;
+      const fallbackIdentityCommand = `git -C ${shellQuote(root)} config user.name "Scotty Session" && git -C ${shellQuote(root)} config user.email "scotty-session-${id}@users.noreply.github.com"`;
+      yield* runtime
+        .execChecked(ghIdentityCommand, { env, timeout: 20_000 })
+        .pipe(
+          Effect.catch(() =>
+            runtime.execChecked(fallbackIdentityCommand, { env, timeout: 10_000 }),
+          ),
+        );
     });
     return ContainerAuth.of({
       seed,
@@ -502,6 +509,8 @@ export function agentEnv(
     GIT_CONFIG_GLOBAL: `${sessionRoot(id)}/.pi-agent/gitconfig`,
     GH_TOKEN: credential.githubSentinel,
     GITHUB_SENTINEL: credential.githubSentinel,
+    GH_PROMPT_DISABLED: "1",
+    GH_NO_UPDATE_NOTIFIER: "1",
     GIT_TERMINAL_PROMPT: "0",
     NODE_OPTIONS: "--use-system-ca",
     GOTOOLCHAIN: "auto",

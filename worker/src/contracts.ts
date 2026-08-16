@@ -105,10 +105,21 @@ export const SessionOperationSchema = Schema.Struct({
 );
 export type SessionOperation = typeof SessionOperationSchema.Type;
 
+export const SessionCreateSetupStageSchema = Schema.Literals([
+  "materialize",
+  "seed",
+  "preflight",
+  "pi_health",
+  "warm_commit",
+  "runtime_phase",
+]);
+export type SessionCreateSetupStage = typeof SessionCreateSetupStageSchema.Type;
+
 export const SessionFailureSchema = Schema.Struct({
   code: Schema.String,
   message: Schema.String,
   recoverable: Schema.Boolean,
+  stage: Schema.optionalKey(SessionCreateSetupStageSchema),
 });
 export type SessionFailure = typeof SessionFailureSchema.Type;
 
