@@ -141,14 +141,22 @@ describe("production deployment ownership", () => {
     assert.match(patch, /Context is cyclic in Effect v4/u);
     assert.match(installedWorkerRuntimeContext, /if \(phase === "plan"\)/u);
 
-    // Registry credentials are minted for a short window and Docker keeps an
-    // isolated per-deploy DOCKER_CONFIG with a plaintext `auths` entry instead
-    // of running `docker login` (the comments in Docker.js explain why).
+    // Registry credentials are minted for a short window and Docker
+    // authenticates in isolation: `docker login --username ... --password-stdin`
+    // streams the password on a Stream-backed stdin (via TextEncoder) and writes
+    // only into a scoped temp DOCKER_CONFIG dir, so no credential reaches argv,
+    // logs, or the shared credential helper. There is no argv `--password`
+    // form, no inline `Buffer.from(user:pass)` auth encoding, and no Wrangler
+    // handoff.
     assert.match(installedContainerProvider, /expirationMinutes: 15/u);
     assert.doesNotMatch(installedContainerProvider, /expirationMinutes: 60/u);
-    assert.match(installedDocker, /DOCKER_CONFIG/u);
-    assert.match(installedDocker, /auths/u);
-    assert.match(installedDocker, /config\.json/u);
+    assert.match(installedDocker, /"login",\s*"--username",/u);
+    assert.match(installedDocker, /"--password-stdin",/u);
+    assert.match(installedDocker, /Stream\.succeed\(new TextEncoder\(\)\.encode\(input\)\)/u);
+    assert.match(installedDocker, /DOCKER_CONFIG: dir/u);
+    assert.doesNotMatch(installedDocker, /"--password",/u);
+    assert.doesNotMatch(installedDocker, /Buffer\.from\(/u);
+    assert.doesNotMatch(installedDocker, /wrangler/u);
     // The backported provider pushes through Docker; neither it nor the Scotty
     // deployment steps hand the release to `wrangler deploy`.
     assert.doesNotMatch(installedContainerProvider, /"wrangler"/u);
