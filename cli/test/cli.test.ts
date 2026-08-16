@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -60,6 +61,29 @@ function rejected<T = never>(message: string): Promise<T> {
 }
 
 const decodeBeamUpRequest = Schema.decodeUnknownSync(BeamUpRequestSchema);
+
+const pendingUpPath = (home: string, host: string, body: unknown): string => {
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify([host, body]))
+    .digest("hex");
+  return join(home, ".scotty", "pending-up", `${fingerprint}.json`);
+};
+
+const beamUpArgs = (repo = "owner/project") =>
+  [
+    "beam",
+    "up",
+    "fix it",
+    "--title",
+    "Fix build",
+    "--repo",
+    repo,
+    "--provider",
+    "cloudflare",
+    "--detach",
+    "--host",
+    "https://worker.example",
+  ] as const;
 
 function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
   let revision = 0;
@@ -344,6 +368,124 @@ describe("configuration and transport", () => {
     expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/u);
     expect(keys[1]).toBe(keys[0]);
     expect(keys[2]).not.toBe(keys[1]);
+  });
+
+  test("beam up retries once with a fresh idempotency key after a vaporized-session conflict", async () => {
+    const home = await temporaryDirectory();
+    const host = "https://worker.example";
+    const body = {
+      title: "Fix build",
+      prompt: "fix it",
+      provider: "cloudflare",
+      repo: "owner/project",
+    };
+    const staleKey = "11111111-1111-4111-8111-111111111111";
+    await mkdir(join(home, ".scotty", "pending-up"), { recursive: true });
+    await writeFile(
+      pendingUpPath(home, host, body),
+      `${JSON.stringify({
+        version: 1,
+        key: staleKey,
+        createdAt: new Date().toISOString(),
+      })}\n`,
+    );
+
+    const keys: string[] = [];
+    let createRequests = 0;
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/api/sessions" && request.method === "POST") {
+        keys.push(request.headers.get("idempotency-key") ?? "");
+        createRequests += 1;
+        if (createRequests === 1) {
+          return Response.json(
+            {
+              error: {
+                code: "conflict",
+                message: "Session abcdef012345 already exists",
+                hint: "Check the session state and Worker logs.",
+              },
+            },
+            { status: 409 },
+          );
+        }
+        return Response.json({
+          id: "s2",
+          title: "Fix build",
+          url: "https://worker.example/s/s2",
+          branch: "scotty/s2",
+          provider: "cloudflare",
+          status: "warm",
+        });
+      }
+      if (url.pathname === "/api/sessions/abcdef012345" && request.method === "GET") {
+        return Response.json(
+          { error: { code: "not_found", message: "Session abcdef012345 is gone" } },
+          { status: 404 },
+        );
+      }
+      return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+    };
+
+    const h = harness({ home, fetch });
+    expect(await main([...beamUpArgs()], h.deps)).toBe(EXIT.OK);
+    expect(createRequests).toBe(2);
+    expect(keys).toEqual([staleKey, expect.stringMatching(/^[0-9a-f-]{36}$/u)]);
+    expect(keys[1]).not.toBe(staleKey);
+    await expect(readFile(pendingUpPath(home, host, body))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  test("beam up keeps a genuine create conflict when the session still exists", async () => {
+    const home = await temporaryDirectory();
+    let createRequests = 0;
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname === "/api/sessions" && request.method === "POST") {
+        createRequests += 1;
+        return Response.json(
+          {
+            error: {
+              code: "conflict",
+              message: "Session abcdef012345 already exists",
+              hint: "Check the session state and Worker logs.",
+            },
+          },
+          { status: 409 },
+        );
+      }
+      if (url.pathname === "/api/sessions/abcdef012345" && request.method === "GET") {
+        return Response.json({
+          id: "abcdef012345",
+          title: "Fix build",
+          status: "warm",
+          provider: "cloudflare",
+          repo: "owner/project",
+          defaultBranch: "main",
+          branch: "scotty/abcdef012345",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          hardCapAt: "2026-01-02T00:00:00.000Z",
+          ageSeconds: 0,
+          capRemainingSeconds: 86_400,
+        });
+      }
+      return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
+    };
+
+    const h = harness({ home, fetch });
+    expect(await main([...beamUpArgs()], h.deps)).toBe(EXIT.WRONG_STATE);
+    expect(createRequests).toBe(1);
+    expect(h.error()).toEqual({
+      error: {
+        code: "conflict",
+        message: "Session abcdef012345 already exists",
+        hint: "Check the session state and Worker logs.",
+      },
+    });
   });
 
   test("env overrides config and config is the final fallback", async () => {

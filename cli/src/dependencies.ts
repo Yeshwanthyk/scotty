@@ -13,7 +13,8 @@ import {
   type PendingUp,
 } from "./schemas";
 import { CliRuntime, FileSystem } from "./services";
-import { normalizeHost, usage } from "./pure";
+import { requestJson } from "./transport";
+import { conflictSessionId, normalizeHost, stableUp, usage } from "./pure";
 
 export { cliLayer, defaultDependencies, type CliDependencies } from "./services";
 
@@ -209,6 +210,71 @@ export const clearPendingUp = Effect.fnUntraced(function* (path: string) {
     .pipe(
       Effect.catch((error) => (error.code === "ENOENT" ? Effect.void : Effect.fail(unexpected()))),
     );
+});
+
+const finalizePendingUp = Effect.fnUntraced(function* (
+  pending: { readonly path: string },
+  output: { readonly status: string },
+) {
+  if (output.status !== "booting") yield* clearPendingUp(pending.path);
+});
+
+export const sessionAbsent = Effect.fnUntraced(function* (
+  auth: { readonly host: string; readonly token: string },
+  sessionId: string,
+) {
+  const result = yield* Effect.result(
+    requestJson(auth, `/api/sessions/${encodeURIComponent(sessionId)}`),
+  );
+  if (Result.isFailure(result)) {
+    if (result.failure.code === "not_found") return true;
+    return yield* result.failure;
+  }
+  return false;
+});
+
+export const beamUpSession = Effect.fnUntraced(function* (
+  auth: { readonly host: string; readonly token: string },
+  body: BeamUpRequest,
+) {
+  const create = (pending: { readonly key: string; readonly path: string }) =>
+    requestJson(auth, "/api/sessions", {
+      method: "POST",
+      headers: { "idempotency-key": pending.key },
+      body: JSON.stringify(body),
+    }).pipe(Effect.flatMap((raw) => Effect.fromResult(stableUp(raw, auth.host))));
+
+  let pending = yield* pendingUpRequest(auth.host, body);
+  const created = yield* Effect.result(create(pending));
+  if (Result.isSuccess(created)) {
+    yield* finalizePendingUp(pending, created.success.output);
+    return created.success;
+  }
+
+  const failure = created.failure;
+  if (failure.code !== "conflict") return yield* failure;
+
+  const sessionId = conflictSessionId(failure.message);
+  if (sessionId === undefined) {
+    yield* clearPendingUp(pending.path);
+    return yield* failure;
+  }
+
+  const absent = yield* Effect.result(sessionAbsent(auth, sessionId));
+  if (Result.isFailure(absent) || !absent.success) {
+    yield* clearPendingUp(pending.path);
+    return yield* failure;
+  }
+
+  yield* clearPendingUp(pending.path);
+  pending = yield* pendingUpRequest(auth.host, body);
+  const retried = yield* Effect.result(create(pending));
+  if (Result.isFailure(retried)) {
+    if (retried.failure.code === "conflict") yield* clearPendingUp(pending.path);
+    return yield* retried.failure;
+  }
+  yield* finalizePendingUp(pending, retried.success.output);
+  return retried.success;
 });
 
 export const credentials = Effect.fnUntraced(function* (options: GlobalOptions) {
