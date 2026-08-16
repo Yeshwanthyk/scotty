@@ -179,7 +179,8 @@ describe("standalone deployment archive", () => {
     expect(installRun).toContain("--assert-image");
     expect(installRun).not.toContain("claudeBackend|codexBackend|claude-agent-sdk");
     expect(piProjectionScript).toContain("export const assertPiSubagentsSource");
-    expect(piProjectionScript).toContain("export const assertPiTasksSource");
+    expect(piProjectionScript).not.toContain("assertPiTasksSource");
+    expect(piProjectionScript).not.toContain("PI_TASKS_SOURCE");
     expect(dockerfile.match(/--assert-image/gu)).toHaveLength(1);
     expect(containerImageCheck).not.toContain("--assert-image");
     expect(installRun).toContain("/usr/local/bin/scotty-pi-session");

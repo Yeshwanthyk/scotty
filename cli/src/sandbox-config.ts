@@ -51,7 +51,6 @@ export const BUILTIN_PI_PACKAGE_NAMES = [
   "pi-askuser",
   "pi-background-terminals",
   "pi-subagents",
-  "pi-tasks",
   "pi-web-access",
   "pi-workflows",
   "scotty-browser-test",

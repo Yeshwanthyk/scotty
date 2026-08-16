@@ -7,7 +7,6 @@ import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./sandbox-run
 import { sessionRoot } from "./workspace";
 
 export const PI_PACKAGES = [
-  "/opt/scotty/pi-packages/sources/pi-tasks",
   "/opt/scotty/pi-packages/sources/pi-subagents",
   "/opt/scotty/pi-packages/sources/pi-workflows",
   "/opt/scotty/pi-packages/sources/pi-background-terminals",
@@ -233,6 +232,12 @@ export const sandboxAgentsInstructions = `- Read and follow the repository AGENT
 - If a required tool is absent or a dependency download is blocked by Scotty policy (including HTTP 520), stop after one bounded retry. Run the focused checks that are available and report the exact unavailable gate. If publication was requested, continue to commit, push, and open the PR so CI can run the locked full gate.
 - Don't build a missing toolchain from source, install a third-party embedded toolchain, add temporary module replacements, or bypass the proxy with direct arbitrary-host downloads unless the user explicitly asks.
 - Use matching skills under \`$PI_CODING_AGENT_DIR/skills\` or \`$CODEX_HOME/skills\`; read the selected \`SKILL.md\` before acting.
+- Identify the required work before acting.
+- Keep a short ordered checklist in progress updates.
+- Complete prerequisites before dependents.
+- Use subagents only for independent parallel work; the parent owns integration and verification.
+- Do not claim that a durable task store exists.
+- Use no more than four concurrent subagents.
 - Publish concise progress checkpoints only when there is meaningful new evidence: a completed implementation slice, a verification result, or a blocker. Finish with a concise outcome and proof.
 - Before changing user-visible behavior, define at most three observable acceptance checks and one reproducible browser flow. Capture that flow before the change, make the smallest complete change, keep Hatch on the finished app, then rerun the same viewport, steps, and assertions with video enabled. Finish only when the checks pass or a concrete blocker is proven.
 - In progress and final updates, include each exact \`scotty-evidence:<jobId>\` or \`scotty-hatch:<hatchId>\` reference returned by its structured first-party tool result at most once. The successful tool result must belong to the same conversation as the update; after any new user, steer, or follow-up message, call the relevant status or evidence tool again before publishing its reference. If that tool fails or returns no reference, do not publish one. Never invent, alter, expand, or repeat a reference, and never publish tool URLs, ports, paths, arguments, cookies, credentials, or route values as a substitute.

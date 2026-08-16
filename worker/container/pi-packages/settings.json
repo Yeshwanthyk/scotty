@@ -1,6 +1,5 @@
 {
   "packages": [
-    "/opt/scotty/pi-packages/sources/pi-tasks",
     "/opt/scotty/pi-packages/sources/pi-subagents",
     "/opt/scotty/pi-packages/sources/pi-workflows",
     "/opt/scotty/pi-packages/sources/pi-background-terminals",

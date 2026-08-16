@@ -33,6 +33,14 @@ function withIndexFixture(run) {
   const fixture = mkdtempSync(join(tmpdir(), "scotty-pi-package-pins-"));
   try {
     execFileSync("git", ["-C", root, "checkout-index", "--all", `--prefix=${fixture}/`]);
+    copyFileSync(
+      join(root, "worker/container/pi-packages/settings.json"),
+      join(fixture, "worker/container/pi-packages/settings.json"),
+    );
+    copyFileSync(
+      join(root, "worker/src/container-auth.ts"),
+      join(fixture, "worker/src/container-auth.ts"),
+    );
     copyFileSync(join(root, manifestPath), join(fixture, manifestPath));
     git(fixture, "init", "--quiet");
     git(fixture, "add", "--force", ".");
@@ -54,7 +62,7 @@ function withIndexFixture(run) {
 
 test("Pi packages are externally vendored or first-party, pinned, locked, and image-local", () => {
   assert.deepEqual(verifyPiPackagePins(), {
-    vendoredPackages: 7,
+    vendoredPackages: 6,
     firstPartyPackages: 2,
     npmPackages: 1,
   });
@@ -117,7 +125,6 @@ test("externally vendored commits are full IDs and match locally available sourc
 test("source digests use staged blobs despite vendored and first-party worktree drift", () => {
   withIndexFixture((fixture) => {
     for (const sourcePath of [
-      "worker/container/pi-packages/sources/pi-tasks/README.md",
       "worker/container/pi-packages/sources/scotty-browser-test/README.md",
       "worker/container/pi-packages/sources/scotty-hatch/README.md",
     ]) {

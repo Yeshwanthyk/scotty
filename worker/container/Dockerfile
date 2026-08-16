@@ -193,8 +193,15 @@ RUN set -eu; \
   && grep -F -- "--plan" /tmp/scotty-pi-help >/dev/null \
   && test ! -d /tmp/scotty-pi-agent/git \
   && test ! -d /tmp/scotty-pi-agent/npm \
+  && if grep -F -- "pi-tasks" /tmp/scotty-pi-packages.list >/dev/null; then \
+    echo "unexpected pi-tasks" >&2; \
+    exit 1; \
+  else \
+    grep_status=$?; \
+    test "${grep_status}" -eq 1; \
+  fi \
+  && test ! -e /opt/scotty/pi-packages/sources/pi-tasks \
   && for package_name in \
-    pi-tasks \
     pi-subagents \
     pi-workflows \
     pi-background-terminals \

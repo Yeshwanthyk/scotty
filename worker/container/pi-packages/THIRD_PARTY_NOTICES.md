@@ -2,7 +2,6 @@
 
 The container includes the exact source and npm pins recorded in [`manifest.json`](manifest.json).
 
-- `pi-tasks` is MIT licensed. See `sources/pi-tasks/LICENSE`.
 - `pi-subagents` is MIT licensed. See `sources/pi-subagents/LICENSE` and
   `sources/pi-subagents/NOTICE.md`.
 - `pi-workflows` is MIT licensed. See `sources/pi-workflows/LICENSE` and
@@ -22,7 +21,6 @@ The container includes the exact source and npm pins recorded in [`manifest.json
   pinned npm package in the container image.
 
 The image install projection is Scotty-owned and does not rewrite the Git-tracked vendor
-checkouts. At image build it omits `@anthropic-ai/claude-agent-sdk` from `pi-subagents` and
-peers `pi-tasks`' `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui` onto the
-already-installed global Pi, so Claude Code and Codex CLI backends are not shipped. Keep
-`pi-codex-compaction`; it supports Pi's `openai-codex` provider, not the Codex CLI.
+checkouts. At image build it omits `@anthropic-ai/claude-agent-sdk` from `pi-subagents`, so
+Claude Code and Codex CLI backends are not shipped. Keep `pi-codex-compaction`; it supports
+Pi's `openai-codex` provider, not the Codex CLI.

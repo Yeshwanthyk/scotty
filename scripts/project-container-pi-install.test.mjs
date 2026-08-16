@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -11,7 +11,6 @@ import {
   PI_SUBAGENTS_PROMPT_REWRITES,
   PI_SUBAGENTS_README_REWRITES,
   PI_SUBAGENTS_SKILL_REWRITES,
-  PI_TASKS_PEER_PACKAGES,
   UPSTREAM_BACKEND_NAMES,
   UPSTREAM_RUNTIME_BACKENDS,
   UPSTREAM_RUNTIME_IMPORTS,
@@ -19,18 +18,14 @@ import {
   UPSTREAM_SKILL_SPAWN,
   UPSTREAM_SKILL_UNAVAILABLE_HARNESSES,
   UPSTREAM_SUBAGENTS_README,
-  assertProjectedPiTasksRuntime,
   canonicalizeNpmLock,
   isIndexedVendorPiPackagesRoot,
   isPiSubagentsProjected,
-  isPiTasksProjected,
   parseProjectContainerPiInstallArgs,
   parentLockPackagePath,
   pruneNpmLockPackages,
   projectContainerPiInstall,
   projectPiSubagentsInstall,
-  projectPiTasksInstall,
-  projectedPiTasksRuntimeProof,
   replaceExact,
   resolveLockDependency,
 } from "./project-container-pi-install.mjs";
@@ -190,60 +185,6 @@ describe("container Pi install projection", () => {
     }
   });
 
-  it("peers pi-tasks' nested pi-coding-agent so Pi's loader aliases supply it", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "scotty-pi-tasks-project-"));
-    try {
-      const packageRoot = join(directory, "sources/pi-tasks");
-      await writeJson(join(packageRoot, "package.json"), {
-        name: "pi-tasks",
-        dependencies: {
-          "@earendil-works/pi-coding-agent": "^0.80.7",
-          "@earendil-works/pi-tui": "^0.80.7",
-          effect: "4.0.0-beta.98",
-        },
-      });
-      await writeJson(join(packageRoot, "package-lock.json"), {
-        packages: {
-          "": {
-            dependencies: {
-              "@earendil-works/pi-coding-agent": "^0.80.7",
-              "@earendil-works/pi-tui": "^0.80.7",
-              effect: "4.0.0-beta.98",
-            },
-          },
-          "node_modules/@earendil-works/pi-coding-agent": {
-            dependencies: {
-              "@earendil-works/pi-tui": "^0.80.7",
-              nested: "1.0.0",
-            },
-          },
-          "node_modules/@earendil-works/pi-coding-agent/node_modules/nested": {},
-          "node_modules/@earendil-works/pi-tui": {},
-          "node_modules/effect": {},
-        },
-      });
-
-      await projectPiTasksInstall(packageRoot);
-      const packageJson = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-      const lock = JSON.parse(await readFile(join(packageRoot, "package-lock.json"), "utf8"));
-      assert.equal(isPiTasksProjected(packageJson), true);
-      for (const name of PI_TASKS_PEER_PACKAGES) {
-        assert.equal(packageJson.dependencies[name], undefined);
-        assert.equal(packageJson.peerDependencies[name], "^0.80.7");
-      }
-      assert.equal(packageJson.dependencies.effect, "4.0.0-beta.98");
-      assert.equal(lock.packages["node_modules/@earendil-works/pi-coding-agent"], undefined);
-      assert.equal(
-        lock.packages["node_modules/@earendil-works/pi-coding-agent/node_modules/nested"],
-        undefined,
-      );
-      assert.equal(lock.packages["node_modules/@earendil-works/pi-tui"], undefined);
-      assert.ok(lock.packages["node_modules/effect"]);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
   it("projects the checked-in vendor sources without mutating the Git tree", async () => {
     const directory = await mkdtemp(join(tmpdir(), "scotty-pi-install-real-"));
     try {
@@ -253,11 +194,6 @@ describe("container Pi install projection", () => {
       await cp(
         join(root, "worker/container/pi-packages/sources/pi-subagents"),
         join(piPackages, "sources/pi-subagents"),
-        { recursive: true, filter: (source) => !source.includes("node_modules") },
-      );
-      await cp(
-        join(root, "worker/container/pi-packages/sources/pi-tasks"),
-        join(piPackages, "sources/pi-tasks"),
         { recursive: true, filter: (source) => !source.includes("node_modules") },
       );
 
@@ -271,18 +207,7 @@ describe("container Pi install projection", () => {
       const projectedSubagents = JSON.parse(
         await readFile(join(piPackages, "sources/pi-subagents/package.json"), "utf8"),
       );
-      const projectedTasks = JSON.parse(
-        await readFile(join(piPackages, "sources/pi-tasks/package.json"), "utf8"),
-      );
-      const projectedLock = JSON.parse(
-        await readFile(join(piPackages, "sources/pi-tasks/package-lock.json"), "utf8"),
-      );
       assert.equal(isPiSubagentsProjected(projectedSubagents), true);
-      assert.equal(isPiTasksProjected(projectedTasks), true);
-      assert.equal(
-        projectedLock.packages["node_modules/@earendil-works/pi-coding-agent"],
-        undefined,
-      );
       const projectedRuntime = await readFile(
         join(piPackages, "sources/pi-subagents/extensions/subagents/src/runtime.ts"),
         "utf8",
@@ -295,30 +220,6 @@ describe("container Pi install projection", () => {
           "utf8",
         ),
         /BACKEND_NAMES = \["pi"\]/u,
-      );
-      assert.match(
-        await readFile(join(piPackages, "sources/pi-tasks/src/types.ts"), "utf8"),
-        /export const TASK_HARNESSES = \["pi"\] as const/u,
-      );
-      assert.match(
-        await readFile(join(piPackages, "sources/pi-tasks/src/types.ts"), "utf8"),
-        /PERSISTED_TASK_HARNESSES = \["pi", "claude", "codex"\]/u,
-      );
-      assert.match(
-        await readFile(join(piPackages, "sources/pi-tasks/src/task-schemas.ts"), "utf8"),
-        /WritableTaskHarnessSchema/u,
-      );
-      assert.match(
-        await readFile(join(piPackages, "sources/pi-tasks/src/index.ts"), "utf8"),
-        /Scotty's image is Pi-only/u,
-      );
-      assert.doesNotMatch(
-        await readFile(join(piPackages, "sources/pi-tasks/src/index.ts"), "utf8"),
-        /use "pi"/u,
-      );
-      assert.doesNotMatch(
-        await readFile(join(piPackages, "sources/pi-tasks/src/index.ts"), "utf8"),
-        /\\`pi\\`, \\`claude\\`, or \\`codex\\`/u,
       );
       const projectedSkill = await readFile(
         join(piPackages, "sources/pi-subagents/skills/subagents/SKILL.md"),
@@ -333,16 +234,6 @@ describe("container Pi install projection", () => {
         await readFile(join(piPackages, "sources/pi-subagents/README.md"), "utf8"),
         /Scotty's image is Pi-only/u,
       );
-      await mkdir(join(piPackages, "sources/pi-tasks/node_modules"), { recursive: true });
-      await symlink(
-        join(root, "node_modules/effect"),
-        join(piPackages, "sources/pi-tasks/node_modules/effect"),
-      );
-      assert.match(
-        projectedPiTasksRuntimeProof(join(piPackages, "sources/pi-tasks")),
-        /sources\/pi-tasks\/node_modules\/effect\/dist\/index\.js/u,
-      );
-      await assertProjectedPiTasksRuntime(join(piPackages, "sources/pi-tasks"));
       assert.equal(
         await readFile(
           join(root, "worker/container/pi-packages/sources/pi-subagents/package.json"),
@@ -444,11 +335,11 @@ describe("container Pi install projection", () => {
   it("does not call npm when projecting locks by default", async () => {
     const directory = await mkdtemp(join(tmpdir(), "scotty-pi-lock-default-"));
     try {
-      const packageRoot = join(directory, "sources/pi-tasks");
+      const packageRoot = join(directory, "sources/pi-subagents");
       await writeJson(join(packageRoot, "package.json"), {
-        name: "pi-tasks",
+        name: "pi-subagents",
         dependencies: {
-          "@earendil-works/pi-coding-agent": "^0.80.7",
+          "@anthropic-ai/claude-agent-sdk": "^0.3.207",
           effect: "4.0.0-beta.98",
         },
       });
@@ -456,23 +347,23 @@ describe("container Pi install projection", () => {
         packages: {
           "": {
             dependencies: {
-              "@earendil-works/pi-coding-agent": "^0.80.7",
+              "@anthropic-ai/claude-agent-sdk": "^0.3.207",
               effect: "4.0.0-beta.98",
             },
           },
-          "node_modules/@earendil-works/pi-coding-agent": {},
+          "node_modules/@anthropic-ai/claude-agent-sdk": {},
           "node_modules/effect": {},
         },
       });
       const calls = [];
-      await projectPiTasksInstall(packageRoot, {
+      await projectPiSubagentsInstall(packageRoot, {
         regenerateNpmPackageLock: async (cwd) => {
           calls.push(cwd);
         },
       });
       assert.deepEqual(calls, []);
       const lock = JSON.parse(await readFile(join(packageRoot, "package-lock.json"), "utf8"));
-      assert.equal(lock.packages["node_modules/@earendil-works/pi-coding-agent"], undefined);
+      assert.equal(lock.packages["node_modules/@anthropic-ai/claude-agent-sdk"], undefined);
       assert.ok(lock.packages["node_modules/effect"]);
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -482,11 +373,11 @@ describe("container Pi install projection", () => {
   it("regenerates locks through npm then prunes the production closure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "scotty-pi-lock-npm-"));
     try {
-      const packageRoot = join(directory, "sources/pi-tasks");
+      const packageRoot = join(directory, "sources/pi-subagents");
       await writeJson(join(packageRoot, "package.json"), {
-        name: "pi-tasks",
+        name: "pi-subagents",
         dependencies: {
-          "@earendil-works/pi-coding-agent": "^0.80.7",
+          "@anthropic-ai/claude-agent-sdk": "^0.3.207",
           effect: "4.0.0-beta.98",
         },
       });
@@ -494,16 +385,16 @@ describe("container Pi install projection", () => {
         packages: {
           "": {
             dependencies: {
-              "@earendil-works/pi-coding-agent": "^0.80.7",
+              "@anthropic-ai/claude-agent-sdk": "^0.3.207",
               effect: "4.0.0-beta.98",
             },
           },
-          "node_modules/@earendil-works/pi-coding-agent": {},
+          "node_modules/@anthropic-ai/claude-agent-sdk": {},
           "node_modules/effect": {},
         },
       });
       const calls = [];
-      await projectPiTasksInstall(packageRoot, {
+      await projectPiSubagentsInstall(packageRoot, {
         regenerateLock: true,
         regenerateNpmPackageLock: async (cwd) => {
           calls.push(cwd);
@@ -511,7 +402,7 @@ describe("container Pi install projection", () => {
       });
       assert.deepEqual(calls, [packageRoot]);
       const lock = JSON.parse(await readFile(join(packageRoot, "package-lock.json"), "utf8"));
-      assert.equal(lock.packages["node_modules/@earendil-works/pi-coding-agent"], undefined);
+      assert.equal(lock.packages["node_modules/@anthropic-ai/claude-agent-sdk"], undefined);
       assert.ok(lock.packages["node_modules/effect"]);
     } finally {
       await rm(directory, { recursive: true, force: true });

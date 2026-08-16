@@ -60,7 +60,7 @@ export function blankProjection() {
     active: false,
     state: {},
     capabilities: { models: [], thinkingLevels: [] },
-    activity: { tasks: [], subagents: [], workflows: [] },
+    activity: { subagents: [], workflows: [] },
     loaded: false,
   };
 }
@@ -137,7 +137,6 @@ export function projectionFromSnapshot(body) {
     firstObject(snapshot.queue, state.queue, snapshot.queues, state.queues),
   );
   projection.activity = {
-    tasks: firstArray(snapshot.tasks, state.tasks, snapshot.activity?.tasks),
     subagents: firstArray(snapshot.subagents, state.subagents, snapshot.activity?.subagents),
     workflows: firstArray(snapshot.workflows, state.workflows, snapshot.activity?.workflows),
   };
@@ -243,9 +242,7 @@ function applyExtensionSurface(projection, request) {
       ? "subagents"
       : key.includes("workflow")
         ? "workflows"
-        : key.includes("task")
-          ? "tasks"
-          : undefined;
+        : undefined;
     if (group)
       projection.activity[group] = Array.isArray(request.widgetLines)
         ? request.widgetLines.map((line, index) => ({

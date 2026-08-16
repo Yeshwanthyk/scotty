@@ -280,7 +280,6 @@ const failed = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRunt
 describe("container auth values", () => {
   it("uses only immutable image-local Pi packages at sandbox startup", () => {
     assert.deepStrictEqual(PI_PACKAGES, [
-      "/opt/scotty/pi-packages/sources/pi-tasks",
       "/opt/scotty/pi-packages/sources/pi-subagents",
       "/opt/scotty/pi-packages/sources/pi-workflows",
       "/opt/scotty/pi-packages/sources/pi-background-terminals",
@@ -338,6 +337,18 @@ describe("container auth values", () => {
     assert.include(sandboxAgentsInstructions, "call the relevant status or evidence tool again");
     assert.include(sandboxAgentsInstructions, "If that tool fails or returns no reference");
     assert.include(sandboxAgentsInstructions, "Never invent, alter, expand, or repeat");
+    assert.include(sandboxAgentsInstructions, "Identify the required work before acting.");
+    assert.include(
+      sandboxAgentsInstructions,
+      "Keep a short ordered checklist in progress updates.",
+    );
+    assert.include(sandboxAgentsInstructions, "Complete prerequisites before dependents.");
+    assert.include(
+      sandboxAgentsInstructions,
+      "Use subagents only for independent parallel work; the parent owns integration and verification.",
+    );
+    assert.include(sandboxAgentsInstructions, "Do not claim that a durable task store exists.");
+    assert.include(sandboxAgentsInstructions, "Use no more than four concurrent subagents.");
   });
 });
 

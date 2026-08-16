@@ -6,6 +6,7 @@ import {
   hatchActions,
 } from "../public/terminal-hatch-reference.js";
 import type { PublicHatchStatusV1 } from "../src/hatch-contracts";
+import { applyEvent, projectionFromSnapshot } from "../public/terminal-projection.js";
 import {
   assistantEvidenceReferences,
   assistantHatchReferences,
@@ -413,11 +414,90 @@ describe("terminal Summary projection", () => {
     });
   });
 
+  it("ignores task-shaped snapshot activity values", () => {
+    const projection = projectionFromSnapshot({
+      snapshot: {
+        tasks: [{ id: "snapshot-task" }],
+        activity: { tasks: [{ id: "activity-task" }] },
+        state: { tasks: [{ id: "state-task" }] },
+      },
+    });
+    assert.deepStrictEqual(projection.activity, { subagents: [], workflows: [] });
+    assert.notProperty(projection.activity, "tasks");
+  });
+  it("retains a generic TaskCreate tool in the ordinary projection map", () => {
+    const projection = projectionFromSnapshot({
+      snapshot: {
+        tools: [{ id: "task-tool", name: "TaskCreate", status: "done" }],
+      },
+    });
+    assert.strictEqual(projection.tools.size, 1);
+    assert.deepInclude(projection.tools.get("task-tool"), {
+      id: "task-tool",
+      name: "TaskCreate",
+    });
+  });
+  it("projects surviving subagent and workflow widgets but not the exact task widget", () => {
+    const projection = projectionFromSnapshot({
+      snapshot: {
+        extensionSurface: {
+          widgets: [
+            { key: "tasks", lines: ["Ignore this task widget"] },
+            { key: "subagents", lines: ["Subagent one"] },
+            { key: "workflows", lines: ["Workflow one"] },
+          ],
+        },
+      },
+    });
+    assert.deepStrictEqual(projection.activity, {
+      subagents: [{ id: "subagents:0", title: "Subagent one", status: "active" }],
+      workflows: [{ id: "workflows:0", title: "Workflow one", status: "active" }],
+    });
+    assert.notProperty(projection.activity, "tasks");
+  });
+  it("preserves generic extension UI requests alongside activity filtering", () => {
+    const projection = projectionFromSnapshot({
+      snapshot: {
+        extensionSurface: { statuses: { initial: "ready" }, title: "Generic extension" },
+      },
+    });
+    assert.strictEqual(
+      applyEvent(projection, {
+        type: "extension_ui_request",
+        sequence: 1,
+        request: { method: "setStatus", statusKey: "phase", statusText: "working" },
+      }),
+      "applied",
+    );
+    assert.strictEqual(
+      applyEvent(projection, {
+        type: "extension_ui_request",
+        sequence: 2,
+        request: { method: "setTitle", title: "Updated extension" },
+      }),
+      "applied",
+    );
+    assert.strictEqual(
+      applyEvent(projection, {
+        type: "extension_ui_request",
+        sequence: 3,
+        request: { method: "set_editor_text", text: "Draft from extension" },
+      }),
+      "applied",
+    );
+    assert.deepStrictEqual(projection.state.extensionStatus, {
+      initial: "ready",
+      phase: "working",
+    });
+    assert.strictEqual(projection.state.extensionTitle, "Updated extension");
+    assert.strictEqual(projection.state.editorText, "Draft from extension");
+  });
   it("ships Summary as a distinct responsive surface without replacing Activity", () => {
     assert.include(terminalHtml, 'id="summary-sidebar"');
     assert.include(terminalHtml, 'aria-label="Summary"');
     assert.include(terminalHtml, 'id="activity-drawer"');
-    assert.include(terminalHtml, "Tasks, subagents, and workflows");
+    assert.include(terminalHtml, "Subagents and workflows");
+    assert.notInclude(terminalHtml, "Tasks");
     assert.include(terminalSource, 'window.matchMedia("(max-width: 1100px)")');
     assert.include(terminalSource, 'document.body.classList.toggle("summary-collapsed"');
     assert.include(terminalSource, 'summarySidebar.classList.toggle("open"');

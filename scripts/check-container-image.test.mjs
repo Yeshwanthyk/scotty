@@ -6,6 +6,7 @@ import { CLEAN_ROOM_CACHE_SCOPE, CLEAN_ROOM_CLI_TARGET } from "./check-cli-clean
 import {
   CONTAINER_IMAGE,
   CONTAINER_IMAGE_ABSENT_COMMANDS,
+  CONTAINER_IMAGE_ABSENT_PI_PACKAGES,
   CONTAINER_IMAGE_CACHE_SCOPE,
   CONTAINER_IMAGE_PI_PACKAGES,
   CONTAINER_IMAGE_PLATFORM,
@@ -13,7 +14,7 @@ import {
   containerImageAbsentToolchainArgs,
   containerImageBuildArgs,
   containerImageInspectArgs,
-  containerImagePiTaskSmokeArgs,
+  containerImagePiPackagesSmokeArgs,
   containerImagePiVersionArgs,
   containerImagePlan,
 } from "./check-container-image.mjs";
@@ -21,7 +22,7 @@ import {
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
 
 describe("final container image gate", () => {
-  it("builds and loads the final linux/amd64 image, then smokes Pi/tasks and inspects Size", async () => {
+  it("builds and loads the final linux/amd64 image, then smokes Pi packages and inspects Size", async () => {
     const prepared = [];
     const dockerCalls = [];
     const inspected = [];
@@ -50,7 +51,7 @@ describe("final container image gate", () => {
     assert.deepEqual(dockerCalls, [
       { command: "docker", args: containerImageBuildArgs(plan) },
       { command: "docker", args: containerImagePiVersionArgs(plan) },
-      { command: "docker", args: containerImagePiTaskSmokeArgs(plan) },
+      { command: "docker", args: containerImagePiPackagesSmokeArgs(plan) },
       { command: "docker", args: containerImageAbsentToolchainArgs(plan) },
     ]);
     assert.deepEqual(containerImageBuildArgs(plan), [
@@ -68,14 +69,32 @@ describe("final container image gate", () => {
     assert.equal(containerImageBuildArgs(plan).includes("--target"), false);
     assert.notEqual(CLEAN_ROOM_CLI_TARGET, undefined);
     assert.match(containerImagePiVersionArgs(plan).join(" "), /--entrypoint pi/u);
-    assert.match(containerImagePiTaskSmokeArgs(plan).join(" "), /pi list/u);
+    const piPackagesSmokeCommand = containerImagePiPackagesSmokeArgs(plan).join(" ");
+    assert.match(piPackagesSmokeCommand, /pi list/u);
     for (const name of CONTAINER_IMAGE_PI_PACKAGES) {
-      assert.match(containerImagePiTaskSmokeArgs(plan).join(" "), new RegExp(name, "u"));
+      assert.match(piPackagesSmokeCommand, new RegExp(name, "u"));
     }
+    for (const name of CONTAINER_IMAGE_ABSENT_PI_PACKAGES) {
+      assert.ok(
+        piPackagesSmokeCommand.includes(
+          `grep -F -- ${JSON.stringify(name)} /tmp/scotty-pi-packages.list`,
+        ),
+      );
+      assert.ok(
+        piPackagesSmokeCommand.includes(
+          `test ! -e ${JSON.stringify(`/opt/scotty/pi-packages/sources/${name}`)}`,
+        ),
+      );
+    }
+    const dockerfile = read("worker/container/Dockerfile");
     assert.match(
-      read("worker/container/Dockerfile"),
+      dockerfile,
       /node \/tmp\/project-container-pi-install\.mjs --assert-image --pi-packages \/opt\/scotty\/pi-packages/u,
     );
+    for (const name of CONTAINER_IMAGE_ABSENT_PI_PACKAGES) {
+      assert.ok(dockerfile.includes(`grep -F -- "${name}" /tmp/scotty-pi-packages.list`));
+      assert.ok(dockerfile.includes(`test ! -e /opt/scotty/pi-packages/sources/${name}`));
+    }
     for (const name of CONTAINER_IMAGE_ABSENT_COMMANDS) {
       assert.match(containerImageAbsentToolchainArgs(plan).join(" "), new RegExp(name, "u"));
     }

@@ -1148,7 +1148,7 @@ async function loadBrowserEvidenceSummary(attachment, evidence) {
 
 function secondaryActivityTool(tool) {
   const name = String(tool?.name ?? tool?.toolName ?? "").toLowerCase();
-  return name.includes("task") || name.includes("subagent") || name.includes("workflow");
+  return name.includes("subagent") || name.includes("workflow");
 }
 
 function toolSummary(tool) {
@@ -1159,7 +1159,6 @@ function toolSummary(tool) {
       args.file_path,
       args.command,
       args.query,
-      args.task,
       args.description,
       tool.summary,
     ) ?? "activity"
@@ -1379,15 +1378,13 @@ function renderReceipts() {
 
 function activityGroups() {
   const activity = currentProjection.activity;
-  const inferred = { tasks: [], subagents: [], workflows: [] };
+  const inferred = { subagents: [], workflows: [] };
   for (const tool of currentProjection.tools.values()) {
     const name = String(tool.name ?? "").toLowerCase();
     if (name.includes("subagent")) inferred.subagents.push(tool);
     else if (name.includes("workflow")) inferred.workflows.push(tool);
-    else if (name.includes("task")) inferred.tasks.push(tool);
   }
   return [
-    ["Tasks", activity.tasks.length ? activity.tasks : inferred.tasks, "T"],
     ["Subagents", activity.subagents.length ? activity.subagents : inferred.subagents, "S"],
     ["Workflows", activity.workflows.length ? activity.workflows : inferred.workflows, "W"],
   ];
@@ -1422,7 +1419,7 @@ function renderActivity() {
         textElement(
           "strong",
           "",
-          firstString(item.title, item.name, item.task, item.description, label.slice(0, -1)),
+          firstString(item.title, item.name, item.description, label.slice(0, -1)),
         ),
         textElement(
           "span",
