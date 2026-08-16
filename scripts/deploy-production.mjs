@@ -66,8 +66,8 @@ export const PRODUCTION_DEPLOY_DIAGNOSTIC_PATH = join(
   "scotty-production-deploy-failure.log",
 );
 const DEFAULT_COMMAND_TIMEOUT_MS = 15 * 60 * 1_000;
-const CONTAINER_ROLLOUT_TIMEOUT_MS = 10 * 60 * 1_000;
-const CONTAINER_ROLLOUT_POLL_MS = 5_000;
+export const CONTAINER_ROLLOUT_TIMEOUT_MS = 10 * 60 * 1_000;
+export const CONTAINER_ROLLOUT_POLL_MS = 5_000;
 export const CONTAINER_ROLLOUT_ABSENCE_QUIET_MS = 60_000;
 const TERMINATION_GRACE_MS = 10_000;
 const activeChildren = new Set();
