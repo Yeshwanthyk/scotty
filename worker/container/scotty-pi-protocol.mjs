@@ -45,6 +45,46 @@ const commandTypes = new Set([
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const workflowRunIdPattern = /^wf_[0-9a-f]{12}$/u;
+const browserSteerMessageIsClean = (message) =>
+  Array.from(message).every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code !== 127 && (code < 128 || code > 159);
+  });
+const browserSteerChildIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
+const browserSteerCommandKeys = ["version", "action", "childId", "revision", "message"];
+const browserSteerMaxMessageLength = 2_048;
+const browserSteerMaxCommandBytes = 4 * 1_024;
+
+const validBrowserSteerArguments = (argumentsText) => {
+  if (
+    typeof argumentsText !== "string" ||
+    Buffer.byteLength(argumentsText, "utf8") > browserSteerMaxCommandBytes
+  )
+    return false;
+  let payload;
+  try {
+    payload = JSON.parse(argumentsText);
+  } catch {
+    return false;
+  }
+  return (
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    Object.keys(payload).length === browserSteerCommandKeys.length &&
+    Object.keys(payload).every((key) => browserSteerCommandKeys.includes(key)) &&
+    payload.version === PI_SUBAGENTS_ACTIVITY_PROTOCOL_VERSION &&
+    payload.action === "steer" &&
+    typeof payload.childId === "string" &&
+    browserSteerChildIdPattern.test(payload.childId) &&
+    Number.isSafeInteger(payload.revision) &&
+    payload.revision >= 0 &&
+    typeof payload.message === "string" &&
+    Array.from(payload.message).length <= browserSteerMaxMessageLength &&
+    browserSteerMessageIsClean(payload.message) &&
+    payload.message.trim().length > 0
+  );
+};
 export const PI_SUBAGENTS_ACTIVITY_WIDGET_KEY = "pi-subagents/activity/v1";
 export const PI_SUBAGENTS_ACTIVITY_PROTOCOL_VERSION = 1;
 export const PI_SUBAGENTS_ACTIVITY_LIMITS = Object.freeze({
@@ -849,7 +889,9 @@ const validIntent = (command) => {
   } else if (command.type === "slash_command") {
     if (
       !remoteSlashCommands.has(command.name) ||
-      (command.name === "subagents" && command.arguments !== undefined) ||
+      (command.name === "subagents" &&
+        command.arguments !== undefined &&
+        !validBrowserSteerArguments(command.arguments)) ||
       (command.name === "workflows" &&
         command.arguments !== undefined &&
         (typeof command.arguments !== "string" || !workflowRunIdPattern.test(command.arguments)))

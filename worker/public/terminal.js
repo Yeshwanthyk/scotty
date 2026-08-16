@@ -23,7 +23,11 @@ import {
   hasBlockingCommands,
 } from "/terminal-session-cache.js";
 import { selectedSubagent, subagentCountLabel } from "/terminal-subagents-projection.js";
-import { renderSubagentDetail, renderSubagentList } from "/terminal-subagents-view.js";
+import {
+  encodeSubagentSteerArguments,
+  renderSubagentDetail,
+  renderSubagentList,
+} from "/terminal-subagents-view.js";
 import { projectSessionSummary } from "/terminal-summary-projection.js";
 import {
   createUiResponseTracker,
@@ -271,7 +275,10 @@ function worklogEntries() {
       {
         key: uniqueWorklogKey(currentSessionId, `subagent:${selected.id}`, new Map()),
         signature: semanticSignature(selected),
-        render: () => renderSubagentDetail(document, selected, returnToParent),
+        render: () =>
+          renderSubagentDetail(document, selected, returnToParent, (message) =>
+            steerSelectedSubagent(selected, message),
+          ),
       },
     ];
   }
@@ -1415,6 +1422,21 @@ function selectSubagent(id) {
   entry.subagentSnapshot = child;
   setActivityDrawer(false);
   renderProjection({ restoreScroll: true });
+}
+
+function steerSelectedSubagent(child, message) {
+  const projection = currentProjection;
+  const revision = projection?.subagents?.revision;
+  if (!projection?.loaded || !Number.isSafeInteger(revision)) return;
+  const intent = {
+    type: "slash_command",
+    name: "subagents",
+    arguments: encodeSubagentSteerArguments(child, revision, message),
+  };
+  void sendCommand(intent, `Steer ${child.id}`).then(
+    () => showToast(`Steer accepted for ${child.id}.`),
+    (error) => showToast(error instanceof Error ? error.message : "Pi rejected the steer."),
+  );
 }
 
 function returnToParent() {

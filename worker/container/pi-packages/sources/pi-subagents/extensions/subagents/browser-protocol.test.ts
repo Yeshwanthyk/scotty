@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SubagentSnapshot } from "./src/domain.ts";
+import { handleBrowserActivityCommand } from "./index.ts";
 import {
   BROWSER_ACTIVITY_LIMITS,
   BROWSER_ACTIVITY_WIDGET_KEY,
+  decodeBrowserActivityCommand,
   decodeBrowserActivitySnapshot,
+  encodeBrowserActivityCommand,
   encodeBrowserActivitySnapshot,
   encodeBrowserActivityWidget,
+  isBrowserActivityCommand,
   isBrowserActivitySnapshot,
   projectBrowserActivity,
   projectBrowserTerminal,
@@ -192,4 +196,101 @@ test("terminal projection carries one bounded final status/output/failure", () =
     settledAt: 6_000,
   });
   assert.equal(projectBrowserTerminal(snapshot()), undefined);
+});
+
+test("browser steer command is versioned, bounded, and strict", () => {
+  const command = {
+    version: 1 as const,
+    action: "steer" as const,
+    childId: "sa-1",
+    revision: 7,
+    message: "Check the failing test",
+  };
+  const encoded = encodeBrowserActivityCommand(command);
+  assert.equal(isBrowserActivityCommand(command), true);
+  assert.deepEqual(decodeBrowserActivityCommand(encoded), command);
+  assert.equal(
+    decodeBrowserActivityCommand({ ...command, action: "stop" }),
+    undefined,
+  );
+  assert.equal(
+    decodeBrowserActivityCommand({ ...command, message: "   " }),
+    undefined,
+  );
+  assert.equal(
+    decodeBrowserActivityCommand({
+      ...command,
+      message: "x".repeat(BROWSER_ACTIVITY_LIMITS.maxSteerMessageLength + 1),
+    }),
+    undefined,
+  );
+  assert.equal(
+    decodeBrowserActivityCommand({ ...command, extra: true }),
+    undefined,
+  );
+});
+
+test("browser steer handler accepts only a fresh running standard child", () => {
+  const running = snapshot();
+  const sent: Array<[string, string]> = [];
+  const manager = {
+    view: {
+      get: (id: string) => (id === running.id ? running : undefined),
+      requestSend: (id: string, message: string) => sent.push([id, message]),
+    },
+  } as unknown as Parameters<typeof handleBrowserActivityCommand>[1]["manager"];
+  const command = {
+    version: 1 as const,
+    action: "steer" as const,
+    childId: running.id,
+    revision: 7,
+    message: "Focus on the failing test",
+  };
+
+  handleBrowserActivityCommand(command, { manager, revision: 7 });
+  assert.deepEqual(sent, [[running.id, "Focus on the failing test"]]);
+
+  assert.throws(
+    () => handleBrowserActivityCommand(command, { manager, revision: 8 }),
+    /Stale/,
+  );
+  assert.throws(
+    () =>
+      handleBrowserActivityCommand(
+        { ...command, childId: "sa-missing" },
+        { manager, revision: 7 },
+      ),
+    /Unknown/,
+  );
+
+  const privateChild = snapshot({ id: "sa-private", visibility: "private" });
+  const settledChild = snapshot({ id: "sa-done", status: "done" });
+  const restrictedManager = {
+    view: {
+      get: (id: string) =>
+        id === privateChild.id
+          ? privateChild
+          : id === settledChild.id
+            ? settledChild
+            : undefined,
+      requestSend: () => sent.push(["unexpected", "send"]),
+    },
+  } as unknown as Parameters<typeof handleBrowserActivityCommand>[1]["manager"];
+  assert.throws(
+    () =>
+      handleBrowserActivityCommand(
+        { ...command, childId: privateChild.id },
+        { manager: restrictedManager, revision: 7 },
+      ),
+    /Unknown or private/,
+  );
+  assert.throws(
+    () =>
+      handleBrowserActivityCommand(
+        { ...command, childId: settledChild.id },
+        { manager: restrictedManager, revision: 7 },
+      ),
+    /settled/,
+  );
+  assert.deepEqual(sent, [[running.id, "Focus on the failing test"]]);
 });

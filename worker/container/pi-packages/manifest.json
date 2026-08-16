@@ -5,8 +5,8 @@
       "name": "pi-subagents",
       "order": 0,
       "repository": "https://github.com/Yeshwanthyk/pi-subagents.git",
-      "commit": "6a6091e647f08b42732db5b33f0986c7656571aa",
-      "sourceSha256": "d398e592c196aa84cd3076622e952ab1e8a4e42c3ea3e4daa8980b57ccba84c5",
+      "commit": "df92d3cf9a2cc0c7f9d579594996a2af033e6fcd",
+      "sourceSha256": "81bf472a1a8af9f6bc29ff1ba37986adaaf49b8634afcc4dff8914f7990a03dd",
       "sourcePath": "worker/container/pi-packages/sources/pi-subagents",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-subagents"
     }

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 export {
   CREDENTIAL_SENTINEL_PREFIXES,
   GITHUB_SENTINEL_PREFIX,
@@ -50,6 +50,36 @@ const DigestSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const SequenceSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const SessionRevisionSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const WorkflowRunIdSchema = Schema.String.check(Schema.isPattern(/^wf_[0-9a-f]{12}$/u));
+const BrowserSteerMessageSchema = Schema.String.check(
+  Schema.makeFilter(
+    (message) =>
+      Array.from(message).length <= 2_048 &&
+      Array.from(message).every((character) => {
+        const code = character.charCodeAt(0);
+        return code >= 32 && code !== 127 && (code < 128 || code > 159);
+      }) &&
+      message.trim().length > 0,
+    { expected: "a non-empty browser steer message of at most 2048 characters" },
+  ),
+);
+const BrowserSteerPayloadSchema = Schema.Struct({
+  version: Schema.Literal(PI_CONSOLE_PROTOCOL_VERSION),
+  action: Schema.Literal("steer"),
+  childId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u)),
+  revision: SessionRevisionSchema,
+  message: BrowserSteerMessageSchema,
+});
+const decodeBrowserSteerPayloadJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(BrowserSteerPayloadSchema),
+);
+const BrowserSteerArgumentsSchema = Schema.String.check(
+  Schema.makeFilter(
+    (argumentsText) =>
+      utf8Encoder.encode(argumentsText).byteLength <= 4 * 1_024 &&
+      Option.isSome(decodeBrowserSteerPayloadJson(argumentsText)),
+    { expected: "a versioned browser steer payload" },
+  ),
+);
 const StatusesSchema = Schema.Record(IdentifierSchema, BoundedStringSchema).check(
   Schema.makeFilter((statuses) => Object.keys(statuses).length <= PI_CONSOLE_MAX_STATUSES, {
     expected: `at most ${PI_CONSOLE_MAX_STATUSES} extension statuses`,
@@ -259,7 +289,11 @@ export const PiConsoleRemoteIntentV1Schema = Schema.Union([
     modelId: NonEmptyBoundedStringSchema,
   }),
   Schema.Struct({ type: Schema.Literal("set_thinking_level"), level: IdentifierSchema }),
-  Schema.Struct({ type: Schema.Literal("slash_command"), name: Schema.Literal("subagents") }),
+  Schema.Struct({
+    type: Schema.Literal("slash_command"),
+    name: Schema.Literal("subagents"),
+    arguments: Schema.optionalKey(BrowserSteerArgumentsSchema),
+  }),
   Schema.Struct({
     type: Schema.Literal("slash_command"),
     name: Schema.Literal("workflows"),

@@ -360,5 +360,9 @@ describe("browser command lane", () => {
     assert.include(terminalSource, "composerDrafts.begin(submission.sessionId, editableDraft)");
     assert.include(terminalSource, "composerDrafts.settle(draftSubmission, outcome.status)");
     assert.include(terminalSource, "submission.sessionId === currentSessionId");
+    assert.include(terminalSource, "encodeSubagentSteerArguments");
+    assert.include(terminalSource, 'name: "subagents"');
+    assert.include(terminalSource, "Steer accepted for");
+    assert.include(terminalSource, "commandOutcomeMessage");
   });
 });

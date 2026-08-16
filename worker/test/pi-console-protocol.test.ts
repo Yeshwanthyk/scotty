@@ -107,6 +107,27 @@ describe("Pi console protocol v1", () => {
           command({ type: "slash_command", name: "subagents", arguments: "active" }),
         ),
       );
+      const steerArguments = JSON.stringify({
+        version: 1,
+        action: "steer",
+        childId: "sa-1",
+        revision: 7,
+        message: "Focus on the failing test",
+      });
+      assert.deepStrictEqual(
+        yield* decodePiConsoleCommandV1(
+          command({ type: "slash_command", name: "subagents", arguments: steerArguments }),
+        ),
+        command({ type: "slash_command", name: "subagents", arguments: steerArguments }),
+      );
+      for (const argumentsText of [
+        JSON.stringify({ version: 1, action: "stop", childId: "sa-1", revision: 7, message: "x" }),
+      ])
+        yield* assertDecodeFailure(
+          decodePiConsoleCommandV1(
+            command({ type: "slash_command", name: "subagents", arguments: argumentsText }),
+          ),
+        );
       yield* assertDecodeFailure(
         decodePiConsoleCommandV1(
           command({ type: "slash_command", name: "workflows", arguments: "one two" }),

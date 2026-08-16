@@ -1,3 +1,13 @@
+export function encodeSubagentSteerArguments(child, revision, message) {
+  return JSON.stringify({
+    version: 1,
+    action: "steer",
+    childId: child.id,
+    revision,
+    message,
+  });
+}
+
 import {
   selectedSubagent,
   subagentCountLabel,
@@ -59,7 +69,7 @@ export function renderSubagentList(document, snapshot, onSelect) {
   return wrapper;
 }
 
-export function renderSubagentDetail(document, child, onBack) {
+export function renderSubagentDetail(document, child, onBack, onSteer = () => {}) {
   const article = document.createElement("article");
   article.className = "subagent-browser-detail";
   const back = document.createElement("button");
@@ -80,6 +90,27 @@ export function renderSubagentDetail(document, child, onBack) {
     ),
   );
   article.append(header);
+  if (child.status === "running") {
+    const form = document.createElement("form");
+    form.className = "subagent-steer-composer";
+    const input = document.createElement("textarea");
+    input.rows = 2;
+    input.placeholder = "Send a steer to this subagent…";
+    input.setAttribute("aria-label", "Steer subagent");
+    const send = document.createElement("button");
+    send.type = "submit";
+    send.className = "send-button";
+    send.textContent = "Steer";
+    form.append(input, send);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      onSteer(message);
+    });
+    article.append(form);
+  }
   article.append(section(document, "Prompt", child.prompt));
   const transcript = subagentTranscriptTail(child);
   if (transcript) article.append(section(document, "Transcript tail", transcript));
@@ -122,9 +153,9 @@ export function renderSubagentDetail(document, child, onBack) {
   return article;
 }
 
-export function renderSelectedSubagent(document, snapshot, selectedId, onBack) {
+export function renderSelectedSubagent(document, snapshot, selectedId, onBack, onSteer) {
   const child = selectedSubagent(snapshot, selectedId);
   return child
-    ? renderSubagentDetail(document, child, onBack)
+    ? renderSubagentDetail(document, child, onBack, onSteer)
     : renderSubagentList(document, snapshot, () => {});
 }

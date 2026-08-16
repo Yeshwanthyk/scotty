@@ -288,6 +288,62 @@ describe("Scotty Pi supervisor protocol", () => {
       ),
       { ok: false, error: "invalid_command" },
     );
+    const steerArguments = JSON.stringify({
+      version: 1,
+      action: "steer",
+      childId: "sa-1",
+      revision: 7,
+      message: "Focus on the failing test",
+    });
+    const steer = normalizeCommand(
+      {
+        version: 1,
+        epoch,
+        commandId,
+        expectedSessionRevision: 7,
+        intent: { type: "slash_command", name: "subagents", arguments: steerArguments },
+      },
+      epoch,
+    );
+    assert.strictEqual(steer.ok, true);
+    assert.deepStrictEqual(steer.command, {
+      type: "prompt",
+      message: `/subagents ${steerArguments}`,
+    });
+    for (const argumentsText of [
+      JSON.stringify({ version: 1, action: "stop", childId: "sa-1", revision: 7, message: "x" }),
+      JSON.stringify({
+        version: 1,
+        action: "steer",
+        childId: "sa-1",
+        revision: 7,
+        message: "x",
+        extra: true,
+      }),
+      JSON.stringify({ version: 1, action: "steer", childId: "bad/id", revision: 7, message: "x" }),
+      JSON.stringify({ version: 1, action: "steer", childId: "sa-1", revision: -1, message: "x" }),
+      JSON.stringify({ version: 1, action: "steer", childId: "sa-1", revision: 7, message: "\n" }),
+      JSON.stringify({
+        version: 1,
+        action: "steer",
+        childId: "sa-1",
+        revision: 7,
+        message: "x".repeat(2_049),
+      }),
+    ])
+      assert.deepStrictEqual(
+        normalizeCommand(
+          {
+            version: 1,
+            epoch,
+            commandId,
+            expectedSessionRevision: 7,
+            intent: { type: "slash_command", name: "subagents", arguments: argumentsText },
+          },
+          epoch,
+        ),
+        { ok: false, error: "invalid_command" },
+      );
     assert.deepStrictEqual(
       normalizeCommand(
         {

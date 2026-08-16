@@ -2030,6 +2030,29 @@ textarea:focus-visible,
   justify-self: start;
 }
 
+.subagent-steer-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.subagent-steer-composer textarea {
+  min-height: 58px;
+  padding: 9px 10px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-strong);
+  font: inherit;
+}
+
+.subagent-steer-composer textarea:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
 .subagent-detail-section {
   display: grid;
   gap: 6px;

@@ -11,7 +11,9 @@ describe("terminal subagent browser view", () => {
     assert.include(viewSource, "Final output");
     assert.include(viewSource, "Failure");
     assert.include(viewSource, 'createElement("details")');
-    assert.notInclude(viewSource, "steer");
+    assert.include(viewSource, "encodeSubagentSteerArguments");
+    assert.include(viewSource, "Send a steer to this subagent");
+    assert.include(viewSource, 'textContent = "Steer"');
     assert.notInclude(viewSource, "subagent_stop");
     assert.include(terminalSource, "renderSubagentList");
     assert.include(terminalSource, "renderSubagentDetail");

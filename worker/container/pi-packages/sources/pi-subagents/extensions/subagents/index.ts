@@ -92,6 +92,7 @@ import {
 } from "./src/activity-protocol.ts";
 import {
   BROWSER_ACTIVITY_WIDGET_KEY,
+  decodeBrowserActivityCommand,
   encodeBrowserActivityWidget,
   nextBrowserActivityRevision,
   projectBrowserActivity,
@@ -189,6 +190,32 @@ function headlessOutput(snap: SubagentSnapshot) {
       : snap.finalText.trim();
   const output = preferred || transcriptTail(snap).trim() || "(no output yet)";
   return output.slice(-HEADLESS_OUTPUT_MAX_LENGTH);
+}
+
+/** Execute the one browser command without widening the manager surface. */
+export function handleBrowserActivityCommand(
+  command: unknown,
+  options: {
+    manager: Pick<SubagentManagerShape, "view">;
+    revision: number;
+  },
+): void {
+  const decoded = decodeBrowserActivityCommand(command);
+  if (!decoded) throw new Error("Malformed browser activity command.");
+  if (decoded.revision !== options.revision) {
+    throw new Error("Stale browser activity revision.");
+  }
+  const snapshot = options.manager.view.get(decoded.childId);
+  if (!snapshot || snapshot.visibility !== "standard") {
+    throw new Error("Unknown or private subagent.");
+  }
+  if (snapshot.status !== "running") {
+    throw new Error("Subagent is settled.");
+  }
+  standardSubagentView(options.manager.view).requestSend(
+    decoded.childId,
+    decoded.message,
+  );
 }
 
 /** Standard-dialog fallback for RPC/web clients where custom TUI views are unavailable. */
@@ -320,6 +347,7 @@ export default function (pi: ExtensionAPI) {
   const publishedActivity = new Map<`subagent:${string}`, ActiveWorkItem>();
   let browserUI: ExtensionUIContext | undefined;
   let browserRevision = 0;
+  let lastBrowserSteerKey: string | undefined;
   let publishedStatus: string | undefined;
   const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
 
@@ -476,6 +504,7 @@ export default function (pi: ExtensionAPI) {
     ui = ctx.hasUI ? ctx.ui : undefined;
     browserUI = ctx.mode === "rpc" && ctx.hasUI ? ctx.ui : undefined;
     browserRevision = 0;
+    lastBrowserSteerKey = undefined;
     if (browserUI) void getManager().catch(() => undefined);
   });
 
@@ -510,6 +539,7 @@ export default function (pi: ExtensionAPI) {
     browserUI?.setWidget(BROWSER_ACTIVITY_WIDGET_KEY, undefined);
     browserUI = undefined;
     browserRevision = 0;
+    lastBrowserSteerKey = undefined;
     for (const key of publishedActivity.keys()) {
       pi.events.emit(ACTIVE_WORK_CHANNELS.remove, { version: 1, key });
     }
@@ -918,6 +948,31 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("subagents", {
     description: "List, inspect, and take over subagents",
     handler: async (_args, ctx) => {
+      const commandText = _args.trim();
+      if (commandText.length > 0) {
+        const command = decodeBrowserActivityCommand(commandText);
+        if (!command) {
+          ctx.ui.notify("Malformed browser activity command.", "error");
+          return;
+        }
+        const key = JSON.stringify(command);
+        if (key === lastBrowserSteerKey) return;
+        try {
+          const manager = await getManager();
+          handleBrowserActivityCommand(command, {
+            manager,
+            revision: browserRevision,
+          });
+          lastBrowserSteerKey = key;
+        } catch (error) {
+          ctx.ui.notify(
+            error instanceof Error ? error.message : String(error),
+            "error",
+          );
+        }
+        return;
+      }
+
       if (ctx.mode !== "tui") {
         if (
           !ctx.hasUI ||

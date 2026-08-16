@@ -30,6 +30,8 @@ export const BROWSER_ACTIVITY_LIMITS = {
   maxToolOutputLength: 512,
   maxQueuedItems: 4,
   maxQueuedTextLength: 512,
+  maxSteerMessageLength: 2_048,
+  maxCommandBytes: 4 * 1024,
 } as const;
 
 export const MAX_PUBLIC_RUNNING_SUBAGENTS =
@@ -39,6 +41,17 @@ export const MAX_BROWSER_ACTIVITY_BYTES =
 
 export type PublicChildId = string;
 export type BrowserActivityStatus = "running" | "done" | "error";
+
+/** The only command accepted through the authenticated `/subagents` lane. */
+export interface BrowserActivitySteerCommand {
+  readonly version: typeof BROWSER_ACTIVITY_PROTOCOL_VERSION;
+  readonly action: "steer";
+  readonly childId: PublicChildId;
+  readonly revision: number;
+  readonly message: string;
+}
+
+export type BrowserActivityCommand = BrowserActivitySteerCommand;
 
 export interface BrowserActivityToolSnapshot {
   readonly name: string;
@@ -175,6 +188,17 @@ function id(value: unknown): PublicChildId | undefined {
 
 export function toPublicChildId(value: unknown): PublicChildId | undefined {
   return id(value);
+}
+
+/** Strict public-ID validation for commands; unlike projection, never truncates. */
+export function isPublicChildId(value: unknown): value is PublicChildId {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    Array.from(value).length <= BROWSER_ACTIVITY_LIMITS.maxChildIdLength &&
+    clean(value) === value &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
 }
 
 function transcriptPart(
@@ -416,6 +440,41 @@ const TERMINAL_KEYS = [
 
 function only(value: Record<string, unknown>, keys: readonly string[]) {
   return Object.keys(value).every((key) => keys.includes(key));
+}
+
+const COMMAND_KEYS = [
+  "version",
+  "action",
+  "childId",
+  "revision",
+  "message",
+] as const;
+
+function validSteerCommand(
+  value: unknown,
+): value is BrowserActivitySteerCommand {
+  return (
+    isRecord(value) &&
+    only(value, COMMAND_KEYS) &&
+    value.version === BROWSER_ACTIVITY_PROTOCOL_VERSION &&
+    value.action === "steer" &&
+    isPublicChildId(value.childId) &&
+    typeof value.revision === "number" &&
+    Number.isSafeInteger(value.revision) &&
+    value.revision >= 0 &&
+    typeof value.message === "string" &&
+    Array.from(value.message).length <=
+      BROWSER_ACTIVITY_LIMITS.maxSteerMessageLength &&
+    clean(value.message) === value.message &&
+    value.message.trim().length > 0
+  );
+}
+
+/** Runtime validation for the single authenticated browser action. */
+export function isBrowserActivityCommand(
+  value: unknown,
+): value is BrowserActivityCommand {
+  return validSteerCommand(value);
 }
 
 function text(value: unknown, maxLength: number) {
@@ -671,6 +730,43 @@ export function encodeBrowserActivityWidget(
   snapshot: BrowserActivitySnapshot,
 ): [string] {
   return [encodeBrowserActivitySnapshot(snapshot)];
+}
+
+/** Encode the canonical JSON command sent through `/subagents`. */
+export function encodeBrowserActivityCommand(
+  command: BrowserActivityCommand,
+): string {
+  if (!isBrowserActivityCommand(command)) {
+    throw new TypeError("Invalid browser activity command");
+  }
+  const encoded = JSON.stringify(command);
+  if (
+    Buffer.byteLength(encoded, "utf8") > BROWSER_ACTIVITY_LIMITS.maxCommandBytes
+  ) {
+    throw new TypeError("Browser activity command is too large");
+  }
+  return encoded;
+}
+
+/** Decode one authenticated slash-command payload. */
+export function decodeBrowserActivityCommand(
+  value: unknown,
+): BrowserActivityCommand | undefined {
+  let parsed: unknown = value;
+  if (typeof parsed === "string") {
+    if (
+      Buffer.byteLength(parsed, "utf8") >
+      BROWSER_ACTIVITY_LIMITS.maxCommandBytes
+    ) {
+      return undefined;
+    }
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  return isBrowserActivityCommand(parsed) ? parsed : undefined;
 }
 
 /** Decode one widget JSON line, rejecting malformed or unsafe public shapes. */
