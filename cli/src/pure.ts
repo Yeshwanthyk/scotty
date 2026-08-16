@@ -147,6 +147,12 @@ export function statusExit(status: number, code: string): ExitCode {
   return EXIT.GENERIC;
 }
 
+const SESSION_CREATE_CONFLICT = /^Session ([a-z0-9][a-z0-9-]{5,31}) already exists$/u;
+
+export function conflictSessionId(message: string): string | undefined {
+  return SESSION_CREATE_CONFLICT.exec(message)?.[1];
+}
+
 export function stableUp(
   value: unknown,
   host: string,

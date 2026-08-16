@@ -11,13 +11,7 @@ import {
 } from "effect/unstable/cli";
 import { handleDown } from "./archive";
 import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
-import {
-  clearPendingUp,
-  credentials,
-  pendingUpRequest,
-  readConfig,
-  secureWrite,
-} from "./dependencies";
+import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
   decodeInitJournalJson,
   decodeInspectResponse,
@@ -57,7 +51,6 @@ import {
   sanitizeUrl,
   stableRecoveryGrant,
   stableSession,
-  stableUp,
   usage,
 } from "./pure";
 import { encodeSandboxSyncJson, formatSandboxSync, sandboxSyncOutput } from "./sandbox-bundle";
@@ -1124,20 +1117,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           ...(newRepo ? { newRepo: true } : {}),
           ...(Option.isSome(cap) ? { cap: cap.value, hardCapSeconds } : {}),
         };
-        const pending = yield* pendingUpRequest(auth.host, body);
-        const requested = yield* Effect.result(
-          requestJson(auth, "/api/sessions", {
-            method: "POST",
-            headers: { "idempotency-key": pending.key },
-            body: JSON.stringify(body),
-          }).pipe(Effect.flatMap((raw) => Effect.fromResult(stableUp(raw, auth.host)))),
-        );
-        if (Result.isFailure(requested)) {
-          if (requested.failure.code === "conflict") yield* clearPendingUp(pending.path);
-          return yield* requested.failure;
-        }
-        const decoded = requested.success;
-        if (decoded.output.status !== "booting") yield* clearPendingUp(pending.path);
+        const decoded = yield* beamUpSession(auth, body);
         const result = decoded.output;
         if (!detach)
           yield* browser.open(
