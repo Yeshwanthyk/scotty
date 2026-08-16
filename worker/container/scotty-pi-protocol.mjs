@@ -45,6 +45,26 @@ const commandTypes = new Set([
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const workflowRunIdPattern = /^wf_[0-9a-f]{12}$/u;
+export const PI_SUBAGENTS_ACTIVITY_WIDGET_KEY = "pi-subagents/activity/v1";
+export const PI_SUBAGENTS_ACTIVITY_PROTOCOL_VERSION = 1;
+export const PI_SUBAGENTS_ACTIVITY_LIMITS = Object.freeze({
+  maxRunningChildren: 4,
+  maxSnapshotBytes: 15 * 1024,
+  maxChildIdLength: 64,
+  maxTitleLength: 160,
+  maxPromptLength: 2048,
+  maxOutputLength: 4096,
+  maxFailureLength: 2048,
+  maxModelLength: 120,
+  maxTranscriptItems: 16,
+  maxTranscriptTextLength: 512,
+  maxToolCount: 4,
+  maxToolNameLength: 120,
+  maxToolArgsLength: 512,
+  maxToolOutputLength: 512,
+  maxQueuedItems: 4,
+  maxQueuedTextLength: 512,
+});
 
 const isBase64Character = (code) =>
   (code >= 65 && code <= 90) ||
@@ -112,6 +132,288 @@ export const sanitizeRemoteString = (value) =>
       .replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, ""),
     maxStringBytes,
   );
+
+const browserTopLevelKeys = ["version", "revision", "generatedAt", "children", "terminal"];
+const browserChildKeys = [
+  "id",
+  "backend",
+  "model",
+  "reasoningEffort",
+  "title",
+  "status",
+  "prompt",
+  "output",
+  "failure",
+  "transcript",
+  "tools",
+  "queued",
+  "startedAt",
+  "lastActivityAt",
+  "settledAt",
+  "usage",
+];
+const browserToolKeys = ["name", "args", "output", "startedAt", "updatedAt", "isError"];
+const browserTerminalKeys = ["id", "title", "status", "output", "failure", "settledAt"];
+const browserOnlyKeys = (value, keys) =>
+  value &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.keys(value).every((key) => keys.includes(key));
+const browserClean = (value) => sanitizeRemoteString(value);
+const browserText = (value, max) =>
+  typeof value === "string" && Array.from(value).length <= max ? browserClean(value) : undefined;
+const browserNumber = (value, integer = false) =>
+  typeof value === "number" && Number.isFinite(value) && (!integer || Number.isSafeInteger(value))
+    ? value
+    : undefined;
+const browserId = (value) => {
+  const id = browserText(value, PI_SUBAGENTS_ACTIVITY_LIMITS.maxChildIdLength);
+  return id && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(id) ? id : undefined;
+};
+const browserOptionalText = (value, max) =>
+  value === undefined ? undefined : browserText(value, max);
+const browserValidTranscript = (value) => {
+  if (
+    !browserOnlyKeys(value, ["kind", "text", "redacted", "name", "args", "output", "isError"]) ||
+    typeof value.kind !== "string"
+  )
+    return undefined;
+  if (value.kind === "user" || value.kind === "assistant")
+    return browserOnlyKeys(value, ["kind", "text"]) &&
+      browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength) !== undefined
+      ? {
+          kind: value.kind,
+          text: browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength),
+        }
+      : undefined;
+  if (value.kind === "thinking")
+    return browserOnlyKeys(value, ["kind", "text", "redacted"]) &&
+      (value.redacted === undefined || typeof value.redacted === "boolean") &&
+      browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength) !== undefined
+      ? {
+          kind: "thinking",
+          text: browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength),
+          ...(value.redacted === undefined ? {} : { redacted: value.redacted }),
+        }
+      : undefined;
+  if (
+    value.kind !== "tool" ||
+    !browserOnlyKeys(value, ["kind", "name", "args", "output", "isError"]) ||
+    (value.isError !== undefined && typeof value.isError !== "boolean")
+  )
+    return undefined;
+  const name = browserText(value.name, PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolNameLength);
+  const args = browserOptionalText(value.args, PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolArgsLength);
+  const output = browserOptionalText(
+    value.output,
+    PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolOutputLength,
+  );
+  return name === undefined ||
+    (value.args !== undefined && args === undefined) ||
+    (value.output !== undefined && output === undefined)
+    ? undefined
+    : {
+        kind: "tool",
+        name,
+        ...(args === undefined ? {} : { args }),
+        ...(output === undefined ? {} : { output }),
+        ...(value.isError === undefined ? {} : { isError: value.isError }),
+      };
+};
+const browserValidTool = (value) => {
+  if (!browserOnlyKeys(value, browserToolKeys)) return undefined;
+  const name = browserText(value.name, PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolNameLength);
+  const args = browserOptionalText(value.args, PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolArgsLength);
+  const output = browserOptionalText(
+    value.output,
+    PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolOutputLength,
+  );
+  const startedAt = browserNumber(value.startedAt);
+  const updatedAt = browserNumber(value.updatedAt);
+  return name === undefined ||
+    startedAt === undefined ||
+    updatedAt === undefined ||
+    (value.args !== undefined && args === undefined) ||
+    (value.output !== undefined && output === undefined) ||
+    (value.isError !== undefined && typeof value.isError !== "boolean")
+    ? undefined
+    : {
+        name,
+        ...(args === undefined ? {} : { args }),
+        ...(output === undefined ? {} : { output }),
+        startedAt,
+        updatedAt,
+        ...(value.isError === undefined ? {} : { isError: value.isError }),
+      };
+};
+const browserValidQueued = (value) => {
+  if (
+    !browserOnlyKeys(value, ["kind", "text"]) ||
+    (value.kind !== "steer" && value.kind !== "follow-up")
+  )
+    return undefined;
+  const text = browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxQueuedTextLength);
+  return text === undefined ? undefined : { kind: value.kind, text };
+};
+const browserValidUsage = (value) => {
+  if (!browserOnlyKeys(value, ["tokens", "contextWindow"])) return undefined;
+  const tokens = value.tokens === undefined ? undefined : browserNumber(value.tokens);
+  const contextWindow =
+    value.contextWindow === undefined ? undefined : browserNumber(value.contextWindow);
+  return (value.tokens !== undefined && (tokens === undefined || tokens < 0)) ||
+    (value.contextWindow !== undefined && (contextWindow === undefined || contextWindow < 0))
+    ? undefined
+    : {
+        ...(tokens === undefined ? {} : { tokens }),
+        ...(contextWindow === undefined ? {} : { contextWindow }),
+      };
+};
+const browserValidChild = (value) => {
+  if (
+    !browserOnlyKeys(value, browserChildKeys) ||
+    browserId(value?.id) !== value?.id ||
+    !["pi", "claude", "codex"].includes(value?.backend) ||
+    value?.status !== "running"
+  )
+    return undefined;
+  const model = browserOptionalText(value.model, PI_SUBAGENTS_ACTIVITY_LIMITS.maxModelLength);
+  const title = browserText(value.title, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTitleLength);
+  const prompt = browserText(value.prompt, PI_SUBAGENTS_ACTIVITY_LIMITS.maxPromptLength);
+  const output = browserText(value.output, PI_SUBAGENTS_ACTIVITY_LIMITS.maxOutputLength);
+  const failure = browserOptionalText(value.failure, PI_SUBAGENTS_ACTIVITY_LIMITS.maxFailureLength);
+  const startedAt = browserNumber(value.startedAt);
+  const lastActivityAt = browserNumber(value.lastActivityAt);
+  const settledAt = value.settledAt === undefined ? undefined : browserNumber(value.settledAt);
+  const transcript =
+    Array.isArray(value.transcript) &&
+    value.transcript.length <= PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptItems
+      ? value.transcript.map(browserValidTranscript)
+      : undefined;
+  const tools =
+    Array.isArray(value.tools) && value.tools.length <= PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolCount
+      ? value.tools.map(browserValidTool)
+      : undefined;
+  const queued =
+    Array.isArray(value.queued) &&
+    value.queued.length <= PI_SUBAGENTS_ACTIVITY_LIMITS.maxQueuedItems
+      ? value.queued.map(browserValidQueued)
+      : undefined;
+  const usage = value.usage === undefined ? undefined : browserValidUsage(value.usage);
+  const efforts = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  if (
+    (model === undefined && value.model !== undefined) ||
+    title === undefined ||
+    prompt === undefined ||
+    output === undefined ||
+    (failure === undefined && value.failure !== undefined) ||
+    startedAt === undefined ||
+    lastActivityAt === undefined ||
+    (settledAt === undefined && value.settledAt !== undefined) ||
+    !transcript?.every(Boolean) ||
+    !tools?.every(Boolean) ||
+    !queued?.every(Boolean) ||
+    (usage === undefined && value.usage !== undefined) ||
+    (value.reasoningEffort !== undefined && !efforts.includes(value.reasoningEffort))
+  )
+    return undefined;
+  return {
+    id: value.id,
+    backend: value.backend,
+    ...(model === undefined ? {} : { model }),
+    ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
+    title,
+    status: "running",
+    prompt,
+    output,
+    ...(failure === undefined ? {} : { failure }),
+    transcript,
+    tools,
+    queued,
+    startedAt,
+    lastActivityAt,
+    ...(settledAt === undefined ? {} : { settledAt }),
+    ...(value.usage === undefined ? {} : { usage }),
+  };
+};
+const browserValidTerminal = (value) => {
+  if (
+    !browserOnlyKeys(value, browserTerminalKeys) ||
+    browserId(value?.id) !== value?.id ||
+    !["done", "error"].includes(value?.status)
+  )
+    return undefined;
+  const title = browserText(value.title, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTitleLength);
+  const output = browserText(value.output, PI_SUBAGENTS_ACTIVITY_LIMITS.maxOutputLength);
+  const failure = browserOptionalText(value.failure, PI_SUBAGENTS_ACTIVITY_LIMITS.maxFailureLength);
+  const settledAt = browserNumber(value.settledAt);
+  return title === undefined ||
+    output === undefined ||
+    settledAt === undefined ||
+    (value.failure !== undefined && failure === undefined)
+    ? undefined
+    : {
+        id: value.id,
+        title,
+        status: value.status,
+        output,
+        ...(failure === undefined ? {} : { failure }),
+        settledAt,
+      };
+};
+export const canonicalizePiSubagentsActivity = (value) => {
+  let parsed = value;
+  if (Array.isArray(parsed)) {
+    if (parsed.length !== 1 || typeof parsed[0] !== "string") return undefined;
+    parsed = parsed[0];
+  }
+  if (typeof parsed === "string") {
+    if (Buffer.byteLength(parsed, "utf8") > PI_SUBAGENTS_ACTIVITY_LIMITS.maxSnapshotBytes)
+      return undefined;
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  if (
+    !browserOnlyKeys(parsed, browserTopLevelKeys) ||
+    parsed.version !== PI_SUBAGENTS_ACTIVITY_PROTOCOL_VERSION ||
+    browserNumber(parsed.revision, true) === undefined ||
+    parsed.revision < 0 ||
+    browserNumber(parsed.generatedAt) === undefined ||
+    !Array.isArray(parsed.children) ||
+    parsed.children.length > PI_SUBAGENTS_ACTIVITY_LIMITS.maxRunningChildren
+  )
+    return undefined;
+  const children = parsed.children.map(browserValidChild);
+  const terminal =
+    parsed.terminal === undefined ? undefined : browserValidTerminal(parsed.terminal);
+  if (
+    !children.every(Boolean) ||
+    (terminal === undefined && parsed.terminal !== undefined) ||
+    new Set(children.map((child) => child.id)).size !== children.length
+  )
+    return undefined;
+  const snapshot = {
+    version: 1,
+    revision: parsed.revision,
+    generatedAt: parsed.generatedAt,
+    children,
+    ...(terminal === undefined ? {} : { terminal }),
+  };
+  return Buffer.byteLength(JSON.stringify(snapshot), "utf8") <=
+    PI_SUBAGENTS_ACTIVITY_LIMITS.maxSnapshotBytes
+    ? snapshot
+    : undefined;
+};
+export const normalizePiSubagentsActivityWidget = (message) => {
+  if (!message || message.widgetKey !== PI_SUBAGENTS_ACTIVITY_WIDGET_KEY) return message;
+  if (message.widgetLines === null) return { ...message, widgetLines: null };
+  const snapshot = canonicalizePiSubagentsActivity(message.widgetLines);
+  return snapshot === undefined
+    ? undefined
+    : { ...message, widgetLines: [JSON.stringify(snapshot)] };
+};
 
 const optionalTimeout = (message) => {
   if (message.timeout === undefined) return {};
@@ -228,7 +530,8 @@ export const normalizeExtensionUiEvent = (message) => {
   }
   if (message.method === "setWidget") {
     if (
-      !isIdentifier(message.widgetKey) ||
+      (message.widgetKey !== PI_SUBAGENTS_ACTIVITY_WIDGET_KEY &&
+        !isIdentifier(message.widgetKey)) ||
       (message.widgetLines !== undefined &&
         message.widgetLines !== null &&
         (!Array.isArray(message.widgetLines) ||
@@ -239,7 +542,7 @@ export const normalizeExtensionUiEvent = (message) => {
         message.widgetPlacement !== "belowEditor")
     )
       return undefined;
-    return {
+    const normalizedWidget = {
       type: message.type,
       id,
       method: message.method,
@@ -251,6 +554,7 @@ export const normalizeExtensionUiEvent = (message) => {
         ? {}
         : { widgetPlacement: message.widgetPlacement }),
     };
+    return normalizePiSubagentsActivityWidget(normalizedWidget);
   }
   if (message.method === "setTitle" && isBoundedString(message.title))
     return {

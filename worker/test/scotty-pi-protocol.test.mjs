@@ -15,6 +15,8 @@ import {
   sanitizeRemoteString,
   sanitizeRemoteEvent,
   sanitizeRemoteValue,
+  canonicalizePiSubagentsActivity,
+  normalizePiSubagentsActivityWidget,
   shouldEmitSseHeartbeat,
 } from "../container/scotty-pi-protocol.mjs";
 
@@ -181,6 +183,46 @@ describe("Scotty Pi supervisor protocol", () => {
       }),
       undefined,
     );
+  });
+
+  it("trusts only the exact bounded subagent widget and preserves generic widgets", () => {
+    const child = {
+      id: "child-1",
+      backend: "pi",
+      title: "Inspect",
+      status: "running",
+      prompt: "Read files",
+      output: "",
+      transcript: [],
+      tools: [],
+      queued: [],
+      startedAt: 1,
+      lastActivityAt: 2,
+    };
+    const snapshot = { version: 1, revision: 1, generatedAt: 2, children: [child] };
+    const normalized = normalizePiSubagentsActivityWidget({
+      type: "extension_ui_request",
+      widgetKey: "pi-subagents/activity/v1",
+      widgetLines: [JSON.stringify(snapshot)],
+    });
+    assert.deepStrictEqual(normalized?.widgetLines, [JSON.stringify(snapshot)]);
+    assert.isUndefined(
+      normalizePiSubagentsActivityWidget({
+        type: "extension_ui_request",
+        widgetKey: "pi-subagents/activity/v1",
+        widgetLines: [
+          JSON.stringify({ ...snapshot, children: [{ ...child, output: "x".repeat(4097) }] }),
+        ],
+      }),
+    );
+    assert.deepStrictEqual(
+      normalizePiSubagentsActivityWidget({
+        widgetKey: "future/widget/v1",
+        widgetLines: ["opaque"],
+      }),
+      { widgetKey: "future/widget/v1", widgetLines: ["opaque"] },
+    );
+    assert.deepStrictEqual(canonicalizePiSubagentsActivity(snapshot), snapshot);
   });
 
   it("suppresses only marked passive SSE heartbeats", () => {

@@ -88,7 +88,14 @@ import { openSubagentPicker } from "./src/ui/takeover.ts";
 import {
   ACTIVE_WORK_CHANNELS,
   subagentActiveWorkItem,
+  type ActiveWorkItem,
 } from "./src/activity-protocol.ts";
+import {
+  BROWSER_ACTIVITY_WIDGET_KEY,
+  encodeBrowserActivityWidget,
+  nextBrowserActivityRevision,
+  projectBrowserActivity,
+} from "./src/browser-protocol.ts";
 import {
   renderSubagentActivity,
   renderSubagentWaitSummary,
@@ -308,11 +315,12 @@ export default function (pi: ExtensionAPI) {
   let ui: ExtensionUIContext | undefined;
   let unsubStatus: (() => void) | undefined;
   let disposeClientApi: (() => void) | undefined;
-  let liveTick: ReturnType<typeof setInterval> | undefined;
   let observabilityTimer: ReturnType<typeof setTimeout> | undefined;
   let renderView: SubagentReadModel | undefined;
-  const toolRowInvalidators = new Map<string, () => void>();
-  const publishedActivityKeys = new Set<`subagent:${string}`>();
+  const publishedActivity = new Map<`subagent:${string}`, ActiveWorkItem>();
+  let browserUI: ExtensionUIContext | undefined;
+  let browserRevision = 0;
+  let publishedStatus: string | undefined;
   const resultDelivery = createDeferredResultDelivery<SubagentSnapshot>();
 
   const getRuntime = () => (runtime ??= createSubagentRuntime());
@@ -340,16 +348,6 @@ export default function (pi: ExtensionAPI) {
   const standardSnapshot = (manager: SubagentManagerShape, id: string) =>
     standardView(manager).get(id);
 
-  const invalidateToolRows = () => {
-    for (const invalidate of toolRowInvalidators.values()) {
-      try {
-        invalidate();
-      } catch {
-        // Historical tool rows can disappear during branch/session changes.
-      }
-    }
-  };
-
   const publishSubagentActivity = (manager: SubagentManagerShape) => {
     const active = new Set<`subagent:${string}`>();
     for (const snap of standardSnapshots(manager)) {
@@ -357,17 +355,44 @@ export default function (pi: ExtensionAPI) {
       const key = `subagent:${snap.id}` as const;
       if (item) {
         active.add(key);
-        publishedActivityKeys.add(key);
-        pi.events.emit(ACTIVE_WORK_CHANNELS.update, item);
-      } else if (publishedActivityKeys.delete(key)) {
+        const previous = publishedActivity.get(key);
+        publishedActivity.set(key, item);
+        if (
+          !previous ||
+          previous.label !== item.label ||
+          previous.status !== item.status ||
+          previous.summary !== item.summary ||
+          previous.currentOperation !== item.currentOperation ||
+          previous.runningProcesses !== item.runningProcesses
+        ) {
+          pi.events.emit(ACTIVE_WORK_CHANNELS.update, item);
+        }
+      } else if (publishedActivity.delete(key)) {
         pi.events.emit(ACTIVE_WORK_CHANNELS.remove, { version: 1, key });
       }
     }
-    for (const key of [...publishedActivityKeys]) {
+    for (const key of [...publishedActivity.keys()]) {
       if (active.has(key)) continue;
-      publishedActivityKeys.delete(key);
+      publishedActivity.delete(key);
       pi.events.emit(ACTIVE_WORK_CHANNELS.remove, { version: 1, key });
     }
+  };
+
+  const publishBrowserActivity = (
+    snapshots: ReadonlyArray<SubagentSnapshot>,
+    terminal?: SubagentSnapshot,
+  ) => {
+    if (!browserUI) return;
+    const snapshot = projectBrowserActivity(
+      snapshots,
+      nextBrowserActivityRevision(browserRevision),
+      terminal,
+    );
+    browserRevision = snapshot.revision;
+    browserUI.setWidget(
+      BROWSER_ACTIVITY_WIDGET_KEY,
+      encodeBrowserActivityWidget(snapshot),
+    );
   };
 
   const scheduleObservability = (manager: SubagentManagerShape) => {
@@ -382,33 +407,26 @@ export default function (pi: ExtensionAPI) {
   const refreshObservability = (manager: SubagentManagerShape) => {
     updateStatus(manager);
     publishSubagentActivity(manager);
-    invalidateToolRows();
-    const running = standardSnapshots(manager).some(
-      (snapshot) => snapshot.status === "running",
-    );
-    if (running && !liveTick) {
-      liveTick = setInterval(invalidateToolRows, 1_000);
-      liveTick.unref?.();
-    } else if (!running && liveTick) {
-      clearInterval(liveTick);
-      liveTick = undefined;
-    }
+    publishBrowserActivity(manager.view.list());
   };
 
   const updateStatus = (manager: SubagentManagerShape) => {
     if (!ui) return;
     const subs = standardSnapshots(manager);
     if (subs.length === 0) {
-      ui.setStatus("subagents", undefined);
+      if (publishedStatus !== undefined) {
+        publishedStatus = undefined;
+        ui.setStatus("subagents", undefined);
+      }
       return;
     }
     const running = subs.filter((snap) => snap.status === "running").length;
     const failed = subs.filter((snap) => snap.status === "error").length;
     const done = subs.length - running - failed;
-    ui.setStatus(
-      "subagents",
-      formatActivityStatus(ui.theme, { running, done, failed }),
-    );
+    const status = formatActivityStatus(ui.theme, { running, done, failed });
+    if (status === publishedStatus) return;
+    publishedStatus = status;
+    ui.setStatus("subagents", status);
   };
 
   const deliverResult = (snap: SubagentSnapshot) => {
@@ -434,6 +452,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const onSettled = (snap: SubagentSnapshot, consumed: boolean) => {
+    publishBrowserActivity(renderView?.list() ?? [], snap);
     if (snap.resultDelivery === "client") {
       const event = clientSettlement(snap);
       if (event) pi.events.emit(SUBAGENT_CLIENT_CHANNELS.settled, event);
@@ -454,7 +473,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     sessionContext = ctx;
-    if (ctx.hasUI) ui = ctx.ui;
+    ui = ctx.hasUI ? ctx.ui : undefined;
+    browserUI = ctx.mode === "rpc" && ctx.hasUI ? ctx.ui : undefined;
+    browserRevision = 0;
+    if (browserUI) void getManager().catch(() => undefined);
   });
 
   pi.on("agent_settled", flushResults);
@@ -482,16 +504,17 @@ export default function (pi: ExtensionAPI) {
     resultDelivery.clear();
     unsubStatus?.();
     unsubStatus = undefined;
-    if (liveTick) clearInterval(liveTick);
     if (observabilityTimer) clearTimeout(observabilityTimer);
-    liveTick = undefined;
     observabilityTimer = undefined;
     renderView = undefined;
-    toolRowInvalidators.clear();
-    for (const key of publishedActivityKeys) {
+    browserUI?.setWidget(BROWSER_ACTIVITY_WIDGET_KEY, undefined);
+    browserUI = undefined;
+    browserRevision = 0;
+    for (const key of publishedActivity.keys()) {
       pi.events.emit(ACTIVE_WORK_CHANNELS.remove, { version: 1, key });
     }
-    publishedActivityKeys.clear();
+    publishedActivity.clear();
+    publishedStatus = undefined;
     ui?.setStatus("subagents", undefined);
     const closing = runtime;
     runtime = undefined;
@@ -606,14 +629,6 @@ export default function (pi: ExtensionAPI) {
         | { id?: string; title?: string; harness?: string; cwd?: string }
         | undefined;
       const id = details?.id;
-      if (id) {
-        toolRowInvalidators.set(context.toolCallId, context.invalidate);
-        while (toolRowInvalidators.size > 128) {
-          const oldest = toolRowInvalidators.keys().next().value;
-          if (typeof oldest !== "string") break;
-          toolRowInvalidators.delete(oldest);
-        }
-      }
       const snapshot = id ? renderView?.get(id) : undefined;
       const component =
         (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

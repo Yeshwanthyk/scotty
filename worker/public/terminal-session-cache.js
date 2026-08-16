@@ -1,3 +1,15 @@
+export function createTerminalSessionCacheEntry(projection, touchedAt = Date.now()) {
+  return {
+    projection,
+    draft: "",
+    scrollTop: 0,
+    subagentScrollTop: 0,
+    subagentSelectedId: undefined,
+    subagentSnapshot: undefined,
+    touchedAt,
+  };
+}
+
 const blockingCommandStates = new Set(["queued", "sending", "paused"]);
 
 export function hasBlockingCommands(items) {

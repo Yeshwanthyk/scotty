@@ -1,4 +1,9 @@
 import {
+  SUBAGENTS_WIDGET_KEY,
+  subagentActivityFromWidget,
+} from "./terminal-subagents-projection.js";
+
+import {
   createMessageProjectionState,
   finishMessageSnapshot,
   projectMessageEvent,
@@ -61,6 +66,7 @@ export function blankProjection() {
     state: {},
     capabilities: { models: [], thinkingLevels: [] },
     activity: { subagents: [], workflows: [] },
+    subagents: undefined,
     loaded: false,
   };
 }
@@ -238,6 +244,14 @@ function applyExtensionSurface(projection, request) {
   const method = request.method;
   if (method === "setWidget") {
     const key = String(request.widgetKey ?? "").toLowerCase();
+    if (key === SUBAGENTS_WIDGET_KEY) {
+      if (request.widgetLines === null) projection.subagents = undefined;
+      else {
+        const snapshot = subagentActivityFromWidget(request.widgetLines);
+        if (snapshot !== undefined) projection.subagents = snapshot;
+      }
+      return;
+    }
     const group = key.includes("subagent")
       ? "subagents"
       : key.includes("workflow")

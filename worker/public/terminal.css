@@ -1961,6 +1961,97 @@ textarea:focus-visible,
   backdrop-filter: blur(2px);
 }
 
+.subagent-activity-label {
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.activity-trigger:has(.subagent-activity-label:not([hidden])) {
+  width: auto;
+  padding-inline: 10px;
+}
+
+.subagent-browser-list,
+.subagent-browser-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.subagent-browser-heading,
+.subagent-detail-title {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 1rem;
+}
+
+.subagent-browser-items {
+  display: grid;
+  gap: 8px;
+}
+
+.subagent-browser-item {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subagent-browser-item:hover,
+.subagent-browser-item:focus-visible {
+  border-color: var(--accent);
+}
+
+.subagent-browser-item-heading,
+.subagent-detail-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.subagent-browser-status {
+  color: var(--accent);
+  font-size: 0.75rem;
+}
+
+.subagent-browser-item-meta,
+.subagent-detail-meta {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.subagent-back-button {
+  justify-self: start;
+}
+
+.subagent-detail-section {
+  display: grid;
+  gap: 6px;
+}
+
+.subagent-detail-label {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.subagent-detail-copy {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.subagent-reasoning {
+  color: var(--ink-muted);
+}
+
 .activity-drawer {
   position: fixed;
   z-index: 50;

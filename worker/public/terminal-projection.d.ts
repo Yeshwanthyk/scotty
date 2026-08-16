@@ -22,6 +22,7 @@ export type TerminalProjection = {
   };
   capabilities: { models: unknown[]; thinkingLevels: unknown[] };
   activity: { subagents: unknown[]; workflows: unknown[] };
+  subagents: import("./terminal-subagents-projection.js").SubagentActivitySnapshot | undefined;
   loaded: boolean;
 };
 

@@ -10,6 +10,7 @@ import {
 } from "../subagents/src/activity-protocol.ts";
 
 const MAX_VISIBLE = 4;
+const ACTIVE_RAIL_LINES = 1 + MAX_VISIBLE * 2 + 1;
 const COALESCE_MS = 100;
 
 function validItem(value: unknown): value is ActiveWorkItem {
@@ -55,10 +56,7 @@ export function renderActiveWorkRail(
   theme: Theme,
   now = Date.now(),
 ) {
-  const sorted = [...items].sort(
-    (a, b) => b.lastActivityAt - a.lastActivityAt || a.startedAt - b.startedAt,
-  );
-  const visible = sorted.slice(0, MAX_VISIBLE);
+  const visible = items.slice(0, MAX_VISIBLE);
   const lines = [theme.fg("muted", theme.bold("ACTIVE WORK"))];
   for (const item of visible) {
     const quiet =
@@ -74,11 +72,12 @@ export function renderActiveWorkRail(
         : item.summary;
     lines.push(`  ${theme.fg(quiet ? "muted" : "toolTitle", summary)}`);
   }
-  if (sorted.length > MAX_VISIBLE) {
-    lines.push(
-      theme.fg("dim", `+${sorted.length - MAX_VISIBLE} more active items`),
-    );
-  }
+  while (lines.length < ACTIVE_RAIL_LINES - 1) lines.push("");
+  lines.push(
+    items.length > MAX_VISIBLE
+      ? theme.fg("dim", `+${items.length - MAX_VISIBLE} more active items`)
+      : "",
+  );
   return lines;
 }
 
@@ -86,15 +85,12 @@ export default function activityRail(pi: ExtensionAPI) {
   const items = new Map<ActiveWorkItem["key"], ActiveWorkItem>();
   let ui: ExtensionUIContext | undefined;
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
-  let tickTimer: ReturnType<typeof setInterval> | undefined;
 
   const flush = () => {
     flushTimer = undefined;
     if (!ui) return;
     if (items.size === 0) {
       ui.setWidget("active-work", undefined);
-      if (tickTimer) clearInterval(tickTimer);
-      tickTimer = undefined;
       return;
     }
     ui.setWidget(
@@ -102,10 +98,6 @@ export default function activityRail(pi: ExtensionAPI) {
       renderActiveWorkRail([...items.values()], ui.theme),
       { placement: "belowEditor" },
     );
-    if (!tickTimer) {
-      tickTimer = setInterval(flush, 1_000);
-      tickTimer.unref?.();
-    }
   };
 
   const schedule = () => {
@@ -117,7 +109,7 @@ export default function activityRail(pi: ExtensionAPI) {
   const unsubscribeUpdate = pi.events.on(
     ACTIVE_WORK_CHANNELS.update,
     (value: unknown) => {
-      if (!validItem(value)) return;
+      if (!ui || !validItem(value)) return;
       items.set(value.key, value);
       schedule();
     },
@@ -125,15 +117,21 @@ export default function activityRail(pi: ExtensionAPI) {
   const unsubscribeRemove = pi.events.on(
     ACTIVE_WORK_CHANNELS.remove,
     (value: unknown) => {
-      if (!validRemoval(value)) return;
+      if (!ui || !validRemoval(value)) return;
       items.delete(value.key);
       schedule();
     },
   );
 
   pi.on("session_start", (_event, ctx) => {
-    if (!ctx.hasUI) return;
+    if (ctx.mode !== "tui" || !ctx.hasUI) {
+      ui?.setWidget("active-work", undefined);
+      ui = undefined;
+      items.clear();
+      return;
+    }
     ui = ctx.ui;
+    items.clear();
     flush();
   });
 
@@ -141,9 +139,7 @@ export default function activityRail(pi: ExtensionAPI) {
     unsubscribeUpdate();
     unsubscribeRemove();
     if (flushTimer) clearTimeout(flushTimer);
-    if (tickTimer) clearInterval(tickTimer);
     flushTimer = undefined;
-    tickTimer = undefined;
     items.clear();
     ui?.setWidget("active-work", undefined);
     ui = undefined;

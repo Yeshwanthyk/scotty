@@ -17,7 +17,13 @@ import {
   hatchStatusLabel,
 } from "/terminal-hatch-reference.js";
 import { assistantMarkdownFragment } from "/terminal-markdown.js";
-import { evictableSessions, hasBlockingCommands } from "/terminal-session-cache.js";
+import {
+  createTerminalSessionCacheEntry,
+  evictableSessions,
+  hasBlockingCommands,
+} from "/terminal-session-cache.js";
+import { selectedSubagent, subagentCountLabel } from "/terminal-subagents-projection.js";
+import { renderSubagentDetail, renderSubagentList } from "/terminal-subagents-view.js";
 import { projectSessionSummary } from "/terminal-summary-projection.js";
 import {
   createUiResponseTracker,
@@ -89,6 +95,7 @@ const activityDrawer = document.querySelector("#activity-drawer");
 const activityBackdrop = document.querySelector("#activity-backdrop");
 const activityContent = document.querySelector("#activity-content");
 const activityIndicator = document.querySelector("#activity-indicator");
+const subagentActivityLabel = document.querySelector("#subagent-activity-label");
 const openSummaryButton = document.querySelector("#open-summary");
 const closeSummaryButton = document.querySelector("#close-summary");
 const summarySidebar = document.querySelector("#summary-sidebar");
@@ -141,12 +148,7 @@ function sessionIdFromLocation() {
 function cacheEntry(sessionId) {
   let entry = sessionCache.get(sessionId);
   if (!entry) {
-    entry = {
-      projection: blankProjection(),
-      draft: "",
-      scrollTop: 0,
-      touchedAt: Date.now(),
-    };
+    entry = createTerminalSessionCacheEntry(blankProjection());
     sessionCache.set(sessionId, entry);
   }
   entry.touchedAt = Date.now();
@@ -245,7 +247,34 @@ function assistantTurnParts(conversation) {
   return { textParts, reasoningParts, tools: conversationTools(conversation) };
 }
 
+function retainSelectedSubagent() {
+  const entry = cacheEntry(currentSessionId);
+  if (!entry.subagentSelectedId) return undefined;
+  const live = currentProjection?.subagents?.children?.find(
+    (child) => child.id === entry.subagentSelectedId,
+  );
+  if (live) entry.subagentSnapshot = live;
+  const terminal = currentProjection?.subagents?.terminal;
+  if (terminal?.id === entry.subagentSelectedId)
+    entry.subagentSnapshot = { ...entry.subagentSnapshot, ...terminal };
+  return entry.subagentSnapshot;
+}
+
+function cachedSelectedSubagent() {
+  return retainSelectedSubagent();
+}
+
 function worklogEntries() {
+  const selected = cachedSelectedSubagent();
+  if (selected) {
+    return [
+      {
+        key: uniqueWorklogKey(currentSessionId, `subagent:${selected.id}`, new Map()),
+        signature: semanticSignature(selected),
+        render: () => renderSubagentDetail(document, selected, returnToParent),
+      },
+    ];
+  }
   const entries = [];
   const occurrences = new Map();
   const { items, claimedToolIds } = conversationItems(currentProjection.messages);
@@ -332,6 +361,7 @@ function worklogEntries() {
 function renderProjection({ restoreScroll = false } = {}) {
   renderScheduled = false;
   if (!currentProjection) return;
+  const selectedId = cacheEntry(currentSessionId).subagentSelectedId;
   const nearBottom = worklog.scrollHeight - worklog.scrollTop - worklog.clientHeight < 100;
   const entries = worklogEntries();
   worklogView.update(entries);
@@ -343,7 +373,7 @@ function renderProjection({ restoreScroll = false } = {}) {
 
   const entry = cacheEntry(currentSessionId);
   requestAnimationFrame(() => {
-    if (restoreScroll) worklog.scrollTop = entry.scrollTop;
+    if (restoreScroll) worklog.scrollTop = selectedId ? entry.subagentScrollTop : entry.scrollTop;
     else if (nearBottom) worklog.scrollTop = worklog.scrollHeight;
   });
 }
@@ -1376,6 +1406,25 @@ function renderReceipts() {
   );
 }
 
+function selectSubagent(id) {
+  const child = selectedSubagent(currentProjection?.subagents, id);
+  if (!child) return;
+  const entry = cacheEntry(currentSessionId);
+  entry.scrollTop = worklog.scrollTop;
+  entry.subagentSelectedId = id;
+  entry.subagentSnapshot = child;
+  setActivityDrawer(false);
+  renderProjection({ restoreScroll: true });
+}
+
+function returnToParent() {
+  const entry = cacheEntry(currentSessionId);
+  entry.subagentScrollTop = worklog.scrollTop;
+  entry.subagentSelectedId = undefined;
+  entry.subagentSnapshot = undefined;
+  renderProjection({ restoreScroll: true });
+}
+
 function activityGroups() {
   const activity = currentProjection.activity;
   const inferred = { subagents: [], workflows: [] };
@@ -1393,14 +1442,26 @@ function activityGroups() {
 function renderActivity() {
   const groups = activityGroups();
   const count = groups.reduce((total, [, items]) => total + items.length, 0);
-  activityIndicator.hidden = count === 0;
-  if (count === 0) {
+  const subagentCount = currentProjection.subagents?.children?.length ?? 0;
+  activityIndicator.hidden = count + subagentCount === 0;
+  subagentActivityLabel.hidden = subagentCount === 0;
+  subagentActivityLabel.textContent = subagentCountLabel(subagentCount);
+  if (count === 0 && subagentCount === 0) {
     activityContent.replaceChildren(
       textElement("p", "activity-empty", "No secondary activity yet."),
     );
     return;
   }
   const fragment = document.createDocumentFragment();
+  if (subagentCount > 0) {
+    fragment.append(renderSubagentList(document, currentProjection.subagents, selectSubagent));
+    openActivityButton.setAttribute(
+      "aria-label",
+      subagentCountLabel(currentProjection.subagents.children.length),
+    );
+  } else {
+    openActivityButton.setAttribute("aria-label", "Open subagents and workflows");
+  }
   for (const [label, items, icon] of groups) {
     if (items.length === 0) continue;
     const section = document.createElement("section");
@@ -1673,6 +1734,7 @@ function consumeSseEvent(messageEvent, source, namedType) {
       composerDrafts.set(currentSessionId, composerInput.value);
       autosizeComposer();
     }
+    retainSelectedSubagent();
     syncUiResponseState(currentSessionId, currentProjection);
     cacheEntry(currentSessionId).projection = currentProjection;
     setConnection("connected", currentProjection.active ? "Pi working" : "Connected");
@@ -2034,7 +2096,8 @@ function saveCurrentView() {
   if (!currentSessionId) return;
   const entry = cacheEntry(currentSessionId);
   composerDrafts.set(currentSessionId, composerInput.value);
-  entry.scrollTop = worklog.scrollTop;
+  if (entry.subagentSelectedId) entry.subagentScrollTop = worklog.scrollTop;
+  else entry.scrollTop = worklog.scrollTop;
   if (currentProjection) entry.projection = currentProjection;
 }
 
@@ -2300,7 +2363,9 @@ stopRunButton.addEventListener("click", async () => {
 worklog.addEventListener(
   "scroll",
   () => {
-    cacheEntry(currentSessionId).scrollTop = worklog.scrollTop;
+    const entry = cacheEntry(currentSessionId);
+    if (entry.subagentSelectedId) entry.subagentScrollTop = worklog.scrollTop;
+    else entry.scrollTop = worklog.scrollTop;
   },
   { passive: true },
 );
