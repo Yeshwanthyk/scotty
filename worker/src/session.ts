@@ -2067,10 +2067,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     if (failure instanceof SessionCreateUncertain) {
       const stage = failure.stage;
+      // SandboxRuntimeFailure messages are Scotty-authored or already pass
+      // through redactCommandFailure, so they are safe to surface verbatim.
+      const detail =
+        failure.cause instanceof SandboxRuntimeFailure
+          ? ` [${failure.cause.reason}] ${failure.cause.message}`
+          : "";
       const message =
         stage === undefined
-          ? "Pi session creation is ambiguous"
-          : `Pi session creation is ambiguous (stage: ${stage})`;
+          ? `Pi session creation is ambiguous${detail}`
+          : `Pi session creation is ambiguous (stage: ${stage})${detail}`;
       yield* Effect.result(
         this.updateForOperationProgram(nonce, (record) => ({
           ...record,
