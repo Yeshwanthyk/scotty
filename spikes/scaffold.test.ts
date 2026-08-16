@@ -22,20 +22,20 @@ describe("pinned Task 4 contracts", () => {
     const workerPackage = await readPackageManifest("worker/package.json");
 
     expect(rootPackage.devDependencies).toMatchObject({
-      "@effect/vitest": "4.0.0-beta.103",
+      "@effect/vitest": "4.0.0-rc.109",
       typescript: "7.0.2",
       vitest: "4.1.10",
       wrangler: "4.112.0",
     });
     expect(rootPackage.dependencies).toMatchObject({
-      "@effect/platform-node": "4.0.0-beta.103",
-      alchemy: "2.0.0-beta.67",
-      effect: "4.0.0-beta.103",
+      "@effect/platform-node": "4.0.0-rc.109",
+      alchemy: "2.0.0-beta.72",
+      effect: "4.0.0-rc.109",
     });
     expect(workerPackage.dependencies).toEqual({
       "@cloudflare/containers": "0.3.5",
       "@cloudflare/sandbox": "0.12.3",
-      effect: "4.0.0-beta.103",
+      effect: "4.0.0-rc.109",
       hono: "4.12.31",
       "qrcode-generator": "1.4.4",
     });

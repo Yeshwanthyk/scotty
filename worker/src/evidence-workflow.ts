@@ -20,7 +20,7 @@ import {
   type ContainerEvidenceRecording,
 } from "./container-evidence-recorder";
 
-export class EvidenceWorkflowError extends Schema.TaggedErrorClass<EvidenceWorkflowError>()(
+export class EvidenceWorkflowError extends Schema.TaggedError<EvidenceWorkflowError>()(
   "EvidenceWorkflowError",
   {
     operation: EvidenceWorkflowOperationSchema,
@@ -40,7 +40,7 @@ export class EvidenceWorkflowError extends Schema.TaggedErrorClass<EvidenceWorkf
   },
 ) {}
 
-export class EvidenceWorkflowControlError extends Schema.TaggedErrorClass<EvidenceWorkflowControlError>()(
+export class EvidenceWorkflowControlError extends Schema.TaggedError<EvidenceWorkflowControlError>()(
   "EvidenceWorkflowControlError",
   {
     operation: Schema.Literals([

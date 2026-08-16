@@ -152,7 +152,7 @@ interface AuthAuthorityV2 {
 }
 ```
 
-The exact Effect Schema syntax must be verified against pinned Effect beta.99 before coding.
+The exact Effect Schema syntax must be verified against pinned Effect rc.109 before coding.
 Schema owns the derived TypeScript types.
 
 Stored client scopes must be exactly the standard set:

@@ -459,7 +459,7 @@ tester.run("no-schema-class", noSchemaClass, {
   valid: [
     {
       filename: productionFile,
-      code: `import * as Schema from "effect/Schema"; class Failure extends Schema.TaggedErrorClass<Failure>()("Failure", {}) {}`,
+      code: `import * as Schema from "effect/Schema"; class Failure extends Schema.TaggedError<Failure>()("Failure", {}) {}`,
     },
     {
       filename: productionFile,

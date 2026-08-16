@@ -647,7 +647,7 @@ export const evidenceShowcaseProjection = (
   };
 };
 
-export class EvidenceStateError extends Schema.TaggedErrorClass<EvidenceStateError>()(
+export class EvidenceStateError extends Schema.TaggedError<EvidenceStateError>()(
   "EvidenceStateError",
   {
     reason: Schema.Literals([
@@ -663,7 +663,7 @@ export class EvidenceStateError extends Schema.TaggedErrorClass<EvidenceStateErr
   },
 ) {}
 
-export class EvidenceArtifactError extends Schema.TaggedErrorClass<EvidenceArtifactError>()(
+export class EvidenceArtifactError extends Schema.TaggedError<EvidenceArtifactError>()(
   "EvidenceArtifactError",
   {
     operation: Schema.Literals(["validate", "hash", "put", "head", "open", "delete"]),

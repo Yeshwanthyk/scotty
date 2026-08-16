@@ -238,7 +238,7 @@ Every external Browser Run or R2 effect follows the same protocol:
 
 ## Typed failures
 
-Use internal `Schema.TaggedErrorClass`/`Data.TaggedError` values and store a bounded `EvidenceFailureRecord { code, message, retryClass, observedAt }`. Map them at the existing HTTP boundary to today's `wrong_state`, `conflict`, `upstream`, or `internal` envelopes; do not change public routes/error shapes incidentally. `SessionFailure.code` is already an internal string while public API codes remain the closed set in `worker/src/contracts.ts:101-106` and `worker/src/contracts.ts:382-455`.
+Use internal `Schema.TaggedError`/`Data.TaggedError` values and store a bounded `EvidenceFailureRecord { code, message, retryClass, observedAt }`. Map them at the existing HTTP boundary to today's `wrong_state`, `conflict`, `upstream`, or `internal` envelopes; do not change public routes/error shapes incidentally. `SessionFailure.code` is already an internal string while public API codes remain the closed set in `worker/src/contracts.ts:101-106` and `worker/src/contracts.ts:382-455`.
 
 | Failure                                        | Meaning                                                                   | Retry class                                                                       |
 | ---------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |

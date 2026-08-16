@@ -10,7 +10,7 @@ COPY tui/package.json tui/package.json
 COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs
 COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
 COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs
-COPY patches/alchemy+2.0.0-beta.67.patch patches/alchemy+2.0.0-beta.67.patch
+COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch
 COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 RUN node scripts/apply-dependency-patches.mjs

@@ -112,7 +112,7 @@ describe("standalone deployment archive", () => {
       "tui/package.json",
       "scripts/apply-dependency-patches.mjs",
       "scripts/project-container-pi-install.mjs",
-      "patches/alchemy+2.0.0-beta.67.patch",
+      "patches/alchemy+2.0.0-beta.72.patch",
       "patches/earendil-works+pi-coding-agent+0.84.0.patch",
     ] as const;
     for (const file of files) {
@@ -129,7 +129,7 @@ describe("standalone deployment archive", () => {
       "COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs",
     );
     expect(dockerfile).toContain(
-      "COPY patches/alchemy+2.0.0-beta.67.patch patches/alchemy+2.0.0-beta.67.patch",
+      "COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch",
     );
     expect(dockerfile).toContain(
       "COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch",
@@ -142,7 +142,7 @@ describe("standalone deployment archive", () => {
     ).toBeLessThan(npmCiIndex);
     expect(
       dockerfile.indexOf(
-        "COPY patches/alchemy+2.0.0-beta.67.patch patches/alchemy+2.0.0-beta.67.patch",
+        "COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch",
       ),
     ).toBeLessThan(npmCiIndex);
     expect(

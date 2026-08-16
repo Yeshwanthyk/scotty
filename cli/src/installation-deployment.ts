@@ -467,11 +467,7 @@ const inspectWithProfile = async (
         const application = applications.find(
           (candidate) => candidate.name === installation.containerName,
         );
-        if (
-          !application ||
-          (application.durableObjectNamespaceId ?? application.durableObjects?.namespaceId) !==
-            sandboxBinding.namespaceId
-        )
+        if (!application || application.durableObjects?.namespaceId !== sandboxBinding.namespaceId)
           return yield* new InstallationDeploymentError({
             message: "The named Scotty Container application is not bound to this Worker.",
           });
@@ -928,11 +924,7 @@ const piAuthTargetProgram = Effect.fnUntraced(function* (request: PiAuthTargetRe
   const application = applications.find(
     (candidate) => candidate.name === request.expectedContainerName,
   );
-  if (
-    !application ||
-    (application.durableObjectNamespaceId ?? application.durableObjects?.namespaceId) !==
-      sandboxBinding.namespaceId
-  )
+  if (!application || application.durableObjects?.namespaceId !== sandboxBinding.namespaceId)
     return yield* new InstallationDeploymentError({
       message: "The saved Scotty Container application is not bound to this Worker.",
     });

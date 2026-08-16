@@ -39,9 +39,10 @@ const decodeManifestJson = Schema.decodeUnknownOption(
   { onExcessProperty: "error" },
 );
 
-class CliUpgradeHostError extends Schema.TaggedErrorClass<CliUpgradeHostError>(
+class CliUpgradeHostError extends Schema.TaggedError<CliUpgradeHostError>("CliUpgradeHostError")(
   "CliUpgradeHostError",
-)("CliUpgradeHostError", { reason: Schema.String }) {
+  { reason: Schema.String },
+) {
   override readonly message = "The Scotty CLI upgrade failed";
 }
 

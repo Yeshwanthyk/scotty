@@ -2,7 +2,7 @@
 name: routing-effect-http
 description: Routes HTTP through Effect v4 HttpClient and HttpRouter while preserving native Cloudflare Request, Response, WebSocket, stream, and Durable Object boundaries. Use for networked domain code, APIs, and Worker adapters.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-beta.103 effect/unstable/http and Alchemy beta.67.
+compatibility: Scotty with Effect 4.0.0-rc.109 effect/unstable/http and Alchemy beta.67.
 ---
 
 # Route Effect HTTP
@@ -36,4 +36,4 @@ const program = Effect.gen(function* () {
 
 Do not introduce a parallel router/runtime beside Alchemy's chosen model. Do not make raw Cloudflare callbacks artificially Effect-shaped when no domain behavior is gained.
 
-The HTTP modules are unstable in beta.99. Before changing imports or combinators, inspect `vendor/effect/packages/effect/src/unstable/http/`, its tests, and Scotty's pinned Alchemy bridge. Do not rely on Effect v3 or beta.97 examples.
+The HTTP modules are unstable in rc.109. Before changing imports or combinators, inspect `vendor/effect/packages/effect/src/unstable/http/`, its tests, and Scotty's pinned Alchemy bridge. Do not rely on Effect v3 or beta.97 examples.

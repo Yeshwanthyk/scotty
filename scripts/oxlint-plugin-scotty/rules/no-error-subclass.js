@@ -1,7 +1,7 @@
 import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.js";
 
 const message =
-  "Model failures with Data.TaggedError or Schema.TaggedErrorClass instead of subclassing Error. Skill: modeling-effect-errors.";
+  "Model failures with Data.TaggedError or Schema.TaggedError instead of subclassing Error. Skill: modeling-effect-errors.";
 
 const isError = (node) => {
   const expression = unwrapExpression(node);

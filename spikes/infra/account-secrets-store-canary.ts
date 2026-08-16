@@ -2,7 +2,11 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { accountSecretsStoreWorkerBinding } from "./account-secrets-store-binding.ts";
+import {
+  accountSecretsStoreWorkerBinding,
+  WriteOnlySecretBinding,
+  WriteOnlySecretBindingLive,
+} from "./account-secrets-store-binding.ts";
 import type { LocalSecretPaths } from "./local-secret-source.ts";
 import {
   WriteOnlySecret,
@@ -225,14 +229,18 @@ export const m01bCanaryDesired = (config: M01BCanaryConfig) => {
 export const m01bCanaryProgram = Effect.fnUntraced(function* (config: M01BCanaryConfig) {
   // This synchronous guard intentionally precedes the first resource Effect evaluation.
   const desired = m01bCanaryDesired(config);
-  yield* WriteOnlySecret("SyntheticSecret", desired.secretProps).pipe(RemovalPolicy.destroy());
+  const secret = yield* WriteOnlySecret("SyntheticSecret", desired.secretProps).pipe(
+    RemovalPolicy.destroy(),
+  );
   const worker = yield* Cloudflare.Worker("SyntheticBindingWorker", {
     name: desired.names.worker,
     main: "spikes/infra/account-secrets-store-canary-worker.ts",
     workersDev: true,
     observability: { enabled: false },
-    env: config.bindingAttached ? { M01B_SYNTHETIC_SECRET: desired.binding } : {},
   }).pipe(RemovalPolicy.destroy());
+  if (config.bindingAttached) {
+    yield* WriteOnlySecretBinding(secret, worker).pipe(Effect.provide(WriteOnlySecretBindingLive));
+  }
   return { workerName: worker.workerName, workerUrl: worker.url };
 });
 

@@ -112,7 +112,7 @@ describe("production deployment ownership", () => {
 
   it("keeps the pinned Alchemy deployment backports installed and deterministic", async () => {
     const rootPackage = JSON.parse(read("package.json"));
-    const patch = read("patches/alchemy+2.0.0-beta.67.patch");
+    const patch = read("patches/alchemy+2.0.0-beta.72.patch");
     const installedApply = read("node_modules/alchemy/lib/Apply.js");
     const installedWorkerProvider = read(
       "node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js",
@@ -121,7 +121,7 @@ describe("production deployment ownership", () => {
       "node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js",
     );
 
-    assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.67");
+    assert.equal(rootPackage.dependencies.alchemy, "2.0.0-beta.72");
     assert.equal(rootPackage.scripts.postinstall, "node scripts/apply-dependency-patches.mjs");
     assert.match(patch, /const oldDoBindings = oldBindings\.flatMap/u);
     assert.doesNotMatch(patch, /bindings: bindingOutputs/u);

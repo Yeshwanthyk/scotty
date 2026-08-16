@@ -516,7 +516,7 @@ const ScottyErrorFields = {
   hint: Schema.optionalKey(Schema.String),
 };
 
-export class ScottyError extends Schema.TaggedErrorClass<ScottyError>("ScottyError")(
+export class ScottyError extends Schema.TaggedError<ScottyError>("ScottyError")(
   "ScottyError",
   ScottyErrorFields,
 ) {

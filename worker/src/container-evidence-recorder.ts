@@ -67,7 +67,7 @@ const decodeRecorderManifest = Schema.decodeUnknownEffect(
   { onExcessProperty: "error" },
 );
 
-export class ContainerEvidenceRecorderError extends Schema.TaggedErrorClass<ContainerEvidenceRecorderError>()(
+export class ContainerEvidenceRecorderError extends Schema.TaggedError<ContainerEvidenceRecorderError>()(
   "ContainerEvidenceRecorderError",
   {
     operation: Schema.Literals(["run", "manifest", "read", "cleanup"]),

@@ -14,7 +14,7 @@ Read this before changing Scotty.
 
 ## Effect v4: source first
 
-Effect is pinned for this repository at `vendor/effect`, commit `dff25449dfc927f2cce912c329f343cfb5365f88`, corresponding to the `4.0.0-beta.103` package set. Treat the submodule as read-only reference source.
+Effect is pinned for this repository at `vendor/effect`, commit `b5946ece2b33a4468ef927a39821d7c3db463af3`, corresponding to the `4.0.0-rc.109` package set. Treat the submodule as read-only reference source. The Effect RC migration plan and its Scotty-facing API breaks are recorded in `docs/research/effect-4-rc-alchemy-upgrade.md`.
 
 Before adding or changing any non-trivial Effect pattern:
 
@@ -28,13 +28,13 @@ Do not rely on Effect v3 docs or add legacy `@effect/platform` / `@effect/schema
 
 ## Alchemy v2: one Cloudflare model
 
-Alchemy is pinned as read-only reference source at `vendor/alchemy`, commit `da667f7d46751fe93952cfeb49768e6eb8212693`, the exact `2.0.0-beta.67` release commit installed by this repository. Scotty uses Alchemy's Effect-native v2 model as the single source for Cloudflare infrastructure and ordinary runtime integration: Worker, HTTP API, bindings, KV, R2, assets, Durable Object migrations, Container application, stages, state, deployment, and integration tests. Do not preserve parallel Wrangler/Hono/manual-binding implementations after their Alchemy replacements pass the migration gates.
+Alchemy is pinned as read-only reference source at `vendor/alchemy`, commit `4465e353603ab71b279a66c4fcd3ecc1488aa090`, the exact `2.0.0-beta.72` release commit installed by this repository. Scotty uses Alchemy's Effect-native v2 model as the single source for Cloudflare infrastructure and ordinary runtime integration: Worker, HTTP API, bindings, KV, R2, assets, Durable Object migrations, Container application, stages, state, deployment, and integration tests. Do not preserve parallel Wrangler/Hono/manual-binding implementations after their Alchemy replacements pass the migration gates.
 
 Before changing a non-trivial Alchemy pattern:
 
 1. Read the relevant guide under `vendor/alchemy/website/src/content/docs/`.
 2. Inspect the actual provider/runtime implementation in `vendor/alchemy/packages/alchemy/src/` and its tests.
-3. Verify it compiles against Scotty's exact Effect beta.103 resolution.
+3. Verify it compiles against Scotty's exact Effect rc.109 resolution.
 4. Prefer its public API. If it lacks a required Sandbox capability, implement the smallest Scotty-owned Effect service or Alchemy custom provider; do not use unstable private bindings as the lasting design.
 
 Alchemy does not replace the official `@cloudflare/sandbox` runtime class. The Sandbox SDK requires its own subclass and native PTY/stream callback signatures. Keep those as minimal host islands that immediately delegate to Scotty Effects. Build the external-Sandbox-DO/Container association with Alchemy's public resource binding contracts; do not add a second reconciler for resources Alchemy already owns.
@@ -43,7 +43,7 @@ Never put real Codex/GitHub credentials in Alchemy stack outputs, state, `Config
 
 ## Executor and effect-cf references
 
-Executor is a comparative implementation reference, not a Scotty dependency. Before copying an Executor pattern, inspect its source and verify it against pinned Effect beta.103 and Scotty's Cloudflare Sandbox constraints.
+Executor is a comparative implementation reference, not a Scotty dependency. Before copying an Executor pattern, inspect its source and verify it against pinned Effect rc.109 and Scotty's Cloudflare Sandbox constraints.
 
 Use Executor primarily for:
 
@@ -54,7 +54,7 @@ Use Executor primarily for:
 
 Do not copy its product/package complexity, broad plugin architecture, or unrelated custom lint rules.
 
-`effect-cf` is comparative source, not an approved dependency. Its `0.16.0` release is tested against Effect beta.77, not Scotty's beta.103 pin. Alchemy supplies Scotty's Cloudflare Effect bridge; do not add a second competing Worker/Durable Object runtime.
+`effect-cf` is comparative source, not an approved dependency. Its `0.16.0` release is tested against Effect beta.77, not Scotty's rc.109 pin. Alchemy supplies Scotty's Cloudflare Effect bridge; do not add a second competing Worker/Durable Object runtime.
 
 ## Effect design rules
 
@@ -84,7 +84,7 @@ Use the project skills under `.agents/skills` when a matching lint diagnostic or
 
 Raw fetch follows the same domain/host split as Effect execution. Migrated Effect domain modules use `HttpClient` and `HttpClientRequest` from `effect/unstable/http` for outbound HTTP. Native Cloudflare `Request`, `Response`, WebSocket, and stream handling; Worker handler methods; ASSETS and service-binding `.fetch` methods; egress native streaming proxy fetch; and CLI host-boundary fetch remain explicit host adapters. Enable `scotty/no-raw-fetch` only in the strict migrated-production override, not globally or for tests and host modules.
 
-Start remediation at the diagnostic's referenced skill, inspect beta.103 source and tests, make the smallest behavior-preserving fix, then run `npm run fmt`, `npm run lint:skills`, the focused test, and the affected typecheck. Boundary suppressions must be adjacent, rule-specific, and explain the native host contract.
+Start remediation at the diagnostic's referenced skill, inspect rc.109 source and tests, make the smallest behavior-preserving fix, then run `npm run fmt`, `npm run lint:skills`, the focused test, and the affected typecheck. Boundary suppressions must be adjacent, rule-specific, and explain the native host contract.
 
 Every newly migrated Effect domain module must be added to the strict Scotty override in `.oxlintrc.json` in the same change. Do not classify legacy Worker, CLI, or E2E modules as migrated merely to expand lint coverage.
 

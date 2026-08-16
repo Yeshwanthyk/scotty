@@ -19,6 +19,14 @@ export type SubagentTranscriptItem = {
   readonly output?: string;
   readonly isError?: boolean;
 };
+export type SubagentTool = {
+  readonly name: string;
+  readonly args?: string;
+  readonly output?: string;
+  readonly startedAt: number;
+  readonly updatedAt: number;
+  readonly isError?: boolean;
+};
 export type SubagentChild = {
   readonly id: string;
   readonly title: string;
@@ -30,7 +38,7 @@ export type SubagentChild = {
   readonly output: string;
   readonly failure?: string;
   readonly transcript: readonly SubagentTranscriptItem[];
-  readonly tools: readonly Record<string, unknown>[];
+  readonly tools: readonly SubagentTool[];
   readonly queued: readonly { kind: "steer" | "follow-up"; text: string }[];
   readonly startedAt: number;
   readonly lastActivityAt: number;
@@ -55,7 +63,7 @@ export type SubagentActivitySnapshot = {
   readonly children: readonly SubagentChild[];
   readonly terminal?: SubagentTerminal;
 };
-export declare function isObject(value: unknown): value is Record<string, unknown>;
+export declare function isObject(value: unknown): value is object;
 export declare function snapshotForWidget(value: unknown): SubagentActivitySnapshot | undefined;
 export declare function subagentActivityFromWidget(
   value: unknown,
