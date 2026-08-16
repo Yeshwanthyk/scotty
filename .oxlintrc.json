@@ -9,12 +9,7 @@
     "vendor/**",
     "work/**",
     "worker/container/skills/bundled/**",
-    "worker/container/pi-packages/sources/pi-amp-ui/**",
-    "worker/container/pi-packages/sources/pi-askuser/**",
-    "worker/container/pi-packages/sources/pi-background-terminals/**",
     "worker/container/pi-packages/sources/pi-subagents/**",
-    "worker/container/pi-packages/sources/pi-web-access/**",
-    "worker/container/pi-packages/sources/pi-workflows/**",
     "worker/container/pi-packages/sources/scotty-browser-test/**",
     "worker/public/vendor/**"
   ],

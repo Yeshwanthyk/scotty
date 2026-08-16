@@ -8,12 +8,7 @@ import { sessionRoot } from "./workspace";
 
 export const PI_PACKAGES = [
   "/opt/scotty/pi-packages/sources/pi-subagents",
-  "/opt/scotty/pi-packages/sources/pi-workflows",
-  "/opt/scotty/pi-packages/sources/pi-background-terminals",
-  "/opt/scotty/pi-packages/sources/pi-askuser",
-  "/opt/scotty/pi-packages/sources/pi-web-access",
   "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
-  "/opt/scotty/pi-packages/sources/pi-amp-ui",
   "/opt/scotty/pi-packages/sources/scotty-browser-test",
   "/opt/scotty/pi-packages/sources/scotty-hatch",
 ] as const;
@@ -198,12 +193,6 @@ const buildMergedSkillsCommand = (
   return parts.join(" && ");
 };
 
-const piWebSearchConfig = JSON.stringify({
-  provider: "openai",
-  workflow: "none",
-  allowBrowserCookies: false,
-});
-
 const gitConfig = (): string => `[credential]
 	helper = !f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f
 	useHttpPath = true
@@ -382,7 +371,6 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       const piAuthPath = `${piHome}/auth.json`;
       const piSettingsPath = `${piHome}/settings.json`;
       const piAgentsPath = `${piHome}/AGENTS.md`;
-      const piWebSearchPath = `${piHome}/web-search.json`;
       const gitConfigPath = `${piHome}/gitconfig`;
       const shellPath = terminalShellPath(id);
       const promptPath = `${piHome}/initial-prompt`;
@@ -393,13 +381,12 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       yield* runtime.writeFile(piAuthPath, piAuthJson(credential));
       yield* runtime.writeFile(piSettingsPath, piSettings(credential, extraPackagePaths));
       yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
-      yield* runtime.writeFile(piWebSearchPath, piWebSearchConfig);
       yield* runtime.writeFile(gitConfigPath, gitConfig());
       yield* runtime.writeFile(shellPath, terminalShell(id, credential));
       if (options?.initialPrompt !== undefined)
         yield* runtime.writeFile(promptPath, options.initialPrompt);
       yield* runtime.execChecked(
-        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, extraSkills, options?.bundleRoot)}`,
+        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, extraSkills, options?.bundleRoot)}`,
       );
       yield* runtime.setEnvVars(agentEnv(id, credential));
       const root = sessionRoot(id);

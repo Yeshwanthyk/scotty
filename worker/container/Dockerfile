@@ -150,9 +150,6 @@ RUN set -eu; \
       --no-audit \
       --no-fund \
       --legacy-peer-deps \
-  && cp \
-    /opt/scotty/pi-packages/locks/pi-web-access/package-lock.json \
-    /opt/scotty/pi-packages/sources/pi-web-access/package-lock.json \
   && for package_dir in /opt/scotty/pi-packages/sources/*; do \
     test -f "${package_dir}/package.json"; \
     test -f "${package_dir}/package-lock.json"; \
@@ -202,16 +199,23 @@ RUN set -eu; \
   fi \
   && test ! -e /opt/scotty/pi-packages/sources/pi-tasks \
   && for package_name in \
-    pi-subagents \
     pi-workflows \
     pi-background-terminals \
     pi-askuser \
     pi-web-access \
-    pi-codex-compaction \
-    pi-amp-ui \
+    pi-amp-ui; do \
+      if grep -F -- "${package_name}" /tmp/scotty-pi-packages.list >/dev/null; then \
+        echo "unexpected ${package_name}" >&2; \
+        exit 1; \
+      fi; \
+      test ! -e "/opt/scotty/pi-packages/sources/${package_name}"; \
+    done \
+  && for package_name in \
+    pi-subagents \
+    @ogulcancelik/pi-codex-compaction \
     scotty-browser-test \
     scotty-hatch; do \
-      grep -F "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \
+      grep -F -- "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \
     done \
   && rm -rf /tmp/scotty-pi-agent /tmp/scotty-pi-help /tmp/scotty-pi-packages.list \
   && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-pi-shell \

@@ -281,12 +281,7 @@ describe("container auth values", () => {
   it("uses only immutable image-local Pi packages at sandbox startup", () => {
     assert.deepStrictEqual(PI_PACKAGES, [
       "/opt/scotty/pi-packages/sources/pi-subagents",
-      "/opt/scotty/pi-packages/sources/pi-workflows",
-      "/opt/scotty/pi-packages/sources/pi-background-terminals",
-      "/opt/scotty/pi-packages/sources/pi-askuser",
-      "/opt/scotty/pi-packages/sources/pi-web-access",
       "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
-      "/opt/scotty/pi-packages/sources/pi-amp-ui",
       "/opt/scotty/pi-packages/sources/scotty-browser-test",
       "/opt/scotty/pi-packages/sources/scotty-hatch",
     ]);
@@ -369,7 +364,6 @@ describe("ContainerAuth", () => {
           "writeFile",
           "writeFile",
           "writeFile",
-          "writeFile",
           "exec",
           "setEnvVars",
           "exec",
@@ -387,7 +381,6 @@ describe("ContainerAuth", () => {
           `/workspace/${ID}/.pi-agent/auth.json`,
           `/workspace/${ID}/.pi-agent/settings.json`,
           `/workspace/${ID}/.pi-agent/AGENTS.md`,
-          `/workspace/${ID}/.pi-agent/web-search.json`,
           `/workspace/${ID}/.pi-agent/gitconfig`,
           `/workspace/${ID}/.pi-agent/scotty-shell`,
         ],
@@ -402,19 +395,14 @@ describe("ContainerAuth", () => {
         theme: "dark",
         packages: [...PI_PACKAGES],
       });
-      assert.deepStrictEqual(JSON.parse(writes[5]?.content ?? ""), {
-        provider: "openai",
-        workflow: "none",
-        allowBrowserCookies: false,
-      });
-      assert.ok(writes[6]?.content.includes("password=$GITHUB_SENTINEL"));
-      assert.ok(writes[7]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
+      assert.ok(writes[5]?.content.includes("password=$GITHUB_SENTINEL"));
+      assert.ok(writes[6]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
       assert.ok(
-        writes[7]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
+        writes[6]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
       );
-      assert.ok(writes[7]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
+      assert.ok(writes[6]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
       for (const secret of [REAL_ACCESS, REAL_REFRESH, REAL_GITHUB, REAL_ACCOUNT, REAL_API_KEY])
-        assert.ok(!writes[7]?.content.includes(secret));
+        assert.ok(!writes[6]?.content.includes(secret));
 
       const skillsExec = chmodExecCommand(capabilities.calls);
       const merged = mergedSkillsPath(ID);
@@ -734,8 +722,8 @@ describe("ContainerAuth", () => {
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 13);
-      assert.strictEqual(second.calls.length, 13);
+      assert.strictEqual(first.calls.length, 12);
+      assert.strictEqual(second.calls.length, 12);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),

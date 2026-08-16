@@ -12,6 +12,20 @@ const npmLockPath = "worker/container/pi-packages/npm/package-lock.json";
 const containerAuthPath = "worker/src/container-auth.ts";
 const gitMaxBuffer = 64 * 1_024 * 1_024;
 
+export const REQUIRED_PI_PACKAGE_NAMES = Object.freeze([
+  "pi-subagents",
+  "@ogulcancelik/pi-codex-compaction",
+  "scotty-browser-test",
+  "scotty-hatch",
+]);
+export const FORBIDDEN_PI_PACKAGE_NAMES = Object.freeze([
+  "pi-workflows",
+  "pi-background-terminals",
+  "pi-askuser",
+  "pi-web-access",
+  "pi-amp-ui",
+]);
+
 function readJson(root, path) {
   return JSON.parse(readFileSync(join(root, path), "utf8"));
 }
@@ -209,7 +223,7 @@ function verifySourcePackage(root, entry, label, kind) {
     verifyLocallyAvailableCommit(root, label, commit, files, sourcePath);
   }
 
-  return { order, imagePath };
+  return { name, order, imagePath };
 }
 
 function packagePathsFromContainerAuth(root) {
@@ -255,10 +269,18 @@ export function verifyPiPackagePins(root = scriptRoot) {
     const locked = npmLock.packages?.[`node_modules/${name}`];
     if (locked?.version !== version) fail(`${name} lock version must be ${version}`);
     if (locked?.integrity !== integrity) fail(`${name} lock integrity does not match the manifest`);
-    configured.push({ order, imagePath });
+    configured.push({ name, order, imagePath });
   }
 
   configured.sort((left, right) => left.order - right.order);
+  const configuredNames = configured.map(({ name }) => name);
+  const forbiddenPackage = FORBIDDEN_PI_PACKAGE_NAMES.find((name) =>
+    configuredNames.includes(name),
+  );
+  if (forbiddenPackage !== undefined)
+    fail(`${manifestPath} contains forbidden Pi package ${forbiddenPackage}`);
+  if (!isDeepStrictEqual(configuredNames, REQUIRED_PI_PACKAGE_NAMES))
+    fail(`${manifestPath} packages must be exactly ${REQUIRED_PI_PACKAGE_NAMES.join(", ")}`);
   const expectedPaths = configured.map(({ imagePath }) => imagePath);
   if (new Set(configured.map(({ order }) => order)).size !== configured.length)
     fail("package load orders must be unique");

@@ -12,8 +12,20 @@ export const CONTAINER_IMAGE = "scotty-container:ci";
 export const CONTAINER_IMAGE_PLATFORM = CLEAN_ROOM_CLI_PLATFORM;
 export const CONTAINER_IMAGE_CACHE_SCOPE = "scotty-container-image";
 export const CONTAINER_IMAGE_ABSENT_COMMANDS = Object.freeze(["codex"]);
-export const CONTAINER_IMAGE_PI_PACKAGES = Object.freeze(["pi-subagents"]);
-export const CONTAINER_IMAGE_ABSENT_PI_PACKAGES = Object.freeze(["pi-tasks"]);
+export const CONTAINER_IMAGE_PI_PACKAGES = Object.freeze([
+  "pi-subagents",
+  "@ogulcancelik/pi-codex-compaction",
+  "scotty-browser-test",
+  "scotty-hatch",
+]);
+export const CONTAINER_IMAGE_ABSENT_PI_PACKAGES = Object.freeze([
+  "pi-tasks",
+  "pi-workflows",
+  "pi-background-terminals",
+  "pi-askuser",
+  "pi-web-access",
+  "pi-amp-ui",
+]);
 
 const ghaCacheEnabled = (environment) =>
   environment.GITHUB_ACTIONS === "true" && typeof environment.ACTIONS_CACHE_URL === "string";

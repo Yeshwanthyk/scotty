@@ -46,13 +46,8 @@ export const BUILTIN_SKILL_NAMES = [
 ] as const;
 
 export const BUILTIN_PI_PACKAGE_NAMES = [
-  "@ogulcancelik/pi-codex-compaction",
-  "pi-amp-ui",
-  "pi-askuser",
-  "pi-background-terminals",
   "pi-subagents",
-  "pi-web-access",
-  "pi-workflows",
+  "@ogulcancelik/pi-codex-compaction",
   "scotty-browser-test",
   "scotty-hatch",
 ] as const;
