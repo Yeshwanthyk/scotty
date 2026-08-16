@@ -3137,16 +3137,61 @@ describe("beam down and sandbox configuration", () => {
     expect(await readFile(path, "utf8")).toBe("{ not json\n");
   });
 
-  test("sandbox add rejects built-in Skill names and credential-bearing Git URLs", async () => {
+  test("sandbox add allows former built-in Skill names, protects duplicates, and rejects credential-bearing Git URLs", async () => {
     const home = await temporaryDirectory();
     const skillRoot = await temporaryDirectory();
     await writeFile(
       join(skillRoot, "SKILL.md"),
       "---\nname: yesh-debug\ndescription: test\n---\n\n# Test\n",
     );
-    const builtin = harness({ home, cwd: skillRoot });
-    expect(await main(["sandbox", "add", skillRoot], builtin.deps)).toBe(EXIT.USAGE);
-    expect(builtin.error().error.code).toBe("sandbox_name_conflict");
+    const sideLoaded = harness({ home, cwd: skillRoot });
+    expect(await main(["sandbox", "add", skillRoot], sideLoaded.deps)).toBe(EXIT.OK);
+    expect(sideLoaded.json().skills).toContainEqual({ name: "yesh-debug", path: skillRoot });
+    const duplicate = harness({ home, cwd: skillRoot });
+    expect(await main(["sandbox", "add", skillRoot], duplicate.deps)).toBe(EXIT.USAGE);
+    expect(duplicate.error().error.code).toBe("sandbox_name_conflict");
+    const builtinPackage = harness({
+      home,
+      resolveGitPackage: async () => ({
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        name: "scotty-hatch",
+      }),
+    });
+    expect(
+      await main(
+        ["sandbox", "add", "https://github.com/acme/scotty-hatch.git", "--ref", "v1"],
+        builtinPackage.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(builtinPackage.error().error.code).toBe("sandbox_name_conflict");
+
+    for (const name of [
+      "pi-amp-ui",
+      "pi-askuser",
+      "pi-background-terminals",
+      "pi-web-access",
+      "pi-workflows",
+    ]) {
+      const available = harness({
+        home,
+        resolveGitPackage: async () => ({
+          commit: "0123456789abcdef0123456789abcdef01234567",
+          name,
+        }),
+      });
+      expect(
+        await main(
+          ["sandbox", "add", "https://github.com/acme/pi-package.git", "--ref", "v1"],
+          available.deps,
+        ),
+      ).toBe(EXIT.OK);
+      expect(available.json().piPackages).toContainEqual({
+        name,
+        repository: "https://github.com/acme/pi-package.git",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        requestedRef: "v1",
+      });
+    }
 
     const credential = harness({ home });
     expect(

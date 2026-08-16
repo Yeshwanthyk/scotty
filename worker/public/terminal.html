@@ -95,7 +95,7 @@
             id="open-activity"
             class="icon-button activity-trigger"
             type="button"
-            aria-label="Open tasks, subagents, and workflows"
+            aria-label="Open subagents and workflows"
             aria-controls="activity-drawer"
             aria-expanded="false"
           >
@@ -105,6 +105,7 @@
               <circle cx="19" cy="12" r="1.25"></circle>
             </svg>
             <span id="activity-indicator" class="activity-indicator" hidden></span>
+            <span id="subagent-activity-label" class="subagent-activity-label" hidden></span>
           </button>
         </header>
 
@@ -271,13 +272,13 @@
       class="activity-drawer"
       role="dialog"
       aria-modal="true"
-      aria-label="Tasks, subagents, and workflows"
+      aria-label="Subagents and workflows"
       aria-hidden="true"
     >
       <header class="activity-header">
         <div>
           <strong>Session activity</strong>
-          <span>Tasks, subagents, and workflows</span>
+          <span>Subagents and workflows</span>
         </div>
         <button id="close-activity" class="icon-button" type="button" aria-label="Close activity">
           ×

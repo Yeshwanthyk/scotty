@@ -7,14 +7,8 @@ import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./sandbox-run
 import { sessionRoot } from "./workspace";
 
 export const PI_PACKAGES = [
-  "/opt/scotty/pi-packages/sources/pi-tasks",
   "/opt/scotty/pi-packages/sources/pi-subagents",
-  "/opt/scotty/pi-packages/sources/pi-workflows",
-  "/opt/scotty/pi-packages/sources/pi-background-terminals",
-  "/opt/scotty/pi-packages/sources/pi-askuser",
-  "/opt/scotty/pi-packages/sources/pi-web-access",
   "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
-  "/opt/scotty/pi-packages/sources/pi-amp-ui",
   "/opt/scotty/pi-packages/sources/scotty-browser-test",
   "/opt/scotty/pi-packages/sources/scotty-hatch",
 ] as const;
@@ -95,7 +89,14 @@ const resolveSeedExtras = (
         reason: "nonzero_exit",
         message: "Sandbox bundle root is required when extras are configured",
       });
+    const configuredNames = new Set<string>();
     for (const skill of extraSkills) {
+      if (configuredNames.has(skill.name))
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox configured skill names must be unique",
+        });
+      configuredNames.add(skill.name);
       if (Option.isNone(decodeSkillName(skill.name)))
         return yield* new SandboxRuntimeFailure({
           reason: "nonzero_exit",
@@ -104,6 +105,12 @@ const resolveSeedExtras = (
     }
     const extraPackagePaths: string[] = [];
     for (const pkg of extraPackages) {
+      if (configuredNames.has(pkg.name))
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox configured source names must be unique",
+        });
+      configuredNames.add(pkg.name);
       const packagePath = extraPackagePath(bundleRoot, pkg.name);
       if (
         Option.isNone(decodePiPackageName(pkg.name)) ||
@@ -184,7 +191,7 @@ const buildMergedSkillsCommand = (
   const piSkills = `${sessionRoot(id)}/.pi-agent/skills`;
   const parts = [
     `mkdir -p ${shellQuote(merged)}`,
-    `ln -sfn /opt/scotty/skills/* ${shellQuote(`${merged}/`)}`,
+    `for skill in /opt/scotty/skills/*; do [ -e "$skill" ] || continue; ln -sfn "$skill" ${shellQuote(`${merged}/`)}; done`,
   ];
   for (const skill of extraSkills) {
     parts.push(
@@ -198,12 +205,6 @@ const buildMergedSkillsCommand = (
   parts.push(`ln -sfn ${shellQuote(merged)} ${shellQuote(piSkills)}`);
   return parts.join(" && ");
 };
-
-const piWebSearchConfig = JSON.stringify({
-  provider: "openai",
-  workflow: "none",
-  allowBrowserCookies: false,
-});
 
 const gitConfig = (): string => `[credential]
 	helper = !f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f
@@ -233,6 +234,12 @@ export const sandboxAgentsInstructions = `- Read and follow the repository AGENT
 - If a required tool is absent or a dependency download is blocked by Scotty policy (including HTTP 520), stop after one bounded retry. Run the focused checks that are available and report the exact unavailable gate. If publication was requested, continue to commit, push, and open the PR so CI can run the locked full gate.
 - Don't build a missing toolchain from source, install a third-party embedded toolchain, add temporary module replacements, or bypass the proxy with direct arbitrary-host downloads unless the user explicitly asks.
 - Use matching skills under \`$PI_CODING_AGENT_DIR/skills\` or \`$CODEX_HOME/skills\`; read the selected \`SKILL.md\` before acting.
+- Identify the required work before acting.
+- Keep a short ordered checklist in progress updates.
+- Complete prerequisites before dependents.
+- Use subagents only for independent parallel work; the parent owns integration and verification.
+- Do not claim that a durable task store exists.
+- Use no more than four concurrent subagents.
 - Publish concise progress checkpoints only when there is meaningful new evidence: a completed implementation slice, a verification result, or a blocker. Finish with a concise outcome and proof.
 - Before changing user-visible behavior, define at most three observable acceptance checks and one reproducible browser flow. Capture that flow before the change, make the smallest complete change, keep Hatch on the finished app, then rerun the same viewport, steps, and assertions with video enabled. Finish only when the checks pass or a concrete blocker is proven.
 - In progress and final updates, include each exact \`scotty-evidence:<jobId>\` or \`scotty-hatch:<hatchId>\` reference returned by its structured first-party tool result at most once. The successful tool result must belong to the same conversation as the update; after any new user, steer, or follow-up message, call the relevant status or evidence tool again before publishing its reference. If that tool fails or returns no reference, do not publish one. Never invent, alter, expand, or repeat a reference, and never publish tool URLs, ports, paths, arguments, cookies, credentials, or route values as a substitute.
@@ -377,7 +384,6 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       const piAuthPath = `${piHome}/auth.json`;
       const piSettingsPath = `${piHome}/settings.json`;
       const piAgentsPath = `${piHome}/AGENTS.md`;
-      const piWebSearchPath = `${piHome}/web-search.json`;
       const gitConfigPath = `${piHome}/gitconfig`;
       const shellPath = terminalShellPath(id);
       const promptPath = `${piHome}/initial-prompt`;
@@ -388,19 +394,25 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       yield* runtime.writeFile(piAuthPath, piAuthJson(credential));
       yield* runtime.writeFile(piSettingsPath, piSettings(credential, extraPackagePaths));
       yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
-      yield* runtime.writeFile(piWebSearchPath, piWebSearchConfig);
       yield* runtime.writeFile(gitConfigPath, gitConfig());
       yield* runtime.writeFile(shellPath, terminalShell(id, credential));
       if (options?.initialPrompt !== undefined)
         yield* runtime.writeFile(promptPath, options.initialPrompt);
       yield* runtime.execChecked(
-        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(piWebSearchPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, extraSkills, options?.bundleRoot)}`,
+        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, extraSkills, options?.bundleRoot)}`,
       );
-      yield* runtime.setEnvVars(agentEnv(id, credential));
+      const env = agentEnv(id, credential);
+      yield* runtime.setEnvVars(env);
       const root = sessionRoot(id);
-      yield* runtime.execChecked(
-        `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C ${shellQuote(root)} config user.name "$git_name" && git -C ${shellQuote(root)} config user.email "$git_email"`,
-      );
+      const ghIdentityCommand = `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C ${shellQuote(root)} config user.name "$git_name" && git -C ${shellQuote(root)} config user.email "$git_email"`;
+      const fallbackIdentityCommand = `git -C ${shellQuote(root)} config user.name "Scotty Session" && git -C ${shellQuote(root)} config user.email "scotty-session-${id}@users.noreply.github.com"`;
+      yield* runtime
+        .execChecked(ghIdentityCommand, { env, timeout: 20_000 })
+        .pipe(
+          Effect.catch(() =>
+            runtime.execChecked(fallbackIdentityCommand, { env, timeout: 10_000 }),
+          ),
+        );
     });
     return ContainerAuth.of({
       seed,
@@ -497,6 +509,8 @@ export function agentEnv(
     GIT_CONFIG_GLOBAL: `${sessionRoot(id)}/.pi-agent/gitconfig`,
     GH_TOKEN: credential.githubSentinel,
     GITHUB_SENTINEL: credential.githubSentinel,
+    GH_PROMPT_DISABLED: "1",
+    GH_NO_UPDATE_NOTIFIER: "1",
     GIT_TERMINAL_PROMPT: "0",
     NODE_OPTIONS: "--use-system-ca",
     GOTOOLCHAIN: "auto",

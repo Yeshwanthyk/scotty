@@ -2,6 +2,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { WriteOnlySecretBindingLive } from "./account-secrets-store-binding.ts";
 import {
   m01bCanaryConfigFromEnvironment,
   m01bCanaryFaultDestinationLayer,
@@ -44,7 +45,10 @@ const secretProviders = Layer.unwrap(
   }),
 );
 
-export const m01bCanaryProviders = secretProviders.pipe(Layer.provideMerge(Cloudflare.providers()));
+export const m01bCanaryProviders = secretProviders.pipe(
+  Layer.provideMerge(Cloudflare.providers()),
+  Layer.provideMerge(WriteOnlySecretBindingLive),
+);
 
 export default Alchemy.Stack(
   "ScottyM01BSecretCanary",

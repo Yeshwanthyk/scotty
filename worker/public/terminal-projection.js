@@ -1,4 +1,9 @@
 import {
+  SUBAGENTS_WIDGET_KEY,
+  subagentActivityFromWidget,
+} from "./terminal-subagents-projection.js";
+
+import {
   createMessageProjectionState,
   finishMessageSnapshot,
   projectMessageEvent,
@@ -60,7 +65,8 @@ export function blankProjection() {
     active: false,
     state: {},
     capabilities: { models: [], thinkingLevels: [] },
-    activity: { tasks: [], subagents: [], workflows: [] },
+    activity: { subagents: [], workflows: [] },
+    subagents: undefined,
     loaded: false,
   };
 }
@@ -137,7 +143,6 @@ export function projectionFromSnapshot(body) {
     firstObject(snapshot.queue, state.queue, snapshot.queues, state.queues),
   );
   projection.activity = {
-    tasks: firstArray(snapshot.tasks, state.tasks, snapshot.activity?.tasks),
     subagents: firstArray(snapshot.subagents, state.subagents, snapshot.activity?.subagents),
     workflows: firstArray(snapshot.workflows, state.workflows, snapshot.activity?.workflows),
   };
@@ -239,13 +244,19 @@ function applyExtensionSurface(projection, request) {
   const method = request.method;
   if (method === "setWidget") {
     const key = String(request.widgetKey ?? "").toLowerCase();
+    if (key === SUBAGENTS_WIDGET_KEY) {
+      if (request.widgetLines === null) projection.subagents = undefined;
+      else {
+        const snapshot = subagentActivityFromWidget(request.widgetLines);
+        if (snapshot !== undefined) projection.subagents = snapshot;
+      }
+      return;
+    }
     const group = key.includes("subagent")
       ? "subagents"
       : key.includes("workflow")
         ? "workflows"
-        : key.includes("task")
-          ? "tasks"
-          : undefined;
+        : undefined;
     if (group)
       projection.activity[group] = Array.isArray(request.widgetLines)
         ? request.widgetLines.map((line, index) => ({

@@ -2,7 +2,7 @@
 name: testing-effect-programs
 description: Tests Effect programs with @effect/vitest, deterministic clocks, Layers, scopes, failures, and interruption. Use when adding Effect-returning tests or fixing conditional assertions and runtime escape hatches in tests.
 license: MIT
-compatibility: Scotty with @effect/vitest and Effect 4.0.0-beta.103.
+compatibility: Scotty with @effect/vitest and Effect 4.0.0-rc.109.
 ---
 
 # Test Effect programs
@@ -14,6 +14,7 @@ Use Effect-native tests for Effect-returning programs and ordinary Vitest tests 
 - Import `assert`, `describe`, and `it` from `@effect/vitest` for Effect tests.
 - Use `it.effect` when the test returns an Effect.
 - Use regular `it` for pure synchronous tests.
+- `it.effect` and `it.live` provide and close a `Scope`; do not wrap their bodies in `Effect.scoped`. Wrap only ordinary `Effect` programs that run outside the testers.
 - Never use `Effect.runSync` or `Effect.runSyncExit` in tests.
 - Use `TestClock` from `effect/testing` for time-dependent Effect behavior; do not wait on wall time.
 - Provide dependencies with Layers or service replacement, not test-only routes around production ingress.
@@ -37,4 +38,4 @@ it.effect("retries after the scheduled delay", () =>
 
 Live Cloudflare tests remain skip-gated unless the exact user approval and isolated-stage guards are present. Never weaken no-deploy or credential-isolation assertions to make a test easier.
 
-Read `vendor/effect/.patterns/testing.md` and inspect analogous beta.99 tests before introducing a new test pattern.
+Read `vendor/effect/.patterns/testing.md` and inspect analogous rc.109 tests before introducing a new test pattern.

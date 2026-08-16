@@ -113,7 +113,7 @@ test("the Container context contains only static runtime assets and CLI graph in
       "tui/package.json",
       "scripts/apply-dependency-patches.mjs",
       "scripts/project-container-pi-install.mjs",
-      "patches/alchemy+2.0.0-beta.67.patch",
+      "patches/alchemy+2.0.0-beta.72.patch",
       "patches/earendil-works+pi-coding-agent+0.84.0.patch",
     ]) {
       assert.equal(await readFile(join(root, CONTAINER_CONTEXT_PATH, input), "utf8"), `${input}\n`);

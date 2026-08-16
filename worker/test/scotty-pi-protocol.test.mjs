@@ -15,6 +15,8 @@ import {
   sanitizeRemoteString,
   sanitizeRemoteEvent,
   sanitizeRemoteValue,
+  canonicalizePiSubagentsActivity,
+  normalizePiSubagentsActivityWidget,
   shouldEmitSseHeartbeat,
 } from "../container/scotty-pi-protocol.mjs";
 
@@ -183,6 +185,46 @@ describe("Scotty Pi supervisor protocol", () => {
     );
   });
 
+  it("trusts only the exact bounded subagent widget and preserves generic widgets", () => {
+    const child = {
+      id: "child-1",
+      backend: "pi",
+      title: "Inspect",
+      status: "running",
+      prompt: "Read files",
+      output: "",
+      transcript: [],
+      tools: [],
+      queued: [],
+      startedAt: 1,
+      lastActivityAt: 2,
+    };
+    const snapshot = { version: 1, revision: 1, generatedAt: 2, children: [child] };
+    const normalized = normalizePiSubagentsActivityWidget({
+      type: "extension_ui_request",
+      widgetKey: "pi-subagents/activity/v1",
+      widgetLines: [JSON.stringify(snapshot)],
+    });
+    assert.deepStrictEqual(normalized?.widgetLines, [JSON.stringify(snapshot)]);
+    assert.isUndefined(
+      normalizePiSubagentsActivityWidget({
+        type: "extension_ui_request",
+        widgetKey: "pi-subagents/activity/v1",
+        widgetLines: [
+          JSON.stringify({ ...snapshot, children: [{ ...child, output: "x".repeat(4097) }] }),
+        ],
+      }),
+    );
+    assert.deepStrictEqual(
+      normalizePiSubagentsActivityWidget({
+        widgetKey: "future/widget/v1",
+        widgetLines: ["opaque"],
+      }),
+      { widgetKey: "future/widget/v1", widgetLines: ["opaque"] },
+    );
+    assert.deepStrictEqual(canonicalizePiSubagentsActivity(snapshot), snapshot);
+  });
+
   it("suppresses only marked passive SSE heartbeats", () => {
     assert.strictEqual(shouldEmitSseHeartbeat({}), true);
     assert.strictEqual(
@@ -246,6 +288,62 @@ describe("Scotty Pi supervisor protocol", () => {
       ),
       { ok: false, error: "invalid_command" },
     );
+    const steerArguments = JSON.stringify({
+      version: 1,
+      action: "steer",
+      childId: "sa-1",
+      revision: 7,
+      message: "Focus on the failing test",
+    });
+    const steer = normalizeCommand(
+      {
+        version: 1,
+        epoch,
+        commandId,
+        expectedSessionRevision: 7,
+        intent: { type: "slash_command", name: "subagents", arguments: steerArguments },
+      },
+      epoch,
+    );
+    assert.strictEqual(steer.ok, true);
+    assert.deepStrictEqual(steer.command, {
+      type: "prompt",
+      message: `/subagents ${steerArguments}`,
+    });
+    for (const argumentsText of [
+      JSON.stringify({ version: 1, action: "stop", childId: "sa-1", revision: 7, message: "x" }),
+      JSON.stringify({
+        version: 1,
+        action: "steer",
+        childId: "sa-1",
+        revision: 7,
+        message: "x",
+        extra: true,
+      }),
+      JSON.stringify({ version: 1, action: "steer", childId: "bad/id", revision: 7, message: "x" }),
+      JSON.stringify({ version: 1, action: "steer", childId: "sa-1", revision: -1, message: "x" }),
+      JSON.stringify({ version: 1, action: "steer", childId: "sa-1", revision: 7, message: "\n" }),
+      JSON.stringify({
+        version: 1,
+        action: "steer",
+        childId: "sa-1",
+        revision: 7,
+        message: "x".repeat(2_049),
+      }),
+    ])
+      assert.deepStrictEqual(
+        normalizeCommand(
+          {
+            version: 1,
+            epoch,
+            commandId,
+            expectedSessionRevision: 7,
+            intent: { type: "slash_command", name: "subagents", arguments: argumentsText },
+          },
+          epoch,
+        ),
+        { ok: false, error: "invalid_command" },
+      );
     assert.deepStrictEqual(
       normalizeCommand(
         {

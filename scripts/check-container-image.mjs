@@ -12,7 +12,20 @@ export const CONTAINER_IMAGE = "scotty-container:ci";
 export const CONTAINER_IMAGE_PLATFORM = CLEAN_ROOM_CLI_PLATFORM;
 export const CONTAINER_IMAGE_CACHE_SCOPE = "scotty-container-image";
 export const CONTAINER_IMAGE_ABSENT_COMMANDS = Object.freeze(["codex"]);
-export const CONTAINER_IMAGE_PI_PACKAGES = Object.freeze(["pi-tasks", "pi-subagents"]);
+export const CONTAINER_IMAGE_PI_PACKAGES = Object.freeze([
+  "pi-subagents",
+  "@ogulcancelik/pi-codex-compaction",
+  "scotty-browser-test",
+  "scotty-hatch",
+]);
+export const CONTAINER_IMAGE_ABSENT_PI_PACKAGES = Object.freeze([
+  "pi-tasks",
+  "pi-workflows",
+  "pi-background-terminals",
+  "pi-askuser",
+  "pi-web-access",
+  "pi-amp-ui",
+]);
 
 const ghaCacheEnabled = (environment) =>
   environment.GITHUB_ACTIONS === "true" && typeof environment.ACTIONS_CACHE_URL === "string";
@@ -69,8 +82,10 @@ export const containerImageRunArgs = (plan, entrypoint, args, extra = []) => [
 
 export const containerImagePiVersionArgs = (plan) =>
   containerImageRunArgs(plan, "pi", ["--version"]);
+const absentPiPackageListAssertion = (name) =>
+  `if grep -F -- ${JSON.stringify(name)} /tmp/scotty-pi-packages.list >/dev/null; then echo "unexpected ${name}" >&2; exit 1; else grep_status=$?; test "$grep_status" -eq 1; fi`;
 
-export const containerImagePiTaskSmokeArgs = (plan) =>
+export const containerImagePiPackagesSmokeArgs = (plan) =>
   containerImageRunArgs(plan, "sh", [
     "-c",
     [
@@ -78,6 +93,10 @@ export const containerImagePiTaskSmokeArgs = (plan) =>
       "mkdir -p /tmp/scotty-pi-agent",
       "cp /opt/scotty/pi-packages/settings.json /tmp/scotty-pi-agent/settings.json",
       "PI_CODING_AGENT_DIR=/tmp/scotty-pi-agent PI_OFFLINE=1 pi list >/tmp/scotty-pi-packages.list",
+      ...CONTAINER_IMAGE_ABSENT_PI_PACKAGES.map(absentPiPackageListAssertion),
+      ...CONTAINER_IMAGE_ABSENT_PI_PACKAGES.map(
+        (name) => `test ! -e ${JSON.stringify(`/opt/scotty/pi-packages/sources/${name}`)}`,
+      ),
       ...CONTAINER_IMAGE_PI_PACKAGES.map(
         (name) => `grep -F ${JSON.stringify(name)} /tmp/scotty-pi-packages.list >/dev/null`,
       ),
@@ -127,7 +146,7 @@ export const checkContainerImage = async ({
   await prepare(root);
   docker("docker", containerImageBuildArgs(plan));
   docker("docker", containerImagePiVersionArgs(plan));
-  docker("docker", containerImagePiTaskSmokeArgs(plan));
+  docker("docker", containerImagePiPackagesSmokeArgs(plan));
   docker("docker", containerImageAbsentToolchainArgs(plan));
   await inspect(plan.image, {
     exec: async (_command, args) => capture("docker", args),

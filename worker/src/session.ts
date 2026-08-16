@@ -145,6 +145,7 @@ import {
   type DownArchive,
   type DownManifest,
   type OperationKind,
+  type SessionCreateSetupStage,
   type SessionRecord,
   type SessionStatus,
   type SessionView,
@@ -349,7 +350,13 @@ class SessionShutdownPending extends Data.TaggedError("SessionShutdownPending")<
 
 class SessionCreateUncertain extends Data.TaggedError("SessionCreateUncertain")<{
   readonly cause: unknown;
+  readonly stage?: SessionCreateSetupStage;
 }> {}
+
+const mapCreateUncertain =
+  (stage: SessionCreateSetupStage) =>
+  (cause: unknown): SessionCreateUncertain =>
+    new SessionCreateUncertain({ cause, stage });
 
 class PiRuntimeStopFailure extends Data.TaggedError("PiRuntimeStopFailure")<{
   readonly stage: "quiesce" | "process";
@@ -1994,7 +2001,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       },
       repoExistsAtCreate: worktree.repoExists,
       defaultBranch: worktree.defaultBranch,
-    })).pipe(Effect.mapError((cause) => new SessionCreateUncertain({ cause })));
+    })).pipe(Effect.mapError(mapCreateUncertain("runtime_phase")));
     return yield* this.continueCloudflarePiCreateProgram(record, prompt, nonce);
   });
 
@@ -2006,18 +2013,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const containerAuth = yield* ContainerAuth;
     const materializer = yield* SandboxBundleMaterializer;
-    const materialized = yield* materializer.materialize({
-      sessionId: record.id,
-      digest: record.sandboxBundle?.digest ?? null,
-    });
+    const materialized = yield* materializer
+      .materialize({
+        sessionId: record.id,
+        digest: record.sandboxBundle?.digest ?? null,
+      })
+      .pipe(Effect.mapError(mapCreateUncertain("materialize")));
     const seedOptions = {
       ...(options?.initialPrompt === undefined ? {} : { initialPrompt: options.initialPrompt }),
       extraSkills: materialized.extraSkills,
       extraPackages: materialized.extraPackages,
       bundleRoot: materialized.bundleRoot,
     };
-    yield* containerAuth.seed(record.id, credential, seedOptions);
-    yield* containerAuth.preflight(record.id, credential, seedOptions);
+    yield* containerAuth
+      .seed(record.id, credential, seedOptions)
+      .pipe(Effect.mapError(mapCreateUncertain("seed")));
+    yield* containerAuth
+      .preflight(record.id, credential, seedOptions)
+      .pipe(Effect.mapError(mapCreateUncertain("preflight")));
   });
 
   private readonly continueCloudflarePiCreateProgram = Effect.fnUntraced(function* (
@@ -2028,25 +2041,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
-    const piPhase = Effect.gen({ self: this }, function* () {
-      const credential = yield* vault.require;
-      yield* this.materializeAndSeedSandboxProgram(record, credential, { initialPrompt: prompt });
-      yield* containerAuth.ensurePiSession(record.id, credential);
-      const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* this.updateForOperationProgram(nonce, (current) => ({
-        ...current,
-        status: "warm",
-        operation: null,
-        codexThreadId: `pi-${record.id}`,
-        agentState: "working",
-        lastAgentEventAt: readyAt,
-        failure: undefined,
-        updatedAt: readyAt,
-      }));
-    });
-    return yield* piPhase.pipe(
-      Effect.mapError((failure) => new SessionCreateUncertain({ cause: failure })),
-    );
+    const credential = yield* vault.require;
+    yield* this.materializeAndSeedSandboxProgram(record, credential, { initialPrompt: prompt });
+    yield* containerAuth
+      .ensurePiSession(record.id, credential)
+      .pipe(Effect.mapError(mapCreateUncertain("pi_health")));
+    const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    return yield* this.updateForOperationProgram(nonce, (current) => ({
+      ...current,
+      status: "warm",
+      operation: null,
+      codexThreadId: `pi-${record.id}`,
+      agentState: "working",
+      lastAgentEventAt: readyAt,
+      failure: undefined,
+      updatedAt: readyAt,
+    })).pipe(Effect.mapError(mapCreateUncertain("warm_commit")));
   });
 
   private readonly failCreateSetupProgram = Effect.fnUntraced(function* (
@@ -2055,24 +2065,28 @@ export class Sandbox extends BaseSandbox<Bindings> {
     nonce: string,
     failure: unknown,
   ) {
-    const ambiguousError = (): ScottyError =>
-      new ScottyError("upstream", "Pi session creation is ambiguous", {
-        httpStatus: 502,
-        exitCode: 4,
-        hint: `The runtime was preserved. Retry session ${id} with the same idempotency key.`,
-      });
-    if (Predicate.isTagged(failure, "SessionCreateUncertain")) {
+    if (failure instanceof SessionCreateUncertain) {
+      const stage = failure.stage;
+      const message =
+        stage === undefined
+          ? "Pi session creation is ambiguous"
+          : `Pi session creation is ambiguous (stage: ${stage})`;
       yield* Effect.result(
         this.updateForOperationProgram(nonce, (record) => ({
           ...record,
           failure: {
             code: "create_ambiguous",
-            message: "Pi session creation is ambiguous",
+            message,
             recoverable: true,
+            ...(stage === undefined ? {} : { stage }),
           },
         })),
       );
-      return yield* ambiguousError();
+      return yield* new ScottyError("upstream", message, {
+        httpStatus: 502,
+        exitCode: 4,
+        hint: `The runtime was preserved. Retry session ${id} with the same idempotency key.`,
+      });
     }
     const failed = yield* this.failOperationProgram(
       nonce,

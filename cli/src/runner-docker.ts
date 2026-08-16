@@ -16,7 +16,7 @@ export const RunnerComputeFailureCodeSchema = Schema.Literals([
 ]);
 export type RunnerComputeFailureCode = typeof RunnerComputeFailureCodeSchema.Type;
 
-export class RunnerComputeFailure extends Schema.TaggedErrorClass<RunnerComputeFailure>(
+export class RunnerComputeFailure extends Schema.TaggedError<RunnerComputeFailure>(
   "RunnerComputeFailure",
 )("RunnerComputeFailure", {
   code: RunnerComputeFailureCodeSchema,

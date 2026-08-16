@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const DEPENDENCY_PATCHES = Object.freeze([
-  "patches/alchemy+2.0.0-beta.67.patch",
+  "patches/alchemy+2.0.0-beta.72.patch",
   "patches/earendil-works+pi-coding-agent+0.84.0.patch",
 ]);
 

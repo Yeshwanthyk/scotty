@@ -232,8 +232,7 @@ const validateCredentialSource = Effect.fnUntraced(function* (
 
 const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
   for (const item of error.errors) {
-    // Effect beta.99 currently exposes this misspelled runtime tag on the public error class.
-    if (Predicate.isTagged(item, "UnknownSubcomand") && item.parent?.length === 1)
+    if (Predicate.isTagged(item, "UnknownSubcommand") && item.parent?.length === 1)
       return usage(`Unknown command: ${item.subcommand}`);
     if (Predicate.isTagged(item, "MissingOption")) {
       if (item.option === "repo") return usage("--repo OWNER/NAME is required");
@@ -1572,7 +1571,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (autoJson) outputJson(runtime.stdout, result);
         else runtime.stdout(`Reseeded ${results.length} warm Cloudflare sessions.\n`);
       }),
-  ).pipe(Command.withDescription("Explicitly replace session Pi credentials"), Command.withHidden);
+  ).pipe(Command.withDescription("Explicitly replace session Pi credentials"), Command.unlisted);
 
   const auth = Command.make("auth").pipe(
     Command.withDescription("Manage Pi credentials"),

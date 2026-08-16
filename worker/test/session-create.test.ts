@@ -546,7 +546,7 @@ describe("Sandbox create orchestration", () => {
       );
 
       assert.ok(error instanceof ScottyError);
-      assert.strictEqual(error.message, "Pi session creation is ambiguous");
+      assert.strictEqual(error.message, "Pi session creation is ambiguous (stage: seed)");
       assert.strictEqual(harness.readRecord()?.status, "booting");
       assert.deepInclude(harness.readRecord()?.operation, {
         kind: "create",
@@ -555,8 +555,9 @@ describe("Sandbox create orchestration", () => {
       });
       assert.deepStrictEqual(harness.readRecord()?.failure, {
         code: "create_ambiguous",
-        message: "Pi session creation is ambiguous",
+        message: "Pi session creation is ambiguous (stage: seed)",
         recoverable: true,
+        stage: "seed",
       });
       assert.ok(!harness.events.includes("host:destroy"));
     });
@@ -589,7 +590,7 @@ describe("Sandbox create orchestration", () => {
     );
 
     assert.ok(error instanceof ScottyError);
-    assert.strictEqual(error.message, "Pi session creation is ambiguous");
+    assert.strictEqual(error.message, "Pi session creation is ambiguous (stage: warm_commit)");
     assert.strictEqual(harness.readRecord()?.status, "booting");
     assert.deepInclude(harness.readRecord()?.operation, {
       kind: "create",
@@ -597,6 +598,12 @@ describe("Sandbox create orchestration", () => {
       createPhase: "runtime",
     });
     assert.strictEqual(harness.readRecord()?.codexThreadId, undefined);
+    assert.deepStrictEqual(harness.readRecord()?.failure, {
+      code: "create_ambiguous",
+      message: "Pi session creation is ambiguous (stage: warm_commit)",
+      recoverable: true,
+      stage: "warm_commit",
+    });
     assert.ok(!harness.events.includes("record:failed"));
     assert.ok(!harness.events.includes("host:destroy"));
   });

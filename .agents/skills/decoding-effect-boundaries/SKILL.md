@@ -2,7 +2,7 @@
 name: decoding-effect-boundaries
 description: Decodes unknown HTTP, environment, storage, OAuth, CLI, archive, and SDK data with Effect Schema or precise typed adapters. Use when data is cast, manually probed, or parsed without validation.
 license: MIT
-compatibility: Scotty with Effect 4.0.0-beta.103; verify Schema APIs against vendor/effect.
+compatibility: Scotty with Effect 4.0.0-rc.109; verify Schema APIs against vendor/effect.
 ---
 
 # Decode Effect boundaries
@@ -45,4 +45,4 @@ Avoid `JSON.parse`, `as unknown as X`, inline object assertions, `as Record<stri
 
 At a native Cloudflare or Alchemy boundary, locally construct an allow-listed output rather than retaining an untrusted response object. Never retain request objects, raw causes, or credential-bearing fields in state, errors, logs, telemetry, or Alchemy outputs.
 
-Verify decoder names and signatures against `vendor/effect/packages/effect/src/Schema.ts` and beta.103 tests. Do not use Effect v3 Schema imports.
+Verify decoder names and signatures against `vendor/effect/packages/effect/src/Schema.ts` and rc.109 tests. Do not use Effect v3 Schema imports.

@@ -19,41 +19,11 @@ const decodeSandboxConfigJson = Schema.decodeUnknownResult(
 );
 const encodeSandboxConfig = Schema.encodeSync(SandboxConfigSchema);
 
-export const BUILTIN_SKILL_NAMES = [
-  "breadboarding",
-  "domain-modeling",
-  "frontend-design",
-  "grill-me",
-  "grill-with-docs",
-  "grilling",
-  "i-have-adhd",
-  "impeccable",
-  "improve-codebase-architecture",
-  "interactive-explainer",
-  "make-interfaces-feel-better",
-  "prototype",
-  "research",
-  "shaping",
-  "stateful-systems",
-  "to-spec",
-  "to-tickets",
-  "wayfinder",
-  "yesh-architect",
-  "yesh-debug",
-  "yesh-how",
-  "yesh-plan",
-  "yesh-structure-review",
-] as const;
+export const BUILTIN_SKILL_NAMES = [] as const;
 
 export const BUILTIN_PI_PACKAGE_NAMES = [
-  "@ogulcancelik/pi-codex-compaction",
-  "pi-amp-ui",
-  "pi-askuser",
-  "pi-background-terminals",
   "pi-subagents",
-  "pi-tasks",
-  "pi-web-access",
-  "pi-workflows",
+  "@ogulcancelik/pi-codex-compaction",
   "scotty-browser-test",
   "scotty-hatch",
 ] as const;

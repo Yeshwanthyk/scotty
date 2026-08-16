@@ -10,7 +10,7 @@ COPY tui/package.json tui/package.json
 COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs
 COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
 COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs
-COPY patches/alchemy+2.0.0-beta.67.patch patches/alchemy+2.0.0-beta.67.patch
+COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch
 COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 RUN node scripts/apply-dependency-patches.mjs
@@ -125,11 +125,9 @@ ENV LANG=en_US.UTF-8 \
   UV_PYTHON_INSTALL_DIR=/opt/uv/python \
   UV_PYTHON_BIN_DIR=/usr/local/bin
 
-RUN mkdir -p /workspace
+RUN mkdir -p /workspace /opt/scotty/skills
 
 COPY --from=scotty-cli-build /out/scotty /usr/local/bin/scotty
-COPY worker/container/skills/bundled /opt/scotty/skills
-COPY worker/container/skills/licenses /opt/scotty/licenses
 COPY worker/container/skills/THIRD_PARTY_NOTICES.md /opt/scotty/THIRD_PARTY_NOTICES.md
 COPY worker/container/skills/skills.lock.json /opt/scotty/skills.lock.json
 COPY worker/container/pi-packages /opt/scotty/pi-packages
@@ -150,9 +148,6 @@ RUN set -eu; \
       --no-audit \
       --no-fund \
       --legacy-peer-deps \
-  && cp \
-    /opt/scotty/pi-packages/locks/pi-web-access/package-lock.json \
-    /opt/scotty/pi-packages/sources/pi-web-access/package-lock.json \
   && for package_dir in /opt/scotty/pi-packages/sources/*; do \
     test -f "${package_dir}/package.json"; \
     test -f "${package_dir}/package-lock.json"; \
@@ -193,22 +188,36 @@ RUN set -eu; \
   && grep -F -- "--plan" /tmp/scotty-pi-help >/dev/null \
   && test ! -d /tmp/scotty-pi-agent/git \
   && test ! -d /tmp/scotty-pi-agent/npm \
+  && if grep -F -- "pi-tasks" /tmp/scotty-pi-packages.list >/dev/null; then \
+    echo "unexpected pi-tasks" >&2; \
+    exit 1; \
+  else \
+    grep_status=$?; \
+    test "${grep_status}" -eq 1; \
+  fi \
+  && test ! -e /opt/scotty/pi-packages/sources/pi-tasks \
   && for package_name in \
-    pi-tasks \
-    pi-subagents \
     pi-workflows \
     pi-background-terminals \
     pi-askuser \
     pi-web-access \
-    pi-codex-compaction \
-    pi-amp-ui \
+    pi-amp-ui; do \
+      if grep -F -- "${package_name}" /tmp/scotty-pi-packages.list >/dev/null; then \
+        echo "unexpected ${package_name}" >&2; \
+        exit 1; \
+      fi; \
+      test ! -e "/opt/scotty/pi-packages/sources/${package_name}"; \
+    done \
+  && for package_name in \
+    pi-subagents \
+    @ogulcancelik/pi-codex-compaction \
     scotty-browser-test \
     scotty-hatch; do \
-      grep -F "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \
+      grep -F -- "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \
     done \
   && rm -rf /tmp/scotty-pi-agent /tmp/scotty-pi-help /tmp/scotty-pi-packages.list \
   && shellcheck /usr/local/bin/scotty-runner-bootstrap /usr/local/bin/scotty-pi-shell \
-  && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 23 \
+  && test "$(find /opt/scotty/skills -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 0 \
   && test "$(stat -c '%a' /usr/local/bin/scotty)" = "755" \
   && test -z "$(find /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills ! -type l -perm /222 -print -quit)" \
   && test "$(pi --version)" = "${PI_VERSION}" \

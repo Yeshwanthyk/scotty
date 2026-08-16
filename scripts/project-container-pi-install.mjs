@@ -8,7 +8,6 @@ import { promisify } from "node:util";
 const execFile = promisify(execFileCallback);
 
 export const PI_SUBAGENTS_SOURCE = "sources/pi-subagents";
-export const PI_TASKS_SOURCE = "sources/pi-tasks";
 export const INDEXED_PI_PACKAGES_RELATIVE = "worker/container/pi-packages";
 export const PI_ONLY_BACKEND_NAMES = 'export const BACKEND_NAMES = ["pi"] as const;';
 export const UPSTREAM_BACKEND_NAMES =
@@ -19,65 +18,7 @@ import { codexBackend } from "./backends/codex.ts";
 export const UPSTREAM_RUNTIME_BACKENDS =
   "const backends: SubagentBackend[] = [piBackend, claudeBackend, codexBackend];";
 export const PI_ONLY_RUNTIME_BACKENDS = "const backends: SubagentBackend[] = [piBackend];";
-export const PI_TASKS_PEER_PACKAGES = Object.freeze([
-  "@earendil-works/pi-coding-agent",
-  "@earendil-works/pi-tui",
-]);
 export const PI_SUBAGENTS_OMITTED_PACKAGES = Object.freeze(["@anthropic-ai/claude-agent-sdk"]);
-export const UNSUPPORTED_HARNESS_REASON =
-  'unsupported harness "${task.harness}" — Scotty\'s image is Pi-only; migrate this task to harness "pi" or recreate it';
-export const UNSUPPORTED_HARNESS_CREATE_REASON =
-  'unsupported harness "${harness}" — Scotty\'s image is Pi-only; migrate this task to harness "pi" or recreate it';
-export const UNSUPPORTED_HARNESS_UPDATE_REASON =
-  'unsupported harness "${fields.harness}" — Scotty\'s image is Pi-only; migrate this task to harness "pi" or recreate it';
-
-export const UPSTREAM_TASK_HARNESSES = `export const TASK_HARNESSES = ["pi", "claude", "codex"] as const;
-export type TaskHarness = (typeof TASK_HARNESSES)[number];`;
-export const PI_ONLY_WRITABLE_TASK_HARNESSES = `export const PERSISTED_TASK_HARNESSES = ["pi", "claude", "codex"] as const;
-export const TASK_HARNESSES = ["pi"] as const;
-export type TaskHarness = (typeof PERSISTED_TASK_HARNESSES)[number];`;
-export const UPSTREAM_TASK_HARNESS_SCHEMA = `import { TASK_HARNESSES } from "./types.js";
-
-export const TaskStatusSchema = Schema.Literals(["pending", "in_progress", "completed"]);
-export const TaskHarnessSchema = Schema.Literals(TASK_HARNESSES);`;
-export const PI_ONLY_WRITABLE_TASK_HARNESS_SCHEMA = `import { PERSISTED_TASK_HARNESSES, TASK_HARNESSES } from "./types.js";
-
-export const TaskStatusSchema = Schema.Literals(["pending", "in_progress", "completed"]);
-export const WritableTaskHarnessSchema = Schema.Literals(TASK_HARNESSES);
-export const TaskHarnessSchema = Schema.Literals(PERSISTED_TASK_HARNESSES);`;
-export const UPSTREAM_NO_HARNESS_GUARD =
-  '      if (!task.harness) return { success: false as const, reason: "no harness set — create with the harness parameter" };';
-export const PI_ONLY_HARNESS_EXECUTE_GUARD = `${UPSTREAM_NO_HARNESS_GUARD}
-      if (task.harness !== "pi") return { success: false as const, reason: \`${UNSUPPORTED_HARNESS_REASON}\` };`;
-export const UPSTREAM_TASK_CREATE = `    this.deps.onBatchCountdownReset();
-    const task = this.deps.getStore().create(subject, description, activeForm, metadata, harness, project, sessionId);`;
-export const PI_ONLY_TASK_CREATE = `    this.deps.onBatchCountdownReset();
-    if (harness !== undefined && harness !== "pi") {
-      throw new Error(\`${UNSUPPORTED_HARNESS_CREATE_REASON}\`);
-    }
-    const task = this.deps.getStore().create(subject, description, activeForm, metadata, harness, project, sessionId);`;
-export const UPSTREAM_TASK_UPDATE = `    const current = this.deps.getStore().get(taskId);
-    const active = current?.execution?.status === "running" || current?.execution?.status === "stopping";`;
-export const PI_ONLY_TASK_UPDATE = `    const current = this.deps.getStore().get(taskId);
-    if (fields.harness !== undefined && fields.harness !== null && fields.harness !== "pi") {
-      return { task: current, changedFields: [], warnings: [\`${UNSUPPORTED_HARNESS_UPDATE_REASON}\`] };
-    }
-    const active = current?.execution?.status === "running" || current?.execution?.status === "stopping";`;
-export const UPSTREAM_TASK_CREATE_COPY =
-  "- Include \\`harness\\` (\\`pi\\`, \\`claude\\`, or \\`codex\\`) to make a task executable via TaskExecute";
-export const PI_ONLY_TASK_CREATE_COPY =
-  "- Include \\`harness\\` (\\`pi\\`) to make a task executable via TaskExecute. Scotty's image is Pi-only; persisted Claude/Codex tasks cannot be executed until migrated to \\`pi\\`.";
-export const UPSTREAM_TASK_UPDATE_COPY =
-  "- **harness**: Set the execution harness (\\`pi\\`, \\`claude\\`, or \\`codex\\`), or null to clear it";
-export const PI_ONLY_TASK_UPDATE_COPY =
-  "- **harness**: Set the execution harness (\\`pi\\`), or null to clear it. Scotty's image is Pi-only.";
-export const UPSTREAM_TASK_CREATE_HARNESS_DESCRIPTION =
-  "Harness used for subagent execution. Tasks with a harness can be started via TaskExecute.";
-export const PI_ONLY_TASK_CREATE_HARNESS_DESCRIPTION =
-  "Harness used for subagent execution. Scotty's image is Pi-only; use pi. Persisted Claude/Codex tasks cannot be executed until migrated to pi.";
-export const UPSTREAM_TASK_UPDATE_HARNESS_DESCRIPTION = "Execution harness, or null to clear it";
-export const PI_ONLY_TASK_UPDATE_HARNESS_DESCRIPTION =
-  "Execution harness, or null to clear it. Scotty's image is Pi-only; use pi or null.";
 
 export const UPSTREAM_SPAWN_DESCRIPTION =
   "Spawn a background subagent: a fully autonomous, headless agent with its own context window. You choose the harness it runs on: pi (in-process pi session, inherits this environment's tools and config), claude (Claude Code), or codex (Codex CLI). Fire-and-forget: this returns immediately with an id. The subagent's final output is queued back to you as a message when it settles, or collect it explicitly with subagent_wait. Children cannot orchestrate more agents/workflows or ask the user, and cannot see this conversation, so the prompt must be self-contained. Max 4 subagents can be running at once across all harnesses.";
@@ -223,61 +164,6 @@ export const PI_SUBAGENTS_README_REWRITES = Object.freeze([
     replacement: PI_ONLY_SUBAGENTS_README,
   }),
 ]);
-export const PI_TASKS_TYPES_REWRITES = Object.freeze([
-  Object.freeze({
-    label: "pi-tasks writable harness enum",
-    search: UPSTREAM_TASK_HARNESSES,
-    replacement: PI_ONLY_WRITABLE_TASK_HARNESSES,
-  }),
-]);
-export const PI_TASKS_SCHEMA_REWRITES = Object.freeze([
-  Object.freeze({
-    label: "pi-tasks persisted harness schema",
-    search: UPSTREAM_TASK_HARNESS_SCHEMA,
-    replacement: PI_ONLY_WRITABLE_TASK_HARNESS_SCHEMA,
-  }),
-]);
-export const PI_TASKS_EXECUTION_REWRITES = Object.freeze([
-  Object.freeze({
-    label: "pi-tasks execute harness guard",
-    search: UPSTREAM_NO_HARNESS_GUARD,
-    replacement: PI_ONLY_HARNESS_EXECUTE_GUARD,
-  }),
-]);
-export const PI_TASKS_LIFECYCLE_REWRITES = Object.freeze([
-  Object.freeze({
-    label: "pi-tasks create harness guard",
-    search: UPSTREAM_TASK_CREATE,
-    replacement: PI_ONLY_TASK_CREATE,
-  }),
-  Object.freeze({
-    label: "pi-tasks update harness guard",
-    search: UPSTREAM_TASK_UPDATE,
-    replacement: PI_ONLY_TASK_UPDATE,
-  }),
-]);
-export const PI_TASKS_INDEX_REWRITES = Object.freeze([
-  Object.freeze({
-    label: "pi-tasks TaskCreate copy",
-    search: UPSTREAM_TASK_CREATE_COPY,
-    replacement: PI_ONLY_TASK_CREATE_COPY,
-  }),
-  Object.freeze({
-    label: "pi-tasks TaskUpdate copy",
-    search: UPSTREAM_TASK_UPDATE_COPY,
-    replacement: PI_ONLY_TASK_UPDATE_COPY,
-  }),
-  Object.freeze({
-    label: "pi-tasks TaskCreate harness description",
-    search: UPSTREAM_TASK_CREATE_HARNESS_DESCRIPTION,
-    replacement: PI_ONLY_TASK_CREATE_HARNESS_DESCRIPTION,
-  }),
-  Object.freeze({
-    label: "pi-tasks TaskUpdate harness description",
-    search: UPSTREAM_TASK_UPDATE_HARNESS_DESCRIPTION,
-    replacement: PI_ONLY_TASK_UPDATE_HARNESS_DESCRIPTION,
-  }),
-]);
 
 const readJson = async (path) => JSON.parse(await readFile(path, "utf8"));
 
@@ -394,17 +280,6 @@ const omitDependencies = (pkg, names) => {
   return { ...pkg, dependencies };
 };
 
-const moveDependenciesToPeers = (pkg, names) => {
-  const dependencies = { ...pkg.dependencies };
-  const peerDependencies = { ...pkg.peerDependencies };
-  for (const name of names) {
-    if (dependencies[name] === undefined) continue;
-    peerDependencies[name] = dependencies[name];
-    delete dependencies[name];
-  }
-  return { ...pkg, dependencies, peerDependencies };
-};
-
 export const lockPackageKeyFor = (name) => `node_modules/${name}`;
 
 export const lockContainsPackage = (lock, name) =>
@@ -461,9 +336,6 @@ const writeProjectedPackage = async (packageRoot, packageJson, options = {}) => 
 export const isPiSubagentsProjected = (packageJson) =>
   PI_SUBAGENTS_OMITTED_PACKAGES.every((name) => packageJson.dependencies?.[name] === undefined);
 
-export const isPiTasksProjected = (packageJson) =>
-  PI_TASKS_PEER_PACKAGES.every((name) => packageJson.dependencies?.[name] === undefined);
-
 export const assertPiSubagentsSkill = (skill) => {
   if (
     /## Claude Code Harness|## Codex Harness|Requires Claude Code|Requires the Codex CLI/u.test(
@@ -506,38 +378,6 @@ export const assertPiSubagentsSource = (runtime, domain, prompt, skill, readme) 
   if (readme !== undefined) assertPiSubagentsReadme(readme);
 };
 
-export const assertPiTasksSource = (types, schemas, execution, lifecycle, index) => {
-  if (!types.includes('export const TASK_HARNESSES = ["pi"] as const')) {
-    throw new Error("pi-tasks writable TASK_HARNESSES is not Pi-only");
-  }
-  if (
-    !types.includes('export const PERSISTED_TASK_HARNESSES = ["pi", "claude", "codex"] as const')
-  ) {
-    throw new Error("pi-tasks persisted harness decoder is missing");
-  }
-  if (!schemas.includes("WritableTaskHarnessSchema")) {
-    throw new Error("pi-tasks writable harness schema is missing");
-  }
-  if (!schemas.includes("PERSISTED_TASK_HARNESSES")) {
-    throw new Error("pi-tasks persisted harness schema is missing");
-  }
-  if (!execution.includes("task.harness !== " + '"pi"')) {
-    throw new Error("pi-tasks execute path does not reject non-Pi harnesses");
-  }
-  if (!lifecycle.includes("fields.harness !== " + '"pi"')) {
-    throw new Error("pi-tasks update path does not reject non-Pi harnesses");
-  }
-  if (
-    /`pi`, `claude`, or `codex`/u.test(index) ||
-    /\\`pi\\`, \\`claude\\`, or \\`codex\\`/u.test(index)
-  ) {
-    throw new Error("pi-tasks model-facing copy still advertises Claude or Codex");
-  }
-  if (!index.includes("Scotty's image is Pi-only")) {
-    throw new Error("pi-tasks model-facing copy is not Pi-only");
-  }
-};
-
 export async function assertProjectedPiSubagents(packageRoot) {
   const runtime = await readFile(join(packageRoot, "extensions/subagents/src/runtime.ts"), "utf8");
   const domain = await readFile(join(packageRoot, "extensions/subagents/src/domain.ts"), "utf8");
@@ -558,23 +398,6 @@ export async function assertProjectedPiSubagents(packageRoot) {
       PI_SUBAGENTS_OMITTED_PACKAGES,
       "pi-subagents",
     );
-  }
-}
-
-export async function assertProjectedPiTasks(packageRoot) {
-  const types = await readFile(join(packageRoot, "src/types.ts"), "utf8");
-  const schemas = await readFile(join(packageRoot, "src/task-schemas.ts"), "utf8");
-  const execution = await readFile(join(packageRoot, "src/task-execution.ts"), "utf8");
-  const lifecycle = await readFile(join(packageRoot, "src/task-lifecycle.ts"), "utf8");
-  const index = await readFile(join(packageRoot, "src/index.ts"), "utf8");
-  assertPiTasksSource(types, schemas, execution, lifecycle, index);
-  const packageJson = await readJson(join(packageRoot, "package.json"));
-  if (!isPiTasksProjected(packageJson)) {
-    throw new Error("pi-tasks package.json still depends on nested Pi packages");
-  }
-  const lockPath = join(packageRoot, "package-lock.json");
-  if (existsSync(lockPath)) {
-    assertLockOmitsPackages(await readJson(lockPath), PI_TASKS_PEER_PACKAGES, "pi-tasks");
   }
 }
 
@@ -633,124 +456,8 @@ export async function projectPiSubagentsInstall(packageRoot, options = {}) {
   return { projected: true };
 }
 
-export async function projectPiTasksInstall(packageRoot, options = {}) {
-  const packageJsonPath = join(packageRoot, "package.json");
-  if (!existsSync(packageJsonPath)) return { projected: false };
-  const packageJson = await readJson(packageJsonPath);
-  if (!isPiTasksProjected(packageJson)) {
-    const projectedJson = moveDependenciesToPeers(packageJson, PI_TASKS_PEER_PACKAGES);
-    const lock = await writeProjectedPackage(packageRoot, projectedJson, options);
-    if (lock) assertLockOmitsPackages(lock, PI_TASKS_PEER_PACKAGES, "pi-tasks");
-  } else {
-    const lock = await projectPackageLock(packageRoot, packageJson, options);
-    if (lock) assertLockOmitsPackages(lock, PI_TASKS_PEER_PACKAGES, "pi-tasks");
-  }
-
-  await rewriteFile(join(packageRoot, "src/types.ts"), PI_TASKS_TYPES_REWRITES);
-  await rewriteFile(join(packageRoot, "src/task-schemas.ts"), PI_TASKS_SCHEMA_REWRITES);
-  await rewriteFile(join(packageRoot, "src/task-execution.ts"), PI_TASKS_EXECUTION_REWRITES);
-  await rewriteFile(join(packageRoot, "src/task-lifecycle.ts"), PI_TASKS_LIFECYCLE_REWRITES);
-  await rewriteFile(join(packageRoot, "src/index.ts"), PI_TASKS_INDEX_REWRITES);
-
-  if (existsSync(join(packageRoot, "src/types.ts"))) {
-    await assertProjectedPiTasks(packageRoot);
-  }
-  return { projected: true };
-}
-
-export const projectedPiTasksRuntimeProof = (packageRoot) => {
-  const root = pathToFileURL(packageRoot).href;
-  return `import { Effect } from ${JSON.stringify(`${root}/node_modules/effect/dist/index.js`)};
-import { decodeTaskStoreData } from ${JSON.stringify(`${root}/src/task-schemas.ts`)};
-import { TaskExecution } from ${JSON.stringify(`${root}/src/task-execution.ts`)};
-import { TaskLifecycle } from ${JSON.stringify(`${root}/src/task-lifecycle.ts`)};
-
-const data = decodeTaskStoreData(JSON.stringify({
-  nextId: 2,
-  tasks: [{
-    id: "1",
-    subject: "Legacy",
-    description: "Keep harness",
-    status: "pending",
-    harness: "codex",
-    metadata: {},
-    blocks: [],
-    blockedBy: [],
-    createdAt: 1,
-    updatedAt: 1,
-  }],
-}));
-if (data.tasks[0].harness !== "codex") {
-  throw new Error("persisted non-Pi harness was mutated");
-}
-
-let mutated = false;
-const store = {
-  get: (id) => data.tasks.find((task) => task.id === id),
-  list: () => data.tasks,
-  create: () => {
-    mutated = true;
-    throw new Error("legacy non-Pi task was created");
-  },
-  update: () => {
-    mutated = true;
-    throw new Error("legacy non-Pi task mutated");
-  },
-};
-const lifecycle = new TaskLifecycle({
-  getStore: () => store,
-  currentTurn: () => 1,
-  onTaskActivated: () => {},
-  onTasksChanged: () => {},
-  onTaskCompleted: () => {},
-  onBatchCountdownReset: () => {},
-});
-const updated = lifecycle.update("1", { harness: "codex" });
-if (mutated) throw new Error("legacy non-Pi task mutated");
-if (!updated.warnings.some((warning) => warning.includes("unsupported harness") && warning.includes("migrate"))) {
-  throw new Error(updated.warnings.join("; ") || "missing migration warning");
-}
-try {
-  lifecycle.create("Legacy", "Keep harness", undefined, undefined, "codex");
-  throw new Error("create accepted a non-Pi harness");
-} catch (error) {
-  if (!(error instanceof Error) || !error.message.includes("unsupported harness") || !error.message.includes("migrate")) {
-    throw error;
-  }
-}
-const execution = new TaskExecution({
-  getStore: () => store,
-  currentWorkspaceRoot: () => "/workspace",
-  spawnSubagent: () => Effect.die("spawned non-Pi harness"),
-  cancelSubagent: () => Effect.die("cancelled"),
-  listSubagents: Effect.succeed([]),
-  writeOutput: () => undefined,
-  notify: () => {},
-  taskNotification: () => "",
-  onTaskActivated: () => {},
-  onTasksChanged: () => {},
-  onTaskCompleted: () => {},
-  onCascadeBlocked: () => {},
-  isAutoCascadeEnabled: () => false,
-  getCascadeConfig: () => undefined,
-  subscribeSettled: () => () => {},
-});
-const summary = await Effect.runPromise(execution.executeTasks(["1"]));
-if (mutated) throw new Error("legacy non-Pi task mutated");
-if (!summary.skipped.some((item) => item.reason.includes("unsupported harness") && item.reason.includes("migrate"))) {
-  throw new Error(JSON.stringify(summary));
-}
-`;
-};
-
-export async function assertProjectedPiTasksRuntime(packageRoot, { exec = execFile } = {}) {
-  await exec("bun", ["-e", projectedPiTasksRuntimeProof(packageRoot)], { encoding: "utf8" });
-}
-
-export async function assertProjectedPiImage(piPackagesRoot, options = {}) {
+export async function assertProjectedPiImage(piPackagesRoot) {
   await assertProjectedPiSubagents(join(piPackagesRoot, PI_SUBAGENTS_SOURCE));
-  await assertProjectedPiTasks(join(piPackagesRoot, PI_TASKS_SOURCE));
-  await assertProjectedPiTasksRuntime(join(piPackagesRoot, PI_TASKS_SOURCE), options);
 }
 
 export function resolvePiPackagesRoot(root = process.cwd(), options = {}) {
@@ -765,8 +472,7 @@ export async function projectContainerPiInstall(root = process.cwd(), options = 
     join(piPackagesRoot, PI_SUBAGENTS_SOURCE),
     options,
   );
-  const tasks = await projectPiTasksInstall(join(piPackagesRoot, PI_TASKS_SOURCE), options);
-  return { piPackagesRoot, subagents, tasks };
+  return { piPackagesRoot, subagents };
 }
 
 export const parseProjectContainerPiInstallArgs = (argv) => {
@@ -794,7 +500,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   } else {
     const result = await projectContainerPiInstall(root, parsed);
     process.stdout.write(
-      `Projected Pi package installs under ${result.piPackagesRoot} (subagents=${result.subagents.projected}, tasks=${result.tasks.projected}).\n`,
+      `Projected Pi package installs under ${result.piPackagesRoot} (subagents=${result.subagents.projected}).\n`,
     );
   }
 }

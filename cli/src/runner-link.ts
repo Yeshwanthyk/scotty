@@ -96,7 +96,7 @@ export interface RunnerLinkConfig {
   readonly onOpen?: Effect.Effect<void>;
 }
 
-export class RunnerLinkError extends Schema.TaggedErrorClass<RunnerLinkError>("RunnerLinkError")(
+export class RunnerLinkError extends Schema.TaggedError<RunnerLinkError>("RunnerLinkError")(
   "RunnerLinkError",
   {
     reason: Schema.Literal("socket_failed"),

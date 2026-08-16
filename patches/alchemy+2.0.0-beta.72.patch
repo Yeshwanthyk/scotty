@@ -1,0 +1,290 @@
+diff --git a/node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js b/node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js
+--- a/node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js
++++ b/node_modules/alchemy/lib/Cloudflare/Workers/WorkerProvider.js
+@@ -2896,7 +2896,7 @@
+                 ]
+                 : []))));
+         }),
+-        diff: Effect.fn(function* ({ id, news: desired, olds, output, newBindings, }) {
++        diff: Effect.fn(function* ({ id, news: desired, olds, output, oldBindings, newBindings, }) {
+             const { accountId } = yield* yield* CloudflareEnvironment;
+             // Effect-valued `env` entries (tagged Worker classes / resource
+             // Effects — the circular-bindings pattern) never resolve at plan
+@@ -3018,10 +3018,11 @@
+             // bound resource on every deploy. Class names are structural (not the
+             // namespace id), so this comparison holds even when `newBindings` is
+             // otherwise unresolved.
++            const oldDoBindings = oldBindings.flatMap((binding) => binding.data.bindings ?? []);
+             const newDoClassNames = Array.isArray(newBindings)
+-                ? getExpectedDurableObjectClassNames(newBindings.flatMap((b) => b.data.bindings ?? []), workerName).sort()
++                ? getExpectedDurableObjectClassNames(newBindings.flatMap((binding) => binding.data.bindings ?? []), workerName).sort()
+                 : [];
+-            const oldDoClassNames = Object.keys(output.durableObjectNamespaces ?? {}).sort();
++            const oldDoClassNames = getExpectedDurableObjectClassNames(oldDoBindings, oldWorkerName).sort();
+             const doNamespacesStable = oldWorkerName === workerName &&
+                 newDoClassNames.length === oldDoClassNames.length &&
+                 newDoClassNames.every((name, i) => name === oldDoClassNames[i]);
+diff --git a/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts b/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts
+--- a/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts
++++ b/node_modules/alchemy/src/Cloudflare/Workers/WorkerProvider.ts
+@@ -3948,6 +3948,7 @@
+           news: desired,
+           olds,
+           output,
++          oldBindings,
+           newBindings,
+         }) {
+           const { accountId } = yield* yield* CloudflareEnvironment;
+@@ -4086,16 +4087,20 @@
+           // bound resource on every deploy. Class names are structural (not the
+           // namespace id), so this comparison holds even when `newBindings` is
+           // otherwise unresolved.
++          const oldDoBindings = oldBindings.flatMap(
++            (binding) => binding.data.bindings ?? [],
++          );
+           const newDoClassNames = Array.isArray(newBindings)
+             ? getExpectedDurableObjectClassNames(
+                 (newBindings as ResourceBinding<Worker["Binding"]>[]).flatMap(
+-                  (b) => b.data.bindings ?? [],
++                  (binding) => binding.data.bindings ?? [],
+                 ),
+                 workerName,
+               ).sort()
+             : [];
+-          const oldDoClassNames = Object.keys(
+-            output.durableObjectNamespaces ?? {},
++          const oldDoClassNames = getExpectedDurableObjectClassNames(
++            oldDoBindings,
++            oldWorkerName,
+           ).sort();
+           const doNamespacesStable =
+             oldWorkerName === workerName &&
+diff --git a/node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js b/node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js
+--- a/node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js
++++ b/node_modules/alchemy/lib/Cloudflare/Workers/WorkerRuntimeContext.js
+@@ -2,6 +2,7 @@
+ import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
+ import * as Output from "../../Output.js";
++import { ALCHEMY_PHASE } from "../../Phase.js";
+ import { packEnvValueKeepRedacted, unpackEnvValue, } from "../../RuntimeContext.js";
+ import { makeRequestHandler } from "./HttpServer.js";
+ import { ExportedHandlerMethods, WorkerEnvironment, WorkerExecutionContext, WorkerTypeId, deferredExecutionContext, } from "./Worker.js";
+@@ -49,6 +50,13 @@
+         // provides the live per-event context.
+         Layer.succeed(WorkerExecutionContext, deferredExecutionContext)),
+         exports: Effect.gen(function* () {
++            const phase = yield* ALCHEMY_PHASE;
++            // Plan props only need export names and kinds. Runtime constructors and
++            // Effect Context services are rebuilt from the bundled entrypoint, and
++            // Context is cyclic in Effect v4, so it must not enter resource state.
++            if (phase === "plan") {
++                return Object.fromEntries(Object.entries(exports).map(([name, entry]) => [name, { kind: entry.kind }]));
++            }
+             const handlers = yield* Effect.all(listeners, {
+                 concurrency: "unbounded",
+             });
+diff --git a/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts b/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts
+--- a/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts
++++ b/node_modules/alchemy/src/Cloudflare/Workers/WorkerRuntimeContext.ts
+@@ -4,6 +4,7 @@
+ import * as Option from "effect/Option";
+ import type { HttpEffect } from "../../Http.ts";
+ import * as Output from "../../Output.ts";
++import { ALCHEMY_PHASE } from "../../Phase.ts";
+ import {
+   packEnvValueKeepRedacted,
+   unpackEnvValue,
+@@ -87,6 +88,19 @@
+       Layer.succeed(WorkerExecutionContext, deferredExecutionContext),
+     ),
+     exports: Effect.gen(function* () {
++      const phase = yield* ALCHEMY_PHASE;
++      // Plan props only need export names and kinds. Runtime constructors and
++      // Effect Context services are rebuilt from the bundled entrypoint, and
++      // Context is cyclic in Effect v4, so it must not enter resource state.
++      if (phase === "plan") {
++        return Object.fromEntries(
++          Object.entries(exports).map(([name, entry]) => [
++            name,
++            { kind: entry.kind },
++          ]),
++        ) as Record<string, DurableObjectExport | WorkflowExport>;
++      }
++
+       const handlers = yield* Effect.all(listeners, {
+         concurrency: "unbounded",
+       });
+diff --git a/node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js b/node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js
+--- a/node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js
++++ b/node_modules/alchemy/lib/Cloudflare/Containers/ContainerProvider.js
+@@ -311,7 +311,7 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
+             accountId,
+             registryId,
+             permissions: ["pull", "push"],
+-            expirationMinutes: 60,
++            expirationMinutes: 15,
+         });
+         const username = credentials.username ?? credentials.user;
+         if (!username) {
+diff --git a/node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts b/node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts
+--- a/node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts
++++ b/node_modules/alchemy/src/Cloudflare/Containers/ContainerProvider.ts
+@@ -449,7 +449,7 @@ export const LiveContainerProvider = () =>
+             accountId,
+             registryId,
+             permissions: ["pull", "push"],
+-            expirationMinutes: 60,
++            expirationMinutes: 15,
+           });
+         const username = credentials.username ?? (credentials as any).user;
+         if (!username) {
+diff --git a/node_modules/alchemy/lib/Docker/Docker.js b/node_modules/alchemy/lib/Docker/Docker.js
+--- a/node_modules/alchemy/lib/Docker/Docker.js
++++ b/node_modules/alchemy/lib/Docker/Docker.js
+@@ -20,8 +20,10 @@ export const DockerLive = Layer.effect(Docker, Effect.gen(function* () {
+     const path = yield* Path.Path;
+     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+     const bin = yield* DockerBin;
+-    const run = (args, env, tap = Stream.tap(Effect.logDebug)) => ChildProcess.make(bin, args, {
+-        stdin: "ignore",
++    const run = (args, env, tap = Stream.tap(Effect.logDebug), input) => ChildProcess.make(bin, args, {
++        stdin: input === undefined
++            ? "ignore"
++            : Stream.succeed(new TextEncoder().encode(input)),
+         stdout: "pipe",
+         stderr: "pipe",
+         detached: false,
+@@ -142,35 +144,27 @@ export const DockerLive = Layer.effect(Docker, Effect.gen(function* () {
+             ]),
+             tag: (source, target, context) => run([...formatArgs({ context }), "image", "tag", source, target]),
+             push: Effect.fn(function* (ref, credentials, platform, context) {
+-                // Write the registry credentials directly into an isolated docker config
+-                // as a plaintext `auths` entry and skip `docker login` entirely.
+-                //
+-                // `docker login` is the wrong tool here: on macOS Docker Desktop it routes
+-                // through the shared `osxkeychain`/`desktop` credential helper *regardless*
+-                // of an isolated DOCKER_CONFIG, so concurrent deploys either race the system
+-                // keychain (`The specified item already exists in the keychain (-25299)`) or
+-                // land the credential in the helper — leaving this isolated config without
+-                // an `auths` entry, so the subsequent `docker push` fails with "no basic
+-                // auth credentials". Embedding the base64 `auth` inline (the same thing
+-                // `docker login` would write when no credsStore is configured) makes each
+-                // deploy fully self-contained: no credential helper, no keychain, no login
+-                // race. Only `push` reads this config; `build`/`pull`/`tag` keep using the
+-                // global docker config (buildx builders, `docker context`, etc. intact).
++                // Authenticate in isolation: `docker login --password-stdin` streams
++                // the password on stdin (never argv, errors, or logs) and writes only
++                // into the scoped temp DOCKER_CONFIG dir, which is removed when the
++                // effect scope closes. The push below reuses the same DOCKER_CONFIG,
++                // so no credential or login state reaches the shared credential
++                // helper or outlives the deploy. Only `push` reads this config;
++                // `build`/`pull`/`tag` keep using the global docker config (buildx
++                // builders, `docker context`, etc. intact).
+                 const dir = yield* fs.makeTempDirectoryScoped({
+                     prefix: "alchemy-docker-",
+                 });
+-                const config = yield* Effect.sync(() => {
+-                    const password = Redacted.isRedacted(credentials.password)
+-                        ? Redacted.value(credentials.password)
+-                        : credentials.password;
+-                    const auth = Buffer.from(`${credentials.username}:${password}`).toString("base64");
+-                    return JSON.stringify({
+-                        auths: {
+-                            [credentials.server]: { auth },
+-                        },
+-                    });
+-                });
+-                yield* fs.writeFileString(path.join(dir, "config.json"), config);
++                const password = Redacted.isRedacted(credentials.password)
++                    ? Redacted.value(credentials.password)
++                    : credentials.password;
++                yield* run([
++                    "login",
++                    "--username",
++                    credentials.username,
++                    "--password-stdin",
++                    credentials.server,
++                ], { DOCKER_CONFIG: dir }, undefined, password);
+                 if (platform === undefined) {
+                     return yield* run([...formatArgs({ context }), "push", ref], {
+                         DOCKER_CONFIG: dir,
+diff --git a/node_modules/alchemy/src/Docker/Docker.ts b/node_modules/alchemy/src/Docker/Docker.ts
+--- a/node_modules/alchemy/src/Docker/Docker.ts
++++ b/node_modules/alchemy/src/Docker/Docker.ts
+@@ -482,9 +482,13 @@ export const DockerLive = Layer.effect(
+       ) => Stream.Stream<string, PlatformError, never> = Stream.tap(
+         Effect.logDebug,
+       ),
++      input?: string,
+     ) =>
+       ChildProcess.make(bin, args, {
+-        stdin: "ignore",
++        stdin:
++          input === undefined
++            ? "ignore"
++            : Stream.succeed(new TextEncoder().encode(input)),
+         stdout: "pipe",
+         stderr: "pipe",
+         detached: false,
+@@ -668,37 +672,32 @@ export const DockerLive = Layer.effect(
+         tag: (source, target, context) =>
+           run([...formatArgs({ context }), "image", "tag", source, target]),
+         push: Effect.fn(function* (ref, credentials, platform, context) {
+-          // Write the registry credentials directly into an isolated docker config
+-          // as a plaintext `auths` entry and skip `docker login` entirely.
+-          //
+-          // `docker login` is the wrong tool here: on macOS Docker Desktop it routes
+-          // through the shared `osxkeychain`/`desktop` credential helper *regardless*
+-          // of an isolated DOCKER_CONFIG, so concurrent deploys either race the system
+-          // keychain (`The specified item already exists in the keychain (-25299)`) or
+-          // land the credential in the helper — leaving this isolated config without
+-          // an `auths` entry, so the subsequent `docker push` fails with "no basic
+-          // auth credentials". Embedding the base64 `auth` inline (the same thing
+-          // `docker login` would write when no credsStore is configured) makes each
+-          // deploy fully self-contained: no credential helper, no keychain, no login
+-          // race. Only `push` reads this config; `build`/`pull`/`tag` keep using the
+-          // global docker config (buildx builders, `docker context`, etc. intact).
++          // Authenticate in isolation: `docker login --password-stdin` streams
++          // the password on stdin (never argv, errors, or logs) and writes only
++          // into the scoped temp DOCKER_CONFIG dir, which is removed when the
++          // effect scope closes. The push below reuses the same DOCKER_CONFIG,
++          // so no credential or login state reaches the shared credential
++          // helper or outlives the deploy. Only `push` reads this config;
++          // `build`/`pull`/`tag` keep using the global docker config (buildx
++          // builders, `docker context`, etc. intact).
+           const dir = yield* fs.makeTempDirectoryScoped({
+             prefix: "alchemy-docker-",
+           });
+-          const config = yield* Effect.sync(() => {
+-            const password = Redacted.isRedacted(credentials.password)
+-              ? Redacted.value(credentials.password)
+-              : credentials.password;
+-            const auth = Buffer.from(
+-              `${credentials.username}:${password}`,
+-            ).toString("base64");
+-            return JSON.stringify({
+-              auths: {
+-                [credentials.server]: { auth },
+-              },
+-            });
+-          });
+-          yield* fs.writeFileString(path.join(dir, "config.json"), config);
++          const password = Redacted.isRedacted(credentials.password)
++            ? Redacted.value(credentials.password)
++            : credentials.password;
++          yield* run(
++            [
++              "login",
++              "--username",
++              credentials.username,
++              "--password-stdin",
++              credentials.server,
++            ],
++            { DOCKER_CONFIG: dir },
++            undefined,
++            password,
++          );
+           if (platform === undefined) {
+             return yield* run([...formatArgs({ context }), "push", ref], {
+               DOCKER_CONFIG: dir,

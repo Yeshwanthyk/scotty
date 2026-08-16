@@ -43,13 +43,15 @@ Before changing a non-trivial CLI pattern:
   vocabulary is closed, such as the currently supported provider.
 - Use root `Command.withSharedFlags` for `host`, `token`, and `json` so they remain available across
   descendants and before or after subcommand names.
-- Put descriptions, aliases, examples, and metavariables on the command definitions. Do not
+- Put descriptions, aliases, examples, and metavariables on the command definitions. Use
+  `Command.unlisted` (the rc.109 replacement for `Command.withHidden`) for commands that must
+  stay runnable but out of generated help. Do not
   maintain parallel help strings or a command-name registry.
 - Use `Command.runWith` at Scotty's explicit-argv Bun boundary so production and tests execute the
   same tree.
 - Configure `CliConfig` with only the built-ins Scotty intentionally exposes. Do not accidentally
   add wizard, completions, log-level, or a conflicting version alias.
-- Pinned Effect beta.99 does not reject undeclared leftover positional arguments. Give each leaf
+- Pinned Effect rc.109 does not reject undeclared leftover positional arguments. Give each leaf
   one shared hidden variadic trailing `Argument` and reject any values before the handler performs
   side effects. Keep this guard until a pinned-source test proves the parser rejects leftovers.
 

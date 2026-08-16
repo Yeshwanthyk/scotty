@@ -14,6 +14,7 @@ export function normalizeSessionListItem(value) {
         ...(typeof value.failure.recoverable === "boolean"
           ? { recoverable: value.failure.recoverable }
           : {}),
+        ...(typeof value.failure.stage === "string" ? { stage: value.failure.stage } : {}),
       }
     : undefined;
 
@@ -50,6 +51,7 @@ export function sessionPrimaryTiming(session, status, pendingAction) {
     return pendingAction === "delete" ? "Retrying cleanup" : "Cleanup retries automatically";
   }
   if (status === "stopping") return "Stopping now";
+  if (status === "boot-failed") return "Needs attention";
   if (status === "sleeping") return session?.backupId ? "Backup ready" : "Backup unavailable";
   if (status === "failed") return session?.backupId ? "Backup ready" : "Needs attention";
   return session?.capRemainingSeconds > 0
@@ -88,6 +90,7 @@ export function sessionsRenderSignature(sessions, loaded, now = Date.now()) {
         session.hardCapAt,
         session.createdAt,
         typeof session.failure?.message === "string" ? session.failure.message : null,
+        typeof session.failure?.stage === "string" ? session.failure.stage : null,
       ]),
     ]),
   ]);
@@ -104,7 +107,25 @@ function addText(parent, className, text, tag = "div") {
 function statusLabel(status) {
   if (status === "stopping") return "Stopping…";
   if (status === "deleting") return "Deleting…";
+  if (status === "boot-failed") return "Boot failed";
   return status;
+}
+
+function sessionRowStatus(session, pendingAction) {
+  const status = sessionDisplayStatus(session.status, pendingAction, session.deleting);
+  if (status === "booting" && typeof session.failure?.message === "string") return "boot-failed";
+  return status;
+}
+
+function sessionStatusClass(status) {
+  return status === "boot-failed" ? "failed" : status;
+}
+
+function sessionShowsFailure(status, session) {
+  return (
+    typeof session.failure?.message === "string" &&
+    (status === "failed" || status === "boot-failed")
+  );
 }
 
 function placementLabel(session, status) {
@@ -306,7 +327,7 @@ function appendMobileDisclosure(item, state, session, status, created) {
     metadata.append(entry);
   }
   detail.append(metadata);
-  if (status === "failed" && typeof session.failure?.message === "string") {
+  if (sessionShowsFailure(status, session)) {
     addText(detail, "session-failure mobile-session-failure", session.failure.message, "p");
   }
   appendLifecycleActions(detail, state, session, status, {
@@ -322,8 +343,9 @@ function appendMobileDisclosure(item, state, session, status, created) {
 function renderSessionRow(state, session, now) {
   const item = document.createElement("li");
   const pendingAction = state.busy.get(session.id);
-  const status = sessionDisplayStatus(session.status, pendingAction, session.deleting);
-  item.className = `session status-${status}${
+  const status = sessionRowStatus(session, pendingAction);
+  const statusClass = sessionStatusClass(status);
+  item.className = `session status-${statusClass}${
     state.renamingId === session.id ? " is-renaming" : ""
   }${state.expandedSessionDetails.has(session.id) ? " is-expanded" : ""}`;
 
@@ -379,11 +401,11 @@ function renderSessionRow(state, session, now) {
   const glance = document.createElement("div");
   glance.className = "mobile-session-glance";
   const glanceStatus = addText(glance, "mobile-status", statusLabel(status), "span");
-  glanceStatus.classList.add(`mobile-status-${status}`);
+  glanceStatus.classList.add(`mobile-status-${statusClass}`);
   addText(glance, "mobile-deadline", sessionPrimaryTiming(session, status, pendingAction), "span");
   identity.append(glance);
   appendIdentityMetadata(identity, session);
-  if (status === "failed" && typeof session.failure?.message === "string") {
+  if (sessionShowsFailure(status, session)) {
     addText(identity, "session-failure desktop-session-failure", session.failure.message, "p");
   }
   item.append(identity);

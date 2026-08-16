@@ -51,7 +51,7 @@ export const UpgradeManifestSchema = Schema.Struct({
 });
 export type UpgradeManifest = typeof UpgradeManifestSchema.Type;
 
-export class MalformedUpgradeManifestError extends Schema.TaggedErrorClass<MalformedUpgradeManifestError>(
+export class MalformedUpgradeManifestError extends Schema.TaggedError<MalformedUpgradeManifestError>(
   "MalformedUpgradeManifestError",
 )("MalformedUpgradeManifestError", {
   reason: Schema.Literals(["schema", "duplicate_asset_name", "duplicate_target"]),
@@ -59,7 +59,7 @@ export class MalformedUpgradeManifestError extends Schema.TaggedErrorClass<Malfo
   override readonly message = "The CLI upgrade manifest is malformed";
 }
 
-export class InvalidUpgradeSignatureError extends Schema.TaggedErrorClass<InvalidUpgradeSignatureError>(
+export class InvalidUpgradeSignatureError extends Schema.TaggedError<InvalidUpgradeSignatureError>(
   "InvalidUpgradeSignatureError",
 )("InvalidUpgradeSignatureError", {
   reason: Schema.Literals(["invalid_public_key", "invalid_signature"]),
@@ -67,7 +67,7 @@ export class InvalidUpgradeSignatureError extends Schema.TaggedErrorClass<Invali
   override readonly message = "The CLI upgrade manifest signature is invalid";
 }
 
-export class UpgradeCryptoError extends Schema.TaggedErrorClass<UpgradeCryptoError>(
+export class UpgradeCryptoError extends Schema.TaggedError<UpgradeCryptoError>(
   "UpgradeCryptoError",
 )("UpgradeCryptoError", {
   operation: Schema.Literals(["import_public_key", "verify_signature", "sha256"]),
@@ -76,13 +76,13 @@ export class UpgradeCryptoError extends Schema.TaggedErrorClass<UpgradeCryptoErr
   override readonly message = "CLI upgrade cryptography failed";
 }
 
-export class UpgradeTargetNotFoundError extends Schema.TaggedErrorClass<UpgradeTargetNotFoundError>(
+export class UpgradeTargetNotFoundError extends Schema.TaggedError<UpgradeTargetNotFoundError>(
   "UpgradeTargetNotFoundError",
 )("UpgradeTargetNotFoundError", UpgradeTargetSchema) {
   override readonly message = "The CLI upgrade manifest has no asset for this target";
 }
 
-export class InvalidUpgradeDigestError extends Schema.TaggedErrorClass<InvalidUpgradeDigestError>(
+export class InvalidUpgradeDigestError extends Schema.TaggedError<InvalidUpgradeDigestError>(
   "InvalidUpgradeDigestError",
 )("InvalidUpgradeDigestError", {
   expectedSha256: Sha256Schema,

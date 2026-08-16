@@ -6,7 +6,7 @@ import {
 } from "../utils.js";
 
 const message =
-  "Do not use Schema.Class or Schema.TaggedClass. Use Schema.Struct / Schema.TaggedStruct and Schema.is(schema) for runtime checks. Effect 4 Schema.Class encodes with an instanceof check that plain structurally typed objects fail. Schema.TaggedErrorClass and Schema.ErrorClass remain valid typed-error forms.";
+  "Do not use Schema.Class or Schema.TaggedClass. Use Schema.Struct / Schema.TaggedStruct and Schema.is(schema) for runtime checks. Effect 4 Schema.Class encodes with an instanceof check that plain structurally typed objects fail. Schema.TaggedError and Schema.Error remain valid typed-error forms.";
 const isSchemaClassCall = (node, schemaNames) => {
   const expression = unwrapExpression(node);
   if (expression?.type !== "CallExpression") return false;

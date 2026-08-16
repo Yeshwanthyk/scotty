@@ -248,6 +248,24 @@ const chmodExecCommand = (calls: ContainerCall[]): string => {
   return exec.command;
 };
 
+const ghIdentityExec = (calls: ContainerCall[]) => {
+  const exec = calls.find(
+    (call): call is Extract<ContainerCall, { operation: "exec" }> =>
+      call.operation === "exec" && call.command.includes("gh api user"),
+  );
+  assert.ok(exec);
+  return exec;
+};
+
+const fallbackIdentityExec = (calls: ContainerCall[]) => {
+  const exec = calls.find(
+    (call): call is Extract<ContainerCall, { operation: "exec" }> =>
+      call.operation === "exec" && call.command.includes('config user.name "Scotty Session"'),
+  );
+  assert.ok(exec);
+  return exec;
+};
+
 const ensureTerminalWith = (
   capabilities: SandboxRuntimeCapabilities,
   storedCredential: StoredCredential = credential,
@@ -280,14 +298,8 @@ const failed = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRunt
 describe("container auth values", () => {
   it("uses only immutable image-local Pi packages at sandbox startup", () => {
     assert.deepStrictEqual(PI_PACKAGES, [
-      "/opt/scotty/pi-packages/sources/pi-tasks",
       "/opt/scotty/pi-packages/sources/pi-subagents",
-      "/opt/scotty/pi-packages/sources/pi-workflows",
-      "/opt/scotty/pi-packages/sources/pi-background-terminals",
-      "/opt/scotty/pi-packages/sources/pi-askuser",
-      "/opt/scotty/pi-packages/sources/pi-web-access",
       "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
-      "/opt/scotty/pi-packages/sources/pi-amp-ui",
       "/opt/scotty/pi-packages/sources/scotty-browser-test",
       "/opt/scotty/pi-packages/sources/scotty-hatch",
     ]);
@@ -309,6 +321,8 @@ describe("container auth values", () => {
       GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
       GH_TOKEN: GITHUB_SENTINEL,
       GITHUB_SENTINEL,
+      GH_PROMPT_DISABLED: "1",
+      GH_NO_UPDATE_NOTIFIER: "1",
       GIT_TERMINAL_PROMPT: "0",
       NODE_OPTIONS: "--use-system-ca",
       GOTOOLCHAIN: "auto",
@@ -338,11 +352,23 @@ describe("container auth values", () => {
     assert.include(sandboxAgentsInstructions, "call the relevant status or evidence tool again");
     assert.include(sandboxAgentsInstructions, "If that tool fails or returns no reference");
     assert.include(sandboxAgentsInstructions, "Never invent, alter, expand, or repeat");
+    assert.include(sandboxAgentsInstructions, "Identify the required work before acting.");
+    assert.include(
+      sandboxAgentsInstructions,
+      "Keep a short ordered checklist in progress updates.",
+    );
+    assert.include(sandboxAgentsInstructions, "Complete prerequisites before dependents.");
+    assert.include(
+      sandboxAgentsInstructions,
+      "Use subagents only for independent parallel work; the parent owns integration and verification.",
+    );
+    assert.include(sandboxAgentsInstructions, "Do not claim that a durable task store exists.");
+    assert.include(sandboxAgentsInstructions, "Use no more than four concurrent subagents.");
   });
 });
 
 describe("ContainerAuth", () => {
-  it.effect("seeds exact paths, contents, modes, environment, and ordering", () =>
+  it.effect("seeds zero built-ins/extras and keeps subagents available", () =>
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       yield* seedWith(capabilities);
@@ -351,7 +377,6 @@ describe("ContainerAuth", () => {
         [
           "mkdir",
           "mkdir",
-          "writeFile",
           "writeFile",
           "writeFile",
           "writeFile",
@@ -376,7 +401,6 @@ describe("ContainerAuth", () => {
           `/workspace/${ID}/.pi-agent/auth.json`,
           `/workspace/${ID}/.pi-agent/settings.json`,
           `/workspace/${ID}/.pi-agent/AGENTS.md`,
-          `/workspace/${ID}/.pi-agent/web-search.json`,
           `/workspace/${ID}/.pi-agent/gitconfig`,
           `/workspace/${ID}/.pi-agent/scotty-shell`,
         ],
@@ -391,30 +415,62 @@ describe("ContainerAuth", () => {
         theme: "dark",
         packages: [...PI_PACKAGES],
       });
-      assert.deepStrictEqual(JSON.parse(writes[5]?.content ?? ""), {
-        provider: "openai",
-        workflow: "none",
-        allowBrowserCookies: false,
-      });
-      assert.ok(writes[6]?.content.includes("password=$GITHUB_SENTINEL"));
-      assert.ok(writes[7]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
+      assert.include(PI_PACKAGES, "/opt/scotty/pi-packages/sources/pi-subagents");
+      assert.ok(writes[5]?.content.includes("password=$GITHUB_SENTINEL"));
+      assert.ok(writes[6]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
       assert.ok(
-        writes[7]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
+        writes[6]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
       );
-      assert.ok(writes[7]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
+      assert.ok(writes[6]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
       for (const secret of [REAL_ACCESS, REAL_REFRESH, REAL_GITHUB, REAL_ACCOUNT, REAL_API_KEY])
-        assert.ok(!writes[7]?.content.includes(secret));
+        assert.ok(!writes[6]?.content.includes(secret));
 
       const skillsExec = chmodExecCommand(capabilities.calls);
       const merged = mergedSkillsPath(ID);
       assert.include(skillsExec, `mkdir -p '${merged}'`);
-      assert.include(skillsExec, `ln -sfn /opt/scotty/skills/* '${merged}/'`);
+      assert.include(
+        skillsExec,
+        `for skill in /opt/scotty/skills/*; do [ -e "$skill" ] || continue; ln -sfn "$skill" '${merged}/'; done`,
+      );
+      assert.notInclude(skillsExec, `ln -sfn /opt/scotty/skills/* '${merged}/'`);
       assert.include(skillsExec, `ln -sfn '${merged}' '/workspace/${ID}/.codex/skills'`);
       assert.include(skillsExec, `ln -sfn '${merged}' '/workspace/${ID}/.pi-agent/skills'`);
       assert.notInclude(skillsExec, `ln -sfn /opt/scotty/skills '/workspace/${ID}/.codex/skills'`);
       assert.notInclude(
         skillsExec,
         `ln -sfn /opt/scotty/skills '/workspace/${ID}/.pi-agent/skills'`,
+      );
+
+      const expectedEnv = agentEnv(ID, credential);
+      const setEnv = capabilities.calls.find(
+        (call): call is Extract<ContainerCall, { operation: "setEnvVars" }> =>
+          call.operation === "setEnvVars",
+      );
+      assert.deepStrictEqual(setEnv?.envVars, expectedEnv);
+      const ghExec = ghIdentityExec(capabilities.calls);
+      assert.deepStrictEqual(ghExec.options, { env: expectedEnv, timeout: 20_000 });
+      assert.notInclude(
+        capabilities.calls.filter((call) => call.operation === "exec").map((call) => call.command),
+        `config user.name "Scotty Session"`,
+      );
+    }),
+  );
+
+  it.effect("falls back to a deterministic git identity when gh lookup fails", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      capabilities.execFailWhen = (command) => command.includes("gh api user");
+      yield* seedWith(capabilities);
+      const ghExec = ghIdentityExec(capabilities.calls);
+      assert.deepStrictEqual(ghExec.options, { env: agentEnv(ID, credential), timeout: 20_000 });
+      const fallbackExec = fallbackIdentityExec(capabilities.calls);
+      assert.deepStrictEqual(fallbackExec.options, {
+        env: agentEnv(ID, credential),
+        timeout: 10_000,
+      });
+      assert.include(
+        fallbackExec.command,
+        `config user.email "scotty-session-${ID}@users.noreply.github.com"`,
       );
     }),
   );
@@ -425,7 +481,7 @@ describe("ContainerAuth", () => {
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
       yield* seedWith(capabilities, credential, {
         bundleRoot,
-        extraSkills: [{ name: "custom-skill" }],
+        extraSkills: [{ name: "custom-skill" }, { name: "another-skill" }],
         extraPackages: [{ name: "custom-package" }, { name: "@scope/custom-package" }],
       });
       const writes = capabilities.calls.filter(
@@ -444,6 +500,31 @@ describe("ContainerAuth", () => {
         skillsExec,
         `ln -sfn '${bundleRoot}/skills/custom-skill' '/workspace/${ID}/.scotty/merged-skills/custom-skill'`,
       );
+      assert.include(
+        skillsExec,
+        `ln -sfn '${bundleRoot}/skills/another-skill' '/workspace/${ID}/.scotty/merged-skills/another-skill'`,
+      );
+    }),
+  );
+
+  it.effect("fails when installation skill names are configured more than once", () =>
+    Effect.gen(function* () {
+      const capabilities = new CapturingSandboxCapabilities();
+      const result = yield* Effect.result(
+        seedWith(capabilities, credential, {
+          bundleRoot: `/workspace/${ID}/.scotty/sandbox/deadbeef`,
+          extraSkills: [{ name: "duplicate" }, { name: "duplicate" }],
+        }),
+      );
+      const error = failed(result);
+      assert.deepStrictEqual(
+        error,
+        new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Sandbox configured skill names must be unique",
+        }),
+      );
+      assert.deepStrictEqual(capabilities.calls, []);
     }),
   );
 
@@ -723,8 +804,8 @@ describe("ContainerAuth", () => {
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 13);
-      assert.strictEqual(second.calls.length, 13);
+      assert.strictEqual(first.calls.length, 12);
+      assert.strictEqual(second.calls.length, 12);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),
@@ -771,6 +852,8 @@ describe("ContainerAuth", () => {
         GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
         GH_TOKEN: GITHUB_SENTINEL,
         GITHUB_SENTINEL,
+        GH_PROMPT_DISABLED: "1",
+        GH_NO_UPDATE_NOTIFIER: "1",
         GIT_TERMINAL_PROMPT: "0",
         NODE_OPTIONS: "--use-system-ca",
         GOTOOLCHAIN: "auto",

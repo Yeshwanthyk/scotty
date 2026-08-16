@@ -2,81 +2,26 @@
   "schemaVersion": 3,
   "vendored": [
     {
-      "name": "pi-tasks",
-      "order": 0,
-      "repository": "https://github.com/Yeshwanthyk/pi-tasks.git",
-      "commit": "cf188268ff758f56e5f911d799c2b43d0ae85dad",
-      "sourceSha256": "9b2a4d96c4977f5b3da650f480ed6903f450470075a83056fd03595b30b81d2b",
-      "sourcePath": "worker/container/pi-packages/sources/pi-tasks",
-      "imagePath": "/opt/scotty/pi-packages/sources/pi-tasks"
-    },
-    {
       "name": "pi-subagents",
-      "order": 1,
+      "order": 0,
       "repository": "https://github.com/Yeshwanthyk/pi-subagents.git",
-      "commit": "692835531bb64b7626e4b901b355a5940efc81ba",
-      "sourceSha256": "0055b278f67208efe2ad34a24bb85a3febbdd7711a73529967a99cf3b47650db",
+      "commit": "df92d3cf9a2cc0c7f9d579594996a2af033e6fcd",
+      "sourceSha256": "81bf472a1a8af9f6bc29ff1ba37986adaaf49b8634afcc4dff8914f7990a03dd",
       "sourcePath": "worker/container/pi-packages/sources/pi-subagents",
       "imagePath": "/opt/scotty/pi-packages/sources/pi-subagents"
-    },
-    {
-      "name": "pi-workflows",
-      "order": 2,
-      "repository": "https://github.com/Yeshwanthyk/pi-workflows.git",
-      "commit": "56656723c52377cec95a3b5d4ecf4061136a1601",
-      "sourceSha256": "3080662537f1c0500cf442b19b68a998e0b90c231cb5880058eca82742e8718b",
-      "sourcePath": "worker/container/pi-packages/sources/pi-workflows",
-      "imagePath": "/opt/scotty/pi-packages/sources/pi-workflows"
-    },
-    {
-      "name": "pi-background-terminals",
-      "order": 3,
-      "repository": "https://github.com/Yeshwanthyk/pi-background-terminals.git",
-      "commit": "7b2913a9a9afd154be645405bcde3331ba78acce",
-      "sourceSha256": "d54b9903d0510e229797e2d636f58efb2fba46f33ee082e60dfa05274e056f8c",
-      "sourcePath": "worker/container/pi-packages/sources/pi-background-terminals",
-      "imagePath": "/opt/scotty/pi-packages/sources/pi-background-terminals"
-    },
-    {
-      "name": "pi-askuser",
-      "order": 4,
-      "repository": "https://github.com/Yeshwanthyk/pi-askuser.git",
-      "commit": "a63093201f1b845f1e8c25764f1c60595033c806",
-      "sourceSha256": "e58789adf732b3ac51b19defac0e40fca74b7d3b1d4ba4851220fe70e5d1a731",
-      "sourcePath": "worker/container/pi-packages/sources/pi-askuser",
-      "imagePath": "/opt/scotty/pi-packages/sources/pi-askuser"
-    },
-    {
-      "name": "pi-web-access",
-      "order": 5,
-      "repository": "https://github.com/nicobailon/pi-web-access.git",
-      "commit": "d84ef67073d14aeaf3644a8aabe2b1cf784719fd",
-      "sourceSha256": "e735b15d5ea88ab81c20d59d6ae8f9a04a9f05fe841b572300acce1d55cccaff",
-      "sourcePath": "worker/container/pi-packages/sources/pi-web-access",
-      "lockPath": "worker/container/pi-packages/locks/pi-web-access/package-lock.json",
-      "imagePath": "/opt/scotty/pi-packages/sources/pi-web-access"
-    },
-    {
-      "name": "pi-amp-ui",
-      "order": 7,
-      "repository": "https://github.com/Yeshwanthyk/pi-amp-ui.git",
-      "commit": "f2d798b4542a4faa27b0b2ce10a299ec3dc13391",
-      "sourceSha256": "69a9c0c0183c132cf5d7fdc3ad8bff2f610bfd0b864117771a3dd32f3aeacb8a",
-      "sourcePath": "worker/container/pi-packages/sources/pi-amp-ui",
-      "imagePath": "/opt/scotty/pi-packages/sources/pi-amp-ui"
     }
   ],
   "firstParty": [
     {
       "name": "scotty-browser-test",
-      "order": 8,
+      "order": 2,
       "sourceSha256": "5853adf320add01c3541e9d91b0a548d40a8571734a3a5a23330f3c8eca9dceb",
       "sourcePath": "worker/container/pi-packages/sources/scotty-browser-test",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-browser-test"
     },
     {
       "name": "scotty-hatch",
-      "order": 9,
+      "order": 3,
       "sourceSha256": "49301b5c43dfb594a682635bfe70414b3c64ec99b85e13a06faf275bb452ea94",
       "sourcePath": "worker/container/pi-packages/sources/scotty-hatch",
       "imagePath": "/opt/scotty/pi-packages/sources/scotty-hatch"
@@ -85,7 +30,7 @@
   "npm": [
     {
       "name": "@ogulcancelik/pi-codex-compaction",
-      "order": 6,
+      "order": 1,
       "version": "0.1.3",
       "integrity": "sha512-1cI0D7TBlXe6aGI1EZePeo/ogST1rPx3zX0xblUjdUTiiHeeIRHyCkWIe5eRjg1FYi1rdfG5wB5YD0AKnKFHZA==",
       "imagePath": "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction"
