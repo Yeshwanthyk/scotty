@@ -186,6 +186,8 @@ export const readContainerControlPlane = (input) =>
 export const parseContainerControlPlaneSnapshot = (output) =>
   Effect.runPromise(decodeSnapshot(output));
 
+export { readControlPlaneEffect };
+
 async function main() {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const applicationId = process.argv[2];

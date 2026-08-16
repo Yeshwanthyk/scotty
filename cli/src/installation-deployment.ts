@@ -21,8 +21,17 @@ import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
 import { PlatformServices } from "alchemy/Util/PlatformServices";
-import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
+import { Clock, Context, Data, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import {
+  assessContainerSettlement,
+  CONTAINER_ROLLOUT_POLL_MS,
+  CONTAINER_ROLLOUT_TIMEOUT_MS,
+} from "../../scripts/deploy-production.mjs";
+import {
+  readControlPlaneEffect,
+  type ContainerControlPlaneSnapshot,
+} from "../../scripts/container-control-plane.mjs";
 import {
   cloudflareStack,
   expectedCloudflareResourceConfirmation,
@@ -79,10 +88,124 @@ const isR2Binding = (binding: WorkerBinding): binding is R2Binding => binding.ty
 const isPlainTextBinding = (binding: WorkerBinding): binding is PlainTextBinding =>
   binding.type === "plain_text";
 
-class InstallationDeploymentError extends Data.TaggedError("InstallationDeploymentError")<{
+export class InstallationDeploymentError extends Data.TaggedError("InstallationDeploymentError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
+export type ContainerControlPlaneReader<R = never> = (input: {
+  readonly accountId: string;
+  readonly applicationId: string;
+}) => Effect.Effect<ContainerControlPlaneSnapshot, unknown, R>;
+
+export const isContainerPlanChanged = (plan: Plan.Plan): boolean => {
+  const containerNode = plan.resources["SandboxContainer"];
+  return containerNode !== undefined && containerNode.action !== "noop";
+};
+
+export const assertContainerBaselineSettled = (
+  snapshot: ContainerControlPlaneSnapshot,
+): Effect.Effect<void, InstallationDeploymentError> => {
+  const activeRollouts = snapshot.rollouts.filter(
+    (rollout) => rollout.status === "pending" || rollout.status === "progressing",
+  );
+  if (snapshot.application.activeRolloutId !== null || activeRollouts.length > 0) {
+    return new InstallationDeploymentError({
+      message: "Container application already has an active rollout.",
+    });
+  }
+  return Effect.void;
+};
+
+const defaultReadControlPlane: ContainerControlPlaneReader<
+  typeof DistilledCredentials | typeof Cloudflare.CloudflareEnvironment
+> = (input) =>
+  readControlPlaneEffect(input).pipe(
+    Effect.mapError(
+      (cause) =>
+        new InstallationDeploymentError({
+          message: "Cloudflare Container control-plane request failed.",
+          cause,
+        }),
+    ),
+  );
+
+export const waitForContainerRollout = Effect.fnUntraced(function* <R = never>(
+  before: ContainerControlPlaneSnapshot,
+  target: { readonly accountId: string; readonly applicationId: string },
+  options: {
+    readonly containerAction?: "updated" | "noop" | "unknown";
+    readonly readControlPlane?: ContainerControlPlaneReader<R>;
+    readonly timeoutMs?: number;
+    readonly pollMs?: number;
+    readonly reportProgress?: (message: string) => void;
+  } = {},
+) {
+  const read = (options.readControlPlane ??
+    defaultReadControlPlane) as ContainerControlPlaneReader<R>;
+  const timeoutMs = options.timeoutMs ?? CONTAINER_ROLLOUT_TIMEOUT_MS;
+  const pollMs = options.pollMs ?? CONTAINER_ROLLOUT_POLL_MS;
+  const containerAction = options.containerAction ?? "updated";
+  const reportProgress = options.reportProgress;
+
+  const startedAt = yield* Clock.currentTimeMillis;
+  let lastObservation =
+    `${before.application.version}:${before.application.updatedAt}:` +
+    `${before.application.activeRolloutId}:${before.application.configurationDigest}:` +
+    `${JSON.stringify(before.application.health)}`;
+  let lastObservationAt = startedAt;
+  let lastReportedProgress: string | undefined = undefined;
+
+  while (true) {
+    const current = yield* read(target);
+    const observedAt = yield* Clock.currentTimeMillis;
+    const elapsedMs = observedAt - startedAt;
+
+    const newRollout = current.rollouts.find(
+      (rollout) => !before.rollouts.some((previous) => previous.id === rollout.id),
+    );
+    const observation = newRollout
+      ? `${newRollout.id}:${newRollout.status}:${newRollout.lastUpdatedAt}:` +
+        `${newRollout.targetVersion}:${newRollout.progress.updatedInstances}:` +
+        `${JSON.stringify(newRollout.health)}:${JSON.stringify(current.application.health)}`
+      : `${current.application.version}:${current.application.updatedAt}:` +
+        `${current.application.activeRolloutId}:${current.application.configurationDigest}:` +
+        `${JSON.stringify(current.application.health)}`;
+
+    if (observation !== lastObservation) {
+      lastObservation = observation;
+      lastObservationAt = observedAt;
+    }
+
+    const assessment = assessContainerSettlement(before, current, containerAction, {
+      quietMs: observedAt - lastObservationAt,
+    });
+
+    if (observation !== lastReportedProgress) {
+      reportProgress?.(assessment.message);
+      lastReportedProgress = observation;
+    }
+
+    if (assessment.status === "settled") {
+      return current;
+    }
+
+    if (assessment.status === "failed") {
+      return yield* new InstallationDeploymentError({
+        message: assessment.message,
+      });
+    }
+
+    if (elapsedMs >= timeoutMs) {
+      return yield* new InstallationDeploymentError({
+        message: `Container rollout did not settle within ${Math.ceil(timeoutMs / 60_000)} minutes: ${assessment.message}`,
+      });
+    }
+
+    const sleepMs = Math.min(pollMs, timeoutMs - elapsedMs);
+    yield* Effect.sleep(Duration.millis(sleepMs));
+  }
+});
 
 const embeddedDeploymentArchive = (): Blob | undefined =>
   Bun.embeddedFiles.find((file) => {
@@ -408,11 +531,39 @@ const deployWithProfile = async (
               return yield* new InstallationDeploymentError({
                 message: "The deployment plan changed after confirmation.",
               });
+
+            const containerChanged = isContainerPlanChanged(plan);
+            let beforeSnapshot: ContainerControlPlaneSnapshot | undefined;
+            let containerAppId: string | undefined;
+
+            if (containerChanged) {
+              const applications = yield* Containers.listContainerApplications({ accountId });
+              const application = applications.find(
+                (candidate) => candidate.name === installation.containerName,
+              );
+              if (application) {
+                containerAppId = application.id;
+                beforeSnapshot = yield* defaultReadControlPlane({
+                  accountId,
+                  applicationId: application.id,
+                });
+                yield* assertContainerBaselineSettled(beforeSnapshot);
+              }
+            }
+
             const output = yield* Apply.apply(plan);
             if (!output.url)
               return yield* new InstallationDeploymentError({
                 message: "Deployed Worker has no URL.",
               });
+
+            if (beforeSnapshot !== undefined && containerAppId !== undefined) {
+              yield* waitForContainerRollout(beforeSnapshot, {
+                accountId,
+                applicationId: containerAppId,
+              });
+            }
+
             return {
               installationName: request.installationName,
               profile: request.profile,
@@ -433,7 +584,7 @@ const deployWithProfile = async (
               ...(installation.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
               host: output.url,
             } satisfies InstallationResult;
-          }),
+          }).pipe(Effect.provide(cloudflareApiLive())),
         { stage: CLOUDFLARE_STAGE },
       ),
     ),
