@@ -21,7 +21,7 @@ import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
 import { PlatformServices } from "alchemy/Util/PlatformServices";
-import { Context, Data, Effect, Layer, Option, Stream } from "effect";
+import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import {
   cloudflareStack,
@@ -163,6 +163,59 @@ const provideAlchemy = <A, E, R>(program: Effect.Effect<A, E, R>) =>
     Effect.provide(alchemyRuntimeLayer),
   );
 
+const DOCKER_CONTEXT_INSPECT_ARGS = [
+  "context",
+  "inspect",
+  "--format",
+  "{{json .Endpoints.docker.Host}}",
+] as const;
+const DOCKER_CONTEXT_INSPECT_TIMEOUT_MS = 30_000;
+
+export type InstallationDockerInspect = (
+  command: string,
+  args: ReadonlyArray<string>,
+) => Promise<string>;
+
+const decodeDockerContextHostJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.String),
+);
+
+const inspectDockerContextHost: InstallationDockerInspect = async (command, args) => {
+  const child = Bun.spawn([command, ...args], { stdout: "pipe", stderr: "pipe" });
+  let timedOut = false;
+  // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: host subprocess timeout uses the platform timer API
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill();
+  }, DOCKER_CONTEXT_INSPECT_TIMEOUT_MS);
+  const [exitCode, stdout] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+  if (timedOut || exitCode !== 0) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw, scotty/no-error-constructor -- boundary: host subprocess adapter reports inspect failure through Promise rejection
+    throw new Error("docker context inspect failed");
+  }
+  return stdout;
+};
+
+export const resolveInstallationDockerHost = Effect.fnUntraced(function* (
+  environment: NodeJS.ProcessEnv = process.env,
+  inspect: InstallationDockerInspect = inspectDockerContextHost,
+) {
+  if (environment.DOCKER_HOST?.trim()) return undefined;
+  const output = yield* Effect.tryPromise({
+    try: () => inspect("docker", DOCKER_CONTEXT_INSPECT_ARGS),
+    catch: (cause) => cause,
+  }).pipe(Effect.option);
+  if (Option.isNone(output)) return undefined;
+  const decoded = decodeDockerContextHostJson(output.value.trim());
+  if (Option.isNone(decoded) || decoded.value.length === 0) return undefined;
+  return decoded.value;
+});
+
 const runWithProfile = async <A, E>(
   profile: string,
   root: string,
@@ -170,10 +223,14 @@ const runWithProfile = async <A, E>(
 ): Promise<A> => {
   const previousProfile = process.env.ALCHEMY_PROFILE;
   const previousTelemetry = process.env.ALCHEMY_TELEMETRY_DISABLED;
+  const previousDockerHost = process.env.DOCKER_HOST;
   const previousDirectory = process.cwd();
   process.env.ALCHEMY_PROFILE = profile;
   process.env.ALCHEMY_TELEMETRY_DISABLED = "1";
   process.chdir(root);
+  // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone CLI owns this Alchemy Effect-to-Promise execution
+  const resolvedDockerHost = await Effect.runPromise(resolveInstallationDockerHost());
+  if (resolvedDockerHost !== undefined) process.env.DOCKER_HOST = resolvedDockerHost;
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must restore process-wide profile and cwd state
   try {
     // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone CLI owns this Alchemy Effect-to-Promise execution
@@ -184,6 +241,8 @@ const runWithProfile = async <A, E>(
     else process.env.ALCHEMY_PROFILE = previousProfile;
     if (previousTelemetry === undefined) delete process.env.ALCHEMY_TELEMETRY_DISABLED;
     else process.env.ALCHEMY_TELEMETRY_DISABLED = previousTelemetry;
+    if (previousDockerHost === undefined) delete process.env.DOCKER_HOST;
+    else process.env.DOCKER_HOST = previousDockerHost;
   }
 };
 
