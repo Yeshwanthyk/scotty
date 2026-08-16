@@ -546,7 +546,10 @@ describe("Sandbox create orchestration", () => {
       );
 
       assert.ok(error instanceof ScottyError);
-      assert.strictEqual(error.message, "Pi session creation is ambiguous (stage: seed)");
+      assert.strictEqual(
+        error.message,
+        "Pi session creation is ambiguous (stage: seed) [transport] Sandbox directory transport failed",
+      );
       assert.strictEqual(harness.readRecord()?.status, "booting");
       assert.deepInclude(harness.readRecord()?.operation, {
         kind: "create",
@@ -555,7 +558,8 @@ describe("Sandbox create orchestration", () => {
       });
       assert.deepStrictEqual(harness.readRecord()?.failure, {
         code: "create_ambiguous",
-        message: "Pi session creation is ambiguous (stage: seed)",
+        message:
+          "Pi session creation is ambiguous (stage: seed) [transport] Sandbox directory transport failed",
         recoverable: true,
         stage: "seed",
       });
