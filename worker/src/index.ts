@@ -106,6 +106,10 @@ import {
   type ScottySandboxConfigStub,
 } from "./sandbox-config-object";
 import { inspectPassiveSession, steerPassiveSession } from "./passive-session";
+import {
+  EnvironmentPutInputSchema,
+  type ProtectedEnvironmentBinding,
+} from "./environment-contracts";
 import { Sandbox as ScottySandbox } from "./session";
 
 export {
@@ -136,6 +140,41 @@ const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrat
 const decodeInstallationPiAuthRecord = Schema.decodeUnknownOption(InstallationPiAuthRecordSchema, {
   onExcessProperty: "error",
 });
+const decodeEnvironmentPutInput = Schema.decodeUnknownOption(EnvironmentPutInputSchema, {
+  onExcessProperty: "error",
+});
+const PROTECTED_ENVIRONMENT_BINDINGS: ReadonlyArray<ProtectedEnvironmentBinding> = [
+  {
+    name: "GH_TOKEN",
+    secret: true,
+    source: "session-bound GitHub sentinel",
+    destination: "process_environment",
+    managedBy: "scotty",
+  },
+  {
+    name: "GITHUB_SENTINEL",
+    secret: true,
+    source: "session-bound GitHub sentinel",
+    destination: "process_environment",
+    managedBy: "scotty",
+  },
+  {
+    name: "Pi provider credentials",
+    secret: true,
+    source: "session credential vault sentinels",
+    destination: "file",
+    path: "$PI_CODING_AGENT_DIR/auth.json",
+    managedBy: "scotty",
+  },
+  {
+    name: "Pi session transport credential",
+    secret: true,
+    source: "session-derived transport token",
+    destination: "file",
+    path: "$PI_CODING_AGENT_DIR/scotty-pi-session.token",
+    managedBy: "scotty",
+  },
+];
 const WorkerErrorSchema = Schema.Struct({
   _tag: Schema.optionalKey(Schema.String),
   operation: Schema.optionalKey(Schema.String),
@@ -457,6 +496,31 @@ app.post("/api/auth/pi", async (c) => {
     updatedAt: authority.updatedAt,
     providers: piProviderMetadata(authority.providers),
   });
+});
+
+app.get("/api/environment", async (c) => {
+  requireEnvironmentManager(c.get("auth"));
+  const environment = unwrapSandboxConfigRpc(await sandboxConfig(c.env).listEnvironment());
+  return c.json({ ...environment, protectedBindings: PROTECTED_ENVIRONMENT_BINDINGS });
+});
+
+app.put("/api/environment/:name", async (c) => {
+  requireEnvironmentManager(c.get("auth"));
+  requireJsonContentType(c.req.raw);
+  const input = decodeEnvironmentPutInput(await readJsonBody(c.req.raw));
+  if (Option.isNone(input)) throw badRequest("Environment variable input is invalid");
+  return c.json(
+    unwrapSandboxConfigRpc(
+      await sandboxConfig(c.env).putEnvironment(c.req.param("name"), input.value),
+    ),
+  );
+});
+
+app.delete("/api/environment/:name", async (c) => {
+  requireEnvironmentManager(c.get("auth"));
+  return c.json(
+    unwrapSandboxConfigRpc(await sandboxConfig(c.env).removeEnvironment(c.req.param("name"))),
+  );
 });
 
 app.get("/api/providers", async (c) => {
@@ -1025,6 +1089,14 @@ app.get("/devices", async (c) => {
   return authAsset(c.env, c.req.raw, "/devices.html");
 });
 
+app.get("/environment", async (c) => {
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  requireOwnerPrincipal(principal);
+  refreshClientAuthCookie(c, principal);
+  return authAsset(c.env, c.req.raw, "/environment.html");
+});
+
 app.get("/providers", async (c) => {
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
@@ -1139,6 +1211,11 @@ async function requireEvidenceBrowser(request: Request, env: Bindings): Promise<
   const principal = await requireClientCookieRequest(request, env);
   requireAuthScope(principal, "sessions:read");
   return principal;
+}
+
+function requireEnvironmentManager(principal: AuthPrincipal): void {
+  if (principal.kind === "root") return;
+  requireOwnerPrincipal(principal);
 }
 
 function requireRootPrincipal(principal: AuthPrincipal): void {

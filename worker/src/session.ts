@@ -1902,7 +1902,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
     const credential = yield* vault.require;
-    yield* containerAuth.ensurePiSession(record.id, credential);
+    yield* containerAuth.ensurePiSession(record.id, credential, record.environment);
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
@@ -2024,6 +2024,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       extraSkills: materialized.extraSkills,
       extraPackages: materialized.extraPackages,
       bundleRoot: materialized.bundleRoot,
+      environment: record.environment,
     };
     yield* containerAuth
       .seed(record.id, credential, seedOptions)
@@ -2044,7 +2045,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const credential = yield* vault.require;
     yield* this.materializeAndSeedSandboxProgram(record, credential, { initialPrompt: prompt });
     yield* containerAuth
-      .ensurePiSession(record.id, credential)
+      .ensurePiSession(record.id, credential, record.environment)
       .pipe(Effect.mapError(mapCreateUncertain("pi_health")));
     const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     return yield* this.updateForOperationProgram(nonce, (current) => ({
@@ -2273,6 +2274,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
     });
     if (!sandboxConfigStatus.ok)
       return yield* this.upstreamError("Session setup failed", sandboxConfigStatus.error, id);
+    const environmentSnapshot = yield* Effect.tryPromise({
+      try: () =>
+        this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).environmentSnapshot(),
+      catch: (cause) => this.upstreamError("Session setup failed", cause, id),
+    });
+    if (!environmentSnapshot.ok)
+      return yield* this.upstreamError("Session setup failed", environmentSnapshot.error, id);
 
     const initialWithBundle: SessionRecord = {
       ...verifiedInitial,
@@ -2280,6 +2288,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         digest: sandboxConfigStatus.value.activeDigest,
         manifestVersion: 1,
       },
+      environment: environmentSnapshot.value,
     };
 
     const hardCapSchedule = yield* Effect.result(
@@ -2366,7 +2375,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         : yield* vault.reconcile(installationRecord, sentinelSeed);
     yield* containerAuth.refreshPiAuth(record.id, credential);
     yield* containerAuth.stopPiSession();
-    yield* containerAuth.ensurePiSession(record.id, credential);
+    yield* containerAuth.ensurePiSession(record.id, credential, record.environment);
     return {
       id: record.id,
       updatedAt: credential.updatedAt,
@@ -2533,7 +2542,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* this.materializeAndSeedSandboxProgram(record, credential);
         yield* this.restorePiAndHatchProgram(
           operation.nonce,
-          containerAuth.ensurePiSession(record.id, credential),
+          containerAuth.ensurePiSession(record.id, credential, record.environment),
         );
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
@@ -4577,7 +4586,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           const credential = yield* vault.require;
           yield* this.restorePiAndHatchProgram(
             nonce,
-            containerAuth.ensurePiSession(record.id, credential),
+            containerAuth.ensurePiSession(record.id, credential, record.environment),
           );
         }),
         resumeRuntime,

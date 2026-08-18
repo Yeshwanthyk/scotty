@@ -18,6 +18,7 @@ import type {
 } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
+import type { EnvironmentSnapshot } from "../src/environment-contracts";
 import type { RepoVerifier } from "../src/repo-verifier";
 import type { SandboxConfigStatus } from "../src/sandbox-config-contracts";
 import type { SandboxConfigRpcResult } from "../src/sandbox-config-object";
@@ -288,6 +289,7 @@ export interface HarnessOptions {
   readonly sandboxNamespace?: Bindings["SANDBOX"];
   readonly sandboxConfigStatus?: SandboxConfigStatus;
   readonly sandboxConfigStatusFailure?: "rpc-error" | "throw";
+  readonly environmentSnapshot?: EnvironmentSnapshot;
   readonly installationPiAuthRecord?: InstallationPiAuthRecord;
   readonly installationPiAuthWriteFailure?: boolean;
   readonly sandboxBundleObjects?: ReadonlyArray<{
@@ -323,6 +325,7 @@ export interface SessionHarness {
   readonly runnerRequests: ReadonlyArray<Request>;
   readonly piRequests: ReadonlyArray<Request>;
   readonly rawPiRequests: ReadonlyArray<Request>;
+  readonly appliedEnvironments: ReadonlyArray<Record<string, string | undefined>>;
   readonly writtenFiles: ReadonlyArray<{
     readonly path: string;
     readonly content: string;
@@ -578,6 +581,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const deletedSchedules: string[] = [];
   const aborts: string[] = [];
   const commands: string[] = [];
+  const appliedEnvironments: Array<Record<string, string | undefined>> = [];
   const runnerOperations: RunnerOperation[] = [];
   const runnerRequests: Request[] = [];
   const piRequests: Request[] = [];
@@ -867,6 +871,22 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
             };
           return { ok: true, value: record };
         },
+        listEnvironment: async () => ({
+          ok: true,
+          value: { revision: 0, variables: [] },
+        }),
+        environmentSnapshot: async () => ({
+          ok: true,
+          value: options.environmentSnapshot ?? { revision: 0, variables: {} },
+        }),
+        putEnvironment: async (name) => ({
+          ok: true,
+          value: { name: String(name), configured: true, secret: false, revision: 1 },
+        }),
+        removeEnvironment: async (name) => ({
+          ok: true,
+          value: { name: String(name), removed: false, revision: 0 },
+        }),
         listRepos: async () => ({ ok: true, value: [] }),
         addRepo: async () => ({
           ok: true,
@@ -1174,8 +1194,9 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     },
     setEnvVars: {
-      value: async (_envVars: Record<string, string | undefined>): Promise<void> => {
+      value: async (envVars: Record<string, string | undefined>): Promise<void> => {
         events.push("host:setEnvVars");
+        appliedEnvironments.push({ ...envVars });
       },
     },
     startProcess: {
@@ -1325,6 +1346,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     piRequests,
     rawPiRequests,
     writtenFiles,
+    appliedEnvironments,
     r2DeletedKeys,
     artifactDeletedKeys,
     artifactKeys: () => [...artifactObjects.keys()],

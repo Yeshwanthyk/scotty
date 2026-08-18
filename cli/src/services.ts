@@ -18,6 +18,7 @@ export interface CliDependencies {
   stdout: Writer;
   stderr: Writer;
   prompt: (label: string) => string | null;
+  readStdin: () => Promise<string>;
   openBrowser: (url: string) => Promise<void>;
   run: (
     command: string[],
@@ -187,6 +188,7 @@ interface CliRuntimeShape {
   readonly stdout: Writer;
   readonly stderr: Writer;
   readonly prompt: (label: string) => string | null;
+  readonly readStdin: () => Promise<string>;
 }
 
 export class CliRuntime extends Context.Service<CliRuntime, CliRuntimeShape>()(
@@ -492,6 +494,7 @@ export const defaultDependencies = (): CliDependencies => ({
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
   prompt: (label) => globalThis.prompt(label),
+  readStdin: () => new Response(Bun.stdin.stream()).text(),
   openBrowser: async (url) => {
     const configuredBrowser = process.env.BROWSER?.trim();
     const command = configuredBrowser
@@ -602,6 +605,7 @@ export const cliLayer = (
       stdout: dependencies.stdout,
       stderr: dependencies.stderr,
       prompt: dependencies.prompt,
+      readStdin: dependencies.readStdin,
     }),
     Layer.succeed(HttpTransport)({
       fetch: (input, init) =>

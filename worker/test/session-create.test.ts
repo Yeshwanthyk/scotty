@@ -191,6 +191,24 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(harness.aborts, []);
   });
 
+  it("captures and injects the global environment snapshot without replacing Scotty bindings", async () => {
+    const environment = {
+      revision: 7,
+      variables: { PUBLIC_URL: "https://example.test", API_TOKEN: "session-secret" },
+    };
+    const harness = await createSessionHarness({ environmentSnapshot: environment });
+
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    assert.deepStrictEqual(harness.readRecord()?.environment, environment);
+    assert.strictEqual(harness.appliedEnvironments[0]?.PUBLIC_URL, "https://example.test");
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, "session-secret");
+    assert.strictEqual(harness.appliedEnvironments[0]?.SCOTTY_SESSION_ID, SESSION_ID);
+    const shell = harness.writtenFiles.find((file) => file.path.endsWith("/scotty-shell"));
+    assert.include(shell?.content ?? "", "export PUBLIC_URL='https://example.test'");
+    assert.include(shell?.content ?? "", "export API_TOKEN='session-secret'");
+  });
+
   it("seeds a new session from installation Pi authority", async () => {
     const installationPiAuthRecord = await makeInstallationPiAuthRecord(
       { openai: { type: "api_key", key: "installation-key" } },

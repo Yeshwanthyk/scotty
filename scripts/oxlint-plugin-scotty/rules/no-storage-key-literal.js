@@ -3,6 +3,7 @@ import { toRepoRelative } from "../utils.js";
 const allowedFiles = new Set([
   "worker/src/auth-registry.ts",
   "worker/src/credential-vault.ts",
+  "worker/src/environment-store.ts",
   "worker/src/runner-registry.ts",
   "worker/src/installation-repo-store.ts",
   "worker/src/sandbox-config-store.ts",

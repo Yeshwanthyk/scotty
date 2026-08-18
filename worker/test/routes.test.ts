@@ -70,6 +70,10 @@ const sandboxConfig = vi.hoisted(() => ({
   listRepos: vi.fn(),
   addRepo: vi.fn(),
   removeRepo: vi.fn(),
+  listEnvironment: vi.fn(),
+  environmentSnapshot: vi.fn(),
+  putEnvironment: vi.fn(),
+  removeEnvironment: vi.fn(),
 }));
 
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
@@ -531,6 +535,22 @@ describe("real Hono boundary", () => {
       },
     }));
     sandboxConfig.removeRepo.mockResolvedValue({ ok: true, value: true });
+    sandboxConfig.listEnvironment.mockResolvedValue({
+      ok: true,
+      value: { revision: 0, variables: [] },
+    });
+    sandboxConfig.environmentSnapshot.mockResolvedValue({
+      ok: true,
+      value: { revision: 0, variables: {} },
+    });
+    sandboxConfig.putEnvironment.mockImplementation(async (name, input) => ({
+      ok: true,
+      value: { name, secret: input.secret, configured: true, revision: 1 },
+    }));
+    sandboxConfig.removeEnvironment.mockImplementation(async (name) => ({
+      ok: true,
+      value: { name, removed: true, revision: 1 },
+    }));
   });
 
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
@@ -3826,6 +3846,104 @@ describe("real Hono boundary", () => {
     const response = await app.request("/", undefined, env());
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/sessions");
+  });
+
+  it("manages global environment through root and primary-device credentials without leaks", async () => {
+    sandboxConfig.listEnvironment.mockResolvedValue({
+      ok: true,
+      value: {
+        revision: 3,
+        variables: [
+          {
+            name: "API_TOKEN",
+            secret: true,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+          },
+          {
+            name: "PUBLIC_URL",
+            secret: false,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+            value: "https://example.test",
+          },
+        ],
+      },
+    });
+    const listed = await app.request(
+      "/api/environment",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(listed.status).toBe(200);
+    const listText = await listed.text();
+    expect(listText).toContain("PUBLIC_URL");
+    expect(listText).toContain("$PI_CODING_AGENT_DIR/auth.json");
+    expect(listText).not.toContain("real-secret");
+
+    const secret = "real-secret-never-return";
+    const updated = await app.request(
+      "http://localhost/api/environment/API_TOKEN",
+      {
+        method: "PUT",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ value: secret, secret: true }),
+      },
+      env(),
+    );
+    expect(updated.status).toBe(200);
+    expect(await updated.text()).not.toContain(secret);
+    expect(sandboxConfig.putEnvironment).toHaveBeenCalledWith("API_TOKEN", {
+      value: secret,
+      secret: true,
+    });
+
+    const removed = await app.request(
+      "/api/environment/PUBLIC_URL",
+      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(removed.status).toBe(200);
+    expect(sandboxConfig.removeEnvironment).toHaveBeenCalledWith("PUBLIC_URL");
+  });
+
+  it("protects environment browser routes and same-origin mutations", async () => {
+    const page = await app.request(
+      "/environment",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env({
+        assets: {
+          fetch: async () => new Response("environment page"),
+          connect: () => {
+            throw new Error("ASSETS.connect isn't used by route tests");
+          },
+        },
+      }),
+    );
+    expect(page.status).toBe(200);
+    expect(await page.text()).toBe("environment page");
+
+    const crossSite = await app.request(
+      "http://localhost/api/environment/SAFE_NAME",
+      {
+        method: "PUT",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "https://evil.example",
+          "sec-fetch-site": "cross-site",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ value: "hidden", secret: true }),
+      },
+      env(),
+    );
+    expect(crossSite.status).toBe(400);
+    expect(sandboxConfig.putEnvironment).not.toHaveBeenCalled();
   });
 
   it("does not expose the legacy PTY API", async () => {

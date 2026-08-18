@@ -14,6 +14,8 @@ import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
   decodeInitJournalJson,
+  decodeEnvironmentMutation,
+  decodeEnvironmentResponse,
   decodeInspectResponse,
   decodeOperationResponse,
   decodePiAuthReseedResponse,
@@ -96,6 +98,7 @@ import {
 import { TuiError, safeErrorMessage } from "../../tui/src/errors.ts";
 import { pairTuiClient, runTuiConsole } from "../../tui/src/main.ts";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
+import { ENVIRONMENT_NAME_PATTERN } from "../../worker/src/environment-contracts.ts";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const SANDBOX_PEER_HOST = "https://scotty.internal";
@@ -1135,6 +1138,102 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         description: "Start a Cloudflare session",
       },
     ]),
+  );
+
+  const envList = Command.make("list", {}, () =>
+    Effect.gen(function* () {
+      const { autoJson, options, runtime } = yield* commandContext();
+      const decoded = decodeEnvironmentResponse(
+        yield* requestJson(yield* credentials(options), "/api/environment"),
+      );
+      if (Option.isNone(decoded))
+        return yield* invalidResponse("Server returned an invalid environment view");
+      if (autoJson) outputJson(runtime.stdout, decoded.value);
+      else {
+        const lines = decoded.value.variables.map((variable) =>
+          variable.secret
+            ? `${variable.name}\tsecret\tconfigured`
+            : `${variable.name}\tplain\t${variable.value ?? ""}`,
+        );
+        runtime.stdout(
+          lines.length === 0 ? "No global environment variables.\n" : `${lines.join("\n")}\n`,
+        );
+      }
+    }),
+  ).pipe(Command.withAlias("ls"), Command.withDescription("List global environment variables"));
+
+  const envSet = Command.make(
+    "set",
+    {
+      name: Argument.string("name").pipe(Argument.withDescription("Environment variable name")),
+      value: Argument.string("value").pipe(Argument.optional),
+      secret: Flag.boolean("secret").pipe(
+        Flag.withDescription("Store a write-only secret read from stdin"),
+      ),
+      stdin: Flag.boolean("stdin").pipe(Flag.withDescription("Read the value from stdin")),
+    },
+    ({ name, secret, stdin, value }) =>
+      Effect.gen(function* () {
+        if (!ENVIRONMENT_NAME_PATTERN.test(name))
+          return yield* usage("Environment variable name is invalid");
+        if (secret && !stdin) return yield* usage("Secret values must be supplied with --stdin");
+        if (stdin && Option.isSome(value))
+          return yield* usage("Do not pass a value when using --stdin");
+        if (!stdin && Option.isNone(value))
+          return yield* usage("Environment set needs a value or --stdin");
+        const { autoJson, options, runtime } = yield* commandContext();
+        const inputValue = stdin
+          ? (yield* Effect.tryPromise({
+              try: runtime.readStdin,
+              catch: () =>
+                new CliError(
+                  "stdin_error",
+                  "Could not read the environment value from stdin",
+                  "Pipe the value to scotty env set and retry.",
+                  EXIT.GENERIC,
+                ),
+            })).replace(/\r?\n$/u, "")
+          : Option.getOrElse(value, () => "");
+        const decoded = decodeEnvironmentMutation(
+          yield* requestJson(
+            yield* credentials(options),
+            `/api/environment/${encodeURIComponent(name)}`,
+            { method: "PUT", body: JSON.stringify({ value: inputValue, secret }) },
+          ),
+        );
+        if (Option.isNone(decoded))
+          return yield* invalidResponse("Server returned an invalid environment update");
+        if (autoJson) outputJson(runtime.stdout, decoded.value);
+        else runtime.stdout(`Set ${name} as ${secret ? "secret" : "plain"}.\n`);
+      }),
+  ).pipe(Command.withDescription("Set a global environment variable"));
+
+  const envRemove = Command.make(
+    "remove",
+    { name: Argument.string("name").pipe(Argument.withDescription("Environment variable name")) },
+    ({ name }) =>
+      Effect.gen(function* () {
+        if (!ENVIRONMENT_NAME_PATTERN.test(name))
+          return yield* usage("Environment variable name is invalid");
+        const { autoJson, options, runtime } = yield* commandContext();
+        const decoded = decodeEnvironmentMutation(
+          yield* requestJson(
+            yield* credentials(options),
+            `/api/environment/${encodeURIComponent(name)}`,
+            { method: "DELETE" },
+          ),
+        );
+        if (Option.isNone(decoded))
+          return yield* invalidResponse("Server returned an invalid environment removal");
+        if (autoJson) outputJson(runtime.stdout, decoded.value);
+        else
+          runtime.stdout(decoded.value.removed ? `Removed ${name}.\n` : `${name} was not set.\n`);
+      }),
+  ).pipe(Command.withDescription("Remove a global environment variable"));
+
+  const environment = Command.make("env").pipe(
+    Command.withDescription("Manage global environment variables"),
+    Command.withSubcommands([envList, envSet, envRemove]),
   );
 
   const repoAdd = Command.make(
@@ -2203,6 +2302,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       upgrade,
       uninstall,
       repo,
+      environment,
       beam,
       list,
       inspect,

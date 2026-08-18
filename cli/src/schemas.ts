@@ -6,6 +6,10 @@ import {
   RepositoryRegistryRemovalResponseSchema,
 } from "../../protocol/repository";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
+import {
+  EnvironmentMutationResponseSchema,
+  EnvironmentViewSchema,
+} from "../../worker/src/environment-contracts";
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
@@ -343,6 +347,9 @@ export const RunnerRemovalResponseSchema = Schema.Struct({
   status: Schema.Literal("removed"),
 });
 
+export const EnvironmentResponseSchema = EnvironmentViewSchema;
+export const EnvironmentMutationSchema = EnvironmentMutationResponseSchema;
+
 export const RepositoryResponseSchema = RepositoryRegistryEntrySchema;
 export const RepositoriesResponseSchema = Schema.Array(RepositoryResponseSchema);
 export const RepositoryRemovalResponseSchema = RepositoryRegistryRemovalResponseSchema;
@@ -395,6 +402,12 @@ export const decodeRunnerStatusesResponse = Schema.decodeUnknownOption(
   RunnerStatusesResponseSchema,
 );
 export const decodeRunnerRemovalResponse = Schema.decodeUnknownOption(RunnerRemovalResponseSchema);
+export const decodeEnvironmentResponse = Schema.decodeUnknownOption(EnvironmentResponseSchema, {
+  onExcessProperty: "error",
+});
+export const decodeEnvironmentMutation = Schema.decodeUnknownOption(EnvironmentMutationSchema, {
+  onExcessProperty: "error",
+});
 export const decodeRepositoryResponse = Schema.decodeUnknownOption(RepositoryResponseSchema, {
   onExcessProperty: "error",
 });

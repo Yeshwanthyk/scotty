@@ -3,6 +3,17 @@ import { Effect, Result } from "effect";
 import type { Bindings } from "./bindings";
 import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
 import type { RepositoryRegistryEntry } from "../../protocol/repository";
+import type {
+  EnvironmentMutationResponse,
+  EnvironmentSnapshot,
+  EnvironmentVariablesView,
+} from "./environment-contracts";
+import {
+  durableObjectEnvironmentStorage,
+  EnvironmentStore,
+  type EnvironmentFailure,
+  environmentStoreLayer,
+} from "./environment-store";
 import {
   InstallationPiAuthStore,
   type InstallationPiAuthFailure,
@@ -30,7 +41,8 @@ export interface SandboxConfigRpcError {
   readonly reason:
     | SandboxConfigFailure["reason"]
     | InstallationPiAuthFailureReason
-    | InstallationRepoFailure["reason"];
+    | InstallationRepoFailure["reason"]
+    | EnvironmentFailure["reason"];
   readonly message: string;
 }
 
@@ -44,7 +56,8 @@ const sandboxConfigRpcError = ({
 }:
   | SandboxConfigFailure
   | InstallationPiAuthFailure
-  | InstallationRepoFailure): SandboxConfigRpcError => ({
+  | InstallationRepoFailure
+  | EnvironmentFailure): SandboxConfigRpcError => ({
   reason,
   message,
 });
@@ -53,6 +66,7 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
   private readonly configLayer;
   private readonly piAuthLayer;
   private readonly repoLayer;
+  private readonly environmentLayer;
 
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
@@ -63,6 +77,7 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
       durableObjectInstallationPiAuthStorage(ctx.storage),
     );
     this.repoLayer = installationRepoStoreLayer(durableObjectInstallationRepoStorage(ctx.storage));
+    this.environmentLayer = environmentStoreLayer(durableObjectEnvironmentStorage(ctx.storage));
   }
 
   status(): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
@@ -94,6 +109,26 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
   removeRepo(repo: unknown): Promise<SandboxConfigRpcResult<boolean>> {
     return this.#runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.remove(repo)));
   }
+  listEnvironment(): Promise<SandboxConfigRpcResult<EnvironmentVariablesView>> {
+    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.list()));
+  }
+
+  environmentSnapshot(): Promise<SandboxConfigRpcResult<EnvironmentSnapshot>> {
+    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.snapshot()));
+  }
+
+  putEnvironment(
+    name: unknown,
+    input: unknown,
+  ): Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>> {
+    return this.#runEnvironment(
+      Effect.flatMap(EnvironmentStore, (store) => store.put(name, input)),
+    );
+  }
+
+  removeEnvironment(name: unknown): Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>> {
+    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.remove(name)));
+  }
 
   async #runConfig<A>(
     operation: Effect.Effect<A, SandboxConfigFailure, SandboxConfigStore>,
@@ -114,6 +149,19 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
     // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
     const result = await Effect.runPromise(
       operation.pipe(Effect.provide(this.piAuthLayer), Effect.result),
+    );
+    return Result.match(result, {
+      onFailure: (error) => ({ ok: false, error: sandboxConfigRpcError(error) }),
+      onSuccess: (value) => ({ ok: true, value }),
+    });
+  }
+
+  async #runEnvironment<A>(
+    operation: Effect.Effect<A, EnvironmentFailure, EnvironmentStore>,
+  ): Promise<SandboxConfigRpcResult<A>> {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
+    const result = await Effect.runPromise(
+      operation.pipe(Effect.provide(this.environmentLayer), Effect.result),
     );
     return Result.match(result, {
       onFailure: (error) => ({ ok: false, error: sandboxConfigRpcError(error) }),
@@ -147,6 +195,15 @@ export type ScottySandboxConfigStub = {
   readonly listRepos: () => Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>>;
   readonly addRepo: (input: unknown) => Promise<SandboxConfigRpcResult<RepositoryRegistryEntry>>;
   readonly removeRepo: (repo: unknown) => Promise<SandboxConfigRpcResult<boolean>>;
+  readonly listEnvironment: () => Promise<SandboxConfigRpcResult<EnvironmentVariablesView>>;
+  readonly environmentSnapshot: () => Promise<SandboxConfigRpcResult<EnvironmentSnapshot>>;
+  readonly putEnvironment: (
+    name: unknown,
+    input: unknown,
+  ) => Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>>;
+  readonly removeEnvironment: (
+    name: unknown,
+  ) => Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>>;
 };
 
 export interface ScottySandboxConfigNamespace {

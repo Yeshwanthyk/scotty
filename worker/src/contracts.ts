@@ -9,6 +9,7 @@ import {
   isRepositoryIdentity,
 } from "../../protocol/repository";
 import { SandboxDigestSchema } from "./sandbox-config-contracts";
+import { EnvironmentSnapshotSchema } from "./environment-contracts";
 
 export const DEFAULT_HARD_CAP_SECONDS = 4 * 60 * 60;
 export const MIN_HARD_CAP_SECONDS = 60;
@@ -183,6 +184,7 @@ export const SessionRecordSchema = Schema.Struct({
   lastAgentEventAt: Schema.optional(Schema.String),
   failure: Schema.optional(SessionFailureSchema),
   sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
+  environment: Schema.optionalKey(EnvironmentSnapshotSchema),
 });
 export type SessionRecord = typeof SessionRecordSchema.Type;
 

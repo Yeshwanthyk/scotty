@@ -60,6 +60,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
+        assert.include(rootHelp, "env");
         assert.include(rootHelp, "sandbox");
         assert.include(rootHelp, "runner");
         assert.include(rootHelp, "tui");
@@ -104,6 +105,13 @@ describe("Effect command tree", () => {
         assert.include(repo.stdout.join(""), "list");
         assert.include(repo.stdout.join(""), "remove");
         assert.strictEqual(repo.stderr.join(""), "");
+
+        const environment = run(["env", "--help"]);
+        assert.strictEqual(yield* environment.effect, EXIT.OK);
+        assert.include(environment.stdout.join(""), "list");
+        assert.include(environment.stdout.join(""), "set");
+        assert.include(environment.stdout.join(""), "remove");
+        assert.strictEqual(environment.stderr.join(""), "");
 
         const auth = run(["auth", "--help"]);
         assert.strictEqual(yield* auth.effect, EXIT.OK);

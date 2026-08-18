@@ -3636,3 +3636,108 @@ describe("beam down and sandbox configuration", () => {
     });
   });
 });
+
+describe("environment commands", () => {
+  test("sets stdin secrets and removes variables with stable JSON", async () => {
+    const requests: Request[] = [];
+    const secret = "stdin-secret-never-echo";
+    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.method === "PUT")
+        return Response.json({
+          name: "API_TOKEN",
+          secret: true,
+          configured: true,
+          revision: 2,
+        });
+      return Response.json({ name: "API_TOKEN", removed: true, revision: 3 });
+    };
+    const h = harness({ readStdin: async () => `${secret}\n`, fetch });
+
+    expect(
+      await main(
+        ["env", "set", "API_TOKEN", "--secret", "--stdin", "--host", "https://worker.example"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual({
+      name: "API_TOKEN",
+      secret: true,
+      configured: true,
+      revision: 2,
+    });
+    const put = requests[0];
+    expect(new URL(put.url).pathname).toBe("/api/environment/API_TOKEN");
+    expect(await put.clone().json()).toEqual({ value: secret, secret: true });
+    expect(put.url).not.toContain(secret);
+    expect(h.stdout.join("")).not.toContain(secret);
+    expect(h.stderr.join("")).not.toContain(secret);
+
+    const removed = harness({ fetch });
+    expect(
+      await main(["env", "remove", "API_TOKEN", "--host", "https://worker.example"], removed.deps),
+    ).toBe(EXIT.OK);
+    expect(removed.json()).toEqual({ name: "API_TOKEN", removed: true, revision: 3 });
+  });
+
+  test("lists plain values and write-only secret metadata", async () => {
+    const secret = "must-not-appear";
+    const h = harness({
+      fetch: async () =>
+        Response.json({
+          revision: 4,
+          variables: [
+            {
+              name: "API_TOKEN",
+              secret: true,
+              configured: true,
+              updatedAt: "2026-08-20T12:00:00.000Z",
+            },
+            {
+              name: "PUBLIC_URL",
+              secret: false,
+              configured: true,
+              updatedAt: "2026-08-20T12:00:00.000Z",
+              value: "https://example.test",
+            },
+          ],
+          protectedBindings: [],
+        }),
+    });
+    expect(await main(["env", "list", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
+    expect(h.json().variables[0]).toEqual({
+      name: "API_TOKEN",
+      secret: true,
+      configured: true,
+      updatedAt: "2026-08-20T12:00:00.000Z",
+    });
+    expect(h.stdout.join("")).not.toContain(secret);
+  });
+
+  test("requires secret values on stdin before transport", async () => {
+    let fetches = 0;
+    const h = harness({
+      fetch: async () => {
+        fetches += 1;
+        return Response.json({});
+      },
+    });
+    expect(
+      await main(
+        [
+          "env",
+          "set",
+          "API_TOKEN",
+          "process-argument-secret",
+          "--secret",
+          "--host",
+          "https://worker.example",
+        ],
+        h.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("Secret values must be supplied with --stdin");
+    expect(fetches).toBe(0);
+  });
+});

@@ -78,6 +78,29 @@ describe("Sandbox resume orchestration", () => {
     assert.deepStrictEqual(harness.aborts, []);
   });
 
+  it("reapplies the session environment snapshot instead of current global values", async () => {
+    const retained = {
+      revision: 4,
+      variables: { RELEASE_CHANNEL: "retained", API_TOKEN: "retained-secret" },
+    };
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: sleepingRecord({ environment: retained }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+      },
+      environmentSnapshot: {
+        revision: 5,
+        variables: { RELEASE_CHANNEL: "new-global", API_TOKEN: "new-secret" },
+      },
+    });
+
+    await harness.sandbox.resumeScottySession();
+
+    assert.deepStrictEqual(harness.readRecord()?.environment, retained);
+    assert.strictEqual(harness.appliedEnvironments[0]?.RELEASE_CHANNEL, "retained");
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, "retained-secret");
+  });
+
   it("applies only installation Pi authority newer than the session vault", async () => {
     for (const [updatedAt, expectedAccess] of [
       ["2025-12-31T00:00:00.000Z", "stored-access-token"],
