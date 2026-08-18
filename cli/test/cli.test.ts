@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
+import { AuthError } from "alchemy/Auth";
 import { EXIT, main, STANDARD_TOOLSET, VERSION, type CliDependencies } from "../scotty";
 import { BeamUpRequestSchema } from "../src/schemas";
 import { Schema } from "effect";
@@ -1614,6 +1615,88 @@ describe("configuration and transport", () => {
       },
     });
     expect(await Bun.file(configPath).exists()).toBe(true);
+    expect(await Bun.file(join(home, ".scotty/diagnostics/uninstall-apply.json")).exists()).toBe(
+      false,
+    );
+  });
+
+  test("uninstall host failures keep the public envelope and persist prototype error details", async () => {
+    const home = await temporaryDirectory();
+    const configPath = join(home, ".scotty.json");
+    const secret = "synthetic-uninstall-secret-token";
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        installationName: "clean-room",
+        profile: "clean-room",
+        accountId: "0123456789abcdef0123456789abcdef",
+      }),
+      { mode: 0o600 },
+    );
+
+    class PrototypeHostError extends Error {
+      readonly cause: unknown;
+
+      constructor(cause: unknown) {
+        super();
+        this.cause = cause;
+      }
+    }
+    Object.defineProperty(PrototypeHostError.prototype, "message", {
+      value: `deployment apply failed with token ${secret}`,
+      configurable: true,
+    });
+
+    const h = harness({
+      home,
+      env: { CLOUDFLARE_API_TOKEN: secret },
+      uninstallInstallation: async () => {
+        throw new PrototypeHostError(
+          new AuthError({
+            message: `No credentials configured for 'cloudflare'; non-interactive ${secret}`,
+          }),
+        );
+      },
+    });
+
+    expect(await main(["uninstall", "--yes", "--json"], h.deps)).toBe(EXIT.GENERIC);
+    const envelope = h.error();
+    expect(Object.keys(envelope)).toEqual(["error"]);
+    expect(Object.keys(envelope.error).sort()).toEqual(["code", "hint", "message"]);
+    expect(envelope.error).toMatchObject({
+      code: "installation_uninstall_failed",
+      message: "Could not fully uninstall the Scotty installation",
+    });
+    expect(envelope.error.hint).toMatch(
+      /^Inspect Cloudflare resources, then rerun scotty uninstall with the same options\./u,
+    );
+    expect(envelope.error.hint).toContain(
+      `Diagnostic: ${join(home, ".scotty/diagnostics/uninstall-apply.json")}`,
+    );
+    expect(envelope.error).not.toHaveProperty("cause");
+    expect(envelope.error).not.toHaveProperty("diagnostic");
+    expect(h.stderr.join("")).not.toContain(secret);
+    expect(await Bun.file(configPath).exists()).toBe(true);
+
+    const diagnosticPath = join(home, ".scotty", "diagnostics", "uninstall-apply.json");
+    expect((await stat(diagnosticPath)).mode & 0o777).toBe(0o600);
+    const diagnosticText = await readFile(diagnosticPath, "utf8");
+    expect(diagnosticText).not.toContain(secret);
+    expect(diagnosticText).toContain("[redacted-secret]");
+    expect(JSON.parse(diagnosticText)).toMatchObject({
+      operation: "uninstall",
+      phase: "apply",
+      context: { installationName: "clean-room", profile: "clean-room" },
+      cause: {
+        name: "Error",
+        message: "deployment apply failed with token [redacted-secret]",
+        cause: {
+          name: "AuthError",
+          message: "No credentials configured for 'cloudflare'; non-interactive [redacted-secret]",
+        },
+      },
+    });
   });
 
   test("uninstall passes the explicit data deletion choice", async () => {

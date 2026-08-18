@@ -73,6 +73,9 @@ jobs:
       - name: Smoke native compiled release artifact
         if: matrix.platform == 'linux' && matrix.architecture == 'x64'
         run: dist/release/scotty-linux-x64 tui --help
+      - name: Prove native release deployment packaging in a clean room
+        if: matrix.platform == 'linux' && matrix.architecture == 'x64'
+        run: node scripts/check-cli-standalone-deploy.mjs dist/release/scotty-linux-x64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: scotty-${{ matrix.platform }}-${{ matrix.architecture }}

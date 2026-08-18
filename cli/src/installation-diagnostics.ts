@@ -23,7 +23,7 @@ export class InstallationHostFailure extends Data.TaggedError("InstallationHostF
   readonly cause: unknown;
 }> {}
 
-export type InstallationDiagnosticOperation = "init" | "deploy";
+export type InstallationDiagnosticOperation = "init" | "deploy" | "uninstall";
 export type InstallationDiagnosticPhase = "plan" | "create" | "apply";
 
 export interface InstallationDiagnosticContext {
@@ -64,9 +64,31 @@ const primitiveCauseMessage = (value: typeof PrimitiveCause.Type): string => {
   return boundText(value ? "true" : "false");
 };
 
+const hostErrorProperty = (value: object, key: "name" | "message" | "cause"): unknown => {
+  let current: object | null = value;
+  for (let depth = 0; current !== null && depth < 8; depth += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, key);
+    if (descriptor !== undefined && "value" in descriptor) return descriptor.value;
+    current = Object.getPrototypeOf(current);
+  }
+  return undefined;
+};
+
+const hostErrorShape = (value: unknown): unknown => {
+  if ((typeof value !== "object" || value === null) && typeof value !== "function") return value;
+  const name = hostErrorProperty(value, "name");
+  const message = hostErrorProperty(value, "message");
+  const cause = hostErrorProperty(value, "cause");
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(message === undefined ? {} : { message }),
+    ...(cause === undefined ? {} : { cause }),
+  };
+};
+
 const projectCause = (value: unknown, depth = 0): InstallationDiagnosticCause => {
   if (depth > 2) return {};
-  const decoded = decodeHostErrorShape(value);
+  const decoded = decodeHostErrorShape(hostErrorShape(value));
   if (Option.isSome(decoded)) {
     return {
       ...(decoded.value.name === undefined ? {} : { name: boundText(decoded.value.name) }),
