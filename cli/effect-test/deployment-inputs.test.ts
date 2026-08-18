@@ -61,6 +61,7 @@ describe("standalone deployment archive", () => {
     expect(DEPLOYMENT_PACKAGING.contextPath).toBe(".alchemy/scotty-container-context");
     expect(DEPLOYMENT_ENTRIES.map((entry) => entry.path)).toEqual(DEPLOYMENT_INPUTS);
     expect(DEPLOYMENT_INPUTS).toContain("worker/public");
+    expect(DEPLOYMENT_INPUTS).toContain("worker/prebuilt");
     expect(ARCHIVE_PUBLIC_ASSETS).toEqual(["worker/public"]);
     expect(CONTAINER_INPUTS).not.toContain("worker/public");
     expect(CONTAINER_STATIC_INPUTS).not.toContain("worker/public");

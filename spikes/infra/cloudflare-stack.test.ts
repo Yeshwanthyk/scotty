@@ -14,6 +14,7 @@ import {
   type CloudflareStackConfig,
 } from "../../infra/cloudflare-stack.ts";
 import { makeInstallationTopology, type AdoptionManifest } from "../../infra/installation.ts";
+import { PREBUILT_MAIN_WORKER_ENTRY } from "../../cli/src/prebuilt-worker-bundles.ts";
 import { readOwnedPreviewTopologyDeletion } from "../../infra/preview-ownership.ts";
 
 const source = readFileSync(new URL("../../infra/cloudflare-stack.ts", import.meta.url), "utf8");
@@ -147,6 +148,12 @@ describe("Cloudflare stack guard", () => {
 });
 
 describe("Cloudflare stack topology", () => {
+  it("switches worker entrypoints to prebuilt bundles for embedded deployment", () => {
+    const topology = makeCloudflareStackTopology(installation, true);
+    assert.strictEqual(topology.worker.main, PREBUILT_MAIN_WORKER_ENTRY);
+    assert.strictEqual(topology.worker.bundle, false);
+  });
+
   it("derives every physical name from the required installation name", () => {
     assert.strictEqual(CLOUDFLARE_STAGE, "production");
     assert.deepEqual(installation, {
@@ -165,6 +172,8 @@ describe("Cloudflare stack topology", () => {
     assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["GH_TOKEN", "PI_AUTH_JSON", "SCOTTY_TOKEN"]);
     const topology = makeCloudflareStackTopology(installation);
     assert.strictEqual(topology.worker.name, "scotty-home-worker");
+    assert.strictEqual(topology.worker.main, "worker/src/index.ts");
+    assert.notProperty(topology.worker, "bundle");
     assert.strictEqual(topology.runnerDurableObject.workerName, "scotty-home-runner");
     assert.strictEqual(topology.container.name, "scotty-home-sandbox");
     assert.strictEqual(topology.kv.title, "scotty-home-sessions");
@@ -463,6 +472,16 @@ describe("Cloudflare stack source contract", () => {
     assert.notMatch(source, /SecretsStore|WriteOnlySecret|secret_text|\bvalue\s*:/u);
     assert.match(source, /worker\.bind\("InheritedWorkerSecrets"/u);
     assert.match(source, /type: "inherit", name/u);
+  });
+
+  it("uses prebuilt runner entrypoints when embedded deployment is enabled", () => {
+    const runnerWorkerSource = readFileSync(
+      new URL("../../worker/src/runner-worker.ts", import.meta.url),
+      "utf8",
+    );
+    assert.match(runnerWorkerSource, /PREBUILT_RUNNER_WORKER_ENTRY/u);
+    assert.match(runnerWorkerSource, /prebuiltWorkers === true/u);
+    assert.match(runnerWorkerSource, /bundle: false as const/u);
   });
 
   it("hosts the Effect Runner only in the private cross-script Worker", () => {

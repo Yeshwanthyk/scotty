@@ -57,6 +57,10 @@ import {
   isDeploymentArchiveFileName,
   prepareContainerContext,
 } from "./deployment-packaging.mjs";
+import {
+  missingPrebuiltWorkerEntries,
+  rewritePrebuiltRunnerStackPlaceholders,
+} from "./prebuilt-worker-bundles.ts";
 import type {
   InstallationApplyRequest,
   InstallationCreateRequest,
@@ -219,14 +223,50 @@ const sourceRoot = (): string => resolve(import.meta.dir, "../..");
 const prepareDeploymentRoot = async (): Promise<{
   readonly root: string;
   readonly cleanup: () => Promise<void>;
+  readonly prebuiltWorkers: boolean;
 }> => {
   const archive = embeddedDeploymentArchive();
-  if (!archive) return { root: sourceRoot(), cleanup: async () => undefined };
+  if (!archive)
+    return { root: sourceRoot(), cleanup: async () => undefined, prebuiltWorkers: false };
   const root = await mkdtemp(join(tmpdir(), "scotty-deployment-"));
-  const bytes = await archive.arrayBuffer();
-  await new Bun.Archive(bytes).extract(root);
-  await mkdir(join(root, ".alchemy"), { recursive: true });
-  return { root, cleanup: () => rm(root, { recursive: true, force: true }) };
+  let prepared = false;
+  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: embedded archive extraction must remove partial roots on every exit
+  try {
+    const bytes = await archive.arrayBuffer();
+    await new Bun.Archive(bytes).extract(root);
+    const missing = missingPrebuiltWorkerEntries(root);
+    if (missing.length > 0) {
+      // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: embedded archives may never fall back to source-mode Worker bundling
+      throw new InstallationDeploymentError({
+        message: `Embedded deployment archive is missing prebuilt worker bundles: ${missing.join(", ")}`,
+      });
+    }
+    await mkdir(join(root, ".alchemy"), { recursive: true });
+    prepared = true;
+    return {
+      root,
+      cleanup: () => rm(root, { recursive: true, force: true }),
+      prebuiltWorkers: true,
+    };
+  } finally {
+    if (!prepared) await rm(root, { recursive: true, force: true });
+  }
+};
+
+const preparePrebuiltWorkerDeployment = async (
+  root: string,
+  prebuiltWorkers: boolean,
+  installation: ReturnType<typeof makeInstallationTopology>,
+): Promise<void> => {
+  if (!prebuiltWorkers) return;
+  const missing = missingPrebuiltWorkerEntries(root);
+  if (missing.length > 0) {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: embedded archive must ship prebuilt worker bundles
+    throw new InstallationDeploymentError({
+      message: `Embedded deployment archive is missing prebuilt worker bundles: ${missing.join(", ")}`,
+    });
+  }
+  await rewritePrebuiltRunnerStackPlaceholders(root, installation.stackName, CLOUDFLARE_STAGE);
 };
 
 const prepareInstallationContainerContext = async (root: string): Promise<void> => {
@@ -386,7 +426,11 @@ const previewConfiguration = (
   return decoded.value;
 };
 
-const makeStack = (request: InstallationDeployRequest, adoption: AdoptionManifest | undefined) => {
+const makeStack = (
+  request: InstallationDeployRequest,
+  adoption: AdoptionManifest | undefined,
+  prebuiltWorkers: boolean,
+) => {
   const installation = makeInstallationTopology(
     request.installationName,
     adoption,
@@ -405,6 +449,7 @@ const makeStack = (request: InstallationDeployRequest, adoption: AdoptionManifes
       installation,
       resourceConfirmation: expectedCloudflareResourceConfirmation(installation),
       approval: expectedCloudflareStackApproval(installation),
+      prebuiltWorkers,
     }).pipe(Alchemy.AdoptPolicy.adopt(adoption !== undefined)),
   );
   return { installation, stack };
@@ -488,8 +533,9 @@ const planWithProfile = async (
   request: InstallationDeployRequest,
   root: string,
   adoption: AdoptionManifest | undefined,
+  prebuiltWorkers: boolean,
 ): Promise<InstallationPlan> => {
-  const { stack } = makeStack(request, adoption);
+  const { stack } = makeStack(request, adoption, prebuiltWorkers);
   return runWithProfile(request.profile, root, () =>
     provideAlchemy(
       evalStack(
@@ -511,8 +557,9 @@ const deployWithProfile = async (
   request: InstallationApplyRequest,
   root: string,
   adoption: AdoptionManifest | undefined,
+  prebuiltWorkers: boolean,
 ): Promise<InstallationResult> => {
-  const { installation, stack } = makeStack(request, adoption);
+  const { installation, stack } = makeStack(request, adoption, prebuiltWorkers);
   return runWithProfile(request.profile, root, () =>
     provideAlchemy(
       evalStack(
@@ -780,6 +827,14 @@ const inspectWithProfile = async (
   );
 };
 
+const prepareInstallationDeployment = async (
+  deployment: { readonly root: string; readonly prebuiltWorkers: boolean },
+  installation: ReturnType<typeof makeInstallationTopology>,
+): Promise<void> => {
+  await prepareInstallationContainerContext(deployment.root);
+  await preparePrebuiltWorkerDeployment(deployment.root, deployment.prebuiltWorkers, installation);
+};
+
 export async function planInstallation(
   request: InstallationDeployRequest,
 ): Promise<InstallationPlan> {
@@ -790,8 +845,14 @@ export async function planInstallation(
       request.adoptionManifestPath,
       request.installationName,
     );
-    await prepareInstallationContainerContext(deployment.root);
-    return await planWithProfile(request, deployment.root, adoption);
+    const installation = makeInstallationTopology(
+      request.installationName,
+      adoption,
+      previewConfiguration(request),
+      request.evidenceEnabled === true,
+    );
+    await prepareInstallationDeployment(deployment, installation);
+    return await planWithProfile(request, deployment.root, adoption, deployment.prebuiltWorkers);
   } finally {
     await deployment.cleanup();
   }
@@ -807,8 +868,14 @@ export async function deployInstallation(
       request.adoptionManifestPath,
       request.installationName,
     );
-    await prepareInstallationContainerContext(deployment.root);
-    return await deployWithProfile(request, deployment.root, adoption);
+    const installation = makeInstallationTopology(
+      request.installationName,
+      adoption,
+      previewConfiguration(request),
+      request.evidenceEnabled === true,
+    );
+    await prepareInstallationDeployment(deployment, installation);
+    return await deployWithProfile(request, deployment.root, adoption, deployment.prebuiltWorkers);
   } finally {
     await deployment.cleanup();
   }
@@ -820,8 +887,14 @@ export async function planCreateInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
   try {
-    await prepareInstallationContainerContext(deployment.root);
-    return await planWithProfile(request, deployment.root, undefined);
+    const installation = makeInstallationTopology(
+      request.installationName,
+      undefined,
+      previewConfiguration(request),
+      request.evidenceEnabled === true,
+    );
+    await prepareInstallationDeployment(deployment, installation);
+    return await planWithProfile(request, deployment.root, undefined, deployment.prebuiltWorkers);
   } finally {
     await deployment.cleanup();
   }
@@ -833,7 +906,6 @@ export async function createInstallation(
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
   try {
-    await prepareInstallationContainerContext(deployment.root);
     const deployRequest = {
       installationName: request.installationName,
       profile: request.profile,
@@ -842,7 +914,19 @@ export async function createInstallation(
         : { previewBase: request.previewBase, previewZoneId: request.previewZoneId }),
       ...(request.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
     };
-    const plan = await planWithProfile(deployRequest, deployment.root, undefined);
+    const installation = makeInstallationTopology(
+      request.installationName,
+      undefined,
+      previewConfiguration(deployRequest),
+      request.evidenceEnabled === true,
+    );
+    await prepareInstallationDeployment(deployment, installation);
+    const plan = await planWithProfile(
+      deployRequest,
+      deployment.root,
+      undefined,
+      deployment.prebuiltWorkers,
+    );
     if (
       plan.accountId !== request.expectedAccountId ||
       plan.fingerprint !== request.expectedPlanFingerprint
@@ -896,6 +980,7 @@ export async function createInstallation(
             },
             deployment.root,
             undefined,
+            deployment.prebuiltWorkers,
           );
     if (plan.changes.length > 0)
       await inspectWithProfile(
@@ -922,14 +1007,14 @@ export async function uninstallInstallation(
       request.adoptionManifestPath,
       request.installationName,
     );
-    await prepareInstallationContainerContext(deployment.root);
     const installation = makeInstallationTopology(
       request.installationName,
       adoption,
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
-    const { stack } = makeStack(request, adoption);
+    await prepareInstallationDeployment(deployment, installation);
+    const { stack } = makeStack(request, adoption, deployment.prebuiltWorkers);
     return await runWithProfile(request.profile, deployment.root, () =>
       provideAlchemy(
         evalStack(
