@@ -146,6 +146,7 @@ import {
   type DownManifest,
   type OperationKind,
   type SessionCreateSetupStage,
+  type SessionEnvironmentStatus,
   type SessionRecord,
   type SessionStatus,
   type SessionView,
@@ -218,6 +219,12 @@ const EVIDENCE_PREVIEW_BASE_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const EVIDENCE_CLEANUP_RETRY_SECONDS = 5;
 const EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS = 5_000;
+const ENVIRONMENT_REFRESH_RETRY_SECONDS = 5;
+
+interface EnvironmentRefreshRetryPayload {
+  readonly sessionId: string;
+  readonly nonce: string;
+}
 const SANDBOX_PREVIEW_PROXY_HEADER = "x-sandbox-preview-proxy";
 const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
@@ -2350,6 +2357,164 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return toSessionView(toProjection(record, new Date(now)), now);
   });
 
+  private readonly resolveEnvironmentSnapshotProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+  ) {
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).environmentSnapshot(
+          record.repo,
+        ),
+      catch: (cause) => this.upstreamError("Environment status failed", cause, record.id),
+    });
+    if (!result.ok)
+      return yield* this.upstreamError("Environment status failed", result.error, record.id);
+    return result.value;
+  });
+
+  private readonly environmentStatusProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record?: SessionRecord,
+  ) {
+    const current = record ?? (yield* this.requireRecordProgram());
+    const effective = yield* this.resolveEnvironmentSnapshotProgram(current);
+    const appliedRevision = current.environment?.revision ?? null;
+    return {
+      id: current.id,
+      title: current.title,
+      repo: current.repo,
+      status: current.status,
+      appliedRevision,
+      currentEffectiveRevision: effective.revision,
+      stale: appliedRevision !== effective.revision,
+      refreshable:
+        current.status === "warm" &&
+        current.execution.provider === "cloudflare" &&
+        current.operation === null,
+    };
+  });
+
+  private readonly armEnvironmentRefreshRetryProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: EnvironmentRefreshRetryPayload,
+  ) {
+    yield* Effect.sync(() => this.deleteSchedules("retryEnvironmentRefresh"));
+    yield* hostEffect("schedule", () =>
+      this.schedule(ENVIRONMENT_REFRESH_RETRY_SECONDS, "retryEnvironmentRefresh", payload),
+    );
+  });
+
+  private readonly continueEnvironmentRefreshProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: EnvironmentRefreshRetryPayload,
+  ) {
+    let record = yield* this.requireRecordProgram();
+    if (
+      record.id !== payload.sessionId ||
+      record.operation?.kind !== "refresh" ||
+      record.operation.nonce !== payload.nonce
+    )
+      return yield* conflict("Session environment refresh lease changed");
+    if (record.operation.environmentRefreshPhase === undefined)
+      record = yield* this.updateForOperationProgram(payload.nonce, (current) => ({
+        ...current,
+        operation: current.operation && {
+          ...current.operation,
+          environmentRefreshPhase: "pending",
+        },
+      }));
+    const next = yield* this.resolveEnvironmentSnapshotProgram(record);
+    if (record.environment?.revision === next.revision) {
+      record = yield* this.releaseOperationProgram(payload.nonce);
+      return yield* this.environmentStatusProgram(record);
+    }
+    const priorAppliedEnvironment = record.operation?.environmentRefreshTarget;
+    record = yield* this.updateForOperationProgram(payload.nonce, (current) => ({
+      ...current,
+      operation: current.operation && {
+        ...current.operation,
+        environmentRefreshPhase: "applying",
+        environmentRefreshTarget: next,
+      },
+    }));
+    const vault = yield* CredentialVault;
+    const containerAuth = yield* ContainerAuth;
+    const credential = yield* vault.require;
+    const priorEnvironment =
+      priorAppliedEnvironment === undefined
+        ? record.environment
+        : {
+            revision: record.environment?.revision ?? priorAppliedEnvironment.revision,
+            variables: {
+              ...record.environment?.variables,
+              ...priorAppliedEnvironment.variables,
+            },
+          };
+    yield* containerAuth.refreshEnvironment(record.id, credential, priorEnvironment, next);
+    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    const committed = yield* this.updateForOperationProgram(payload.nonce, (current) => ({
+      ...current,
+      environment: next,
+      operation: null,
+      failure: undefined,
+      updatedAt,
+    }));
+    yield* Effect.sync(() => this.deleteSchedules("retryEnvironmentRefresh"));
+    return yield* this.environmentStatusProgram(committed);
+  });
+
+  private readonly failEnvironmentRefreshProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+  ) {
+    const current = yield* this.requireRecordProgram();
+    const failed = yield* this.failOperationProgram(
+      nonce,
+      "environment_refresh_failed",
+      "Environment refresh failed and retry could not be scheduled",
+      Boolean(current.backup?.current),
+    );
+    yield* this.destroyFailedRuntimeProgram(failed.id);
+  });
+
+  private readonly refreshEnvironmentProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const current = yield* this.requireRecordProgram();
+    if (current.execution.provider !== "cloudflare")
+      return yield* wrongState(
+        current.status,
+        "refresh environment",
+        "Only Cloudflare sessions can be refreshed",
+      );
+    const operation = yield* this.acquireOperationProgram("refresh", ["warm"]);
+    const payload = { sessionId: current.id, nonce: operation.nonce };
+    const refreshed = yield* Effect.result(this.continueEnvironmentRefreshProgram(payload));
+    if (Result.isSuccess(refreshed)) return refreshed.success;
+    const armed = yield* Effect.result(this.armEnvironmentRefreshRetryProgram(payload));
+    if (Result.isFailure(armed)) yield* this.failEnvironmentRefreshProgram(operation.nonce);
+    return yield* this.upstreamError("Environment refresh failed", refreshed.failure, current.id);
+  });
+
+  private readonly retryEnvironmentRefreshProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: EnvironmentRefreshRetryPayload,
+  ) {
+    const current = yield* this.readRecordProgram();
+    if (
+      current?.id !== payload.sessionId ||
+      current.operation?.kind !== "refresh" ||
+      current.operation.nonce !== payload.nonce
+    )
+      return;
+    const refreshed = yield* Effect.result(this.continueEnvironmentRefreshProgram(payload));
+    if (Result.isSuccess(refreshed)) return;
+    const armed = yield* Effect.result(this.armEnvironmentRefreshRetryProgram(payload));
+    if (Result.isSuccess(armed)) return;
+    const pending = yield* this.readRecordProgram();
+    if (pending?.operation?.kind !== "refresh" || pending.operation.nonce !== payload.nonce) return;
+    yield* this.failEnvironmentRefreshProgram(payload.nonce);
+  });
+
   private readonly reseedPiAuthProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.requireRecordProgram();
     if (record.status !== "warm")
@@ -4337,6 +4502,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async resumeScottySession(): Promise<SessionView> {
     return this.#run(this.resumeScottySessionProgram());
+  }
+
+  async getScottyEnvironmentStatus(): Promise<SessionEnvironmentStatus> {
+    return this.#run(this.environmentStatusProgram());
+  }
+
+  async refreshScottyEnvironment(): Promise<SessionEnvironmentStatus> {
+    return this.#run(this.refreshEnvironmentProgram());
+  }
+
+  async retryEnvironmentRefresh(payload: EnvironmentRefreshRetryPayload): Promise<void> {
+    return this.#run(this.retryEnvironmentRefreshProgram(payload));
   }
 
   async prepareDownArchive(): Promise<DownArchive> {

@@ -234,6 +234,8 @@ export type HarnessFailureStage =
   | "downSha"
   | "downTar"
   | "downWriteManifest"
+  | "environmentApply"
+  | "environmentRefreshRetrySchedule"
   | "evidenceRetentionSchedulePostInsert"
   | "evidenceRetentionSchedulePreInsert"
   | "evidenceRetentionSchedulePreInsertOnce"
@@ -1201,6 +1203,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     setEnvVars: {
       value: async (envVars: Record<string, string | undefined>): Promise<void> => {
         events.push("host:setEnvVars");
+        if (failures.has("environmentApply"))
+          throw injectedHarnessFailure("injected environment apply failure");
         appliedEnvironments.push({ ...envVars });
       },
     },
@@ -1300,6 +1304,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         }
         if (failures.has("vaporizeRetrySchedule") && callback === "retryVaporizeSession")
           throw injectedHarnessFailure("injected vaporize retry schedule failure");
+        if (
+          failures.has("environmentRefreshRetrySchedule") &&
+          callback === "retryEnvironmentRefresh"
+        )
+          throw injectedHarnessFailure("injected environment refresh retry schedule failure");
         const scheduled = { when, callback, payload };
         schedules.push(scheduled);
         if (

@@ -31,6 +31,7 @@ describe("session lifecycle invariants", () => {
       "expireEvidenceJob",
       "expireRetainedEvidence",
       "finalizeManagedStop",
+      "retryEnvironmentRefresh",
       "retryHardCapDestroy",
       "retryHatchCleanup",
       "retryVaporizeSession",
@@ -40,6 +41,7 @@ describe("session lifecycle invariants", () => {
       "expireEvidenceJob",
       "expireRetainedEvidence",
       "finalizeManagedStop",
+      "retryEnvironmentRefresh",
       "retryHardCapDestroy",
       "retryHatchCleanup",
     ]);

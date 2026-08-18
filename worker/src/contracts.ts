@@ -81,6 +81,7 @@ export const OperationKindSchema = Schema.Literals([
   "create",
   "snapshot",
   "resume",
+  "refresh",
   "evidence",
   "hatch",
   "down",
@@ -96,11 +97,28 @@ export const SessionOperationSchema = Schema.Struct({
   checkpointedBackupId: Schema.optionalKey(Schema.String),
   stopRequestedAt: Schema.optionalKey(Schema.String),
   stopRollbackAt: Schema.optionalKey(Schema.String),
+  environmentRefreshPhase: Schema.optionalKey(Schema.Literals(["pending", "applying"])),
+  environmentRefreshTarget: Schema.optionalKey(EnvironmentSnapshotSchema),
 }).pipe(
   Schema.check(
     Schema.makeFilter(
-      (operation) => (operation.kind === "create") === (operation.createPhase !== undefined),
-      { expected: "only create operations to include a create phase" },
+      (operation) => {
+        const refreshStateIsValid =
+          operation.kind === "refresh"
+            ? (operation.environmentRefreshPhase === undefined &&
+                operation.environmentRefreshTarget === undefined) ||
+              (operation.environmentRefreshPhase === "pending" &&
+                operation.environmentRefreshTarget === undefined) ||
+              (operation.environmentRefreshPhase === "applying" &&
+                operation.environmentRefreshTarget !== undefined)
+            : operation.environmentRefreshPhase === undefined &&
+              operation.environmentRefreshTarget === undefined;
+        return (
+          (operation.kind === "create") === (operation.createPhase !== undefined) &&
+          refreshStateIsValid
+        );
+      },
+      { expected: "only create and refresh operations to include their phases" },
     ),
   ),
 );
@@ -187,6 +205,18 @@ export const SessionRecordSchema = Schema.Struct({
   environment: Schema.optionalKey(EnvironmentSnapshotSchema),
 });
 export type SessionRecord = typeof SessionRecordSchema.Type;
+
+export const SessionEnvironmentStatusSchema = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  repo: Schema.String,
+  status: SessionStatusSchema,
+  appliedRevision: Schema.NullOr(Schema.Number),
+  currentEffectiveRevision: Schema.Number,
+  stale: Schema.Boolean,
+  refreshable: Schema.Boolean,
+});
+export type SessionEnvironmentStatus = typeof SessionEnvironmentStatusSchema.Type;
 
 export function hasCommittedManagedStop(record: SessionRecord): boolean {
   const operation = record.operation;

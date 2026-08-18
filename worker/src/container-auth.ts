@@ -289,6 +289,12 @@ interface ContainerAuthShape {
     id: SessionRecord["id"],
     credential: StoredCredential,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
+  readonly refreshEnvironment: (
+    id: SessionRecord["id"],
+    credential: StoredCredential,
+    previous: EnvironmentSnapshot | undefined,
+    next: EnvironmentSnapshot,
+  ) => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
 export class ContainerAuth extends Context.Service<ContainerAuth, ContainerAuthShape>()(
@@ -501,6 +507,64 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           return;
         yield* process.kill("SIGTERM");
         yield* process.waitForExit(10_000);
+      }),
+      refreshEnvironment: Effect.fnUntraced(function* (id, credential, previous, next) {
+        const process = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
+        if (
+          process !== null &&
+          process.status !== "completed" &&
+          process.status !== "failed" &&
+          process.status !== "killed" &&
+          process.status !== "error"
+        ) {
+          const transportToken = yield* derivePiSessionTransportToken(id, credential);
+          const status = yield* runtime.fetchPortStatus("/quiesce", PI_SESSION_PORT, "POST", {
+            [PI_SESSION_TOKEN_HEADER]: transportToken,
+          });
+          if (status !== 200)
+            return yield* new SandboxRuntimeFailure({
+              reason: "nonzero_exit",
+              message: "Pi session quiesce failed",
+            });
+          yield* process.kill("SIGTERM");
+          yield* process.waitForExit(10_000);
+        }
+        const shellPath = terminalShellPath(id);
+        yield* runtime.writeFile(shellPath, terminalShell(id, credential, next));
+        yield* runtime.execChecked(`chmod 700 ${shellQuote(shellPath)}`);
+        const removed = Object.fromEntries(
+          Object.keys(previous?.variables ?? {})
+            .filter((name) => !(name in next.variables) && !environmentNameIsReserved(name))
+            .map((name) => [name, undefined]),
+        );
+        yield* runtime.setEnvVars({ ...agentEnv(id, credential, next), ...removed });
+        yield* refreshPiAuth(id, credential);
+        const transportToken = yield* derivePiSessionTransportToken(id, credential);
+        const tokenPath = piSessionTokenPath(id);
+        yield* runtime.writeFile(tokenPath, transportToken);
+        yield* runtime.execChecked(`chmod 600 ${shellQuote(tokenPath)}`);
+        const restarted = yield* runtime.startProcess("/usr/local/bin/scotty-pi-session", {
+          autoCleanup: true,
+          cwd: sessionRoot(id),
+          env: {
+            ...agentEnv(id, credential, next),
+            SCOTTY_PI_SESSION_PORT: String(PI_SESSION_PORT),
+            SCOTTY_PI_SESSION_TOKEN_FILE: tokenPath,
+            SCOTTY_WORKSPACE: sessionRoot(id),
+          },
+          processId: PI_SESSION_PROCESS_ID,
+        });
+        yield* restarted.waitForPort(PI_SESSION_PORT, {
+          path: "/health",
+          status: 200,
+          timeout: 30_000,
+        });
+        const healthStatus = yield* runtime.fetchPortStatus("/health", PI_SESSION_PORT, "GET");
+        if (healthStatus !== 200)
+          return yield* new SandboxRuntimeFailure({
+            reason: "nonzero_exit",
+            message: "Pi session mapped port health check failed",
+          });
       }),
       refreshPiAuth,
     });

@@ -10,6 +10,9 @@ const elements = {
   revision: document.querySelector("#revision"),
   scopeTitle: document.querySelector("#scope-title"),
   secret: document.querySelector("#secret"),
+  sessionList: document.querySelector("#environment-sessions"),
+  sessionsError: document.querySelector("#sessions-error"),
+  sessionsLoading: document.querySelector("#sessions-loading"),
   value: document.querySelector("#value"),
   variables: document.querySelector("#variables"),
 };
@@ -99,11 +102,73 @@ function render(body) {
   elements.loading.hidden = true;
 }
 
+async function loadSessionStatuses() {
+  elements.sessionsError.hidden = true;
+  elements.sessionsLoading.hidden = false;
+  try {
+    const sessions = await fetchJson("/api/sessions", undefined, "Couldn't load sessions.");
+    const relevant = (Array.isArray(sessions) ? sessions : []).filter(
+      (session) => !elements.repository.value || session.repo === elements.repository.value,
+    );
+    const statuses = await Promise.all(
+      relevant.map((session) =>
+        fetchJson(
+          `/api/sessions/${encodeURIComponent(session.id)}/environment`,
+          undefined,
+          `Couldn't load environment status for ${session.id}.`,
+        ),
+      ),
+    );
+    elements.sessionList.replaceChildren(
+      ...statuses.map((status) => {
+        const refresh = document.createElement("button");
+        refresh.type = "button";
+        refresh.className = "button";
+        refresh.dataset.refreshSession = status.id;
+        refresh.textContent = "Refresh";
+        refresh.disabled = !status.refreshable || !status.stale;
+        return row(
+          status.title,
+          `${status.repo} · ${status.status} · applied ${status.appliedRevision ?? "none"} · current ${status.currentEffectiveRevision} · ${status.stale ? "stale" : "current"}`,
+          refresh,
+        );
+      }),
+    );
+    if (statuses.length === 0)
+      elements.sessionList.append(row("No relevant sessions", "No sessions use this scope."));
+  } catch (error) {
+    elements.sessionsError.textContent =
+      error instanceof Error ? error.message : "Couldn't load session environment status.";
+    elements.sessionsError.hidden = false;
+  } finally {
+    elements.sessionsLoading.hidden = true;
+  }
+}
+
+async function refreshSession(id, button) {
+  button.disabled = true;
+  elements.sessionsError.hidden = true;
+  try {
+    await fetchJson(
+      `/api/sessions/${encodeURIComponent(id)}/environment/refresh`,
+      { method: "POST" },
+      `Couldn't refresh environment for ${id}.`,
+    );
+    await loadSessionStatuses();
+  } catch (error) {
+    elements.sessionsError.textContent =
+      error instanceof Error ? error.message : "Couldn't refresh the session environment.";
+    elements.sessionsError.hidden = false;
+    button.disabled = false;
+  }
+}
+
 async function load() {
   elements.refresh.disabled = true;
   elements.listError.hidden = true;
   try {
     render(await fetchJson(environmentPath(), undefined, "Couldn't load the environment."));
+    await loadSessionStatuses();
   } catch (error) {
     elements.listError.textContent =
       error instanceof Error ? error.message : "Couldn't load the environment.";
@@ -188,5 +253,9 @@ elements.variables.addEventListener("click", (event) => {
     elements.value.value = "";
     elements.value.focus();
   }
+});
+elements.sessionList.addEventListener("click", (event) => {
+  const refresh = event.target.closest("button[data-refresh-session]");
+  if (refresh) void refreshSession(refresh.dataset.refreshSession, refresh);
 });
 void loadRepositories().then(load);

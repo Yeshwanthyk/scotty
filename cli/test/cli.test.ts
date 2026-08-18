@@ -3782,6 +3782,47 @@ describe("environment commands", () => {
     expect(h.json().variables[0].source).toBe("global");
   });
 
+  test("refreshes exactly one warm session environment with stable JSON", async () => {
+    const requests: Request[] = [];
+    const body = {
+      id: "a0b1c2d3e4f5",
+      title: "Test session",
+      repo: "owner/project",
+      status: "warm",
+      appliedRevision: 4,
+      currentEffectiveRevision: 4,
+      stale: false,
+      refreshable: true,
+    };
+    const h = harness({
+      fetch: async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json(body);
+      },
+    });
+
+    expect(
+      await main(["env", "refresh", body.id, "--host", "https://worker.example"], h.deps),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual(body);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].method).toBe("POST");
+    expect(new URL(requests[0].url).pathname).toBe(`/api/sessions/${body.id}/environment/refresh`);
+    expect(requests[0].headers.get("idempotency-key")).toBeTruthy();
+
+    let malformedFetches = 0;
+    const malformed = harness({
+      fetch: async () => {
+        malformedFetches += 1;
+        return Response.json({});
+      },
+    });
+    expect(
+      await main(["env", "refresh", "bad!", "--host", "https://worker.example"], malformed.deps),
+    ).toBe(EXIT.USAGE);
+    expect(malformedFetches).toBe(0);
+  });
+
   test("requires secret values on stdin before transport", async () => {
     let fetches = 0;
     const h = harness({

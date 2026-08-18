@@ -12,5 +12,10 @@ describe("environment dashboard", () => {
       'actionButton(variable.name, inherited ? "override" : "remove")',
     );
     expect(environmentScript).toContain("?repo=${encodeURIComponent(elements.repository.value)}");
+    expect(environmentHtml).toContain('id="environment-sessions"');
+    expect(environmentHtml).toContain('id="sessions-error" role="alert"');
+    expect(environmentScript).toContain('fetchJson("/api/sessions"');
+    expect(environmentScript).toContain("/environment/refresh");
+    expect(environmentScript).toContain("refresh.disabled = !status.refreshable || !status.stale");
   });
 });

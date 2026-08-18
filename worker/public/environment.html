@@ -29,7 +29,7 @@
       <div class="page-heading">
         <div>
           <h1 id="scope-title">Global environment</h1>
-          <p class="intro">New sessions capture these values. Secrets are write-only.</p>
+          <p class="intro">Sessions capture these values. Secrets are write-only.</p>
         </div>
         <div class="issue-row">
           <label for="repository">Scope</label>
@@ -44,7 +44,9 @@
         <div class="panel-heading">
           <div>
             <h2>Set a variable</h2>
-            <p class="panel-copy">Changes apply only to newly created sessions.</p>
+            <p class="panel-copy">
+              Changes make existing warm sessions stale until explicitly refreshed.
+            </p>
           </div>
         </div>
         <form class="issue-row" id="environment-form">
@@ -81,6 +83,20 @@
         <div class="state" id="loading">Loading environment…</div>
         <ul class="clients" id="variables"></ul>
         <div class="error" id="list-error" role="alert" hidden></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Session environment</h2>
+            <p class="panel-copy">
+              Refresh applies the current effective snapshot to one warm session.
+            </p>
+          </div>
+        </div>
+        <div class="state" id="sessions-loading">Loading session status…</div>
+        <ul class="clients" id="environment-sessions"></ul>
+        <div class="error" id="sessions-error" role="alert" hidden></div>
       </section>
 
       <section class="panel">

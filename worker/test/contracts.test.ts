@@ -338,6 +338,34 @@ describe("persisted session schemas", () => {
             createPhase: "setup",
           },
         },
+        {
+          ...persistedRecord,
+          operation: {
+            kind: "refresh",
+            nonce: "private",
+            startedAt: "2026-01-01T00:00:01.000Z",
+            environmentRefreshPhase: "applying",
+          },
+        },
+        {
+          ...persistedRecord,
+          operation: {
+            kind: "refresh",
+            nonce: "private",
+            startedAt: "2026-01-01T00:00:01.000Z",
+            environmentRefreshPhase: "pending",
+            environmentRefreshTarget: { revision: 1, variables: {} },
+          },
+        },
+        {
+          ...persistedRecord,
+          operation: {
+            kind: "refresh",
+            nonce: "private",
+            startedAt: "2026-01-01T00:00:01.000Z",
+            environmentRefreshTarget: { revision: 1, variables: {} },
+          },
+        },
         { ...persistedRecord, secret: "excess" },
         {
           ...persistedRecord,

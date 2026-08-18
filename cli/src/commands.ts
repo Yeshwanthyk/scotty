@@ -16,6 +16,7 @@ import {
   decodeInitJournalJson,
   decodeEnvironmentMutation,
   decodeEnvironmentResponse,
+  decodeSessionEnvironmentStatus,
   decodeInspectResponse,
   decodeOperationResponse,
   decodePiAuthReseedResponse,
@@ -1252,9 +1253,37 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Remove a global environment variable"));
 
+  const envRefresh = Command.make(
+    "refresh",
+    {
+      id: Argument.string("session-id").pipe(Argument.withDescription("Warm session ID")),
+    },
+    ({ id }) =>
+      Effect.gen(function* () {
+        const sessionId = yield* validateSessionId(id);
+        const { autoJson, options, runtime } = yield* commandContext();
+        const decoded = decodeSessionEnvironmentStatus(
+          yield* requestJson(
+            yield* credentials(options),
+            `/api/sessions/${encodeURIComponent(sessionId)}/environment/refresh`,
+            { method: "POST" },
+          ),
+        );
+        if (Option.isNone(decoded))
+          return yield* invalidResponse("Server returned an invalid environment refresh");
+        if (autoJson) outputJson(runtime.stdout, decoded.value);
+        else
+          runtime.stdout(
+            decoded.value.stale
+              ? `Session ${sessionId} environment remains stale.\n`
+              : `Refreshed session ${sessionId} to environment revision ${decoded.value.appliedRevision}.\n`,
+          );
+      }),
+  ).pipe(Command.withDescription("Refresh one warm session environment"));
+
   const environment = Command.make("env").pipe(
     Command.withDescription("Manage global environment variables"),
-    Command.withSubcommands([envList, envSet, envRemove]),
+    Command.withSubcommands([envList, envSet, envRemove, envRefresh]),
   );
 
   const repoAdd = Command.make(

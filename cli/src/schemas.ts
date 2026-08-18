@@ -10,6 +10,7 @@ import {
   EnvironmentMutationResponseSchema,
   EnvironmentViewSchema,
 } from "../../worker/src/environment-contracts";
+import { SessionEnvironmentStatusSchema } from "../../worker/src/contracts";
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
@@ -408,6 +409,10 @@ export const decodeEnvironmentResponse = Schema.decodeUnknownOption(EnvironmentR
 export const decodeEnvironmentMutation = Schema.decodeUnknownOption(EnvironmentMutationSchema, {
   onExcessProperty: "error",
 });
+export const decodeSessionEnvironmentStatus = Schema.decodeUnknownOption(
+  SessionEnvironmentStatusSchema,
+  { onExcessProperty: "error" },
+);
 export const decodeRepositoryResponse = Schema.decodeUnknownOption(RepositoryResponseSchema, {
   onExcessProperty: "error",
 });

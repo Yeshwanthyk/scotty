@@ -772,6 +772,18 @@ app.get("/api/sessions/:id", async (c) => {
   return c.json(await sessionSandbox(c.env, id).getScottySession());
 });
 
+app.get("/api/sessions/:id/environment", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).getScottyEnvironmentStatus());
+});
+
+app.post("/api/sessions/:id/environment/refresh", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:write");
+  const id = parseSessionId(c.req.param("id"));
+  return c.json(await sessionSandbox(c.env, id).refreshScottyEnvironment());
+});
+
 app.get("/api/sessions/:id/hatch", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const id = parseSessionId(c.req.param("id"));

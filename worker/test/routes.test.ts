@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   getScottySession: vi.fn(),
+  getScottyEnvironmentStatus: vi.fn(),
+  refreshScottyEnvironment: vi.fn(),
   completeScottyEvidenceStep: vi.fn(),
   finalizeScottyEvidenceJob: vi.fn(),
   listScottyEvidence: vi.fn(),
@@ -412,6 +414,26 @@ describe("real Hono boundary", () => {
       repo: "owner/repo",
       branch: "scotty/a0b1c2d3e4f5",
     });
+    sandbox.getScottyEnvironmentStatus.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      title: "Test session",
+      repo: "owner/repo",
+      status: "warm",
+      appliedRevision: 3,
+      currentEffectiveRevision: 4,
+      stale: true,
+      refreshable: true,
+    });
+    sandbox.refreshScottyEnvironment.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      title: "Test session",
+      repo: "owner/repo",
+      status: "warm",
+      appliedRevision: 4,
+      currentEffectiveRevision: 4,
+      stale: false,
+      refreshable: true,
+    });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
     sandbox.getScottyHatchStatus.mockResolvedValue({ version: 1, status: "not_configured" });
     sandbox.ensureScottyHatch.mockResolvedValue({
@@ -551,6 +573,29 @@ describe("real Hono boundary", () => {
       ok: true,
       value: { name, removed: true, revision: 1 },
     }));
+  });
+
+  it("reads and refreshes one session environment through session scopes", async () => {
+    const headers = { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` };
+    const status = await app.request("/api/sessions/a0b1c2d3e4f5/environment", { headers }, env());
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual(expect.objectContaining({ stale: true }));
+
+    const refreshed = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/environment/refresh",
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
+      env(),
+    );
+    expect(refreshed.status).toBe(200);
+    expect(await refreshed.json()).toEqual(expect.objectContaining({ stale: false }));
+    expect(sandbox.refreshScottyEnvironment).toHaveBeenCalledOnce();
   });
 
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
