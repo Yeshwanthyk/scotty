@@ -18,6 +18,7 @@ describe("dependency patch verification", () => {
   it("keeps one first-party apply command and a non-mutating check mode", () => {
     assert.deepEqual(DEPENDENCY_PATCHES, [
       "patches/alchemy+2.0.0-beta.72.patch",
+      "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
       "patches/earendil-works+pi-coding-agent+0.84.0.patch",
     ]);
     assert.doesNotThrow(() => assertPatchInventory());

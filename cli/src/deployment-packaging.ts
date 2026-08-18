@@ -37,6 +37,11 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("scripts/is-direct-run.mjs", "archive", "containerStatic"),
   entry("scripts/project-container-pi-install.mjs", "archive", "containerStatic"),
   entry("patches/alchemy+2.0.0-beta.72.patch", "archive", "containerStatic"),
+  entry(
+    "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+    "archive",
+    "containerStatic",
+  ),
   entry("patches/earendil-works+pi-coding-agent+0.84.0.patch", "archive", "containerStatic"),
 ]);
 

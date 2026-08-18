@@ -14,6 +14,7 @@ COPY scripts/deploy-production.mjs scripts/deploy-production.mjs
 COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs
 COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs
 COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch
+COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch
 COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 RUN node scripts/apply-dependency-patches.mjs

@@ -155,6 +155,7 @@ describe("standalone deployment archive", () => {
       "scripts/is-direct-run.mjs",
       "scripts/project-container-pi-install.mjs",
       "patches/alchemy+2.0.0-beta.72.patch",
+      "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
       "patches/earendil-works+pi-coding-agent+0.84.0.patch",
     ] as const;
     for (const file of files) {
@@ -174,6 +175,9 @@ describe("standalone deployment archive", () => {
       "COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch",
     );
     expect(dockerfile).toContain(
+      "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+    );
+    expect(dockerfile).toContain(
       "COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch",
     );
     expect(dockerfile.indexOf("COPY tui/package.json tui/package.json")).toBeLessThan(npmCiIndex);
@@ -185,6 +189,11 @@ describe("standalone deployment archive", () => {
     expect(
       dockerfile.indexOf(
         "COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch",
+      ),
+    ).toBeLessThan(npmCiIndex);
+    expect(
+      dockerfile.indexOf(
+        "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
       ),
     ).toBeLessThan(npmCiIndex);
     expect(
