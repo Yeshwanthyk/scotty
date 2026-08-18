@@ -60,6 +60,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
+        assert.include(rootHelp, "skills");
         assert.include(rootHelp, "env");
         assert.include(rootHelp, "sandbox");
         assert.include(rootHelp, "runner");
@@ -119,6 +120,20 @@ describe("Effect command tree", () => {
         assert.include(auth.stdout.join(""), "sync");
         assert.notInclude(auth.stdout.join(""), "reseed");
         assert.strictEqual(auth.stderr.join(""), "");
+
+        const skills = run(["skills"]);
+        assert.strictEqual(yield* skills.effect, EXIT.OK);
+        const skillsHelp = skills.stdout.join("");
+        assert.include(skillsHelp, "scotty skills <subcommand> [flags]");
+        assert.include(skillsHelp, "show");
+        assert.notInclude(skillsHelp, "__scotty_trailing__");
+        assert.strictEqual(skills.stderr.join(""), "");
+
+        const skillsShow = run(["skills", "show", "--help"]);
+        assert.strictEqual(yield* skillsShow.effect, EXIT.OK);
+        assert.include(skillsShow.stdout.join(""), "scotty skills show [flags]");
+        assert.notInclude(skillsShow.stdout.join(""), "__scotty_trailing__");
+        assert.strictEqual(skillsShow.stderr.join(""), "");
         const tui = run(["tui", "--help"]);
         assert.strictEqual(yield* tui.effect, EXIT.OK);
         const tuiHelp = tui.stdout.join("");

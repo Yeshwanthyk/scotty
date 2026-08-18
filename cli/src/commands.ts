@@ -42,6 +42,7 @@ import { isRepositoryIdentity } from "../../protocol/repository";
 import {
   browserUrl,
   durationSeconds,
+  EMBEDDED_SKILL,
   humanInspect,
   humanResult,
   humanSession,
@@ -1707,6 +1708,23 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([authStatus, authSync, authReseed]),
   );
 
+  const skillsShow = Command.make("show", {}, () =>
+    Effect.gen(function* () {
+      const { options, runtime } = yield* commandContext();
+      if (options.json)
+        return yield* usage(
+          "scotty skills show emits Markdown and does not support --json",
+          "Run scotty skills show without flags.",
+        );
+      runtime.stdout(EMBEDDED_SKILL);
+    }),
+  ).pipe(Command.withDescription("Print the embedded agent skill"));
+
+  const skills = Command.make("skills").pipe(
+    Command.withDescription("Show embedded agent skills"),
+    Command.withSubcommands([skillsShow]),
+  );
+
   const emitSandboxStatus = (
     autoJson: boolean,
     runtime: { readonly stdout: (text: string) => void },
@@ -2360,6 +2378,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       doctor,
       attach,
       auth,
+      skills,
       owner,
       snapshot,
       resume,

@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { AuthError } from "alchemy/Auth";
-import { EXIT, main, STANDARD_TOOLSET, VERSION, type CliDependencies } from "../scotty";
+import {
+  EMBEDDED_SKILL,
+  EXIT,
+  main,
+  STANDARD_TOOLSET,
+  VERSION,
+  type CliDependencies,
+} from "../scotty";
 import { BeamUpRequestSchema } from "../src/schemas";
 import { Schema } from "effect";
 
@@ -2647,7 +2654,7 @@ describe("commands and schemas", () => {
   });
 
   test("removed commands and top-level lifecycle aliases fail as unknown commands", async () => {
-    for (const command of ["pr", "publish", "up", "down", "vaporize", "skills"]) {
+    for (const command of ["pr", "publish", "up", "down", "vaporize"]) {
       const h = harness();
       expect(await main([command, "s1"], h.deps)).toBe(EXIT.USAGE);
       expect(h.error().error.code).toBe("bad_usage");
@@ -3069,6 +3076,31 @@ function tarFile(entries: Array<[string, Uint8Array]>): Uint8Array {
   }
   return result;
 }
+
+describe("embedded skill", () => {
+  test("skills show prints the exact embedded source as Markdown", async () => {
+    const skills = harness();
+    const source = await readFile(new URL("../skills/scotty/SKILL.md", import.meta.url), "utf8");
+    expect(await main(["skills", "show"], skills.deps)).toBe(EXIT.OK);
+    expect(EMBEDDED_SKILL).toBe(source);
+    expect(skills.stdout.join("")).toBe(EMBEDDED_SKILL);
+    expect(EMBEDDED_SKILL).toContain("## Hatch and browser evidence");
+    expect(EMBEDDED_SKILL).toContain("one actual WebM recording");
+    expect(EMBEDDED_SKILL).toContain("exact same viewport, steps, and assertions");
+    expect(EMBEDDED_SKILL).toContain("plus `/hatch/open`");
+    expect(EMBEDDED_SKILL).toContain("Never copy, guess, or publish the wildcard preview origin");
+  });
+
+  test("skills show rejects JSON wrapping and trailing arguments", async () => {
+    const json = harness();
+    const trailing = harness();
+    expect(await main(["skills", "show", "--json"], json.deps)).toBe(EXIT.USAGE);
+    expect(await main(["skills", "show", "install"], trailing.deps)).toBe(EXIT.USAGE);
+    expect(json.error().error.code).toBe("bad_usage");
+    expect(trailing.error().error.code).toBe("bad_usage");
+    expect(trailing.error().error.message).toBe("Unexpected argument: install");
+  });
+});
 
 describe("beam down and sandbox configuration", () => {
   test("down fetches the branch and writes rollout mode 0600", async () => {
