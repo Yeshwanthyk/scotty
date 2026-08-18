@@ -1,19 +1,26 @@
 import { Clock, Context, Data, Effect, Layer, Result, Schema } from "effect";
+import { RepositoryIdentitySchema, repositoryIdentityKey } from "../../protocol/repository";
 import {
   EnvironmentAuthoritySchema,
   EnvironmentNameSchema,
   EnvironmentPutInputSchema,
+  LegacyEnvironmentAuthoritySchema,
   type EnvironmentAuthority,
   type EnvironmentMutationResponse,
   type EnvironmentPutInput,
   type EnvironmentSnapshot,
+  type EnvironmentVariable,
   type EnvironmentVariablesView,
 } from "./environment-contracts";
 import { environmentNameIsReserved } from "./environment-policy";
 
 const AUTHORITY_KEY = "scotty:environment:1";
 
-export type EnvironmentFailureReason = "invalid_authority" | "invalid_input" | "storage";
+export type EnvironmentFailureReason =
+  | "invalid_authority"
+  | "invalid_input"
+  | "invalid_scope"
+  | "storage";
 
 export class EnvironmentFailure extends Data.TaggedError("EnvironmentFailure")<{
   readonly reason: EnvironmentFailureReason;
@@ -32,14 +39,16 @@ export interface EnvironmentAuthorityStorage {
 }
 
 interface EnvironmentStoreShape {
-  readonly list: () => Effect.Effect<EnvironmentVariablesView, EnvironmentFailure>;
-  readonly snapshot: () => Effect.Effect<EnvironmentSnapshot, EnvironmentFailure>;
+  readonly list: (repo?: unknown) => Effect.Effect<EnvironmentVariablesView, EnvironmentFailure>;
+  readonly snapshot: (repo?: unknown) => Effect.Effect<EnvironmentSnapshot, EnvironmentFailure>;
   readonly put: (
     name: unknown,
     input: unknown,
+    repo?: unknown,
   ) => Effect.Effect<EnvironmentMutationResponse, EnvironmentFailure>;
   readonly remove: (
     name: unknown,
+    repo?: unknown,
   ) => Effect.Effect<EnvironmentMutationResponse, EnvironmentFailure>;
 }
 
@@ -63,14 +72,24 @@ export const environmentStoreLayer = (
   storage: EnvironmentAuthorityStorage,
 ): Layer.Layer<EnvironmentStore> => Layer.succeed(EnvironmentStore)(makeEnvironmentStore(storage));
 
-const decodeAuthority = Schema.decodeUnknownResult(EnvironmentAuthoritySchema, {
+const StoredEnvironmentAuthoritySchema = Schema.Union([
+  LegacyEnvironmentAuthoritySchema,
+  EnvironmentAuthoritySchema,
+]);
+const decodeStoredAuthority = Schema.decodeUnknownResult(StoredEnvironmentAuthoritySchema, {
   onExcessProperty: "error",
 });
 const decodeName = Schema.decodeUnknownResult(EnvironmentNameSchema);
+const decodeRepo = Schema.decodeUnknownResult(RepositoryIdentitySchema);
 const decodeInput = Schema.decodeUnknownResult(EnvironmentPutInputSchema, {
   onExcessProperty: "error",
 });
-const emptyAuthority = (): EnvironmentAuthority => ({ version: 1, revision: 0, variables: {} });
+const emptyAuthority = (): EnvironmentAuthority => ({
+  version: 2,
+  revision: 0,
+  global: { variables: {} },
+  repositories: {},
+});
 
 const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): EnvironmentStoreShape => {
   const failure = (reason: EnvironmentFailureReason, message: string): EnvironmentFailure =>
@@ -79,6 +98,8 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
     failure("invalid_authority", "Stored environment authority is invalid");
   const invalidInput = (): EnvironmentFailure =>
     failure("invalid_input", "Environment variable input is invalid");
+  const invalidScope = (): EnvironmentFailure =>
+    failure("invalid_scope", "Repository environment scope must be OWNER/NAME");
   const storageFailure = (): EnvironmentFailure =>
     failure("storage", "Environment storage operation failed");
 
@@ -86,7 +107,15 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
     value: unknown | undefined,
   ): Result.Result<EnvironmentAuthority, EnvironmentFailure> => {
     if (value === undefined) return Result.succeed(emptyAuthority());
-    return Result.mapError(decodeAuthority(value), invalidAuthority);
+    const decoded = Result.mapError(decodeStoredAuthority(value), invalidAuthority);
+    if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
+    if (decoded.success.version === 2) return Result.succeed(decoded.success);
+    return Result.succeed({
+      version: 2,
+      revision: decoded.success.revision,
+      global: { variables: decoded.success.variables },
+      repositories: {},
+    });
   };
 
   const transact = <A>(
@@ -113,71 +142,157 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
       : Result.succeed(decoded.success);
   };
 
+  const parseScope = (
+    repo: unknown | undefined,
+  ): Result.Result<string | undefined, EnvironmentFailure> =>
+    repo === undefined
+      ? Result.succeed(undefined)
+      : Result.mapError(decodeRepo(repo), invalidScope);
+
+  const effectiveVariables = (
+    authority: EnvironmentAuthority,
+    repo: string | undefined,
+  ): Readonly<
+    Record<string, { readonly variable: EnvironmentVariable; readonly source: "global" | "repo" }>
+  > => {
+    const global = Object.fromEntries(
+      Object.entries(authority.global.variables).map(([name, variable]) => [
+        name,
+        { variable, source: "global" as const },
+      ]),
+    );
+    if (repo === undefined) return global;
+    const overrides = authority.repositories[repositoryIdentityKey(repo)]?.variables ?? {};
+    return {
+      ...global,
+      ...Object.fromEntries(
+        Object.entries(overrides).map(([name, variable]) => [
+          name,
+          { variable, source: "repo" as const },
+        ]),
+      ),
+    };
+  };
+
   return EnvironmentStore.of({
-    list: () =>
-      transact(async (authority) =>
-        Result.succeed({
-          revision: authority.revision,
-          variables: Object.entries(authority.variables)
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([name, variable]) => ({
-              name,
-              secret: variable.secret,
-              configured: true as const,
-              updatedAt: variable.updatedAt,
-              ...(variable.secret ? {} : { value: variable.value }),
-            })),
-        }),
-      ),
-    snapshot: () =>
-      transact(async (authority) =>
-        Result.succeed({
-          revision: authority.revision,
-          variables: Object.fromEntries(
-            Object.entries(authority.variables).map(([name, variable]) => [name, variable.value]),
-          ),
-        }),
-      ),
-    put: (nameValue, inputValue) =>
+    list: (repoValue) =>
+      Effect.gen(function* () {
+        const repo = yield* Effect.fromResult(parseScope(repoValue));
+        return yield* transact(async (authority) =>
+          Result.succeed({
+            revision: authority.revision,
+            ...(repo === undefined ? {} : { repo }),
+            variables: Object.entries(effectiveVariables(authority, repo))
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([name, { source, variable }]) => ({
+                name,
+                secret: variable.secret,
+                configured: true as const,
+                updatedAt: variable.updatedAt,
+                ...(repo === undefined ? {} : { source }),
+                ...(variable.secret ? {} : { value: variable.value }),
+              })),
+          }),
+        );
+      }),
+    snapshot: (repoValue) =>
+      Effect.gen(function* () {
+        const repo = yield* Effect.fromResult(parseScope(repoValue));
+        return yield* transact(async (authority) =>
+          Result.succeed({
+            revision: authority.revision,
+            variables: Object.fromEntries(
+              Object.entries(effectiveVariables(authority, repo)).map(([name, { variable }]) => [
+                name,
+                variable.value,
+              ]),
+            ),
+          }),
+        );
+      }),
+    put: (nameValue, inputValue, repoValue) =>
       Effect.gen(function* () {
         const name = yield* Effect.fromResult(parseName(nameValue));
         const input: EnvironmentPutInput = yield* Effect.fromResult(
           Result.mapError(decodeInput(inputValue), invalidInput),
         );
+        const repo = yield* Effect.fromResult(parseScope(repoValue));
         const now = new Date(yield* Clock.currentTimeMillis).toISOString();
         return yield* transact(async (authority, transaction) => {
+          const variables =
+            repo === undefined
+              ? authority.global.variables
+              : (authority.repositories[repositoryIdentityKey(repo)]?.variables ?? {});
           const next: EnvironmentAuthority = {
             ...authority,
             revision: authority.revision + 1,
-            variables: {
-              ...authority.variables,
-              [name]: { value: input.value, secret: input.secret, updatedAt: now },
-            },
+            ...(repo === undefined
+              ? {
+                  global: {
+                    variables: {
+                      ...variables,
+                      [name]: { value: input.value, secret: input.secret, updatedAt: now },
+                    },
+                  },
+                }
+              : {
+                  repositories: {
+                    ...authority.repositories,
+                    [repositoryIdentityKey(repo)]: {
+                      variables: {
+                        ...variables,
+                        [name]: { value: input.value, secret: input.secret, updatedAt: now },
+                      },
+                    },
+                  },
+                }),
           };
           await transaction.put(next);
           return Result.succeed({
             name,
+            ...(repo === undefined ? {} : { repo }),
             secret: input.secret,
             configured: true as const,
             revision: next.revision,
           });
         });
       }),
-    remove: (nameValue) =>
+    remove: (nameValue, repoValue) =>
       Effect.gen(function* () {
         const name = yield* Effect.fromResult(parseName(nameValue));
+        const repo = yield* Effect.fromResult(parseScope(repoValue));
         return yield* transact(async (authority, transaction) => {
-          if (!(name in authority.variables))
-            return Result.succeed({ name, removed: false, revision: authority.revision });
-          const variables = { ...authority.variables };
-          delete variables[name];
+          const variables =
+            repo === undefined
+              ? authority.global.variables
+              : (authority.repositories[repositoryIdentityKey(repo)]?.variables ?? {});
+          if (!(name in variables))
+            return Result.succeed({
+              name,
+              ...(repo === undefined ? {} : { repo }),
+              removed: false,
+              revision: authority.revision,
+            });
+          const remaining = { ...variables };
+          delete remaining[name];
+          const repositories = { ...authority.repositories };
+          if (repo !== undefined) {
+            if (Object.keys(remaining).length === 0)
+              delete repositories[repositoryIdentityKey(repo)];
+            else repositories[repositoryIdentityKey(repo)] = { variables: remaining };
+          }
           const next: EnvironmentAuthority = {
             ...authority,
             revision: authority.revision + 1,
-            variables,
+            ...(repo === undefined ? { global: { variables: remaining } } : { repositories }),
           };
           await transaction.put(next);
-          return Result.succeed({ name, removed: true, revision: next.revision });
+          return Result.succeed({
+            name,
+            ...(repo === undefined ? {} : { repo }),
+            removed: true,
+            revision: next.revision,
+          });
         });
       }),
   });

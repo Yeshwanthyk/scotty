@@ -1140,11 +1140,20 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ]),
   );
 
-  const envList = Command.make("list", {}, () =>
+  const environmentRepoFlag = Flag.string("repo").pipe(
+    Flag.optional,
+    Flag.withDescription("Repository scope as OWNER/NAME"),
+  );
+  const environmentPath = (path: string, repo: Option.Option<string>): string =>
+    Option.isSome(repo) ? `${path}?repo=${encodeURIComponent(repo.value)}` : path;
+
+  const envList = Command.make("list", { repo: environmentRepoFlag }, ({ repo }) =>
     Effect.gen(function* () {
+      if (Option.isSome(repo) && !isRepositoryIdentity(repo.value))
+        return yield* usage("--repo must be OWNER/NAME");
       const { autoJson, options, runtime } = yield* commandContext();
       const decoded = decodeEnvironmentResponse(
-        yield* requestJson(yield* credentials(options), "/api/environment"),
+        yield* requestJson(yield* credentials(options), environmentPath("/api/environment", repo)),
       );
       if (Option.isNone(decoded))
         return yield* invalidResponse("Server returned an invalid environment view");
@@ -1152,11 +1161,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       else {
         const lines = decoded.value.variables.map((variable) =>
           variable.secret
-            ? `${variable.name}\tsecret\tconfigured`
-            : `${variable.name}\tplain\t${variable.value ?? ""}`,
+            ? `${variable.name}\tsecret\tconfigured${Option.isSome(repo) ? `\t${variable.source}` : ""}`
+            : `${variable.name}\tplain\t${variable.value ?? ""}${Option.isSome(repo) ? `\t${variable.source}` : ""}`,
         );
         runtime.stdout(
-          lines.length === 0 ? "No global environment variables.\n" : `${lines.join("\n")}\n`,
+          lines.length === 0
+            ? Option.isSome(repo)
+              ? `No environment variables for ${repo.value}.\n`
+              : "No global environment variables.\n"
+            : `${lines.join("\n")}\n`,
         );
       }
     }),
@@ -1171,11 +1184,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Store a write-only secret read from stdin"),
       ),
       stdin: Flag.boolean("stdin").pipe(Flag.withDescription("Read the value from stdin")),
+      repo: environmentRepoFlag,
     },
-    ({ name, secret, stdin, value }) =>
+    ({ name, repo, secret, stdin, value }) =>
       Effect.gen(function* () {
         if (!ENVIRONMENT_NAME_PATTERN.test(name))
           return yield* usage("Environment variable name is invalid");
+        if (Option.isSome(repo) && !isRepositoryIdentity(repo.value))
+          return yield* usage("--repo must be OWNER/NAME");
         if (secret && !stdin) return yield* usage("Secret values must be supplied with --stdin");
         if (stdin && Option.isSome(value))
           return yield* usage("Do not pass a value when using --stdin");
@@ -1197,7 +1213,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const decoded = decodeEnvironmentMutation(
           yield* requestJson(
             yield* credentials(options),
-            `/api/environment/${encodeURIComponent(name)}`,
+            environmentPath(`/api/environment/${encodeURIComponent(name)}`, repo),
             { method: "PUT", body: JSON.stringify({ value: inputValue, secret }) },
           ),
         );
@@ -1210,16 +1226,21 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
 
   const envRemove = Command.make(
     "remove",
-    { name: Argument.string("name").pipe(Argument.withDescription("Environment variable name")) },
-    ({ name }) =>
+    {
+      name: Argument.string("name").pipe(Argument.withDescription("Environment variable name")),
+      repo: environmentRepoFlag,
+    },
+    ({ name, repo }) =>
       Effect.gen(function* () {
         if (!ENVIRONMENT_NAME_PATTERN.test(name))
           return yield* usage("Environment variable name is invalid");
+        if (Option.isSome(repo) && !isRepositoryIdentity(repo.value))
+          return yield* usage("--repo must be OWNER/NAME");
         const { autoJson, options, runtime } = yield* commandContext();
         const decoded = decodeEnvironmentMutation(
           yield* requestJson(
             yield* credentials(options),
-            `/api/environment/${encodeURIComponent(name)}`,
+            environmentPath(`/api/environment/${encodeURIComponent(name)}`, repo),
             { method: "DELETE" },
           ),
         );

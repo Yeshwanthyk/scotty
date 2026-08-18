@@ -73,6 +73,7 @@ import {
 } from "./repo-projection";
 import {
   decodeRepositoryRegistryRequest,
+  isRepositoryIdentity,
   type RepositoryRegistryEntry,
 } from "../../protocol/repository";
 import { RepoVerifier, repoVerifierLayer } from "./repo-verifier";
@@ -500,7 +501,10 @@ app.post("/api/auth/pi", async (c) => {
 
 app.get("/api/environment", async (c) => {
   requireEnvironmentManager(c.get("auth"));
-  const environment = unwrapSandboxConfigRpc(await sandboxConfig(c.env).listEnvironment());
+  const repo = c.req.query("repo");
+  if (repo !== undefined && !isRepositoryIdentity(repo))
+    throw badRequest("repo must be OWNER/NAME");
+  const environment = unwrapSandboxConfigRpc(await sandboxConfig(c.env).listEnvironment(repo));
   return c.json({ ...environment, protectedBindings: PROTECTED_ENVIRONMENT_BINDINGS });
 });
 
@@ -509,17 +513,23 @@ app.put("/api/environment/:name", async (c) => {
   requireJsonContentType(c.req.raw);
   const input = decodeEnvironmentPutInput(await readJsonBody(c.req.raw));
   if (Option.isNone(input)) throw badRequest("Environment variable input is invalid");
+  const repo = c.req.query("repo");
+  if (repo !== undefined && !isRepositoryIdentity(repo))
+    throw badRequest("repo must be OWNER/NAME");
   return c.json(
     unwrapSandboxConfigRpc(
-      await sandboxConfig(c.env).putEnvironment(c.req.param("name"), input.value),
+      await sandboxConfig(c.env).putEnvironment(c.req.param("name"), input.value, repo),
     ),
   );
 });
 
 app.delete("/api/environment/:name", async (c) => {
   requireEnvironmentManager(c.get("auth"));
+  const repo = c.req.query("repo");
+  if (repo !== undefined && !isRepositoryIdentity(repo))
+    throw badRequest("repo must be OWNER/NAME");
   return c.json(
-    unwrapSandboxConfigRpc(await sandboxConfig(c.env).removeEnvironment(c.req.param("name"))),
+    unwrapSandboxConfigRpc(await sandboxConfig(c.env).removeEnvironment(c.req.param("name"), repo)),
   );
 });
 

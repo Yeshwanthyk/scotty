@@ -109,25 +109,31 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
   removeRepo(repo: unknown): Promise<SandboxConfigRpcResult<boolean>> {
     return this.#runRepo(Effect.flatMap(InstallationRepoStore, (store) => store.remove(repo)));
   }
-  listEnvironment(): Promise<SandboxConfigRpcResult<EnvironmentVariablesView>> {
-    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.list()));
+  listEnvironment(repo?: unknown): Promise<SandboxConfigRpcResult<EnvironmentVariablesView>> {
+    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.list(repo)));
   }
 
-  environmentSnapshot(): Promise<SandboxConfigRpcResult<EnvironmentSnapshot>> {
-    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.snapshot()));
+  environmentSnapshot(repo?: unknown): Promise<SandboxConfigRpcResult<EnvironmentSnapshot>> {
+    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.snapshot(repo)));
   }
 
   putEnvironment(
     name: unknown,
     input: unknown,
+    repo?: unknown,
   ): Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>> {
     return this.#runEnvironment(
-      Effect.flatMap(EnvironmentStore, (store) => store.put(name, input)),
+      Effect.flatMap(EnvironmentStore, (store) => store.put(name, input, repo)),
     );
   }
 
-  removeEnvironment(name: unknown): Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>> {
-    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.remove(name)));
+  removeEnvironment(
+    name: unknown,
+    repo?: unknown,
+  ): Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>> {
+    return this.#runEnvironment(
+      Effect.flatMap(EnvironmentStore, (store) => store.remove(name, repo)),
+    );
   }
 
   async #runConfig<A>(
@@ -195,14 +201,20 @@ export type ScottySandboxConfigStub = {
   readonly listRepos: () => Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>>;
   readonly addRepo: (input: unknown) => Promise<SandboxConfigRpcResult<RepositoryRegistryEntry>>;
   readonly removeRepo: (repo: unknown) => Promise<SandboxConfigRpcResult<boolean>>;
-  readonly listEnvironment: () => Promise<SandboxConfigRpcResult<EnvironmentVariablesView>>;
-  readonly environmentSnapshot: () => Promise<SandboxConfigRpcResult<EnvironmentSnapshot>>;
+  readonly listEnvironment: (
+    repo?: unknown,
+  ) => Promise<SandboxConfigRpcResult<EnvironmentVariablesView>>;
+  readonly environmentSnapshot: (
+    repo?: unknown,
+  ) => Promise<SandboxConfigRpcResult<EnvironmentSnapshot>>;
   readonly putEnvironment: (
     name: unknown,
     input: unknown,
+    repo?: unknown,
   ) => Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>>;
   readonly removeEnvironment: (
     name: unknown,
+    repo?: unknown,
   ) => Promise<SandboxConfigRpcResult<EnvironmentMutationResponse>>;
 };
 

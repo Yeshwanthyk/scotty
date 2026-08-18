@@ -6,7 +6,9 @@ const elements = {
   name: document.querySelector("#name"),
   protected: document.querySelector("#protected"),
   refresh: document.querySelector("#refresh"),
+  repository: document.querySelector("#repository"),
   revision: document.querySelector("#revision"),
+  scopeTitle: document.querySelector("#scope-title"),
   secret: document.querySelector("#secret"),
   value: document.querySelector("#value"),
   variables: document.querySelector("#variables"),
@@ -44,27 +46,46 @@ function row(title, detail, action) {
   return item;
 }
 
-function removeButton(name) {
+function actionButton(name, action) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "button button-danger";
-  button.dataset.name = name;
-  button.textContent = "Remove";
+  button.className = action === "remove" ? "button button-danger" : "button";
+  button.dataset[action] = name;
+  button.textContent = action === "remove" ? "Remove" : "Override";
   return button;
+}
+
+function environmentPath(path = "/api/environment") {
+  return elements.repository.value
+    ? `${path}?repo=${encodeURIComponent(elements.repository.value)}`
+    : path;
 }
 
 function render(body) {
   const variables = Array.isArray(body?.variables) ? body.variables : [];
   const protectedBindings = Array.isArray(body?.protectedBindings) ? body.protectedBindings : [];
+  const repositoryScope = elements.repository.value !== "";
+  elements.scopeTitle.textContent = repositoryScope
+    ? `${elements.repository.value} environment`
+    : "Global environment";
   elements.revision.textContent = `Revision ${Number.isInteger(body?.revision) ? body.revision : "unknown"}`;
   elements.variables.replaceChildren(
-    ...variables.map((variable) =>
-      row(
+    ...variables.map((variable) => {
+      const inherited = repositoryScope && variable.source !== "repo";
+      const value = variable.secret
+        ? "Secret · configured · value hidden"
+        : `Plain · ${variable.value ?? ""}`;
+      const source = repositoryScope
+        ? inherited
+          ? " · inherited from global"
+          : " · repository override"
+        : "";
+      return row(
         variable.name,
-        variable.secret ? "Secret · configured · value hidden" : `Plain · ${variable.value ?? ""}`,
-        removeButton(variable.name),
-      ),
-    ),
+        `${value}${source}`,
+        actionButton(variable.name, inherited ? "override" : "remove"),
+      );
+    }),
   );
   if (variables.length === 0) elements.variables.append(row("No user variables", "Set one above."));
   elements.protected.replaceChildren(
@@ -82,7 +103,7 @@ async function load() {
   elements.refresh.disabled = true;
   elements.listError.hidden = true;
   try {
-    render(await fetchJson("/api/environment", undefined, "Couldn't load the environment."));
+    render(await fetchJson(environmentPath(), undefined, "Couldn't load the environment."));
   } catch (error) {
     elements.listError.textContent =
       error instanceof Error ? error.message : "Couldn't load the environment.";
@@ -99,7 +120,7 @@ async function setVariable(event) {
   submit.disabled = true;
   try {
     await fetchJson(
-      `/api/environment/${encodeURIComponent(elements.name.value.trim())}`,
+      environmentPath(`/api/environment/${encodeURIComponent(elements.name.value.trim())}`),
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -122,7 +143,7 @@ async function removeVariable(name, button) {
   button.disabled = true;
   try {
     await fetchJson(
-      `/api/environment/${encodeURIComponent(name)}`,
+      environmentPath(`/api/environment/${encodeURIComponent(name)}`),
       { method: "DELETE" },
       "Couldn't remove the variable.",
     );
@@ -135,13 +156,37 @@ async function removeVariable(name, button) {
   }
 }
 
+async function loadRepositories() {
+  try {
+    const repositories = await fetchJson("/api/repos", undefined, "Couldn't load repositories.");
+    for (const entry of Array.isArray(repositories) ? repositories : []) {
+      if (typeof entry?.repo !== "string") continue;
+      const option = document.createElement("option");
+      option.value = entry.repo;
+      option.textContent = entry.repo;
+      elements.repository.append(option);
+    }
+  } catch (error) {
+    elements.listError.textContent =
+      error instanceof Error ? error.message : "Couldn't load repositories.";
+    elements.listError.hidden = false;
+  }
+}
+
 elements.secret.addEventListener("change", () => {
   elements.value.type = elements.secret.checked ? "password" : "text";
 });
 elements.form.addEventListener("submit", (event) => void setVariable(event));
 elements.refresh.addEventListener("click", () => void load());
+elements.repository.addEventListener("change", () => void load());
 elements.variables.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-name]");
-  if (button) void removeVariable(button.dataset.name, button);
+  const remove = event.target.closest("button[data-remove]");
+  if (remove) void removeVariable(remove.dataset.remove, remove);
+  const override = event.target.closest("button[data-override]");
+  if (override) {
+    elements.name.value = override.dataset.override;
+    elements.value.value = "";
+    elements.value.focus();
+  }
 });
-void load();
+void loadRepositories().then(load);

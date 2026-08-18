@@ -28,10 +28,16 @@
     <main>
       <div class="page-heading">
         <div>
-          <h1>Global environment</h1>
+          <h1 id="scope-title">Global environment</h1>
           <p class="intro">New sessions capture these values. Secrets are write-only.</p>
         </div>
-        <button class="button" id="refresh" type="button">Refresh</button>
+        <div class="issue-row">
+          <label for="repository">Scope</label>
+          <select id="repository" aria-label="Environment scope">
+            <option value="">Global</option>
+          </select>
+          <button class="button" id="refresh" type="button">Refresh</button>
+        </div>
       </div>
 
       <section class="panel">

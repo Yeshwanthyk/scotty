@@ -191,7 +191,7 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(harness.aborts, []);
   });
 
-  it("captures and injects the global environment snapshot without replacing Scotty bindings", async () => {
+  it("captures the effective repository environment without replacing Scotty bindings", async () => {
     const environment = {
       revision: 7,
       variables: { PUBLIC_URL: "https://example.test", API_TOKEN: "session-secret" },
@@ -199,6 +199,7 @@ describe("Sandbox create orchestration", () => {
     const harness = await createSessionHarness({ environmentSnapshot: environment });
 
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    assert.deepStrictEqual(harness.environmentSnapshotRepos, [CREATE_INPUT.repo]);
 
     assert.deepStrictEqual(harness.readRecord()?.environment, environment);
     assert.strictEqual(harness.appliedEnvironments[0]?.PUBLIC_URL, "https://example.test");

@@ -1,3 +1,4 @@
+import { RepositoryIdentitySchema } from "../../protocol/repository";
 import { Schema } from "effect";
 
 export const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
@@ -19,10 +20,22 @@ export const EnvironmentVariableSchema = Schema.Struct({
 });
 export type EnvironmentVariable = typeof EnvironmentVariableSchema.Type;
 
-export const EnvironmentAuthoritySchema = Schema.Struct({
+export const LegacyEnvironmentAuthoritySchema = Schema.Struct({
   version: Schema.Literal(1),
   revision: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   variables: Schema.Record(EnvironmentNameSchema, EnvironmentVariableSchema),
+});
+export type LegacyEnvironmentAuthority = typeof LegacyEnvironmentAuthoritySchema.Type;
+
+export const RepositoryEnvironmentSchema = Schema.Struct({
+  variables: Schema.Record(EnvironmentNameSchema, EnvironmentVariableSchema),
+});
+
+export const EnvironmentAuthoritySchema = Schema.Struct({
+  version: Schema.Literal(2),
+  revision: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  global: RepositoryEnvironmentSchema,
+  repositories: Schema.Record(RepositoryIdentitySchema, RepositoryEnvironmentSchema),
 });
 export type EnvironmentAuthority = typeof EnvironmentAuthoritySchema.Type;
 
@@ -43,6 +56,7 @@ export const EnvironmentVariableViewSchema = Schema.Struct({
   secret: Schema.Boolean,
   configured: Schema.Literal(true),
   updatedAt: Schema.NonEmptyString,
+  source: Schema.optionalKey(Schema.Literals(["global", "repo"])),
   value: Schema.optionalKey(EnvironmentValueSchema),
 });
 export type EnvironmentVariableView = typeof EnvironmentVariableViewSchema.Type;
@@ -59,6 +73,7 @@ export type ProtectedEnvironmentBinding = typeof ProtectedEnvironmentBindingSche
 
 export const EnvironmentVariablesViewSchema = Schema.Struct({
   revision: Schema.Number,
+  repo: Schema.optionalKey(Schema.NonEmptyString),
   variables: Schema.Array(EnvironmentVariableViewSchema),
 });
 export type EnvironmentVariablesView = typeof EnvironmentVariablesViewSchema.Type;
@@ -71,6 +86,7 @@ export type EnvironmentView = typeof EnvironmentViewSchema.Type;
 
 export const EnvironmentMutationResponseSchema = Schema.Struct({
   name: EnvironmentNameSchema,
+  repo: Schema.optionalKey(Schema.NonEmptyString),
   removed: Schema.optionalKey(Schema.Boolean),
   secret: Schema.optionalKey(Schema.Boolean),
   configured: Schema.optionalKey(Schema.Literal(true)),

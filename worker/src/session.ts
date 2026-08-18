@@ -2276,7 +2276,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* this.upstreamError("Session setup failed", sandboxConfigStatus.error, id);
     const environmentSnapshot = yield* Effect.tryPromise({
       try: () =>
-        this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).environmentSnapshot(),
+        this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).environmentSnapshot(
+          input.repo,
+        ),
       catch: (cause) => this.upstreamError("Session setup failed", cause, id),
     });
     if (!environmentSnapshot.ok)

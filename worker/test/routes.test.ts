@@ -3898,10 +3898,14 @@ describe("real Hono boundary", () => {
     );
     expect(updated.status).toBe(200);
     expect(await updated.text()).not.toContain(secret);
-    expect(sandboxConfig.putEnvironment).toHaveBeenCalledWith("API_TOKEN", {
-      value: secret,
-      secret: true,
-    });
+    expect(sandboxConfig.putEnvironment).toHaveBeenCalledWith(
+      "API_TOKEN",
+      {
+        value: secret,
+        secret: true,
+      },
+      undefined,
+    );
 
     const removed = await app.request(
       "/api/environment/PUBLIC_URL",
@@ -3909,7 +3913,83 @@ describe("real Hono boundary", () => {
       env(),
     );
     expect(removed.status).toBe(200);
-    expect(sandboxConfig.removeEnvironment).toHaveBeenCalledWith("PUBLIC_URL");
+    expect(sandboxConfig.removeEnvironment).toHaveBeenCalledWith("PUBLIC_URL", undefined);
+  });
+
+  it("validates and forwards repository environment scope without leaking inherited secrets", async () => {
+    sandboxConfig.listEnvironment.mockResolvedValue({
+      ok: true,
+      value: {
+        revision: 8,
+        repo: "owner/project",
+        variables: [
+          {
+            name: "GLOBAL_SECRET",
+            secret: true,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+            source: "global",
+          },
+          {
+            name: "CHANNEL",
+            secret: false,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+            source: "repo",
+            value: "preview",
+          },
+        ],
+      },
+    });
+    const listed = await app.request(
+      "/api/environment?repo=owner%2Fproject",
+      {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      env(),
+    );
+    expect(listed.status).toBe(200);
+    expect(sandboxConfig.listEnvironment).toHaveBeenCalledWith("owner/project");
+    expect(await listed.text()).not.toContain("inherited-secret");
+
+    const updated = await app.request(
+      "http://localhost/api/environment/CHANNEL?repo=owner%2Fproject",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ value: "stable", secret: false }),
+      },
+      env(),
+    );
+    expect(updated.status).toBe(200);
+    expect(sandboxConfig.putEnvironment).toHaveBeenCalledWith(
+      "CHANNEL",
+      { value: "stable", secret: false },
+      "owner/project",
+    );
+
+    const removed = await app.request(
+      "/api/environment/CHANNEL?repo=owner%2Fproject",
+      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(removed.status).toBe(200);
+    expect(sandboxConfig.removeEnvironment).toHaveBeenCalledWith("CHANNEL", "owner/project");
+
+    const malformed = await app.request(
+      "/api/environment?repo=owner%2Fproject%2Fextra",
+      {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      env(),
+    );
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({
+      error: { code: "bad_request", message: "repo must be OWNER/NAME" },
+    });
   });
 
   it("protects environment browser routes and same-origin mutations", async () => {

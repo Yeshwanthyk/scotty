@@ -48,7 +48,7 @@ describe("environment store", () => {
       ]);
       assert.notInclude(JSON.stringify(view), "do-not-return");
       assert.strictEqual(
-        (storage.snapshot() as EnvironmentAuthority).variables.API_TOKEN?.value,
+        (storage.snapshot() as EnvironmentAuthority).global.variables.API_TOKEN?.value,
         "do-not-return",
       );
     }).pipe(Effect.provide(storage.layer));
@@ -73,6 +73,100 @@ describe("environment store", () => {
         removed: false,
         revision: 2,
       });
+    }).pipe(Effect.provide(storage.layer));
+  });
+
+  it.effect("resolves repository overrides without copying inherited globals", () => {
+    const storage = makeStorage();
+    return Effect.gen(function* () {
+      const store = yield* EnvironmentStore;
+      yield* store.put("CHANNEL", { value: "global", secret: false });
+      yield* store.put("GLOBAL_SECRET", { value: "hidden-global", secret: true });
+      yield* store.put("CHANNEL", { value: "repository", secret: false }, "Owner/Project");
+      yield* store.put("REPO_SECRET", { value: "hidden-repo", secret: true }, "owner/project");
+
+      const view = yield* store.list("OWNER/PROJECT");
+      assert.strictEqual(view.repo, "OWNER/PROJECT");
+      assert.deepEqual(
+        view.variables.map(({ name, source, value }) => ({ name, source, value })),
+        [
+          { name: "CHANNEL", source: "repo", value: "repository" },
+          { name: "GLOBAL_SECRET", source: "global", value: undefined },
+          { name: "REPO_SECRET", source: "repo", value: undefined },
+        ],
+      );
+      assert.notInclude(JSON.stringify(view), "hidden-global");
+      assert.notInclude(JSON.stringify(view), "hidden-repo");
+      assert.deepEqual(yield* store.snapshot("owner/project"), {
+        revision: 4,
+        variables: {
+          CHANNEL: "repository",
+          GLOBAL_SECRET: "hidden-global",
+          REPO_SECRET: "hidden-repo",
+        },
+      });
+      assert.deepEqual(
+        Object.keys(
+          (storage.snapshot() as EnvironmentAuthority).repositories["owner/project"]?.variables ??
+            {},
+        ),
+        ["CHANNEL", "REPO_SECRET"],
+      );
+    }).pipe(Effect.provide(storage.layer));
+  });
+
+  it.effect("removing an override reveals the current global and evicts empty scopes", () => {
+    const storage = makeStorage();
+    return Effect.gen(function* () {
+      const store = yield* EnvironmentStore;
+      yield* store.put("CHANNEL", { value: "first", secret: false });
+      yield* store.put("CHANNEL", { value: "override", secret: false }, "owner/project");
+      yield* store.put("CHANNEL", { value: "current", secret: false });
+      assert.deepEqual(yield* store.remove("CHANNEL", "owner/project"), {
+        name: "CHANNEL",
+        repo: "owner/project",
+        removed: true,
+        revision: 4,
+      });
+      assert.deepEqual(yield* store.snapshot("owner/project"), {
+        revision: 4,
+        variables: { CHANNEL: "current" },
+      });
+      assert.deepEqual((storage.snapshot() as EnvironmentAuthority).repositories, {});
+      yield* store.remove("CHANNEL");
+      assert.deepEqual(yield* store.snapshot("owner/project"), { revision: 5, variables: {} });
+    }).pipe(Effect.provide(storage.layer));
+  });
+
+  it.effect("migrates Slice 1 authority and rejects malformed repository scopes", () => {
+    const storage = makeStorage({
+      version: 1,
+      revision: 3,
+      variables: {
+        LEGACY: {
+          value: "retained",
+          secret: false,
+          updatedAt: "2026-08-20T12:00:00.000Z",
+        },
+      },
+    });
+    return Effect.gen(function* () {
+      const store = yield* EnvironmentStore;
+      assert.deepEqual(yield* store.snapshot("owner/project"), {
+        revision: 3,
+        variables: { LEGACY: "retained" },
+      });
+      const failure = yield* Effect.flip(
+        store.put("SAFE_NAME", { value: "hidden", secret: true }, "owner/project/extra"),
+      );
+      assert.strictEqual(failure.reason, "invalid_scope");
+      assert.notInclude(failure.message, "hidden");
+      yield* store.put("NEXT", { value: "value", secret: false });
+      assert.strictEqual((storage.snapshot() as EnvironmentAuthority).version, 2);
+      assert.strictEqual(
+        (storage.snapshot() as EnvironmentAuthority).global.variables.LEGACY?.value,
+        "retained",
+      );
     }).pipe(Effect.provide(storage.layer));
   });
 

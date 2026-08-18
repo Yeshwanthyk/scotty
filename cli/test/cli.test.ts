@@ -3647,28 +3647,46 @@ describe("environment commands", () => {
       if (request.method === "PUT")
         return Response.json({
           name: "API_TOKEN",
+          repo: "owner/project",
           secret: true,
           configured: true,
           revision: 2,
         });
-      return Response.json({ name: "API_TOKEN", removed: true, revision: 3 });
+      return Response.json({
+        name: "API_TOKEN",
+        repo: "owner/project",
+        removed: true,
+        revision: 3,
+      });
     };
     const h = harness({ readStdin: async () => `${secret}\n`, fetch });
 
     expect(
       await main(
-        ["env", "set", "API_TOKEN", "--secret", "--stdin", "--host", "https://worker.example"],
+        [
+          "env",
+          "set",
+          "API_TOKEN",
+          "--secret",
+          "--stdin",
+          "--repo",
+          "owner/project",
+          "--host",
+          "https://worker.example",
+        ],
         h.deps,
       ),
     ).toBe(EXIT.OK);
     expect(h.json()).toEqual({
       name: "API_TOKEN",
+      repo: "owner/project",
       secret: true,
       configured: true,
       revision: 2,
     });
     const put = requests[0];
     expect(new URL(put.url).pathname).toBe("/api/environment/API_TOKEN");
+    expect(new URL(put.url).searchParams.get("repo")).toBe("owner/project");
     expect(await put.clone().json()).toEqual({ value: secret, secret: true });
     expect(put.url).not.toContain(secret);
     expect(h.stdout.join("")).not.toContain(secret);
@@ -3676,9 +3694,26 @@ describe("environment commands", () => {
 
     const removed = harness({ fetch });
     expect(
-      await main(["env", "remove", "API_TOKEN", "--host", "https://worker.example"], removed.deps),
+      await main(
+        [
+          "env",
+          "remove",
+          "API_TOKEN",
+          "--repo",
+          "owner/project",
+          "--host",
+          "https://worker.example",
+        ],
+        removed.deps,
+      ),
     ).toBe(EXIT.OK);
-    expect(removed.json()).toEqual({ name: "API_TOKEN", removed: true, revision: 3 });
+    expect(removed.json()).toEqual({
+      name: "API_TOKEN",
+      repo: "owner/project",
+      removed: true,
+      revision: 3,
+    });
+    expect(new URL(requests[1].url).searchParams.get("repo")).toBe("owner/project");
   });
 
   test("lists plain values and write-only secret metadata", async () => {
@@ -3715,6 +3750,38 @@ describe("environment commands", () => {
     expect(h.stdout.join("")).not.toContain(secret);
   });
 
+  test("lists effective repository variables with source metadata", async () => {
+    let requestUrl = "";
+    const h = harness({
+      fetch: async (input, init) => {
+        requestUrl = new Request(input, init).url;
+        return Response.json({
+          revision: 5,
+          repo: "owner/project",
+          variables: [
+            {
+              name: "CHANNEL",
+              secret: false,
+              configured: true,
+              updatedAt: "2026-08-20T12:00:00.000Z",
+              source: "global",
+              value: "stable",
+            },
+          ],
+          protectedBindings: [],
+        });
+      },
+    });
+    expect(
+      await main(
+        ["env", "list", "--repo", "owner/project", "--host", "https://worker.example"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(new URL(requestUrl).searchParams.get("repo")).toBe("owner/project");
+    expect(h.json().variables[0].source).toBe("global");
+  });
+
   test("requires secret values on stdin before transport", async () => {
     let fetches = 0;
     const h = harness({
@@ -3738,6 +3805,23 @@ describe("environment commands", () => {
       ),
     ).toBe(EXIT.USAGE);
     expect(h.error().error.message).toBe("Secret values must be supplied with --stdin");
+    expect(fetches).toBe(0);
+  });
+  test("rejects malformed environment repository scope before transport", async () => {
+    let fetches = 0;
+    const h = harness({
+      fetch: async () => {
+        fetches += 1;
+        return Response.json({});
+      },
+    });
+    expect(
+      await main(
+        ["env", "list", "--repo", "owner/project/extra", "--host", "https://worker.example"],
+        h.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("--repo must be OWNER/NAME");
     expect(fetches).toBe(0);
   });
 });

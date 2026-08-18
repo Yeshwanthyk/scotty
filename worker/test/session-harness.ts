@@ -326,6 +326,7 @@ export interface SessionHarness {
   readonly piRequests: ReadonlyArray<Request>;
   readonly rawPiRequests: ReadonlyArray<Request>;
   readonly appliedEnvironments: ReadonlyArray<Record<string, string | undefined>>;
+  readonly environmentSnapshotRepos: ReadonlyArray<unknown>;
   readonly writtenFiles: ReadonlyArray<{
     readonly path: string;
     readonly content: string;
@@ -581,6 +582,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const deletedSchedules: string[] = [];
   const aborts: string[] = [];
   const commands: string[] = [];
+  const environmentSnapshotRepos: unknown[] = [];
   const appliedEnvironments: Array<Record<string, string | undefined>> = [];
   const runnerOperations: RunnerOperation[] = [];
   const runnerRequests: Request[] = [];
@@ -875,10 +877,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           ok: true,
           value: { revision: 0, variables: [] },
         }),
-        environmentSnapshot: async () => ({
-          ok: true,
-          value: options.environmentSnapshot ?? { revision: 0, variables: {} },
-        }),
+        environmentSnapshot: async (repo) => {
+          environmentSnapshotRepos.push(repo);
+          return {
+            ok: true,
+            value: options.environmentSnapshot ?? { revision: 0, variables: {} },
+          };
+        },
         putEnvironment: async (name) => ({
           ok: true,
           value: { name: String(name), configured: true, secret: false, revision: 1 },
@@ -1347,6 +1352,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     rawPiRequests,
     writtenFiles,
     appliedEnvironments,
+    environmentSnapshotRepos,
     r2DeletedKeys,
     artifactDeletedKeys,
     artifactKeys: () => [...artifactObjects.keys()],
