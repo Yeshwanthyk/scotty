@@ -73,6 +73,46 @@ describe("prebuilt worker bundle helpers", () => {
     }
   });
 
+  it("reports empty required prebuilt entries by relative name", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scotty-prebuilt-empty-"));
+    try {
+      await Promise.all([
+        mkdir(join(root, PREBUILT_MAIN_WORKER_DIR), { recursive: true }),
+        mkdir(join(root, PREBUILT_RUNNER_WORKER_DIR), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(join(root, PREBUILT_MAIN_WORKER_ENTRY), "main"),
+        writeFile(join(root, PREBUILT_RUNNER_WORKER_ENTRY), "runner"),
+        writeFile(join(root, PREBUILT_WORKER_MARKER), ""),
+      ]);
+
+      expect(missingPrebuiltWorkerEntries(root)).toEqual([PREBUILT_WORKER_MARKER]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts non-empty required entries projected into an archive root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "scotty-prebuilt-projected-"));
+    try {
+      await Promise.all([
+        mkdir(join(root, PREBUILT_MAIN_WORKER_DIR), { recursive: true }),
+        mkdir(join(root, PREBUILT_RUNNER_WORKER_DIR), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(join(root, PREBUILT_MAIN_WORKER_ENTRY), "main"),
+        writeFile(join(root, PREBUILT_RUNNER_WORKER_ENTRY), "runner"),
+        writeFile(join(root, PREBUILT_WORKER_MARKER), "prebuilt"),
+      ]);
+      const archiveRoot = join(root, "archive");
+      await materializeProjectInputs(root, archiveRoot, [PREBUILT_WORKER_ROOT]);
+
+      expect(missingPrebuiltWorkerEntries(archiveRoot)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("detects exported durable object class names", () => {
     const names = collectExportClassNames(`
       export class ScottyRunner extends DurableObjectBridge {}

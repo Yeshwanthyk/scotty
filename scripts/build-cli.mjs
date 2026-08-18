@@ -1,8 +1,15 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEPLOYMENT_INPUTS, listPackagedFiles } from "../cli/src/deployment-packaging.mjs";
-import { PREBUILT_WORKER_ROOT } from "../cli/src/prebuilt-worker-bundles.ts";
+import {
+  PREBUILT_MAIN_WORKER_ENTRY,
+  PREBUILT_RUNNER_WORKER_ENTRY,
+  PREBUILT_WORKER_MARKER,
+  PREBUILT_WORKER_ROOT,
+} from "../cli/src/prebuilt-worker-bundles.ts";
+import { DEPENDENCY_PATCHES } from "./apply-dependency-patches.mjs";
 import { bundleDeploymentWorkers } from "./bundle-deployment-workers.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -12,6 +19,39 @@ const entryPath = join(buildDirectory, "standalone.ts");
 const output = resolve(process.argv[2] ?? join(root, "dist", "scotty"));
 const compileTarget = process.env.SCOTTY_COMPILE_TARGET;
 
+const CRITICAL_ARCHIVE_ENTRIES = Object.freeze([
+  "package.json",
+  PREBUILT_MAIN_WORKER_ENTRY,
+  PREBUILT_RUNNER_WORKER_ENTRY,
+  PREBUILT_WORKER_MARKER,
+  "worker/container/Dockerfile",
+  ...DEPENDENCY_PATCHES,
+]);
+
+const validateArchive = async () => {
+  const validationRoot = await mkdtemp(join(tmpdir(), "scotty-build-archive-"));
+  try {
+    await new Bun.Archive(await readFile(archivePath)).extract(validationRoot);
+    const invalidEntries = [];
+    for (const entry of CRITICAL_ARCHIVE_ENTRIES) {
+      try {
+        if ((await readFile(join(validationRoot, entry))).byteLength === 0) {
+          invalidEntries.push(entry);
+        }
+      } catch {
+        invalidEntries.push(entry);
+      }
+    }
+    if (invalidEntries.length > 0) {
+      throw new Error(
+        `Embedded deployment archive has missing, unreadable, or empty critical entries: ${invalidEntries.join(", ")}`,
+      );
+    }
+  } finally {
+    await rm(validationRoot, { recursive: true, force: true });
+  }
+};
+
 await rm(buildDirectory, { recursive: true, force: true });
 await mkdir(buildDirectory, { recursive: true });
 // The finished output is outside these generated input roots and survives cleanup.
@@ -19,9 +59,10 @@ try {
   await bundleDeploymentWorkers({ projectRoot: root });
   const files = {};
   for (const relativePath of await listPackagedFiles(root, DEPLOYMENT_INPUTS)) {
-    files[relativePath] = Bun.file(join(root, relativePath));
+    files[relativePath] = await readFile(join(root, relativePath));
   }
   await Bun.Archive.write(archivePath, files, { compress: "gzip", level: 9 });
+  await validateArchive();
 
   const archiveImport = JSON.stringify(`./${relative(buildDirectory, archivePath)}`);
   const cliImport = JSON.stringify(`../cli/scotty.ts`);

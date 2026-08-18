@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 
 export const PREBUILT_WORKER_ROOT = "worker/prebuilt" as const;
@@ -143,7 +143,14 @@ export const requiredPrebuiltWorkerEntries = Object.freeze([
 ] as const);
 
 export const missingPrebuiltWorkerEntries = (root: string): readonly string[] =>
-  requiredPrebuiltWorkerEntries.filter((entry) => !existsSync(`${root}/${entry}`));
+  requiredPrebuiltWorkerEntries.filter((entry) => {
+    // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: synchronous filesystem validation reports bad archive entries through the caller's typed deployment error
+    try {
+      return readFileSync(`${root}/${entry}`).byteLength === 0;
+    } catch {
+      return true;
+    }
+  });
 
 const escapeJavaScriptStringContent = (value: string): string =>
   JSON.stringify(value)
