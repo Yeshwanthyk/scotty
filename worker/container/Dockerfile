@@ -9,6 +9,9 @@ COPY worker/package.json worker/package.json
 COPY tui/package.json tui/package.json
 COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs
 COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
+COPY scripts/container-control-plane.mjs scripts/container-control-plane.mjs
+COPY scripts/deploy-production.mjs scripts/deploy-production.mjs
+COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs
 COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs
 COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch
 COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch
@@ -138,6 +141,7 @@ COPY worker/container/scotty-pi-session.mjs /usr/local/bin/scotty-pi-session
 COPY worker/container/scotty-jsonl.mjs /usr/local/bin/scotty-jsonl.mjs
 COPY worker/container/scotty-pi-protocol.mjs /usr/local/bin/scotty-pi-protocol.mjs
 COPY protocol/pi-console-shared.mjs /usr/protocol/pi-console-shared.mjs
+COPY scripts/is-direct-run.mjs /tmp/is-direct-run.mjs
 COPY scripts/project-container-pi-install.mjs /tmp/project-container-pi-install.mjs
 RUN set -eu; \
   node /tmp/project-container-pi-install.mjs --pi-packages /opt/scotty/pi-packages \
@@ -160,7 +164,7 @@ RUN set -eu; \
         --legacy-peer-deps; \
   done \
   && node /tmp/project-container-pi-install.mjs --assert-image --pi-packages /opt/scotty/pi-packages \
-  && rm -f /tmp/project-container-pi-install.mjs \
+  && rm -f /tmp/is-direct-run.mjs /tmp/project-container-pi-install.mjs \
   && test "$(node --input-type=module -e "import('/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/package.json', { with: { type: 'json' } }).then(({ default: packageJson }) => process.stdout.write(packageJson.version))")" = "${PLAYWRIGHT_VERSION}" \
   && node \
     /opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/cli.js \
