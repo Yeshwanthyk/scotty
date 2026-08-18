@@ -3,6 +3,7 @@ import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
 import { CLOUDFLARE_BINDING_TOPOLOGY } from "../scripts/cloudflare-topology-data.mjs";
 import { makeScottyRunnerWorker, ScottyRunnerWorker } from "../worker/src/runner-worker.ts";
+import { PREBUILT_MAIN_WORKER_ENTRY } from "../cli/src/prebuilt-worker-bundles.ts";
 import { bindExternalSandboxContainer } from "./external-sandbox-container-binding.ts";
 import {
   CLOUDFLARE_STAGE,
@@ -14,12 +15,16 @@ export { CLOUDFLARE_STAGE };
 
 export const CLOUDFLARE_WORKER_SECRETS = ["GH_TOKEN", "PI_AUTH_JSON", "SCOTTY_TOKEN"] as const;
 
-export const makeCloudflareStackTopology = (installation: InstallationTopology) =>
+export const makeCloudflareStackTopology = (
+  installation: InstallationTopology,
+  prebuiltWorkers = false,
+) =>
   ({
     worker: {
       logicalId: installation.workerLogicalId,
       name: installation.workerName,
-      main: "worker/src/index.ts",
+      main: prebuiltWorkers ? PREBUILT_MAIN_WORKER_ENTRY : "worker/src/index.ts",
+      ...(prebuiltWorkers ? { bundle: false as const } : {}),
       url: true,
       compatibilityDate: "2026-07-20",
       compatibilityFlags: ["nodejs_compat"],
@@ -100,6 +105,7 @@ export interface CloudflareStackConfig {
   readonly installation: InstallationTopology;
   readonly resourceConfirmation: string | undefined;
   readonly approval: string | undefined;
+  readonly prebuiltWorkers?: boolean;
 }
 
 export const expectedCloudflareResourceConfirmation = (
@@ -153,7 +159,10 @@ export function assertCloudflareStackConfig(config: CloudflareStackConfig): void
 export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareStackConfig) {
   assertCloudflareStackConfig(config);
 
-  const topology = makeCloudflareStackTopology(config.installation);
+  const topology = makeCloudflareStackTopology(
+    config.installation,
+    config.prebuiltWorkers === true,
+  );
   const environment = yield* Cloudflare.CloudflareEnvironment;
   const { accountId } = yield* environment;
   const removalPolicy = RemovalPolicy.retain();
@@ -188,7 +197,11 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
     },
   );
   const runnerWorker = yield* ScottyRunnerWorker.pipe(
-    Effect.provide(makeScottyRunnerWorker(topology.runnerDurableObject.workerName)),
+    Effect.provide(
+      makeScottyRunnerWorker(topology.runnerDurableObject.workerName, {
+        prebuiltWorkers: config.prebuiltWorkers === true,
+      }),
+    ),
     removalPolicy,
   );
   const runnerDurableObject = Cloudflare.DurableObject(topology.runnerDurableObject.logicalId, {
@@ -205,6 +218,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
   const worker = yield* Cloudflare.Worker(topology.worker.logicalId, {
     name: topology.worker.name,
     main: topology.worker.main,
+    ...(topology.worker.bundle === false ? { bundle: false as const } : {}),
     workersDev: topology.worker.url,
     assets: assetConfig,
     compatibility: {
@@ -257,4 +271,4 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
 });
 
 export const defaultCloudflareStackTopology = (installationName: string) =>
-  makeCloudflareStackTopology(makeInstallationTopology(installationName));
+  makeCloudflareStackTopology(makeInstallationTopology(installationName), false);

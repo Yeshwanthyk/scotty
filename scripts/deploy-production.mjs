@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+import { isDirectRun } from "./is-direct-run.mjs";
 import {
   FAILURE_OUTPUT_TAIL_CHARACTERS,
   redactProductionDeploymentOutput,
@@ -1090,7 +1090,7 @@ export async function deployProduction({ allowContainerRollout = false } = {}) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectRun(import.meta.url, process.argv[1])) {
   Promise.resolve()
     .then(() => parseProductionDeployOptions(process.argv.slice(2)))
     .then(deployProduction)

@@ -28,11 +28,20 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("worker/package.json", "archive", "containerStatic"),
   entry("worker/src", "archive", "cliSource"),
   entry("worker/public", "archive", "archivePublic"),
+  entry("worker/prebuilt", "archive"),
   entry("worker/container", "archive", "containerRuntime"),
   entry("scripts/apply-dependency-patches.mjs", "archive", "containerStatic"),
   entry("scripts/cloudflare-topology-data.mjs", "archive", "containerStatic"),
+  entry("scripts/container-control-plane.mjs", "archive", "containerStatic"),
+  entry("scripts/deploy-production.mjs", "archive", "containerStatic"),
+  entry("scripts/is-direct-run.mjs", "archive", "containerStatic"),
   entry("scripts/project-container-pi-install.mjs", "archive", "containerStatic"),
   entry("patches/alchemy+2.0.0-beta.72.patch", "archive", "containerStatic"),
+  entry(
+    "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+    "archive",
+    "containerStatic",
+  ),
   entry("patches/earendil-works+pi-coding-agent+0.84.0.patch", "archive", "containerStatic"),
 ]);
 

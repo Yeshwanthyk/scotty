@@ -753,14 +753,21 @@ export const cliLayer = (
                   previewCleanup.value.hint,
                   EXIT.GENERIC,
                 )
-              : new CliError(
-                  "installation_uninstall_failed",
-                  "Could not fully uninstall the Scotty installation",
-                  "Inspect Cloudflare resources, then rerun scotty uninstall with the same options.",
-                  EXIT.GENERIC,
-                );
+              : new InstallationHostFailure({ cause });
           },
-        }),
+        }).pipe(
+          Effect.catchTag("InstallationHostFailure", ({ cause }) =>
+            failInstallation(cause, {
+              code: "installation_uninstall_failed",
+              message: "Could not fully uninstall the Scotty installation",
+              hint: "Inspect Cloudflare resources, then rerun scotty uninstall with the same options.",
+              operation: "uninstall",
+              phase: "apply",
+              installationName: request.installationName,
+              profile: request.profile,
+            }),
+          ),
+        ),
     }),
     Layer.succeed(InstallationRecovery)({
       inspect: (request) =>

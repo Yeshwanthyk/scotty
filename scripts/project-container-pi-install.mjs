@@ -2,7 +2,8 @@ import { execFile as execFileCallback, execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isDirectRun } from "./is-direct-run.mjs";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
@@ -490,7 +491,7 @@ export const parseProjectContainerPiInstallArgs = (argv) => {
   return options;
 };
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (isDirectRun(import.meta.url, process.argv[1])) {
   const root = dirname(fileURLToPath(new URL(".", import.meta.url)));
   const parsed = parseProjectContainerPiInstallArgs(process.argv.slice(2));
   const piPackagesRoot = resolvePiPackagesRoot(root, parsed);

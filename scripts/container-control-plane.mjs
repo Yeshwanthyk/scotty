@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { isDirectRun } from "./is-direct-run.mjs";
 import { Credentials, formatHeaders } from "@distilled.cloud/cloudflare/Credentials";
 import { AuthProviders } from "alchemy/Auth";
 import { CloudflareApiLive, CloudflareEnvironment } from "alchemy/Cloudflare";
@@ -202,7 +202,7 @@ async function main() {
   process.stdout.write(`${JSON.stringify(snapshot)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectRun(import.meta.url, process.argv[1])) {
   main().catch((error) => {
     process.stderr.write(`Container control-plane read failed: ${error.message}\n`);
     process.exitCode = 1;

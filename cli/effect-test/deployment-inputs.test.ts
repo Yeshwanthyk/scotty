@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   ARCHIVE_PUBLIC_ASSETS,
@@ -15,6 +17,8 @@ import {
   isDeploymentArchiveFileName,
 } from "../src/deployment-packaging.ts";
 
+const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
+
 const dockerfile = readFileSync(
   new URL("../../worker/container/Dockerfile", import.meta.url),
   "utf8",
@@ -27,6 +31,40 @@ const containerImageCheck = readFileSync(
   new URL("../../scripts/check-container-image.mjs", import.meta.url),
   "utf8",
 );
+
+const normalizePath = (path: string): string => path.replaceAll("\\", "/");
+
+const listFiles = (path: string): string[] => {
+  const absolute = join(repositoryRoot, path);
+  if (!statSync(absolute).isDirectory()) return [path];
+  return readdirSync(absolute, { withFileTypes: true }).flatMap((entry) => {
+    const child = normalizePath(join(path, entry.name));
+    return entry.isDirectory() ? listFiles(child) : [child];
+  });
+};
+
+const listBundledScriptImports = (): string[] => {
+  const pending = CLI_SOURCE_TREES.flatMap(listFiles);
+  const visited = new Set<string>();
+  const scripts = new Set<string>();
+  while (pending.length > 0) {
+    const source = pending.pop();
+    if (source === undefined || visited.has(source)) continue;
+    visited.add(source);
+    const contents = readFileSync(join(repositoryRoot, source), "utf8");
+    for (const match of contents.matchAll(/\b(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']/gu)) {
+      const specifier = match[1];
+      if (!specifier?.startsWith(".")) continue;
+      const target = normalizePath(
+        relative(repositoryRoot, resolve(repositoryRoot, dirname(source), specifier)),
+      );
+      if (!target.startsWith("scripts/") || !existsSync(join(repositoryRoot, target))) continue;
+      scripts.add(target);
+      pending.push(target);
+    }
+  }
+  return [...scripts].sort();
+};
 
 const listDockerfileProjectCopySources = (source: string): string[] => {
   const sources: string[] = [];
@@ -61,6 +99,7 @@ describe("standalone deployment archive", () => {
     expect(DEPLOYMENT_PACKAGING.contextPath).toBe(".alchemy/scotty-container-context");
     expect(DEPLOYMENT_ENTRIES.map((entry) => entry.path)).toEqual(DEPLOYMENT_INPUTS);
     expect(DEPLOYMENT_INPUTS).toContain("worker/public");
+    expect(DEPLOYMENT_INPUTS).toContain("worker/prebuilt");
     expect(ARCHIVE_PUBLIC_ASSETS).toEqual(["worker/public"]);
     expect(CONTAINER_INPUTS).not.toContain("worker/public");
     expect(CONTAINER_STATIC_INPUTS).not.toContain("worker/public");
@@ -107,12 +146,16 @@ describe("standalone deployment archive", () => {
     }
   });
 
-  it("packages TUI package.json, patch files, and the apply script for container npm ci", () => {
+  it("packages maintainer scripts, package metadata, and patches for the compiled CLI", () => {
     const files = [
       "tui/package.json",
       "scripts/apply-dependency-patches.mjs",
+      "scripts/container-control-plane.mjs",
+      "scripts/deploy-production.mjs",
+      "scripts/is-direct-run.mjs",
       "scripts/project-container-pi-install.mjs",
       "patches/alchemy+2.0.0-beta.72.patch",
+      "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
       "patches/earendil-works+pi-coding-agent+0.84.0.patch",
     ] as const;
     for (const file of files) {
@@ -132,6 +175,9 @@ describe("standalone deployment archive", () => {
       "COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch",
     );
     expect(dockerfile).toContain(
+      "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+    );
+    expect(dockerfile).toContain(
       "COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch",
     );
     expect(dockerfile.indexOf("COPY tui/package.json tui/package.json")).toBeLessThan(npmCiIndex);
@@ -147,12 +193,18 @@ describe("standalone deployment archive", () => {
     ).toBeLessThan(npmCiIndex);
     expect(
       dockerfile.indexOf(
+        "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
+      ),
+    ).toBeLessThan(npmCiIndex);
+    expect(
+      dockerfile.indexOf(
         "COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch",
       ),
     ).toBeLessThan(npmCiIndex);
     expect(dockerfile.indexOf("RUN node scripts/apply-dependency-patches.mjs")).toBeGreaterThan(
       npmCiIndex,
     );
+    expect(dockerfile).toContain("COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs");
     expect(dockerfile).toContain(
       "COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs",
     );
@@ -164,9 +216,34 @@ describe("standalone deployment archive", () => {
     expect(dockerfile.indexOf("RUN bun build")).toBeGreaterThan(
       dockerfile.indexOf("RUN node scripts/apply-dependency-patches.mjs"),
     );
+    expect(dockerfile).toContain("COPY scripts/is-direct-run.mjs /tmp/is-direct-run.mjs");
+    expect(dockerfile).toContain(
+      "rm -f /tmp/is-direct-run.mjs /tmp/project-container-pi-install.mjs",
+    );
     expect(dockerfile).toContain(
       "COPY scripts/project-container-pi-install.mjs /tmp/project-container-pi-install.mjs",
     );
+  });
+
+  it("catalogs and COPYs every maintainer script reachable from the bundled source graph", () => {
+    const bundledScripts = listBundledScriptImports();
+    expect(bundledScripts).toEqual(
+      expect.arrayContaining([
+        "scripts/container-control-plane.mjs",
+        "scripts/deploy-production.mjs",
+        "scripts/is-direct-run.mjs",
+        "scripts/project-container-pi-install.mjs",
+      ]),
+    );
+
+    const compileIndex = dockerfile.indexOf("RUN bun build");
+    expect(compileIndex).toBeGreaterThan(-1);
+    const cliBuildStage = dockerfile.slice(0, compileIndex);
+    for (const script of bundledScripts) {
+      const entry = DEPLOYMENT_ENTRIES.find((candidate) => candidate.path === script);
+      expect(entry?.categories).toEqual(expect.arrayContaining(["archive", "containerStatic"]));
+      expect(cliBuildStage).toContain(`COPY ${script} ${script}`);
+    }
   });
 
   it("keeps recursive read-only chmod in the Pi/Playwright install layer and drops Codex CLI", () => {

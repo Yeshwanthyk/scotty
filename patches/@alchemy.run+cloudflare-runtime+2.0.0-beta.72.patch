@@ -1,0 +1,334 @@
+diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
+index 37d5e1a..5783beb 100644
+--- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
++++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/RuntimeServices.d.mts
+@@ -27 +27,2 @@
++import { WorkerdLoadError } from "./workerd/Workerd.mjs";
+ import "./registry/index.mjs";
+@@ -48,2 +49,2 @@
+-declare const layerProxy: () => Layer.Layer<WorkerProxy, never, import("effect/FileSystem").FileSystem>;
++declare const layerProxy: () => Layer.Layer<WorkerProxy, WorkerdLoadError, import("effect/FileSystem").FileSystem>;
+ declare const layerRegistry: () => Layer.Layer<RegistryProxy, import("effect/PlatformError").PlatformError | SystemError, import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path | Paths>;
+@@ -50,2 +51,2 @@
+-declare const layerRuntime: (config: RuntimeConfig) => Layer.Layer<AnalyticsEngine | Assets | Browser | Cache | D1 | DispatchNamespace | Hyperdrive | Images | KvNamespace | Loopback | Queue | R2Bucket | RateLimit | RegistryProxy | RemoteBindings | Runtime | SecretsStore | SendEmail | Stream | WorkerProxy | Workflows, import("effect/Config").ConfigError | ConfigError | import("effect/PlatformError").PlatformError | SystemError, import("effect/unstable/process/ChildProcessSpawner").ChildProcessSpawner | import("@distilled.cloud/cloudflare/Credentials").Credentials | import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path>;
++declare const layerRuntime: (config: RuntimeConfig) => Layer.Layer<AnalyticsEngine | Assets | Browser | Cache | D1 | DispatchNamespace | Hyperdrive | Images | KvNamespace | Loopback | Queue | R2Bucket | RateLimit | RegistryProxy | RemoteBindings | Runtime | SecretsStore | SendEmail | Stream | WorkerProxy | Workflows, WorkerdLoadError | import("effect/Config").ConfigError | ConfigError | import("effect/PlatformError").PlatformError | SystemError, import("effect/unstable/process/ChildProcessSpawner").ChildProcessSpawner | import("@distilled.cloud/cloudflare/Credentials").Credentials | import("effect/FileSystem").FileSystem | import("effect/unstable/http/HttpClient").HttpClient | import("effect/Path").Path>;
+ //#endregion
+diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
+index c08bb75..68faeec 100644
+--- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
++++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.d.mts
+@@ -4 +4,2 @@
++import * as Data from "effect/Data";
+ import * as Effect from "effect/Effect";
+@@ -8,2 +9,2 @@
+-  export { OutputSink, ServeOptions, Workerd, WorkerdLive, WorkerdPorts, isAddressInUseError };
++  export { OutputSink, ServeOptions, Workerd, WorkerdLive, WorkerdLoadError, WorkerdPorts, isAddressInUseError };
+ }
+@@ -10 +11,4 @@
++declare class WorkerdLoadError extends Data.TaggedError("WorkerdLoadError")<{
++  readonly cause: unknown;
++}> {}
+ interface WorkerdPorts {
+@@ -32,2 +36,2 @@
+-declare const WorkerdLive: Layer.Layer<Workerd, never, never>;
++declare const WorkerdLive: Layer.Layer<Workerd, WorkerdLoadError, never>;
+ declare const isAddressInUseError: (error: ConfigError | SystemError) => boolean;
+@@ -35,2 +39,2 @@
+-export { OutputSink, ServeOptions, Workerd, WorkerdLive, WorkerdPorts, Workerd_d_exports, isAddressInUseError };
++export { OutputSink, ServeOptions, Workerd, WorkerdLive, WorkerdLoadError, WorkerdPorts, Workerd_d_exports, isAddressInUseError };
+ //# sourceMappingURL=Workerd.d.mts.map
+\ No newline at end of file
+diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
+index 03eb955..e32ae72 100644
+--- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
++++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/Workerd.mjs
+@@ -4,2 +4,2 @@
+-import { bin, compatibilityDate } from "./internal/workerd.mjs";
++import { load } from "./internal/workerd.mjs";
+ import * as Context from "effect/Context";
+@@ -6 +6,2 @@
++import * as Data from "effect/Data";
+ import * as Effect from "effect/Effect";
+@@ -16,2 +17,3 @@
+-	isAddressInUseError: () => isAddressInUseError
++	WorkerdLoadError: () => WorkerdLoadError,
++	isAddressInUseError: () => isAddressInUseError
+ });
+@@ -18 +20,2 @@
++var WorkerdLoadError = class extends Data.TaggedError("WorkerdLoadError") {};
+ var Workerd = class extends Context.Service()("cloudflare-runtime/workerd/Workerd") {};
+@@ -19,36 +22,36 @@
+-const make = (spawn) => Workerd.of({
+-	compatibilityDate,
+-	serve: Effect.fn("Workerd.serve")(function* (config, args, options) {
+-		const dumpDir = process.env.WORKERD_DUMP_CONFIG;
+-		if (dumpDir) yield* Effect.promise(async () => {
+-			const fs = await import("node:fs/promises");
+-			const path = await import("node:path");
+-			await fs.mkdir(dumpDir, { recursive: true });
+-			await fs.writeFile(path.join(dumpDir, `workerd-config-${Date.now()}.json`), JSON.stringify(config, null, 2));
+-		});
+-		const handle = yield* spawn(bin, [
+-			"serve",
+-			"--binary",
+-			"--experimental",
+-			"--control-fd=3",
+-			...Object.entries(args ?? {}).map(([key, value]) => typeof value === "boolean" ? `--${key}` : `--${key}=${value}`),
+-			"-"
+-		], Buffer.from(serializeConfig(config)));
+-		const unregister = exitHook(() => handle.kill());
+-		yield* Effect.addFinalizer(() => Effect.sync(() => {
+-			handle.kill();
+-			unregister();
+-		}));
+-		if (handle.configure) yield* handle.configure();
+-		const count = (config.sockets?.length ?? 0) + (typeof args?.["debug-port"] !== "undefined" ? 1 : 0) + (typeof args?.["inspector-addr"] !== "undefined" ? 1 : 0);
+-		const control = yield* Effect.raceAllFirst([handle.control(count), handle.error()]);
+-		yield* handle.pipe(options?.onOutput);
+-		const ports = {};
+-		for (const message of control) if (message.event === "listen") ports[message.socket] = message.port;
+-		return ports;
+-	}, Effect.retry({
+-		while: (error) => error._tag === "SystemError",
+-		schedule: Schedule.exponential(50),
+-		times: 3
+-	}))
++const make = (workerdPackage, spawn) => Workerd.of({
++	compatibilityDate: workerdPackage.compatibilityDate,
++	serve: Effect.fn("Workerd.serve")(function* (config, args, options) {
++		const dumpDir = process.env.WORKERD_DUMP_CONFIG;
++		if (dumpDir) yield* Effect.promise(async () => {
++			const fs = await import("node:fs/promises");
++			const path = await import("node:path");
++			await fs.mkdir(dumpDir, { recursive: true });
++			await fs.writeFile(path.join(dumpDir, `workerd-config-${Date.now()}.json`), JSON.stringify(config, null, 2));
++		});
++		const handle = yield* spawn(workerdPackage.bin, [
++			"serve",
++			"--binary",
++			"--experimental",
++			"--control-fd=3",
++			...Object.entries(args ?? {}).map(([key, value]) => typeof value === "boolean" ? `--${key}` : `--${key}=${value}`),
++			"-"
++		], Buffer.from(serializeConfig(config)));
++		const unregister = exitHook(() => handle.kill());
++		yield* Effect.addFinalizer(() => Effect.sync(() => {
++			handle.kill();
++			unregister();
++		}));
++		if (handle.configure) yield* handle.configure();
++		const count = (config.sockets?.length ?? 0) + (typeof args?.["debug-port"] !== "undefined" ? 1 : 0) + (typeof args?.["inspector-addr"] !== "undefined" ? 1 : 0);
++		const control = yield* Effect.raceAllFirst([handle.control(count), handle.error()]);
++		yield* handle.pipe(options?.onOutput);
++		const ports = {};
++		for (const message of control) if (message.event === "listen") ports[message.socket] = message.port;
++		return ports;
++	}, Effect.retry({
++		while: (error) => error._tag === "SystemError",
++		schedule: Schedule.exponential(50),
++		times: 3
++	}))
+ });
+@@ -90,10 +93,10 @@
+-const makeBun = () => make((command, args, config) => Effect.sync(() => Bun.spawn({
+-	cmd: [command, ...args],
+-	stdio: [
+-		config,
+-		"pipe",
+-		"pipe",
+-		"pipe"
+-	],
+-	killSignal: "SIGKILL"
++const makeBun = (workerdPackage) => make(workerdPackage, (command, args, config) => Effect.sync(() => Bun.spawn({
++	cmd: [command, ...args],
++	stdio: [
++		config,
++		"pipe",
++		"pipe",
++		"pipe"
++	],
++	killSignal: "SIGKILL"
+ })).pipe(Effect.map((child) => {
+@@ -136,16 +139,16 @@
+-const makeNode = () => make((command, args, config) => Effect.try({
+-	try: () => NodeChildProcess.spawn(command, args, {
+-		stdio: [
+-			"pipe",
+-			"pipe",
+-			"pipe",
+-			"pipe"
+-		],
+-		killSignal: "SIGKILL"
+-	}),
+-	catch: (error) => new SystemError({
+-		subtag: "WorkerdSpawn",
+-		message: "Failed to spawn the Workers runtime (workerd) process.",
+-		cause: error
+-	})
++const makeNode = (workerdPackage) => make(workerdPackage, (command, args, config) => Effect.try({
++	try: () => NodeChildProcess.spawn(command, args, {
++		stdio: [
++			"pipe",
++			"pipe",
++			"pipe",
++			"pipe"
++		],
++		killSignal: "SIGKILL"
++	}),
++	catch: (error) => new SystemError({
++		subtag: "WorkerdSpawn",
++		message: "Failed to spawn the Workers runtime (workerd) process.",
++		cause: error
++	})
+ }).pipe(Effect.tap((child) => Effect.callback((resume) => {
+@@ -249,2 +252,5 @@
+-const WorkerdLive = Layer.sync(Workerd, () => typeof globalThis.Bun !== "undefined" && process.platform !== "win32" ? makeBun() : makeNode());
++const WorkerdLive = Layer.effect(Workerd, Effect.tryPromise({
++	try: load,
++	catch: (cause) => new WorkerdLoadError({ cause })
++}).pipe(Effect.map((workerdPackage) => typeof globalThis.Bun !== "undefined" && process.platform !== "win32" ? makeBun(workerdPackage) : makeNode(workerdPackage))));
+ const ADDRESS_IN_USE_SUBTAG = "AddressInUse";
+@@ -301,3 +307,3 @@
+-export { Workerd, WorkerdLive, Workerd_exports, isAddressInUseError };
+-
++export { Workerd, WorkerdLive, WorkerdLoadError, Workerd_exports, isAddressInUseError };
++
+ //# sourceMappingURL=Workerd.mjs.map
+\ No newline at end of file
+diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
+index 40fac1d..cf8be02 100644
+--- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
++++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.d.mts
+@@ -2,4 +2,7 @@
+-declare const bin: string;
+-declare const compatibilityDate: string;
+-declare const version: string;
++interface WorkerdPackage {
++  readonly bin: string;
++  readonly compatibilityDate: string;
++  readonly version: string;
++}
++declare const load: () => Promise<WorkerdPackage>;
+ //#endregion
+@@ -6,2 +9,2 @@
+-export { bin, compatibilityDate, version };
++export { WorkerdPackage, load };
+ //# sourceMappingURL=workerd.d.mts.map
+\ No newline at end of file
+diff --git a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
+index 38a52e8..b704446 100644
+--- a/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
++++ b/node_modules/@alchemy.run/cloudflare-runtime/dist/core/node/workerd/internal/workerd.mjs
+@@ -1,2 +1 @@
+-import * as Workerd from "workerd";
+ //#region src/core/workerd/internal/workerd.ts
+@@ -3,4 +2,10 @@
+-const bin = typeof Workerd.default === "string" ? Workerd.default : Workerd.default.default;
+-const compatibilityDate = Workerd.compatibilityDate;
+-const version = Workerd.version;
++let packagePromise;
++const load = () => packagePromise ??= import("workerd").then((Workerd) => {
++	const defaultExport = Workerd.default;
++	return {
++		bin: typeof defaultExport === "string" ? defaultExport : defaultExport.default,
++		compatibilityDate: Workerd.compatibilityDate,
++		version: Workerd.version
++	};
++});
+ //#endregion
+@@ -7,3 +12,3 @@
+-export { bin, compatibilityDate, version };
+-
++export { load };
++
+ //# sourceMappingURL=workerd.mjs.map
+\ No newline at end of file
+diff --git a/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts b/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
+index f2ef4af..a792a78 100644
+--- a/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
++++ b/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/Workerd.ts
+@@ -3 +3,2 @@
++import * as Data from "effect/Data";
+ import * as Effect from "effect/Effect";
+@@ -13,2 +14,6 @@
+-
++
++export class WorkerdLoadError extends Data.TaggedError("WorkerdLoadError")<{
++  readonly cause: unknown;
++}> {}
++
+ export interface WorkerdPorts {
+@@ -76 +81,2 @@
++  workerdPackage: workerd.WorkerdPackage,
+   spawn: (
+@@ -83,2 +89,2 @@
+-    compatibilityDate: workerd.compatibilityDate,
++    compatibilityDate: workerdPackage.compatibilityDate,
+     serve: Effect.fn("Workerd.serve")(
+@@ -101,2 +107,2 @@
+-          workerd.bin,
++          workerdPackage.bin,
+           [
+@@ -197,3 +203,3 @@
+-const makeBun = () =>
+-  make((command, args, config) =>
++const makeBun = (workerdPackage: workerd.WorkerdPackage) =>
++  make(workerdPackage, (command, args, config) =>
+     Effect.sync(() =>
+@@ -268,3 +274,3 @@
+-const makeNode = () =>
+-  make((command, args, config) =>
++const makeNode = (workerdPackage: workerd.WorkerdPackage) =>
++  make(workerdPackage, (command, args, config) =>
+     Effect.try({
+@@ -428,5 +434,13 @@
+-export const WorkerdLive = Layer.sync(Workerd, () =>
+-  typeof globalThis.Bun !== "undefined" && process.platform !== "win32"
+-    ? makeBun()
+-    : makeNode(),
++export const WorkerdLive = Layer.effect(
++  Workerd,
++  Effect.tryPromise({
++    try: workerd.load,
++    catch: (cause) => new WorkerdLoadError({ cause }),
++  }).pipe(
++    Effect.map((workerdPackage) =>
++      typeof globalThis.Bun !== "undefined" && process.platform !== "win32"
++        ? makeBun(workerdPackage)
++        : makeNode(workerdPackage),
++    ),
++  ),
+ );
+diff --git a/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts b/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
+index e282cc0..1a65379 100644
+--- a/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
++++ b/node_modules/@alchemy.run/cloudflare-runtime/src/core/workerd/internal/workerd.ts
+@@ -1,8 +1,20 @@
+-import * as Workerd from "workerd";
+-
+-export const bin =
+-  typeof Workerd.default === "string"
+-    ? (Workerd.default as string)
+-    : (Workerd.default as { default: string }).default;
+-export const compatibilityDate = Workerd.compatibilityDate;
+-export const version = Workerd.version;
++export interface WorkerdPackage {
++  readonly bin: string;
++  readonly compatibilityDate: string;
++  readonly version: string;
++}
++
++let packagePromise: Promise<WorkerdPackage> | undefined;
++
++export const load = () =>
++  (packagePromise ??= import("workerd").then((Workerd) => {
++    const defaultExport = Workerd.default;
++    return {
++      bin:
++        typeof defaultExport === "string"
++          ? defaultExport
++          : defaultExport.default,
++      compatibilityDate: Workerd.compatibilityDate,
++      version: Workerd.version,
++    };
++  }));

@@ -19,6 +19,7 @@
     "check:patches": "node scripts/apply-dependency-patches.mjs --check",
     "check:wrangler-bindings": "node scripts/check-wrangler-bindings.mjs",
     "check:cli-clean-room": "node scripts/check-cli-clean-room.mjs",
+    "check:cli-standalone-deploy": "node scripts/check-cli-standalone-deploy.mjs",
     "check:container-image": "node scripts/check-container-image.mjs",
     "check:effect-version": "node e2e/scripts/check-effect-version.mjs",
     "check:pi-packages": "node scripts/check-pi-packages.mjs",

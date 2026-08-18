@@ -89,12 +89,17 @@ describe("clean-room CLI image gate", () => {
     const release = read(".github/workflows/release-cli.yml");
 
     assert.equal(pkg.scripts["check:cli-clean-room"], "node scripts/check-cli-clean-room.mjs");
+    assert.equal(
+      pkg.scripts["check:cli-standalone-deploy"],
+      "node scripts/check-cli-standalone-deploy.mjs",
+    );
     assert.equal(pkg.scripts["check:patches"], "node scripts/apply-dependency-patches.mjs --check");
     assert.match(pkg.scripts.check, /check:patches/u);
     assert.doesNotMatch(pkg.scripts.check, /check:cli-clean-room/u);
     assert.equal(bunVersion, "1.3.13");
     assert.match(ci, /bun-version-file: \.bun-version/u);
     assert.match(ci, /npm run check:cli-clean-room/u);
+    assert.match(ci, /npm run check:cli-standalone-deploy/u);
     assert.match(ci, /cli-clean-room:/u);
     assert.match(ci, /timeout-minutes: 30/u);
     assert.match(ci, /docker\/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c/u);
@@ -102,6 +107,10 @@ describe("clean-room CLI image gate", () => {
     assert.doesNotMatch(release, /bun-version: 1\.3\.13/u);
     assert.match(release, /Smoke native compiled release artifact/u);
     assert.match(release, /dist\/release\/scotty-linux-x64 tui --help/u);
+    assert.match(
+      release,
+      /node scripts\/check-cli-standalone-deploy\.mjs dist\/release\/scotty-linux-x64/u,
+    );
     assert.match(
       dockerfile,
       /FROM docker\.io\/cloudflare\/sandbox:0\.12\.3@sha256:[0-9a-f]{64} AS scotty-cli-build/u,
