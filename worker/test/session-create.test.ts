@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
+import { isSessionEnvironmentSnapshot } from "../src/environment-contracts";
 import { ScottyError } from "../src/contracts";
 import { InitialSessionStorageFailure } from "../src/session-store";
 import { RepoVerifierFailure } from "../src/repo-verifier";
@@ -191,23 +192,50 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(harness.aborts, []);
   });
 
-  it("captures the effective repository environment without replacing Scotty bindings", async () => {
-    const environment = {
-      revision: 7,
-      variables: { PUBLIC_URL: "https://example.test", API_TOKEN: "session-secret" },
-    };
-    const harness = await createSessionHarness({ environmentSnapshot: environment });
+  it("materializes plain values directly and keeps secrets sentinel-only in session state and env", async () => {
+    const secret = "session-secret";
+    const harness = await createSessionHarness({
+      environmentMaterialization: {
+        revision: 7,
+        repo: "owner/project",
+        variables: {
+          PUBLIC_URL: {
+            value: "https://example.test",
+            secret: false,
+            updatedAt: "2026-07-24T11:00:00.000Z",
+            sourceScope: "global",
+          },
+          API_TOKEN: {
+            value: secret,
+            secret: true,
+            updatedAt: "2026-07-24T11:00:00.000Z",
+            sourceScope: "global",
+          },
+        },
+      },
+    });
 
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
     assert.deepStrictEqual(harness.environmentSnapshotRepos, [CREATE_INPUT.repo]);
 
-    assert.deepStrictEqual(harness.readRecord()?.environment, environment);
+    const record = harness.readRecord();
+    const environment = record?.environment;
+    assert.ok(isSessionEnvironmentSnapshot(environment));
+    const sentinel = environment.variables.API_TOKEN;
+    assert.strictEqual(environment.version, 1);
+    assert.strictEqual(environment.revision, 7);
+    assert.strictEqual(environment.variables.PUBLIC_URL, "https://example.test");
+    assert.ok(sentinel?.startsWith(`scotty-env-${SESSION_ID}-`));
+    assert.notStrictEqual(sentinel, secret);
+    assert.notInclude(JSON.stringify(record), secret);
     assert.strictEqual(harness.appliedEnvironments[0]?.PUBLIC_URL, "https://example.test");
-    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, "session-secret");
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, sentinel);
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments[0]), secret);
     assert.strictEqual(harness.appliedEnvironments[0]?.SCOTTY_SESSION_ID, SESSION_ID);
     const shell = harness.writtenFiles.find((file) => file.path.endsWith("/scotty-shell"));
     assert.include(shell?.content ?? "", "export PUBLIC_URL='https://example.test'");
-    assert.include(shell?.content ?? "", "export API_TOKEN='session-secret'");
+    assert.include(shell?.content ?? "", `export API_TOKEN='${sentinel}'`);
+    assert.notInclude(shell?.content ?? "", secret);
   });
 
   it("seeds a new session from installation Pi authority", async () => {
@@ -605,7 +633,7 @@ describe("Sandbox create orchestration", () => {
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
         [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
-      transactionFailureCountdown: 1,
+      transactionFailureCountdown: 3,
     });
 
     const error = await rejection(

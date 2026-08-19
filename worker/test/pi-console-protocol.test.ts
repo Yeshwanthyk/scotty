@@ -284,7 +284,11 @@ describe("Pi console protocol v1", () => {
   );
 
   it("uses the credential authority's exact sentinel prefixes", () => {
-    assert.deepStrictEqual(CREDENTIAL_SENTINEL_PREFIXES, ["scotty-pi-", "scotty-github-"]);
+    assert.deepStrictEqual(CREDENTIAL_SENTINEL_PREFIXES, [
+      "scotty-pi-",
+      "scotty-github-",
+      "scotty-env-",
+    ]);
     assert.strictEqual(PI_SENTINEL_PREFIX, CREDENTIAL_SENTINEL_PREFIXES[0]);
     assert.strictEqual(GITHUB_SENTINEL_PREFIX, CREDENTIAL_SENTINEL_PREFIXES[1]);
   });

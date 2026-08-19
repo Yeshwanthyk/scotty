@@ -306,6 +306,24 @@ describe("persisted session schemas", () => {
     }),
   );
 
+  it.effect("decodes legacy environment snapshots while accepting the versioned shape", () =>
+    Effect.gen(function* () {
+      const legacy = { revision: 7, variables: { API_TOKEN: "real-secret" } };
+      const decodedLegacy = yield* decodeSessionRecord({ ...persistedRecord, environment: legacy });
+      assert.deepStrictEqual(decodedLegacy.environment, legacy);
+      const versioned = {
+        version: 1 as const,
+        revision: 8,
+        variables: { API_TOKEN: "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000000" },
+      };
+      const decodedVersioned = yield* decodeSessionRecord({
+        ...persistedRecord,
+        environment: versioned,
+      });
+      assert.deepStrictEqual(decodedVersioned.environment, versioned);
+    }),
+  );
+
   it.effect("fails closed for missing, malformed, and excess authoritative state", () =>
     Effect.gen(function* () {
       for (const malformed of [

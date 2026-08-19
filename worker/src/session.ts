@@ -129,6 +129,23 @@ import {
   credentialVaultLayer,
   durableObjectCredentialVaultStorage,
 } from "./credential-vault";
+import {
+  EnvironmentSecretVault,
+  environmentSecretVaultLayer,
+  durableObjectEnvironmentSecretVaultStorage,
+  EnvironmentProxyRequestSchema,
+  EnvironmentProxyResponseSchema,
+  EnvironmentSecretResolveRequestSchema,
+  EnvironmentSecretResolutionSchema,
+  type EnvironmentProxyResponse,
+  type EnvironmentSecretResolutionResponse,
+} from "./environment-secret-vault";
+import {
+  EnvironmentAuthorizationResultSchema,
+  EnvironmentMaterializationSchema,
+  isSessionEnvironmentSnapshot,
+  type SessionEnvironmentSnapshot,
+} from "./environment-contracts";
 import { readBoundedUtf8Body } from "./bounded-http";
 import {
   badRequest,
@@ -153,10 +170,9 @@ import {
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import {
-  ALLOWED_HOSTS,
   GITHUB_SENTINEL_PREFIX,
   PI_SENTINEL_PREFIX,
-  denyOutbound,
+  makeEnvironmentOutbound,
   makeOutboundByHost,
   type CredentialPatch,
   type CredentialRefreshLease,
@@ -190,7 +206,7 @@ import {
   SandboxBundleMaterializer,
 } from "./sandbox-bundle-materializer";
 import { r2SandboxBundleCapabilities, sandboxBundleStoreLayer } from "./sandbox-bundle-store";
-import { SANDBOX_CONFIG_OBJECT_NAME } from "./sandbox-config-object";
+import { SANDBOX_CONFIG_OBJECT_NAME, type SandboxConfigRpcResult } from "./sandbox-config-object";
 import {
   kvSessionProjectionStorage,
   projectSessionBestEffort,
@@ -230,7 +246,29 @@ const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
 const SANDBOX_PREVIEW_SANDBOX_ID_HEADER = "x-sandbox-preview-sandbox-id";
 const PREVIEW_PORT_PATTERN = /^(?:[1-9][0-9]{3,4})$/u;
+const decodeEnvironmentAuthorizationResult = Schema.decodeUnknownResult(
+  EnvironmentAuthorizationResultSchema,
+  { onExcessProperty: "error" },
+);
 
+const decodeEnvironmentMaterialization = Schema.decodeUnknownResult(
+  EnvironmentMaterializationSchema,
+  { onExcessProperty: "error" },
+);
+const decodeEnvironmentProxyRequest = Schema.decodeUnknownResult(EnvironmentProxyRequestSchema, {
+  onExcessProperty: "error",
+});
+const decodeEnvironmentProxyResponse = Schema.decodeUnknownResult(EnvironmentProxyResponseSchema, {
+  onExcessProperty: "error",
+});
+const decodeEnvironmentSecretResolveRequest = Schema.decodeUnknownResult(
+  EnvironmentSecretResolveRequestSchema,
+  { onExcessProperty: "error" },
+);
+const decodeEnvironmentSecretResolution = Schema.decodeUnknownResult(
+  EnvironmentSecretResolutionSchema,
+  { onExcessProperty: "error" },
+);
 const adaptSandboxWriteFile = (
   sandbox: Pick<Sandbox, "writeFile">,
   path: string,
@@ -291,6 +329,7 @@ type SandboxServices =
   | BackupStore
   | ContainerEvidenceRecorder
   | ContainerAuth
+  | EnvironmentSecretVault
   | CredentialVault
   | EvidenceStore
   | HatchStore
@@ -581,7 +620,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   override sleepAfter = "60m";
   interceptHttps = true;
   enableInternet = false;
-  allowedHosts = [...ALLOWED_HOSTS];
+  allowedHosts = ["*"];
   private readonly layer: Layer.Layer<SandboxServices>;
   private readonly clock: Clock.Clock | undefined;
   private readonly passivePiConsoleRelay: PassivePiConsoleRelay;
@@ -667,7 +706,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
       durableObjectCredentialVaultStorage(ctx.storage),
       env.GH_TOKEN,
     );
-    const runtimeAndVault = Layer.merge(runtime, vault);
+    const environmentSecrets = environmentSecretVaultLayer(
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires the per-session environment secret vault to the Session Durable Object
+      durableObjectEnvironmentSecretVaultStorage(ctx.storage),
+    );
+    const runtimeAndVault = Layer.merge(Layer.merge(runtime, vault), environmentSecrets);
     const backup = backupStoreLayer(
       {
         createBackup: (backupOptions) => this.createBackup(backupOptions),
@@ -1998,7 +2041,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       githubSentinel: `${GITHUB_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
     });
     const worktree = yield* workspace.prepare(record, credential.githubSentinel, verified);
-    yield* this.updateForOperationProgram(nonce, (current) => ({
+    const runtimeRecord = yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       operation: {
         kind: "create",
@@ -2009,7 +2052,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       repoExistsAtCreate: worktree.repoExists,
       defaultBranch: worktree.defaultBranch,
     })).pipe(Effect.mapError(mapCreateUncertain("runtime_phase")));
-    return yield* this.continueCloudflarePiCreateProgram(record, prompt, nonce);
+    return yield* this.continueCloudflarePiCreateProgram(runtimeRecord, prompt, nonce);
   });
 
   private readonly materializeAndSeedSandboxProgram = Effect.fnUntraced(function* (
@@ -2047,13 +2090,27 @@ export class Sandbox extends BaseSandbox<Bindings> {
     prompt: string,
     nonce: string,
   ) {
+    const environmentVault = yield* EnvironmentSecretVault;
     const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
     const credential = yield* vault.require;
-    yield* this.materializeAndSeedSandboxProgram(record, credential, { initialPrompt: prompt });
+    const preparedRecord = yield* this.materializeEnvironmentSnapshotProgram(record, nonce).pipe(
+      Effect.mapError(mapCreateUncertain("materialize")),
+    );
+    yield* this.materializeAndSeedSandboxProgram(preparedRecord, credential, {
+      initialPrompt: prompt,
+    });
     yield* containerAuth
-      .ensurePiSession(record.id, credential, record.environment)
+      .ensurePiSession(preparedRecord.id, credential, preparedRecord.environment)
       .pipe(Effect.mapError(mapCreateUncertain("pi_health")));
+    if (!isSessionEnvironmentSnapshot(preparedRecord.environment))
+      return yield* new SessionCreateUncertain({
+        cause: "session environment snapshot was not prepared",
+        stage: "warm_commit",
+      });
+    yield* environmentVault
+      .commit(preparedRecord.environment)
+      .pipe(Effect.mapError(mapCreateUncertain("warm_commit")));
     const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     return yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
@@ -2108,6 +2165,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       "Session setup failed",
       false,
     );
+    const environmentVault = yield* EnvironmentSecretVault;
+    yield* Effect.result(environmentVault.delete);
     yield* this.destroyFailedRuntimeProgram(failed.id);
     return yield* this.upstreamError("Session setup failed", failure, failed.id);
   });
@@ -2281,23 +2340,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     });
     if (!sandboxConfigStatus.ok)
       return yield* this.upstreamError("Session setup failed", sandboxConfigStatus.error, id);
-    const environmentSnapshot = yield* Effect.tryPromise({
-      try: () =>
-        this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).environmentSnapshot(
-          input.repo,
-        ),
-      catch: (cause) => this.upstreamError("Session setup failed", cause, id),
-    });
-    if (!environmentSnapshot.ok)
-      return yield* this.upstreamError("Session setup failed", environmentSnapshot.error, id);
-
     const initialWithBundle: SessionRecord = {
       ...verifiedInitial,
       sandboxBundle: {
         digest: sandboxConfigStatus.value.activeDigest,
         manifestVersion: 1,
       },
-      environment: environmentSnapshot.value,
     };
 
     const hardCapSchedule = yield* Effect.result(
@@ -2328,6 +2376,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* this.projectProgram(recordToCommit);
 
     if (Result.isFailure(hardCapSchedule)) {
+      yield* Effect.result((yield* EnvironmentSecretVault).delete);
       yield* this.destroyFailedRuntimeProgram(recordToCommit.id);
       return yield* this.upstreamError(
         "Session setup failed",
@@ -2357,20 +2406,61 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return toSessionView(toProjection(record, new Date(now)), now);
   });
 
-  private readonly resolveEnvironmentSnapshotProgram = Effect.fnUntraced(function* (
+  private readonly resolveEnvironmentMaterializationProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     record: SessionRecord,
   ) {
+    const stub = this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
+    const materializeEnvironment = stub.materializeEnvironment;
+    if (materializeEnvironment === undefined)
+      return yield* this.upstreamError(
+        "Environment materialization is unavailable",
+        undefined,
+        record.id,
+      );
     const result = yield* Effect.tryPromise({
-      try: () =>
-        this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).environmentSnapshot(
-          record.repo,
-        ),
-      catch: (cause) => this.upstreamError("Environment status failed", cause, record.id),
+      try: async (): Promise<SandboxConfigRpcResult<unknown>> =>
+        await materializeEnvironment(record.repo),
+      catch: (cause): ScottyError =>
+        this.upstreamError("Environment materialization failed", cause, record.id),
     });
     if (!result.ok)
-      return yield* this.upstreamError("Environment status failed", result.error, record.id);
-    return result.value;
+      return yield* this.upstreamError(
+        "Environment materialization failed",
+        result.error,
+        record.id,
+      );
+    const materialization = decodeEnvironmentMaterialization(result.value);
+    if (Result.isFailure(materialization))
+      return yield* this.upstreamError(
+        "Environment materialization failed",
+        materialization.failure,
+        record.id,
+      );
+    return materialization.success;
+  });
+
+  private readonly materializeEnvironmentSnapshotProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    nonce: string,
+  ) {
+    const materialization = yield* this.resolveEnvironmentMaterializationProgram(record);
+    const vault = yield* EnvironmentSecretVault;
+    const committed = isSessionEnvironmentSnapshot(record.environment)
+      ? record.environment
+      : undefined;
+    const snapshot = yield* vault
+      .reconcile(materialization, record.id, committed)
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Environment materialization failed", undefined, record.id),
+        ),
+      );
+    return yield* this.updateForOperationProgram(nonce, (current) => ({
+      ...current,
+      environment: snapshot,
+    }));
   });
 
   private readonly environmentStatusProgram = Effect.fnUntraced(function* (
@@ -2378,7 +2468,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     record?: SessionRecord,
   ) {
     const current = record ?? (yield* this.requireRecordProgram());
-    const effective = yield* this.resolveEnvironmentSnapshotProgram(current);
+    const effective = yield* this.resolveEnvironmentMaterializationProgram(current);
     const appliedRevision = current.environment?.revision ?? null;
     return {
       id: current.id,
@@ -2424,42 +2514,84 @@ export class Sandbox extends BaseSandbox<Bindings> {
           environmentRefreshPhase: "pending",
         },
       }));
-    const next = yield* this.resolveEnvironmentSnapshotProgram(record);
-    if (record.environment?.revision === next.revision) {
+    const priorAppliedEnvironment = isSessionEnvironmentSnapshot(
+      record.operation?.environmentRefreshTarget,
+    )
+      ? record.operation.environmentRefreshTarget
+      : undefined;
+    const previousEnvironment = record.operation?.environmentRefreshPrevious;
+    const environmentVault = yield* EnvironmentSecretVault;
+    const vault = yield* CredentialVault;
+    const containerAuth = yield* ContainerAuth;
+    const credential = yield* vault.require;
+    const effective = yield* this.resolveEnvironmentMaterializationProgram(record);
+    if (
+      priorAppliedEnvironment === undefined &&
+      isSessionEnvironmentSnapshot(record.environment) &&
+      record.environment.revision === effective.revision
+    ) {
       record = yield* this.releaseOperationProgram(payload.nonce);
       return yield* this.environmentStatusProgram(record);
     }
-    const priorAppliedEnvironment = record.operation?.environmentRefreshTarget;
+    const committedEnvironment = isSessionEnvironmentSnapshot(previousEnvironment)
+      ? previousEnvironment
+      : priorAppliedEnvironment === undefined && isSessionEnvironmentSnapshot(record.environment)
+        ? record.environment
+        : undefined;
+    const next = yield* environmentVault
+      .reconcile(effective, record.id, committedEnvironment)
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Environment refresh materialization failed", undefined, record.id),
+        ),
+      );
     record = yield* this.updateForOperationProgram(payload.nonce, (current) => ({
       ...current,
       operation: current.operation && {
         ...current.operation,
         environmentRefreshPhase: "applying",
         environmentRefreshTarget: next,
+        ...(current.operation.environmentRefreshPrevious === undefined &&
+        current.environment !== undefined
+          ? { environmentRefreshPrevious: current.environment }
+          : {}),
       },
     }));
-    const vault = yield* CredentialVault;
-    const containerAuth = yield* ContainerAuth;
-    const credential = yield* vault.require;
+    // Stage and fence the target before touching the runtime. The lease keeps the target
+    // retryable if applying, persisting, or pruning becomes ambiguous.
+    yield* containerAuth.quiescePiSession(record.id, credential);
+    yield* containerAuth.stopPiSession();
     const priorEnvironment =
       priorAppliedEnvironment === undefined
         ? record.environment
         : {
-            revision: record.environment?.revision ?? priorAppliedEnvironment.revision,
+            version: 1 as const,
+            revision: isSessionEnvironmentSnapshot(record.environment)
+              ? record.environment.revision
+              : priorAppliedEnvironment.revision,
             variables: {
-              ...record.environment?.variables,
+              ...(isSessionEnvironmentSnapshot(record.environment)
+                ? record.environment.variables
+                : {}),
               ...priorAppliedEnvironment.variables,
             },
           };
     yield* containerAuth.refreshEnvironment(record.id, credential, priorEnvironment, next);
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    const committed = yield* this.updateForOperationProgram(payload.nonce, (current) => ({
+    yield* this.updateForOperationProgram(payload.nonce, (current) => ({
       ...current,
       environment: next,
-      operation: null,
       failure: undefined,
       updatedAt,
     }));
+    yield* environmentVault
+      .commit(next)
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Environment refresh commit failed", undefined, record.id),
+        ),
+      );
+    const committed = yield* this.releaseOperationProgram(payload.nonce);
     yield* Effect.sync(() => this.deleteSchedules("retryEnvironmentRefresh"));
     return yield* this.environmentStatusProgram(committed);
   });
@@ -2468,7 +2600,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     nonce: string,
   ) {
-    const current = yield* this.requireRecordProgram();
+    let current = yield* this.requireRecordProgram();
+    if (
+      current.operation?.kind === "refresh" &&
+      current.operation.environmentRefreshPhase === "applying"
+    ) {
+      const previous = current.operation.environmentRefreshPrevious;
+      current = yield* this.updateForOperationProgram(nonce, (record) => {
+        const { environment: _environment, ...withoutEnvironment } = record;
+        return previous === undefined
+          ? withoutEnvironment
+          : { ...withoutEnvironment, environment: previous };
+      });
+    }
     const failed = yield* this.failOperationProgram(
       nonce,
       "environment_refresh_failed",
@@ -2668,6 +2812,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* this.resumeRunnerSessionProgram();
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
+    const environmentVault = yield* EnvironmentSecretVault;
     const containerAuth = yield* ContainerAuth;
     const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
     let record = yield* this.requireRecordProgram();
@@ -2706,11 +2851,26 @@ export class Sandbox extends BaseSandbox<Bindings> {
                 installationRecord,
                 `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
               );
-        yield* this.materializeAndSeedSandboxProgram(record, credential);
+        let environment: SessionEnvironmentSnapshot;
+        if (isSessionEnvironmentSnapshot(record.environment)) {
+          environment = yield* environmentVault.replay(record.environment);
+        } else {
+          record = yield* this.materializeEnvironmentSnapshotProgram(record, operation.nonce);
+          if (!isSessionEnvironmentSnapshot(record.environment))
+            return yield* new ScottyError(
+              "internal",
+              "Session environment snapshot was not prepared",
+              { httpStatus: 500, exitCode: 1 },
+            );
+          environment = record.environment;
+        }
+        const runtimeRecord = { ...record, environment };
+        yield* this.materializeAndSeedSandboxProgram(runtimeRecord, credential);
         yield* this.restorePiAndHatchProgram(
           operation.nonce,
-          containerAuth.ensurePiSession(record.id, credential, record.environment),
+          containerAuth.ensurePiSession(record.id, credential, environment),
         );
+        yield* environmentVault.commit(environment);
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
           ...current,
@@ -2755,6 +2915,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
+    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     const current = yield* this.readRecordProgram();
     if (!current) return yield* notFound(payload.id);
@@ -2807,6 +2968,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* evidence.clearForVaporize(payload.nonce);
     }
     yield* vault.delete;
+    yield* environmentVault.delete;
     yield* store.clearCreateIdempotency;
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     const gone = yield* this.updateForOperationProgram(payload.nonce, (record) => ({
@@ -2875,6 +3037,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     record: SessionRecord,
   ) {
     const vault = yield* CredentialVault;
+    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     if (record.execution.provider === "cloudflare" && this.rawContainer?.running === true) {
       const destroyed = yield* Effect.raceFirst(
@@ -2887,6 +3050,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           exitCode: 1,
         });
     }
+    yield* environmentVault.delete;
     yield* vault.delete;
     yield* store.clearCreateIdempotency;
     yield* removeSessionProjection(record.id);
@@ -4537,6 +4701,104 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.renameScottySessionProgram(title));
   }
 
+  private readonly authorizeEnvironmentRequestProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: unknown,
+  ) {
+    const decoded = decodeEnvironmentProxyRequest(input);
+    if (Result.isFailure(decoded)) return yield* badRequest("Environment proxy request is invalid");
+    const record = yield* this.readRecordProgram();
+    if (record === undefined || record.status === "gone")
+      return { authorized: false, reason: "session_unavailable" as const };
+    const vault = yield* EnvironmentSecretVault;
+    const resolutions = yield* vault.readForProxy(decoded.success.sentinels);
+    if (resolutions === null) return { authorized: false, reason: "unknown_sentinel" as const };
+    const stub = this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
+    const authorizeEnvironmentSecrets = stub.authorizeEnvironmentSecrets;
+    if (authorizeEnvironmentSecrets === undefined)
+      return { authorized: false, reason: "session_unavailable" as const };
+    const result = yield* Effect.result(
+      Effect.tryPromise({
+        try: () =>
+          authorizeEnvironmentSecrets({
+            origin: decoded.success.origin,
+            keys: resolutions.map(({ sourceScope, name }) => ({ sourceScope, name })),
+          }),
+        catch: (cause): ScottyError =>
+          this.upstreamError("Environment proxy authorization failed", cause, record.id),
+      }),
+    );
+    if (Result.isFailure(result))
+      return { authorized: false, reason: "session_unavailable" as const };
+    if (!result.success.ok) return { authorized: false, reason: "session_unavailable" as const };
+    const authorizationResult = decodeEnvironmentAuthorizationResult(result.success.value);
+    if (Result.isFailure(authorizationResult))
+      return yield* this.upstreamError(
+        "Environment proxy authorization failed",
+        authorizationResult.failure,
+        record.id,
+      );
+    const authorization = decodeEnvironmentProxyResponse({
+      authorized: authorizationResult.success.authorized,
+      reason: authorizationResult.success.authorized
+        ? "approved"
+        : (authorizationResult.success.decisions.find(({ status }) => status !== "approved")
+            ?.status ?? "pending"),
+      ...(authorizationResult.success.authorized
+        ? {
+            values: Object.fromEntries(resolutions.map(({ sentinel, value }) => [sentinel, value])),
+          }
+        : {}),
+    });
+    if (Result.isFailure(authorization))
+      return yield* this.upstreamError(
+        "Environment proxy authorization failed",
+        authorization.failure,
+        record.id,
+      );
+    return authorization.success;
+  });
+
+  async authorizeEnvironmentRequest(input: unknown): Promise<EnvironmentProxyResponse> {
+    return this.#run(this.authorizeEnvironmentRequestProgram(input));
+  }
+
+  private readonly resolveEnvironmentSecretProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: unknown,
+  ) {
+    const decoded = decodeEnvironmentSecretResolveRequest(input);
+    if (Result.isFailure(decoded)) return yield* badRequest("Environment sentinel is invalid");
+    const record = yield* this.readRecordProgram();
+    if (record === undefined || record.status === "gone") return null;
+    const vault = yield* EnvironmentSecretVault;
+    const resolution = yield* vault
+      .resolve(decoded.success.sentinel)
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Environment secret resolution failed", undefined, record.id),
+        ),
+      );
+    if (resolution === null) return null;
+    const response = decodeEnvironmentSecretResolution({
+      sentinel: resolution.sentinel,
+      value: resolution.value,
+    });
+    if (Result.isFailure(response))
+      return yield* this.upstreamError(
+        "Environment secret resolution failed",
+        response.failure,
+        record.id,
+      );
+    return response.success;
+  });
+
+  async resolveEnvironmentSecretForProxy(
+    input: unknown,
+  ): Promise<EnvironmentSecretResolutionResponse | null> {
+    return this.#run(this.resolveEnvironmentSecretProgram(input));
+  }
+
   async readCredentialForProxy(sentinel: string): Promise<StoredCredential | null> {
     return this.#run(Effect.flatMap(CredentialVault, (vault) => vault.readForProxy(sentinel)));
   }
@@ -4549,6 +4811,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async persistRotatedCredential(
     sentinel: string,
+
     patch: CredentialPatch,
     nonce: string,
   ): Promise<void> {
@@ -4976,7 +5239,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 }
 
 Sandbox.outboundByHost = makeOutboundByHost(fetch);
-Sandbox.outbound = denyOutbound;
+Sandbox.outbound = makeEnvironmentOutbound(fetch);
 
 function isHatchStateError(error: unknown): error is HatchStateError {
   return Predicate.isTagged("HatchStateError")(error);

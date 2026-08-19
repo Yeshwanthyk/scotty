@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { ScottyError } from "../src/contracts";
+import { isSessionEnvironmentSnapshot } from "../src/environment-contracts";
 import {
   createSessionHarness,
   type InitialStorageEntries,
@@ -78,27 +79,130 @@ describe("Sandbox resume orchestration", () => {
     assert.deepStrictEqual(harness.aborts, []);
   });
 
-  it("reapplies the session environment snapshot instead of current global values", async () => {
-    const retained = {
+  it("rematerializes a legacy snapshot without exposing its secret to runtime state", async () => {
+    const legacySecret = "real-secret";
+    const removedLegacySecret = "removed-real-secret";
+    const legacy = {
       revision: 4,
-      variables: { RELEASE_CHANNEL: "retained", API_TOKEN: "retained-secret" },
+      variables: {
+        RELEASE_CHANNEL: "retained",
+        API_TOKEN: legacySecret,
+        REMOVED_TOKEN: removedLegacySecret,
+      },
+    };
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: sleepingRecord({ environment: legacy }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+      },
+      environmentMaterialization: {
+        revision: 5,
+        variables: {
+          RELEASE_CHANNEL: {
+            value: "new-global",
+            secret: false,
+            updatedAt: "two",
+            sourceScope: "global",
+          },
+          API_TOKEN: {
+            value: "new-secret",
+            secret: true,
+            updatedAt: "two",
+            sourceScope: "global",
+          },
+        },
+      },
+    });
+
+    await harness.sandbox.resumeScottySession();
+
+    const record = harness.readRecord();
+    const environment = record?.environment;
+    assert.ok(isSessionEnvironmentSnapshot(environment));
+    const sentinel = environment.variables.API_TOKEN;
+    assert.strictEqual(environment.version, 1);
+    assert.ok(sentinel?.startsWith(`scotty-env-${SESSION_ID}-`));
+    assert.notInclude(JSON.stringify(record), legacySecret);
+    assert.notInclude(JSON.stringify(record), removedLegacySecret);
+    assert.notProperty(environment.variables, "REMOVED_TOKEN");
+    assert.strictEqual(harness.appliedEnvironments[0]?.RELEASE_CHANNEL, "new-global");
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, sentinel);
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments[0]), legacySecret);
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments[0]), removedLegacySecret);
+    assert.notInclude(JSON.stringify(harness.writtenFiles), legacySecret);
+    assert.notInclude(JSON.stringify(harness.writtenFiles), removedLegacySecret);
+    assert.notInclude(JSON.stringify(harness.piProcessEnvironments), legacySecret);
+    assert.notInclude(JSON.stringify(harness.piProcessEnvironments), removedLegacySecret);
+  });
+  it("replays a versioned snapshot without rematerializing installation environment", async () => {
+    const retainedSecret = "retained-secret";
+    const retainedSentinel = `scotty-env-${SESSION_ID}-${"a".repeat(32)}`;
+    const staleSentinel = `scotty-env-${SESSION_ID}-${"b".repeat(32)}`;
+    const retained = {
+      version: 1 as const,
+      revision: 4,
+      variables: { RELEASE_CHANNEL: "retained", API_TOKEN: retainedSentinel },
     };
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: sleepingRecord({ environment: retained }),
         [sessionHarnessKeys.credential]: makeStoredCredential(),
+        [sessionHarnessKeys.environmentVault]: {
+          version: 1,
+          entries: {
+            [retainedSentinel]: {
+              sentinel: retainedSentinel,
+              sourceScope: "global",
+              name: "API_TOKEN",
+              value: retainedSecret,
+            },
+            [staleSentinel]: {
+              sentinel: staleSentinel,
+              sourceScope: "global",
+              name: "STALE_TOKEN",
+              value: "stale-secret",
+            },
+          },
+        },
       },
-      environmentSnapshot: {
+      environmentMaterialization: {
         revision: 5,
-        variables: { RELEASE_CHANNEL: "new-global", API_TOKEN: "new-secret" },
+        variables: {
+          RELEASE_CHANNEL: {
+            value: "new-global",
+            secret: false,
+            updatedAt: "newer",
+            sourceScope: "global",
+          },
+          API_TOKEN: {
+            value: "new-secret",
+            secret: true,
+            updatedAt: "newer",
+            sourceScope: "global",
+          },
+        },
       },
     });
 
     await harness.sandbox.resumeScottySession();
 
     assert.deepStrictEqual(harness.readRecord()?.environment, retained);
+    assert.deepStrictEqual(harness.environmentSnapshotRepos, []);
     assert.strictEqual(harness.appliedEnvironments[0]?.RELEASE_CHANNEL, "retained");
-    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, "retained-secret");
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, retainedSentinel);
+    assert.strictEqual(harness.piProcessEnvironments[0]?.RELEASE_CHANNEL, "retained");
+    assert.strictEqual(harness.piProcessEnvironments[0]?.API_TOKEN, retainedSentinel);
+    assert.deepStrictEqual(harness.read(sessionHarnessKeys.environmentVault), {
+      version: 1,
+      entries: {
+        [retainedSentinel]: {
+          sentinel: retainedSentinel,
+          sourceScope: "global",
+          name: "API_TOKEN",
+          value: retainedSecret,
+        },
+      },
+    });
   });
 
   it("applies only installation Pi authority newer than the session vault", async () => {

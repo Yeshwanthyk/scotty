@@ -112,7 +112,24 @@ describe("Effect command tree", () => {
         assert.include(environment.stdout.join(""), "list");
         assert.include(environment.stdout.join(""), "set");
         assert.include(environment.stdout.join(""), "remove");
+        assert.include(environment.stdout.join(""), "approvals");
         assert.strictEqual(environment.stderr.join(""), "");
+
+        const approvals = run(["env", "approvals", "--help"]);
+        assert.strictEqual(yield* approvals.effect, EXIT.OK);
+        assert.include(approvals.stdout.join(""), "scotty env approvals <subcommand> [flags]");
+        assert.include(approvals.stdout.join(""), "list");
+        assert.include(approvals.stdout.join(""), "approve");
+        assert.include(approvals.stdout.join(""), "reject");
+        assert.include(approvals.stdout.join(""), "revoke");
+        assert.strictEqual(approvals.stderr.join(""), "");
+
+        const approve = run(["env", "approvals", "approve", "--help"]);
+        assert.strictEqual(yield* approve.effect, EXIT.OK);
+        assert.include(approve.stdout.join(""), "<name>");
+        assert.include(approve.stdout.join(""), "<origin>");
+        assert.include(approve.stdout.join(""), "--repo");
+        assert.strictEqual(approve.stderr.join(""), "");
 
         const auth = run(["auth", "--help"]);
         assert.strictEqual(yield* auth.effect, EXIT.OK);

@@ -1,185 +1,721 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect } from "effect";
-import type { EnvironmentAuthority } from "../src/environment-contracts";
+import { Effect, Option, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import {
-  type EnvironmentAuthorityStorage,
+  EnvironmentOriginSchema,
+  EnvironmentApprovalListSchema,
+  EnvironmentAuthorizationResultSchema,
+  EnvironmentAuthoritySchema,
+  EnvironmentVariablesViewSchema,
+  ENVIRONMENT_MAX_AUTHORIZATION_KEYS,
+  ENVIRONMENT_MAX_ORIGIN_POLICIES,
+  ENVIRONMENT_MAX_PENDING_OBSERVATIONS,
+  type EnvironmentAuthority,
+} from "../src/environment-contracts";
+import {
   EnvironmentStore,
   environmentStoreLayer,
+  type EnvironmentAuthorityStorage,
 } from "../src/environment-store";
 
+const NOW = Date.parse("2026-08-20T12:00:00.000Z");
+
+const decodeVariablesView = Schema.decodeUnknownSync(EnvironmentVariablesViewSchema);
+const decodeOrigin = Schema.decodeUnknownOption(EnvironmentOriginSchema);
+const decodeAuthority = Schema.decodeUnknownOption(EnvironmentAuthoritySchema);
+const decodeApprovalList = Schema.decodeUnknownOption(EnvironmentApprovalListSchema);
+const decodeAuthorizationResult = Schema.decodeUnknownOption(EnvironmentAuthorizationResultSchema);
+
 const makeStorage = (initial?: unknown) => {
-  let authority = initial;
+  let authority = structuredClone(initial);
+  const writes: unknown[] = [];
   const storage: EnvironmentAuthorityStorage = {
     transaction: async (operation) =>
       operation({
-        get: async () => authority,
+        get: async () => structuredClone(authority),
         put: async (next) => {
-          authority = next;
+          writes.push(structuredClone(next));
+          authority = structuredClone(next);
         },
       }),
   };
-  return { layer: environmentStoreLayer(storage), snapshot: () => authority };
+  return {
+    storage,
+    writes,
+    authority: () => structuredClone(authority),
+  };
 };
 
-describe("environment store", () => {
-  it.effect("stores plain and secret values but returns secrets write-only", () => {
-    const storage = makeStorage();
-    return Effect.gen(function* () {
-      const store = yield* EnvironmentStore;
-      yield* store.put("PUBLIC_URL", { value: "https://example.test", secret: false });
-      yield* store.put("API_TOKEN", { value: "do-not-return", secret: true });
+const withStore = <A, E>(
+  storage: EnvironmentAuthorityStorage,
+  effect: Effect.Effect<A, E, EnvironmentStore>,
+): Effect.Effect<A, E> => Effect.provide(effect, environmentStoreLayer(storage));
+const makePolicies = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    sourceScope: "global" as const,
+    name: `POLICY_${index}`,
+    origin: `https://policy-${index}.example`,
+    decision: "rejected" as const,
+    updatedAt: "observed",
+  }));
 
-      const view = yield* store.list();
-      assert.strictEqual(view.revision, 2);
-      assert.deepEqual(view.variables, [
-        {
-          name: "API_TOKEN",
-          secret: true,
-          configured: true,
-          updatedAt: view.variables[0]?.updatedAt,
+const makePendingObservations = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    sourceScope: "global" as const,
+    name: `PENDING_${index}`,
+    origin: `https://pending-${index}.example`,
+    firstObservedAt: "observed",
+    lastObservedAt: "observed",
+  }));
+
+describe("EnvironmentStore", () => {
+  it.effect("migrates validated v1 and v2 authorities losslessly into v3", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const v1 = makeStorage({
+        version: 1,
+        revision: 3,
+        variables: {
+          LEGACY: {
+            value: "retained-v1",
+            secret: false,
+            updatedAt: "2026-08-20T11:00:00.000Z",
+          },
         },
-        {
-          name: "PUBLIC_URL",
-          secret: false,
-          configured: true,
-          updatedAt: view.variables[1]?.updatedAt,
-          value: "https://example.test",
-        },
-      ]);
-      assert.notInclude(JSON.stringify(view), "do-not-return");
-      assert.strictEqual(
-        (storage.snapshot() as EnvironmentAuthority).global.variables.API_TOKEN?.value,
-        "do-not-return",
+      });
+      const v1Materialization = yield* withStore(
+        v1.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.materialize("OWNER/PROJECT")),
       );
-    }).pipe(Effect.provide(storage.layer));
-  });
+      assert.strictEqual(v1Materialization.revision, 3);
+      assert.strictEqual(v1Materialization.repo, "owner/project");
+      assert.deepStrictEqual(v1Materialization.variables.LEGACY, {
+        value: "retained-v1",
+        secret: false,
+        updatedAt: "2026-08-20T11:00:00.000Z",
+        sourceScope: "global",
+      });
+      const v1Authority = v1.authority() as EnvironmentAuthority;
+      assert.strictEqual(v1Authority.version, 3);
+      assert.deepStrictEqual(v1Authority.originPolicies, []);
+      assert.deepStrictEqual(v1Authority.pendingObservations, []);
+      assert.strictEqual(v1Authority.global.variables.LEGACY?.value, "retained-v1");
 
-  it.effect("returns a complete snapshot and removes idempotently", () => {
-    const storage = makeStorage();
-    return Effect.gen(function* () {
-      const store = yield* EnvironmentStore;
-      yield* store.put("FEATURE_MODE", { value: "strict", secret: false });
-      assert.deepEqual(yield* store.snapshot(), {
+      const v2 = makeStorage({
+        version: 2,
+        revision: 7,
+        global: {
+          variables: {
+            GLOBAL_SECRET: {
+              value: "global-secret",
+              secret: true,
+              updatedAt: "2026-08-20T11:01:00.000Z",
+            },
+          },
+        },
+        repositories: {
+          "Owner/Project": {
+            variables: {
+              REPO_SECRET: {
+                value: "repo-secret",
+                secret: true,
+                updatedAt: "2026-08-20T11:02:00.000Z",
+              },
+            },
+          },
+        },
+      });
+      const v2Materialization = yield* withStore(
+        v2.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.materialize("owner/project")),
+      );
+      assert.strictEqual(v2Materialization.revision, 7);
+      assert.deepStrictEqual(v2Materialization.variables, {
+        GLOBAL_SECRET: {
+          value: "global-secret",
+          secret: true,
+          updatedAt: "2026-08-20T11:01:00.000Z",
+          sourceScope: "global",
+        },
+        REPO_SECRET: {
+          value: "repo-secret",
+          secret: true,
+          updatedAt: "2026-08-20T11:02:00.000Z",
+          sourceScope: "owner/project",
+        },
+      });
+      const v2Authority = v2.authority() as EnvironmentAuthority;
+      assert.strictEqual(v2Authority.version, 3);
+      assert.deepStrictEqual(Object.keys(v2Authority.repositories), ["owner/project"]);
+      assert.strictEqual(
+        v2Authority.repositories["owner/project"]?.variables.REPO_SECRET?.value,
+        "repo-secret",
+      );
+    }),
+  );
+
+  it.effect("rejects a lossy v2 repository case collision", () =>
+    Effect.gen(function* () {
+      const storage = makeStorage({
+        version: 2,
         revision: 1,
-        variables: { FEATURE_MODE: "strict" },
+        global: { variables: {} },
+        repositories: {
+          "owner/project": { variables: { TOKEN: { value: "one", secret: true, updatedAt: "a" } } },
+          "OWNER/PROJECT": { variables: { TOKEN: { value: "two", secret: true, updatedAt: "b" } } },
+        },
       });
-      assert.deepEqual(yield* store.remove("FEATURE_MODE"), {
-        name: "FEATURE_MODE",
-        removed: true,
-        revision: 2,
-      });
-      assert.deepEqual(yield* store.remove("FEATURE_MODE"), {
-        name: "FEATURE_MODE",
-        removed: false,
-        revision: 2,
-      });
-    }).pipe(Effect.provide(storage.layer));
-  });
+      const failure = yield* withStore(
+        storage.storage,
+        Effect.flip(Effect.flatMap(EnvironmentStore, (store) => store.list())),
+      );
+      assert.strictEqual(failure.reason, "invalid_authority");
+      assert.deepStrictEqual(storage.writes, []);
+    }),
+  );
 
-  it.effect("resolves repository overrides without copying inherited globals", () => {
-    const storage = makeStorage();
-    return Effect.gen(function* () {
-      const store = yield* EnvironmentStore;
-      yield* store.put("CHANNEL", { value: "global", secret: false });
-      yield* store.put("GLOBAL_SECRET", { value: "hidden-global", secret: true });
-      yield* store.put("CHANNEL", { value: "repository", secret: false }, "Owner/Project");
-      yield* store.put("REPO_SECRET", { value: "hidden-repo", secret: true }, "owner/project");
-
-      const view = yield* store.list("OWNER/PROJECT");
+  it.effect("uses canonical global and repository source identities", () =>
+    Effect.gen(function* () {
+      const storage = makeStorage();
+      yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.put("TOKEN", { value: "global-secret", secret: true }),
+        ),
+      );
+      yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.put("TOKEN", { value: "repo-secret", secret: true }, "Owner/Project"),
+        ),
+      );
+      const materialization = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.materialize("OWNER/PROJECT")),
+      );
+      assert.strictEqual(materialization.repo, "owner/project");
+      assert.strictEqual(materialization.variables.TOKEN?.value, "repo-secret");
+      assert.strictEqual(materialization.variables.TOKEN?.sourceScope, "owner/project");
+      const view = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.list("OWNER/PROJECT")),
+      );
       assert.strictEqual(view.repo, "OWNER/PROJECT");
-      assert.deepEqual(
-        view.variables.map(({ name, source, value }) => ({ name, source, value })),
+      assert.strictEqual(view.variables[0]?.source, "repo");
+      assert.deepStrictEqual((storage.authority() as EnvironmentAuthority).repositories, {
+        "owner/project": {
+          variables: {
+            TOKEN: {
+              value: "repo-secret",
+              secret: true,
+              updatedAt: view.variables[0]?.updatedAt,
+            },
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("keeps public views write-only while materialization remains internal", () =>
+    Effect.gen(function* () {
+      const storage = makeStorage();
+      yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.put("PUBLIC_URL", { value: "https://example.test", secret: false }),
+        ),
+      );
+      yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.put("API_TOKEN", { value: "known-real-secret", secret: true }),
+        ),
+      );
+      const view = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.list()),
+      );
+      assert.deepStrictEqual(decodeVariablesView(view), view);
+      assert.notInclude(JSON.stringify(view), "known-real-secret");
+      assert.deepStrictEqual(
+        view.variables.map(({ name, value, secret }) => ({ name, value, secret })),
         [
-          { name: "CHANNEL", source: "repo", value: "repository" },
-          { name: "GLOBAL_SECRET", source: "global", value: undefined },
-          { name: "REPO_SECRET", source: "repo", value: undefined },
+          { name: "API_TOKEN", value: undefined, secret: true },
+          { name: "PUBLIC_URL", value: "https://example.test", secret: false },
         ],
       );
-      assert.notInclude(JSON.stringify(view), "hidden-global");
-      assert.notInclude(JSON.stringify(view), "hidden-repo");
-      assert.deepEqual(yield* store.snapshot("owner/project"), {
-        revision: 4,
-        variables: {
-          CHANNEL: "repository",
-          GLOBAL_SECRET: "hidden-global",
-          REPO_SECRET: "hidden-repo",
-        },
-      });
-      assert.deepEqual(
-        Object.keys(
-          (storage.snapshot() as EnvironmentAuthority).repositories["owner/project"]?.variables ??
-            {},
+      const materialization = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.materialize()),
+      );
+      assert.strictEqual(materialization.variables.API_TOKEN?.value, "known-real-secret");
+      assert.strictEqual(materialization.variables.API_TOKEN?.secret, true);
+      assert.strictEqual(materialization.variables.PUBLIC_URL?.value, "https://example.test");
+    }),
+  );
+
+  it.effect("requires a live observation and an exact configured secret before approval", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const origin = "https://registry.example";
+      const directStorage = makeStorage();
+      yield* withStore(
+        directStorage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.put("TOKEN", { value: "opaque", secret: true }),
         ),
-        ["CHANNEL", "REPO_SECRET"],
       );
-    }).pipe(Effect.provide(storage.layer));
-  });
+      const directFailure = yield* withStore(
+        directStorage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.approve({ sourceScope: "global", name: "TOKEN", origin }),
+          ),
+        ),
+      );
+      assert.strictEqual(directFailure.reason, "invalid_input");
+      assert.include(directFailure.message, "pending");
+      assert.deepStrictEqual(
+        (directStorage.authority() as EnvironmentAuthority).originPolicies,
+        [],
+      );
 
-  it.effect("removing an override reveals the current global and evicts empty scopes", () => {
-    const storage = makeStorage();
-    return Effect.gen(function* () {
-      const store = yield* EnvironmentStore;
-      yield* store.put("CHANNEL", { value: "first", secret: false });
-      yield* store.put("CHANNEL", { value: "override", secret: false }, "owner/project");
-      yield* store.put("CHANNEL", { value: "current", secret: false });
-      assert.deepEqual(yield* store.remove("CHANNEL", "owner/project"), {
-        name: "CHANNEL",
-        repo: "owner/project",
-        removed: true,
-        revision: 4,
-      });
-      assert.deepEqual(yield* store.snapshot("owner/project"), {
-        revision: 4,
-        variables: { CHANNEL: "current" },
-      });
-      assert.deepEqual((storage.snapshot() as EnvironmentAuthority).repositories, {});
-      yield* store.remove("CHANNEL");
-      assert.deepEqual(yield* store.snapshot("owner/project"), { revision: 5, variables: {} });
-    }).pipe(Effect.provide(storage.layer));
-  });
+      const variableStorage = makeStorage();
+      yield* withStore(
+        variableStorage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.put("TOKEN", { value: "opaque", secret: false }),
+        ),
+      );
+      const plainFailure = yield* withStore(
+        variableStorage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.approve({ sourceScope: "global", name: "TOKEN", origin }),
+          ),
+        ),
+      );
+      assert.strictEqual(plainFailure.reason, "invalid_input");
+      assert.include(plainFailure.message, "secret");
+      yield* withStore(
+        variableStorage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.remove("TOKEN")),
+      );
+      const missingFailure = yield* withStore(
+        variableStorage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.approve({ sourceScope: "global", name: "TOKEN", origin }),
+          ),
+        ),
+      );
+      assert.strictEqual(missingFailure.reason, "invalid_input");
+      assert.include(missingFailure.message, "secret");
 
-  it.effect("migrates Slice 1 authority and rejects malformed repository scopes", () => {
-    const storage = makeStorage({
-      version: 1,
-      revision: 3,
-      variables: {
-        LEGACY: {
-          value: "retained",
-          secret: false,
-          updatedAt: "2026-08-20T12:00:00.000Z",
+      const pending = yield* withStore(
+        directStorage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.authorizeOrRecordPending({
+            origin,
+            keys: [{ sourceScope: "global", name: "TOKEN" }],
+          }),
+        ),
+      );
+      assert.strictEqual(pending.decisions[0]?.status, "pending");
+      const approved = yield* withStore(
+        directStorage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.approve({ sourceScope: "global", name: "TOKEN", origin }),
+        ),
+      );
+      assert.strictEqual(approved.decision, "approved");
+    }),
+  );
+
+  it.effect("enforces policy and observation capacities without growing state", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const pendingCountBeforeFill = ENVIRONMENT_MAX_PENDING_OBSERVATIONS - 1;
+      const fillName = `PENDING_${pendingCountBeforeFill}`;
+      const storage = makeStorage({
+        version: 3,
+        revision: 4,
+        policyRevision: 4,
+        global: {
+          variables: {
+            [fillName]: { value: "opaque", secret: true, updatedAt: "observed" },
+            OVERFLOW: { value: "opaque", secret: true, updatedAt: "observed" },
+          },
         },
-      },
-    });
-    return Effect.gen(function* () {
-      const store = yield* EnvironmentStore;
-      assert.deepEqual(yield* store.snapshot("owner/project"), {
-        revision: 3,
-        variables: { LEGACY: "retained" },
+        repositories: {},
+        originPolicies: makePolicies(ENVIRONMENT_MAX_ORIGIN_POLICIES),
+        pendingObservations: makePendingObservations(pendingCountBeforeFill),
       });
-      const failure = yield* Effect.flip(
-        store.put("SAFE_NAME", { value: "hidden", secret: true }, "owner/project/extra"),
-      );
-      assert.strictEqual(failure.reason, "invalid_scope");
-      assert.notInclude(failure.message, "hidden");
-      yield* store.put("NEXT", { value: "value", secret: false });
-      assert.strictEqual((storage.snapshot() as EnvironmentAuthority).version, 2);
-      assert.strictEqual(
-        (storage.snapshot() as EnvironmentAuthority).global.variables.LEGACY?.value,
-        "retained",
-      );
-    }).pipe(Effect.provide(storage.layer));
-  });
 
-  it.effect("rejects invalid and Scotty-owned names without echoing values", () => {
-    const storage = makeStorage();
-    return Effect.gen(function* () {
-      const store = yield* EnvironmentStore;
-      for (const name of ["9INVALID", "GH_TOKEN", "PATH", "SCOTTY_CUSTOM"]) {
-        const failure = yield* Effect.flip(store.put(name, { value: "do-not-echo", secret: true }));
-        assert.strictEqual(failure.reason, "invalid_input");
-        assert.notInclude(failure.message, "do-not-echo");
-      }
-      assert.strictEqual(storage.snapshot(), undefined);
-    }).pipe(Effect.provide(storage.layer));
-  });
+      const filled = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.authorizeOrRecordPending({
+            origin: `https://pending-${pendingCountBeforeFill}.example`,
+            keys: [{ sourceScope: "global", name: fillName }],
+          }),
+        ),
+      );
+      assert.strictEqual(filled.decisions[0]?.status, "pending");
+      assert.strictEqual(
+        (storage.authority() as EnvironmentAuthority).pendingObservations.length,
+        ENVIRONMENT_MAX_PENDING_OBSERVATIONS,
+      );
+      assert.strictEqual(
+        (storage.authority() as EnvironmentAuthority).originPolicies.length,
+        ENVIRONMENT_MAX_ORIGIN_POLICIES,
+      );
+
+      const writesAtCapacity = storage.writes.length;
+      const repeated = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.authorizeOrRecordPending({
+            origin: `https://pending-${pendingCountBeforeFill}.example`,
+            keys: [{ sourceScope: "global", name: fillName }],
+          }),
+        ),
+      );
+      assert.strictEqual(repeated.decisions[0]?.status, "pending");
+      assert.strictEqual(storage.writes.length, writesAtCapacity);
+      assert.strictEqual(
+        (storage.authority() as EnvironmentAuthority).pendingObservations.length,
+        ENVIRONMENT_MAX_PENDING_OBSERVATIONS,
+      );
+
+      const beforePendingOverflow = storage.authority();
+      const pendingOverflow = yield* withStore(
+        storage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.authorizeOrRecordPending({
+              origin: "https://overflow.example",
+              keys: [{ sourceScope: "global", name: "OVERFLOW" }],
+            }),
+          ),
+        ),
+      );
+      assert.strictEqual(pendingOverflow.reason, "invalid_input");
+      assert.include(pendingOverflow.message, "capacity");
+      assert.strictEqual(storage.writes.length, writesAtCapacity);
+      assert.deepStrictEqual(storage.authority(), beforePendingOverflow);
+
+      const beforePolicyOverflow = storage.authority();
+      const policyOverflow = yield* withStore(
+        storage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.reject({
+              sourceScope: "global",
+              name: "POLICY_OVERFLOW",
+              origin: "https://policy-overflow.example",
+            }),
+          ),
+        ),
+      );
+      assert.strictEqual(policyOverflow.reason, "invalid_input");
+      assert.include(policyOverflow.message, "capacity");
+      assert.strictEqual(storage.writes.length, writesAtCapacity);
+      assert.deepStrictEqual(storage.authority(), beforePolicyOverflow);
+    }),
+  );
+
+  it.effect("rejects oversized authorization requests and policy output states", () =>
+    Effect.gen(function* () {
+      const storage = makeStorage();
+      const oversizedRequest = yield* withStore(
+        storage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.authorizeOrRecordPending({
+              origin: "https://registry.example",
+              keys: Array.from({ length: ENVIRONMENT_MAX_AUTHORIZATION_KEYS + 1 }, (_, index) => ({
+                sourceScope: "global",
+                name: `REQUEST_${index}`,
+              })),
+            }),
+          ),
+        ),
+      );
+      assert.strictEqual(oversizedRequest.reason, "invalid_input");
+      assert.deepStrictEqual(storage.writes, []);
+
+      const policy = makePolicies(ENVIRONMENT_MAX_ORIGIN_POLICIES)[0];
+      const pending = makePendingObservations(ENVIRONMENT_MAX_PENDING_OBSERVATIONS)[0];
+      assert.isTrue(
+        Option.isSome(
+          decodeAuthority({
+            version: 3,
+            revision: 0,
+            policyRevision: 0,
+            global: { variables: {} },
+            repositories: {},
+            originPolicies: makePolicies(ENVIRONMENT_MAX_ORIGIN_POLICIES),
+            pendingObservations: [],
+          }),
+        ),
+      );
+      assert.isTrue(
+        Option.isSome(
+          decodeAuthority({
+            version: 3,
+            revision: 0,
+            policyRevision: 0,
+            global: { variables: {} },
+            repositories: {},
+            originPolicies: [],
+            pendingObservations: makePendingObservations(ENVIRONMENT_MAX_PENDING_OBSERVATIONS),
+          }),
+        ),
+      );
+      assert.isTrue(
+        Option.isNone(
+          decodeAuthority({
+            version: 3,
+            revision: 0,
+            policyRevision: 0,
+            global: { variables: {} },
+            repositories: {},
+            originPolicies: [
+              ...makePolicies(ENVIRONMENT_MAX_ORIGIN_POLICIES),
+              {
+                sourceScope: "global",
+                name: "POLICY_OVERFLOW",
+                origin: "https://policy-overflow.example",
+                decision: "rejected",
+                updatedAt: "observed",
+              },
+            ],
+            pendingObservations: [],
+          }),
+        ),
+      );
+      assert.isTrue(
+        Option.isNone(
+          decodeAuthority({
+            version: 3,
+            revision: 0,
+            policyRevision: 0,
+            global: { variables: {} },
+            repositories: {},
+            originPolicies: [],
+            pendingObservations: [
+              ...makePendingObservations(ENVIRONMENT_MAX_PENDING_OBSERVATIONS),
+              {
+                sourceScope: "global",
+                name: "PENDING_OVERFLOW",
+                origin: "https://pending-overflow.example",
+                firstObservedAt: "observed",
+                lastObservedAt: "observed",
+              },
+            ],
+          }),
+        ),
+      );
+      assert.isTrue(
+        Option.isNone(
+          decodeApprovalList({
+            revision: 0,
+            policyRevision: 0,
+            approvals: [policy, ...makePolicies(ENVIRONMENT_MAX_ORIGIN_POLICIES)],
+            pending: [],
+          }),
+        ),
+      );
+      assert.isTrue(
+        Option.isNone(
+          decodeApprovalList({
+            revision: 0,
+            policyRevision: 0,
+            approvals: [],
+            pending: [pending, ...makePendingObservations(ENVIRONMENT_MAX_PENDING_OBSERVATIONS)],
+          }),
+        ),
+      );
+      assert.isTrue(
+        Option.isNone(
+          decodeAuthorizationResult({
+            policyRevision: 0,
+            authorized: false,
+            decisions: Array.from({ length: ENVIRONMENT_MAX_AUTHORIZATION_KEYS + 1 }, () => ({
+              sourceScope: "global",
+              name: "TOKEN",
+              origin: "https://registry.example",
+              status: "pending",
+            })),
+          }),
+        ),
+      );
+    }),
+  );
+  it.effect(
+    "creates pending observations only during live authorization and keeps decisions keyed",
+    () =>
+      Effect.gen(function* () {
+        const storage = makeStorage();
+        yield* TestClock.setTime(NOW);
+        const put = (sourceScope: string | undefined, value: string) =>
+          withStore(
+            storage.storage,
+            Effect.flatMap(EnvironmentStore, (store) =>
+              store.put("TOKEN", { value, secret: true }, sourceScope),
+            ),
+          );
+        yield* put(undefined, "global-secret");
+        yield* put("Owner/Project", "repo-secret");
+        const origin = "https://registry.example/";
+        const before = storage.authority() as EnvironmentAuthority;
+        assert.deepStrictEqual(before.pendingObservations, []);
+        const rejectedOrigin = yield* withStore(
+          storage.storage,
+          Effect.flip(
+            Effect.flatMap(EnvironmentStore, (store) =>
+              store.authorizeOrRecordPending({
+                origin: "https://registry.example/path",
+                keys: [{ sourceScope: "global", name: "TOKEN" }],
+              }),
+            ),
+          ),
+        );
+        assert.strictEqual(rejectedOrigin.reason, "invalid_input");
+        assert.deepStrictEqual(
+          (storage.authority() as EnvironmentAuthority).pendingObservations,
+          [],
+        );
+
+        const pending = yield* withStore(
+          storage.storage,
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.authorizeOrRecordPending({
+              origin,
+              keys: [
+                { sourceScope: "global", name: "TOKEN" },
+                { sourceScope: "OWNER/PROJECT", name: "TOKEN" },
+              ],
+            }),
+          ),
+        );
+        assert.isFalse(pending.authorized);
+        assert.deepStrictEqual(
+          pending.decisions.map(({ sourceScope, name, origin: resolvedOrigin, status }) => ({
+            sourceScope,
+            name,
+            origin: resolvedOrigin,
+            status,
+          })),
+          [
+            {
+              sourceScope: "global",
+              name: "TOKEN",
+              origin: "https://registry.example",
+              status: "pending",
+            },
+            {
+              sourceScope: "owner/project",
+              name: "TOKEN",
+              origin: "https://registry.example",
+              status: "pending",
+            },
+          ],
+        );
+        assert.deepStrictEqual(
+          (storage.authority() as EnvironmentAuthority).pendingObservations.map(
+            ({ sourceScope, name, origin: observedOrigin }) => ({
+              sourceScope,
+              name,
+              origin: observedOrigin,
+            }),
+          ),
+          [
+            { sourceScope: "global", name: "TOKEN", origin: "https://registry.example" },
+            { sourceScope: "owner/project", name: "TOKEN", origin: "https://registry.example" },
+          ],
+        );
+
+        yield* TestClock.setTime(NOW + 1_000);
+        yield* withStore(
+          storage.storage,
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.approve({
+              sourceScope: "OWNER/PROJECT",
+              name: "TOKEN",
+              origin,
+            }),
+          ),
+        );
+        const repoApproved = yield* withStore(
+          storage.storage,
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.authorizeOrRecordPending({
+              origin,
+              keys: [{ sourceScope: "owner/project", name: "TOKEN" }],
+            }),
+          ),
+        );
+        assert.isTrue(repoApproved.authorized);
+        assert.strictEqual(repoApproved.decisions[0]?.status, "approved");
+        const globalPending = yield* withStore(
+          storage.storage,
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.authorizeOrRecordPending({
+              origin,
+              keys: [{ sourceScope: "global", name: "TOKEN" }],
+            }),
+          ),
+        );
+        assert.strictEqual(globalPending.decisions[0]?.status, "pending");
+
+        yield* withStore(
+          storage.storage,
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.reject({ sourceScope: "owner/project", name: "TOKEN", origin }),
+          ),
+        );
+        const rejected = yield* withStore(
+          storage.storage,
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.authorizeOrRecordPending({
+              origin,
+              keys: [{ sourceScope: "owner/project", name: "TOKEN" }],
+            }),
+          ),
+        );
+        assert.strictEqual(rejected.decisions[0]?.status, "rejected");
+        yield* withStore(
+          storage.storage,
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.revoke({ sourceScope: "owner/project", name: "TOKEN", origin }),
+          ),
+        );
+        const revoked = yield* withStore(
+          storage.storage,
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.authorizeOrRecordPending({
+              origin,
+              keys: [{ sourceScope: "owner/project", name: "TOKEN" }],
+            }),
+          ),
+        );
+        assert.strictEqual(revoked.decisions[0]?.status, "revoked");
+        assert.deepStrictEqual(
+          (yield* withStore(
+            storage.storage,
+            Effect.flatMap(EnvironmentStore, (store) => store.listApprovals("OWNER/PROJECT")),
+          )).pending,
+          [],
+        );
+        assert.isTrue(
+          (yield* withStore(
+            storage.storage,
+            Effect.flatMap(EnvironmentStore, (store) => store.listApprovals()),
+          )).pending.length > 0,
+        );
+        assert.isFalse(Option.isSome(decodeOrigin("https://registry.example/path")));
+      }),
+  );
 });

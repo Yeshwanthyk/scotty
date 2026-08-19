@@ -18,7 +18,11 @@ import type {
 } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
-import type { EnvironmentSnapshot } from "../src/environment-contracts";
+import type {
+  EnvironmentMaterialization,
+  EnvironmentSnapshot,
+  SessionEnvironmentSnapshot,
+} from "../src/environment-contracts";
 import type { RepoVerifier } from "../src/repo-verifier";
 import type { SandboxConfigStatus } from "../src/sandbox-config-contracts";
 import type { SandboxConfigRpcResult } from "../src/sandbox-config-object";
@@ -34,6 +38,7 @@ import {
   type SandboxEffectOptions,
 } from "../src/session";
 import { EVIDENCE_RECORD_KEY, RUNTIME_EPOCH_KEY } from "../src/session-store";
+import { ENVIRONMENT_SECRET_VAULT_KEY } from "../src/environment-secret-vault";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
@@ -197,6 +202,7 @@ export type InitialStorageEntries = Partial<{
   [EVIDENCE_RECORD_KEY]: unknown;
   [HATCH_STATE_KEY]: unknown;
   [RUNTIME_EPOCH_KEY]: unknown;
+  [ENVIRONMENT_SECRET_VAULT_KEY]: unknown;
   [SESSION_CONTROL_REVISION_KEY]: unknown;
 }>;
 
@@ -236,6 +242,7 @@ export type HarnessFailureStage =
   | "downWriteManifest"
   | "environmentApply"
   | "environmentRefreshRetrySchedule"
+  | "environmentVaultCommit"
   | "evidenceRetentionSchedulePostInsert"
   | "evidenceRetentionSchedulePreInsert"
   | "evidenceRetentionSchedulePreInsertOnce"
@@ -291,7 +298,8 @@ export interface HarnessOptions {
   readonly sandboxNamespace?: Bindings["SANDBOX"];
   readonly sandboxConfigStatus?: SandboxConfigStatus;
   readonly sandboxConfigStatusFailure?: "rpc-error" | "throw";
-  readonly environmentSnapshot?: EnvironmentSnapshot;
+  readonly environmentSnapshot?: EnvironmentSnapshot | SessionEnvironmentSnapshot;
+  readonly environmentMaterialization?: EnvironmentMaterialization;
   readonly installationPiAuthRecord?: InstallationPiAuthRecord;
   readonly installationPiAuthWriteFailure?: boolean;
   readonly sandboxBundleObjects?: ReadonlyArray<{
@@ -328,6 +336,7 @@ export interface SessionHarness {
   readonly piRequests: ReadonlyArray<Request>;
   readonly rawPiRequests: ReadonlyArray<Request>;
   readonly appliedEnvironments: ReadonlyArray<Record<string, string | undefined>>;
+  readonly piProcessEnvironments: ReadonlyArray<Record<string, string | undefined>>;
   readonly environmentSnapshotRepos: ReadonlyArray<unknown>;
   readonly writtenFiles: ReadonlyArray<{
     readonly path: string;
@@ -357,6 +366,8 @@ class HarnessStorage {
   private failNextGet = false;
   private readonly getCounts = new Map<string, number>();
   private transactionTail: Promise<void> = Promise.resolve();
+  private environmentVaultPutCount = 0;
+  private environmentVaultCommitFailureConsumed = false;
 
   constructor(
     private readonly events: string[],
@@ -471,6 +482,17 @@ class HarnessStorage {
           get: async <T>(key: string) => structuredClone(staged.get(key)) as T | undefined,
           put: async <T>(key: string, value: T) => {
             staged.set(key, structuredClone(value));
+            if (key === ENVIRONMENT_SECRET_VAULT_KEY) {
+              this.environmentVaultPutCount += 1;
+              if (
+                this.environmentVaultPutCount === 2 &&
+                !this.environmentVaultCommitFailureConsumed &&
+                this.failures.has("environmentVaultCommit")
+              ) {
+                this.environmentVaultCommitFailureConsumed = true;
+                throw injectedHarnessFailure("injected environment vault commit failure");
+              }
+            }
             mutations.push({ kind: "put", key, value });
           },
           delete: async (key: string) => {
@@ -586,6 +608,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const commands: string[] = [];
   const environmentSnapshotRepos: unknown[] = [];
   const appliedEnvironments: Array<Record<string, string | undefined>> = [];
+  const piProcessEnvironments: Array<Record<string, string | undefined>> = [];
   const runnerOperations: RunnerOperation[] = [];
   const runnerRequests: Request[] = [];
   const piRequests: Request[] = [];
@@ -879,11 +902,23 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           ok: true,
           value: { revision: 0, variables: [] },
         }),
-        environmentSnapshot: async (repo) => {
+        materializeEnvironment: async (repo: unknown) => {
           environmentSnapshotRepos.push(repo);
+          if (options.environmentMaterialization !== undefined)
+            return { ok: true, value: options.environmentMaterialization };
+          const snapshot = options.environmentSnapshot ?? { revision: 0, variables: {} };
           return {
             ok: true,
-            value: options.environmentSnapshot ?? { revision: 0, variables: {} },
+            value: {
+              revision: snapshot.revision,
+              ...(typeof repo === "string" ? { repo } : {}),
+              variables: Object.fromEntries(
+                Object.entries(snapshot.variables).map(([name, value]) => [
+                  name,
+                  { value, secret: false, updatedAt: "legacy", sourceScope: "global" as const },
+                ]),
+              ),
+            },
           };
         },
         putEnvironment: async (name) => ({
@@ -1209,8 +1244,16 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     },
     startProcess: {
-      value: async (_command: string, processOptions?: { readonly processId?: string }) => {
+      value: async (
+        _command: string,
+        processOptions?: {
+          readonly processId?: string;
+          readonly env?: Record<string, string | undefined>;
+        },
+      ) => {
         const processId = processOptions?.processId ?? "generated";
+        if (processOptions?.env !== undefined)
+          piProcessEnvironments.push({ ...processOptions.env });
         piSessionRunning = true;
         events.push(`host:pi:start:${processId}`);
         return {
@@ -1361,6 +1404,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     rawPiRequests,
     writtenFiles,
     appliedEnvironments,
+    piProcessEnvironments,
     environmentSnapshotRepos,
     r2DeletedKeys,
     artifactDeletedKeys,
@@ -1404,4 +1448,5 @@ export const sessionHarnessKeys = {
   hatch: HATCH_STATE_KEY,
   record: RECORD_KEY,
   runtimeEpoch: RUNTIME_EPOCH_KEY,
+  environmentVault: ENVIRONMENT_SECRET_VAULT_KEY,
 } as const;

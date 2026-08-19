@@ -1,4 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
+import {
+  isSessionEnvironmentSnapshot,
+  type EnvironmentMaterialization,
+} from "../src/environment-contracts";
 import { ScottyError } from "../src/contracts";
 import {
   createSessionHarness,
@@ -10,12 +14,65 @@ import {
 import { makeSessionRecord } from "./support";
 
 const previous = {
+  version: 1 as const,
   revision: 3,
   variables: { KEEP: "old", REMOVE_ME: "secret-to-remove" },
 };
+const OLD_API_TOKEN_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000000";
+const OLD_REMOVE_ME_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000001";
 const current = {
+  version: 1 as const,
   revision: 4,
   variables: { KEEP: "new", ADDED: "added" },
+};
+const secretPrevious = {
+  version: 1 as const,
+  revision: 3,
+  variables: {
+    KEEP: "old",
+    API_TOKEN: OLD_API_TOKEN_SENTINEL,
+    REMOVE_ME: OLD_REMOVE_ME_SENTINEL,
+  },
+};
+const secretMaterialization = {
+  revision: 4,
+  variables: {
+    KEEP: {
+      value: "new",
+      secret: false,
+      updatedAt: "four",
+      sourceScope: "global",
+    },
+    API_TOKEN: {
+      value: "new-rotation-secret",
+      secret: true,
+      updatedAt: "four",
+      sourceScope: "global",
+    },
+    ADDED: {
+      value: "added-secret",
+      secret: true,
+      updatedAt: "four",
+      sourceScope: "global",
+    },
+  },
+} satisfies EnvironmentMaterialization;
+const secretVaultState = {
+  version: 1 as const,
+  entries: {
+    [OLD_API_TOKEN_SENTINEL]: {
+      sentinel: OLD_API_TOKEN_SENTINEL,
+      sourceScope: "global" as const,
+      name: "API_TOKEN",
+      value: "old-rotation-secret",
+    },
+    [OLD_REMOVE_ME_SENTINEL]: {
+      sentinel: OLD_REMOVE_ME_SENTINEL,
+      sourceScope: "global" as const,
+      name: "REMOVE_ME",
+      value: "removed-secret",
+    },
+  },
 };
 
 const entries = (operation: ReturnType<typeof makeSessionRecord>["operation"] = null) => ({
@@ -86,6 +143,193 @@ describe("Sandbox environment refresh", () => {
     assert.deepStrictEqual(harness.schedules, []);
   });
 
+  it("keeps the old generation and refresh lease through a failed prune", async () => {
+    const oldSecret = "old-rotation-secret";
+    const newSecret = "new-rotation-secret";
+    const committed = {
+      version: 1 as const,
+      revision: 3,
+      variables: {
+        API_TOKEN: OLD_API_TOKEN_SENTINEL,
+        REMOVE_ME: OLD_REMOVE_ME_SENTINEL,
+      },
+    };
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "warm",
+          environment: committed,
+        }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+        [sessionHarnessKeys.environmentVault]: {
+          version: 1,
+          entries: {
+            [OLD_API_TOKEN_SENTINEL]: {
+              sentinel: OLD_API_TOKEN_SENTINEL,
+              sourceScope: "global",
+              name: "API_TOKEN",
+              value: oldSecret,
+            },
+            [OLD_REMOVE_ME_SENTINEL]: {
+              sentinel: OLD_REMOVE_ME_SENTINEL,
+              sourceScope: "global",
+              name: "REMOVE_ME",
+              value: "removed-secret",
+            },
+          },
+        },
+      },
+      environmentMaterialization: {
+        revision: 4,
+        variables: {
+          API_TOKEN: {
+            value: newSecret,
+            secret: true,
+            updatedAt: "four",
+            sourceScope: "global",
+          },
+        },
+      },
+      piSessionRunning: true,
+      failureStage: "environmentVaultCommit",
+    });
+
+    const error = await rejection(harness.sandbox.refreshScottyEnvironment());
+    assert.ok(error instanceof ScottyError);
+    const pending = harness.readRecord();
+    assert.strictEqual(pending?.operation?.kind, "refresh");
+    assert.strictEqual(pending?.operation?.environmentRefreshPhase, "applying");
+    const pendingEnvironment = pending?.environment;
+    assert.ok(isSessionEnvironmentSnapshot(pendingEnvironment));
+    assert.strictEqual(pendingEnvironment.version, 1);
+    assert.strictEqual(harness.schedules.at(-1)?.callback, "retryEnvironmentRefresh");
+    assert.deepStrictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_API_TOKEN_SENTINEL }),
+      { sentinel: OLD_API_TOKEN_SENTINEL, value: oldSecret },
+    );
+    assert.notInclude(JSON.stringify(pending), oldSecret);
+    assert.deepStrictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_REMOVE_ME_SENTINEL }),
+      { sentinel: OLD_REMOVE_ME_SENTINEL, value: "removed-secret" },
+    );
+    assert.notInclude(JSON.stringify(pending), newSecret);
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments), oldSecret);
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments), newSecret);
+    assert.notInclude(JSON.stringify(harness.piProcessEnvironments), newSecret);
+    assert.notInclude(JSON.stringify(harness.writtenFiles), newSecret);
+
+    harness.clearFailure("environmentVaultCommit");
+    await harness.sandbox.retryEnvironmentRefresh({
+      sessionId: SESSION_ID,
+      nonce: pending?.operation?.nonce ?? "missing",
+    });
+    const committedRecord = harness.readRecord();
+    const committedEnvironment = committedRecord?.environment;
+    assert.ok(isSessionEnvironmentSnapshot(committedEnvironment));
+    const newSentinel = committedEnvironment.variables.API_TOKEN;
+    assert.strictEqual(committedRecord?.operation, null);
+    assert.notStrictEqual(newSentinel, OLD_API_TOKEN_SENTINEL);
+    assert.strictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_API_TOKEN_SENTINEL }),
+      null,
+    );
+    assert.strictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_REMOVE_ME_SENTINEL }),
+      null,
+    );
+    assert.deepStrictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: newSentinel }),
+      { sentinel: newSentinel, value: newSecret },
+    );
+    assert.isUndefined(harness.appliedEnvironments.at(-1)?.REMOVE_ME);
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments), newSecret);
+    assert.notInclude(JSON.stringify(harness.piProcessEnvironments), newSecret);
+    assert.notInclude(JSON.stringify(harness.writtenFiles), newSecret);
+    assert.deepStrictEqual(harness.read(sessionHarnessKeys.environmentVault), {
+      version: 1,
+      entries: {
+        [newSentinel]: {
+          sentinel: newSentinel,
+          sourceScope: "global",
+          name: "API_TOKEN",
+          value: newSecret,
+        },
+      },
+    });
+  });
+
+  it("retains secret rotation and removal across an ambiguous apply retry", async () => {
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "warm",
+          environment: secretPrevious,
+        }),
+        [sessionHarnessKeys.credential]: makeStoredCredential(),
+        [sessionHarnessKeys.environmentVault]: secretVaultState,
+      },
+      environmentMaterialization: secretMaterialization,
+      piSessionRunning: true,
+      failureStage: "environmentApply",
+    });
+
+    const error = await rejection(harness.sandbox.refreshScottyEnvironment());
+    assert.ok(error instanceof ScottyError);
+    const pending = harness.readRecord();
+    const target = pending?.operation?.environmentRefreshTarget;
+    assert.ok(isSessionEnvironmentSnapshot(target));
+    const stagedToken = target.variables.API_TOKEN;
+    const stagedAdded = target.variables.ADDED;
+    assert.notStrictEqual(stagedToken, OLD_API_TOKEN_SENTINEL);
+    assert.notStrictEqual(stagedAdded, undefined);
+    assert.strictEqual(
+      (await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_API_TOKEN_SENTINEL }))
+        ?.value,
+      "old-rotation-secret",
+    );
+    assert.strictEqual(
+      (await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_REMOVE_ME_SENTINEL }))
+        ?.value,
+      "removed-secret",
+    );
+    assert.deepStrictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: stagedToken }),
+      { sentinel: stagedToken, value: "new-rotation-secret" },
+    );
+    assert.notInclude(JSON.stringify(pending), "old-rotation-secret");
+    assert.notInclude(JSON.stringify(pending), "new-rotation-secret");
+
+    harness.clearFailure("environmentApply");
+    await harness.sandbox.retryEnvironmentRefresh({
+      sessionId: SESSION_ID,
+      nonce: pending?.operation?.nonce ?? "missing",
+    });
+
+    const committed = harness.readRecord();
+    const environment = committed?.environment;
+    assert.ok(isSessionEnvironmentSnapshot(environment));
+    assert.strictEqual(committed?.operation, null);
+    assert.strictEqual(environment.variables.API_TOKEN, stagedToken);
+    assert.strictEqual(environment.variables.ADDED, stagedAdded);
+    assert.strictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_API_TOKEN_SENTINEL }),
+      null,
+    );
+    assert.strictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_REMOVE_ME_SENTINEL }),
+      null,
+    );
+    assert.isUndefined(harness.appliedEnvironments.at(-1)?.REMOVE_ME);
+    assert.strictEqual(harness.appliedEnvironments.at(-1)?.API_TOKEN, stagedToken);
+    assert.strictEqual(harness.appliedEnvironments.at(-1)?.ADDED, stagedAdded);
+    assert.notInclude(JSON.stringify(committed), "new-rotation-secret");
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments), "new-rotation-secret");
+    assert.notInclude(JSON.stringify(harness.piProcessEnvironments), "new-rotation-secret");
+    assert.notInclude(JSON.stringify(harness.writtenFiles), "new-rotation-secret");
+  });
+
   it("returns an idempotent no-op when the committed revision is current", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
@@ -132,12 +376,13 @@ describe("Sandbox environment refresh", () => {
     }
   });
 
-  it("unsets variables from a prior ambiguous target when retry resolves a newer revision", async () => {
+  it("reconciles a prior ambiguous target to the newest authority revision", async () => {
     const attempted = {
+      version: 1 as const,
       revision: 4,
       variables: { KEEP: "intermediate", TRANSIENT: "must-be-unset" },
     };
-    const newest = { revision: 5, variables: { KEEP: "newest" } };
+    const newest = { version: 1 as const, revision: 5, variables: { KEEP: "newest" } };
     const nonce = "refresh-retry-nonce";
     const harness = await createSessionHarness({
       initialEntries: entries({
@@ -154,7 +399,7 @@ describe("Sandbox environment refresh", () => {
 
     assert.deepStrictEqual(harness.readRecord()?.environment, newest);
     assert.property(harness.appliedEnvironments.at(-1) ?? {}, "TRANSIENT");
-    assert.strictEqual(harness.appliedEnvironments.at(-1)?.TRANSIENT, undefined);
+    assert.isUndefined(harness.appliedEnvironments.at(-1)?.TRANSIENT);
   });
 
   it("retains typed retry state after an uncertain apply and commits only after retry", async () => {
@@ -270,14 +515,15 @@ describe("Sandbox environment refresh", () => {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
           status: "warm",
-          environment: previous,
+          environment: secretPrevious,
           backup: { current: backup },
           ownedBackupIds: [backup.id],
         }),
         [sessionHarnessKeys.credential]: makeStoredCredential(),
+        [sessionHarnessKeys.environmentVault]: secretVaultState,
       },
-      environmentSnapshot: current,
-      failureStage: "environmentApply",
+      environmentMaterialization: secretMaterialization,
+      failureStage: "environmentVaultCommit",
     });
     harness.injectFailure("environmentRefreshRetrySchedule");
 
@@ -289,14 +535,38 @@ describe("Sandbox environment refresh", () => {
     assert.strictEqual(failed?.backup?.current.id, backup.id);
     assert.include(harness.events, "host:destroy");
 
-    harness.clearFailure("environmentApply");
+    harness.clearFailure("environmentVaultCommit");
     harness.clearFailure("environmentRefreshRetrySchedule");
     const resumed = await harness.sandbox.resumeScottySession();
 
     assert.strictEqual(resumed.status, "warm");
-    assert.deepStrictEqual(harness.readRecord()?.environment, previous);
+    const resumedRecord = harness.readRecord();
+    const resumedEnvironment = resumedRecord?.environment;
+    assert.ok(isSessionEnvironmentSnapshot(resumedEnvironment));
+    assert.strictEqual(resumedEnvironment.revision, secretPrevious.revision);
+    assert.strictEqual(resumedEnvironment.variables.KEEP, "old");
+    assert.strictEqual(resumedEnvironment.variables.API_TOKEN, OLD_API_TOKEN_SENTINEL);
+    assert.notProperty(resumedEnvironment.variables, "ADDED");
+    assert.property(resumedEnvironment.variables, "REMOVE_ME");
     assert.strictEqual(harness.appliedEnvironments.at(-1)?.KEEP, "old");
-    assert.strictEqual(harness.appliedEnvironments.at(-1)?.REMOVE_ME, "secret-to-remove");
+    assert.strictEqual(
+      harness.appliedEnvironments.at(-1)?.API_TOKEN,
+      resumedEnvironment.variables.API_TOKEN,
+    );
+    assert.deepStrictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({
+        sentinel: resumedEnvironment.variables.API_TOKEN,
+      }),
+      {
+        sentinel: resumedEnvironment.variables.API_TOKEN,
+        value: "old-rotation-secret",
+      },
+    );
+    assert.strictEqual(harness.appliedEnvironments.at(-1)?.REMOVE_ME, OLD_REMOVE_ME_SENTINEL);
+    assert.notInclude(JSON.stringify(resumedRecord), "new-rotation-secret");
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments), "new-rotation-secret");
+    assert.notInclude(JSON.stringify(harness.piProcessEnvironments), "new-rotation-secret");
+    assert.notInclude(JSON.stringify(harness.writtenFiles), "new-rotation-secret");
   });
 
   it("fails the held lease when an uncertain apply cannot arm another retry", async () => {

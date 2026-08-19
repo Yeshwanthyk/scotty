@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Option } from "effect";
+import type { Bindings } from "../src/bindings";
 import {
   HttpClient,
   HttpClientError,
@@ -14,19 +15,24 @@ import {
 import { SCOTTY_INTERNAL_HOST } from "../src/container-session-egress";
 import {
   ALLOWED_HOSTS,
+  ENVIRONMENT_MAX_BODY_BYTES,
   denyOutbound,
   EgressFailure,
+  EnvironmentEgressVault,
+  type EnvironmentEgressVaultShape,
   EgressTransport,
   type EgressTransportShape,
   egressTransportLayer,
   EgressVault,
   type EgressVaultShape,
+  makeEnvironmentOutbound,
   makeOutboundByHost,
   passThroughProgram,
   piAccessSentinel,
   proxyChatGptProgram,
   proxyGitHubProgram,
   proxyOAuthRefreshProgram,
+  proxyEnvironmentProgram,
   proxyOpenAIProgram,
 } from "../src/egress";
 
@@ -34,6 +40,9 @@ const OPENAI = "scotty-pi-openai-session-sentinel";
 const CODEX = "scotty-pi-openai-codex-session-sentinel";
 const GITHUB = "scotty-github-session-sentinel";
 const HONEYPOT = "never-expose-honeypot-secret";
+const ENVIRONMENT_A = `scotty-env-a0b1c2d3e4f5-${"0".repeat(32)}`;
+const ENVIRONMENT_B = `scotty-env-b0c1d2e3f4a5-${"1".repeat(32)}`;
+const ENVIRONMENT_COMPONENT_LIMIT = 16_384;
 const credential: StoredCredential = {
   providers: {
     openai: {
@@ -171,6 +180,41 @@ function run(
     Effect.provide(Layer.succeed(EgressVault)(EgressVault.of(options.vault ?? vault()))),
     Effect.provide(Layer.succeed(EgressTransport)(EgressTransport.of(transport))),
     Effect.provide(Layer.succeed(HttpClient.HttpClient)(client)),
+  );
+}
+
+function runEnvironment(
+  program: Effect.Effect<Response, EgressFailure, EnvironmentEgressVault | EgressTransport>,
+  options: {
+    readonly resolve?: EnvironmentEgressVaultShape["resolve"];
+    readonly nativeRespond?: (request: Request) => Effect.Effect<Response>;
+    readonly nativeRequests?: Array<Request>;
+  } = {},
+) {
+  const transport: EgressTransportShape = {
+    forward: (request, url, headers) => {
+      const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
+      const init: RequestInit = {
+        method: request.method,
+        headers,
+        body,
+        redirect: "manual",
+      };
+      if (body) Reflect.set(init, "duplex", "half");
+      const outgoing = new Request(url.toString(), init);
+      options.nativeRequests?.push(outgoing);
+      return options.nativeRespond
+        ? options.nativeRespond(outgoing)
+        : Effect.succeed(new Response("ok", { status: 200 }));
+    },
+  };
+  return program.pipe(
+    Effect.provide(
+      Layer.succeed(EnvironmentEgressVault)(
+        EnvironmentEgressVault.of({ resolve: options.resolve ?? (() => Effect.succeed(null)) }),
+      ),
+    ),
+    Effect.provide(Layer.succeed(EgressTransport)(EgressTransport.of(transport))),
   );
 }
 
@@ -680,4 +724,711 @@ describe("OAuth refresh", () => {
       assert.ok(String(exit).includes("Failed to persist rotated OAuth credential"));
     }),
   );
+});
+
+function environmentBindings(
+  authorizeEnvironmentRequest: (input: unknown) => Promise<unknown>,
+): Bindings {
+  const stub = { authorizeEnvironmentRequest };
+  const id: DurableObjectId = {
+    toString: () => "container",
+    equals: () => true,
+  };
+  const namespace: Bindings["SANDBOX"] = {
+    newUniqueId: () => id,
+    idFromName: () => id,
+    idFromString: () => id,
+    get: () => stub as never,
+    getByName: () => stub as never,
+    jurisdiction: () => namespace,
+  };
+  return {
+    AUTH: undefined as never,
+    RUNNER_REGISTRY: undefined as never,
+    RUNNERS: undefined as never,
+    SANDBOX: namespace,
+    SANDBOX_CONFIG: undefined as never,
+    SESSIONS: undefined as never,
+    BACKUP_BUCKET: undefined as never,
+    ARTIFACT_BUCKET: undefined as never,
+    SANDBOX_BUNDLE_BUCKET: undefined as never,
+    ASSETS: undefined as never,
+    SCOTTY_TOKEN: "unused",
+    PI_AUTH_JSON: "unused",
+    GH_TOKEN: "unused",
+  };
+}
+
+describe("environment secret egress", () => {
+  it.effect(
+    "resolves every sentinel, percent-encodes URL components, and preserves the origin",
+    () =>
+      Effect.gen(function* () {
+        const requests: Array<Request> = [];
+        const observations: Array<{
+          readonly origin: string;
+          readonly sentinels: ReadonlyArray<string>;
+        }> = [];
+        const firstSecret = "https://evil.example/a path";
+        const secondSecret = "value/with?query&fragment#text";
+        const response = yield* runEnvironment(
+          proxyEnvironmentProgram(
+            new Request(
+              `https://origin.example/path/${ENVIRONMENT_A}?one=${ENVIRONMENT_B}&two=${ENVIRONMENT_A}`,
+              {
+                headers: {
+                  authorization: `Bearer ${ENVIRONMENT_A}`,
+                  "x-custom": `${ENVIRONMENT_A},${ENVIRONMENT_B}`,
+                  cookie: ENVIRONMENT_A,
+                  forwarded: ENVIRONMENT_B,
+                  "x-forwarded-for": ENVIRONMENT_A,
+                  "x-scotty-internal": ENVIRONMENT_B,
+                  "cf-ray": ENVIRONMENT_A,
+                  "x-envoy-attempt-count": ENVIRONMENT_B,
+                },
+              },
+            ),
+          ),
+          {
+            nativeRequests: requests,
+            resolve: (origin, sentinels) =>
+              Effect.sync(() => {
+                observations.push({ origin, sentinels });
+                return { [ENVIRONMENT_A]: firstSecret, [ENVIRONMENT_B]: secondSecret };
+              }),
+          },
+        );
+
+        assert.strictEqual(response.status, 200);
+        assert.deepStrictEqual(observations, [
+          { origin: "https://origin.example", sentinels: [ENVIRONMENT_A, ENVIRONMENT_B] },
+        ]);
+        const sent = requests[0];
+        assert.strictEqual(
+          sent.url,
+          `https://origin.example/path/${encodeURIComponent(firstSecret)}?one=${encodeURIComponent(secondSecret)}&two=${encodeURIComponent(firstSecret)}`,
+        );
+        assert.strictEqual(sent.headers.get("authorization"), `Bearer ${firstSecret}`);
+        assert.strictEqual(sent.headers.get("x-custom"), `${firstSecret},${secondSecret}`);
+        for (const name of [
+          "cookie",
+          "forwarded",
+          "x-forwarded-for",
+          "x-scotty-internal",
+          "cf-ray",
+          "x-envoy-attempt-count",
+        ])
+          assert.strictEqual(sent.headers.get(name), null);
+        assert.notInclude(sent.url, ENVIRONMENT_A);
+        assert.notInclude(sent.url, ENVIRONMENT_B);
+      }),
+  );
+
+  it.effect("blocks pending, rejected, revoked, unknown, and unavailable authorization", () =>
+    Effect.gen(function* () {
+      for (const reason of [
+        "pending",
+        "rejected",
+        "revoked",
+        "unknown_sentinel",
+        "session_unavailable",
+      ] as const) {
+        const requests: Array<Request> = [];
+        const response = yield* runEnvironment(
+          proxyEnvironmentProgram(new Request(`https://origin.example/path/${ENVIRONMENT_A}`)),
+          {
+            nativeRequests: requests,
+            resolve: () => Effect.succeed(null),
+          },
+        );
+        assert.strictEqual(response.status, 403, reason);
+        assert.deepStrictEqual(requests, []);
+      }
+      const unavailable = yield* runEnvironment(
+        proxyEnvironmentProgram(new Request(`https://origin.example/path/${ENVIRONMENT_A}`)),
+        {
+          resolve: () =>
+            Effect.fail(new EgressFailure({ reason: "vault", message: "unavailable" })),
+        },
+      );
+      assert.strictEqual(unavailable.status, 403);
+    }),
+  );
+
+  it.effect("requires all sentinels to be known and approved before forwarding", () =>
+    Effect.gen(function* () {
+      const requests: Array<Request> = [];
+      let resolves = 0;
+      const response = yield* runEnvironment(
+        proxyEnvironmentProgram(
+          new Request(`https://origin.example/path/${ENVIRONMENT_A}/${ENVIRONMENT_B}`),
+        ),
+        {
+          nativeRequests: requests,
+          resolve: () =>
+            Effect.sync(() => {
+              resolves += 1;
+              return { [ENVIRONMENT_A]: "only-one-secret" };
+            }),
+        },
+      );
+      assert.strictEqual(response.status, 403);
+      assert.strictEqual(resolves, 1);
+      assert.deepStrictEqual(requests, []);
+    }),
+  );
+
+  it.effect("fails closed for malformed, truncated, and over-bound sentinels", () =>
+    Effect.gen(function* () {
+      const malformed = [
+        ENVIRONMENT_A.slice(0, -1),
+        `${ENVIRONMENT_A}-suffix`,
+        `scotty-env-a0b1c2d3e4f5-${"g".repeat(32)}`,
+        `${ENVIRONMENT_A} scotty-env-a0b1c2d3e4f5-truncated`,
+      ];
+      for (const value of malformed) {
+        let resolves = 0;
+        const requests: Array<Request> = [];
+        const response = yield* runEnvironment(
+          proxyEnvironmentProgram(new Request(`https://origin.example/path/${value}`)),
+          {
+            nativeRequests: requests,
+            resolve: () =>
+              Effect.sync(() => {
+                resolves += 1;
+                return { [ENVIRONMENT_A]: "must-not-forward" };
+              }),
+          },
+        );
+        assert.strictEqual(response.status, 403);
+        assert.strictEqual(resolves, 0);
+        assert.deepStrictEqual(requests, []);
+        assert.notInclude(yield* Effect.promise(() => response.text()), "must-not-forward");
+      }
+
+      const overBound = yield* runEnvironment(
+        proxyEnvironmentProgram(
+          new Request(
+            `https://origin.example/${"x".repeat(ENVIRONMENT_COMPONENT_LIMIT)}${ENVIRONMENT_A}`,
+          ),
+        ),
+        {
+          resolve: () => Effect.succeed({ [ENVIRONMENT_A]: "must-not-forward" }),
+        },
+      );
+      assert.strictEqual(overBound.status, 403);
+      assert.strictEqual(overBound.status, 403);
+
+      const overBoundHeaders = new Headers();
+      for (let index = 0; index <= 128; index += 1)
+        overBoundHeaders.set(`x-bound-${String(index).padStart(3, "0")}`, ENVIRONMENT_A);
+      const overBoundHeader = yield* runEnvironment(
+        proxyEnvironmentProgram(
+          new Request("https://origin.example/package", { headers: overBoundHeaders }),
+        ),
+        { resolve: () => Effect.succeed({ [ENVIRONMENT_A]: "must-not-forward" }) },
+      );
+      assert.strictEqual(overBoundHeader.status, 403);
+    }),
+  );
+
+  it.effect("rejects CR/LF header injection while allowing URL percent encoding", () =>
+    Effect.gen(function* () {
+      const requests: Array<Request> = [];
+      const headerInjection = yield* runEnvironment(
+        proxyEnvironmentProgram(
+          new Request(`https://origin.example/path/${ENVIRONMENT_A}`, {
+            headers: { "x-secret": ENVIRONMENT_A },
+          }),
+        ),
+        {
+          nativeRequests: requests,
+          resolve: () => Effect.succeed({ [ENVIRONMENT_A]: "line-one\r\nx-injected: yes" }),
+        },
+      );
+      assert.strictEqual(headerInjection.status, 403);
+      assert.deepStrictEqual(requests, []);
+
+      const urlValue = "line-one\r\nline-two";
+      const urlInjection = yield* runEnvironment(
+        proxyEnvironmentProgram(new Request(`https://origin.example/path/${ENVIRONMENT_A}`)),
+        {
+          nativeRequests: requests,
+          resolve: () => Effect.succeed({ [ENVIRONMENT_A]: urlValue }),
+        },
+      );
+      assert.strictEqual(urlInjection.status, 200);
+      assert.strictEqual(
+        requests[0]?.url,
+        `https://origin.example/path/${encodeURIComponent(urlValue)}`,
+      );
+    }),
+  );
+
+  it("gives generic sentinels precedence on legacy hosts and preserves package pass-through", async () => {
+    const forwarded: Array<Request> = [];
+    const rpcInputs: unknown[] = [];
+    const nativeFetch: typeof globalThis.fetch = (request) => {
+      forwarded.push(request instanceof Request ? request : new Request(request));
+      return Promise.resolve(new Response("forwarded"));
+    };
+    const handler = makeOutboundByHost(nativeFetch)["registry.npmjs.org"];
+    assert.isFunction(handler);
+    const context = { containerId: "container", className: "Sandbox" };
+
+    const pending = await handler(
+      new Request(`https://registry.npmjs.org/pkg?token=${ENVIRONMENT_A}`),
+      environmentBindings(async (input) => {
+        rpcInputs.push(input);
+        return { authorized: false, reason: "pending" };
+      }),
+      context,
+    );
+    assert.strictEqual(pending.status, 403);
+    assert.strictEqual(forwarded.length, 0);
+    assert.deepStrictEqual(rpcInputs, [
+      { origin: "https://registry.npmjs.org", sentinels: [ENVIRONMENT_A] },
+    ]);
+
+    const approved = await handler(
+      new Request(`https://registry.npmjs.org/pkg?token=${ENVIRONMENT_A}`),
+      environmentBindings(async () => ({
+        authorized: true,
+        reason: "approved",
+        values: { [ENVIRONMENT_A]: "real-package-token" },
+      })),
+      context,
+    );
+    assert.strictEqual(approved.status, 200);
+    assert.strictEqual(
+      forwarded[0]?.url,
+      "https://registry.npmjs.org/pkg?token=real-package-token",
+    );
+
+    let unexpectedRpcCalls = 0;
+    const legacy = await handler(
+      new Request("https://registry.npmjs.org/pkg"),
+      environmentBindings(async () => {
+        unexpectedRpcCalls += 1;
+        return { authorized: false, reason: "session_unavailable" };
+      }),
+      context,
+    );
+    assert.strictEqual(legacy.status, 200);
+    assert.strictEqual(forwarded.length, 2);
+    assert.strictEqual(unexpectedRpcCalls, 0);
+  });
+
+  it("blocks catch-all generic outbound without a recognized sentinel", async () => {
+    let nativeCalls = 0;
+    const outbound = makeEnvironmentOutbound(() => {
+      nativeCalls += 1;
+      return Promise.resolve(new Response("must-not-forward"));
+    });
+    const env = environmentBindings(async () => ({
+      authorized: true,
+      reason: "approved",
+      values: { [ENVIRONMENT_A]: "real-secret" },
+    }));
+    const context = { containerId: "container", className: "Sandbox" };
+
+    const noSentinel = await outbound(
+      new Request("https://unlisted.example/package"),
+      env,
+      context,
+    );
+    assert.strictEqual(noSentinel.status, 403);
+    const malformed = await outbound(
+      new Request(`https://unlisted.example/package/${ENVIRONMENT_A.slice(0, -1)}`),
+      env,
+      context,
+    );
+    assert.strictEqual(malformed.status, 403);
+    assert.strictEqual(nativeCalls, 0);
+  });
+});
+
+describe("environment secret egress body scanning", () => {
+  const context = { containerId: "container", className: "Sandbox" };
+
+  it.effect(
+    "authorizes and replaces text, JSON, and form body sentinels without consuming the forward body",
+    () =>
+      Effect.gen(function* () {
+        const cases = [
+          {
+            contentType: "text/plain",
+            body: `text=${ENVIRONMENT_A}`,
+            expected: "text=body-text-secret",
+            secret: "body-text-secret",
+          },
+          {
+            contentType: "application/json",
+            body: JSON.stringify({ token: ENVIRONMENT_A }),
+            expected: JSON.stringify({ token: 'body-json-secret"' }),
+            secret: 'body-json-secret"',
+          },
+          {
+            contentType: "application/x-www-form-urlencoded",
+            body: `token=${ENVIRONMENT_A}`,
+            expected: `token=${encodeURIComponent("body form secret")}`,
+            secret: "body form secret",
+          },
+        ] as const;
+        for (const item of cases) {
+          const requests: Array<Request> = [];
+          const observations: Array<{
+            readonly origin: string;
+            readonly sentinels: ReadonlyArray<string>;
+          }> = [];
+          const response = yield* runEnvironment(
+            proxyEnvironmentProgram(
+              new Request("https://origin.example/body", {
+                method: "POST",
+                headers: { "content-type": item.contentType, "x-body-test": "yes" },
+                body: item.body,
+              }),
+            ),
+            {
+              nativeRequests: requests,
+              resolve: (origin, sentinels) =>
+                Effect.sync(() => {
+                  observations.push({ origin, sentinels });
+                  return { [ENVIRONMENT_A]: item.secret };
+                }),
+            },
+          );
+          assert.strictEqual(response.status, 200);
+          assert.deepStrictEqual(observations, [
+            { origin: "https://origin.example", sentinels: [ENVIRONMENT_A] },
+          ]);
+          const sent = requests[0];
+          assert.strictEqual(sent.method, "POST");
+          assert.strictEqual(sent.headers.get("x-body-test"), "yes");
+          assert.strictEqual(sent.headers.get("content-length"), null);
+          assert.strictEqual(yield* Effect.promise(() => sent.text()), item.expected);
+        }
+      }),
+  );
+
+  it.effect("blocks pending, rejected, revoked, and unknown body-only sentinels", () =>
+    Effect.gen(function* () {
+      for (const reason of ["pending", "rejected", "revoked", "unknown_sentinel"] as const) {
+        const requests: Array<Request> = [];
+        let resolves = 0;
+        const response = yield* runEnvironment(
+          proxyEnvironmentProgram(
+            new Request("https://origin.example/body", {
+              method: "POST",
+              headers: { "content-type": "text/plain" },
+              body: `token=${ENVIRONMENT_A}`,
+            }),
+          ),
+          {
+            nativeRequests: requests,
+            resolve: () =>
+              Effect.sync(() => {
+                resolves += 1;
+                return null;
+              }),
+          },
+        );
+        assert.strictEqual(response.status, 403, reason);
+        assert.strictEqual(resolves, 1, reason);
+        assert.deepStrictEqual(requests, [], reason);
+      }
+    }),
+  );
+
+  it.effect("fails closed for malformed and truncated body sentinels before authorization", () =>
+    Effect.gen(function* () {
+      const bodies = [
+        { contentType: "text/plain", body: ENVIRONMENT_A.slice(0, -1) },
+        { contentType: "application/x-www-form-urlencoded", body: `token=${ENVIRONMENT_A}-suffix` },
+        { contentType: "application/json", body: `{"token":"${ENVIRONMENT_A}"` },
+      ] as const;
+      for (const item of bodies) {
+        const requests: Array<Request> = [];
+        let resolves = 0;
+        const response = yield* runEnvironment(
+          proxyEnvironmentProgram(
+            new Request("https://origin.example/body", {
+              method: "POST",
+              headers: { "content-type": item.contentType },
+              body: item.body,
+            }),
+          ),
+          {
+            nativeRequests: requests,
+            resolve: () =>
+              Effect.sync(() => {
+                resolves += 1;
+                return { [ENVIRONMENT_A]: "must-not-forward" };
+              }),
+          },
+        );
+        assert.strictEqual(response.status, 403);
+        assert.strictEqual(resolves, 0);
+        assert.deepStrictEqual(requests, []);
+      }
+    }),
+  );
+
+  it.effect("requires all body sentinels to be known and approved", () =>
+    Effect.gen(function* () {
+      const requests: Array<Request> = [];
+      const observations: Array<ReadonlyArray<string>> = [];
+      const approved = yield* runEnvironment(
+        proxyEnvironmentProgram(
+          new Request("https://origin.example/body", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ first: ENVIRONMENT_A, second: ENVIRONMENT_B }),
+          }),
+        ),
+        {
+          nativeRequests: requests,
+          resolve: (origin, sentinels) =>
+            Effect.sync(() => {
+              observations.push(sentinels);
+              assert.strictEqual(origin, "https://origin.example");
+              return {
+                [ENVIRONMENT_A]: "first-secret",
+                [ENVIRONMENT_B]: "second-secret",
+              };
+            }),
+        },
+      );
+      assert.strictEqual(approved.status, 200);
+      assert.deepStrictEqual(observations, [[ENVIRONMENT_A, ENVIRONMENT_B]]);
+      assert.strictEqual(
+        yield* Effect.promise(() => requests[0].text()),
+        JSON.stringify({ first: "first-secret", second: "second-secret" }),
+      );
+
+      const rejectedRequests: Array<Request> = [];
+      const rejected = yield* runEnvironment(
+        proxyEnvironmentProgram(
+          new Request("https://origin.example/body", {
+            method: "POST",
+            headers: { "content-type": "text/plain" },
+            body: `${ENVIRONMENT_A},${ENVIRONMENT_B}`,
+          }),
+        ),
+        {
+          nativeRequests: rejectedRequests,
+          resolve: () => Effect.succeed({ [ENVIRONMENT_A]: "only-one-secret" }),
+        },
+      );
+      assert.strictEqual(rejected.status, 403);
+      assert.deepStrictEqual(rejectedRequests, []);
+    }),
+  );
+
+  it("applies body authorization on catch-all, OpenAI, GitHub, and package handlers", async () => {
+    const forwarded: Array<Request> = [];
+    const rpcInputs: unknown[] = [];
+    const nativeFetch: typeof globalThis.fetch = (request) => {
+      forwarded.push(request instanceof Request ? request : new Request(request));
+      return Promise.resolve(new Response("forwarded"));
+    };
+    const env = environmentBindings(async (input) => {
+      rpcInputs.push(input);
+      return {
+        authorized: true,
+        reason: "approved",
+        values: { [ENVIRONMENT_A]: "body-handler-secret" },
+      };
+    });
+    const handlers = makeOutboundByHost(nativeFetch);
+    const requests = [
+      {
+        handler: makeEnvironmentOutbound(nativeFetch),
+        url: "https://unlisted.example/body",
+        body: `catch-all=${ENVIRONMENT_A}`,
+        contentType: "text/plain",
+        expected: "catch-all=body-handler-secret",
+      },
+      {
+        handler: handlers["api.openai.com"],
+        url: "https://api.openai.com/v1/responses",
+        body: JSON.stringify({ token: ENVIRONMENT_A }),
+        contentType: "application/json",
+        expected: JSON.stringify({ token: "body-handler-secret" }),
+      },
+      {
+        handler: handlers["github.com"],
+        url: "https://github.com/org/repo.git",
+        body: `token=${ENVIRONMENT_A}`,
+        contentType: "application/x-www-form-urlencoded",
+        expected: "token=body-handler-secret",
+      },
+      {
+        handler: handlers["registry.npmjs.org"],
+        url: "https://registry.npmjs.org/package",
+        body: `token=${ENVIRONMENT_A}`,
+        contentType: "text/plain",
+        expected: "token=body-handler-secret",
+      },
+    ] as const;
+    for (const item of requests) {
+      assert.isFunction(item.handler);
+      const response = await item.handler(
+        new Request(item.url, {
+          method: "POST",
+          headers: { "content-type": item.contentType },
+          body: item.body,
+        }),
+        env,
+        context,
+      );
+      assert.strictEqual(response.status, 200);
+      const sent = forwarded[forwarded.length - 1];
+      assert.strictEqual(new URL(sent.url).origin, new URL(item.url).origin);
+      assert.strictEqual(await sent.text(), item.expected);
+      assert.strictEqual(sent.headers.get("authorization"), null);
+    }
+    assert.lengthOf(rpcInputs, requests.length);
+  });
+
+  it("scans generic sentinels after the previous 64 KiB window on legacy handlers", async () => {
+    const padding = "x".repeat(64 * 1024);
+    const body = `${padding}${ENVIRONMENT_A}`;
+    const forwarded: Array<Request> = [];
+    const nativeFetch: typeof globalThis.fetch = (request) => {
+      forwarded.push(request instanceof Request ? request : new Request(request));
+      return Promise.resolve(new Response("forwarded"));
+    };
+    const handlers = makeOutboundByHost(nativeFetch);
+    const requests = [
+      { handler: handlers["api.openai.com"], url: "https://api.openai.com/v1/responses" },
+      { handler: handlers["github.com"], url: "https://github.com/org/repo.git" },
+      { handler: handlers["registry.npmjs.org"], url: "https://registry.npmjs.org/package" },
+    ] as const;
+
+    for (const item of requests) {
+      assert.isFunction(item.handler);
+      const forwardedBeforePending = forwarded.length;
+      const pending = await item.handler(
+        new Request(item.url, {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body,
+        }),
+        environmentBindings(async () => ({ authorized: false, reason: "pending" })),
+        context,
+      );
+      assert.strictEqual(pending.status, 403);
+      assert.lengthOf(forwarded, forwardedBeforePending);
+
+      const approved = await item.handler(
+        new Request(item.url, {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body,
+        }),
+        environmentBindings(async () => ({
+          authorized: true,
+          reason: "approved",
+          values: { [ENVIRONMENT_A]: "approved-body-secret" },
+        })),
+        context,
+      );
+      assert.strictEqual(approved.status, 200);
+      assert.lengthOf(forwarded, forwardedBeforePending + 1);
+      assert.strictEqual(
+        await forwarded[forwardedBeforePending].text(),
+        `${padding}approved-body-secret`,
+      );
+    }
+  });
+
+  it("preserves ordinary large bodies but blocks hard-limit overflow and uninspectable prefixes", async () => {
+    const forwarded: Array<Request> = [];
+    let rpcCalls = 0;
+    const nativeFetch: typeof globalThis.fetch = (request) => {
+      forwarded.push(request instanceof Request ? request : new Request(request));
+      return Promise.resolve(new Response("forwarded"));
+    };
+    const handler = makeOutboundByHost(nativeFetch)["registry.npmjs.org"];
+    assert.isFunction(handler);
+    const ordinaryBody = "ordinary-large-body-".repeat(4_000);
+    const ordinary = await handler(
+      new Request("https://registry.npmjs.org/ordinary", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: ordinaryBody,
+      }),
+      environmentBindings(async () => {
+        rpcCalls += 1;
+        return { authorized: false, reason: "session_unavailable" };
+      }),
+      context,
+    );
+    assert.strictEqual(ordinary.status, 200);
+    assert.strictEqual(await forwarded[0].text(), ordinaryBody);
+    assert.strictEqual(rpcCalls, 0);
+
+    assert.isAbove(ordinaryBody.length, 64 * 1024);
+    assert.isBelow(ordinaryBody.length, ENVIRONMENT_MAX_BODY_BYTES);
+
+    const declaredOversized = await handler(
+      new Request("https://registry.npmjs.org/declared-oversized", {
+        method: "POST",
+        headers: {
+          "content-type": "text/plain",
+          "content-length": String(ENVIRONMENT_MAX_BODY_BYTES + 1),
+        },
+        body: "ordinary-body",
+      }),
+      environmentBindings(async () => {
+        rpcCalls += 1;
+        return { authorized: true, reason: "approved", values: {} };
+      }),
+      context,
+    );
+    assert.strictEqual(declaredOversized.status, 403);
+    assert.strictEqual(forwarded.length, 1);
+    assert.strictEqual(rpcCalls, 0);
+
+    const oversized = await handler(
+      new Request("https://registry.npmjs.org/oversized", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "x".repeat(ENVIRONMENT_MAX_BODY_BYTES + 1),
+      }),
+      environmentBindings(async () => {
+        rpcCalls += 1;
+        return { authorized: true, reason: "approved", values: {} };
+      }),
+      context,
+    );
+    assert.strictEqual(oversized.status, 403);
+    assert.strictEqual(forwarded.length, 1);
+    assert.strictEqual(rpcCalls, 0);
+
+    const failingBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`prefix=${ENVIRONMENT_A}`));
+        controller.error(new Error("body unavailable"));
+      },
+    });
+    const failingRequestInit: RequestInit = {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: failingBody,
+    };
+    Reflect.set(failingRequestInit, "duplex", "half");
+    const uninspectable = await handler(
+      new Request("https://registry.npmjs.org/uninspectable", failingRequestInit),
+      environmentBindings(async () => {
+        rpcCalls += 1;
+        return { authorized: true, reason: "approved", values: { [ENVIRONMENT_A]: "secret" } };
+      }),
+      context,
+    );
+    assert.strictEqual(uninspectable.status, 403);
+    assert.strictEqual(forwarded.length, 1);
+    assert.strictEqual(rpcCalls, 0);
+  });
 });

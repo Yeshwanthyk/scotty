@@ -73,6 +73,10 @@ const sandboxConfig = vi.hoisted(() => ({
   addRepo: vi.fn(),
   removeRepo: vi.fn(),
   listEnvironment: vi.fn(),
+  listEnvironmentApprovals: vi.fn(),
+  approveEnvironment: vi.fn(),
+  rejectEnvironment: vi.fn(),
+  revokeEnvironment: vi.fn(),
   environmentSnapshot: vi.fn(),
   putEnvironment: vi.fn(),
   removeEnvironment: vi.fn(),
@@ -4035,6 +4039,176 @@ describe("real Hono boundary", () => {
     expect(await malformed.json()).toMatchObject({
       error: { code: "bad_request", message: "repo must be OWNER/NAME" },
     });
+  });
+
+  it("lists environment-secret approvals for root and the primary device without secret values", async () => {
+    const approvalList = {
+      revision: 12,
+      policyRevision: 4,
+      approvals: [
+        {
+          sourceScope: "owner/project",
+          name: "API_TOKEN",
+          origin: "https://preview.example",
+          decision: "approved",
+          updatedAt: "2026-08-20T12:00:00.000Z",
+        },
+      ],
+      pending: [
+        {
+          sourceScope: "owner/project",
+          name: "API_TOKEN",
+          origin: "https://staging.example",
+          firstObservedAt: "2026-08-20T12:01:00.000Z",
+          lastObservedAt: "2026-08-20T12:02:00.000Z",
+        },
+      ],
+    };
+    sandboxConfig.listEnvironmentApprovals.mockResolvedValue({ ok: true, value: approvalList });
+
+    const unauthenticated = await app.request("/api/environment/approvals", undefined, env());
+    expect(unauthenticated.status).toBe(401);
+    expect(sandboxConfig.listEnvironmentApprovals).not.toHaveBeenCalled();
+
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, role: "standard" },
+        renewed: false,
+      },
+    });
+    const standard = await app.request(
+      "/api/environment/approvals",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(standard.status).toBe(401);
+    expect(sandboxConfig.listEnvironmentApprovals).not.toHaveBeenCalled();
+
+    const root = await app.request(
+      "/api/environment/approvals?repo=owner%2Fproject",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(root.status).toBe(200);
+    await expect(root.json()).resolves.toEqual(approvalList);
+    expect(sandboxConfig.listEnvironmentApprovals).toHaveBeenCalledWith("owner/project");
+
+    const primaryDevice = await app.request(
+      "/api/environment/approvals",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(primaryDevice.status).toBe(200);
+    expect(sandboxConfig.listEnvironmentApprovals).toHaveBeenLastCalledWith(undefined);
+
+    const serialized = JSON.stringify(approvalList);
+    expect(serialized).not.toContain("real-secret");
+    expect(await primaryDevice.text()).not.toContain("real-secret");
+
+    const malformedRepo = await app.request(
+      "/api/environment/approvals?repo=owner%2Fproject%2Fextra",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(malformedRepo.status).toBe(400);
+    await expect(malformedRepo.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "repo must be OWNER/NAME" },
+    });
+    expect(sandboxConfig.listEnvironmentApprovals).toHaveBeenCalledTimes(2);
+  });
+
+  it("approves, rejects, and revokes environment-secret origins through the optional RPCs", async () => {
+    const input = {
+      sourceScope: "owner/project",
+      name: "API_TOKEN",
+      origin: "https://preview.example",
+    };
+    const responses = {
+      approve: {
+        sourceScope: input.sourceScope,
+        name: input.name,
+        origin: input.origin,
+        decision: "approved",
+        revision: 12,
+        policyRevision: 5,
+      },
+      reject: {
+        sourceScope: input.sourceScope,
+        name: input.name,
+        origin: input.origin,
+        decision: "rejected",
+        revision: 12,
+        policyRevision: 6,
+      },
+      revoke: {
+        sourceScope: input.sourceScope,
+        name: input.name,
+        origin: input.origin,
+        decision: "revoked",
+        revision: 12,
+        policyRevision: 7,
+      },
+    } as const;
+    sandboxConfig.approveEnvironment.mockResolvedValue({ ok: true, value: responses.approve });
+    sandboxConfig.rejectEnvironment.mockResolvedValue({ ok: true, value: responses.reject });
+    sandboxConfig.revokeEnvironment.mockResolvedValue({ ok: true, value: responses.revoke });
+
+    const requests = [
+      ["approve", sandboxConfig.approveEnvironment, responses.approve],
+      ["reject", sandboxConfig.rejectEnvironment, responses.reject],
+      ["revoke", sandboxConfig.revokeEnvironment, responses.revoke],
+    ] as const;
+    for (const [action, rpc, responseBody] of requests) {
+      const response = await app.request(
+        `/api/environment/approvals/${action}`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(input),
+        },
+        env(),
+      );
+      expect(response.status, action).toBe(200);
+      await expect(response.json(), action).resolves.toEqual(responseBody);
+      expect(rpc, action).toHaveBeenCalledWith(input);
+    }
+
+    const missingContentType = await app.request(
+      "/api/environment/approvals/approve",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify(input),
+      },
+      env(),
+    );
+    expect(missingContentType.status).toBe(400);
+    await expect(missingContentType.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "Request content type must be application/json" },
+    });
+
+    const invalidBody = await app.request(
+      "/api/environment/approvals/reject",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ ...input, origin: "http://insecure.example", secret: "leak" }),
+      },
+      env(),
+    );
+    expect(invalidBody.status).toBe(400);
+    const invalidBodyJson = await invalidBody.json();
+    expect(invalidBodyJson).toEqual({
+      error: { code: "bad_request", message: "Environment approval request is invalid" },
+    });
+    expect(JSON.stringify(invalidBodyJson)).not.toContain("leak");
   });
 
   it("protects environment browser routes and same-origin mutations", async () => {

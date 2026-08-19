@@ -14,6 +14,9 @@ import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
   decodeInitJournalJson,
+  decodeEnvironmentApprovalKey,
+  decodeEnvironmentApprovalMutation,
+  decodeEnvironmentApprovalsResponse,
   decodeEnvironmentMutation,
   decodeEnvironmentResponse,
   decodeSessionEnvironmentStatus,
@@ -1282,9 +1285,93 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Refresh one warm session environment"));
 
+  const envApprovalsList = Command.make("list", { repo: environmentRepoFlag }, ({ repo }) =>
+    Effect.gen(function* () {
+      if (Option.isSome(repo) && !isRepositoryIdentity(repo.value))
+        return yield* usage("--repo must be OWNER/NAME");
+      const { autoJson, options, runtime } = yield* commandContext();
+      const decoded = decodeEnvironmentApprovalsResponse(
+        yield* requestJson(
+          yield* credentials(options),
+          environmentPath("/api/environment/approvals", repo),
+        ),
+      );
+      if (Option.isNone(decoded))
+        return yield* invalidResponse("Server returned an invalid environment approval list");
+      if (autoJson) outputJson(runtime.stdout, decoded.value);
+      else {
+        const lines = [
+          ...decoded.value.approvals.map(
+            (approval) =>
+              `${approval.decision}\t${approval.sourceScope}\t${approval.name}\t${approval.origin}`,
+          ),
+          ...decoded.value.pending.map(
+            (pending) => `pending\t${pending.sourceScope}\t${pending.name}\t${pending.origin}`,
+          ),
+        ];
+        runtime.stdout(
+          lines.length === 0 ? "No environment approvals.\n" : `${lines.join("\n")}\n`,
+        );
+      }
+    }),
+  ).pipe(Command.withDescription("List environment origin approvals"));
+
+  const makeEnvironmentApprovalMutation = (action: "approve" | "reject" | "revoke") =>
+    Command.make(
+      action,
+      {
+        name: Argument.string("name").pipe(Argument.withDescription("Environment variable name")),
+        origin: Argument.string("origin").pipe(Argument.withDescription("Exact HTTPS origin")),
+        repo: environmentRepoFlag,
+      },
+      ({ name, origin, repo }) =>
+        Effect.gen(function* () {
+          if (!ENVIRONMENT_NAME_PATTERN.test(name))
+            return yield* usage("Environment variable name is invalid");
+          if (Option.isSome(repo) && !isRepositoryIdentity(repo.value))
+            return yield* usage("--repo must be OWNER/NAME");
+          const key = decodeEnvironmentApprovalKey({
+            sourceScope: Option.isSome(repo) ? repo.value : "global",
+            name,
+            origin,
+          });
+          if (Option.isNone(key)) return yield* usage("Origin must be an exact HTTPS origin");
+          const { autoJson, options, runtime } = yield* commandContext();
+          const decoded = decodeEnvironmentApprovalMutation(
+            yield* requestJson(
+              yield* credentials(options),
+              `/api/environment/approvals/${action}`,
+              { method: "POST", body: JSON.stringify(key.value) },
+            ),
+          );
+          if (Option.isNone(decoded))
+            return yield* invalidResponse("Server returned an invalid environment approval update");
+          if (autoJson) outputJson(runtime.stdout, decoded.value);
+          else {
+            const decision =
+              decoded.value.decision.charAt(0).toUpperCase() + decoded.value.decision.slice(1);
+            runtime.stdout(
+              `${decision} ${decoded.value.sourceScope} ${decoded.value.name} for ${decoded.value.origin}.\n`,
+            );
+          }
+        }),
+    ).pipe(
+      Command.withDescription(`${action[0].toUpperCase()}${action.slice(1)} an environment origin`),
+    );
+
+  const envApprovals = Command.make("approvals").pipe(
+    Command.withDescription("Manage environment origin approvals"),
+    Command.withSubcommands([
+      envApprovalsList,
+      makeEnvironmentApprovalMutation("approve"),
+      makeEnvironmentApprovalMutation("reject"),
+      makeEnvironmentApprovalMutation("revoke"),
+    ]),
+  );
+
   const environment = Command.make("env").pipe(
     Command.withDescription("Manage global environment variables"),
-    Command.withSubcommands([envList, envSet, envRemove, envRefresh]),
+    Command.withSubcommands([envList, envSet, envRemove, envRefresh, envApprovals]),
   );
 
   const repoAdd = Command.make(

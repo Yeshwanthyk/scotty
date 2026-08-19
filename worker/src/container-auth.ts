@@ -1,6 +1,10 @@
 import { Context, Effect, Layer, Option, Result, Schema } from "effect";
 import type { SessionRecord } from "./contracts";
-import type { EnvironmentSnapshot } from "./environment-contracts";
+import {
+  isSessionEnvironmentSnapshot,
+  type PersistedSessionEnvironmentSnapshot,
+  type SessionEnvironmentSnapshot,
+} from "./environment-contracts";
 import { environmentNameIsReserved } from "./environment-policy";
 import { sha256Hex } from "./digest";
 import { piAuthJson, type StoredCredential } from "./egress";
@@ -219,7 +223,7 @@ export const terminalShellPath = (id: SessionRecord["id"]): string =>
 const terminalShell = (
   id: SessionRecord["id"],
   credential: StoredCredential,
-  environment?: EnvironmentSnapshot,
+  environment?: PersistedSessionEnvironmentSnapshot,
 ): string => {
   const exports = Object.entries(agentEnv(id, credential, environment))
     .map(([name, value]) => `export ${name}=${shellQuote(value)}`)
@@ -256,7 +260,7 @@ export interface ContainerAuthSeedOptions {
   readonly extraSkills?: ReadonlyArray<{ readonly name: string }>;
   readonly extraPackages?: ReadonlyArray<{ readonly name: string }>;
   readonly bundleRoot?: string;
-  readonly environment?: EnvironmentSnapshot;
+  readonly environment?: PersistedSessionEnvironmentSnapshot;
 }
 
 interface ContainerAuthShape {
@@ -273,12 +277,12 @@ interface ContainerAuthShape {
   readonly ensureTerminal: (
     id: SessionRecord["id"],
     credential: StoredCredential,
-    environment?: EnvironmentSnapshot,
+    environment?: PersistedSessionEnvironmentSnapshot,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly ensurePiSession: (
     id: SessionRecord["id"],
     credential: StoredCredential,
-    environment?: EnvironmentSnapshot,
+    environment?: PersistedSessionEnvironmentSnapshot,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly quiescePiSession: (
     id: SessionRecord["id"],
@@ -292,8 +296,8 @@ interface ContainerAuthShape {
   readonly refreshEnvironment: (
     id: SessionRecord["id"],
     credential: StoredCredential,
-    previous: EnvironmentSnapshot | undefined,
-    next: EnvironmentSnapshot,
+    previous: PersistedSessionEnvironmentSnapshot | undefined,
+    next: SessionEnvironmentSnapshot,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
@@ -434,7 +438,11 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       preflight,
       ensureTerminal: Effect.fnUntraced(function* (id, credential, environment) {
         const existing = yield* runtime.exec(`test -x ${shellQuote(terminalShellPath(id))}`);
-        if (existing.success) return;
+        if (
+          existing.success &&
+          (environment === undefined || isSessionEnvironmentSnapshot(environment))
+        )
+          return;
         yield* seed(id, credential, { environment });
       }),
       ensurePiSession: Effect.fnUntraced(function* (id, credential, environment) {
@@ -574,11 +582,12 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
 export function agentEnv(
   id: SessionRecord["id"],
   credential: StoredCredential,
-  environment?: EnvironmentSnapshot,
+  environment?: PersistedSessionEnvironmentSnapshot,
 ): Record<string, string> {
+  const safeEnvironment = isSessionEnvironmentSnapshot(environment) ? environment : undefined;
   return {
     ...Object.fromEntries(
-      Object.entries(environment?.variables ?? {}).filter(
+      Object.entries(safeEnvironment?.variables ?? {}).filter(
         ([name]) => !environmentNameIsReserved(name),
       ),
     ),
