@@ -36,6 +36,9 @@ describe("SessionProjection", () => {
         id: "a0b1c2d3e4f5",
         projectedAt: "2026-04-05T06:07:08.000Z",
       });
+      const projected = storage.values.get("session:a0b1c2d3e4f5");
+      assert.ok(typeof projected === "object" && projected !== null);
+      assert.ok(!("piSessionTransportToken" in projected));
 
       yield* withProjection(
         storage,

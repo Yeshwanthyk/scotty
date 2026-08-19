@@ -141,10 +141,10 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
   });
 
   it("relays a native snapshot over one raw TCP fetch with isolated headers and token", async () => {
+    const record = makeSessionRecord({ id: SESSION_ID, status: "warm" });
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
+        [sessionHarnessKeys.record]: record,
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () =>
@@ -184,7 +184,11 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     assert.strictEqual(forwarded.headers.get("x-scotty-root"), null);
     assert.strictEqual(forwarded.headers.get(PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER), "1");
     assert.notStrictEqual(forwarded.headers.get(PI_SESSION_TOKEN_HEADER), "attacker-token");
-    assert.ok((forwarded.headers.get(PI_SESSION_TOKEN_HEADER)?.length ?? 0) >= 32);
+    assert.strictEqual(
+      forwarded.headers.get(PI_SESSION_TOKEN_HEADER),
+      record.piSessionTransportToken,
+    );
+    assert.notStrictEqual(forwarded.headers.get(PI_SESSION_TOKEN_HEADER), "stored-github-token");
     assert.deepStrictEqual(harness.piRequests, []);
     assert.isFalse(harness.events.some((event) => event.startsWith("host:container:")));
   });

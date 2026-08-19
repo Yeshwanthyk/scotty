@@ -54,7 +54,15 @@ const assertUpstreamFailure = async (operation: Promise<unknown>): Promise<void>
 
 describe("Sandbox resume orchestration", () => {
   it("restores the current backup, reseeds runtime state, and reaches warm", async () => {
-    const harness = await createSessionHarness({ initialEntries: resumeEntries() });
+    const transportToken = "e".repeat(64);
+    const harness = await createSessionHarness({
+      initialEntries: {
+        ...resumeEntries(),
+        [sessionHarnessKeys.record]: sleepingRecord({
+          piSessionTransportToken: transportToken,
+        }),
+      },
+    });
 
     const resumed = await harness.sandbox.resumeScottySession();
 
@@ -64,6 +72,13 @@ describe("Sandbox resume orchestration", () => {
     assert.strictEqual(record?.operation, null);
     assert.strictEqual(record?.failure, undefined);
     assert.strictEqual(record?.backup?.current.id, "backup-1");
+    assert.strictEqual(record?.piSessionTransportToken, transportToken);
+    assert.strictEqual(
+      harness.writtenFiles.find(
+        (file) => file.path === `/tmp/scotty-pi-session-${SESSION_ID}.token`,
+      )?.content,
+      transportToken,
+    );
     const hardCapIndex = harness.events.indexOf("schedule:enforceHardCap");
     const restoreIndex = harness.events.indexOf("host:restoreBackup");
     const authIndex = harness.events.indexOf("host:mkdir");

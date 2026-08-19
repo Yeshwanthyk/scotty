@@ -35,7 +35,7 @@ describe("Sandbox Pi auth reseed", () => {
         `/workspace/${SESSION_ID}/.pi-agent/settings.json`,
         `/workspace/${SESSION_ID}/.pi-agent/auth.json`,
         `/workspace/${SESSION_ID}/.pi-agent/settings.json`,
-        `/workspace/${SESSION_ID}/.pi-agent/scotty-pi-session.token`,
+        `/tmp/scotty-pi-session-${SESSION_ID}.token`,
       ],
     );
     const auth = JSON.parse(reseedWrites[0]?.content ?? "{}");
@@ -47,6 +47,11 @@ describe("Sandbox Pi auth reseed", () => {
       defaultModel: "gpt-5.6-sol",
       defaultThinkingLevel: "high",
     });
+    assert.strictEqual(
+      reseedWrites.find((write) => write.path === `/tmp/scotty-pi-session-${SESSION_ID}.token`)
+        ?.content,
+      harness.readRecord()?.piSessionTransportToken,
+    );
     const quiesce = reseedEvents.indexOf("host:pi:fetch:43117:/quiesce");
     const credentialWrite = reseedEvents.indexOf("host:writeFile");
     const processStop = reseedEvents.indexOf("host:pi:kill");

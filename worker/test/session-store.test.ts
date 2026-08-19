@@ -37,6 +37,30 @@ runContractSuite<SessionRecordStorageFactory>(
     },
   ],
   ({ make }) => {
+    it.effect("reuses a persisted Pi transport capability across store access", () =>
+      Effect.gen(function* () {
+        const existingToken = "b".repeat(64);
+        const storage = make(record({ piSessionTransportToken: existingToken })).storage;
+        const first = yield* withStore(
+          storage,
+          Effect.flatMap(SessionStore, (store) => store.ensurePiSessionTransportToken),
+        );
+        assert.strictEqual(first, existingToken);
+        const second = yield* withStore(
+          storage,
+          Effect.flatMap(SessionStore, (store) => store.ensurePiSessionTransportToken),
+        );
+        assert.strictEqual(second, first);
+        assert.strictEqual(
+          (yield* withStore(
+            storage,
+            Effect.flatMap(SessionStore, (store) => store.requireRecord),
+          )).piSessionTransportToken,
+          first,
+        );
+      }),
+    );
+
     it.effect("reads valid authority optionally while rejecting malformed stored records", () =>
       Effect.gen(function* () {
         const missing = yield* withStore(

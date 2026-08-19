@@ -28,6 +28,7 @@ import { sessionRoot } from "../src/workspace";
 const ID = "a0b1c2d3e4f5";
 const PI_SENTINEL = `scotty-pi-${ID}-sentinel`;
 const GITHUB_SENTINEL = `scotty-github-${ID}-sentinel`;
+const PI_SESSION_TRANSPORT_TOKEN = "c".repeat(64);
 const REAL_ACCESS = "honeypot-real-codex-access";
 const REAL_REFRESH = "honeypot-real-codex-refresh";
 const REAL_GITHUB = "honeypot-real-github-token";
@@ -280,12 +281,14 @@ const ensureTerminalWith = (
 const piSessionWith = (
   capabilities: SandboxRuntimeCapabilities,
   operation: "ensure" | "quiesce" | "stop",
+  storedCredential: StoredCredential = credential,
+  transportToken = PI_SESSION_TRANSPORT_TOKEN,
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
   return Effect.flatMap(ContainerAuth, (auth) => {
-    if (operation === "ensure") return auth.ensurePiSession(ID, credential);
-    if (operation === "quiesce") return auth.quiescePiSession(ID, credential);
+    if (operation === "ensure") return auth.ensurePiSession(ID, storedCredential, transportToken);
+    if (operation === "quiesce") return auth.quiescePiSession(ID, transportToken);
     return auth.stopPiSession();
   }).pipe(Effect.provide(layer));
 };
@@ -725,6 +728,10 @@ describe("ContainerAuth", () => {
       });
       assert.strictEqual(start?.options?.env?.SCOTTY_PI_SESSION_PORT, String(PI_SESSION_PORT));
       assert.ok(start?.options?.env?.SCOTTY_PI_SESSION_TOKEN_FILE?.endsWith(".token"));
+      assert.strictEqual(
+        new TextDecoder().decode(capabilities.files.get(`/tmp/scotty-pi-session-${ID}.token`)),
+        PI_SESSION_TRANSPORT_TOKEN,
+      );
       assert.strictEqual(start?.options?.env?.GH_TOKEN, GITHUB_SENTINEL);
       assert.ok(!JSON.stringify(start).includes(REAL_GITHUB));
       assert.ok(
@@ -770,6 +777,43 @@ describe("ContainerAuth", () => {
         ),
       );
       assert.strictEqual(capabilities.process, null);
+    }),
+  );
+
+  it.effect("uses the supplied Pi capability independently of the GitHub credential", () =>
+    Effect.gen(function* () {
+      const first = new ProcessSandboxCapabilities();
+      const second = new ProcessSandboxCapabilities();
+      const alternateCredential: StoredCredential = {
+        ...credential,
+        githubToken: "alternate-github-token",
+        githubSentinel: "alternate-github-sentinel",
+      };
+
+      yield* piSessionWith(first, "ensure", credential, PI_SESSION_TRANSPORT_TOKEN);
+      yield* piSessionWith(second, "ensure", alternateCredential, PI_SESSION_TRANSPORT_TOKEN);
+
+      const tokenPath = `/tmp/scotty-pi-session-${ID}.token`;
+      assert.strictEqual(
+        new TextDecoder().decode(first.files.get(tokenPath)),
+        PI_SESSION_TRANSPORT_TOKEN,
+      );
+      assert.strictEqual(
+        new TextDecoder().decode(second.files.get(tokenPath)),
+        PI_SESSION_TRANSPORT_TOKEN,
+      );
+      const firstStart = first.calls.find((call) => call.operation === "startProcess");
+      const secondStart = second.calls.find((call) => call.operation === "startProcess");
+      assert.strictEqual(
+        firstStart?.operation === "startProcess" ? firstStart.options?.env?.GH_TOKEN : undefined,
+        GITHUB_SENTINEL,
+      );
+      assert.strictEqual(
+        secondStart?.operation === "startProcess" ? secondStart.options?.env?.GH_TOKEN : undefined,
+        alternateCredential.githubSentinel,
+      );
+      assert.notInclude(JSON.stringify(first.calls), REAL_GITHUB);
+      assert.notInclude(JSON.stringify(second.calls), alternateCredential.githubToken);
     }),
   );
 

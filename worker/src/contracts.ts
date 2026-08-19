@@ -36,6 +36,8 @@ const SessionIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]
 const SessionRepositoryIdentitySchema = RepositoryIdentitySchema;
 const ShortHexIdSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u));
 const IdempotencyKeySchema = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{16,128}$/u));
+const PiSessionTransportTokenSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+export type PiSessionTransportToken = typeof PiSessionTransportTokenSchema.Type;
 const decodeSessionId = Schema.decodeUnknownOption(SessionIdSchema);
 const ContainerSteerMessageSchema = Schema.String.check(
   Schema.makeFilter(
@@ -207,6 +209,7 @@ export const SessionRecordSchema = Schema.Struct({
   failure: Schema.optional(SessionFailureSchema),
   sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
   environment: Schema.optionalKey(PersistedSessionEnvironmentSnapshotSchema),
+  piSessionTransportToken: PiSessionTransportTokenSchema,
 });
 export type SessionRecord = typeof SessionRecordSchema.Type;
 

@@ -160,6 +160,9 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(record?.repoExistsAtCreate, true);
     assert.strictEqual(record?.defaultBranch, "main");
     assert.strictEqual(record?.codexThreadId, `pi-${SESSION_ID}`);
+    assert.match(record?.piSessionTransportToken ?? "", /^[0-9a-f]{64}$/u);
+    assert.ok(!("piSessionTransportToken" in created));
+    assert.notStrictEqual(record?.piSessionTransportToken, "stored-github-token");
     assert.deepStrictEqual(record?.sandboxBundle, { digest: null, manifestVersion: 1 });
     assert.deepStrictEqual(created.sandboxBundle, { digest: null, manifestVersion: 1 });
     assert.deepStrictEqual(harness.read(sessionHarnessKeys.createIdempotency), CREATE_IDEMPOTENCY);

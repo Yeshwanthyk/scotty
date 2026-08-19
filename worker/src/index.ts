@@ -177,7 +177,7 @@ const PROTECTED_ENVIRONMENT_BINDINGS: ReadonlyArray<ProtectedEnvironmentBinding>
     secret: true,
     source: "session-derived transport token",
     destination: "file",
-    path: "$PI_CODING_AGENT_DIR/scotty-pi-session.token",
+    path: "/tmp/scotty-pi-session-$SCOTTY_SESSION_ID.token",
     managedBy: "scotty",
   },
 ];

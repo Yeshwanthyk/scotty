@@ -147,6 +147,7 @@ describe("request contracts", () => {
       hardCapAt: "2026-01-01T04:00:00.000Z",
       hardCapDurationSeconds: 14_400,
       ownedBackupIds: [],
+      piSessionTransportToken: "a".repeat(64),
     };
     const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));
     assert.ok(!("operation" in projection));
@@ -211,6 +212,7 @@ const persistedRecord = {
   hardCapAt: "2026-01-01T04:00:00.000Z",
   hardCapDurationSeconds: 14_400,
   ownedBackupIds: ["backup-1"],
+  piSessionTransportToken: "a".repeat(64),
   backup: {
     current: { id: "backup-1", dir: "/workspace/a0b1c2d3e4f5", localBucket: true },
   },
@@ -434,6 +436,7 @@ describe("persisted session schemas", () => {
       hardCapAt: "2026-01-01T04:00:00.000Z",
       hardCapDurationSeconds: 14_400,
       ownedBackupIds: [],
+      piSessionTransportToken: "a".repeat(64),
       sandboxBundle: { digest, manifestVersion: 1 },
     };
     const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));

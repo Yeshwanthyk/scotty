@@ -122,7 +122,6 @@ import {
   PI_SESSION_PORT,
   PI_SESSION_PROCESS_ID,
   PI_SESSION_TOKEN_HEADER,
-  piSessionTransportToken,
 } from "./container-auth";
 import {
   CredentialVault,
@@ -181,6 +180,7 @@ import {
 import { inspectPassiveSession, scottyErrorResponse, steerPassiveSession } from "./passive-session";
 import {
   durableObjectSessionRecordStorage,
+  createPiSessionTransportToken,
   makeSessionControlGate,
   SessionStore,
   sessionStoreLayer,
@@ -1950,9 +1950,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (record.execution.provider !== "cloudflare")
       return yield* wrongState(record.status, "access", "This session uses the runner runtime");
     const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
     const credential = yield* vault.require;
-    yield* containerAuth.ensurePiSession(record.id, credential, record.environment);
+    const transportToken = yield* store.ensurePiSessionTransportToken;
+    yield* containerAuth.ensurePiSession(record.id, credential, transportToken, record.environment);
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
@@ -2092,8 +2094,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const environmentVault = yield* EnvironmentSecretVault;
     const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
     const credential = yield* vault.require;
+    const transportToken = yield* store.ensurePiSessionTransportToken;
     const preparedRecord = yield* this.materializeEnvironmentSnapshotProgram(record, nonce).pipe(
       Effect.mapError(mapCreateUncertain("materialize")),
     );
@@ -2101,7 +2105,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       initialPrompt: prompt,
     });
     yield* containerAuth
-      .ensurePiSession(preparedRecord.id, credential, preparedRecord.environment)
+      .ensurePiSession(preparedRecord.id, credential, transportToken, preparedRecord.environment)
       .pipe(Effect.mapError(mapCreateUncertain("pi_health")));
     if (!isSessionEnvironmentSnapshot(preparedRecord.environment))
       return yield* new SessionCreateUncertain({
@@ -2303,6 +2307,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hardCapAt: new Date(now + input.hardCapSeconds * 1_000).toISOString(),
       hardCapDurationSeconds: input.hardCapSeconds,
       ownedBackupIds: [],
+      piSessionTransportToken: createPiSessionTransportToken(),
     };
 
     const inspected = yield* Effect.result(store.inspectInitial(initial, idempotency));
@@ -2522,8 +2527,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const previousEnvironment = record.operation?.environmentRefreshPrevious;
     const environmentVault = yield* EnvironmentSecretVault;
     const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
     const credential = yield* vault.require;
+    const transportToken = yield* store.ensurePiSessionTransportToken;
     const effective = yield* this.resolveEnvironmentMaterializationProgram(record);
     if (
       priorAppliedEnvironment === undefined &&
@@ -2559,7 +2566,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }));
     // Stage and fence the target before touching the runtime. The lease keeps the target
     // retryable if applying, persisting, or pruning becomes ambiguous.
-    yield* containerAuth.quiescePiSession(record.id, credential);
+    yield* containerAuth.quiescePiSession(record.id, transportToken);
     yield* containerAuth.stopPiSession();
     const priorEnvironment =
       priorAppliedEnvironment === undefined
@@ -2576,7 +2583,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
               ...priorAppliedEnvironment.variables,
             },
           };
-    yield* containerAuth.refreshEnvironment(record.id, credential, priorEnvironment, next);
+    yield* containerAuth.refreshEnvironment(
+      record.id,
+      credential,
+      transportToken,
+      priorEnvironment,
+      next,
+    );
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     yield* this.updateForOperationProgram(payload.nonce, (current) => ({
       ...current,
@@ -2672,10 +2685,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (record.operation)
       return yield* conflict(`Session is already running ${record.operation.kind}`);
     const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
-    const currentCredential = yield* vault.require;
+    const transportToken = yield* store.ensurePiSessionTransportToken;
     const installationRecord = yield* this.readInstallationPiAuthProgram();
-    yield* containerAuth.quiescePiSession(record.id, currentCredential);
+    yield* containerAuth.quiescePiSession(record.id, transportToken);
     const sentinelSeed = `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`;
     const credential =
       installationRecord === null
@@ -2686,7 +2700,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         : yield* vault.reconcile(installationRecord, sentinelSeed);
     yield* containerAuth.refreshPiAuth(record.id, credential);
     yield* containerAuth.stopPiSession();
-    yield* containerAuth.ensurePiSession(record.id, credential, record.environment);
+    yield* containerAuth.ensurePiSession(record.id, credential, transportToken, record.environment);
     return {
       id: record.id,
       updatedAt: credential.updatedAt,
@@ -2813,6 +2827,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
     const environmentVault = yield* EnvironmentSecretVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
     const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
     let record = yield* this.requireRecordProgram();
@@ -2822,6 +2837,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* wrongState(record.status, "resume", "No successful backup is available");
     }
 
+    const transportToken = yield* store.ensurePiSessionTransportToken;
     const bootingAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     record = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
       ...current,
@@ -2868,7 +2884,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* this.materializeAndSeedSandboxProgram(runtimeRecord, credential);
         yield* this.restorePiAndHatchProgram(
           operation.nonce,
-          containerAuth.ensurePiSession(record.id, credential, environment),
+          containerAuth.ensurePiSession(record.id, credential, transportToken, environment),
         );
         yield* environmentVault.commit(environment);
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
@@ -4177,14 +4193,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (container === undefined || !container.running)
       return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
 
-    const credential = await this.#run(
-      Effect.result(CredentialVault.pipe(Effect.flatMap((vault) => vault.require))),
-    );
-    if (Result.isFailure(credential))
-      return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
-    const transportToken = await piSessionTransportToken(input.sessionId, credential.success).then(
-      (value) => Result.succeed(value),
-      () => Result.fail(undefined),
+    const transportToken = await this.#run(
+      Effect.result(Effect.flatMap(SessionStore, (store) => store.ensurePiSessionTransportToken)),
     );
     if (Result.isFailure(transportToken))
       return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
@@ -4275,6 +4285,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
     };
 
+    if (command !== undefined) {
+      const transportToken = await this.#run(
+        Effect.result(Effect.flatMap(SessionStore, (store) => store.ensurePiSessionTransportToken)),
+      );
+      if (Result.isFailure(transportToken))
+        return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
+    }
     return command === undefined
       ? relayWithCurrentAuthority()
       : this.sessionControlGate.run(relayWithCurrentAuthority);
@@ -4969,7 +4986,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const runtime = yield* SandboxRuntime;
     const backups = yield* BackupStore;
     const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
+    const transportToken = yield* store.ensurePiSessionTransportToken;
     const root = sessionRoot(record.id);
     let runtimeStopAttempted = false;
 
@@ -4984,9 +5003,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
           piProcess.status !== "killed" &&
           piProcess.status !== "error"
         ) {
-          const credential = yield* vault.require;
           yield* containerAuth
-            .quiescePiSession(record.id, credential)
+            .quiescePiSession(record.id, transportToken)
             .pipe(
               Effect.mapError((cause) => new PiRuntimeStopFailure({ stage: "quiesce", cause })),
             );
@@ -5028,7 +5046,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
           const credential = yield* vault.require;
           yield* this.restorePiAndHatchProgram(
             nonce,
-            containerAuth.ensurePiSession(record.id, credential, record.environment),
+            containerAuth.ensurePiSession(
+              record.id,
+              credential,
+              transportToken,
+              record.environment,
+            ),
           );
         }),
         resumeRuntime,
