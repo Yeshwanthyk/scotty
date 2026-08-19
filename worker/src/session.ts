@@ -432,6 +432,11 @@ class HostOperationFailure extends Data.TaggedError("HostOperationFailure")<{
 class InstallationPiAuthRpcFailure extends Data.TaggedError("InstallationPiAuthRpcFailure")<{
   readonly message: string;
 }> {}
+class InstallationGithubTokenRpcFailure extends Data.TaggedError(
+  "InstallationGithubTokenRpcFailure",
+)<{
+  readonly message: string;
+}> {}
 
 interface InFlightCreate {
   readonly id: string;
@@ -780,6 +785,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
       });
     return result.value;
   });
+
+  private readonly readInstallationGithubTokenProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).resolveGlobalGithubToken(),
+        catch: () =>
+          new InstallationGithubTokenRpcFailure({
+            message: "Installation GitHub credential authority is unavailable",
+          }),
+      });
+      if (!result.ok)
+        return yield* new InstallationGithubTokenRpcFailure({
+          message: "Installation GitHub credential authority is unavailable",
+        });
+      return result.value;
+    },
+  );
 
   private readonly writeInstallationPiAuthProgram = Effect.fnUntraced(function* (
     this: Sandbox,
@@ -2316,7 +2339,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (decisionBeforeSchedule.kind === "replay")
       return yield* this.replayCreateProgram(decisionBeforeSchedule.record, input.prompt);
 
-    const verified = yield* verifier.verify(input.repo, this.env.GH_TOKEN).pipe(
+    const githubToken = yield* this.readInstallationGithubTokenProgram().pipe(
+      Effect.mapError((error) => this.upstreamError("Repository verification failed", error, id)),
+    );
+    const verified = yield* verifier.verify(input.repo, githubToken).pipe(
       Effect.mapError(
         (_failure: RepoVerifierFailure) =>
           new ScottyError("upstream", "Repository verification failed", {

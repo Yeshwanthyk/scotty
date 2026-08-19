@@ -44,6 +44,7 @@ export type EnvironmentFailureReason =
   | "invalid_authority"
   | "invalid_input"
   | "invalid_scope"
+  | "invalid_github_token"
   | "storage";
 
 export class EnvironmentFailure extends Data.TaggedError("EnvironmentFailure")<{
@@ -66,6 +67,8 @@ interface EnvironmentStoreShape {
   readonly list: (repo?: unknown) => Effect.Effect<EnvironmentVariablesView, EnvironmentFailure>;
   /** Compatibility-only complete snapshot; it includes real secret values and is not a session input. */
   readonly snapshot: (repo?: unknown) => Effect.Effect<EnvironmentSnapshot, EnvironmentFailure>;
+  /** Internal Worker/DO-only lookup for the installation's global GitHub verifier credential. */
+  readonly resolveGlobalGithubToken: Effect.Effect<string, EnvironmentFailure>;
   /** The only installation-to-session boundary that returns real secret values. */
   readonly materialize: (
     repo?: unknown,
@@ -246,6 +249,8 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
     failure("invalid_input", message);
   const invalidScope = (): EnvironmentFailure =>
     failure("invalid_scope", "Repository environment scope must be OWNER/NAME");
+  const invalidGithubToken = (): EnvironmentFailure =>
+    failure("invalid_github_token", "Global GH_TOKEN secret is missing or invalid");
   const storageFailure = (): EnvironmentFailure =>
     failure("storage", "Environment storage operation failed");
 
@@ -287,6 +292,19 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
     return environmentNameIsReserved(decoded.success)
       ? Result.fail(invalidInput())
       : Result.succeed(decoded.success);
+  };
+
+  const parseManagedGithubToken = (
+    name: unknown,
+    input: EnvironmentPutInput | undefined,
+    repo: string | undefined,
+  ): Result.Result<string, EnvironmentFailure> => {
+    const decoded = Result.mapError(decodeName(name), invalidInput);
+    if (Result.isFailure(decoded)) return decoded;
+    if (decoded.success !== "GH_TOKEN") return parseName(decoded.success);
+    if (repo !== undefined || (input !== undefined && input.secret !== true))
+      return Result.fail(invalidInput());
+    return Result.succeed(decoded.success);
   };
 
   const parseScope = (
@@ -461,6 +479,13 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
     });
   });
 
+  const resolveGlobalGithubToken = transact(async (authority) => {
+    const variable = authority.global.variables.GH_TOKEN;
+    if (variable === undefined || variable.secret !== true || variable.value.trim().length === 0)
+      return Result.fail(invalidGithubToken());
+    return Result.succeed(variable.value);
+  });
+
   const snapshot = (repoValue: unknown) =>
     Effect.gen(function* () {
       const repo = yield* Effect.fromResult(parseScope(repoValue));
@@ -482,6 +507,7 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
 
   return EnvironmentStore.of({
     snapshot,
+    resolveGlobalGithubToken,
     list: (repoValue) =>
       Effect.gen(function* () {
         const repo = yield* Effect.fromResult(parseScope(repoValue));
@@ -494,13 +520,15 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
               .sort(([left], [right]) => left.localeCompare(right))
               .map(([name, { sourceScope, variable }]) => ({
                 name,
-                secret: variable.secret,
+                secret: variable.secret || environmentNameIsReserved(name),
                 configured: true as const,
                 updatedAt: variable.updatedAt,
                 ...(repo === undefined
                   ? {}
                   : { source: sourceScope === "global" ? ("global" as const) : ("repo" as const) }),
-                ...(variable.secret ? undefined : { value: variable.value }),
+                ...(variable.secret || environmentNameIsReserved(name)
+                  ? undefined
+                  : { value: variable.value }),
               })),
           });
           return Result.isFailure(decoded)
@@ -515,7 +543,7 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
           const variables: Record<string, EnvironmentEffectiveVariable> = {};
           for (const [name, { sourceScope, variable }] of Object.entries(
             effectiveVariables(authority, repo),
-          ))
+          ).filter(([name]) => !environmentNameIsReserved(name)))
             variables[name] = {
               value: variable.value,
               secret: variable.secret,
@@ -534,11 +562,11 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
       }),
     put: (nameValue, inputValue, repoValue) =>
       Effect.gen(function* () {
-        const name = yield* Effect.fromResult(parseName(nameValue));
         const input: EnvironmentPutInput = yield* Effect.fromResult(
           Result.mapError(decodeInput(inputValue), invalidInput),
         );
         const repo = yield* Effect.fromResult(parseScope(repoValue));
+        const name = yield* Effect.fromResult(parseManagedGithubToken(nameValue, input, repo));
         const now = new Date(yield* Clock.currentTimeMillis).toISOString();
         return yield* transact(async (authority, transaction) => {
           if (repo === undefined) {
@@ -585,8 +613,8 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
       }),
     remove: (nameValue, repoValue) =>
       Effect.gen(function* () {
-        const name = yield* Effect.fromResult(parseName(nameValue));
         const repo = yield* Effect.fromResult(parseScope(repoValue));
+        const name = yield* Effect.fromResult(parseManagedGithubToken(nameValue, undefined, repo));
         return yield* transact(async (authority, transaction) => {
           const variables =
             repo === undefined

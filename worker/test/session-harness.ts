@@ -298,6 +298,8 @@ export interface HarnessOptions {
   readonly sandboxNamespace?: Bindings["SANDBOX"];
   readonly sandboxConfigStatus?: SandboxConfigStatus;
   readonly sandboxConfigStatusFailure?: "rpc-error" | "throw";
+  readonly sandboxConfigGithubToken?: string;
+  readonly sandboxConfigGithubTokenFailure?: "rpc-error" | "throw";
   readonly environmentSnapshot?: EnvironmentSnapshot | SessionEnvironmentSnapshot;
   readonly environmentMaterialization?: EnvironmentMaterialization;
   readonly installationPiAuthRecord?: InstallationPiAuthRecord;
@@ -649,6 +651,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     activeDigest: null,
   };
   const sandboxConfigStatus = options.sandboxConfigStatus ?? defaultSandboxConfigStatus;
+  const sandboxConfigGithubToken = options.sandboxConfigGithubToken ?? "authority-github-token";
   const sandboxBundleObjectMap = new Map<string, StoredSandboxBundleObject>();
   for (const { digest, gzip } of options.sandboxBundleObjects ?? [])
     seedSandboxBundleObject(sandboxBundleObjectMap, digest, gzip);
@@ -869,6 +872,19 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     SANDBOX: options.sandboxNamespace ?? (undefined as never),
     SANDBOX_CONFIG: {
       getByName: () => ({
+        resolveGlobalGithubToken: async (): Promise<SandboxConfigRpcResult<string>> => {
+          if (options.sandboxConfigGithubTokenFailure === "throw")
+            throw injectedHarnessFailure("injected sandbox config GitHub token failure");
+          if (options.sandboxConfigGithubTokenFailure === "rpc-error")
+            return {
+              ok: false,
+              error: {
+                reason: "invalid_github_token",
+                message: "injected sandbox config GitHub token failure",
+              },
+            };
+          return { ok: true, value: sandboxConfigGithubToken };
+        },
         status: async (): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> => {
           sandboxConfigStatusCalls += 1;
           if (options.sandboxConfigStatusFailure === "throw")

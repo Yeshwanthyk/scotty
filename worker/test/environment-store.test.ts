@@ -254,6 +254,136 @@ describe("EnvironmentStore", () => {
     }),
   );
 
+  it.effect("resolves the global GH_TOKEN secret without exposing its value in public views", () =>
+    Effect.gen(function* () {
+      const token = "authority-github-token";
+      const storage = makeStorage();
+      yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) =>
+          store.put("GH_TOKEN", { value: token, secret: true }),
+        ),
+      );
+      const view = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.list()),
+      );
+      assert.include(
+        view.variables.map((variable) => variable.name),
+        "GH_TOKEN",
+      );
+      assert.notInclude(JSON.stringify(view), token);
+      const resolved = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalGithubToken),
+      );
+      assert.strictEqual(resolved, token);
+      const materialized = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.materialize()),
+      );
+      assert.notProperty(materialized.variables, "GH_TOKEN");
+      const plainFailure = yield* withStore(
+        storage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.put("GH_TOKEN", { value: token, secret: false }),
+          ),
+        ),
+      );
+      assert.strictEqual(plainFailure.reason, "invalid_input");
+      const repositoryFailure = yield* withStore(
+        storage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.put("GH_TOKEN", { value: token, secret: true }, "owner/project"),
+          ),
+        ),
+      );
+      assert.strictEqual(repositoryFailure.reason, "invalid_input");
+      const legacyPlainStorage = makeStorage({
+        version: 3,
+        revision: 1,
+        policyRevision: 0,
+        global: {
+          variables: {
+            GH_TOKEN: { value: token, secret: false, updatedAt: "2026-08-20T12:00:00.000Z" },
+          },
+        },
+        repositories: {},
+        originPolicies: [],
+        pendingObservations: [],
+      });
+      const legacyPlainView = yield* withStore(
+        legacyPlainStorage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.list()),
+      );
+      assert.notInclude(JSON.stringify(legacyPlainView), token);
+      assert.strictEqual(legacyPlainView.variables[0]?.secret, true);
+      const sentinelFailure = yield* withStore(
+        storage.storage,
+        Effect.flip(
+          Effect.flatMap(EnvironmentStore, (store) =>
+            store.put("GITHUB_SENTINEL", { value: "sentinel", secret: true }),
+          ),
+        ),
+      );
+      assert.strictEqual(sentinelFailure.reason, "invalid_input");
+    }),
+  );
+
+  it.effect("rejects missing, plain, repository-scoped, and empty GH_TOKEN authority", () =>
+    Effect.gen(function* () {
+      const base = {
+        version: 3 as const,
+        revision: 0,
+        policyRevision: 0,
+        global: { variables: {} },
+        repositories: {},
+        originPolicies: [],
+        pendingObservations: [],
+      };
+      const authorities = [
+        base,
+        {
+          ...base,
+          global: {
+            variables: {
+              GH_TOKEN: { value: "plain", secret: false, updatedAt: "now" },
+            },
+          },
+        },
+        {
+          ...base,
+          repositories: {
+            "owner/project": {
+              variables: {
+                GH_TOKEN: { value: "repository-token", secret: true, updatedAt: "now" },
+              },
+            },
+          },
+        },
+        {
+          ...base,
+          global: {
+            variables: {
+              GH_TOKEN: { value: "", secret: true, updatedAt: "now" },
+            },
+          },
+        },
+      ];
+      for (const authority of authorities) {
+        const storage = makeStorage(authority);
+        const failure = yield* withStore(
+          storage.storage,
+          Effect.flip(Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalGithubToken)),
+        );
+        assert.strictEqual(failure.reason, "invalid_github_token");
+        assert.deepStrictEqual(storage.writes, []);
+      }
+    }),
+  );
+
   it.effect("requires a live observation and an exact configured secret before approval", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);

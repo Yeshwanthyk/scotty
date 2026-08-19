@@ -86,6 +86,12 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
   status(): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
     return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.status()));
   }
+  /** Internal Worker/DO use only; this credential never crosses a public route. */
+  resolveGlobalGithubToken(): Promise<SandboxConfigRpcResult<string>> {
+    return this.#runEnvironment(
+      Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalGithubToken),
+    );
+  }
 
   activate(input: SandboxActivateInput): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
     return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.activate(input)));
@@ -231,6 +237,8 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
 
 export type ScottySandboxConfigStub = {
   readonly status: () => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
+  /** Internal Worker/DO use only; never expose this result through a public API. */
+  readonly resolveGlobalGithubToken: () => Promise<SandboxConfigRpcResult<string>>;
   readonly activate: (
     input: SandboxActivateInput,
   ) => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;

@@ -76,6 +76,38 @@ describe("Sandbox create orchestration", () => {
     assert.ok(!harness.events.includes("credential:put"));
   });
 
+  it("passes the SandboxConfig global GH_TOKEN authority to repository verification", async () => {
+    let observedToken: string | undefined;
+    const harness = await createSessionHarness({
+      repoVerifier: {
+        verify: (_repo, token) => {
+          observedToken = token;
+          return Effect.succeed({ exists: true, defaultBranch: "main" });
+        },
+      },
+    });
+    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+
+    assert.strictEqual(observedToken, "authority-github-token");
+  });
+
+  it("fails closed before runtime mutation when the GH_TOKEN authority is unavailable", async () => {
+    const harness = await createSessionHarness({
+      sandboxConfigGithubTokenFailure: "rpc-error",
+    });
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(harness.readRecord(), undefined);
+    assert.deepStrictEqual(harness.schedules, []);
+    assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
+    assert.deepStrictEqual(harness.commands, []);
+    assert.ok(!harness.events.some((event) => event.startsWith("projection:")));
+  });
+
   it("rejects an authenticated missing repository unless --new-repo is explicit", async () => {
     const harness = await createSessionHarness({
       repoVerifier: { verify: () => Effect.succeed({ exists: false }) },

@@ -66,6 +66,7 @@ const runnerRegistry = vi.hoisted(() => ({
 
 const sandboxConfig = vi.hoisted(() => ({
   status: vi.fn(),
+  resolveGlobalGithubToken: vi.fn(),
   activate: vi.fn(),
   piAuth: vi.fn(),
   writePiAuth: vi.fn(),
@@ -540,6 +541,10 @@ describe("real Hono boundary", () => {
       lastSeenAt: "2026-07-27T12:00:00.000Z",
     });
     runner.fetch.mockResolvedValue(new Response(null, { status: 204 }));
+    sandboxConfig.resolveGlobalGithubToken.mockResolvedValue({
+      ok: true,
+      value: "authority-github-token",
+    });
     sandboxConfig.status.mockResolvedValue({
       ok: true,
       value: { schemaVersion: 1, revision: 0, activeDigest: null },
@@ -2491,6 +2496,61 @@ describe("real Hono boundary", () => {
     expect(request instanceof Request ? request.url : String(request)).toBe(
       "https://api.github.com/repos/owner/project",
     );
+    const requestInit = fetch.mock.calls[0]?.[1];
+    expect(new Headers(requestInit?.headers).get("authorization")).toBe(
+      "Bearer authority-github-token",
+    );
+  });
+
+  it("fails repository verification closed when the global GH_TOKEN authority is unavailable", async () => {
+    sandboxConfig.resolveGlobalGithubToken.mockResolvedValue({
+      ok: false,
+      error: {
+        reason: "invalid_github_token",
+        message: "Global GH_TOKEN secret is missing or invalid",
+      },
+    });
+
+    const response = await app.request(
+      "/api/repos",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ repo: "owner/project" }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "upstream",
+        message: "Repository verification failed",
+      },
+    });
+    expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
+  });
+
+  it("maps a GitHub authority transport failure to the repository verification envelope", async () => {
+    sandboxConfig.resolveGlobalGithubToken.mockRejectedValue(
+      new Error("simulated SandboxConfig transport failure"),
+    );
+
+    const response = await app.request(
+      "/api/repos",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ repo: "owner/project" }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "upstream", message: "Repository verification failed" },
+    });
+    expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
   });
 
   it("does not register a repository when GitHub verification fails", async () => {
@@ -3904,6 +3964,12 @@ describe("real Hono boundary", () => {
         revision: 3,
         variables: [
           {
+            name: "GH_TOKEN",
+            secret: true,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+          },
+          {
             name: "API_TOKEN",
             secret: true,
             configured: true,
@@ -3929,6 +3995,8 @@ describe("real Hono boundary", () => {
     expect(listText).toContain("PUBLIC_URL");
     expect(listText).toContain("$PI_CODING_AGENT_DIR/auth.json");
     expect(listText).not.toContain("real-secret");
+    expect(listText).toContain("GH_TOKEN");
+    expect(listText).not.toContain("authority-github-token");
 
     const secret = "real-secret-never-return";
     const updated = await app.request(
@@ -3951,6 +4019,28 @@ describe("real Hono boundary", () => {
       "API_TOKEN",
       {
         value: secret,
+        secret: true,
+      },
+      undefined,
+    );
+    const githubUpdated = await app.request(
+      "http://localhost/api/environment/GH_TOKEN",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ value: "authority-github-token", secret: true }),
+      },
+      env(),
+    );
+    expect(githubUpdated.status).toBe(200);
+    expect(await githubUpdated.text()).not.toContain("authority-github-token");
+    expect(sandboxConfig.putEnvironment).toHaveBeenCalledWith(
+      "GH_TOKEN",
+      {
+        value: "authority-github-token",
         secret: true,
       },
       undefined,

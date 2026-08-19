@@ -1575,8 +1575,28 @@ async function verifyRepository(
   env: Bindings,
   repo: string,
 ): Promise<{ readonly exists: true; readonly defaultBranch: string } | { readonly exists: false }> {
+  const githubTokenRpc = await sandboxConfig(env)
+    .resolveGlobalGithubToken()
+    .then(
+      (result) => Result.succeed(result),
+      () => Result.fail(undefined),
+    );
+  if (Result.isFailure(githubTokenRpc) || !githubTokenRpc.success.ok) {
+    console.error("Repository verification credential unavailable", {
+      reason:
+        Result.isSuccess(githubTokenRpc) && !githubTokenRpc.success.ok
+          ? githubTokenRpc.success.error.reason
+          : "transport",
+    });
+    throw new ScottyError("upstream", "Repository verification failed", {
+      httpStatus: 502,
+      exitCode: 1,
+      hint: "GitHub repository verification did not complete; retry the request",
+    });
+  }
+  const githubToken = githubTokenRpc.success.value;
   const result = await Effect.runPromise(
-    Effect.flatMap(RepoVerifier, (verifier) => verifier.verify(repo, env.GH_TOKEN)).pipe(
+    Effect.flatMap(RepoVerifier, (verifier) => verifier.verify(repo, githubToken)).pipe(
       Effect.provide(repoVerifierLayer.pipe(Layer.provide(FetchHttpClient.layer))),
       Effect.result,
     ),
