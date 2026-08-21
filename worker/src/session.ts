@@ -4651,7 +4651,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return { authorized: false, reason: "session_unavailable" as const };
     const vault = yield* EnvironmentSecretVault;
     const resolutions = yield* vault.readForProxy(decoded.success.sentinels);
-    if (resolutions === null) return { authorized: false, reason: "unknown_sentinel" as const };
+    if (resolutions === null) {
+      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+      console.error(
+        JSON.stringify({ event: "egress.authorize.denied", reason: "unknown_sentinel" }),
+      );
+      return { authorized: false, reason: "unknown_sentinel" as const };
+    }
     const stub = this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
     const authorizeEnvironmentSecrets = stub.authorizeEnvironmentSecrets;
     if (authorizeEnvironmentSecrets === undefined)
@@ -4667,9 +4673,30 @@ export class Sandbox extends BaseSandbox<Bindings> {
           this.upstreamError("Environment proxy authorization failed", cause, record.id),
       }),
     );
-    if (Result.isFailure(result))
+    if (Result.isFailure(result)) {
+      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+      console.error(
+        JSON.stringify({
+          event: "egress.authorize.denied",
+          reason: "session_unavailable",
+          detail: "authorizeEnvironmentSecrets threw",
+          error: result.failure.message,
+        }),
+      );
       return { authorized: false, reason: "session_unavailable" as const };
-    if (!result.success.ok) return { authorized: false, reason: "session_unavailable" as const };
+    }
+    if (!result.success.ok) {
+      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+      console.error(
+        JSON.stringify({
+          event: "egress.authorize.denied",
+          reason: "session_unavailable",
+          detail: "authorizeEnvironmentSecrets not ok",
+          error: JSON.stringify(result.success.error).slice(0, 400),
+        }),
+      );
+      return { authorized: false, reason: "session_unavailable" as const };
+    }
     const authorizationResult = decodeEnvironmentAuthorizationResult(result.success.value);
     if (Result.isFailure(authorizationResult))
       return yield* this.upstreamError(
@@ -4689,12 +4716,32 @@ export class Sandbox extends BaseSandbox<Bindings> {
           }
         : {}),
     });
-    if (Result.isFailure(authorization))
+    if (Result.isFailure(authorization)) {
+      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+      console.error(
+        JSON.stringify({
+          event: "egress.authorize.denied",
+          reason: "decode_failure",
+          detail: authorization.failure.message,
+        }),
+      );
       return yield* this.upstreamError(
         "Environment proxy authorization failed",
         authorization.failure,
         record.id,
       );
+    }
+    if (!authorization.success.authorized) {
+      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+      console.error(
+        JSON.stringify({
+          event: "egress.authorize.denied",
+          reason: authorization.success.reason,
+          origin: decoded.success.origin,
+          keys: resolutions.map(({ sourceScope, name }) => `${sourceScope}/${name}`),
+        }),
+      );
+    }
     return authorization.success;
   });
 
