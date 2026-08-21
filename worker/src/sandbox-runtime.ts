@@ -6,6 +6,7 @@ import type {
   ProcessStatus,
   WaitForPortOptions,
 } from "@cloudflare/sandbox";
+import { redactCredentialSentinels } from "../../protocol/pi-console-shared.mjs";
 import { Context, Data, Effect, Layer, Predicate, Schedule } from "effect";
 
 export type SandboxExecOptions = Pick<ExecOptions, "cwd" | "env" | "timeout">;
@@ -352,8 +353,9 @@ export function errorName(error: unknown): string {
 }
 
 function redactCommandFailure(value: string): string {
-  return value
-    .replaceAll(/scotty-(?:codex|github)-[A-Za-z0-9-]+/gu, "[sentinel]")
+  return redactCredentialSentinels(
+    value.replaceAll(/scotty-(?:codex|github|env)-[A-Za-z0-9-]+/gu, "[sentinel]"),
+  )
     .replaceAll(/(?:ghp_|github_pat_)[A-Za-z0-9_]+/gu, "[credential]")
     .slice(0, 1_000);
 }

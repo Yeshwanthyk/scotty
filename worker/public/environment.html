@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#01060c" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
+    <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
+    <link rel="stylesheet" href="/scotty-ui.css" />
+    <title>Scotty environment</title>
+  </head>
+  <body class="scotty-ui app-page devices-page">
+    <header class="masthead">
+      <div class="masthead-inner">
+        <a class="identity" href="/sessions" aria-label="Scotty sessions">
+          <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
+          <span class="wordmark">SCOTTY</span>
+        </a>
+        <nav class="masthead-nav" aria-label="Primary navigation">
+          <a class="button" href="/sessions">Sessions</a>
+          <a class="button" href="/providers">Providers</a>
+          <a class="button" href="/devices">Devices</a>
+        </nav>
+      </div>
+    </header>
+    <main>
+      <div class="page-heading">
+        <div>
+          <h1 id="scope-title">Global environment</h1>
+          <p class="intro">Sessions capture these values. Secrets are write-only.</p>
+        </div>
+        <div class="issue-row">
+          <label for="repository">Scope</label>
+          <select id="repository" aria-label="Environment scope">
+            <option value="">Global</option>
+          </select>
+          <button class="button" id="refresh" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Set a variable</h2>
+            <p class="panel-copy">
+              Changes make existing warm sessions stale until explicitly refreshed.
+            </p>
+          </div>
+        </div>
+        <form class="issue-row" id="environment-form">
+          <input
+            id="name"
+            name="name"
+            required
+            maxlength="128"
+            autocomplete="off"
+            placeholder="VARIABLE_NAME"
+            aria-label="Variable name"
+          />
+          <input
+            id="value"
+            name="value"
+            required
+            autocomplete="off"
+            placeholder="Value"
+            aria-label="Variable value"
+          />
+          <label><input id="secret" name="secret" type="checkbox" /> Secret</label>
+          <button class="button button-primary" type="submit">Set</button>
+        </form>
+        <div class="error" id="form-error" role="alert" hidden></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>User variables</h2>
+            <p class="panel-copy" id="revision"></p>
+          </div>
+        </div>
+        <div class="state" id="loading">Loading environment…</div>
+        <ul class="clients" id="variables"></ul>
+        <div class="error" id="list-error" role="alert" hidden></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Session environment</h2>
+            <p class="panel-copy">
+              Refresh applies the current effective snapshot to one warm session.
+            </p>
+          </div>
+        </div>
+        <div class="state" id="sessions-loading">Loading session status…</div>
+        <ul class="clients" id="environment-sessions"></ul>
+        <div class="error" id="sessions-error" role="alert" hidden></div>
+      </section>
+
+      <section class="panel" aria-labelledby="approvals-heading">
+        <div class="panel-heading">
+          <div>
+            <h2 id="approvals-heading">Origin approvals</h2>
+            <p class="panel-copy">
+              Review observed secret uses by origin. Secret values are never shown.
+            </p>
+          </div>
+        </div>
+        <div class="state" id="approvals-loading">Loading origin approvals…</div>
+        <div class="error" id="approvals-error" role="alert" hidden>
+          <span id="approvals-error-message"></span>
+          <button class="button" id="approvals-retry" type="button">Retry</button>
+        </div>
+        <div id="approvals-content" hidden>
+          <h3>Pending observed uses</h3>
+          <ul class="clients" id="approvals-pending"></ul>
+          <div class="state" id="approvals-pending-empty" hidden>
+            No pending origin uses for this scope.
+          </div>
+          <h3>Existing decisions</h3>
+          <ul class="clients" id="approvals-decisions"></ul>
+          <div class="state" id="approvals-decisions-empty" hidden>
+            No approved, rejected, or revoked decisions for this scope.
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Scotty-managed credentials</h2>
+            <p class="panel-copy">Protected bindings cannot be changed here.</p>
+          </div>
+        </div>
+        <ul class="clients" id="protected"></ul>
+      </section>
+    </main>
+    <script type="module" src="/environment.js"></script>
+  </body>
+</html>

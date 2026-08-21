@@ -90,8 +90,9 @@ function readBody(request) {
 export class FakeWorkerService {
   constructor(options = {}) {
     this.token = options.token ?? "scotty-e2e-control-token";
-    this.realCodexSecret = options.realCodexSecret ?? "e2e-real-codex-secret-never-expose";
+    this.realOpenaiSecret = options.realOpenaiSecret ?? "e2e-real-openai-secret-never-expose";
     this.realGithubSecret = options.realGithubSecret ?? "e2e-real-github-secret-never-expose";
+    this.realOpencodeSecret = options.realOpencodeSecret ?? "e2e-real-opencode-secret-never-expose";
     this.sessions = new Map();
     this.projections = new Map();
     this.trackedRepos = new Map();
@@ -150,7 +151,6 @@ export class FakeWorkerService {
       container: runtime
         ? {
             env: runtime.env,
-            authJson: runtime.authJson,
             gitConfig: runtime.gitConfig,
             processList: runtime.processList,
           }
@@ -167,16 +167,19 @@ export class FakeWorkerService {
       "api.github.com",
       "codeload.github.com",
       "api.openai.com",
-      "chatgpt.com",
+      "opencode.ai",
+      "pi.dev",
       "registry.npmjs.org",
     ]);
     if (!allowed.has(host)) return { allowed: false, status: 403, authorization: null };
     const injected =
       host === "github.com" || host === "api.github.com"
         ? this.realGithubSecret
-        : host === "api.openai.com" || host === "chatgpt.com"
-          ? this.realCodexSecret
-          : null;
+        : host === "api.openai.com"
+          ? this.realOpenaiSecret
+          : host === "opencode.ai" || host === "pi.dev"
+            ? this.realOpencodeSecret
+            : null;
     return {
       allowed: true,
       status: 200,
@@ -782,7 +785,11 @@ export class FakeWorkerService {
       };
       const sentinel = `scotty-sentinel-${id}`;
       this.sessions.set(id, record);
-      this.credentials.set(id, { codex: this.realCodexSecret, github: this.realGithubSecret });
+      this.credentials.set(id, {
+        openai: this.realOpenaiSecret,
+        github: this.realGithubSecret,
+        opencode: this.realOpencodeSecret,
+      });
       this.runtimes.set(id, {
         generation: 1,
         worktree: "fixture worktree\n",
@@ -790,17 +797,9 @@ export class FakeWorkerService {
           CODEX_HOME: `/workspace/${id}/.codex`,
           PI_CODING_AGENT_DIR: `/workspace/${id}/.pi-agent`,
           OPENAI_API_KEY: sentinel,
+          OPENCODE_API_KEY: sentinel,
           GH_TOKEN: sentinel,
         },
-        authJson: JSON.stringify({
-          "openai-codex": {
-            type: "oauth",
-            access: `${sentinel}.scotty-payload.scotty-pi`,
-            refresh: sentinel,
-            expires: 0,
-            accountId: "scotty-sentinel",
-          },
-        }),
         gitConfig: `credential.helper=!scotty-sentinel-helper\nremote.origin.url=https://github.com/${record.repo}.git`,
         pi: {
           command: "pi --continue",
@@ -916,8 +915,6 @@ export class FakeWorkerService {
       runtime: structuredClone(runtime),
       files: {
         [`/workspace/${record.id}/worktree.txt`]: runtime.worktree,
-        [`/workspace/${record.id}/.codex/auth.json`]: runtime.authJson,
-        [`/workspace/${record.id}/.pi-agent/auth.json`]: runtime.authJson,
         [`/workspace/${record.id}/.codex/sessions/2026/07/20/rollout.jsonl`]: FIXTURE_ROLLOUT,
       },
     };

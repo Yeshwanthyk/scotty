@@ -16,6 +16,7 @@ export const makeSessionRecord = (overrides: Partial<SessionRecord> = {}): Sessi
   hardCapAt: "2026-01-01T04:00:00.000Z",
   hardCapDurationSeconds: 14_400,
   ownedBackupIds: [],
+  piSessionTransportToken: "a".repeat(64),
   ...overrides,
   title: overrides.title ?? "Test session",
 });

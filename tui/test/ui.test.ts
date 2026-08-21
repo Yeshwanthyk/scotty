@@ -514,7 +514,7 @@ describe("composer key routing", () => {
       notifications: [{ id: "notification-1", type: "warning", message: "before\rINJECT" }],
       extensionSurface: {
         statuses: { "status\rspoof": "value\nnext" },
-        title: "\u001b]0;bad\u0007 scotty-github-session-secret",
+        title: "\u001b]0;bad\u0007 scotty-env-session-secret",
         widgets: [
           { key: "above", lines: ["above\rwidget"], placement: "aboveEditor" },
           { key: "below", lines: ["below\nwidget"], placement: "belowEditor" },

@@ -20,6 +20,7 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 RUN node scripts/apply-dependency-patches.mjs
 COPY cli/scotty.ts cli/scotty.ts
 COPY cli/src cli/src
+COPY cli/skills cli/skills
 COPY infra infra
 COPY protocol protocol
 COPY tui/src tui/src

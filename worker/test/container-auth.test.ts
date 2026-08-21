@@ -13,7 +13,6 @@ import {
   terminalShellPath,
   type ContainerAuthSeedOptions,
 } from "../src/container-auth";
-import { piAuthJson, type StoredCredential } from "../src/egress";
 import {
   SandboxRuntimeFailure,
   sandboxRuntimeLayer,
@@ -26,42 +25,14 @@ import {
 import { sessionRoot } from "../src/workspace";
 
 const ID = "a0b1c2d3e4f5";
-const PI_SENTINEL = `scotty-pi-${ID}-sentinel`;
-const GITHUB_SENTINEL = `scotty-github-${ID}-sentinel`;
-const REAL_ACCESS = "honeypot-real-codex-access";
-const REAL_REFRESH = "honeypot-real-codex-refresh";
+const GH_TOKEN_SENTINEL = `scotty-env-${ID}-${"a".repeat(32)}`;
+const ENVIRONMENT = {
+  version: 1 as const,
+  revision: 1,
+  variables: { GH_TOKEN: GH_TOKEN_SENTINEL },
+};
+const PI_SESSION_TRANSPORT_TOKEN = "c".repeat(64);
 const REAL_GITHUB = "honeypot-real-github-token";
-const REAL_ACCOUNT = "honeypot-real-account";
-const REAL_API_KEY = "honeypot-real-api-key";
-
-const credential: StoredCredential = {
-  providers: {
-    "openai-codex": {
-      credential: {
-        type: "oauth",
-        access: REAL_ACCESS,
-        refresh: REAL_REFRESH,
-        expires: 0,
-        accountId: REAL_ACCOUNT,
-        idToken: "honeypot-real-id-token",
-      },
-      sentinel: PI_SENTINEL,
-    },
-  },
-  githubToken: REAL_GITHUB,
-  githubSentinel: GITHUB_SENTINEL,
-  updatedAt: "2026-07-22T01:02:03.000Z",
-};
-
-const apiKeyCredential: StoredCredential = {
-  ...credential,
-  providers: {
-    openai: {
-      credential: { type: "api_key", key: REAL_API_KEY },
-      sentinel: PI_SENTINEL,
-    },
-  },
-};
 
 type ContainerCall =
   | { readonly operation: "mkdir"; readonly path: string; readonly recursive?: boolean }
@@ -215,28 +186,23 @@ class ProcessSandboxCapabilities extends CapturingSandboxCapabilities {
   };
 }
 
-const seedWith = (
-  capabilities: SandboxRuntimeCapabilities,
-  storedCredential: StoredCredential = credential,
-  options?: ContainerAuthSeedOptions,
-) => {
+const seedWith = (capabilities: SandboxRuntimeCapabilities, options?: ContainerAuthSeedOptions) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
-  return Effect.flatMap(ContainerAuth, (auth) => auth.seed(ID, storedCredential, options)).pipe(
-    Effect.provide(layer),
-  );
+  return Effect.flatMap(ContainerAuth, (auth) =>
+    auth.seed(ID, { environment: ENVIRONMENT, ...options }),
+  ).pipe(Effect.provide(layer));
 };
 
 const preflightWith = (
   capabilities: SandboxRuntimeCapabilities,
-  storedCredential: StoredCredential = credential,
   options?: ContainerAuthSeedOptions,
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
-  return Effect.flatMap(ContainerAuth, (auth) =>
-    auth.preflight(ID, storedCredential, options),
-  ).pipe(Effect.provide(layer));
+  return Effect.flatMap(ContainerAuth, (auth) => auth.preflight(ID, options)).pipe(
+    Effect.provide(layer),
+  );
 };
 
 const chmodExecCommand = (calls: ContainerCall[]): string => {
@@ -266,13 +232,10 @@ const fallbackIdentityExec = (calls: ContainerCall[]) => {
   return exec;
 };
 
-const ensureTerminalWith = (
-  capabilities: SandboxRuntimeCapabilities,
-  storedCredential: StoredCredential = credential,
-) => {
+const ensureTerminalWith = (capabilities: SandboxRuntimeCapabilities) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
-  return Effect.flatMap(ContainerAuth, (auth) => auth.ensureTerminal(ID, storedCredential)).pipe(
+  return Effect.flatMap(ContainerAuth, (auth) => auth.ensureTerminal(ID, ENVIRONMENT)).pipe(
     Effect.provide(layer),
   );
 };
@@ -280,12 +243,14 @@ const ensureTerminalWith = (
 const piSessionWith = (
   capabilities: SandboxRuntimeCapabilities,
   operation: "ensure" | "quiesce" | "stop",
+  transportToken = PI_SESSION_TRANSPORT_TOKEN,
+  environment = ENVIRONMENT,
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
   return Effect.flatMap(ContainerAuth, (auth) => {
-    if (operation === "ensure") return auth.ensurePiSession(ID, credential);
-    if (operation === "quiesce") return auth.quiescePiSession(ID, credential);
+    if (operation === "ensure") return auth.ensurePiSession(ID, transportToken, environment);
+    if (operation === "quiesce") return auth.quiescePiSession(ID, transportToken);
     return auth.stopPiSession();
   }).pipe(Effect.provide(layer));
 };
@@ -314,13 +279,12 @@ describe("container auth values", () => {
   it("constructs the exact session path and agent environment", () => {
     assert.strictEqual(sessionRoot(ID), `/workspace/${ID}`);
     assert.strictEqual(terminalShellPath(ID), `/workspace/${ID}/.pi-agent/scotty-shell`);
-    assert.deepStrictEqual(agentEnv(ID, credential), {
+    assert.deepStrictEqual(agentEnv(ID, ENVIRONMENT), {
       CODEX_HOME: `/workspace/${ID}/.codex`,
       PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
       SCOTTY_SESSION_ID: ID,
       GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
-      GH_TOKEN: GITHUB_SENTINEL,
-      GITHUB_SENTINEL,
+      GH_TOKEN: GH_TOKEN_SENTINEL,
       GH_PROMPT_DISABLED: "1",
       GH_NO_UPDATE_NOTIFIER: "1",
       GIT_TERMINAL_PROMPT: "0",
@@ -383,7 +347,6 @@ describe("ContainerAuth", () => {
           "writeFile",
           "writeFile",
           "writeFile",
-          "writeFile",
           "exec",
           "setEnvVars",
           "exec",
@@ -398,32 +361,26 @@ describe("ContainerAuth", () => {
         [
           `/workspace/${ID}/.codex/config.toml`,
           `/workspace/${ID}/.codex/AGENTS.md`,
-          `/workspace/${ID}/.pi-agent/auth.json`,
           `/workspace/${ID}/.pi-agent/settings.json`,
           `/workspace/${ID}/.pi-agent/AGENTS.md`,
           `/workspace/${ID}/.pi-agent/gitconfig`,
           `/workspace/${ID}/.pi-agent/scotty-shell`,
         ],
       );
-      assert.deepStrictEqual(
-        JSON.parse(writes[2]?.content ?? ""),
-        JSON.parse(piAuthJson(credential)),
-      );
-      assert.deepInclude(JSON.parse(writes[3]?.content ?? ""), {
-        defaultProvider: "openai-codex",
+      assert.deepInclude(JSON.parse(writes[2]?.content ?? ""), {
+        defaultProvider: "openai",
         defaultModel: "gpt-5.6-sol",
         theme: "dark",
         packages: [...PI_PACKAGES],
       });
       assert.include(PI_PACKAGES, "/opt/scotty/pi-packages/sources/pi-subagents");
-      assert.ok(writes[5]?.content.includes("password=$GITHUB_SENTINEL"));
-      assert.ok(writes[6]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
+      assert.ok(writes[4]?.content.includes("password=$GH_TOKEN"));
+      assert.ok(writes[5]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
       assert.ok(
-        writes[6]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
+        writes[5]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
       );
-      assert.ok(writes[6]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
-      for (const secret of [REAL_ACCESS, REAL_REFRESH, REAL_GITHUB, REAL_ACCOUNT, REAL_API_KEY])
-        assert.ok(!writes[6]?.content.includes(secret));
+      assert.ok(writes[5]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
+      assert.ok(!writes[5]?.content.includes(REAL_GITHUB));
 
       const skillsExec = chmodExecCommand(capabilities.calls);
       const merged = mergedSkillsPath(ID);
@@ -441,7 +398,7 @@ describe("ContainerAuth", () => {
         `ln -sfn /opt/scotty/skills '/workspace/${ID}/.pi-agent/skills'`,
       );
 
-      const expectedEnv = agentEnv(ID, credential);
+      const expectedEnv = agentEnv(ID, ENVIRONMENT);
       const setEnv = capabilities.calls.find(
         (call): call is Extract<ContainerCall, { operation: "setEnvVars" }> =>
           call.operation === "setEnvVars",
@@ -462,10 +419,13 @@ describe("ContainerAuth", () => {
       capabilities.execFailWhen = (command) => command.includes("gh api user");
       yield* seedWith(capabilities);
       const ghExec = ghIdentityExec(capabilities.calls);
-      assert.deepStrictEqual(ghExec.options, { env: agentEnv(ID, credential), timeout: 20_000 });
+      assert.deepStrictEqual(ghExec.options, {
+        env: agentEnv(ID, ENVIRONMENT),
+        timeout: 20_000,
+      });
       const fallbackExec = fallbackIdentityExec(capabilities.calls);
       assert.deepStrictEqual(fallbackExec.options, {
-        env: agentEnv(ID, credential),
+        env: agentEnv(ID, ENVIRONMENT),
         timeout: 10_000,
       });
       assert.include(
@@ -479,7 +439,7 @@ describe("ContainerAuth", () => {
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
-      yield* seedWith(capabilities, credential, {
+      yield* seedWith(capabilities, {
         bundleRoot,
         extraSkills: [{ name: "custom-skill" }, { name: "another-skill" }],
         extraPackages: [{ name: "custom-package" }, { name: "@scope/custom-package" }],
@@ -488,7 +448,7 @@ describe("ContainerAuth", () => {
         (call): call is Extract<ContainerCall, { operation: "writeFile" }> =>
           call.operation === "writeFile",
       );
-      assert.deepInclude(JSON.parse(writes[3]?.content ?? ""), {
+      assert.deepInclude(JSON.parse(writes[2]?.content ?? ""), {
         packages: [
           ...PI_PACKAGES,
           `${bundleRoot}/pi-packages/custom-package`,
@@ -511,7 +471,7 @@ describe("ContainerAuth", () => {
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       const result = yield* Effect.result(
-        seedWith(capabilities, credential, {
+        seedWith(capabilities, {
           bundleRoot: `/workspace/${ID}/.scotty/sandbox/deadbeef`,
           extraSkills: [{ name: "duplicate" }, { name: "duplicate" }],
         }),
@@ -536,8 +496,8 @@ describe("ContainerAuth", () => {
         bundleRoot,
         extraSkills: [{ name: "custom-skill" }],
       };
-      yield* seedWith(capabilities, credential, options);
-      yield* seedWith(capabilities, credential, options);
+      yield* seedWith(capabilities, options);
+      yield* seedWith(capabilities, options);
       const skillsExec = chmodExecCommand(capabilities.calls);
       const target = `${mergedSkillsPath(ID)}/custom-skill`;
       const source = `${bundleRoot}/skills/custom-skill`;
@@ -558,7 +518,7 @@ describe("ContainerAuth", () => {
       capabilities.execFailWhen = (command) => command.includes(collisionCommand);
       const error = failed(
         yield* Effect.result(
-          seedWith(capabilities, credential, {
+          seedWith(capabilities, {
             bundleRoot,
             extraSkills: [{ name: "impeccable" }],
           }),
@@ -578,8 +538,8 @@ describe("ContainerAuth", () => {
         extraSkills: [{ name: "custom-skill" }],
         extraPackages: [{ name: "@scope/custom-package" }],
       };
-      yield* seedWith(capabilities, credential, options);
-      yield* preflightWith(capabilities, credential, options);
+      yield* seedWith(capabilities, options);
+      yield* preflightWith(capabilities, options);
     }),
   );
 
@@ -587,7 +547,7 @@ describe("ContainerAuth", () => {
     Effect.gen(function* () {
       const capabilities = new ProcessSandboxCapabilities();
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
-      yield* seedWith(capabilities, credential, {
+      yield* seedWith(capabilities, {
         bundleRoot,
         extraPackages: [{ name: "custom-package" }],
       });
@@ -620,7 +580,7 @@ describe("ContainerAuth", () => {
       );
       const error = failed(
         yield* Effect.result(
-          preflightWith(capabilities, credential, {
+          preflightWith(capabilities, {
             bundleRoot,
             extraPackages: [{ name: "../outside" }],
           }),
@@ -694,25 +654,25 @@ describe("ContainerAuth", () => {
     Effect.gen(function* () {
       const capabilities = new ProcessSandboxCapabilities();
       yield* piSessionWith(capabilities, "ensure");
-      const authWriteIndex = capabilities.calls.findIndex(
-        (call) =>
-          call.operation === "writeFile" && call.path === `/workspace/${ID}/.pi-agent/auth.json`,
-      );
       const settingsWriteIndex = capabilities.calls.findIndex(
         (call) =>
           call.operation === "writeFile" &&
           call.path === `/workspace/${ID}/.pi-agent/settings.json`,
       );
-      const authModeIndex = capabilities.calls.findIndex(
+      const settingsModeIndex = capabilities.calls.findIndex(
         (call) =>
           call.operation === "exec" &&
-          call.command.includes(`chmod 600 '/workspace/${ID}/.pi-agent/auth.json'`),
+          call.command.includes(`chmod 600 '/workspace/${ID}/.pi-agent/settings.json'`),
       );
       const startIndex = capabilities.calls.findIndex((call) => call.operation === "startProcess");
-      assert.ok(authWriteIndex >= 0);
-      assert.ok(settingsWriteIndex > authWriteIndex);
-      assert.ok(authModeIndex > settingsWriteIndex);
-      assert.ok(startIndex > authModeIndex);
+      assert.ok(settingsWriteIndex >= 0);
+      assert.ok(settingsModeIndex > settingsWriteIndex);
+      assert.ok(startIndex > settingsModeIndex);
+      assert.ok(
+        !capabilities.calls.some(
+          (call) => call.operation === "writeFile" && call.path.endsWith("/.pi-agent/auth.json"),
+        ),
+      );
       const start = capabilities.calls.find(
         (call): call is Extract<ContainerCall, { operation: "startProcess" }> =>
           call.operation === "startProcess",
@@ -725,7 +685,11 @@ describe("ContainerAuth", () => {
       });
       assert.strictEqual(start?.options?.env?.SCOTTY_PI_SESSION_PORT, String(PI_SESSION_PORT));
       assert.ok(start?.options?.env?.SCOTTY_PI_SESSION_TOKEN_FILE?.endsWith(".token"));
-      assert.strictEqual(start?.options?.env?.GH_TOKEN, GITHUB_SENTINEL);
+      assert.strictEqual(
+        new TextDecoder().decode(capabilities.files.get(`/tmp/scotty-pi-session-${ID}.token`)),
+        PI_SESSION_TRANSPORT_TOKEN,
+      );
+      assert.strictEqual(start?.options?.env?.GH_TOKEN, GH_TOKEN_SENTINEL);
       assert.ok(!JSON.stringify(start).includes(REAL_GITHUB));
       assert.ok(
         capabilities.calls.some(
@@ -773,6 +737,43 @@ describe("ContainerAuth", () => {
     }),
   );
 
+  it.effect("uses the supplied environment GH_TOKEN sentinel per session", () =>
+    Effect.gen(function* () {
+      const first = new ProcessSandboxCapabilities();
+      const second = new ProcessSandboxCapabilities();
+      const alternateSentinel = `scotty-env-${ID}-${"b".repeat(32)}`;
+      const alternateEnvironment = {
+        ...ENVIRONMENT,
+        variables: { GH_TOKEN: alternateSentinel },
+      };
+
+      yield* piSessionWith(first, "ensure", PI_SESSION_TRANSPORT_TOKEN);
+      yield* piSessionWith(second, "ensure", PI_SESSION_TRANSPORT_TOKEN, alternateEnvironment);
+
+      const tokenPath = `/tmp/scotty-pi-session-${ID}.token`;
+      assert.strictEqual(
+        new TextDecoder().decode(first.files.get(tokenPath)),
+        PI_SESSION_TRANSPORT_TOKEN,
+      );
+      assert.strictEqual(
+        new TextDecoder().decode(second.files.get(tokenPath)),
+        PI_SESSION_TRANSPORT_TOKEN,
+      );
+      const firstStart = first.calls.find((call) => call.operation === "startProcess");
+      const secondStart = second.calls.find((call) => call.operation === "startProcess");
+      assert.strictEqual(
+        firstStart?.operation === "startProcess" ? firstStart.options?.env?.GH_TOKEN : undefined,
+        GH_TOKEN_SENTINEL,
+      );
+      assert.strictEqual(
+        secondStart?.operation === "startProcess" ? secondStart.options?.env?.GH_TOKEN : undefined,
+        alternateSentinel,
+      );
+      assert.notInclude(JSON.stringify(first.calls), REAL_GITHUB);
+      assert.notInclude(JSON.stringify(second.calls), REAL_GITHUB);
+    }),
+  );
+
   it.effect("rejects a Pi session whose mapped port is unreachable", () =>
     Effect.gen(function* () {
       const capabilities = new ProcessSandboxCapabilities();
@@ -804,8 +805,8 @@ describe("ContainerAuth", () => {
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 12);
-      assert.strictEqual(second.calls.length, 12);
+      assert.strictEqual(first.calls.length, 11);
+      assert.strictEqual(second.calls.length, 11);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),
@@ -817,52 +818,9 @@ describe("ContainerAuth", () => {
       yield* seedWith(capabilities);
       const surfaces = JSON.stringify(capabilities.calls);
 
-      for (const secret of [
-        REAL_ACCESS,
-        REAL_REFRESH,
-        REAL_GITHUB,
-        REAL_ACCOUNT,
-        "honeypot-real-id-token",
-      ]) {
-        assert.ok(!surfaces.includes(secret));
-      }
-      assert.ok(surfaces.includes(PI_SENTINEL));
-      assert.ok(surfaces.includes(GITHUB_SENTINEL));
+      assert.ok(!surfaces.includes(REAL_GITHUB));
+      assert.ok(surfaces.includes(GH_TOKEN_SENTINEL));
       assert.ok(surfaces.includes(".scotty"));
-    }),
-  );
-
-  it.effect("replaces API-key seed material in Pi auth JSON", () =>
-    Effect.gen(function* () {
-      const capabilities = new CapturingSandboxCapabilities();
-      yield* seedWith(capabilities, apiKeyCredential);
-      const surfaces = JSON.stringify(capabilities.calls);
-
-      assert.ok(!surfaces.includes(REAL_API_KEY));
-      assert.deepStrictEqual(JSON.parse(piAuthJson(apiKeyCredential)), {
-        openai: {
-          type: "api_key",
-          key: PI_SENTINEL,
-        },
-      });
-      assert.deepStrictEqual(agentEnv(ID, apiKeyCredential), {
-        CODEX_HOME: `/workspace/${ID}/.codex`,
-        PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
-        SCOTTY_SESSION_ID: ID,
-        GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
-        GH_TOKEN: GITHUB_SENTINEL,
-        GITHUB_SENTINEL,
-        GH_PROMPT_DISABLED: "1",
-        GH_NO_UPDATE_NOTIFIER: "1",
-        GIT_TERMINAL_PROMPT: "0",
-        NODE_OPTIONS: "--use-system-ca",
-        GOTOOLCHAIN: "auto",
-        GOPROXY: "https://proxy.golang.org",
-        GOSUMDB: "sum.golang.org",
-        TERM: "xterm-256color",
-        LANG: "C.UTF-8",
-        LC_ALL: "C.UTF-8",
-      });
     }),
   );
 });

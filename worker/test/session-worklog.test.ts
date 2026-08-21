@@ -6,12 +6,7 @@ import {
   PiConsoleStaleCommandV1Schema,
 } from "../../protocol/pi-console";
 import { PI_SESSION_PORT, PI_SESSION_TOKEN_HEADER } from "../src/container-auth";
-import {
-  createSessionHarness,
-  makeStoredCredential,
-  SESSION_ID,
-  sessionHarnessKeys,
-} from "./session-harness";
+import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "./session-harness";
 import { SESSION_CONTROL_REVISION_KEY } from "../src/session-store";
 import { makeSessionRecord } from "./support";
 
@@ -86,7 +81,6 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: record,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () => {
@@ -117,7 +111,6 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       rawPiContainerRunning: true,
     });
@@ -141,10 +134,10 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
   });
 
   it("relays a native snapshot over one raw TCP fetch with isolated headers and token", async () => {
+    const record = makeSessionRecord({ id: SESSION_ID, status: "warm" });
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
+        [sessionHarnessKeys.record]: record,
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () =>
@@ -184,7 +177,11 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     assert.strictEqual(forwarded.headers.get("x-scotty-root"), null);
     assert.strictEqual(forwarded.headers.get(PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER), "1");
     assert.notStrictEqual(forwarded.headers.get(PI_SESSION_TOKEN_HEADER), "attacker-token");
-    assert.ok((forwarded.headers.get(PI_SESSION_TOKEN_HEADER)?.length ?? 0) >= 32);
+    assert.strictEqual(
+      forwarded.headers.get(PI_SESSION_TOKEN_HEADER),
+      record.piSessionTransportToken,
+    );
+    assert.notStrictEqual(forwarded.headers.get(PI_SESSION_TOKEN_HEADER), "stored-github-token");
     assert.deepStrictEqual(harness.piRequests, []);
     assert.isFalse(harness.events.some((event) => event.startsWith("host:container:")));
   });
@@ -194,7 +191,6 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () =>
@@ -310,7 +306,6 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID, status: "warm" }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       rawPiContainerRunning: true,
       rawPiFetch: async () => Response.json({ version: 1, accepted: true }, { status: 202 }),
@@ -370,7 +365,6 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       passivePiConsoleRelay: {
         fetch: async ({ request }) => {
@@ -409,7 +403,6 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       passivePiConsoleRelay: {
         fetch: async () => {

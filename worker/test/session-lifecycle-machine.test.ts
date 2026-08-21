@@ -13,7 +13,6 @@ import {
   createSessionHarness,
   type HarnessOptions,
   makeResumeBackup,
-  makeStoredCredential,
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
@@ -346,7 +345,6 @@ describe("Sandbox lifecycle machine", () => {
       const harness = yield* createTestHarness({
         initialEntries: {
           [sessionHarnessKeys.record]: record,
-          [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
         piSessionRunning: true,
         stopCallsOnStop: true,
@@ -420,7 +418,6 @@ describe("Sandbox lifecycle machine", () => {
         const harness = yield* createTestHarness({
           initialEntries: {
             [sessionHarnessKeys.record]: record,
-            [sessionHarnessKeys.credential]: makeStoredCredential(),
           },
         });
         const payload = {
@@ -447,7 +444,6 @@ describe("Sandbox lifecycle machine", () => {
       const harness = yield* createTestHarness({
         initialEntries: {
           [sessionHarnessKeys.record]: record,
-          [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
         piSessionRunning: true,
       });
@@ -469,7 +465,6 @@ describe("Sandbox lifecycle machine", () => {
       const harness = yield* createTestHarness({
         initialEntries: {
           [sessionHarnessKeys.record]: makeSessionRecord(),
-          [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
         piSessionRunning: true,
       });
@@ -493,7 +488,6 @@ describe("Sandbox lifecycle machine", () => {
       const harness = yield* createTestHarness({
         initialEntries: {
           [sessionHarnessKeys.record]: makeSessionRecord(),
-          [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
         piSessionRunning: true,
       });
@@ -515,7 +509,6 @@ describe("Sandbox lifecycle machine", () => {
         failureStage: "terminalStop",
         initialEntries: {
           [sessionHarnessKeys.record]: makeSessionRecord(),
-          [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
         piSessionRunning: true,
       });
@@ -540,7 +533,6 @@ describe("Sandbox lifecycle machine", () => {
         failureStage: "checkpointDefect",
         initialEntries: {
           [sessionHarnessKeys.record]: makeSessionRecord(),
-          [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
         piSessionRunning: true,
       });

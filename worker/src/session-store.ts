@@ -8,6 +8,7 @@ import {
   wrongState,
   type OperationKind,
   type AgentActivityState,
+  type PiSessionTransportToken,
   type SessionRecord,
   type SessionStatus,
 } from "./contracts";
@@ -29,6 +30,11 @@ const INVALID_RECORD = new ScottyError("internal", "Authoritative session record
   httpStatus: 500,
   exitCode: 1,
 });
+export const createPiSessionTransportToken = (): PiSessionTransportToken => {
+  const data = new Uint8Array(32);
+  crypto.getRandomValues(data);
+  return Array.from(data, (value) => value.toString(16).padStart(2, "0")).join("");
+};
 
 class SessionControlRevisionFailure extends Data.TaggedError("SessionControlRevisionFailure")<{
   readonly reason: "invalid" | "exhausted";
@@ -119,6 +125,7 @@ export class InitialSessionStorageFailure extends Data.TaggedError("InitialSessi
 interface SessionStoreShape {
   readonly read: Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly requireRecord: Effect.Effect<SessionRecord, ScottyError>;
+  readonly ensurePiSessionTransportToken: Effect.Effect<PiSessionTransportToken, ScottyError>;
   readonly readControlAuthority: Effect.Effect<SessionControlAuthority, ScottyError>;
   readonly put: (record: SessionRecord) => Effect.Effect<void, ScottyError>;
   readonly clearCreateIdempotency: Effect.Effect<void, ScottyError>;
@@ -316,6 +323,10 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
       try: () => storage.transaction(operation),
       catch: storageFailure,
     }).pipe(Effect.flatMap(Effect.fromResult));
+  const ensurePiSessionTransportToken = Effect.map(
+    requireRecord(),
+    (record) => record.piSessionTransportToken,
+  );
 
   const updateForOperation = Effect.fnUntraced(function* (
     nonce: string,
@@ -378,6 +389,7 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
   return SessionStore.of({
     read: read(),
     requireRecord: requireRecord(),
+    ensurePiSessionTransportToken,
     readControlAuthority:
       storage.readControlAuthority === undefined
         ? Effect.fail(storageFailure())

@@ -18,6 +18,7 @@ export interface CliDependencies {
   stdout: Writer;
   stderr: Writer;
   prompt: (label: string) => string | null;
+  readStdin: () => Promise<string>;
   openBrowser: (url: string) => Promise<void>;
   run: (
     command: string[],
@@ -33,8 +34,6 @@ export interface CliDependencies {
     request: InstallationUninstallRequest,
   ) => Promise<InstallationUninstallResult>;
   upgradeCli: (request: CliUpgradeRequest) => Promise<CliUpgradeResult>;
-  inspectPiAuthTarget: (request: PiAuthTargetRequest) => Promise<PiAuthTargetResult>;
-  uploadPiAuthSecret: (request: PiAuthUploadRequest) => Promise<PiAuthTargetResult>;
   resolveGitPackage: (repository: string, ref: string) => Promise<GitPackageResolution>;
 }
 
@@ -54,7 +53,6 @@ export interface InstallationDeployRequest {
 
 export interface InstallationCreateRequest extends InstallationDeployRequest {
   readonly token: string;
-  readonly githubToken: string;
   readonly expectedAccountId: string;
   readonly expectedPlanFingerprint: string;
   readonly mode: "fresh" | "resume";
@@ -139,27 +137,6 @@ export interface CliUpgradeResult {
   readonly updated: boolean;
 }
 
-export interface PiAuthTargetRequest {
-  readonly profile: string;
-  readonly expectedAccountId: string;
-  readonly expectedWorkerName: string;
-  readonly expectedRunnerWorkerName: string;
-  readonly expectedContainerName: string;
-  readonly expectedKvTitle: string;
-  readonly expectedBackupBucketName: string;
-  readonly expectedHost: string;
-}
-
-export interface PiAuthUploadRequest extends PiAuthTargetRequest {
-  readonly json: string;
-}
-
-export interface PiAuthTargetResult {
-  readonly accountId: string;
-  readonly workerName: string;
-  readonly host: string;
-}
-
 export interface InstallationResult {
   readonly installationName: string;
   readonly profile: string;
@@ -187,6 +164,7 @@ interface CliRuntimeShape {
   readonly stdout: Writer;
   readonly stderr: Writer;
   readonly prompt: (label: string) => string | null;
+  readonly readStdin: () => Promise<string>;
 }
 
 export class CliRuntime extends Context.Service<CliRuntime, CliRuntimeShape>()(
@@ -238,16 +216,6 @@ interface BrowserLauncherShape {
 export class BrowserLauncher extends Context.Service<BrowserLauncher, BrowserLauncherShape>()(
   "scotty/cli/BrowserLauncher",
 ) {}
-
-interface PiAuthSecretManagerShape {
-  readonly inspect: (request: PiAuthTargetRequest) => Effect.Effect<PiAuthTargetResult, CliError>;
-  readonly upload: (request: PiAuthUploadRequest) => Effect.Effect<PiAuthTargetResult, CliError>;
-}
-
-export class PiAuthSecretManager extends Context.Service<
-  PiAuthSecretManager,
-  PiAuthSecretManagerShape
->()("scotty/cli/PiAuthSecretManager") {}
 
 interface InstallationCreatorShape {
   readonly plan: (request: InstallationDeployRequest) => Effect.Effect<InstallationPlan, CliError>;
@@ -492,6 +460,7 @@ export const defaultDependencies = (): CliDependencies => ({
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
   prompt: (label) => globalThis.prompt(label),
+  readStdin: () => new Response(Bun.stdin.stream()).text(),
   openBrowser: async (url) => {
     const configuredBrowser = process.env.BROWSER?.trim();
     const command = configuredBrowser
@@ -559,14 +528,6 @@ export const defaultDependencies = (): CliDependencies => ({
     const { upgradeCli } = await import("./upgrade-host.ts");
     return upgradeCli(request);
   },
-  inspectPiAuthTarget: async (request) => {
-    const { inspectPiAuthTarget } = await import("./installation-deployment.ts");
-    return inspectPiAuthTarget(request);
-  },
-  uploadPiAuthSecret: async (request) => {
-    const { uploadPiAuthSecret } = await import("./installation-deployment.ts");
-    return uploadPiAuthSecret(request);
-  },
   resolveGitPackage: async (repository, ref) => {
     const { resolveGitPackage } = await import("./sandbox-git.ts");
     return resolveGitPackage(repository, ref);
@@ -581,7 +542,6 @@ export const cliLayer = (
   | ProcessRunner
   | GitResolver
   | BrowserLauncher
-  | PiAuthSecretManager
   | FileSystem
   | InstallationCreator
   | InstallationDeployer
@@ -602,6 +562,7 @@ export const cliLayer = (
       stdout: dependencies.stdout,
       stderr: dependencies.stderr,
       prompt: dependencies.prompt,
+      readStdin: dependencies.readStdin,
     }),
     Layer.succeed(HttpTransport)({
       fetch: (input, init) =>
@@ -629,30 +590,6 @@ export const cliLayer = (
         Effect.tryPromise({
           try: () => dependencies.openBrowser(url),
           catch: unexpected,
-        }),
-    }),
-    Layer.succeed(PiAuthSecretManager)({
-      inspect: (request) =>
-        Effect.tryPromise({
-          try: () => dependencies.inspectPiAuthTarget(request),
-          catch: () =>
-            new CliError(
-              "pi_auth_target_failed",
-              "Could not verify the managed Pi auth destination",
-              "Check the saved Cloudflare profile, account, Worker, and origin.",
-              EXIT.GENERIC,
-            ),
-        }),
-      upload: (request) =>
-        Effect.tryPromise({
-          try: () => dependencies.uploadPiAuthSecret(request),
-          catch: () =>
-            new CliError(
-              "pi_auth_upload_failed",
-              "Could not upload PI_AUTH_JSON to the managed Worker",
-              "The upload may have succeeded. Run scotty auth status before retrying.",
-              EXIT.GENERIC,
-            ),
         }),
     }),
     Layer.succeed(InstallationCreator)({

@@ -464,8 +464,15 @@ test("sentinels are visible, real credentials are absent, and egress is default-
 
   const surfaces = service.publicSurfaces(session.id);
   assert.match(JSON.stringify(surfaces.container), new RegExp(`scotty-sentinel-${session.id}`));
-  assert.match(JSON.stringify(surfaces.backups), new RegExp(`scotty-sentinel-${session.id}`));
-  assertNoLeaks(surfaces, [service.realCodexSecret, service.realGithubSecret, service.token]);
+  assert.match(surfaces.container.env.OPENAI_API_KEY, new RegExp(`^scotty-sentinel-`));
+  assert.match(surfaces.container.env.OPENCODE_API_KEY, new RegExp(`^scotty-sentinel-`));
+  assert.match(surfaces.container.env.GH_TOKEN, new RegExp(`^scotty-sentinel-`));
+  assertNoLeaks(surfaces, [
+    service.realOpenaiSecret,
+    service.realGithubSecret,
+    service.realOpencodeSecret,
+    service.token,
+  ]);
   assert.doesNotMatch(surfaces.container.gitConfig, /https:\/\/[^/@]+@github\.com/);
 
   const denied = service.attemptEgress(session.id, "https://attacker.example/exfil");
@@ -474,9 +481,12 @@ test("sentinels are visible, real credentials are absent, and egress is default-
   assert.equal(allowed.allowed, true);
   assert.equal(
     allowed.authorization,
-    service.realCodexSecret,
+    service.realOpenaiSecret,
     "credential injection happens only outside container-visible state",
   );
+  const opencodeEgress = service.attemptEgress(session.id, "https://opencode.ai/zen/v1/responses");
+  assert.equal(opencodeEgress.allowed, true);
+  assert.equal(opencodeEgress.authorization, service.realOpencodeSecret);
   const redirected = service.attemptEgress(
     session.id,
     "https://attacker.example/redirect-target",

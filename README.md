@@ -76,7 +76,7 @@ it has the native Pi RPC worklog transport.
 
 - `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, direct Pi RPC
   lifecycle and worklog, and trusted-runner control plane.
-- `cli/` — Effect-native Bun CLI, embedded `scotty tui`, and embedded `scotty skills` guide.
+- `cli/` — Effect-native Bun CLI, embedded `scotty tui`, and embedded `scotty skills show` guide.
 - `tui/` — internal terminal fleet console and shared desktop-sidecar source modules; these
   compile into Scotty artifacts and are not a separately installed product.
 - `desktop/` — macOS GPUI viewport for switching among existing warm Scotty sessions.
@@ -365,7 +365,7 @@ npm run build:cli
 ./dist/scotty steer SESSION_ID "check the focused tests" --json
 ./dist/scotty upgrade
 ./dist/scotty uninstall
-./dist/scotty skills
+./dist/scotty skills show
 ```
 
 ### Hatch and Showcase

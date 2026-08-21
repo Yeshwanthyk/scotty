@@ -12,7 +12,7 @@ export interface PreparedWorkspace {
 interface WorkspaceShape {
   readonly prepare: (
     record: SessionRecord,
-    githubSentinel: string,
+    githubToken: string,
     verified?: VerifiedRepository,
   ) => Effect.Effect<PreparedWorkspace, SandboxRuntimeFailure>;
 }
@@ -23,10 +23,10 @@ export const workspaceLayer: Layer.Layer<Workspace, never, SandboxRuntime> = Lay
   Workspace,
   Effect.map(SandboxRuntime, (runtime) =>
     Workspace.of({
-      prepare: Effect.fnUntraced(function* (record, githubSentinel, verified) {
+      prepare: Effect.fnUntraced(function* (record, githubToken, verified) {
         const root = sessionRoot(record.id);
         const url = `https://github.com/${record.repo}.git`;
-        const env = { GH_TOKEN: githubSentinel, GIT_TERMINAL_PROMPT: "0" };
+        const env = { GH_TOKEN: githubToken, GIT_TERMINAL_PROMPT: "0" };
         const repository =
           verified ??
           (record.repoExistsAtCreate
@@ -46,7 +46,7 @@ export const workspaceLayer: Layer.Layer<Workspace, never, SandboxRuntime> = Lay
         }
 
         const defaultBranch = repository.defaultBranch;
-        const basic = btoa(`x-access-token:${githubSentinel}`);
+        const basic = btoa(`x-access-token:${githubToken}`);
         yield* runtime.execChecked(
           `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch ${shellQuote(defaultBranch)} --single-branch ${shellQuote(url)} ${shellQuote(root)}`,
           { env, timeout: 180_000 },
@@ -69,7 +69,7 @@ const configureGitCredentialHelper = Effect.fnUntraced(function* (
   runtime: SandboxRuntime["Service"],
   root: string,
 ) {
-  const helper = "!f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f";
+  const helper = "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f";
   yield* runtime.execChecked(
     `git -C ${shellQuote(root)} config credential.helper ${shellQuote(helper)} && git -C ${shellQuote(root)} config credential.useHttpPath true && exclude=$(git -C ${shellQuote(root)} rev-parse --absolute-git-dir)/info/exclude && { grep -qxF '.codex/' "$exclude" 2>/dev/null || printf '.codex/\\n' >> "$exclude"; }`,
   );

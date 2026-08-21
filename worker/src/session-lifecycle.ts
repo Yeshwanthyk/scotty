@@ -5,6 +5,7 @@ export const SESSION_SCHEDULE_CALLBACKS = [
   "expireEvidenceJob",
   "expireRetainedEvidence",
   "finalizeManagedStop",
+  "retryEnvironmentRefresh",
   "retryHardCapDestroy",
   "retryHatchCleanup",
   "retryVaporizeSession",

@@ -42,9 +42,9 @@ describe("Account Secrets Store Worker binding", () => {
   });
 
   it("preserves unresolved identifiers so the Worker depends on the managed secret", () => {
-    const bindingName = Output.literal("PI_AUTH_JSON");
+    const bindingName = Output.literal("OPENAI_API_KEY");
     const storeId = Output.literal("store-id");
-    const secretName = Output.literal("codex-auth-json");
+    const secretName = Output.literal("openai-api-key");
 
     const binding = accountSecretsStoreWorkerBinding({ bindingName, storeId, secretName });
 

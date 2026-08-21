@@ -491,7 +491,7 @@ describe("Scotty Pi supervisor protocol", () => {
 
   it("strips control sequences, credentials, deep values, and oversized strings", () => {
     const sanitized = sanitizeRemoteValue({
-      text: "\u001b]0;owned\u0007\u001b[31mred\u001b[0m scotty-pi-a0b1c2-token_0 scotty-github-session-secret ghp_abcdef",
+      text: "\u001b]0;owned\u0007\u001b[31mred\u001b[0m scotty-env-session-secret scotty-env-other-secret ghp_abcdef",
       deep: {
         one: {
           two: {

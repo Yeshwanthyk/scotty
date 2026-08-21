@@ -12,12 +12,7 @@ import {
   HATCH_PRIVATE_WEBSOCKET_HEADER,
   type HatchStateV1,
 } from "../src/hatch-contracts";
-import {
-  createSessionHarness,
-  makeStoredCredential,
-  SESSION_ID,
-  sessionHarnessKeys,
-} from "./session-harness";
+import { createSessionHarness, SESSION_ID, sessionHarnessKeys } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
 const NOW = Date.parse("2026-08-08T12:00:00.000Z");
@@ -44,7 +39,6 @@ const createHarness = Effect.fnUntraced(function* (stopCallsOnStop = false) {
           id: SESSION_ID,
           hardCapAt: "2026-08-08T13:00:00.000Z",
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     }),
   );
@@ -825,7 +819,6 @@ describe("authoritative Hatch session lifecycle", () => {
           rawPiContainerRunning: false,
           initialEntries: {
             [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
-            [sessionHarnessKeys.credential]: makeStoredCredential(),
             [sessionHarnessKeys.hatch]: activeHatch,
           },
           initialProjections: {
@@ -861,7 +854,6 @@ describe("authoritative Hatch session lifecycle", () => {
           rawPiContainerRunning: false,
           initialEntries: {
             [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
-            [sessionHarnessKeys.credential]: makeStoredCredential(),
             [sessionHarnessKeys.hatch]: legacyHatch,
           },
           initialProjections: {

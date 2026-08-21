@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   getScottySession: vi.fn(),
+  getScottyEnvironmentStatus: vi.fn(),
+  refreshScottyEnvironment: vi.fn(),
   completeScottyEvidenceStep: vi.fn(),
   finalizeScottyEvidenceJob: vi.fn(),
   listScottyEvidence: vi.fn(),
@@ -23,7 +25,6 @@ const sandbox = vi.hoisted(() => ({
   fetch: vi.fn(),
   containerFetch: vi.fn(),
   preparePiSessionAccess: vi.fn(),
-  reseedPiAuth: vi.fn(),
 }));
 
 const sandboxTarget = vi.hoisted((): { current: unknown } => ({
@@ -64,12 +65,19 @@ const runnerRegistry = vi.hoisted(() => ({
 
 const sandboxConfig = vi.hoisted(() => ({
   status: vi.fn(),
+  resolveGlobalSecret: vi.fn(),
   activate: vi.fn(),
-  piAuth: vi.fn(),
-  writePiAuth: vi.fn(),
   listRepos: vi.fn(),
   addRepo: vi.fn(),
   removeRepo: vi.fn(),
+  listEnvironment: vi.fn(),
+  listEnvironmentApprovals: vi.fn(),
+  approveEnvironment: vi.fn(),
+  rejectEnvironment: vi.fn(),
+  revokeEnvironment: vi.fn(),
+  environmentSnapshot: vi.fn(),
+  putEnvironment: vi.fn(),
+  removeEnvironment: vi.fn(),
 }));
 
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
@@ -81,7 +89,6 @@ import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
-import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { conflict } from "../src/contracts";
 import type { EvidenceStateV2 } from "../src/evidence-contracts";
 import { orderedEvidenceFrames } from "../public/evidence-view.js";
@@ -93,7 +100,6 @@ import showcaseScript from "../public/showcase.js?raw";
 import {
   createSessionHarness,
   makeResumeBackup,
-  makeStoredCredential,
   SESSION_ID,
   sessionHarnessKeys,
   type SessionHarness,
@@ -232,9 +238,6 @@ function env(
   };
   return {
     SCOTTY_TOKEN: TOKEN,
-    PI_AUTH_JSON:
-      '{"openai-codex":{"type":"oauth","access":"access","refresh":"refresh","expires":0}}',
-    GH_TOKEN: "github-test-sentinel",
     ASSETS: assets,
     AUTH: authNamespace(),
     RUNNER_REGISTRY: runnerRegistryNamespace(),
@@ -408,6 +411,26 @@ describe("real Hono boundary", () => {
       repo: "owner/repo",
       branch: "scotty/a0b1c2d3e4f5",
     });
+    sandbox.getScottyEnvironmentStatus.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      title: "Test session",
+      repo: "owner/repo",
+      status: "warm",
+      appliedRevision: 3,
+      currentEffectiveRevision: 4,
+      stale: true,
+      refreshable: true,
+    });
+    sandbox.refreshScottyEnvironment.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      title: "Test session",
+      repo: "owner/repo",
+      status: "warm",
+      appliedRevision: 4,
+      currentEffectiveRevision: 4,
+      stale: false,
+      refreshable: true,
+    });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
     sandbox.getScottyHatchStatus.mockResolvedValue({ version: 1, status: "not_configured" });
     sandbox.ensureScottyHatch.mockResolvedValue({
@@ -433,11 +456,6 @@ describe("real Hono boundary", () => {
       exposure: "closed",
       createdAt: "2026-08-08T12:00:00.000Z",
       updatedAt: "2026-08-08T12:00:02.000Z",
-    });
-    sandbox.reseedPiAuth.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      updatedAt: "2026-07-29T12:00:00.000Z",
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
     });
     auth.authenticate.mockResolvedValue({
       ok: true,
@@ -510,6 +528,18 @@ describe("real Hono boundary", () => {
       lastSeenAt: "2026-07-27T12:00:00.000Z",
     });
     runner.fetch.mockResolvedValue(new Response(null, { status: 204 }));
+    sandboxConfig.resolveGlobalSecret.mockImplementation(async (name: unknown) =>
+      name === "GH_TOKEN"
+        ? { ok: true as const, value: "authority-github-token" }
+        : name === "OPENAI_API_KEY"
+          ? { ok: true as const, value: "authority-openai-key" }
+          : name === "OPENCODE_API_KEY"
+            ? { ok: true as const, value: "authority-opencode-key" }
+            : {
+                ok: false as const,
+                error: { reason: "invalid_global_secret", message: "unknown global secret" },
+              },
+    );
     sandboxConfig.status.mockResolvedValue({
       ok: true,
       value: { schemaVersion: 1, revision: 0, activeDigest: null },
@@ -518,8 +548,6 @@ describe("real Hono boundary", () => {
       ok: true,
       value: { schemaVersion: 1, revision: 1, activeDigest: "a".repeat(64) },
     });
-    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: null });
-    sandboxConfig.writePiAuth.mockImplementation(async (record) => ({ ok: true, value: record }));
     sandboxConfig.listRepos.mockResolvedValue({ ok: true, value: [] });
     sandboxConfig.addRepo.mockImplementation(async (input) => ({
       ok: true,
@@ -531,6 +559,45 @@ describe("real Hono boundary", () => {
       },
     }));
     sandboxConfig.removeRepo.mockResolvedValue({ ok: true, value: true });
+    sandboxConfig.listEnvironment.mockResolvedValue({
+      ok: true,
+      value: { revision: 0, variables: [] },
+    });
+    sandboxConfig.environmentSnapshot.mockResolvedValue({
+      ok: true,
+      value: { revision: 0, variables: {} },
+    });
+    sandboxConfig.putEnvironment.mockImplementation(async (name, input) => ({
+      ok: true,
+      value: { name, secret: input.secret, configured: true, revision: 1 },
+    }));
+    sandboxConfig.removeEnvironment.mockImplementation(async (name) => ({
+      ok: true,
+      value: { name, removed: true, revision: 1 },
+    }));
+  });
+
+  it("reads and refreshes one session environment through session scopes", async () => {
+    const headers = { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` };
+    const status = await app.request("/api/sessions/a0b1c2d3e4f5/environment", { headers }, env());
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual(expect.objectContaining({ stale: true }));
+
+    const refreshed = await app.request(
+      "/api/sessions/a0b1c2d3e4f5/environment/refresh",
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
+      env(),
+    );
+    expect(refreshed.status).toBe(200);
+    expect(await refreshed.json()).toEqual(expect.objectContaining({ stale: false }));
+    expect(sandbox.refreshScottyEnvironment).toHaveBeenCalledOnce();
   });
 
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
@@ -1066,126 +1133,6 @@ describe("real Hono boundary", () => {
     expect(conflict.status).toBe(409);
     expect(runner.control).not.toHaveBeenCalled();
     expect(runnerRegistry.remove).not.toHaveBeenCalled();
-  });
-
-  it("reports only redacted Pi auth metadata and explicitly reseeds one session", async () => {
-    const bindings = env();
-    bindings.PI_AUTH_JSON = JSON.stringify({
-      "openai-codex": {
-        type: "oauth",
-        access: "honeypot-access",
-        refresh: "honeypot-refresh",
-        expires: 0,
-        accountId: "honeypot-account",
-      },
-      anthropic: {
-        type: "oauth",
-        access: "honeypot-anthropic-access",
-        refresh: "honeypot-anthropic-refresh",
-        expires: 0,
-      },
-    });
-    const status = await app.request(
-      "/api/auth/pi",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      bindings,
-    );
-    expect(status.status).toBe(200);
-    const statusBody = await status.json();
-    expect(statusBody).toMatchObject({
-      source: "bootstrap",
-      updatedAt: null,
-      providers: [
-        { id: "anthropic", type: "oauth", adapter: "unsupported" },
-        { id: "openai-codex", type: "oauth", adapter: "supported" },
-      ],
-    });
-    const serializedStatus = JSON.stringify(statusBody);
-    expect(serializedStatus).toMatch(/"sourceDigest":"[0-9a-f]{64}"/u);
-    expect(serializedStatus).not.toContain("honeypot");
-
-    const reseeded = await app.request(
-      "/api/sessions/a0b1c2d3e4f5/auth/reseed",
-      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
-      bindings,
-    );
-    expect(reseeded.status).toBe(200);
-    expect(sandbox.reseedPiAuth).toHaveBeenCalledTimes(1);
-    expect(await reseeded.json()).toEqual({
-      id: "a0b1c2d3e4f5",
-      updatedAt: "2026-07-29T12:00:00.000Z",
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-    });
-  });
-
-  it("keeps Pi credential writes root-only, schema-decoded, and metadata-only", async () => {
-    const record = await makeInstallationPiAuthRecord(
-      {
-        "openai-codex": {
-          type: "oauth",
-          access: "honeypot-access",
-          refresh: "honeypot-refresh",
-          expires: 0,
-        },
-      },
-      "2026-08-15T12:00:00.000Z",
-      "sync",
-    );
-    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: record });
-    const preferred = await app.request(
-      "/api/auth/pi",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env(),
-    );
-    expect(await preferred.json()).toEqual({
-      source: "sync",
-      sourceDigest: record.digest,
-      updatedAt: record.updatedAt,
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-    });
-
-    const ownerRejected = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          "content-type": "application/json",
-          origin: "http://localhost",
-          "sec-fetch-site": "same-origin",
-        },
-        body: JSON.stringify(record),
-      },
-      env(),
-    );
-    expect(ownerRejected.status).toBe(401);
-    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
-
-    const malformed = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ ...record, githubToken: "honeypot-github" }),
-      },
-      env(),
-    );
-    expect(malformed.status).toBe(400);
-    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
-
-    const written = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify(record),
-      },
-      env(),
-    );
-    expect(written.status).toBe(200);
-    expect(sandboxConfig.writePiAuth).toHaveBeenCalledWith(record);
-    const serialized = JSON.stringify(await written.json());
-    expect(serialized).not.toContain("honeypot");
   });
 
   it("allows only the owner browser to control the configured runner", async () => {
@@ -2111,7 +2058,7 @@ describe("real Hono boundary", () => {
     expect(harness.events).toContain("projection:warm");
   });
 
-  it("resumes through real restore, credential, runtime, and state orchestration", async () => {
+  it("resumes through real restore, runtime, and state orchestration", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
@@ -2122,7 +2069,6 @@ describe("real Hono boundary", () => {
           ownedBackupIds: ["backup-1"],
           codexThreadId: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
     useRealSandbox(harness);
@@ -2154,7 +2100,7 @@ describe("real Hono boundary", () => {
     );
   });
 
-  it("vaporizes through real destruction, credential deletion, and authority transition", async () => {
+  it("vaporizes through real destruction and authority transition", async () => {
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
       initialEntries: {
@@ -2162,7 +2108,6 @@ describe("real Hono boundary", () => {
           id: SESSION_ID,
           branch: `scotty/${SESSION_ID}`,
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       initialProjections: {
         [`stats:workspace-created:${SESSION_ID}`]: {
@@ -2189,12 +2134,11 @@ describe("real Hono boundary", () => {
       operation: null,
       ownedBackupIds: [],
     });
-    expect(harness.read(sessionHarnessKeys.credential)).toBeUndefined();
     expect(harness.events).toEqual(
       expect.arrayContaining([
         "schedule:retryVaporizeSession",
         "host:destroy",
-        `storage:delete:${sessionHarnessKeys.credential}`,
+        `storage:delete:${sessionHarnessKeys.environmentVault}`,
         "record:gone",
         `projection:delete:session:${SESSION_ID}`,
       ]),
@@ -2422,6 +2366,61 @@ describe("real Hono boundary", () => {
     expect(request instanceof Request ? request.url : String(request)).toBe(
       "https://api.github.com/repos/owner/project",
     );
+    const requestInit = fetch.mock.calls[0]?.[1];
+    expect(new Headers(requestInit?.headers).get("authorization")).toBe(
+      "Bearer authority-github-token",
+    );
+  });
+
+  it("fails repository verification closed when the global GH_TOKEN authority is unavailable", async () => {
+    sandboxConfig.resolveGlobalSecret.mockResolvedValue({
+      ok: false,
+      error: {
+        reason: "invalid_global_secret",
+        message: "Global GH_TOKEN secret is missing or invalid",
+      },
+    });
+
+    const response = await app.request(
+      "/api/repos",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ repo: "owner/project" }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "upstream",
+        message: "Repository verification failed",
+      },
+    });
+    expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
+  });
+
+  it("maps a GitHub authority transport failure to the repository verification envelope", async () => {
+    sandboxConfig.resolveGlobalSecret.mockRejectedValue(
+      new Error("simulated SandboxConfig transport failure"),
+    );
+
+    const response = await app.request(
+      "/api/repos",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ repo: "owner/project" }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "upstream", message: "Repository verification failed" },
+    });
+    expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
   });
 
   it("does not register a repository when GitHub verification fails", async () => {
@@ -3826,6 +3825,385 @@ describe("real Hono boundary", () => {
     const response = await app.request("/", undefined, env());
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/sessions");
+  });
+
+  it("manages global environment through root and primary-device credentials without leaks", async () => {
+    sandboxConfig.listEnvironment.mockResolvedValue({
+      ok: true,
+      value: {
+        revision: 3,
+        variables: [
+          {
+            name: "GH_TOKEN",
+            secret: true,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+          },
+          {
+            name: "API_TOKEN",
+            secret: true,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+          },
+          {
+            name: "PUBLIC_URL",
+            secret: false,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+            value: "https://example.test",
+          },
+        ],
+      },
+    });
+    const listed = await app.request(
+      "/api/environment",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(listed.status).toBe(200);
+    const listText = await listed.text();
+    expect(listText).toContain("PUBLIC_URL");
+    expect(listText).toContain("OPENAI_API_KEY");
+    expect(listText).toContain("OPENCODE_API_KEY");
+    expect(listText).not.toContain("real-secret");
+    expect(listText).toContain("GH_TOKEN");
+    expect(listText).not.toContain("authority-github-token");
+
+    const secret = "real-secret-never-return";
+    const updated = await app.request(
+      "http://localhost/api/environment/API_TOKEN",
+      {
+        method: "PUT",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ value: secret, secret: true }),
+      },
+      env(),
+    );
+    expect(updated.status).toBe(200);
+    expect(await updated.text()).not.toContain(secret);
+    expect(sandboxConfig.putEnvironment).toHaveBeenCalledWith(
+      "API_TOKEN",
+      {
+        value: secret,
+        secret: true,
+      },
+      undefined,
+    );
+    const githubUpdated = await app.request(
+      "http://localhost/api/environment/GH_TOKEN",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ value: "authority-github-token", secret: true }),
+      },
+      env(),
+    );
+    expect(githubUpdated.status).toBe(200);
+    expect(await githubUpdated.text()).not.toContain("authority-github-token");
+    expect(sandboxConfig.putEnvironment).toHaveBeenCalledWith(
+      "GH_TOKEN",
+      {
+        value: "authority-github-token",
+        secret: true,
+      },
+      undefined,
+    );
+
+    const removed = await app.request(
+      "/api/environment/PUBLIC_URL",
+      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(removed.status).toBe(200);
+    expect(sandboxConfig.removeEnvironment).toHaveBeenCalledWith("PUBLIC_URL", undefined);
+  });
+
+  it("validates and forwards repository environment scope without leaking inherited secrets", async () => {
+    sandboxConfig.listEnvironment.mockResolvedValue({
+      ok: true,
+      value: {
+        revision: 8,
+        repo: "owner/project",
+        variables: [
+          {
+            name: "GLOBAL_SECRET",
+            secret: true,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+            source: "global",
+          },
+          {
+            name: "CHANNEL",
+            secret: false,
+            configured: true,
+            updatedAt: "2026-08-20T12:00:00.000Z",
+            source: "repo",
+            value: "preview",
+          },
+        ],
+      },
+    });
+    const listed = await app.request(
+      "/api/environment?repo=owner%2Fproject",
+      {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      env(),
+    );
+    expect(listed.status).toBe(200);
+    expect(sandboxConfig.listEnvironment).toHaveBeenCalledWith("owner/project");
+    expect(await listed.text()).not.toContain("inherited-secret");
+
+    const updated = await app.request(
+      "http://localhost/api/environment/CHANNEL?repo=owner%2Fproject",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ value: "stable", secret: false }),
+      },
+      env(),
+    );
+    expect(updated.status).toBe(200);
+    expect(sandboxConfig.putEnvironment).toHaveBeenCalledWith(
+      "CHANNEL",
+      { value: "stable", secret: false },
+      "owner/project",
+    );
+
+    const removed = await app.request(
+      "/api/environment/CHANNEL?repo=owner%2Fproject",
+      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(removed.status).toBe(200);
+    expect(sandboxConfig.removeEnvironment).toHaveBeenCalledWith("CHANNEL", "owner/project");
+
+    const malformed = await app.request(
+      "/api/environment?repo=owner%2Fproject%2Fextra",
+      {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      },
+      env(),
+    );
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({
+      error: { code: "bad_request", message: "repo must be OWNER/NAME" },
+    });
+  });
+
+  it("lists environment-secret approvals for root and the primary device without secret values", async () => {
+    const approvalList = {
+      revision: 12,
+      policyRevision: 4,
+      approvals: [
+        {
+          sourceScope: "owner/project",
+          name: "API_TOKEN",
+          origin: "https://preview.example",
+          decision: "approved",
+          updatedAt: "2026-08-20T12:00:00.000Z",
+        },
+      ],
+      pending: [
+        {
+          sourceScope: "owner/project",
+          name: "API_TOKEN",
+          origin: "https://staging.example",
+          firstObservedAt: "2026-08-20T12:01:00.000Z",
+          lastObservedAt: "2026-08-20T12:02:00.000Z",
+        },
+      ],
+    };
+    sandboxConfig.listEnvironmentApprovals.mockResolvedValue({ ok: true, value: approvalList });
+
+    const unauthenticated = await app.request("/api/environment/approvals", undefined, env());
+    expect(unauthenticated.status).toBe(401);
+    expect(sandboxConfig.listEnvironmentApprovals).not.toHaveBeenCalled();
+
+    auth.authenticate.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        client: { ...REGISTERED_CLIENT, role: "standard" },
+        renewed: false,
+      },
+    });
+    const standard = await app.request(
+      "/api/environment/approvals",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(standard.status).toBe(401);
+    expect(sandboxConfig.listEnvironmentApprovals).not.toHaveBeenCalled();
+
+    const root = await app.request(
+      "/api/environment/approvals?repo=owner%2Fproject",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(root.status).toBe(200);
+    await expect(root.json()).resolves.toEqual(approvalList);
+    expect(sandboxConfig.listEnvironmentApprovals).toHaveBeenCalledWith("owner/project");
+
+    const primaryDevice = await app.request(
+      "/api/environment/approvals",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env(),
+    );
+    expect(primaryDevice.status).toBe(200);
+    expect(sandboxConfig.listEnvironmentApprovals).toHaveBeenLastCalledWith(undefined);
+
+    const serialized = JSON.stringify(approvalList);
+    expect(serialized).not.toContain("real-secret");
+    expect(await primaryDevice.text()).not.toContain("real-secret");
+
+    const malformedRepo = await app.request(
+      "/api/environment/approvals?repo=owner%2Fproject%2Fextra",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(malformedRepo.status).toBe(400);
+    await expect(malformedRepo.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "repo must be OWNER/NAME" },
+    });
+    expect(sandboxConfig.listEnvironmentApprovals).toHaveBeenCalledTimes(2);
+  });
+
+  it("approves, rejects, and revokes environment-secret origins through the optional RPCs", async () => {
+    const input = {
+      sourceScope: "owner/project",
+      name: "API_TOKEN",
+      origin: "https://preview.example",
+    };
+    const responses = {
+      approve: {
+        sourceScope: input.sourceScope,
+        name: input.name,
+        origin: input.origin,
+        decision: "approved",
+        revision: 12,
+        policyRevision: 5,
+      },
+      reject: {
+        sourceScope: input.sourceScope,
+        name: input.name,
+        origin: input.origin,
+        decision: "rejected",
+        revision: 12,
+        policyRevision: 6,
+      },
+      revoke: {
+        sourceScope: input.sourceScope,
+        name: input.name,
+        origin: input.origin,
+        decision: "revoked",
+        revision: 12,
+        policyRevision: 7,
+      },
+    } as const;
+    sandboxConfig.approveEnvironment.mockResolvedValue({ ok: true, value: responses.approve });
+    sandboxConfig.rejectEnvironment.mockResolvedValue({ ok: true, value: responses.reject });
+    sandboxConfig.revokeEnvironment.mockResolvedValue({ ok: true, value: responses.revoke });
+
+    const requests = [
+      ["approve", sandboxConfig.approveEnvironment, responses.approve],
+      ["reject", sandboxConfig.rejectEnvironment, responses.reject],
+      ["revoke", sandboxConfig.revokeEnvironment, responses.revoke],
+    ] as const;
+    for (const [action, rpc, responseBody] of requests) {
+      const response = await app.request(
+        `/api/environment/approvals/${action}`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(input),
+        },
+        env(),
+      );
+      expect(response.status, action).toBe(200);
+      await expect(response.json(), action).resolves.toEqual(responseBody);
+      expect(rpc, action).toHaveBeenCalledWith(input);
+    }
+
+    const missingContentType = await app.request(
+      "/api/environment/approvals/approve",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify(input),
+      },
+      env(),
+    );
+    expect(missingContentType.status).toBe(400);
+    await expect(missingContentType.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "Request content type must be application/json" },
+    });
+
+    const invalidBody = await app.request(
+      "/api/environment/approvals/reject",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ ...input, origin: "http://insecure.example", secret: "leak" }),
+      },
+      env(),
+    );
+    expect(invalidBody.status).toBe(400);
+    const invalidBodyJson = await invalidBody.json();
+    expect(invalidBodyJson).toEqual({
+      error: { code: "bad_request", message: "Environment approval request is invalid" },
+    });
+    expect(JSON.stringify(invalidBodyJson)).not.toContain("leak");
+  });
+
+  it("protects environment browser routes and same-origin mutations", async () => {
+    const page = await app.request(
+      "/environment",
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
+      env({
+        assets: {
+          fetch: async () => new Response("environment page"),
+          connect: () => {
+            throw new Error("ASSETS.connect isn't used by route tests");
+          },
+        },
+      }),
+    );
+    expect(page.status).toBe(200);
+    expect(await page.text()).toBe("environment page");
+
+    const crossSite = await app.request(
+      "http://localhost/api/environment/SAFE_NAME",
+      {
+        method: "PUT",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "https://evil.example",
+          "sec-fetch-site": "cross-site",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ value: "hidden", secret: true }),
+      },
+      env(),
+    );
+    expect(crossSite.status).toBe(400);
+    expect(sandboxConfig.putEnvironment).not.toHaveBeenCalled();
   });
 
   it("does not expose the legacy PTY API", async () => {

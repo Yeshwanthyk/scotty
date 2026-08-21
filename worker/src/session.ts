@@ -13,11 +13,6 @@ import {
 } from "../../protocol/pi-console";
 import { RUNNER_PROTOCOL_VERSION, type RunnerOperation } from "../../protocol/runner";
 import {
-  makeInstallationPiAuthRecord,
-  piProviderMetadata,
-  type InstallationPiAuthRecord,
-} from "../../protocol/pi-auth";
-import {
   type Cause,
   Clock,
   Data,
@@ -122,13 +117,26 @@ import {
   PI_SESSION_PORT,
   PI_SESSION_PROCESS_ID,
   PI_SESSION_TOKEN_HEADER,
-  piSessionTransportToken,
 } from "./container-auth";
 import {
-  CredentialVault,
-  credentialVaultLayer,
-  durableObjectCredentialVaultStorage,
-} from "./credential-vault";
+  EnvironmentSecretVault,
+  environmentSecretVaultLayer,
+  durableObjectEnvironmentSecretVaultStorage,
+  EnvironmentProxyRequestSchema,
+  EnvironmentProxyResponseSchema,
+  EnvironmentSecretResolveRequestSchema,
+  EnvironmentSecretResolutionSchema,
+  type EnvironmentProxyResponse,
+  type EnvironmentSecretResolutionResponse,
+} from "./environment-secret-vault";
+import {
+  EnvironmentAuthorizationResultSchema,
+  ENVIRONMENT_SECRET_SENTINEL_PREFIX,
+  EnvironmentMaterializationSchema,
+  isSessionEnvironmentSnapshot,
+  type SessionEnvironmentSnapshot,
+} from "./environment-contracts";
+import { REQUIRED_GLOBAL_SECRET_NAMES } from "./environment-policy";
 import { readBoundedUtf8Body } from "./bounded-http";
 import {
   badRequest,
@@ -146,24 +154,17 @@ import {
   type DownManifest,
   type OperationKind,
   type SessionCreateSetupStage,
+  type SessionEnvironmentStatus,
   type SessionRecord,
   type SessionStatus,
   type SessionView,
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
-import {
-  ALLOWED_HOSTS,
-  GITHUB_SENTINEL_PREFIX,
-  PI_SENTINEL_PREFIX,
-  denyOutbound,
-  makeOutboundByHost,
-  type CredentialPatch,
-  type CredentialRefreshLease,
-  type StoredCredential,
-} from "./egress";
+import { makeEnvironmentOutbound, makeOutboundByHost } from "./egress";
 import { inspectPassiveSession, scottyErrorResponse, steerPassiveSession } from "./passive-session";
 import {
   durableObjectSessionRecordStorage,
+  createPiSessionTransportToken,
   makeSessionControlGate,
   SessionStore,
   sessionStoreLayer,
@@ -189,7 +190,7 @@ import {
   SandboxBundleMaterializer,
 } from "./sandbox-bundle-materializer";
 import { r2SandboxBundleCapabilities, sandboxBundleStoreLayer } from "./sandbox-bundle-store";
-import { SANDBOX_CONFIG_OBJECT_NAME } from "./sandbox-config-object";
+import { SANDBOX_CONFIG_OBJECT_NAME, type SandboxConfigRpcResult } from "./sandbox-config-object";
 import {
   kvSessionProjectionStorage,
   projectSessionBestEffort,
@@ -218,12 +219,58 @@ const EVIDENCE_PREVIEW_BASE_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const EVIDENCE_CLEANUP_RETRY_SECONDS = 5;
 const EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS = 5_000;
+const ENVIRONMENT_REFRESH_RETRY_SECONDS = 5;
+
+interface EnvironmentRefreshRetryPayload {
+  readonly sessionId: string;
+  readonly nonce: string;
+}
 const SANDBOX_PREVIEW_PROXY_HEADER = "x-sandbox-preview-proxy";
 const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
 const SANDBOX_PREVIEW_SANDBOX_ID_HEADER = "x-sandbox-preview-sandbox-id";
 const PREVIEW_PORT_PATTERN = /^(?:[1-9][0-9]{3,4})$/u;
+const decodeEnvironmentAuthorizationResult = Schema.decodeUnknownResult(
+  EnvironmentAuthorizationResultSchema,
+  { onExcessProperty: "error" },
+);
 
+const decodeEnvironmentMaterialization = Schema.decodeUnknownResult(
+  EnvironmentMaterializationSchema,
+  { onExcessProperty: "error" },
+);
+const environmentSecretSentinel = (environment: unknown, name: string): string | undefined => {
+  if (!isSessionEnvironmentSnapshot(environment)) return undefined;
+  const value = environment.variables[name];
+  return value?.startsWith(ENVIRONMENT_SECRET_SENTINEL_PREFIX) ? value : undefined;
+};
+
+const requiredGlobalSecretSentinels = (
+  environment: unknown,
+): Record<string, string> | undefined => {
+  if (!isSessionEnvironmentSnapshot(environment)) return undefined;
+  const sentinels: Record<string, string> = {};
+  for (const name of REQUIRED_GLOBAL_SECRET_NAMES) {
+    const value = environmentSecretSentinel(environment, name);
+    if (value === undefined) return undefined;
+    sentinels[name] = value;
+  }
+  return sentinels;
+};
+const decodeEnvironmentProxyRequest = Schema.decodeUnknownResult(EnvironmentProxyRequestSchema, {
+  onExcessProperty: "error",
+});
+const decodeEnvironmentProxyResponse = Schema.decodeUnknownResult(EnvironmentProxyResponseSchema, {
+  onExcessProperty: "error",
+});
+const decodeEnvironmentSecretResolveRequest = Schema.decodeUnknownResult(
+  EnvironmentSecretResolveRequestSchema,
+  { onExcessProperty: "error" },
+);
+const decodeEnvironmentSecretResolution = Schema.decodeUnknownResult(
+  EnvironmentSecretResolutionSchema,
+  { onExcessProperty: "error" },
+);
 const adaptSandboxWriteFile = (
   sandbox: Pick<Sandbox, "writeFile">,
   path: string,
@@ -284,7 +331,7 @@ type SandboxServices =
   | BackupStore
   | ContainerEvidenceRecorder
   | ContainerAuth
-  | CredentialVault
+  | EnvironmentSecretVault
   | EvidenceStore
   | HatchStore
   | RolloutDiscovery
@@ -383,7 +430,7 @@ class HostOperationFailure extends Data.TaggedError("HostOperationFailure")<{
   readonly cause: unknown;
 }> {}
 
-class InstallationPiAuthRpcFailure extends Data.TaggedError("InstallationPiAuthRpcFailure")<{
+class GlobalSecretRpcFailure extends Data.TaggedError("GlobalSecretRpcFailure")<{
   readonly message: string;
 }> {}
 
@@ -574,7 +621,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   override sleepAfter = "60m";
   interceptHttps = true;
   enableInternet = false;
-  allowedHosts = [...ALLOWED_HOSTS];
+  allowedHosts = ["*"];
   private readonly layer: Layer.Layer<SandboxServices>;
   private readonly clock: Clock.Clock | undefined;
   private readonly passivePiConsoleRelay: PassivePiConsoleRelay;
@@ -655,12 +702,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
       runtimeAccess,
       { fetchPortReadiness: env.SCOTTY_LOCAL_E2E === "1" },
     );
-    const vault = credentialVaultLayer(
-      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning CredentialVault adapter
-      durableObjectCredentialVaultStorage(ctx.storage),
-      env.GH_TOKEN,
+    const environmentSecrets = environmentSecretVaultLayer(
+      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires the per-session environment secret vault to the Session Durable Object
+      durableObjectEnvironmentSecretVaultStorage(ctx.storage),
     );
-    const runtimeAndVault = Layer.merge(runtime, vault);
+    const runtimeAndVault = Layer.merge(runtime, environmentSecrets);
     const backup = backupStoreLayer(
       {
         createBackup: (backupOptions) => this.createBackup(backupOptions),
@@ -716,35 +762,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return Option.getOrUndefined(yield* store.read);
   });
 
-  private readonly readInstallationPiAuthProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const result = yield* Effect.tryPromise({
-      try: () => this.env.SANDBOX_CONFIG.getByName("account").piAuth(),
-      catch: () =>
-        new InstallationPiAuthRpcFailure({
-          message: "Installation Pi credential authority is unavailable",
-        }),
-    });
-    if (!result.ok)
-      return yield* new InstallationPiAuthRpcFailure({
-        message: "Installation Pi credential authority is unavailable",
-      });
-    return result.value;
-  });
-
-  private readonly writeInstallationPiAuthProgram = Effect.fnUntraced(function* (
+  private readonly readGlobalSecretProgram = Effect.fnUntraced(function* (
     this: Sandbox,
-    record: InstallationPiAuthRecord,
+    name: string,
   ) {
     const result = yield* Effect.tryPromise({
-      try: () => this.env.SANDBOX_CONFIG.getByName("account").writePiAuth(record),
+      try: () =>
+        this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).resolveGlobalSecret(name),
       catch: () =>
-        new InstallationPiAuthRpcFailure({
-          message: "Installation Pi credential write-back failed",
+        new GlobalSecretRpcFailure({
+          message: "Installation environment secret authority is unavailable",
         }),
     });
     if (!result.ok)
-      return yield* new InstallationPiAuthRpcFailure({
-        message: "Installation Pi credential write-back failed",
+      return yield* new GlobalSecretRpcFailure({
+        message: "Installation environment secret authority is unavailable",
       });
     return result.value;
   });
@@ -1899,10 +1931,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict(`Session is already running ${record.operation.kind}`);
     if (record.execution.provider !== "cloudflare")
       return yield* wrongState(record.status, "access", "This session uses the runner runtime");
-    const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
-    const credential = yield* vault.require;
-    yield* containerAuth.ensurePiSession(record.id, credential);
+    const transportToken = yield* store.ensurePiSessionTransportToken;
+    yield* containerAuth.ensurePiSession(record.id, transportToken, record.environment);
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
@@ -1980,18 +2012,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ? { exists: true, defaultBranch: record.defaultBranch }
       : { exists: false },
   ) {
-    const vault = yield* CredentialVault;
     const workspace = yield* Workspace;
-    const installationRecord = yield* this.readInstallationPiAuthProgram();
-    const credential = yield* vault.seed({
-      ...(installationRecord === null
-        ? { piAuthJson: this.env.PI_AUTH_JSON }
-        : { installationRecord }),
-      providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-      githubSentinel: `${GITHUB_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-    });
-    const worktree = yield* workspace.prepare(record, credential.githubSentinel, verified);
-    yield* this.updateForOperationProgram(nonce, (current) => ({
+    const preparedRecord = yield* this.materializeEnvironmentSnapshotProgram(record, nonce).pipe(
+      Effect.mapError(mapCreateUncertain("materialize")),
+    );
+    const secrets = requiredGlobalSecretSentinels(preparedRecord.environment);
+    if (secrets === undefined)
+      return yield* new SessionCreateUncertain({
+        cause: "required global secrets were not materialized into the session environment",
+        stage: "materialize",
+      });
+    const worktree = yield* workspace.prepare(preparedRecord, secrets.GH_TOKEN, verified);
+    const runtimeRecord = yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       operation: {
         kind: "create",
@@ -2002,13 +2034,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
       repoExistsAtCreate: worktree.repoExists,
       defaultBranch: worktree.defaultBranch,
     })).pipe(Effect.mapError(mapCreateUncertain("runtime_phase")));
-    return yield* this.continueCloudflarePiCreateProgram(record, prompt, nonce);
+    return yield* this.continueCloudflarePiCreateProgram(runtimeRecord, prompt, nonce);
   });
 
   private readonly materializeAndSeedSandboxProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     record: SessionRecord,
-    credential: StoredCredential,
     options?: { readonly initialPrompt?: string },
   ) {
     const containerAuth = yield* ContainerAuth;
@@ -2024,12 +2055,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
       extraSkills: materialized.extraSkills,
       extraPackages: materialized.extraPackages,
       bundleRoot: materialized.bundleRoot,
+      environment: record.environment,
     };
     yield* containerAuth
-      .seed(record.id, credential, seedOptions)
+      .seed(record.id, seedOptions)
       .pipe(Effect.mapError(mapCreateUncertain("seed")));
     yield* containerAuth
-      .preflight(record.id, credential, seedOptions)
+      .preflight(record.id, seedOptions)
       .pipe(Effect.mapError(mapCreateUncertain("preflight")));
   });
 
@@ -2039,13 +2071,29 @@ export class Sandbox extends BaseSandbox<Bindings> {
     prompt: string,
     nonce: string,
   ) {
-    const vault = yield* CredentialVault;
+    const environmentVault = yield* EnvironmentSecretVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
-    const credential = yield* vault.require;
-    yield* this.materializeAndSeedSandboxProgram(record, credential, { initialPrompt: prompt });
+    const transportToken = yield* store.ensurePiSessionTransportToken;
+    if (requiredGlobalSecretSentinels(record.environment) === undefined)
+      return yield* new SessionCreateUncertain({
+        cause: "required global secrets were not materialized into the session environment",
+        stage: "materialize",
+      });
+    yield* this.materializeAndSeedSandboxProgram(record, {
+      initialPrompt: prompt,
+    });
     yield* containerAuth
-      .ensurePiSession(record.id, credential)
+      .ensurePiSession(record.id, transportToken, record.environment)
       .pipe(Effect.mapError(mapCreateUncertain("pi_health")));
+    if (!isSessionEnvironmentSnapshot(record.environment))
+      return yield* new SessionCreateUncertain({
+        cause: "session environment snapshot was not prepared",
+        stage: "warm_commit",
+      });
+    yield* environmentVault
+      .commit(record.environment)
+      .pipe(Effect.mapError(mapCreateUncertain("warm_commit")));
     const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     return yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
@@ -2100,6 +2148,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       "Session setup failed",
       false,
     );
+    const environmentVault = yield* EnvironmentSecretVault;
+    yield* Effect.result(environmentVault.delete);
     yield* this.destroyFailedRuntimeProgram(failed.id);
     return yield* this.upstreamError("Session setup failed", failure, failed.id);
   });
@@ -2236,6 +2286,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hardCapAt: new Date(now + input.hardCapSeconds * 1_000).toISOString(),
       hardCapDurationSeconds: input.hardCapSeconds,
       ownedBackupIds: [],
+      piSessionTransportToken: createPiSessionTransportToken(),
     };
 
     const inspected = yield* Effect.result(store.inspectInitial(initial, idempotency));
@@ -2244,7 +2295,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (decisionBeforeSchedule.kind === "replay")
       return yield* this.replayCreateProgram(decisionBeforeSchedule.record, input.prompt);
 
-    const verified = yield* verifier.verify(input.repo, this.env.GH_TOKEN).pipe(
+    const githubToken = yield* this.readGlobalSecretProgram("GH_TOKEN").pipe(
+      Effect.mapError((error) => this.upstreamError("Repository verification failed", error, id)),
+    );
+    const verified = yield* verifier.verify(input.repo, githubToken).pipe(
       Effect.mapError(
         (_failure: RepoVerifierFailure) =>
           new ScottyError("upstream", "Repository verification failed", {
@@ -2273,7 +2327,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     });
     if (!sandboxConfigStatus.ok)
       return yield* this.upstreamError("Session setup failed", sandboxConfigStatus.error, id);
-
     const initialWithBundle: SessionRecord = {
       ...verifiedInitial,
       sandboxBundle: {
@@ -2310,6 +2363,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* this.projectProgram(recordToCommit);
 
     if (Result.isFailure(hardCapSchedule)) {
+      yield* Effect.result((yield* EnvironmentSecretVault).delete);
       yield* this.destroyFailedRuntimeProgram(recordToCommit.id);
       return yield* this.upstreamError(
         "Session setup failed",
@@ -2339,46 +2393,259 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return toSessionView(toProjection(record, new Date(now)), now);
   });
 
-  private readonly reseedPiAuthProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const record = yield* this.requireRecordProgram();
-    if (record.status !== "warm")
-      return yield* wrongState(record.status, "reseed auth", "Only warm sessions can be reseeded");
-    if (record.execution.provider !== "cloudflare")
-      return yield* wrongState(
-        record.status,
-        "reseed auth",
-        "Runner credentials are managed by the runner host",
+  private readonly resolveEnvironmentMaterializationProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+  ) {
+    const stub = this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
+    const materializeEnvironment = stub.materializeEnvironment;
+    if (materializeEnvironment === undefined)
+      return yield* this.upstreamError(
+        "Environment materialization is unavailable",
+        undefined,
+        record.id,
       );
-    if (record.operation)
-      return yield* conflict(`Session is already running ${record.operation.kind}`);
-    const vault = yield* CredentialVault;
-    const containerAuth = yield* ContainerAuth;
-    const currentCredential = yield* vault.require;
-    const installationRecord = yield* this.readInstallationPiAuthProgram();
-    yield* containerAuth.quiescePiSession(record.id, currentCredential);
-    const sentinelSeed = `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`;
-    const credential =
-      installationRecord === null
-        ? yield* vault.reseed({
-            piAuthJson: this.env.PI_AUTH_JSON,
-            providerSentinelSeed: sentinelSeed,
-          })
-        : yield* vault.reconcile(installationRecord, sentinelSeed);
-    yield* containerAuth.refreshPiAuth(record.id, credential);
-    yield* containerAuth.stopPiSession();
-    yield* containerAuth.ensurePiSession(record.id, credential);
-    return {
-      id: record.id,
-      updatedAt: credential.updatedAt,
-      providers: piProviderMetadata(
-        Object.fromEntries(
-          Object.entries(credential.providers).map(([providerId, provider]) => [
-            providerId,
-            provider.credential,
-          ]),
+    const result = yield* Effect.tryPromise({
+      try: async (): Promise<SandboxConfigRpcResult<unknown>> =>
+        await materializeEnvironment(record.repo),
+      catch: (cause): ScottyError =>
+        this.upstreamError("Environment materialization failed", cause, record.id),
+    });
+    if (!result.ok)
+      return yield* this.upstreamError(
+        "Environment materialization failed",
+        result.error,
+        record.id,
+      );
+    const materialization = decodeEnvironmentMaterialization(result.value);
+    if (Result.isFailure(materialization))
+      return yield* this.upstreamError(
+        "Environment materialization failed",
+        materialization.failure,
+        record.id,
+      );
+    return materialization.success;
+  });
+
+  private readonly materializeEnvironmentSnapshotProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+    nonce: string,
+  ) {
+    const materialization = yield* this.resolveEnvironmentMaterializationProgram(record);
+    const vault = yield* EnvironmentSecretVault;
+    const committed = isSessionEnvironmentSnapshot(record.environment)
+      ? record.environment
+      : undefined;
+    const snapshot = yield* vault
+      .reconcile(materialization, record.id, committed)
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Environment materialization failed", undefined, record.id),
         ),
-      ),
+      );
+    if (requiredGlobalSecretSentinels(snapshot) === undefined)
+      return yield* this.upstreamError("Environment materialization failed", undefined, record.id);
+    return yield* this.updateForOperationProgram(nonce, (current) => ({
+      ...current,
+      environment: snapshot,
+    }));
+  });
+
+  private readonly environmentStatusProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record?: SessionRecord,
+  ) {
+    const current = record ?? (yield* this.requireRecordProgram());
+    const effective = yield* this.resolveEnvironmentMaterializationProgram(current);
+    const appliedRevision = current.environment?.revision ?? null;
+    return {
+      id: current.id,
+      title: current.title,
+      repo: current.repo,
+      status: current.status,
+      appliedRevision,
+      currentEffectiveRevision: effective.revision,
+      stale: appliedRevision !== effective.revision,
+      refreshable:
+        current.status === "warm" &&
+        current.execution.provider === "cloudflare" &&
+        current.operation === null,
     };
+  });
+
+  private readonly armEnvironmentRefreshRetryProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: EnvironmentRefreshRetryPayload,
+  ) {
+    yield* Effect.sync(() => this.deleteSchedules("retryEnvironmentRefresh"));
+    yield* hostEffect("schedule", () =>
+      this.schedule(ENVIRONMENT_REFRESH_RETRY_SECONDS, "retryEnvironmentRefresh", payload),
+    );
+  });
+
+  private readonly continueEnvironmentRefreshProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: EnvironmentRefreshRetryPayload,
+  ) {
+    let record = yield* this.requireRecordProgram();
+    if (
+      record.id !== payload.sessionId ||
+      record.operation?.kind !== "refresh" ||
+      record.operation.nonce !== payload.nonce
+    )
+      return yield* conflict("Session environment refresh lease changed");
+    if (record.operation.environmentRefreshPhase === undefined)
+      record = yield* this.updateForOperationProgram(payload.nonce, (current) => ({
+        ...current,
+        operation: current.operation && {
+          ...current.operation,
+          environmentRefreshPhase: "pending",
+        },
+      }));
+    const priorAppliedEnvironment = isSessionEnvironmentSnapshot(
+      record.operation?.environmentRefreshTarget,
+    )
+      ? record.operation.environmentRefreshTarget
+      : undefined;
+    const previousEnvironment = record.operation?.environmentRefreshPrevious;
+    const environmentVault = yield* EnvironmentSecretVault;
+    const store = yield* SessionStore;
+    const containerAuth = yield* ContainerAuth;
+    const transportToken = yield* store.ensurePiSessionTransportToken;
+    const effective = yield* this.resolveEnvironmentMaterializationProgram(record);
+    if (
+      priorAppliedEnvironment === undefined &&
+      isSessionEnvironmentSnapshot(record.environment) &&
+      record.environment.revision === effective.revision
+    ) {
+      record = yield* this.releaseOperationProgram(payload.nonce);
+      return yield* this.environmentStatusProgram(record);
+    }
+    const committedEnvironment = isSessionEnvironmentSnapshot(previousEnvironment)
+      ? previousEnvironment
+      : priorAppliedEnvironment === undefined && isSessionEnvironmentSnapshot(record.environment)
+        ? record.environment
+        : undefined;
+    const next = yield* environmentVault
+      .reconcile(effective, record.id, committedEnvironment)
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Environment refresh materialization failed", undefined, record.id),
+        ),
+      );
+    record = yield* this.updateForOperationProgram(payload.nonce, (current) => ({
+      ...current,
+      operation: current.operation && {
+        ...current.operation,
+        environmentRefreshPhase: "applying",
+        environmentRefreshTarget: next,
+        ...(current.operation.environmentRefreshPrevious === undefined &&
+        current.environment !== undefined
+          ? { environmentRefreshPrevious: current.environment }
+          : {}),
+      },
+    }));
+    // Stage and fence the target before touching the runtime. The lease keeps the target
+    // retryable if applying, persisting, or pruning becomes ambiguous.
+    yield* containerAuth.quiescePiSession(record.id, transportToken);
+    yield* containerAuth.stopPiSession();
+    const priorEnvironment =
+      priorAppliedEnvironment === undefined
+        ? record.environment
+        : {
+            version: 1 as const,
+            revision: isSessionEnvironmentSnapshot(record.environment)
+              ? record.environment.revision
+              : priorAppliedEnvironment.revision,
+            variables: {
+              ...(isSessionEnvironmentSnapshot(record.environment)
+                ? record.environment.variables
+                : {}),
+              ...priorAppliedEnvironment.variables,
+            },
+          };
+    yield* containerAuth.refreshEnvironment(record.id, transportToken, priorEnvironment, next);
+    const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+    yield* this.updateForOperationProgram(payload.nonce, (current) => ({
+      ...current,
+      environment: next,
+      failure: undefined,
+      updatedAt,
+    }));
+    yield* environmentVault
+      .commit(next)
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Environment refresh commit failed", undefined, record.id),
+        ),
+      );
+    const committed = yield* this.releaseOperationProgram(payload.nonce);
+    yield* Effect.sync(() => this.deleteSchedules("retryEnvironmentRefresh"));
+    return yield* this.environmentStatusProgram(committed);
+  });
+
+  private readonly failEnvironmentRefreshProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+  ) {
+    let current = yield* this.requireRecordProgram();
+    if (
+      current.operation?.kind === "refresh" &&
+      current.operation.environmentRefreshPhase === "applying"
+    ) {
+      const previous = current.operation.environmentRefreshPrevious;
+      current = yield* this.updateForOperationProgram(nonce, (record) => {
+        const { environment: _environment, ...withoutEnvironment } = record;
+        return previous === undefined
+          ? withoutEnvironment
+          : { ...withoutEnvironment, environment: previous };
+      });
+    }
+    const failed = yield* this.failOperationProgram(
+      nonce,
+      "environment_refresh_failed",
+      "Environment refresh failed and retry could not be scheduled",
+      Boolean(current.backup?.current),
+    );
+    yield* this.destroyFailedRuntimeProgram(failed.id);
+  });
+
+  private readonly refreshEnvironmentProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const current = yield* this.requireRecordProgram();
+    if (current.execution.provider !== "cloudflare")
+      return yield* wrongState(
+        current.status,
+        "refresh environment",
+        "Only Cloudflare sessions can be refreshed",
+      );
+    const operation = yield* this.acquireOperationProgram("refresh", ["warm"]);
+    const payload = { sessionId: current.id, nonce: operation.nonce };
+    const refreshed = yield* Effect.result(this.continueEnvironmentRefreshProgram(payload));
+    if (Result.isSuccess(refreshed)) return refreshed.success;
+    const armed = yield* Effect.result(this.armEnvironmentRefreshRetryProgram(payload));
+    if (Result.isFailure(armed)) yield* this.failEnvironmentRefreshProgram(operation.nonce);
+    return yield* this.upstreamError("Environment refresh failed", refreshed.failure, current.id);
+  });
+
+  private readonly retryEnvironmentRefreshProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    payload: EnvironmentRefreshRetryPayload,
+  ) {
+    const current = yield* this.readRecordProgram();
+    if (
+      current?.id !== payload.sessionId ||
+      current.operation?.kind !== "refresh" ||
+      current.operation.nonce !== payload.nonce
+    )
+      return;
+    const refreshed = yield* Effect.result(this.continueEnvironmentRefreshProgram(payload));
+    if (Result.isSuccess(refreshed)) return;
+    const armed = yield* Effect.result(this.armEnvironmentRefreshRetryProgram(payload));
+    if (Result.isSuccess(armed)) return;
+    const pending = yield* this.readRecordProgram();
+    if (pending?.operation?.kind !== "refresh" || pending.operation.nonce !== payload.nonce) return;
+    yield* this.failEnvironmentRefreshProgram(payload.nonce);
   });
 
   private readonly renameScottySessionProgram = Effect.fnUntraced(function* (
@@ -2491,7 +2758,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (authoritative.execution.provider === "runner")
       return yield* this.resumeRunnerSessionProgram();
     const backups = yield* BackupStore;
-    const vault = yield* CredentialVault;
+    const environmentVault = yield* EnvironmentSecretVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
     const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
     let record = yield* this.requireRecordProgram();
@@ -2501,6 +2769,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* wrongState(record.status, "resume", "No successful backup is available");
     }
 
+    const transportToken = yield* store.ensurePiSessionTransportToken;
     const bootingAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     record = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
       ...current,
@@ -2522,19 +2791,32 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }));
         yield* hostEffect("schedule", () => this.scheduleHardCap(hardCapAt));
         yield* backups.restore(backup);
-        const installationRecord = yield* this.readInstallationPiAuthProgram();
-        const credential =
-          installationRecord === null
-            ? yield* vault.require
-            : yield* vault.reconcile(
-                installationRecord,
-                `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-              );
-        yield* this.materializeAndSeedSandboxProgram(record, credential);
+        let environment: SessionEnvironmentSnapshot;
+        if (isSessionEnvironmentSnapshot(record.environment)) {
+          environment = yield* environmentVault.replay(record.environment);
+        } else {
+          record = yield* this.materializeEnvironmentSnapshotProgram(record, operation.nonce);
+          if (!isSessionEnvironmentSnapshot(record.environment))
+            return yield* new ScottyError(
+              "internal",
+              "Session environment snapshot was not prepared",
+              { httpStatus: 500, exitCode: 1 },
+            );
+          environment = record.environment;
+        }
+        if (requiredGlobalSecretSentinels(environment) === undefined)
+          return yield* this.upstreamError(
+            "Environment materialization failed",
+            undefined,
+            record.id,
+          );
+        const runtimeRecord = { ...record, environment };
+        yield* this.materializeAndSeedSandboxProgram(runtimeRecord);
         yield* this.restorePiAndHatchProgram(
           operation.nonce,
-          containerAuth.ensurePiSession(record.id, credential),
+          containerAuth.ensurePiSession(record.id, transportToken, environment),
         );
+        yield* environmentVault.commit(environment);
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
           ...current,
@@ -2578,7 +2860,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     payload: VaporizeRetryPayload,
   ) {
     const backups = yield* BackupStore;
-    const vault = yield* CredentialVault;
+    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     const current = yield* this.readRecordProgram();
     if (!current) return yield* notFound(payload.id);
@@ -2630,7 +2912,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* this.deleteEvidenceArtifactsProgram(pending);
       yield* evidence.clearForVaporize(payload.nonce);
     }
-    yield* vault.delete;
+    yield* environmentVault.delete;
     yield* store.clearCreateIdempotency;
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     const gone = yield* this.updateForOperationProgram(payload.nonce, (record) => ({
@@ -2698,7 +2980,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     record: SessionRecord,
   ) {
-    const vault = yield* CredentialVault;
+    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     if (record.execution.provider === "cloudflare" && this.rawContainer?.running === true) {
       const destroyed = yield* Effect.raceFirst(
@@ -2711,7 +2993,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           exitCode: 1,
         });
     }
-    yield* vault.delete;
+    yield* environmentVault.delete;
     yield* store.clearCreateIdempotency;
     yield* removeSessionProjection(record.id);
     yield* Effect.sync(() => this.cancelAllSessionSchedules());
@@ -3704,10 +3986,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.expireRetainedEvidenceProgram(payload));
   }
 
-  async reseedPiAuth() {
-    return this.#run(this.reseedPiAuthProgram());
-  }
-
   async preparePiSessionAccess(): Promise<void> {
     return this.#run(this.preparePiSessionAccessProgram());
   }
@@ -3837,14 +4115,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (container === undefined || !container.running)
       return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
 
-    const credential = await this.#run(
-      Effect.result(CredentialVault.pipe(Effect.flatMap((vault) => vault.require))),
-    );
-    if (Result.isFailure(credential))
-      return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
-    const transportToken = await piSessionTransportToken(input.sessionId, credential.success).then(
-      (value) => Result.succeed(value),
-      () => Result.fail(undefined),
+    const transportToken = await this.#run(
+      Effect.result(Effect.flatMap(SessionStore, (store) => store.ensurePiSessionTransportToken)),
     );
     if (Result.isFailure(transportToken))
       return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
@@ -3935,6 +4207,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
     };
 
+    if (command !== undefined) {
+      const transportToken = await this.#run(
+        Effect.result(Effect.flatMap(SessionStore, (store) => store.ensurePiSessionTransportToken)),
+      );
+      if (Result.isFailure(transportToken))
+        return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
+    }
     return command === undefined
       ? relayWithCurrentAuthority()
       : this.sessionControlGate.run(relayWithCurrentAuthority);
@@ -4328,6 +4607,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.resumeScottySessionProgram());
   }
 
+  async getScottyEnvironmentStatus(): Promise<SessionEnvironmentStatus> {
+    return this.#run(this.environmentStatusProgram());
+  }
+
+  async refreshScottyEnvironment(): Promise<SessionEnvironmentStatus> {
+    return this.#run(this.refreshEnvironmentProgram());
+  }
+
+  async retryEnvironmentRefresh(payload: EnvironmentRefreshRetryPayload): Promise<void> {
+    return this.#run(this.retryEnvironmentRefreshProgram(payload));
+  }
+
   async prepareDownArchive(): Promise<DownArchive> {
     return this.#run(this.prepareDownArchiveProgram());
   }
@@ -4349,48 +4640,102 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.renameScottySessionProgram(title));
   }
 
-  async readCredentialForProxy(sentinel: string): Promise<StoredCredential | null> {
-    return this.#run(Effect.flatMap(CredentialVault, (vault) => vault.readForProxy(sentinel)));
-  }
-
-  async beginCredentialRefresh(sentinel: string): Promise<CredentialRefreshLease | null> {
-    return this.#run(
-      Effect.flatMap(CredentialVault, (vault) => vault.beginRefresh(sentinel, crypto.randomUUID())),
-    );
-  }
-
-  async persistRotatedCredential(
-    sentinel: string,
-    patch: CredentialPatch,
-    nonce: string,
-  ): Promise<void> {
-    await this.#run(
-      Effect.gen({ self: this }, function* () {
-        const vault = yield* CredentialVault;
-        yield* vault.persistRotation(sentinel, patch, nonce);
-        const credential = yield* vault.require;
-        const providers = Object.fromEntries(
-          Object.entries(credential.providers).map(([providerId, provider]) => [
-            providerId,
-            provider.credential,
-          ]),
-        );
-        const record = yield* Effect.tryPromise({
-          try: () => makeInstallationPiAuthRecord(providers, credential.updatedAt, "rotation"),
-          catch: () =>
-            new InstallationPiAuthRpcFailure({
-              message: "Installation Pi credential write-back failed",
-            }),
-        });
-        yield* this.writeInstallationPiAuthProgram(record);
+  private readonly authorizeEnvironmentRequestProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: unknown,
+  ) {
+    const decoded = decodeEnvironmentProxyRequest(input);
+    if (Result.isFailure(decoded)) return yield* badRequest("Environment proxy request is invalid");
+    const record = yield* this.readRecordProgram();
+    if (record === undefined || record.status === "gone")
+      return { authorized: false, reason: "session_unavailable" as const };
+    const vault = yield* EnvironmentSecretVault;
+    const resolutions = yield* vault.readForProxy(decoded.success.sentinels);
+    if (resolutions === null) return { authorized: false, reason: "unknown_sentinel" as const };
+    const stub = this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
+    const authorizeEnvironmentSecrets = stub.authorizeEnvironmentSecrets;
+    if (authorizeEnvironmentSecrets === undefined)
+      return { authorized: false, reason: "session_unavailable" as const };
+    const result = yield* Effect.result(
+      Effect.tryPromise({
+        try: () =>
+          authorizeEnvironmentSecrets({
+            origin: decoded.success.origin,
+            keys: resolutions.map(({ sourceScope, name }) => ({ sourceScope, name })),
+          }),
+        catch: (cause): ScottyError =>
+          this.upstreamError("Environment proxy authorization failed", cause, record.id),
       }),
     );
+    if (Result.isFailure(result))
+      return { authorized: false, reason: "session_unavailable" as const };
+    if (!result.success.ok) return { authorized: false, reason: "session_unavailable" as const };
+    const authorizationResult = decodeEnvironmentAuthorizationResult(result.success.value);
+    if (Result.isFailure(authorizationResult))
+      return yield* this.upstreamError(
+        "Environment proxy authorization failed",
+        authorizationResult.failure,
+        record.id,
+      );
+    const authorization = decodeEnvironmentProxyResponse({
+      authorized: authorizationResult.success.authorized,
+      reason: authorizationResult.success.authorized
+        ? "approved"
+        : (authorizationResult.success.decisions.find(({ status }) => status !== "approved")
+            ?.status ?? "pending"),
+      ...(authorizationResult.success.authorized
+        ? {
+            values: Object.fromEntries(resolutions.map(({ sentinel, value }) => [sentinel, value])),
+          }
+        : {}),
+    });
+    if (Result.isFailure(authorization))
+      return yield* this.upstreamError(
+        "Environment proxy authorization failed",
+        authorization.failure,
+        record.id,
+      );
+    return authorization.success;
+  });
+
+  async authorizeEnvironmentRequest(input: unknown): Promise<EnvironmentProxyResponse> {
+    return this.#run(this.authorizeEnvironmentRequestProgram(input));
   }
 
-  async cancelCredentialRefresh(sentinel: string, nonce: string): Promise<void> {
-    await this.#run(
-      Effect.flatMap(CredentialVault, (vault) => vault.cancelRefresh(sentinel, nonce)),
-    );
+  private readonly resolveEnvironmentSecretProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: unknown,
+  ) {
+    const decoded = decodeEnvironmentSecretResolveRequest(input);
+    if (Result.isFailure(decoded)) return yield* badRequest("Environment sentinel is invalid");
+    const record = yield* this.readRecordProgram();
+    if (record === undefined || record.status === "gone") return null;
+    const vault = yield* EnvironmentSecretVault;
+    const resolution = yield* vault
+      .resolve(decoded.success.sentinel)
+      .pipe(
+        Effect.mapError(() =>
+          this.upstreamError("Environment secret resolution failed", undefined, record.id),
+        ),
+      );
+    if (resolution === null) return null;
+    const response = decodeEnvironmentSecretResolution({
+      sentinel: resolution.sentinel,
+      value: resolution.value,
+    });
+    if (Result.isFailure(response))
+      return yield* this.upstreamError(
+        "Environment secret resolution failed",
+        response.failure,
+        record.id,
+      );
+    return response.success;
+  });
+
+  async resolveEnvironmentSecretForProxy(
+    input: unknown,
+  ): Promise<EnvironmentSecretResolutionResponse | null> {
+    return this.#run(this.resolveEnvironmentSecretProgram(input));
   }
 
   async enforceHardCap(payload: HardCapPayload): Promise<void> {
@@ -4517,8 +4862,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
     const runtime = yield* SandboxRuntime;
     const backups = yield* BackupStore;
-    const vault = yield* CredentialVault;
+    const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
+    const transportToken = yield* store.ensurePiSessionTransportToken;
     const root = sessionRoot(record.id);
     let runtimeStopAttempted = false;
 
@@ -4533,9 +4879,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
           piProcess.status !== "killed" &&
           piProcess.status !== "error"
         ) {
-          const credential = yield* vault.require;
           yield* containerAuth
-            .quiescePiSession(record.id, credential)
+            .quiescePiSession(record.id, transportToken)
             .pipe(
               Effect.mapError((cause) => new PiRuntimeStopFailure({ stage: "quiesce", cause })),
             );
@@ -4574,10 +4919,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }),
       {
         restore: Effect.gen({ self: this }, function* () {
-          const credential = yield* vault.require;
           yield* this.restorePiAndHatchProgram(
             nonce,
-            containerAuth.ensurePiSession(record.id, credential),
+            containerAuth.ensurePiSession(record.id, transportToken, record.environment),
           );
         }),
         resumeRuntime,
@@ -4788,7 +5132,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 }
 
 Sandbox.outboundByHost = makeOutboundByHost(fetch);
-Sandbox.outbound = denyOutbound;
+Sandbox.outbound = makeEnvironmentOutbound(fetch);
 
 function isHatchStateError(error: unknown): error is HatchStateError {
   return Predicate.isTagged("HatchStateError")(error);

@@ -1,11 +1,18 @@
 import { Effect, Option, Schema } from "effect";
-import { PiAuthDigestSchema, PiAuthUpdatedAtSchema } from "../../protocol/pi-auth";
 import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
 import {
   RepositoryRegistryEntrySchema,
   RepositoryRegistryRemovalResponseSchema,
 } from "../../protocol/repository";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
+import {
+  EnvironmentApprovalListSchema,
+  EnvironmentApprovalMutationResponseSchema,
+  EnvironmentMutationResponseSchema,
+  EnvironmentPolicyKeyInputSchema,
+  EnvironmentViewSchema,
+} from "../../worker/src/environment-contracts";
+import { SessionEnvironmentStatusSchema } from "../../worker/src/contracts";
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
@@ -303,23 +310,6 @@ export const DownOutputSchema = Schema.Struct({
   resumeCmd: Schema.NullOr(Schema.String),
 });
 export type DownOutput = typeof DownOutputSchema.Type;
-export const PiProviderMetadataSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  type: Schema.Literals(["api_key", "oauth"]),
-  adapter: Schema.Literals(["supported", "unsupported"]),
-});
-export const PiAuthStatusResponseSchema = Schema.Struct({
-  source: Schema.Literals(["bootstrap", "sync", "rotation"]),
-  sourceDigest: PiAuthDigestSchema,
-  updatedAt: Schema.NullOr(PiAuthUpdatedAtSchema),
-  providers: Schema.Array(PiProviderMetadataSchema),
-});
-export type PiAuthStatusResponse = typeof PiAuthStatusResponseSchema.Type;
-export const PiAuthReseedResponseSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
-  providers: Schema.Array(PiProviderMetadataSchema),
-});
 export const CloudflareApiEnvelopeSchema = Schema.Struct({
   success: Schema.Boolean,
 });
@@ -342,6 +332,12 @@ export const RunnerRemovalResponseSchema = Schema.Struct({
   name: Schema.NonEmptyString,
   status: Schema.Literal("removed"),
 });
+
+export const EnvironmentResponseSchema = EnvironmentViewSchema;
+export const EnvironmentMutationSchema = EnvironmentMutationResponseSchema;
+export const EnvironmentApprovalsResponseSchema = EnvironmentApprovalListSchema;
+export const EnvironmentApprovalMutationSchema = EnvironmentApprovalMutationResponseSchema;
+export const EnvironmentApprovalKeySchema = EnvironmentPolicyKeyInputSchema;
 
 export const RepositoryResponseSchema = RepositoryRegistryEntrySchema;
 export const RepositoriesResponseSchema = Schema.Array(RepositoryResponseSchema);
@@ -385,8 +381,6 @@ export const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchem
 export const decodeErrorFields = Schema.decodeUnknownOption(ErrorFieldsSchema);
 export const decodeDownMetadata = Schema.decodeUnknownOption(DownMetadataSchema);
 export const decodeVaporizeResponse = Schema.decodeUnknownOption(VaporizeResponseSchema);
-export const decodePiAuthStatusResponse = Schema.decodeUnknownOption(PiAuthStatusResponseSchema);
-export const decodePiAuthReseedResponse = Schema.decodeUnknownOption(PiAuthReseedResponseSchema);
 export const decodeCloudflareApiEnvelope = Schema.decodeUnknownOption(CloudflareApiEnvelopeSchema);
 export const decodeRunnerRegistrationResponse = Schema.decodeUnknownOption(
   RunnerRegistrationResponseSchema,
@@ -395,6 +389,28 @@ export const decodeRunnerStatusesResponse = Schema.decodeUnknownOption(
   RunnerStatusesResponseSchema,
 );
 export const decodeRunnerRemovalResponse = Schema.decodeUnknownOption(RunnerRemovalResponseSchema);
+export const decodeEnvironmentResponse = Schema.decodeUnknownOption(EnvironmentResponseSchema, {
+  onExcessProperty: "error",
+});
+export const decodeEnvironmentMutation = Schema.decodeUnknownOption(EnvironmentMutationSchema, {
+  onExcessProperty: "error",
+});
+export const decodeEnvironmentApprovalsResponse = Schema.decodeUnknownOption(
+  EnvironmentApprovalsResponseSchema,
+  { onExcessProperty: "error" },
+);
+export const decodeEnvironmentApprovalMutation = Schema.decodeUnknownOption(
+  EnvironmentApprovalMutationSchema,
+  { onExcessProperty: "error" },
+);
+export const decodeEnvironmentApprovalKey = Schema.decodeUnknownOption(
+  EnvironmentApprovalKeySchema,
+  { onExcessProperty: "error" },
+);
+export const decodeSessionEnvironmentStatus = Schema.decodeUnknownOption(
+  SessionEnvironmentStatusSchema,
+  { onExcessProperty: "error" },
+);
 export const decodeRepositoryResponse = Schema.decodeUnknownOption(RepositoryResponseSchema, {
   onExcessProperty: "error",
 });

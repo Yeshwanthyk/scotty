@@ -1,12 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
-import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { ScottyError } from "../src/contracts";
+import { isSessionEnvironmentSnapshot } from "../src/environment-contracts";
 import {
   createSessionHarness,
   type InitialStorageEntries,
   makeResumeBackup,
-  makeStoredCredential,
   type HarnessFailureStage,
   type HarnessOptions,
   SESSION_ID,
@@ -36,7 +35,6 @@ const sleepingRecord = (overrides: Parameters<typeof makeSessionRecord>[0] = {})
 
 const resumeEntries = (): InitialStorageEntries => ({
   [sessionHarnessKeys.record]: sleepingRecord(),
-  [sessionHarnessKeys.credential]: makeStoredCredential(),
 });
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
@@ -53,7 +51,15 @@ const assertUpstreamFailure = async (operation: Promise<unknown>): Promise<void>
 
 describe("Sandbox resume orchestration", () => {
   it("restores the current backup, reseeds runtime state, and reaches warm", async () => {
-    const harness = await createSessionHarness({ initialEntries: resumeEntries() });
+    const transportToken = "e".repeat(64);
+    const harness = await createSessionHarness({
+      initialEntries: {
+        ...resumeEntries(),
+        [sessionHarnessKeys.record]: sleepingRecord({
+          piSessionTransportToken: transportToken,
+        }),
+      },
+    });
 
     const resumed = await harness.sandbox.resumeScottySession();
 
@@ -63,6 +69,13 @@ describe("Sandbox resume orchestration", () => {
     assert.strictEqual(record?.operation, null);
     assert.strictEqual(record?.failure, undefined);
     assert.strictEqual(record?.backup?.current.id, "backup-1");
+    assert.strictEqual(record?.piSessionTransportToken, transportToken);
+    assert.strictEqual(
+      harness.writtenFiles.find(
+        (file) => file.path === `/tmp/scotty-pi-session-${SESSION_ID}.token`,
+      )?.content,
+      transportToken,
+    );
     const hardCapIndex = harness.events.indexOf("schedule:enforceHardCap");
     const restoreIndex = harness.events.indexOf("host:restoreBackup");
     const authIndex = harness.events.indexOf("host:mkdir");
@@ -78,59 +91,173 @@ describe("Sandbox resume orchestration", () => {
     assert.deepStrictEqual(harness.aborts, []);
   });
 
-  it("applies only installation Pi authority newer than the session vault", async () => {
-    for (const [updatedAt, expectedAccess] of [
-      ["2025-12-31T00:00:00.000Z", "stored-access-token"],
-      ["2026-01-02T00:00:00.000Z", "installation-access"],
-    ] as const) {
-      const installationPiAuthRecord = await makeInstallationPiAuthRecord(
-        {
-          "openai-codex": {
-            type: "oauth",
-            access: "installation-access",
-            refresh: "installation-refresh",
-            expires: 1,
-          },
-        },
-        updatedAt,
-        "sync",
-      );
-      const harness = await createSessionHarness({
-        initialEntries: resumeEntries(),
-        installationPiAuthRecord,
-      });
-      await harness.sandbox.resumeScottySession();
-      const stored = harness.read<ReturnType<typeof makeStoredCredential>>(
-        sessionHarnessKeys.credential,
-      );
-      assert.strictEqual(
-        stored?.providers["openai-codex"]?.credential.type === "oauth"
-          ? stored.providers["openai-codex"].credential.access
-          : undefined,
-        expectedAccess,
-      );
-    }
-  });
-
-  it("treats an equal matching installation record as idempotent on resume", async () => {
-    const current = makeStoredCredential();
-    const providers = Object.fromEntries(
-      Object.entries(current.providers).map(([id, provider]) => [id, provider.credential]),
-    );
-    const installationPiAuthRecord = await makeInstallationPiAuthRecord(
-      providers,
-      current.updatedAt,
-      "rotation",
-    );
+  it("rematerializes a legacy snapshot without exposing its secret to runtime state", async () => {
+    const legacySecret = "real-secret";
+    const removedLegacySecret = "removed-real-secret";
+    const legacy = {
+      revision: 4,
+      variables: {
+        RELEASE_CHANNEL: "retained",
+        API_TOKEN: legacySecret,
+        REMOVED_TOKEN: removedLegacySecret,
+      },
+    };
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: sleepingRecord(),
-        [sessionHarnessKeys.credential]: current,
+        [sessionHarnessKeys.record]: sleepingRecord({ environment: legacy }),
       },
-      installationPiAuthRecord,
+      environmentMaterialization: {
+        revision: 5,
+        variables: {
+          RELEASE_CHANNEL: {
+            value: "new-global",
+            secret: false,
+            updatedAt: "two",
+            sourceScope: "global",
+          },
+          API_TOKEN: {
+            value: "new-secret",
+            secret: true,
+            updatedAt: "two",
+            sourceScope: "global",
+          },
+        },
+      },
     });
+
     await harness.sandbox.resumeScottySession();
-    assert.deepStrictEqual(harness.read(sessionHarnessKeys.credential), current);
+
+    const record = harness.readRecord();
+    const environment = record?.environment;
+    assert.ok(isSessionEnvironmentSnapshot(environment));
+    const sentinel = environment.variables.API_TOKEN;
+    assert.strictEqual(environment.version, 1);
+    assert.ok(sentinel?.startsWith(`scotty-env-${SESSION_ID}-`));
+    assert.notInclude(JSON.stringify(record), legacySecret);
+    assert.notInclude(JSON.stringify(record), removedLegacySecret);
+    assert.notProperty(environment.variables, "REMOVED_TOKEN");
+    assert.strictEqual(harness.appliedEnvironments[0]?.RELEASE_CHANNEL, "new-global");
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, sentinel);
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments[0]), legacySecret);
+    assert.notInclude(JSON.stringify(harness.appliedEnvironments[0]), removedLegacySecret);
+    assert.notInclude(JSON.stringify(harness.writtenFiles), legacySecret);
+    assert.notInclude(JSON.stringify(harness.writtenFiles), removedLegacySecret);
+    assert.notInclude(JSON.stringify(harness.piProcessEnvironments), legacySecret);
+    assert.notInclude(JSON.stringify(harness.piProcessEnvironments), removedLegacySecret);
+  });
+  it("replays a versioned snapshot without rematerializing installation environment", async () => {
+    const retainedSecret = "retained-secret";
+    const retainedSentinel = `scotty-env-${SESSION_ID}-${"a".repeat(32)}`;
+    const staleSentinel = `scotty-env-${SESSION_ID}-${"b".repeat(32)}`;
+    const githubSentinel = `scotty-env-${SESSION_ID}-${"c".repeat(32)}`;
+    const openaiSentinel = `scotty-env-${SESSION_ID}-${"d".repeat(32)}`;
+    const opencodeSentinel = `scotty-env-${SESSION_ID}-${"e".repeat(32)}`;
+    const retained = {
+      version: 1 as const,
+      revision: 4,
+      variables: {
+        RELEASE_CHANNEL: "retained",
+        API_TOKEN: retainedSentinel,
+        GH_TOKEN: githubSentinel,
+        OPENAI_API_KEY: openaiSentinel,
+        OPENCODE_API_KEY: opencodeSentinel,
+      },
+    };
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: sleepingRecord({ environment: retained }),
+        [sessionHarnessKeys.environmentVault]: {
+          version: 1,
+          entries: {
+            [retainedSentinel]: {
+              sentinel: retainedSentinel,
+              sourceScope: "global",
+              name: "API_TOKEN",
+              value: retainedSecret,
+            },
+            [staleSentinel]: {
+              sentinel: staleSentinel,
+              sourceScope: "global",
+              name: "STALE_TOKEN",
+              value: "stale-secret",
+            },
+            [githubSentinel]: {
+              sentinel: githubSentinel,
+              sourceScope: "global",
+              name: "GH_TOKEN",
+              value: "authority-github-token",
+            },
+            [openaiSentinel]: {
+              sentinel: openaiSentinel,
+              sourceScope: "global",
+              name: "OPENAI_API_KEY",
+              value: "authority-openai-key",
+            },
+            [opencodeSentinel]: {
+              sentinel: opencodeSentinel,
+              sourceScope: "global",
+              name: "OPENCODE_API_KEY",
+              value: "authority-opencode-key",
+            },
+          },
+        },
+      },
+      environmentMaterialization: {
+        revision: 5,
+        variables: {
+          RELEASE_CHANNEL: {
+            value: "new-global",
+            secret: false,
+            updatedAt: "newer",
+            sourceScope: "global",
+          },
+          API_TOKEN: {
+            value: "new-secret",
+            secret: true,
+            updatedAt: "newer",
+            sourceScope: "global",
+          },
+        },
+      },
+    });
+
+    await harness.sandbox.resumeScottySession();
+
+    assert.deepStrictEqual(harness.readRecord()?.environment, retained);
+    assert.deepStrictEqual(harness.environmentSnapshotRepos, []);
+    assert.strictEqual(harness.appliedEnvironments[0]?.RELEASE_CHANNEL, "retained");
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, retainedSentinel);
+    assert.strictEqual(harness.piProcessEnvironments[0]?.RELEASE_CHANNEL, "retained");
+    assert.strictEqual(harness.piProcessEnvironments[0]?.API_TOKEN, retainedSentinel);
+    assert.deepStrictEqual(harness.read(sessionHarnessKeys.environmentVault), {
+      version: 1,
+      entries: {
+        [retainedSentinel]: {
+          sentinel: retainedSentinel,
+          sourceScope: "global",
+          name: "API_TOKEN",
+          value: retainedSecret,
+        },
+        [githubSentinel]: {
+          sentinel: githubSentinel,
+          sourceScope: "global",
+          name: "GH_TOKEN",
+          value: "authority-github-token",
+        },
+        [openaiSentinel]: {
+          sentinel: openaiSentinel,
+          sourceScope: "global",
+          name: "OPENAI_API_KEY",
+          value: "authority-openai-key",
+        },
+        [opencodeSentinel]: {
+          sentinel: opencodeSentinel,
+          sourceScope: "global",
+          name: "OPENCODE_API_KEY",
+          value: "authority-opencode-key",
+        },
+      },
+    });
   });
 
   it("rematerializes the pinned sandbox bundle after backup restore", async () => {
@@ -140,7 +267,6 @@ describe("Sandbox resume orchestration", () => {
         [sessionHarnessKeys.record]: sleepingRecord({
           sandboxBundle: { digest, manifestVersion: 1 },
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -177,7 +303,6 @@ describe("Sandbox resume orchestration", () => {
         [sessionHarnessKeys.record]: sleepingRecord({
           sandboxBundle: { digest, manifestVersion: 1 },
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       seedPinnedSandboxBundle: false,
     });
@@ -205,7 +330,6 @@ describe("Sandbox resume orchestration", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: withoutBackup,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -237,10 +361,10 @@ describe("Sandbox resume orchestration", () => {
       },
     },
     {
-      name: "credential require",
+      name: "ready state persist",
       options: {
         initialEntries: resumeEntries(),
-        transactionFailureCountdown: 3,
+        transactionFailureCountdown: 2,
       },
     },
     {

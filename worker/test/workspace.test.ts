@@ -14,11 +14,11 @@ import { sessionRoot, Workspace, workspaceLayer } from "../src/workspace";
 import { makeSessionRecord } from "./support";
 
 const ID = "a0b1c2d3e4f5";
-const SENTINEL = `scotty-github-${ID}-sentinel`;
+const SENTINEL = `scotty-env-${ID}-${"a".repeat(32)}`;
 const REAL_GITHUB = "honeypot-real-github-credential";
 const ROOT = `/workspace/${ID}`;
 const ENV = { GH_TOKEN: SENTINEL, GIT_TERMINAL_PROMPT: "0" };
-const HELPER = "!f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f";
+const HELPER = "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f";
 
 const execResult = (
   command: string,

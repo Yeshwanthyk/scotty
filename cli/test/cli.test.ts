@@ -5,8 +5,15 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { AuthError } from "alchemy/Auth";
-import { EXIT, main, STANDARD_TOOLSET, VERSION, type CliDependencies } from "../scotty";
-import { BeamUpRequestSchema } from "../src/schemas";
+import {
+  EMBEDDED_SKILL,
+  EXIT,
+  main,
+  STANDARD_TOOLSET,
+  VERSION,
+  type CliDependencies,
+} from "../scotty";
+import { BeamUpRequestSchema, EnvironmentApprovalKeySchema } from "../src/schemas";
 import { Schema } from "effect";
 
 const temporaryDirectories: string[] = [];
@@ -62,6 +69,7 @@ function rejected<T = never>(message: string): Promise<T> {
 }
 
 const decodeBeamUpRequest = Schema.decodeUnknownSync(BeamUpRequestSchema);
+const decodeEnvironmentApprovalKey = Schema.decodeUnknownSync(EnvironmentApprovalKeySchema);
 
 const pendingUpPath = (home: string, host: string, body: unknown): string => {
   const fingerprint = createHash("sha256")
@@ -662,7 +670,6 @@ describe("configuration and transport", () => {
       mode: "fresh",
     });
     expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
-    expect(request?.githubToken).toBe("0123456789abcdef0123456789abcdef01234567");
     const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
     expect((await stat(join(home, ".scotty.json"))).mode & 0o777).toBe(0o600);
     expect(config).toEqual({
@@ -1907,294 +1914,6 @@ describe("configuration and transport", () => {
   });
 });
 
-describe("Pi auth commands", () => {
-  test("sync posts one canonical record, skips secret upload and polling, and reports warm reconciliation failures", async () => {
-    const home = await temporaryDirectory();
-    const authDirectory = join(home, ".pi", "agent");
-    const authPath = join(authDirectory, "auth.json");
-    await mkdir(authDirectory, { recursive: true });
-    await writeFile(
-      authPath,
-      JSON.stringify({
-        openai: { type: "api_key", key: "$OPENAI_TEST_KEY" },
-        "openai-codex": {
-          type: "oauth",
-          access: "local-access",
-          refresh: "local-refresh",
-          expires: 0,
-          accountId: "local-account",
-          idToken: "local-id-token",
-          oauthExtension: { nested: "must-preserve" },
-        },
-        anthropic: {
-          type: "oauth",
-          access: "anthropic-access",
-          refresh: "anthropic-refresh",
-          expires: 0,
-        },
-      }),
-      { mode: 0o600 },
-    );
-    await writeFile(
-      join(home, ".scotty.json"),
-      JSON.stringify({
-        version: 1,
-        installationName: "home",
-        profile: "personal",
-        accountId: "a".repeat(32),
-        workerName: "scotty-home-worker",
-        runnerWorkerName: "scotty-home-runner",
-        containerName: "scotty-home-sandbox",
-        kvTitle: "scotty-home-sessions",
-        backupBucketName: "scotty-home-backups",
-        host: "https://scotty-home-worker.example.workers.dev",
-        token: "worker-token",
-      }),
-      { mode: 0o600 },
-    );
-    let secretUploads = 0;
-    let postedRecord = "";
-    const requests: Request[] = [];
-    const targets: unknown[] = [];
-    const target = {
-      accountId: "a".repeat(32),
-      workerName: "scotty-home-worker",
-      host: "https://scotty-home-worker.example.workers.dev",
-    };
-    const h = harness({
-      home,
-      env: { OPENAI_TEST_KEY: "resolved-openai-key" },
-      inspectPiAuthTarget: async (request) => {
-        targets.push(request);
-        return target;
-      },
-      uploadPiAuthSecret: async (request) => {
-        secretUploads += 1;
-        return rejected(`must not upload ${request.json}`);
-      },
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        requests.push(request);
-        const path = new URL(request.url).pathname;
-        if (path === "/api/auth/pi") {
-          postedRecord = await request.text();
-          return Response.json({
-            source: "sync",
-            sourceDigest: "a".repeat(64),
-            updatedAt: "2026-08-15T12:00:00.000Z",
-            providers: [
-              { id: "openai", type: "api_key", adapter: "supported" },
-              { id: "openai-codex", type: "oauth", adapter: "supported" },
-            ],
-          });
-        }
-        if (path === "/api/sessions")
-          return Response.json(
-            ["warm-ok", "warm-failed", "sleeping"].map((id) => ({
-              id,
-              title: id,
-              status: id === "sleeping" ? "sleeping" : "warm",
-              provider: "cloudflare",
-              repo: "owner/repo",
-              defaultBranch: "main",
-              branch: `scotty/${id}`,
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              hardCapAt: "2026-01-01T04:00:00.000Z",
-              ageSeconds: 1,
-              capRemainingSeconds: 1,
-            })),
-          );
-        if (path.endsWith("/warm-failed/auth/reseed"))
-          return Response.json({ error: { code: "internal", message: "failed" } }, { status: 500 });
-        return Response.json({ id: "warm-ok", updatedAt: "now", providers: [] });
-      },
-    });
-
-    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.OK);
-    expect(targets).toHaveLength(1);
-    expect(secretUploads).toBe(0);
-    const normalized = JSON.parse(postedRecord);
-    expect(normalized.providers.openai.key).toBe("resolved-openai-key");
-    expect(normalized.providers["openai-codex"].accountId).toBe("local-account");
-    expect(normalized.providers["openai-codex"].idToken).toBe("local-id-token");
-    expect(normalized.providers["openai-codex"].oauthExtension).toEqual({
-      nested: "must-preserve",
-    });
-    expect(normalized.providers.anthropic).toBeUndefined();
-    const expectedTarget = {
-      profile: "personal",
-      expectedAccountId: "a".repeat(32),
-      expectedWorkerName: "scotty-home-worker",
-      expectedRunnerWorkerName: "scotty-home-runner",
-      expectedContainerName: "scotty-home-sandbox",
-      expectedKvTitle: "scotty-home-sessions",
-      expectedBackupBucketName: "scotty-home-backups",
-      expectedHost: "https://scotty-home-worker.example.workers.dev",
-    };
-    expect(targets[0]).toEqual(expectedTarget);
-    expect(h.json()).toMatchObject({
-      synchronized: true,
-      worker: "scotty-home-worker",
-      providers: [
-        { id: "openai", adapter: "supported" },
-        { id: "openai-codex", adapter: "supported" },
-      ],
-      reconciled: ["warm-ok"],
-      failed: ["warm-failed"],
-      partial: true,
-    });
-    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
-      "/api/auth/pi",
-      "/api/sessions",
-      "/api/sessions/warm-ok/auth/reseed",
-      "/api/sessions/warm-failed/auth/reseed",
-    ]);
-    expect(
-      requests.every((request) => request.headers.get("authorization") === "Bearer worker-token"),
-    ).toBe(true);
-    expect(JSON.stringify(h.json())).not.toContain("local-access");
-    expect(JSON.stringify(h.json())).not.toContain("resolved-openai-key");
-  });
-
-  test("sync verifies the managed target before reading Pi credentials", async () => {
-    const home = await temporaryDirectory();
-    await writeFile(
-      join(home, ".scotty.json"),
-      JSON.stringify({
-        version: 1,
-        installationName: "home",
-        profile: "personal",
-        accountId: "a".repeat(32),
-        workerName: "scotty-home-worker",
-        runnerWorkerName: "scotty-home-runner",
-        containerName: "scotty-home-sandbox",
-        kvTitle: "scotty-home-sessions",
-        backupBucketName: "scotty-home-backups",
-        host: "https://scotty-home-worker.example.workers.dev",
-        token: "worker-token",
-      }),
-      { mode: 0o600 },
-    );
-    let uploaded = false;
-    const h = harness({
-      home,
-      inspectPiAuthTarget: async () => {
-        return rejected("wrong account");
-      },
-      uploadPiAuthSecret: async () => {
-        uploaded = true;
-        return rejected("must not upload");
-      },
-    });
-
-    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.GENERIC);
-    expect(h.error().error.code).toBe("pi_auth_target_failed");
-    expect(uploaded).toBe(false);
-    expect(h.stderr.join("")).not.toContain("wrong account");
-  });
-
-  test("sync rejects a symlinked Pi auth file", async () => {
-    const home = await temporaryDirectory();
-    const authDirectory = join(home, ".pi", "agent");
-    await mkdir(authDirectory, { recursive: true });
-    const targetPath = join(home, "auth-target.json");
-    await writeFile(targetPath, JSON.stringify({ openai: { type: "api_key", key: "secret" } }), {
-      mode: 0o600,
-    });
-    await symlink(targetPath, join(authDirectory, "auth.json"));
-    await writeFile(
-      join(home, ".scotty.json"),
-      JSON.stringify({
-        version: 1,
-        installationName: "home",
-        profile: "personal",
-        accountId: "a".repeat(32),
-        workerName: "scotty-home-worker",
-        runnerWorkerName: "scotty-home-runner",
-        containerName: "scotty-home-sandbox",
-        kvTitle: "scotty-home-sessions",
-        backupBucketName: "scotty-home-backups",
-        host: "https://scotty-home-worker.example.workers.dev",
-        token: "worker-token",
-      }),
-      { mode: 0o600 },
-    );
-    const target = {
-      accountId: "a".repeat(32),
-      workerName: "scotty-home-worker",
-      host: "https://scotty-home-worker.example.workers.dev",
-    };
-    const h = harness({ home, inspectPiAuthTarget: async () => target });
-
-    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.USAGE);
-    expect(h.error().error.message).toBe("Pi auth.json must be a private regular file");
-    expect(h.stderr.join("")).not.toContain("secret");
-  });
-
-  test("reseed --all-active targets only warm Cloudflare sessions", async () => {
-    const requests: Request[] = [];
-    const h = harness({
-      env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "worker-token" },
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        requests.push(request);
-        if (new URL(request.url).pathname === "/api/sessions")
-          return Response.json([
-            {
-              id: "warm-cloud",
-              title: "Warm",
-              status: "warm",
-              provider: "cloudflare",
-              repo: "owner/repo",
-              defaultBranch: "main",
-              branch: "scotty/warm",
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              hardCapAt: "2026-01-01T04:00:00.000Z",
-              ageSeconds: 1,
-              capRemainingSeconds: 1,
-            },
-            {
-              id: "sleeping-cloud",
-              title: "Sleeping",
-              status: "sleeping",
-              provider: "cloudflare",
-              repo: "owner/repo",
-              defaultBranch: "main",
-              branch: "scotty/sleeping",
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              hardCapAt: "2026-01-01T04:00:00.000Z",
-              ageSeconds: 1,
-              capRemainingSeconds: 1,
-            },
-          ]);
-        return Response.json({
-          id: "warm-cloud",
-          updatedAt: "2026-01-02T00:00:00.000Z",
-          providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-        });
-      },
-    });
-
-    expect(await main(["auth", "reseed", "--all-active"], h.deps)).toBe(EXIT.OK);
-    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
-      "/api/sessions",
-      "/api/sessions/warm-cloud/auth/reseed",
-    ]);
-    expect(h.json()).toEqual({
-      reseeded: [
-        {
-          id: "warm-cloud",
-          updatedAt: "2026-01-02T00:00:00.000Z",
-          providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-        },
-      ],
-    });
-  });
-});
-
 describe("commands and schemas", () => {
   test("maps auth, missing, wrong-state, usage, and generic failures to exits 4, 3, 5, 2, and 1", async () => {
     const cases = [
@@ -2647,7 +2366,7 @@ describe("commands and schemas", () => {
   });
 
   test("removed commands and top-level lifecycle aliases fail as unknown commands", async () => {
-    for (const command of ["pr", "publish", "up", "down", "vaporize", "skills"]) {
+    for (const command of ["pr", "publish", "up", "down", "vaporize"]) {
       const h = harness();
       expect(await main([command, "s1"], h.deps)).toBe(EXIT.USAGE);
       expect(h.error().error.code).toBe("bad_usage");
@@ -3069,6 +2788,31 @@ function tarFile(entries: Array<[string, Uint8Array]>): Uint8Array {
   }
   return result;
 }
+
+describe("embedded skill", () => {
+  test("skills show prints the exact embedded source as Markdown", async () => {
+    const skills = harness();
+    const source = await readFile(new URL("../skills/scotty/SKILL.md", import.meta.url), "utf8");
+    expect(await main(["skills", "show"], skills.deps)).toBe(EXIT.OK);
+    expect(EMBEDDED_SKILL).toBe(source);
+    expect(skills.stdout.join("")).toBe(EMBEDDED_SKILL);
+    expect(EMBEDDED_SKILL).toContain("## Hatch and browser evidence");
+    expect(EMBEDDED_SKILL).toContain("one actual WebM recording");
+    expect(EMBEDDED_SKILL).toContain("exact same viewport, steps, and assertions");
+    expect(EMBEDDED_SKILL).toContain("plus `/hatch/open`");
+    expect(EMBEDDED_SKILL).toContain("Never copy, guess, or publish the wildcard preview origin");
+  });
+
+  test("skills show rejects JSON wrapping and trailing arguments", async () => {
+    const json = harness();
+    const trailing = harness();
+    expect(await main(["skills", "show", "--json"], json.deps)).toBe(EXIT.USAGE);
+    expect(await main(["skills", "show", "install"], trailing.deps)).toBe(EXIT.USAGE);
+    expect(json.error().error.code).toBe("bad_usage");
+    expect(trailing.error().error.code).toBe("bad_usage");
+    expect(trailing.error().error.message).toBe("Unexpected argument: install");
+  });
+});
 
 describe("beam down and sandbox configuration", () => {
   test("down fetches the branch and writes rollout mode 0600", async () => {
@@ -3634,5 +3378,430 @@ describe("beam down and sandbox configuration", () => {
       version: "scotty-hatch image",
       expectedVersion: null,
     });
+  });
+});
+
+describe("environment commands", () => {
+  test("sets stdin secrets and removes variables with stable JSON", async () => {
+    const requests: Request[] = [];
+    const secret = "stdin-secret-never-echo";
+    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.method === "PUT")
+        return Response.json({
+          name: "API_TOKEN",
+          repo: "owner/project",
+          secret: true,
+          configured: true,
+          revision: 2,
+        });
+      return Response.json({
+        name: "API_TOKEN",
+        repo: "owner/project",
+        removed: true,
+        revision: 3,
+      });
+    };
+    const h = harness({ readStdin: async () => `${secret}\n`, fetch });
+
+    expect(
+      await main(
+        [
+          "env",
+          "set",
+          "API_TOKEN",
+          "--secret",
+          "--stdin",
+          "--repo",
+          "owner/project",
+          "--host",
+          "https://worker.example",
+        ],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual({
+      name: "API_TOKEN",
+      repo: "owner/project",
+      secret: true,
+      configured: true,
+      revision: 2,
+    });
+    const put = requests[0];
+    expect(new URL(put.url).pathname).toBe("/api/environment/API_TOKEN");
+    expect(new URL(put.url).searchParams.get("repo")).toBe("owner/project");
+    expect(await put.clone().json()).toEqual({ value: secret, secret: true });
+    expect(put.url).not.toContain(secret);
+    expect(h.stdout.join("")).not.toContain(secret);
+    expect(h.stderr.join("")).not.toContain(secret);
+
+    const removed = harness({ fetch });
+    expect(
+      await main(
+        [
+          "env",
+          "remove",
+          "API_TOKEN",
+          "--repo",
+          "owner/project",
+          "--host",
+          "https://worker.example",
+        ],
+        removed.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(removed.json()).toEqual({
+      name: "API_TOKEN",
+      repo: "owner/project",
+      removed: true,
+      revision: 3,
+    });
+    expect(new URL(requests[1].url).searchParams.get("repo")).toBe("owner/project");
+  });
+
+  test("lists plain values and write-only secret metadata", async () => {
+    const secret = "must-not-appear";
+    const h = harness({
+      fetch: async () =>
+        Response.json({
+          revision: 4,
+          variables: [
+            {
+              name: "API_TOKEN",
+              secret: true,
+              configured: true,
+              updatedAt: "2026-08-20T12:00:00.000Z",
+            },
+            {
+              name: "PUBLIC_URL",
+              secret: false,
+              configured: true,
+              updatedAt: "2026-08-20T12:00:00.000Z",
+              value: "https://example.test",
+            },
+          ],
+          protectedBindings: [],
+        }),
+    });
+    expect(await main(["env", "list", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
+    expect(h.json().variables[0]).toEqual({
+      name: "API_TOKEN",
+      secret: true,
+      configured: true,
+      updatedAt: "2026-08-20T12:00:00.000Z",
+    });
+    expect(h.stdout.join("")).not.toContain(secret);
+  });
+
+  test("lists effective repository variables with source metadata", async () => {
+    let requestUrl = "";
+    const h = harness({
+      fetch: async (input, init) => {
+        requestUrl = new Request(input, init).url;
+        return Response.json({
+          revision: 5,
+          repo: "owner/project",
+          variables: [
+            {
+              name: "CHANNEL",
+              secret: false,
+              configured: true,
+              updatedAt: "2026-08-20T12:00:00.000Z",
+              source: "global",
+              value: "stable",
+            },
+          ],
+          protectedBindings: [],
+        });
+      },
+    });
+    expect(
+      await main(
+        ["env", "list", "--repo", "owner/project", "--host", "https://worker.example"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(new URL(requestUrl).searchParams.get("repo")).toBe("owner/project");
+    expect(h.json().variables[0].source).toBe("global");
+  });
+
+  test("refreshes exactly one warm session environment with stable JSON", async () => {
+    const requests: Request[] = [];
+    const body = {
+      id: "a0b1c2d3e4f5",
+      title: "Test session",
+      repo: "owner/project",
+      status: "warm",
+      appliedRevision: 4,
+      currentEffectiveRevision: 4,
+      stale: false,
+      refreshable: true,
+    };
+    const h = harness({
+      fetch: async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json(body);
+      },
+    });
+
+    expect(
+      await main(["env", "refresh", body.id, "--host", "https://worker.example"], h.deps),
+    ).toBe(EXIT.OK);
+    expect(h.json()).toEqual(body);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].method).toBe("POST");
+    expect(new URL(requests[0].url).pathname).toBe(`/api/sessions/${body.id}/environment/refresh`);
+    expect(requests[0].headers.get("idempotency-key")).toBeTruthy();
+
+    let malformedFetches = 0;
+    const malformed = harness({
+      fetch: async () => {
+        malformedFetches += 1;
+        return Response.json({});
+      },
+    });
+    expect(
+      await main(["env", "refresh", "bad!", "--host", "https://worker.example"], malformed.deps),
+    ).toBe(EXIT.USAGE);
+    expect(malformedFetches).toBe(0);
+  });
+
+  test("lists and mutates environment approvals with scoped transport and stable JSON", async () => {
+    const requests: Request[] = [];
+    const bodies: unknown[] = [];
+    const approvalList = {
+      revision: 9,
+      policyRevision: 3,
+      approvals: [
+        {
+          sourceScope: "owner/project",
+          name: "API_TOKEN",
+          origin: "https://api.example",
+          decision: "approved",
+          updatedAt: "2026-08-20T12:00:00.000Z",
+        },
+      ],
+      pending: [
+        {
+          sourceScope: "owner/project",
+          name: "PUBLIC_URL",
+          origin: "https://pending.example",
+          firstObservedAt: "2026-08-20T12:01:00.000Z",
+          lastObservedAt: "2026-08-20T12:02:00.000Z",
+        },
+      ],
+    };
+    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.method === "GET") return Response.json(approvalList);
+      const key = decodeEnvironmentApprovalKey(await request.clone().json());
+      bodies.push(key);
+      const action = new URL(request.url).pathname.split("/").at(-1);
+      const decision =
+        action === "approve" ? "approved" : action === "reject" ? "rejected" : "revoked";
+      return Response.json({ ...key, decision, revision: 10, policyRevision: 4 });
+    };
+    const shared = { fetch, env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root" } };
+
+    const listed = harness(shared);
+    expect(await main(["env", "approvals", "list", "--repo", "owner/project"], listed.deps)).toBe(
+      EXIT.OK,
+    );
+    expect(listed.json()).toEqual(approvalList);
+
+    for (const action of ["approve", "reject", "revoke"] as const) {
+      const mutated = harness(shared);
+      expect(
+        await main(
+          [
+            "env",
+            "approvals",
+            action,
+            "API_TOKEN",
+            "https://api.example",
+            "--repo",
+            "owner/project",
+          ],
+          mutated.deps,
+        ),
+      ).toBe(EXIT.OK);
+      expect(mutated.json()).toMatchObject({
+        sourceScope: "owner/project",
+        name: "API_TOKEN",
+        origin: "https://api.example",
+        decision: action === "approve" ? "approved" : action === "reject" ? "rejected" : "revoked",
+      });
+    }
+
+    expect(
+      requests.map((request) => ({
+        method: request.method,
+        pathname: new URL(request.url).pathname,
+        repo: new URL(request.url).searchParams.get("repo"),
+      })),
+    ).toEqual([
+      { method: "GET", pathname: "/api/environment/approvals", repo: "owner/project" },
+      { method: "POST", pathname: "/api/environment/approvals/approve", repo: null },
+      { method: "POST", pathname: "/api/environment/approvals/reject", repo: null },
+      { method: "POST", pathname: "/api/environment/approvals/revoke", repo: null },
+    ]);
+    expect(bodies).toEqual([
+      { sourceScope: "owner/project", name: "API_TOKEN", origin: "https://api.example" },
+      { sourceScope: "owner/project", name: "API_TOKEN", origin: "https://api.example" },
+      { sourceScope: "owner/project", name: "API_TOKEN", origin: "https://api.example" },
+    ]);
+  });
+
+  test("renders approval lists and mutations concisely without secret values", async () => {
+    const approvalList = {
+      revision: 9,
+      policyRevision: 3,
+      approvals: [
+        {
+          sourceScope: "global",
+          name: "API_TOKEN",
+          origin: "https://api.example",
+          decision: "approved",
+          updatedAt: "2026-08-20T12:00:00.000Z",
+        },
+      ],
+      pending: [
+        {
+          sourceScope: "owner/project",
+          name: "PUBLIC_URL",
+          origin: "https://pending.example",
+          firstObservedAt: "2026-08-20T12:01:00.000Z",
+          lastObservedAt: "2026-08-20T12:02:00.000Z",
+        },
+      ],
+    };
+    const human = harness({
+      stdoutIsTTY: true,
+      fetch: async (input) => {
+        const request = new Request(input);
+        return request.method === "GET"
+          ? Response.json(approvalList)
+          : Response.json({
+              sourceScope: "global",
+              name: "API_TOKEN",
+              origin: "https://api.example",
+              decision: "approved",
+              revision: 10,
+              policyRevision: 4,
+            });
+      },
+    });
+    const base = ["--host", "https://worker.example"];
+
+    expect(await main([...base, "env", "approvals", "list"], human.deps)).toBe(EXIT.OK);
+    expect(human.stdout.join("")).toBe(
+      "approved\tglobal\tAPI_TOKEN\thttps://api.example\npending\towner/project\tPUBLIC_URL\thttps://pending.example\n",
+    );
+
+    const mutation = harness({
+      stdoutIsTTY: true,
+      fetch: async () =>
+        Response.json({
+          sourceScope: "global",
+          name: "API_TOKEN",
+          origin: "https://api.example",
+          decision: "approved",
+          revision: 10,
+          policyRevision: 4,
+        }),
+    });
+    expect(
+      await main(
+        [...base, "env", "approvals", "approve", "API_TOKEN", "https://api.example"],
+        mutation.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(mutation.stdout.join("")).toBe("Approved global API_TOKEN for https://api.example.\n");
+    expect(`${human.stdout.join("")}\n${mutation.stdout.join("")}`).not.toContain("secret-value");
+  });
+
+  test("validates approval scope and origin before transport and preserves HTTP exits", async () => {
+    let fetches = 0;
+    const h = harness({
+      fetch: async () => {
+        fetches += 1;
+        return Response.json({});
+      },
+    });
+    const base = ["env", "approvals", "approve", "API_TOKEN", "https://api.example"];
+    expect(
+      await main(
+        [...base.slice(0, -1), "http://api.example", "--host", "https://worker.example"],
+        h.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("Origin must be an exact HTTPS origin");
+    expect(fetches).toBe(0);
+
+    const invalidRepo = harness({ fetch: h.deps.fetch });
+    expect(
+      await main(
+        [...base, "--repo", "owner/project/extra", "--host", "https://worker.example"],
+        invalidRepo.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(invalidRepo.error().error.message).toBe("--repo must be OWNER/NAME");
+
+    const failed = harness({
+      fetch: async () =>
+        Response.json(
+          { error: { code: "not_found", message: "approval missing" } },
+          { status: 404 },
+        ),
+    });
+    expect(
+      await main(["env", "approvals", "list", "--host", "https://worker.example"], failed.deps),
+    ).toBe(EXIT.NOT_FOUND);
+    expect(failed.error().error.code).toBe("not_found");
+  });
+
+  test("requires secret values on stdin before transport", async () => {
+    let fetches = 0;
+    const h = harness({
+      fetch: async () => {
+        fetches += 1;
+        return Response.json({});
+      },
+    });
+    expect(
+      await main(
+        [
+          "env",
+          "set",
+          "API_TOKEN",
+          "process-argument-secret",
+          "--secret",
+          "--host",
+          "https://worker.example",
+        ],
+        h.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("Secret values must be supplied with --stdin");
+    expect(fetches).toBe(0);
+  });
+  test("rejects malformed environment repository scope before transport", async () => {
+    let fetches = 0;
+    const h = harness({
+      fetch: async () => {
+        fetches += 1;
+        return Response.json({});
+      },
+    });
+    expect(
+      await main(
+        ["env", "list", "--repo", "owner/project/extra", "--host", "https://worker.example"],
+        h.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("--repo must be OWNER/NAME");
+    expect(fetches).toBe(0);
   });
 });

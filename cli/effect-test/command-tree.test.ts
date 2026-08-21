@@ -60,6 +60,8 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
+        assert.include(rootHelp, "skills");
+        assert.include(rootHelp, "env");
         assert.include(rootHelp, "sandbox");
         assert.include(rootHelp, "runner");
         assert.include(rootHelp, "tui");
@@ -105,12 +107,43 @@ describe("Effect command tree", () => {
         assert.include(repo.stdout.join(""), "remove");
         assert.strictEqual(repo.stderr.join(""), "");
 
-        const auth = run(["auth", "--help"]);
-        assert.strictEqual(yield* auth.effect, EXIT.OK);
-        assert.include(auth.stdout.join(""), "status");
-        assert.include(auth.stdout.join(""), "sync");
-        assert.notInclude(auth.stdout.join(""), "reseed");
-        assert.strictEqual(auth.stderr.join(""), "");
+        const environment = run(["env", "--help"]);
+        assert.strictEqual(yield* environment.effect, EXIT.OK);
+        assert.include(environment.stdout.join(""), "list");
+        assert.include(environment.stdout.join(""), "set");
+        assert.include(environment.stdout.join(""), "remove");
+        assert.include(environment.stdout.join(""), "approvals");
+        assert.strictEqual(environment.stderr.join(""), "");
+
+        const approvals = run(["env", "approvals", "--help"]);
+        assert.strictEqual(yield* approvals.effect, EXIT.OK);
+        assert.include(approvals.stdout.join(""), "scotty env approvals <subcommand> [flags]");
+        assert.include(approvals.stdout.join(""), "list");
+        assert.include(approvals.stdout.join(""), "approve");
+        assert.include(approvals.stdout.join(""), "reject");
+        assert.include(approvals.stdout.join(""), "revoke");
+        assert.strictEqual(approvals.stderr.join(""), "");
+
+        const approve = run(["env", "approvals", "approve", "--help"]);
+        assert.strictEqual(yield* approve.effect, EXIT.OK);
+        assert.include(approve.stdout.join(""), "<name>");
+        assert.include(approve.stdout.join(""), "<origin>");
+        assert.include(approve.stdout.join(""), "--repo");
+        assert.strictEqual(approve.stderr.join(""), "");
+
+        const skills = run(["skills"]);
+        assert.strictEqual(yield* skills.effect, EXIT.OK);
+        const skillsHelp = skills.stdout.join("");
+        assert.include(skillsHelp, "scotty skills <subcommand> [flags]");
+        assert.include(skillsHelp, "show");
+        assert.notInclude(skillsHelp, "__scotty_trailing__");
+        assert.strictEqual(skills.stderr.join(""), "");
+
+        const skillsShow = run(["skills", "show", "--help"]);
+        assert.strictEqual(yield* skillsShow.effect, EXIT.OK);
+        assert.include(skillsShow.stdout.join(""), "scotty skills show [flags]");
+        assert.notInclude(skillsShow.stdout.join(""), "__scotty_trailing__");
+        assert.strictEqual(skillsShow.stderr.join(""), "");
         const tui = run(["tui", "--help"]);
         assert.strictEqual(yield* tui.effect, EXIT.OK);
         const tuiHelp = tui.stdout.join("");
@@ -318,21 +351,6 @@ describe("Effect command tree", () => {
       const failedError = failure(yield* Effect.result(failed.effect));
       assert.strictEqual(failedError.code, "not_found");
       assert.strictEqual(failedError.exitCode, EXIT.NOT_FOUND);
-    }),
-  );
-
-  it.effect("requires exactly one auth reseed target", () =>
-    Effect.gen(function* () {
-      const missing = run(["auth", "reseed"]);
-      assert.strictEqual(
-        failure(yield* Effect.result(missing.effect)).message,
-        "Pass exactly one session ID or --all-active",
-      );
-      const both = run(["auth", "reseed", "abc123", "--all-active"]);
-      assert.strictEqual(
-        failure(yield* Effect.result(both.effect)).message,
-        "Pass exactly one session ID or --all-active",
-      );
     }),
   );
 

@@ -21,6 +21,7 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("package-lock.json", "archive", "containerStatic"),
   entry("cli/scotty.ts", "archive", "cliSource"),
   entry("cli/src", "archive", "cliSource"),
+  entry("cli/skills", "archive", "cliSource"),
   entry("infra", "archive", "cliSource"),
   entry("protocol", "archive", "cliSource"),
   entry("tui/package.json", "archive", "containerStatic"),
