@@ -16,6 +16,7 @@ import {
   completeSnapshotOverlap,
   createPendingUiTracker,
   createProjectionReducer,
+  filterModelsByAllowlist,
   filterRemoteCommands,
   normalizeCommand,
   normalizeExtensionUiEvent,
@@ -23,6 +24,7 @@ import {
   sanitizeRemoteString,
   sanitizeRemoteValue,
   shouldEmitSseHeartbeat,
+  PI_MODEL_ALLOWLIST_ENV,
 } from "./scotty-pi-protocol.mjs";
 
 const port = Number.parseInt(process.env.SCOTTY_PI_SESSION_PORT ?? "43117", 10);
@@ -294,11 +296,16 @@ const snapshotAttempt = async () => {
     },
     extensionSurface: projection.extensionSurface,
     capabilities: {
-      models: (Array.isArray(models) ? models : []).slice(0, 100).map((model) => ({
-        provider: sanitizeRemoteString(String(model?.provider ?? "unknown")) || "unknown",
-        id: sanitizeRemoteString(String(model?.id ?? "unknown")) || "unknown",
-        ...(typeof model?.name === "string" ? { name: sanitizeRemoteString(model.name) } : {}),
-      })),
+      models: filterModelsByAllowlist(
+        Array.isArray(models) ? models : [],
+        process.env[PI_MODEL_ALLOWLIST_ENV],
+      )
+        .slice(0, 100)
+        .map((model) => ({
+          provider: sanitizeRemoteString(String(model?.provider ?? "unknown")) || "unknown",
+          id: sanitizeRemoteString(String(model?.id ?? "unknown")) || "unknown",
+          ...(typeof model?.name === "string" ? { name: sanitizeRemoteString(model.name) } : {}),
+        })),
       thinkingLevels:
         thinkingLevelsResponse?.success === false
           ? []

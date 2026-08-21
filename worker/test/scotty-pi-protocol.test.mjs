@@ -9,7 +9,9 @@ import {
   completeSnapshotOverlap,
   createPendingUiTracker,
   createProjectionReducer,
+  filterModelsByAllowlist,
   filterRemoteCommands,
+  modelMatchesAllowlistEntry,
   normalizeCommand,
   normalizeExtensionUiEvent,
   sanitizeRemoteString,
@@ -521,5 +523,55 @@ describe("Scotty Pi supervisor protocol", () => {
       }),
       { type: "scotty_event_truncated", originalType: "message_update" },
     );
+  });
+});
+
+describe("Pi model allowlist", () => {
+  const catalog = [
+    { provider: "openai", id: "gpt-5.6-sol" },
+    { provider: "openai", id: "gpt-5.3-codex" },
+    { provider: "opencode", id: "x-preview-f-free" },
+    { provider: "opencode-go", id: "kimi-k2.6" },
+    { provider: "openai-codex", id: "gpt-5.1-codex-max" },
+  ];
+
+  it("defaults to the shipped curated providers when no value is configured", () => {
+    const filtered = filterModelsByAllowlist(catalog, undefined);
+    assert.deepStrictEqual(
+      filtered.map(({ provider, id }) => `${provider}/${id}`),
+      ["opencode/x-preview-f-free", "opencode-go/kimi-k2.6", "openai-codex/gpt-5.1-codex-max"],
+    );
+  });
+
+  it("matches provider globs case-insensitively regardless of catalog casing", () => {
+    const mixedCatalog = [
+      { provider: "OpenCode", id: "X-Preview-F-Free" },
+      { provider: "openai", id: "gpt-5.6-sol" },
+    ];
+    assert.deepStrictEqual(filterModelsByAllowlist(mixedCatalog, "opencode/*"), [mixedCatalog[0]]);
+  });
+
+  it("supports model-level globs and exact ids", () => {
+    const filtered = filterModelsByAllowlist(catalog, "openai/gpt-5*, opengo/x-preview-f-free");
+    assert.deepStrictEqual(
+      filtered.map(({ id }) => id),
+      ["gpt-5.6-sol", "gpt-5.3-codex"],
+    );
+    assert.strictEqual(modelMatchesAllowlistEntry(catalog[2], "opencode/x-preview-f-free"), true);
+  });
+
+  it("treats a bare star as allow-everything and blank values as unset", () => {
+    assert.strictEqual(filterModelsByAllowlist(catalog, "*").length, catalog.length);
+    assert.deepStrictEqual(
+      filterModelsByAllowlist(catalog, "   "),
+      filterModelsByAllowlist(catalog, undefined),
+    );
+  });
+
+  it("ignores malformed entries instead of failing the snapshot", () => {
+    assert.strictEqual(modelMatchesAllowlistEntry(catalog[0], "no-slash"), false);
+    assert.strictEqual(modelMatchesAllowlistEntry(catalog[0], "/"), false);
+    assert.strictEqual(modelMatchesAllowlistEntry(undefined, "opencode/*"), false);
+    assert.deepStrictEqual(filterModelsByAllowlist("not-an-array", "*"), []);
   });
 });
