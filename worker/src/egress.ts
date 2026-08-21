@@ -146,6 +146,22 @@ function proxyEnvironmentProgramWithScan(
 ): Effect.Effect<Response, EgressFailure, EnvironmentEgressVault | EgressTransport> {
   return Effect.gen(function* () {
     const scan = providedScan ?? (yield* scanEnvironmentSentinels(request));
+    const deny = (reason: string): Response => {
+      // Diagnostic: silent egress denials are unobservable from the CLI; surface the branch.
+      console.error(
+        JSON.stringify({
+          event: "egress.proxy.denied",
+          reason,
+          url: request.url.slice(0, 120),
+          sentinels: scan.sentinels.length,
+          potential: scan.potential,
+          bounded: scan.bounded,
+          malformed: scan.malformed,
+          unreplaceable: scan.unreplaceable,
+        }),
+      );
+      return forbidden();
+    };
     if (
       !scan.potential ||
       !scan.bounded ||
@@ -154,29 +170,30 @@ function proxyEnvironmentProgramWithScan(
       scan.sentinels.length === 0 ||
       (scan.body?.potential === true && !scan.body.bounded)
     )
-      return forbidden();
+      return deny("scan_gate");
     const url = new URL(request.url);
-    if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return forbidden();
+    if (url.protocol !== "https:" || url.username !== "" || url.password !== "")
+      return deny("non_https");
     const vault = yield* EnvironmentEgressVault;
     const values = yield* vault
       .resolve(url.origin, scan.sentinels)
       .pipe(Effect.catchTag("EgressFailure", () => Effect.succeed(null)));
-    if (values === null) return forbidden();
+    if (values === null) return deny("vault_unauthorized");
 
     const headers = sanitizedHeaders(request.headers);
     const headerReplacements = new Map<string, string>();
     for (const [name, value] of headers) {
       const basic = replaceBasicEnvironmentAuthorization(name, value, scan.sentinels, values);
-      if (basic === null) return forbidden();
+      if (basic === null) return deny("basic_replace_failed");
       const replaced = basic ?? replaceEnvironmentSentinels(value, scan.sentinels, values, false);
-      if (replaced === null) return forbidden();
+      if (replaced === null) return deny("header_replace_failed");
       if (replaced !== value) headerReplacements.set(name, replaced);
     }
     for (const [name, value] of headerReplacements) headers.set(name, value);
 
     const pathname = replaceEnvironmentSentinels(url.pathname, scan.sentinels, values, true);
     const search = replaceEnvironmentSentinels(url.search, scan.sentinels, values, true);
-    if (pathname === null || search === null) return forbidden();
+    if (pathname === null || search === null) return deny("url_replace_failed");
     url.pathname = pathname;
     url.search = search;
 
