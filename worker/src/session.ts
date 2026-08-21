@@ -4647,21 +4647,46 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const decoded = decodeEnvironmentProxyRequest(input);
     if (Result.isFailure(decoded)) return yield* badRequest("Environment proxy request is invalid");
     const record = yield* this.readRecordProgram();
-    if (record === undefined || record.status === "gone")
+    if (record === undefined || record.status === "gone") {
+      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+      console.error(
+        JSON.stringify({
+          event: "egress.authorize.denied",
+          reason: "session_unavailable",
+          detail: "record missing",
+          origin: decoded.success.origin,
+        }),
+      );
       return { authorized: false, reason: "session_unavailable" as const };
+    }
     const vault = yield* EnvironmentSecretVault;
     const resolutions = yield* vault.readForProxy(decoded.success.sentinels);
     if (resolutions === null) {
       // Diagnostic: egress denials are silent at the boundary; surface the branch.
       console.error(
-        JSON.stringify({ event: "egress.authorize.denied", reason: "unknown_sentinel" }),
+        JSON.stringify({
+          event: "egress.authorize.denied",
+          reason: "unknown_sentinel",
+          origin: decoded.success.origin,
+          sentinels: decoded.success.sentinels.length,
+        }),
       );
       return { authorized: false, reason: "unknown_sentinel" as const };
     }
     const stub = this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
     const authorizeEnvironmentSecrets = stub.authorizeEnvironmentSecrets;
-    if (authorizeEnvironmentSecrets === undefined)
+    if (authorizeEnvironmentSecrets === undefined) {
+      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+      console.error(
+        JSON.stringify({
+          event: "egress.authorize.denied",
+          reason: "session_unavailable",
+          detail: "authorizeEnvironmentSecrets missing from binding",
+          origin: decoded.success.origin,
+        }),
+      );
       return { authorized: false, reason: "session_unavailable" as const };
+    }
     const result = yield* Effect.result(
       Effect.tryPromise({
         try: () =>
