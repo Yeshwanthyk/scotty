@@ -258,10 +258,14 @@ describe("EnvironmentStore", () => {
     Effect.gen(function* () {
       const token = "authority-github-token";
       const storage = makeStorage();
+      const openaiKey = "authority-openai-key";
       yield* withStore(
         storage.storage,
         Effect.flatMap(EnvironmentStore, (store) =>
-          store.put("GH_TOKEN", { value: token, secret: true }),
+          Effect.all([
+            store.put("GH_TOKEN", { value: token, secret: true }),
+            store.put("OPENAI_API_KEY", { value: openaiKey, secret: true }),
+          ]),
         ),
       );
       const view = yield* withStore(
@@ -275,9 +279,14 @@ describe("EnvironmentStore", () => {
       assert.notInclude(JSON.stringify(view), token);
       const resolved = yield* withStore(
         storage.storage,
-        Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalGithubToken),
+        Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalSecret("GH_TOKEN")),
       );
       assert.strictEqual(resolved, token);
+      const openaiResolved = yield* withStore(
+        storage.storage,
+        Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalSecret("OPENAI_API_KEY")),
+      );
+      assert.strictEqual(openaiResolved, openaiKey);
       const materialized = yield* withStore(
         storage.storage,
         Effect.flatMap(EnvironmentStore, (store) => store.materialize()),
@@ -380,9 +389,11 @@ describe("EnvironmentStore", () => {
         const storage = makeStorage(authority);
         const failure = yield* withStore(
           storage.storage,
-          Effect.flip(Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalGithubToken)),
+          Effect.flip(
+            Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalSecret("GH_TOKEN")),
+          ),
         );
-        assert.strictEqual(failure.reason, "invalid_github_token");
+        assert.strictEqual(failure.reason, "invalid_global_secret");
         assert.deepStrictEqual(storage.writes, []);
       }
     }),

@@ -5,12 +5,6 @@ import {
   PI_CONSOLE_PUBLIC_PATH_SEGMENT,
   PI_CONSOLE_PROXY_PREFIX,
 } from "../../protocol/pi-console";
-import {
-  InstallationPiAuthRecordSchema,
-  digestPiAuthProviders,
-  parsePiAuthJsonOption,
-  piProviderMetadata,
-} from "../../protocol/pi-auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
@@ -139,9 +133,6 @@ const RunnerRegistrationInputSchema = Schema.Struct({
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
   onExcessProperty: "error",
 });
-const decodeInstallationPiAuthRecord = Schema.decodeUnknownOption(InstallationPiAuthRecordSchema, {
-  onExcessProperty: "error",
-});
 const decodeEnvironmentPutInput = Schema.decodeUnknownOption(EnvironmentPutInputSchema, {
   onExcessProperty: "error",
 });
@@ -158,11 +149,10 @@ const PROTECTED_ENVIRONMENT_BINDINGS: ReadonlyArray<ProtectedEnvironmentBinding>
     managedBy: "scotty",
   },
   {
-    name: "Pi provider credentials",
+    name: "OPENAI_API_KEY",
     secret: true,
-    source: "session credential vault sentinels",
-    destination: "file",
-    path: "$PI_CODING_AGENT_DIR/auth.json",
+    source: "session environment secret sentinel",
+    destination: "process_environment",
     managedBy: "scotty",
   },
   {
@@ -456,45 +446,6 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
   );
   setClientAuthCookie(c, issued);
   return c.json({ client: issued.client });
-});
-
-app.get("/api/auth/pi", async (c) => {
-  requireAuthScope(c.get("auth"), "sessions:read");
-  const authority = unwrapSandboxConfigRpc(await sandboxConfig(c.env).piAuth());
-  if (authority !== null)
-    return c.json({
-      source: authority.source,
-      sourceDigest: authority.digest,
-      updatedAt: authority.updatedAt,
-      providers: piProviderMetadata(authority.providers),
-    });
-  const providers = parsePiAuthJsonOption(c.env.PI_AUTH_JSON);
-  if (Option.isNone(providers))
-    throw new ScottyError("internal", "PI_AUTH_JSON is missing or invalid", {
-      httpStatus: 500,
-      exitCode: 1,
-    });
-  return c.json({
-    source: "bootstrap" as const,
-    sourceDigest: await digestPiAuthProviders(providers.value),
-    updatedAt: null,
-    providers: piProviderMetadata(providers.value),
-  });
-});
-
-app.post("/api/auth/pi", async (c) => {
-  requireRootPrincipal(c.get("auth"));
-  requireJsonContentType(c.req.raw);
-  const decoded = decodeInstallationPiAuthRecord(await readJsonBody(c.req.raw));
-  if (Option.isNone(decoded)) throw badRequest("Pi credential record is invalid");
-  if (decoded.value.source !== "sync") throw badRequest("Pi credential record source is invalid");
-  const authority = unwrapSandboxConfigRpc(await sandboxConfig(c.env).writePiAuth(decoded.value));
-  return c.json({
-    source: authority.source,
-    sourceDigest: authority.digest,
-    updatedAt: authority.updatedAt,
-    providers: piProviderMetadata(authority.providers),
-  });
 });
 
 app.get("/api/environment/approvals", async (c) => {
@@ -895,13 +846,6 @@ app.post("/api/sessions/:id/resume", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).resumeScottySession());
-});
-
-app.post("/api/sessions/:id/auth/reseed", async (c) => {
-  const principal = c.get("auth");
-  if (principal.kind !== "root") requireOwnerPrincipal(principal);
-  const id = parseSessionId(c.req.param("id"));
-  return c.json(await sessionSandbox(c.env, id).reseedPiAuth());
 });
 
 app.get("/api/sessions/:id/down", async (c) => {
@@ -1365,7 +1309,7 @@ function sandboxConfig(env: Bindings): ScottySandboxConfigStub {
 function unwrapSandboxConfigRpc<A>(result: SandboxConfigRpcResult<A>): A {
   if (result.ok) return result.value;
   const { reason, message } = result.error;
-  if (reason === "conflict" || reason === "stale") throw conflict(message);
+  if (reason === "conflict") throw conflict(message);
   if (reason === "invalid_input") throw badRequest(message);
   console.error("Sandbox configuration RPC failed", { reason });
   throw new ScottyError("internal", "Sandbox configuration failed", {
@@ -1569,7 +1513,7 @@ async function verifyRepository(
   repo: string,
 ): Promise<{ readonly exists: true; readonly defaultBranch: string } | { readonly exists: false }> {
   const githubTokenRpc = await sandboxConfig(env)
-    .resolveGlobalGithubToken()
+    .resolveGlobalSecret("GH_TOKEN")
     .then(
       (result) => Result.succeed(result),
       () => Result.fail(undefined),

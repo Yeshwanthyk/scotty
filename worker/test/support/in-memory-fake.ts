@@ -1,10 +1,6 @@
 import type { BackupOptions, ExecResult, RestoreBackupResult } from "@cloudflare/sandbox";
 import type { BackupCapabilities, BackupObjectPage } from "../../src/backup-store";
-import type { DirectoryBackup, StoredCredential } from "../../src/contracts";
-import type {
-  CredentialVaultStorage,
-  CredentialVaultTransaction,
-} from "../../src/credential-vault";
+import type { DirectoryBackup } from "../../src/contracts";
 import type { RepoProjectionStorage } from "../../src/repo-projection";
 import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox-runtime";
 import type { SessionProjectionStorage } from "../../src/session-projection";
@@ -147,33 +143,6 @@ export const sessionRecordStorageFake = (
       }),
     ),
 });
-
-export const credentialVaultStorageFake = (
-  memory = new InMemoryFaultInjectableFake(),
-): CredentialVaultStorage => ({
-  transaction: <A>(operation: (transaction: CredentialVaultTransaction) => Promise<A>) =>
-    memory.transaction((transaction) =>
-      operation({
-        get: transaction.get,
-        put: (credential: StoredCredential) => transaction.put(credential),
-        delete: transaction.delete,
-      }),
-    ),
-});
-
-export interface InMemoryCredentialVaultStorage extends CredentialVaultStorage {
-  readonly snapshot: () => unknown | undefined;
-}
-
-export const makeCredentialVaultStorageFake = (
-  initial?: unknown,
-  memory = new InMemoryFaultInjectableFake(initial),
-): InMemoryCredentialVaultStorage => {
-  return {
-    ...credentialVaultStorageFake(memory),
-    snapshot: () => memory.snapshot(),
-  };
-};
 
 const projectionGet = (memory: InMemoryFaultInjectableFake, key: string): Promise<unknown | null> =>
   memory.invoke("get", [key], () => memory.values.get(key) ?? null);

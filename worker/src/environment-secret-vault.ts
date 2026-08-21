@@ -12,7 +12,7 @@ import {
   type EnvironmentSecretSentinel,
   type SessionEnvironmentSnapshot,
 } from "./environment-contracts";
-import { environmentNameIsMaterializable } from "./environment-policy";
+import { environmentNameIsMaterializable, requiredGlobalSecretNameIs } from "./environment-policy";
 
 export { ENVIRONMENT_SECRET_SENTINEL_PREFIX } from "./environment-contracts";
 
@@ -219,7 +219,7 @@ const makeEnvironmentSecretVault = (
     for (const [name, variable] of Object.entries(decoded.success.variables)) {
       if (
         !environmentNameIsMaterializable(name) ||
-        (name === "GH_TOKEN" &&
+        (requiredGlobalSecretNameIs(name) &&
           (variable.sourceScope !== "global" ||
             variable.secret !== true ||
             variable.value.trim().length === 0)) ||

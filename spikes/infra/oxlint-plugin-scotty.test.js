@@ -170,7 +170,7 @@ tester.run("no-direct-do-storage", noDirectDoStorage, {
       code: `ctx.storage.get("key"); class Store { read() { return this.ctx.storage.get("key") } }`,
     },
     {
-      filename: workerFile("credential-vault.ts"),
+      filename: workerFile("sandbox-config-object.ts"),
       code: `ctx["storage"].get("key")`,
     },
     {
@@ -485,7 +485,10 @@ tester.run("no-storage-key-literal", noStorageKeyLiteral, {
   valid: [
     { filename: productionFile, code: `const key = "session"; const prefix = "scotty_"` },
     { filename: workerFile("session-store.ts"), code: `const key = "scotty:session"` },
-    { filename: workerFile("credential-vault.ts"), code: `const key = "scotty:credential"` },
+    {
+      filename: workerFile("environment-secret-vault.ts"),
+      code: `const key = "scotty:credential"`,
+    },
     { filename: workerFile("auth-registry.ts"), code: `const key = "scotty:auth-authority"` },
   ],
   invalid: [

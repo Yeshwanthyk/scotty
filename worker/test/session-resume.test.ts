@@ -1,13 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
-import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { ScottyError } from "../src/contracts";
 import { isSessionEnvironmentSnapshot } from "../src/environment-contracts";
 import {
   createSessionHarness,
   type InitialStorageEntries,
   makeResumeBackup,
-  makeStoredCredential,
   type HarnessFailureStage,
   type HarnessOptions,
   SESSION_ID,
@@ -37,7 +35,6 @@ const sleepingRecord = (overrides: Parameters<typeof makeSessionRecord>[0] = {})
 
 const resumeEntries = (): InitialStorageEntries => ({
   [sessionHarnessKeys.record]: sleepingRecord(),
-  [sessionHarnessKeys.credential]: makeStoredCredential(),
 });
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
@@ -108,7 +105,6 @@ describe("Sandbox resume orchestration", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: sleepingRecord({ environment: legacy }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       environmentMaterialization: {
         revision: 5,
@@ -154,6 +150,7 @@ describe("Sandbox resume orchestration", () => {
     const retainedSentinel = `scotty-env-${SESSION_ID}-${"a".repeat(32)}`;
     const staleSentinel = `scotty-env-${SESSION_ID}-${"b".repeat(32)}`;
     const githubSentinel = `scotty-env-${SESSION_ID}-${"c".repeat(32)}`;
+    const openaiSentinel = `scotty-env-${SESSION_ID}-${"d".repeat(32)}`;
     const retained = {
       version: 1 as const,
       revision: 4,
@@ -161,12 +158,12 @@ describe("Sandbox resume orchestration", () => {
         RELEASE_CHANNEL: "retained",
         API_TOKEN: retainedSentinel,
         GH_TOKEN: githubSentinel,
+        OPENAI_API_KEY: openaiSentinel,
       },
     };
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: sleepingRecord({ environment: retained }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
         [sessionHarnessKeys.environmentVault]: {
           version: 1,
           entries: {
@@ -187,6 +184,12 @@ describe("Sandbox resume orchestration", () => {
               sourceScope: "global",
               name: "GH_TOKEN",
               value: "authority-github-token",
+            },
+            [openaiSentinel]: {
+              sentinel: openaiSentinel,
+              sourceScope: "global",
+              name: "OPENAI_API_KEY",
+              value: "authority-openai-key",
             },
           },
         },
@@ -233,63 +236,14 @@ describe("Sandbox resume orchestration", () => {
           name: "GH_TOKEN",
           value: "authority-github-token",
         },
-      },
-    });
-  });
-
-  it("applies only installation Pi authority newer than the session vault", async () => {
-    for (const [updatedAt, expectedAccess] of [
-      ["2025-12-31T00:00:00.000Z", "stored-access-token"],
-      ["2026-01-02T00:00:00.000Z", "installation-access"],
-    ] as const) {
-      const installationPiAuthRecord = await makeInstallationPiAuthRecord(
-        {
-          "openai-codex": {
-            type: "oauth",
-            access: "installation-access",
-            refresh: "installation-refresh",
-            expires: 1,
-          },
+        [openaiSentinel]: {
+          sentinel: openaiSentinel,
+          sourceScope: "global",
+          name: "OPENAI_API_KEY",
+          value: "authority-openai-key",
         },
-        updatedAt,
-        "sync",
-      );
-      const harness = await createSessionHarness({
-        initialEntries: resumeEntries(),
-        installationPiAuthRecord,
-      });
-      await harness.sandbox.resumeScottySession();
-      const stored = harness.read<ReturnType<typeof makeStoredCredential>>(
-        sessionHarnessKeys.credential,
-      );
-      assert.strictEqual(
-        stored?.providers["openai-codex"]?.credential.type === "oauth"
-          ? stored.providers["openai-codex"].credential.access
-          : undefined,
-        expectedAccess,
-      );
-    }
-  });
-
-  it("treats an equal matching installation record as idempotent on resume", async () => {
-    const current = makeStoredCredential();
-    const providers = Object.fromEntries(
-      Object.entries(current.providers).map(([id, provider]) => [id, provider.credential]),
-    );
-    const installationPiAuthRecord = await makeInstallationPiAuthRecord(
-      providers,
-      current.updatedAt,
-      "rotation",
-    );
-    const harness = await createSessionHarness({
-      initialEntries: {
-        [sessionHarnessKeys.record]: sleepingRecord(),
-        [sessionHarnessKeys.credential]: current,
       },
-      installationPiAuthRecord,
     });
-    await harness.sandbox.resumeScottySession();
-    assert.deepStrictEqual(harness.read(sessionHarnessKeys.credential), current);
   });
 
   it("rematerializes the pinned sandbox bundle after backup restore", async () => {
@@ -299,7 +253,6 @@ describe("Sandbox resume orchestration", () => {
         [sessionHarnessKeys.record]: sleepingRecord({
           sandboxBundle: { digest, manifestVersion: 1 },
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -336,7 +289,6 @@ describe("Sandbox resume orchestration", () => {
         [sessionHarnessKeys.record]: sleepingRecord({
           sandboxBundle: { digest, manifestVersion: 1 },
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       seedPinnedSandboxBundle: false,
     });
@@ -364,7 +316,6 @@ describe("Sandbox resume orchestration", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: withoutBackup,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -396,10 +347,10 @@ describe("Sandbox resume orchestration", () => {
       },
     },
     {
-      name: "credential require",
+      name: "ready state persist",
       options: {
         initialEntries: resumeEntries(),
-        transactionFailureCountdown: 3,
+        transactionFailureCountdown: 2,
       },
     },
     {

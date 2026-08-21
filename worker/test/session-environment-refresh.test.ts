@@ -7,7 +7,6 @@ import { ScottyError } from "../src/contracts";
 import {
   createSessionHarness,
   makeResumeBackup,
-  makeStoredCredential,
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
@@ -21,6 +20,7 @@ const previous = {
 const OLD_API_TOKEN_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000000";
 const OLD_REMOVE_ME_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000001";
 const OLD_GITHUB_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000002";
+const OLD_OPENAI_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000003";
 const current = {
   version: 1 as const,
   revision: 4,
@@ -32,6 +32,7 @@ const secretPrevious = {
   variables: {
     KEEP: "old",
     GH_TOKEN: OLD_GITHUB_SENTINEL,
+    OPENAI_API_KEY: OLD_OPENAI_SENTINEL,
     API_TOKEN: OLD_API_TOKEN_SENTINEL,
     REMOVE_ME: OLD_REMOVE_ME_SENTINEL,
   },
@@ -68,6 +69,12 @@ const secretVaultState = {
       name: "GH_TOKEN",
       value: "authority-github-token",
     },
+    [OLD_OPENAI_SENTINEL]: {
+      sentinel: OLD_OPENAI_SENTINEL,
+      sourceScope: "global" as const,
+      name: "OPENAI_API_KEY",
+      value: "authority-openai-key",
+    },
     [OLD_API_TOKEN_SENTINEL]: {
       sentinel: OLD_API_TOKEN_SENTINEL,
       sourceScope: "global" as const,
@@ -90,7 +97,6 @@ const entries = (operation: ReturnType<typeof makeSessionRecord>["operation"] = 
     operation,
     environment: previous,
   }),
-  [sessionHarnessKeys.credential]: makeStoredCredential(),
 });
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
@@ -103,8 +109,9 @@ const assertEnvironmentWithGithub = (
   expected: { readonly version: 1; readonly revision: number; readonly variables: object },
 ): void => {
   assert.ok(isSessionEnvironmentSnapshot(actual));
-  const { GH_TOKEN: github, ...variables } = actual.variables;
+  const { GH_TOKEN: github, OPENAI_API_KEY: openai, ...variables } = actual.variables;
   assert.ok(github?.startsWith(`scotty-env-${SESSION_ID}-`));
+  assert.ok(openai?.startsWith(`scotty-env-${SESSION_ID}-`));
   assert.deepStrictEqual({ ...actual, variables }, expected);
 };
 
@@ -178,7 +185,6 @@ describe("Sandbox environment refresh", () => {
           status: "warm",
           environment: committed,
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
         [sessionHarnessKeys.environmentVault]: {
           version: 1,
           entries: {
@@ -278,7 +284,6 @@ describe("Sandbox environment refresh", () => {
           status: "warm",
           environment: secretPrevious,
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
         [sessionHarnessKeys.environmentVault]: secretVaultState,
       },
       environmentMaterialization: secretMaterialization,
@@ -349,7 +354,6 @@ describe("Sandbox environment refresh", () => {
           status: "warm",
           environment: current,
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       environmentSnapshot: current,
       piSessionRunning: true,
@@ -376,7 +380,6 @@ describe("Sandbox environment refresh", () => {
           status: "sleeping",
           environment: previous,
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     ]) {
       const harness = await createSessionHarness({ initialEntries, environmentSnapshot: current });
@@ -482,7 +485,6 @@ describe("Sandbox environment refresh", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: record,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       environmentSnapshot: current,
     });
@@ -530,7 +532,6 @@ describe("Sandbox environment refresh", () => {
           backup: { current: backup },
           ownedBackupIds: [backup.id],
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
         [sessionHarnessKeys.environmentVault]: secretVaultState,
       },
       environmentMaterialization: secretMaterialization,

@@ -184,7 +184,6 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
         stdio: "pipe",
         env: {
           ...process.env,
-          PI_AUTH_JSON: syntheticMaterial,
           GH_TOKEN: syntheticMaterial,
           SCOTTY_TOKEN: syntheticMaterial,
         },

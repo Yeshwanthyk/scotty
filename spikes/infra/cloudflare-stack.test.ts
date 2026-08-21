@@ -169,7 +169,7 @@ describe("Cloudflare stack topology", () => {
       sandboxBundleBucketName: "scotty-home-sandbox-bundles",
       workerLogicalId: "Worker",
     });
-    assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["PI_AUTH_JSON", "SCOTTY_TOKEN"]);
+    assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["SCOTTY_TOKEN"]);
     const topology = makeCloudflareStackTopology(installation);
     assert.strictEqual(topology.worker.name, "scotty-home-worker");
     assert.strictEqual(topology.worker.main, "worker/src/index.ts");
@@ -292,7 +292,6 @@ describe("Cloudflare stack source contract", () => {
           stdio: "pipe",
           env: {
             ...process.env,
-            PI_AUTH_JSON: syntheticMaterial,
             GH_TOKEN: syntheticMaterial,
             SCOTTY_TOKEN: syntheticMaterial,
           },

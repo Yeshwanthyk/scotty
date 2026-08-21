@@ -1,7 +1,6 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Effect, Option, Predicate, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
-import { InstallationPiAuthRecordSchema, PiCredentialSchema } from "../../protocol/pi-auth";
 import {
   RepositoryDefaultBranchSchema,
   RepositoryIdentitySchema,
@@ -370,117 +369,8 @@ export const DownArchiveSchema = Schema.Struct({
 });
 export type DownArchive = typeof DownArchiveSchema.Type;
 
-const OptionalNonEmptyStringSchema = Schema.optional(Schema.NonEmptyString);
-
-export const CredentialRefreshLeaseValueSchema = Schema.Struct({
-  nonce: Schema.NonEmptyString,
-  startedAt: Schema.NonEmptyString,
-});
-
-export const StoredProviderCredentialSchema = Schema.Struct({
-  credential: PiCredentialSchema,
-  sentinel: Schema.NonEmptyString,
-});
-export type StoredProviderCredential = typeof StoredProviderCredentialSchema.Type;
-
-export const StoredCredentialSchema = Schema.Struct({
-  providers: Schema.Record(Schema.NonEmptyString, StoredProviderCredentialSchema),
-  updatedAt: Schema.NonEmptyString,
-  refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
-});
-export type StoredCredential = typeof StoredCredentialSchema.Type;
-
-const CredentialSeedCommon = {
-  providerSentinelSeed: Schema.NonEmptyString,
-};
-export const CredentialSeedSchema = Schema.Union([
-  Schema.Struct({ ...CredentialSeedCommon, piAuthJson: Schema.NonEmptyString }),
-  Schema.Struct({ ...CredentialSeedCommon, installationRecord: InstallationPiAuthRecordSchema }),
-]);
-export type CredentialSeed = typeof CredentialSeedSchema.Type;
-
-export const CredentialReseedSchema = Schema.Struct({
-  piAuthJson: Schema.NonEmptyString,
-  providerSentinelSeed: Schema.NonEmptyString,
-});
-export type CredentialReseed = typeof CredentialReseedSchema.Type;
-
-export const CredentialRefreshLeaseSchema = Schema.Struct({
-  credential: StoredCredentialSchema,
-  nonce: Schema.NonEmptyString,
-});
-export type CredentialRefreshLease = typeof CredentialRefreshLeaseSchema.Type;
-
-const OAuthExpiresInSecondsSchema = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0));
-
-export const CredentialPatchSchema = Schema.Struct({
-  idToken: OptionalNonEmptyStringSchema,
-  accessToken: OptionalNonEmptyStringSchema,
-  refreshToken: OptionalNonEmptyStringSchema,
-  expiresInSeconds: Schema.optionalKey(OAuthExpiresInSecondsSchema),
-});
-export type CredentialPatch = typeof CredentialPatchSchema.Type;
-
-export const OAuthRefreshRequestSchema = Schema.StructWithRest(
-  Schema.Struct({
-    grant_type: Schema.Literal("refresh_token"),
-    refresh_token: Schema.String,
-  }),
-  [Schema.Record(Schema.String, Schema.Json)],
-);
-export type OAuthRefreshRequest = typeof OAuthRefreshRequestSchema.Type;
-
-export const OAuthUpstreamSuccessSchema = Schema.Struct({
-  id_token: OptionalNonEmptyStringSchema,
-  access_token: Schema.NonEmptyString,
-  refresh_token: OptionalNonEmptyStringSchema,
-  expires_in: Schema.optionalKey(OAuthExpiresInSecondsSchema),
-});
-export type OAuthUpstreamSuccess = typeof OAuthUpstreamSuccessSchema.Type;
-
-export const OAuthContainerResultSchema = Schema.Struct({
-  id_token: Schema.NonEmptyString,
-  access_token: Schema.NonEmptyString,
-  refresh_token: Schema.NonEmptyString,
-  expires_in: Schema.optionalKey(Schema.Number),
-});
-export type OAuthContainerResult = typeof OAuthContainerResultSchema.Type;
-
-const RawOAuthUpstreamSuccessSchema = Schema.Struct({
-  id_token: Schema.optionalKey(Schema.Unknown),
-  access_token: Schema.optionalKey(Schema.Unknown),
-  refresh_token: Schema.optionalKey(Schema.Unknown),
-  expires_in: Schema.optionalKey(Schema.Unknown),
-});
-
 export const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
-export const decodeStoredCredentialOption = Schema.decodeUnknownOption(StoredCredentialSchema);
-export const decodeStoredCredentialResult = Schema.decodeUnknownResult(StoredCredentialSchema, {
-  onExcessProperty: "error",
-});
-export const decodeCredentialSeedResult = Schema.decodeUnknownResult(CredentialSeedSchema, {
-  onExcessProperty: "error",
-});
-export const decodeCredentialReseedResult = Schema.decodeUnknownResult(CredentialReseedSchema, {
-  onExcessProperty: "error",
-});
 export const decodeNonEmptyStringResult = Schema.decodeUnknownResult(Schema.NonEmptyString);
-export const decodeCredentialRefreshLeaseOption = Schema.decodeUnknownOption(
-  Schema.NullOr(CredentialRefreshLeaseSchema),
-);
-export const decodeCredentialPatchOption = Schema.decodeUnknownOption(CredentialPatchSchema);
-export const decodeCredentialPatchResult = Schema.decodeUnknownResult(CredentialPatchSchema);
-export const decodeOAuthRefreshRequestOption =
-  Schema.decodeUnknownOption(OAuthRefreshRequestSchema);
-export const decodeRawOAuthUpstreamSuccess = Schema.decodeUnknownOption(
-  RawOAuthUpstreamSuccessSchema,
-);
-export const decodeOAuthUpstreamSuccessOption = Schema.decodeUnknownOption(
-  OAuthUpstreamSuccessSchema,
-);
-export const decodeOAuthContainerResultOption = Schema.decodeUnknownOption(
-  OAuthContainerResultSchema,
-);
 
 export const ApiErrorCodeSchema = Schema.Literals([
   "bad_request",

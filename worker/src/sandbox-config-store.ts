@@ -8,7 +8,6 @@ import {
 } from "./sandbox-config-contracts";
 
 const AUTHORITY_KEY = "scotty:sandbox-config:1";
-export const INSTALLATION_PI_AUTH_KEY = "scotty:installation-pi-auth:1";
 
 export type SandboxConfigFailureReason =
   | "conflict"

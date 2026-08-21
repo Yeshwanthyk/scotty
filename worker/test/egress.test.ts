@@ -1,17 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer } from "effect";
 import type { Bindings } from "../src/bindings";
-import {
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
-import {
-  decodeJsonValue,
-  type CredentialRefreshLease,
-  type StoredCredential,
-} from "../src/contracts";
 import { SCOTTY_INTERNAL_HOST } from "../src/container-session-egress";
 import {
   ALLOWED_HOSTS,
@@ -23,44 +12,16 @@ import {
   EgressTransport,
   type EgressTransportShape,
   egressTransportLayer,
-  EgressVault,
-  type EgressVaultShape,
   makeEnvironmentOutbound,
   makeOutboundByHost,
   passThroughProgram,
-  piAccessSentinel,
-  proxyChatGptProgram,
-  proxyOAuthRefreshProgram,
   proxyEnvironmentProgram,
-  proxyOpenAIProgram,
 } from "../src/egress";
 
-const OPENAI = "scotty-pi-openai-session-sentinel";
-const CODEX = "scotty-pi-openai-codex-session-sentinel";
 const HONEYPOT = "never-expose-honeypot-secret";
 const ENVIRONMENT_A = `scotty-env-a0b1c2d3e4f5-${"0".repeat(32)}`;
 const ENVIRONMENT_B = `scotty-env-b0c1d2e3f4a5-${"1".repeat(32)}`;
 const ENVIRONMENT_COMPONENT_LIMIT = 16_384;
-const credential: StoredCredential = {
-  providers: {
-    openai: {
-      credential: { type: "api_key", key: "real-openai-key" },
-      sentinel: OPENAI,
-    },
-    "openai-codex": {
-      credential: {
-        type: "oauth",
-        access: "real-chatgpt-token",
-        refresh: "real-refresh-token",
-        expires: 0,
-        accountId: "account-123",
-      },
-      sentinel: CODEX,
-    },
-  },
-  updatedAt: "2026-01-02T00:00:00.000Z",
-};
-const lease: CredentialRefreshLease = { credential, nonce: "lease-nonce" };
 
 describe("native egress transport", () => {
   it.effect("forwards one exact native request and returns the native response unchanged", () =>
@@ -115,46 +76,18 @@ describe("native egress transport", () => {
     const handlers = makeOutboundByHost(nativeFetch);
     assert.deepEqual(Object.keys(handlers), [...ALLOWED_HOSTS]);
     assert.strictEqual(handlers["github.com"], handlers["api.github.com"]);
+    assert.strictEqual(handlers["api.openai.com"], handlers["github.com"]);
     assert.strictEqual(handlers["codeload.github.com"], handlers["registry.npmjs.org"]);
-    assert.notStrictEqual(handlers["api.openai.com"], handlers["chatgpt.com"]);
-    assert.notStrictEqual(handlers["auth.openai.com"], handlers["api.openai.com"]);
   });
 });
 
-function vault(overrides: Partial<EgressVaultShape> = {}): EgressVaultShape {
-  return {
-    read: () => Effect.succeed(credential),
-    begin: () => Effect.succeed(lease),
-    persist: () => Effect.void,
-    cancel: () => Effect.void,
-    ...overrides,
-  };
-}
-
 function run(
-  program: Effect.Effect<
-    Response,
-    EgressFailure,
-    EgressVault | EgressTransport | HttpClient.HttpClient
-  >,
+  program: Effect.Effect<Response, EgressFailure, EgressTransport>,
   options: {
-    readonly vault?: EgressVaultShape;
-    readonly respond?: (request: HttpClientRequest.HttpClientRequest) => Effect.Effect<Response>;
-    readonly requests?: Array<HttpClientRequest.HttpClientRequest>;
     readonly nativeRespond?: (request: Request) => Effect.Effect<Response>;
     readonly nativeRequests?: Array<Request>;
   } = {},
 ) {
-  const requests = options.requests ?? [];
-  const client = HttpClient.make((request) =>
-    Effect.gen(function* () {
-      requests.push(request);
-      const response = options.respond
-        ? yield* options.respond(request)
-        : new Response("ok", { status: 200 });
-      return HttpClientResponse.fromWeb(request, response);
-    }),
-  );
   const transport: EgressTransportShape = {
     forward: (request, url, headers) => {
       const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
@@ -165,7 +98,7 @@ function run(
         redirect: "manual",
       };
       if (body) Reflect.set(init, "duplex", "half");
-      const outgoing = new Request(`https://${url.hostname}${url.pathname}${url.search}`, init);
+      const outgoing = new Request(url.toString(), init);
       options.nativeRequests?.push(outgoing);
       return options.nativeRespond
         ? options.nativeRespond(outgoing)
@@ -173,9 +106,7 @@ function run(
     },
   };
   return program.pipe(
-    Effect.provide(Layer.succeed(EgressVault)(EgressVault.of(options.vault ?? vault()))),
     Effect.provide(Layer.succeed(EgressTransport)(EgressTransport.of(transport))),
-    Effect.provide(Layer.succeed(HttpClient.HttpClient)(client)),
   );
 }
 
@@ -215,81 +146,6 @@ function runEnvironment(
 }
 
 describe("credential egress", () => {
-  it.effect("injects OpenAI API keys, removes x-api-key and strips all ambient headers", () =>
-    Effect.gen(function* () {
-      const requests: Array<Request> = [];
-      const response = yield* run(
-        proxyOpenAIProgram(
-          new Request("https://api.openai.com/v1/models", {
-            headers: {
-              authorization: `Bearer ${OPENAI}`,
-              "x-api-key": HONEYPOT,
-              cookie: HONEYPOT,
-              "proxy-authorization": HONEYPOT,
-              "cf-ray": HONEYPOT,
-              "x-forwarded-for": HONEYPOT,
-            },
-          }),
-        ),
-        { nativeRequests: requests },
-      );
-      const sent = requests[0];
-      assert.equal(response.status, 200);
-      assert.equal(sent.headers.get("authorization"), "Bearer real-openai-key");
-      for (const name of [
-        "x-api-key",
-        "cookie",
-        "proxy-authorization",
-        "cf-ray",
-        "x-forwarded-for",
-      ])
-        assert.equal(sent.headers.get(name), null);
-    }),
-  );
-
-  it.effect("uses the OpenAI token fallback", () =>
-    Effect.gen(function* () {
-      const requests: Array<Request> = [];
-      const { openai: _openai, ...oauthOnlyProviders } = credential.providers;
-      const tokenOnly = { ...credential, providers: oauthOnlyProviders };
-      yield* run(
-        proxyOpenAIProgram(
-          new Request("https://api.openai.com/v1/models", { headers: { "x-api-key": CODEX } }),
-        ),
-        {
-          nativeRequests: requests,
-          vault: vault({ read: () => Effect.succeed(tokenOnly) }),
-        },
-      );
-      assert.equal(requests[0].headers.get("authorization"), "Bearer real-chatgpt-token");
-    }),
-  );
-
-  it.effect("injects ChatGPT token and account id and rejects an environment sentinel", () =>
-    Effect.gen(function* () {
-      const requests: Array<Request> = [];
-      yield* run(
-        proxyChatGptProgram(
-          new Request("https://chatgpt.com/backend-api/me", {
-            headers: { authorization: `Bearer ${CODEX}` },
-          }),
-        ),
-        { nativeRequests: requests },
-      );
-      const sent = requests[0];
-      assert.equal(sent.headers.get("authorization"), "Bearer real-chatgpt-token");
-      assert.equal(sent.headers.get("chatgpt-account-id"), "account-123");
-      const rejected = yield* run(
-        proxyChatGptProgram(
-          new Request("https://chatgpt.com/backend-api/me", {
-            headers: { authorization: `Bearer ${ENVIRONMENT_A}` },
-          }),
-        ),
-      );
-      assert.equal(rejected.status, 403);
-    }),
-  );
-
   it.effect("replaces generic environment sentinels in GitHub Bearer and Basic credentials", () =>
     Effect.gen(function* () {
       const requests: Array<Request> = [];
@@ -320,15 +176,11 @@ describe("credential egress", () => {
     }),
   );
 
-  it.effect("returns credential-bearing redirects without forwarding credentials again", () =>
+  it.effect("returns redirects without following them or forwarding again", () =>
     Effect.gen(function* () {
       const requests: Array<Request> = [];
       const response = yield* run(
-        proxyOpenAIProgram(
-          new Request("https://api.openai.com/v1/responses", {
-            headers: { authorization: `Bearer ${CODEX}` },
-          }),
-        ),
+        passThroughProgram(new Request("https://registry.npmjs.org/pkg")),
         {
           nativeRequests: requests,
           nativeRespond: () =>
@@ -343,7 +195,7 @@ describe("credential egress", () => {
       assert.equal(response.status, 307);
       assert.equal(response.headers.get("location"), "https://evil.example/steal");
       assert.equal(requests.length, 1);
-      assert.equal(requests[0].url, "https://api.openai.com/v1/responses");
+      assert.equal(requests[0].url, "https://registry.npmjs.org/pkg");
     }),
   );
 });
@@ -463,260 +315,6 @@ describe("pass-through policy", () => {
   );
 });
 
-describe("OAuth refresh", () => {
-  const request = (body: unknown) =>
-    new Request("https://auth.openai.com/oauth/token", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  const body = { grant_type: "refresh_token", refresh_token: CODEX, client_id: "client" };
-
-  it.effect("rejects malformed OAuth and reports busy or missing leases", () =>
-    Effect.gen(function* () {
-      assert.equal(
-        (yield* run(proxyOAuthRefreshProgram(new Request("https://auth.openai.com/oauth/token"))))
-          .status,
-        403,
-      );
-      assert.equal(
-        (yield* run(
-          proxyOAuthRefreshProgram(
-            new Request("https://auth.openai.com/not-token", {
-              method: "POST",
-              body: JSON.stringify(body),
-            }),
-          ),
-        )).status,
-        403,
-      );
-      assert.equal(
-        (yield* run(proxyOAuthRefreshProgram(request({ refresh_token: CODEX })))).status,
-        403,
-      );
-      const busy = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        vault: vault({ begin: () => Effect.succeed(null) }),
-      });
-      assert.equal(busy.status, 409);
-      assert.deepEqual(yield* Effect.promise(() => busy.json()), {
-        error: { code: "oauth_refresh_busy", message: "OAuth refresh is already in progress" },
-      });
-      const withoutRefresh = {
-        ...credential,
-        providers: {
-          ...credential.providers,
-          "openai-codex": {
-            ...credential.providers["openai-codex"],
-            credential: {
-              type: "oauth" as const,
-              access: "real-chatgpt-token",
-              refresh: "",
-              expires: 0,
-              accountId: "account-123",
-            },
-          },
-        },
-      };
-      const missing = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        vault: vault({
-          begin: () =>
-            Effect.succeed({ credential: withoutRefresh, nonce: "missing-refresh-nonce" }),
-        }),
-      });
-      assert.equal(missing.status, 409);
-    }),
-  );
-
-  it.effect(
-    "sends the real refresh token only to the exact auth URL and persists before sentinel response",
-    () =>
-      Effect.gen(function* () {
-        const events: Array<string> = [];
-        const requests: Array<HttpClientRequest.HttpClientRequest> = [];
-        const response = yield* run(proxyOAuthRefreshProgram(request(body)), {
-          requests,
-          vault: vault({
-            persist: () => Effect.sync(() => events.push("persist")).pipe(Effect.asVoid),
-          }),
-          respond: (upstream) =>
-            Effect.gen(function* () {
-              events.push("upstream");
-              assert.equal(upstream.url, "https://auth.openai.com/oauth/token");
-              const upstreamRequest = yield* HttpClientRequest.toWeb(upstream).pipe(Effect.orDie);
-              const upstreamBody = yield* Effect.promise(() => upstreamRequest.text());
-              assert.deepEqual(
-                decodeJsonValue(upstreamBody),
-                Option.some({
-                  grant_type: "refresh_token",
-                  refresh_token: "real-refresh-token",
-                  client_id: "client",
-                }),
-              );
-              return new Response(
-                JSON.stringify({
-                  access_token: "rotated-access",
-                  refresh_token: "rotated-refresh",
-                }),
-                { status: 200 },
-              );
-            }),
-        });
-        events.push("response");
-        assert.deepEqual(events, ["upstream", "persist", "response"]);
-        const text = yield* Effect.promise(() => response.text());
-        assert.ok(text.includes(CODEX));
-        assert.ok(!text.includes("rotated-access") && !text.includes("real-refresh-token"));
-      }),
-  );
-
-  it.effect("accepts Pi form refresh and returns a JWT-shaped sentinel with expiry", () =>
-    Effect.gen(function* () {
-      const form = new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: CODEX,
-        client_id: "pi-client",
-      });
-      const response = yield* run(
-        proxyOAuthRefreshProgram(
-          new Request("https://auth.openai.com/oauth/token", {
-            method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded" },
-            body: form,
-          }),
-        ),
-        {
-          respond: (upstream) =>
-            Effect.gen(function* () {
-              const web = yield* HttpClientRequest.toWeb(upstream).pipe(Effect.orDie);
-              assert.equal(web.headers.get("content-type"), "application/x-www-form-urlencoded");
-              assert.deepEqual(
-                Object.fromEntries(new URLSearchParams(yield* Effect.promise(() => web.text()))),
-                {
-                  grant_type: "refresh_token",
-                  refresh_token: "real-refresh-token",
-                  client_id: "pi-client",
-                },
-              );
-              return new Response(
-                JSON.stringify({
-                  access_token: "rotated-access",
-                  refresh_token: "rotated-refresh",
-                  expires_in: 3600,
-                }),
-                { status: 200 },
-              );
-            }),
-        },
-      );
-      assert.equal(response.status, 200);
-      assert.deepEqual(yield* Effect.promise(() => response.json()), {
-        id_token:
-          "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoic2NvdHR5LXNlbnRpbmVsIiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJ1bmtub3duIn19.scotty",
-        access_token: piAccessSentinel(CODEX),
-        refresh_token: CODEX,
-        expires_in: 3600,
-      });
-    }),
-  );
-
-  it.effect("preserves upstream non-2xx status/envelope/no-store and cancels", () =>
-    Effect.gen(function* () {
-      let cancels = 0;
-      const response = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        vault: vault({
-          cancel: () =>
-            Effect.sync(() => {
-              cancels += 1;
-            }),
-        }),
-        respond: () => Effect.succeed(new Response(HONEYPOT, { status: 429 })),
-      });
-      assert.equal(response.status, 429);
-      assert.equal(response.headers.get("cache-control"), "no-store");
-      assert.deepEqual(yield* Effect.promise(() => response.json()), {
-        error: { code: "oauth_refresh_failed", message: "OAuth refresh failed" },
-      });
-      assert.equal(cancels, 1);
-    }),
-  );
-
-  it.effect("cancels malformed upstream responses", () =>
-    Effect.gen(function* () {
-      let cancels = 0;
-      const response = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        vault: vault({
-          cancel: () =>
-            Effect.sync(() => {
-              cancels += 1;
-            }),
-        }),
-        respond: () => Effect.succeed(new Response(HONEYPOT, { status: 200 })),
-      });
-      assert.equal(response.status, 502);
-      assert.equal(yield* Effect.promise(() => response.text()), "Invalid OAuth response");
-      assert.equal(cancels, 1);
-    }),
-  );
-
-  it.effect("cancels transport failures and redacts causes", () =>
-    Effect.gen(function* () {
-      let cancels = 0;
-      const client = HttpClient.make((outgoing) =>
-        Effect.fail(
-          new HttpClientError.HttpClientError({
-            reason: new HttpClientError.TransportError({ request: outgoing, cause: HONEYPOT }),
-          }),
-        ),
-      );
-      const exit = yield* proxyOAuthRefreshProgram(request(body)).pipe(
-        Effect.provide(
-          Layer.succeed(EgressVault)(
-            EgressVault.of(
-              vault({
-                cancel: () =>
-                  Effect.sync(() => {
-                    cancels += 1;
-                  }),
-              }),
-            ),
-          ),
-        ),
-        Effect.provide(Layer.succeed(HttpClient.HttpClient)(client)),
-        Effect.exit,
-      );
-      assert.equal(cancels, 1);
-      assert.ok(String(exit).includes("Failure"));
-      assert.ok(!String(exit).includes(HONEYPOT));
-    }),
-  );
-
-  it.effect("makes exactly three immediate persistence attempts and redacts stale failures", () =>
-    Effect.gen(function* () {
-      let attempts = 0;
-      const exit = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        vault: vault({
-          persist: () =>
-            Effect.sync(() => {
-              attempts += 1;
-            }).pipe(
-              Effect.andThen(
-                Effect.fail(new EgressFailure({ reason: "persistence", message: HONEYPOT })),
-              ),
-            ),
-        }),
-        respond: () =>
-          Effect.succeed(
-            new Response(JSON.stringify({ access_token: "new-token" }), { status: 200 }),
-          ),
-      }).pipe(Effect.exit);
-      assert.equal(attempts, 3);
-      assert.ok(String(exit).includes("Failure"));
-      assert.ok(!String(exit).includes(HONEYPOT));
-      assert.ok(String(exit).includes("Failed to persist rotated OAuth credential"));
-    }),
-  );
-});
-
 function environmentBindings(
   authorizeEnvironmentRequest: (input: unknown) => Promise<unknown>,
 ): Bindings {
@@ -745,7 +343,6 @@ function environmentBindings(
     SANDBOX_BUNDLE_BUCKET: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "unused",
-    PI_AUTH_JSON: "unused",
   };
 }
 

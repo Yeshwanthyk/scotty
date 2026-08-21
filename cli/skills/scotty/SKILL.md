@@ -44,7 +44,7 @@ The agent probes, parses, and reports. The human supplies identity, authority, a
 | Cloudflare        | Ask whether the named local profile is authorized                                          | Choose the profile and complete its login; provide a profile name, never a provider credential |
 | Preview/evidence  | Keep the default path unless requested                                                     | Supply both preview base and zone ID explicitly when enabling that topology                    |
 | Docker            | Run `docker info`; offer a detected user-level start after approval                        | Approve a safe start or complete any install, privileged, GUI, or first-run action             |
-| GitHub and Pi     | Run status probes and wait                                                                 | Complete `gh auth login` and Pi login in the human's own terminal                              |
+| GitHub            | Run status probes and wait                                                                 | Complete `gh auth login` in the human's own terminal                                           |
 | Mutations         | Show the plan or impact and ask before `--yes`, deployment, recovery, removal, or vaporize | Approve the named resource change; `--yes` skips confirmation, not validation                  |
 | Browser authority | Explain owner recovery and revocation                                                      | Complete the browser recovery or ownership flow                                                |
 | Pairing           | Give the verified origin and wait for confirmation                                         | Create the one-use pairing value and enter it at the no-echo prompt in the human terminal      |
@@ -72,8 +72,7 @@ scotty --version
 Ask for the installation name and Cloudflare profile before choosing a target. If evidence topology
 is requested, ask for the explicit preview base and zone ID as a pair. If Docker is unavailable,
 offer only an already-installed user-level runtime after human approval; do not install software or
-elevate privileges. If GitHub login is missing, ask the human to run `gh auth login` locally. If Pi
-login is missing, ask the human to finish it locally and report only redacted status.
+elevate privileges. If GitHub login is missing, ask the human to run `gh auth login` locally.
 
 **Done when:** prerequisites are healthy, or the human has one exact secure action to complete.
 
@@ -119,14 +118,12 @@ It does not guess an installation or adopt arbitrary resources.
 **Done when:** the managed pointer is private and the installation Worker accepts sandbox
 synchronization.
 
-### 3. Synchronize Pi auth and verify health
+### 3. Synchronize the sandbox and verify health
 
-After the human finishes Pi login, run:
+Run:
 
 ```sh
 scotty sandbox sync --json
-scotty auth sync --json
-scotty auth status --json
 scotty doctor --json
 ```
 
@@ -134,18 +131,12 @@ Interpret the results, do not print their hidden values:
 
 - `sandbox sync` reports `schemaVersion`, bundle `digest`, `bytes`, `fileCount`, configured
   `skills`, `piPackages`, and `remote.status` plus `remote.activeDigest`.
-- `auth status` reports `source`, `sourceDigest`, `updatedAt`, and provider metadata only:
-  `{id,type,adapter}`, where `type` is `api_key` or `oauth` and `adapter` is `supported` or
-  `unsupported`.
-- `auth sync` reports `synchronized`, a redacted `sourceDigest`, `worker`, provider metadata,
-  `reconciled`, `failed`, and `partial`. A partial result names warm sessions that need a later
-  retry; it does not silently change them.
 - `doctor` must return `ok: true`, normally with `mode: "managed"` and installation/profile/resource
   identifiers. It proves config identity, reachability, and root-authenticated Worker access; it
   does not prove browser ownership or pairing.
 
-**Done when:** Pi providers are synchronized without an unresolved partial result and `doctor`
-returns `ok: true` in managed mode.
+**Done when:** `sandbox sync` returns a digest with remote active state `synchronized` (or its typed
+divergence is reported for human choice) and `doctor` returns `ok: true` in managed mode.
 
 ### 4. Establish browser authority and pair
 
@@ -341,19 +332,11 @@ original pin.
 **Done when:** the desired source list is valid, sync returns a digest, and remote active state is
 `synchronized` or its typed divergence is reported for human choice.
 
-## Auth and browser authority
+## Browser authority
 
-`scotty auth status --json` is redacted metadata, not a way to retrieve provider material. `auth
-sync` reads the human's local Pi store through the supported boundary, commits the sanitized provider
-record before returning, and may report warm-session reconciliation failures. `auth reseed` is
-intentionally unlisted but callable; use it only as an explicit session mutation:
-
-```sh
-scotty auth reseed ID --json
-scotty auth reseed --all-active --json
-```
-
-The two forms target one warm session or every warm Cloudflare session; pass exactly one target.
+Session model credentials come from the installation environment authority (`scotty env set
+GH_TOKEN --secret` and `scotty env set OPENAI_API_KEY --secret`); sessions receive only per-session
+sentinels, never real values.
 
 The Auth Durable Object owns the browser owner, standard clients, pairing, transfer, recovery, and
 revocation. It stores credential digests only. The root authority is bearer-only and recovery
@@ -364,8 +347,7 @@ scope; owner-only browser management must stay in the primary browser or the rec
 browser credentials, and the human must finish the browser flow before pairing a new terminal. Keep
 pairing values and browser cookies in the human browser/terminal boundary.
 
-**Done when:** status exposes only provider metadata/digests, sync or reseed has an explicit result,
-and browser ownership is confirmed by the human rather than inferred from a URL.
+**Done when:** browser ownership is confirmed by the human rather than inferred from a URL.
 
 ## Tools and runners
 

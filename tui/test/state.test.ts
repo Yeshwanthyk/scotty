@@ -5,7 +5,7 @@ import { SESSION_A, event, snapshot } from "./fixtures.ts";
 
 describe("snapshot and SSE reducer", () => {
   it("redacts every snapshot surface before it enters renderable state", () => {
-    const leaked = "scotty-pi-a0b1c2d3e4f5-secret_0";
+    const leaked = "scotty-env-a0b1c2d3e4f5-secret_0";
     const environment = "scotty-env-a0b1c2d3e4f5-secret";
     const live = hydrateSnapshot({
       ...snapshot(),
@@ -52,7 +52,7 @@ describe("snapshot and SSE reducer", () => {
       extensionSurface: live.extensionSurface,
       capabilities: live.capabilities,
     });
-    expect(renderedState).not.toContain("scotty-pi-");
+    expect(renderedState).not.toContain("scotty-env-");
     expect(renderedState).not.toContain("scotty-env-");
     expect(renderedState.match(/\[sentinel\]/gu)?.length).toBeGreaterThan(8);
   });

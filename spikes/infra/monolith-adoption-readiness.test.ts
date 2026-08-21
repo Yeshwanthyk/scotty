@@ -77,7 +77,6 @@ const bindings = () => [
   { type: "assets", name: "ASSETS" },
   { type: "plain_text", name: "SANDBOX_TRANSPORT", value: "rpc" },
   { type: "plain_text", name: "BACKUP_BUCKET_NAME", value: "scotty-backups" },
-  { type: "secret_text", name: "PI_AUTH_JSON" },
   { type: "secret_text", name: "GH_TOKEN" },
   { type: "secret_text", name: "SCOTTY_TOKEN" },
 ];
@@ -127,16 +126,6 @@ const inventory = (): Chunk2LiveInventory => ({
 });
 
 const secretEvidence = (): readonly (Chunk2SecretProps & { readonly physicalId: string })[] => [
-  {
-    bindingName: "PI_AUTH_JSON",
-    sourceId: "scotty/codex-auth",
-    physicalId: "secret-1",
-    accountId: "account-01",
-    storeId: "store-01",
-    secretName: "codex-auth-json",
-    providerVersion: 1,
-    keyedDigest: "hmac-sha256:v1:codex-auth-json",
-  },
   {
     bindingName: "GH_TOKEN",
     sourceId: "scotty/github-token",
@@ -214,7 +203,6 @@ const edges = (logicalId: string) => {
     ["SandboxContainer", ["Sandbox"]],
     ["SessionsProjection", []],
     ["BackupBucket", []],
-    ["CodexAuthSecret", []],
     ["GithubTokenSecret", []],
     ["ScottyTokenSecret", []],
   ]);
@@ -656,12 +644,7 @@ describe("Chunk 2 monolith adoption readiness", () => {
       mutateEdges("SessionsProjection", [{ sid: "Unexpected", action: "noop" }]),
       ["PLAN_BINDING_ACTION_INVALID"],
     );
-    for (const logicalId of [
-      "BackupBucket",
-      "CodexAuthSecret",
-      "GithubTokenSecret",
-      "ScottyTokenSecret",
-    ]) {
+    for (const logicalId of ["BackupBucket", "GithubTokenSecret", "ScottyTokenSecret"]) {
       assert.deepStrictEqual(mutateEdges(logicalId, [{ sid: "Unexpected", action: "noop" }]), [
         "PLAN_BINDING_ACTION_INVALID",
       ]);
@@ -705,7 +688,7 @@ describe("Chunk 2 monolith adoption readiness", () => {
   });
 
   it("correlates fresh secret creates and second-plan identity plus all metadata by bindingName", () => {
-    const populatedBefore = replaceResource(plan(), "CodexAuthSecret", (resource) => ({
+    const populatedBefore = replaceResource(plan(), "GithubTokenSecret", (resource) => ({
       ...resource,
       resolvedIdentity: { before: "already-there", desired: resource.resolvedIdentity.desired },
     }));
@@ -717,7 +700,7 @@ describe("Chunk 2 monolith adoption readiness", () => {
       ["keyedDigest", "hmac-sha256:v1:changed"],
     ];
     for (const [field, value] of mutations) {
-      const second = replaceResource(plan("second"), "CodexAuthSecret", (resource) =>
+      const second = replaceResource(plan("second"), "GithubTokenSecret", (resource) =>
         field === "physicalId"
           ? { ...resource, resolvedIdentity: { before: String(value), desired: String(value) } }
           : {

@@ -8,14 +8,8 @@ import type {
 import { Data, Effect, Match, Result } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import type { RunnerOperation } from "../../protocol/runner";
-import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
 import type { Bindings } from "../src/bindings";
-import type {
-  CreateSessionInput,
-  SessionRecord,
-  StoredCredential,
-  WorkspaceCreationMarker,
-} from "../src/contracts";
+import type { CreateSessionInput, SessionRecord, WorkspaceCreationMarker } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
 import {
@@ -43,7 +37,6 @@ import { ENVIRONMENT_SECRET_VAULT_KEY } from "../src/environment-secret-vault";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
-const CREDENTIAL_KEY = "scotty:credential";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const SANDBOX_BUNDLE_CONTENT_TYPE = "application/gzip";
@@ -198,7 +191,6 @@ type InitialProjection = StatusProjection | WorkspaceCreationMarker;
 
 export type InitialStorageEntries = Partial<{
   [RECORD_KEY]: SessionRecord;
-  [CREDENTIAL_KEY]: StoredCredential;
   [CREATE_IDEMPOTENCY_KEY]: CreateIdempotencyMetadata;
   [EVIDENCE_RECORD_KEY]: unknown;
   [HATCH_STATE_KEY]: unknown;
@@ -300,12 +292,11 @@ export interface HarnessOptions {
   readonly sandboxConfigStatus?: SandboxConfigStatus;
   readonly sandboxConfigStatusFailure?: "rpc-error" | "throw";
   readonly sandboxConfigGithubToken?: string;
-  readonly sandboxConfigGithubTokenFailure?: "rpc-error" | "throw";
+  readonly sandboxConfigGlobalSecretFailure?: "rpc-error" | "throw";
   readonly environmentSnapshot?: EnvironmentSnapshot | SessionEnvironmentSnapshot;
   readonly environmentMaterialization?: EnvironmentMaterialization;
   readonly omitGithubEnvironmentSecret?: boolean;
-  readonly installationPiAuthRecord?: InstallationPiAuthRecord;
-  readonly installationPiAuthWriteFailure?: boolean;
+  readonly omitOpenaiEnvironmentSecret?: boolean;
   readonly sandboxBundleObjects?: ReadonlyArray<{
     readonly digest: string;
     readonly gzip: Uint8Array;
@@ -361,7 +352,6 @@ export interface SessionHarness {
   readonly read: <A>(key: string) => A | undefined;
   readonly readRecord: () => SessionRecord | undefined;
   readonly sandboxConfigStatusCallCount: () => number;
-  readonly installationPiAuthWrites: ReadonlyArray<InstallationPiAuthRecord>;
 }
 
 class HarnessStorage {
@@ -559,33 +549,11 @@ class HarnessStorage {
   private recordMutation(key: string, value: unknown): void {
     if (key === RECORD_KEY) {
       this.events.push(`record:${(value as SessionRecord).status}`);
-    } else if (key === CREDENTIAL_KEY) {
-      this.events.push("credential:put");
     } else {
       this.events.push(`storage:put:${key}`);
     }
   }
 }
-
-export const makeStoredCredential = (
-  overrides: Partial<StoredCredential> = {},
-): StoredCredential => ({
-  providers: {
-    "openai-codex": {
-      credential: {
-        type: "oauth",
-        access: "stored-access-token",
-        refresh: "stored-refresh-token",
-        expires: 0,
-        accountId: "stored-account-id",
-        idToken: "stored-id-token",
-      },
-      sentinel: `scotty-pi-${SESSION_ID}-sentinel-0`,
-    },
-  },
-  updatedAt: "2026-01-01T00:00:00.000Z",
-  ...overrides,
-});
 
 export const makeResumeBackup = (): DirectoryBackup => ({
   id: "backup-1",
@@ -603,7 +571,6 @@ export const lifecycleWallClock = {
 
 export async function createSessionHarness(options: HarnessOptions = {}): Promise<SessionHarness> {
   const events: string[] = [];
-  const installationPiAuthWrites: InstallationPiAuthRecord[] = [];
   const schedules: RecordedSchedule[] = [];
   const deletedSchedules: string[] = [];
   const aborts: string[] = [];
@@ -673,19 +640,30 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     initialRecord.operation.createPhase === "runtime" &&
     !isSessionEnvironmentSnapshot(initialRecord.environment)
   ) {
-    const sentinel = `scotty-env-${initialRecord.id}-${"a".repeat(32)}`;
+    const ghSentinel = `scotty-env-${initialRecord.id}-${"a".repeat(32)}`;
+    const openaiSentinel = `scotty-env-${initialRecord.id}-${"b".repeat(32)}`;
     initialEntries[RECORD_KEY] = {
       ...initialRecord,
-      environment: { version: 1, revision: 1, variables: { GH_TOKEN: sentinel } },
+      environment: {
+        version: 1,
+        revision: 1,
+        variables: { GH_TOKEN: ghSentinel, OPENAI_API_KEY: openaiSentinel },
+      },
     };
     initialEntries[ENVIRONMENT_SECRET_VAULT_KEY] = {
       version: 1,
       entries: {
-        [sentinel]: {
-          sentinel,
+        [ghSentinel]: {
+          sentinel: ghSentinel,
           sourceScope: "global",
           name: "GH_TOKEN",
           value: sandboxConfigGithubToken,
+        },
+        [openaiSentinel]: {
+          sentinel: openaiSentinel,
+          sourceScope: "global",
+          name: "OPENAI_API_KEY",
+          value: "stored-openai-api-key",
         },
       },
     };
@@ -896,18 +874,23 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     SANDBOX: options.sandboxNamespace ?? (undefined as never),
     SANDBOX_CONFIG: {
       getByName: () => ({
-        resolveGlobalGithubToken: async (): Promise<SandboxConfigRpcResult<string>> => {
-          if (options.sandboxConfigGithubTokenFailure === "throw")
-            throw injectedHarnessFailure("injected sandbox config GitHub token failure");
-          if (options.sandboxConfigGithubTokenFailure === "rpc-error")
+        resolveGlobalSecret: async (name: unknown): Promise<SandboxConfigRpcResult<string>> => {
+          if (options.sandboxConfigGlobalSecretFailure === "throw")
+            throw injectedHarnessFailure("injected sandbox config global secret failure");
+          if (options.sandboxConfigGlobalSecretFailure === "rpc-error")
             return {
               ok: false,
               error: {
-                reason: "invalid_github_token",
-                message: "injected sandbox config GitHub token failure",
+                reason: "invalid_global_secret",
+                message: "injected sandbox config global secret failure",
               },
             };
-          return { ok: true, value: sandboxConfigGithubToken };
+          if (name === "GH_TOKEN") return { ok: true, value: sandboxConfigGithubToken };
+          if (name === "OPENAI_API_KEY") return { ok: true, value: "stored-openai-api-key" };
+          return {
+            ok: false,
+            error: { reason: "invalid_global_secret", message: "unknown global secret" },
+          };
         },
         status: async (): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> => {
           sandboxConfigStatusCalls += 1;
@@ -927,17 +910,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           ok: true,
           value: { schemaVersion: 1, revision: 1, activeDigest: null },
         }),
-        piAuth: async () => ({ ok: true, value: options.installationPiAuthRecord ?? null }),
-        writePiAuth: async (record) => {
-          events.push("installation-pi-auth:write");
-          installationPiAuthWrites.push(record);
-          if (options.installationPiAuthWriteFailure)
-            return {
-              ok: false,
-              error: { reason: "storage" as const, message: "injected write failure" },
-            };
-          return { ok: true, value: record };
-        },
         listEnvironment: async () => ({
           ok: true,
           value: { revision: 0, variables: [] },
@@ -961,6 +933,16 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                           sourceScope: "global" as const,
                         },
                       }),
+                  ...(options.omitOpenaiEnvironmentSecret === true
+                    ? {}
+                    : {
+                        OPENAI_API_KEY: {
+                          value: "stored-openai-api-key",
+                          secret: true,
+                          updatedAt: "legacy",
+                          sourceScope: "global" as const,
+                        },
+                      }),
                   ...supplied.variables,
                 },
               },
@@ -977,12 +959,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                   ...(options.omitGithubEnvironmentSecret === true
                     ? []
                     : [["GH_TOKEN", sandboxConfigGithubToken] as const]),
-                  ...Object.entries(snapshot.variables).filter(([name]) => name !== "GH_TOKEN"),
+                  ...(options.omitOpenaiEnvironmentSecret === true
+                    ? []
+                    : [["OPENAI_API_KEY", "stored-openai-api-key"] as const]),
+                  ...Object.entries(snapshot.variables).filter(
+                    ([name]) => name !== "GH_TOKEN" && name !== "OPENAI_API_KEY",
+                  ),
                 ].map(([name, value]) => [
                   name,
                   {
                     value,
-                    secret: name === "GH_TOKEN",
+                    secret: name === "GH_TOKEN" || name === "OPENAI_API_KEY",
                     updatedAt: "legacy",
                     sourceScope: "global" as const,
                   },
@@ -1105,15 +1092,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     ),
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
-    PI_AUTH_JSON: JSON.stringify({
-      "openai-codex": {
-        type: "oauth",
-        access: "seed-access-token",
-        refresh: "seed-refresh-token",
-        expires: 0,
-        accountId: "seed-account-id",
-      },
-    }),
     ...(options.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
     ...(options.previewBase === undefined ? {} : { SCOTTY_PREVIEW_BASE: options.previewBase }),
   };
@@ -1506,12 +1484,10 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     read: <A>(key: string) => storage.read<A>(key),
     readRecord: () => storage.read<SessionRecord>(RECORD_KEY),
     sandboxConfigStatusCallCount: () => sandboxConfigStatusCalls,
-    installationPiAuthWrites,
   };
 }
 
 export const sessionHarnessKeys = {
-  credential: CREDENTIAL_KEY,
   createIdempotency: CREATE_IDEMPOTENCY_KEY,
   evidence: EVIDENCE_RECORD_KEY,
   hatch: HATCH_STATE_KEY,

@@ -29,13 +29,12 @@ tar traversal rejection; rollout mode 0600; and resource cleanup.
 
 ## Run the real local Worker, Sandbox, and Pi
 
-The local-live harness tests both Pi credential paths changed by auth hydration:
+The local-live harness exercises a fresh session end to end: environment secret
+materialization (`GH_TOKEN` and `OPENAI_API_KEY` sentinels), Git clone through the
+generic egress proxy, and a live Pi provider request.
 
-1. a fresh session writes current Pi auth before its first Pi process starts;
-2. a warm session quiesces, reseeds, restarts Pi, and executes another provider request.
-
-It requires a healthy Docker daemon, `gh auth`, and a mode-0600
-`~/.pi/agent/auth.json`. It uses temporary Wrangler state and a temporary secret file, opens a
+It requires a healthy Docker daemon, `gh auth`, and `OPENAI_API_KEY` in the invoking
+environment. It uses temporary Wrangler state and a temporary secret file, opens a
 one-time browser pairing page after both checks pass, and keeps Wrangler alive until `Ctrl-C`.
 It does not read or change any deployed Scotty resources. The local SDK host uses its documented
 HTTP control transport; deployed Scotty remains on RPC.
@@ -83,12 +82,11 @@ chmod 600 "$token_file"
 openssl rand -hex 32 >"$token_file"
 npx wrangler secret put SCOTTY_TOKEN --name "$worker" <"$token_file"
 gh auth token | tr -d '\n' | npx wrangler secret put GH_TOKEN --name "$worker"
-test -s "$HOME/.pi/agent/auth.json"
-npx wrangler secret put PI_AUTH_JSON --name "$worker" <"$HOME/.pi/agent/auth.json"
+printf '%s' "$OPENAI_API_KEY" | npx wrangler secret put OPENAI_API_KEY --name "$worker"
 ```
 
-`PI_AUTH_JSON` and `GH_TOKEN` stay in the Worker/Durable Object credential boundary. The
-Container receives only its session-bound Codex and GitHub sentinels.
+Secrets stay in the Worker/environment-authority boundary. Containers receive only their
+session-bound `GH_TOKEN` and `OPENAI_API_KEY` sentinels.
 
 Use a disposable clone of the repository. The canary pushes one random `scotty/<id>` branch so
 beam-down exercises a real remote fetch; the test deletes that branch in its cleanup hook.

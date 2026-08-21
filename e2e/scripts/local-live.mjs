@@ -1,17 +1,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runCli } from "../support/harness.mjs";
@@ -30,11 +21,11 @@ export function repositoryFromRemote(remote) {
   return match[1];
 }
 
-export function formatLocalDevVars({ rootToken, githubToken, piAuthJson }) {
+export function formatLocalDevVars({ rootToken, githubToken, openaiApiKey }) {
   return [
     `SCOTTY_TOKEN=${JSON.stringify(rootToken)}`,
     `GH_TOKEN=${JSON.stringify(githubToken)}`,
-    `PI_AUTH_JSON=${JSON.stringify(JSON.parse(piAuthJson))}`,
+    `OPENAI_API_KEY=${JSON.stringify(openaiApiKey)}`,
     'SANDBOX_TRANSPORT="http"',
     'SCOTTY_LOCAL_E2E="1"',
     "",
@@ -132,16 +123,9 @@ function requireExecutable(command, arguments_) {
 }
 
 function localInputs() {
-  const piAuthPath = path.join(homedir(), ".pi/agent/auth.json");
-  if (!existsSync(piAuthPath))
-    throw new Error(`Pi auth is missing at ${piAuthPath}; sign in with Pi first`);
-  const mode = statSync(piAuthPath).mode & 0o777;
-  if (mode !== 0o600)
-    throw new Error(`Pi auth must be mode 0600, received ${mode.toString(8).padStart(3, "0")}`);
-  const piAuthJson = readFileSync(piAuthPath, "utf8");
-  const parsed = JSON.parse(piAuthJson);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error("Pi auth must contain a provider object");
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  if (typeof openaiApiKey !== "string" || openaiApiKey.trim().length < 20)
+    throw new Error("Set OPENAI_API_KEY in the environment before running local live E2E");
 
   requireExecutable("docker", ["info"]);
   requireExecutable("gh", ["auth", "status"]);
@@ -154,7 +138,7 @@ function localInputs() {
   if (githubToken.length < 20) throw new Error("GitHub returned an invalid auth token");
   return {
     githubToken,
-    piAuthJson,
+    openaiApiKey: openaiApiKey.trim(),
     rootToken: randomBytes(32).toString("hex"),
   };
 }
@@ -442,12 +426,7 @@ async function run() {
     envFile,
     persistPath,
     port: options.port,
-    secrets: [
-      inputs.rootToken,
-      inputs.githubToken,
-      inputs.piAuthJson,
-      JSON.stringify(JSON.parse(inputs.piAuthJson)),
-    ],
+    secrets: [inputs.rootToken, inputs.githubToken, inputs.openaiApiKey],
   });
   let cleaned = false;
   let holding = false;

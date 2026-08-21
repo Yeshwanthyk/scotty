@@ -12,12 +12,6 @@ export const CHUNK2_ADOPTED_RESOURCES = [
 
 export const CHUNK2_SECRET_RESOURCES = [
   {
-    logicalId: "CodexAuthSecret",
-    resourceType: "Scotty.WriteOnlySecret",
-    bindingName: "PI_AUTH_JSON",
-    sourceId: "scotty/codex-auth",
-  },
-  {
     logicalId: "GithubTokenSecret",
     resourceType: "Scotty.WriteOnlySecret",
     bindingName: "GH_TOKEN",
@@ -103,7 +97,7 @@ export const CHUNK2_WRANGLER_PARITY = {
 export type Chunk2PlanAction = "create" | "noop" | "update" | "replace" | "delete";
 export type Chunk2TaskAction = "run" | "noop";
 export type Chunk2BindingAction = "create" | "noop" | "update" | "delete";
-export type Chunk2SecretBindingName = "PI_AUTH_JSON" | "GH_TOKEN" | "SCOTTY_TOKEN";
+export type Chunk2SecretBindingName = "GH_TOKEN" | "SCOTTY_TOKEN";
 
 export interface Chunk2ResolvedIdentity {
   readonly before: string | undefined;
@@ -1320,7 +1314,7 @@ export function chunk2InventoryBlockers(
     blockers.push(
       blocker(
         "SECRET_CONTINUITY_UNPROVEN",
-        "The current Worker must retain all three secret_text bindings.",
+        "The current Worker must retain all required secret_text bindings.",
       ),
     );
   return blockers;
@@ -1417,8 +1411,8 @@ export function chunk2CloneEvidenceBlockers(
   );
   const uniqueRefs = new Set(refs.map(({ bindingName }) => bindingName));
   if (
-    refs.length !== 3 ||
-    uniqueRefs.size !== 3 ||
+    refs.length !== CHUNK2_SECRET_RESOURCES.length ||
+    uniqueRefs.size !== CHUNK2_SECRET_RESOURCES.length ||
     refs.some((reference) => {
       const expected = CHUNK2_SECRET_RESOURCES.find(
         ({ bindingName }) => bindingName === reference.bindingName,

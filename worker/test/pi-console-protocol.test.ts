@@ -6,6 +6,7 @@ import {
   decodePiConsoleSnapshotV1,
   decodePiConsoleStaleCommandV1,
   CREDENTIAL_SENTINEL_PREFIXES,
+  ENVIRONMENT_SENTINEL_PREFIX,
   decodePiConsoleUnavailableV1,
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_MAX_EVENTS,
@@ -14,7 +15,6 @@ import {
   PI_CONSOLE_MAX_STATUSES,
   PI_CONSOLE_MAX_STRING_BYTES,
 } from "../../protocol/pi-console";
-import { PI_SENTINEL_PREFIX } from "../src/egress";
 
 const command = (intent: unknown) => ({
   version: 1,
@@ -284,7 +284,7 @@ describe("Pi console protocol v1", () => {
   );
 
   it("uses the credential authority's exact sentinel prefixes", () => {
-    assert.deepStrictEqual(CREDENTIAL_SENTINEL_PREFIXES, ["scotty-pi-", "scotty-env-"]);
-    assert.strictEqual(PI_SENTINEL_PREFIX, CREDENTIAL_SENTINEL_PREFIXES[0]);
+    assert.deepStrictEqual(CREDENTIAL_SENTINEL_PREFIXES, ["scotty-env-"]);
+    assert.strictEqual(ENVIRONMENT_SENTINEL_PREFIX, CREDENTIAL_SENTINEL_PREFIXES[0]);
   });
 });

@@ -1,7 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
-import { Effect, Result } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 import type { Bindings } from "./bindings";
-import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
 import type { RepositoryRegistryEntry } from "../../protocol/repository";
 import type {
   EnvironmentApprovalList,
@@ -17,13 +16,6 @@ import {
   type EnvironmentFailure,
   environmentStoreLayer,
 } from "./environment-store";
-import {
-  InstallationPiAuthStore,
-  type InstallationPiAuthFailure,
-  type InstallationPiAuthFailureReason,
-  durableObjectInstallationPiAuthStorage,
-  installationPiAuthStoreLayer,
-} from "./installation-pi-auth-store";
 import type { SandboxActivateInput, SandboxConfigStatus } from "./sandbox-config-contracts";
 import {
   SandboxConfigStore,
@@ -40,10 +32,11 @@ import {
 
 export const SANDBOX_CONFIG_OBJECT_NAME = "account";
 
+const decodeGlobalSecretName = Schema.decodeUnknownOption(Schema.NonEmptyString);
+
 export interface SandboxConfigRpcError {
   readonly reason:
     | SandboxConfigFailure["reason"]
-    | InstallationPiAuthFailureReason
     | InstallationRepoFailure["reason"]
     | EnvironmentFailure["reason"];
   readonly message: string;
@@ -56,18 +49,13 @@ export type SandboxConfigRpcResult<A> =
 const sandboxConfigRpcError = ({
   reason,
   message,
-}:
-  | SandboxConfigFailure
-  | InstallationPiAuthFailure
-  | InstallationRepoFailure
-  | EnvironmentFailure): SandboxConfigRpcError => ({
+}: SandboxConfigFailure | InstallationRepoFailure | EnvironmentFailure): SandboxConfigRpcError => ({
   reason,
   message,
 });
 
 export class ScottySandboxConfig extends DurableObject<Bindings> {
   private readonly configLayer;
-  private readonly piAuthLayer;
   private readonly repoLayer;
   private readonly environmentLayer;
 
@@ -76,9 +64,6 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
     this.configLayer = sandboxConfigStoreLayer(
       durableObjectSandboxConfigAuthorityStorage(ctx.storage),
     );
-    this.piAuthLayer = installationPiAuthStoreLayer(
-      durableObjectInstallationPiAuthStorage(ctx.storage),
-    );
     this.repoLayer = installationRepoStoreLayer(durableObjectInstallationRepoStorage(ctx.storage));
     this.environmentLayer = environmentStoreLayer(durableObjectEnvironmentStorage(ctx.storage));
   }
@@ -86,25 +71,22 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
   status(): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
     return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.status()));
   }
-  /** Internal Worker/DO use only; this credential never crosses a public route. */
-  resolveGlobalGithubToken(): Promise<SandboxConfigRpcResult<string>> {
+  /** Internal Worker/DO use only; this secret never crosses a public route. */
+  resolveGlobalSecret(name: unknown): Promise<SandboxConfigRpcResult<string>> {
+    const decoded = decodeGlobalSecretName(name);
+    if (Option.isNone(decoded)) {
+      return Promise.resolve({
+        ok: false,
+        error: { reason: "invalid_input", message: "Global secret name is invalid" },
+      });
+    }
     return this.#runEnvironment(
-      Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalGithubToken),
+      Effect.flatMap(EnvironmentStore, (store) => store.resolveGlobalSecret(decoded.value)),
     );
   }
 
   activate(input: SandboxActivateInput): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
     return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.activate(input)));
-  }
-
-  piAuth(): Promise<SandboxConfigRpcResult<InstallationPiAuthRecord | null>> {
-    return this.#runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.read));
-  }
-
-  writePiAuth(
-    input: InstallationPiAuthRecord,
-  ): Promise<SandboxConfigRpcResult<InstallationPiAuthRecord>> {
-    return this.#runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.write(input)));
   }
 
   listRepos(): Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>> {
@@ -195,19 +177,6 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
     });
   }
 
-  async #runPiAuth<A>(
-    operation: Effect.Effect<A, InstallationPiAuthFailure, InstallationPiAuthStore>,
-  ): Promise<SandboxConfigRpcResult<A>> {
-    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
-    const result = await Effect.runPromise(
-      operation.pipe(Effect.provide(this.piAuthLayer), Effect.result),
-    );
-    return Result.match(result, {
-      onFailure: (error) => ({ ok: false, error: sandboxConfigRpcError(error) }),
-      onSuccess: (value) => ({ ok: true, value }),
-    });
-  }
-
   async #runEnvironment<A>(
     operation: Effect.Effect<A, EnvironmentFailure, EnvironmentStore>,
   ): Promise<SandboxConfigRpcResult<A>> {
@@ -238,14 +207,10 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
 export type ScottySandboxConfigStub = {
   readonly status: () => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
   /** Internal Worker/DO use only; never expose this result through a public API. */
-  readonly resolveGlobalGithubToken: () => Promise<SandboxConfigRpcResult<string>>;
+  readonly resolveGlobalSecret: (name: unknown) => Promise<SandboxConfigRpcResult<string>>;
   readonly activate: (
     input: SandboxActivateInput,
   ) => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
-  readonly piAuth: () => Promise<SandboxConfigRpcResult<InstallationPiAuthRecord | null>>;
-  readonly writePiAuth: (
-    input: InstallationPiAuthRecord,
-  ) => Promise<SandboxConfigRpcResult<InstallationPiAuthRecord>>;
   readonly listRepos: () => Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>>;
   readonly addRepo: (input: unknown) => Promise<SandboxConfigRpcResult<RepositoryRegistryEntry>>;
   readonly removeRepo: (repo: unknown) => Promise<SandboxConfigRpcResult<boolean>>;

@@ -3,7 +3,6 @@ export {
   CREDENTIAL_SENTINEL_PREFIXES,
   ENVIRONMENT_SENTINEL_PREFIX,
   PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
-  PI_SENTINEL_PREFIX,
   canonicalJson,
   commandIntentDigest,
   redactCredentialSentinels,

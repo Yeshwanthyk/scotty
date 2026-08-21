@@ -41,11 +41,11 @@ test("local live E2E writes isolated Worker inputs", () => {
   const value = formatLocalDevVars({
     rootToken: "root-token",
     githubToken: "github-token",
-    piAuthJson: '{\n  "openai-codex": {"type": "oauth"}\n}',
+    openaiApiKey: "openai-key",
   });
   assert.match(value, /^SCOTTY_TOKEN="root-token"$/mu);
   assert.match(value, /^GH_TOKEN="github-token"$/mu);
-  assert.match(value, /^PI_AUTH_JSON=\{"openai-codex":\{"type":"oauth"\}\}$/mu);
+  assert.match(value, /^OPENAI_API_KEY="openai-key"$/mu);
   assert.match(value, /^SANDBOX_TRANSPORT="http"$/mu);
   assert.match(value, /^SCOTTY_LOCAL_E2E="1"$/mu);
 });

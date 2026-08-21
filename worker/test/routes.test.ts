@@ -25,7 +25,6 @@ const sandbox = vi.hoisted(() => ({
   fetch: vi.fn(),
   containerFetch: vi.fn(),
   preparePiSessionAccess: vi.fn(),
-  reseedPiAuth: vi.fn(),
 }));
 
 const sandboxTarget = vi.hoisted((): { current: unknown } => ({
@@ -66,10 +65,8 @@ const runnerRegistry = vi.hoisted(() => ({
 
 const sandboxConfig = vi.hoisted(() => ({
   status: vi.fn(),
-  resolveGlobalGithubToken: vi.fn(),
+  resolveGlobalSecret: vi.fn(),
   activate: vi.fn(),
-  piAuth: vi.fn(),
-  writePiAuth: vi.fn(),
   listRepos: vi.fn(),
   addRepo: vi.fn(),
   removeRepo: vi.fn(),
@@ -92,7 +89,6 @@ import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
-import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { conflict } from "../src/contracts";
 import type { EvidenceStateV2 } from "../src/evidence-contracts";
 import { orderedEvidenceFrames } from "../public/evidence-view.js";
@@ -104,7 +100,6 @@ import showcaseScript from "../public/showcase.js?raw";
 import {
   createSessionHarness,
   makeResumeBackup,
-  makeStoredCredential,
   SESSION_ID,
   sessionHarnessKeys,
   type SessionHarness,
@@ -243,8 +238,6 @@ function env(
   };
   return {
     SCOTTY_TOKEN: TOKEN,
-    PI_AUTH_JSON:
-      '{"openai-codex":{"type":"oauth","access":"access","refresh":"refresh","expires":0}}',
     ASSETS: assets,
     AUTH: authNamespace(),
     RUNNER_REGISTRY: runnerRegistryNamespace(),
@@ -464,11 +457,6 @@ describe("real Hono boundary", () => {
       createdAt: "2026-08-08T12:00:00.000Z",
       updatedAt: "2026-08-08T12:00:02.000Z",
     });
-    sandbox.reseedPiAuth.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      updatedAt: "2026-07-29T12:00:00.000Z",
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-    });
     auth.authenticate.mockResolvedValue({
       ok: true,
       value: {
@@ -540,10 +528,16 @@ describe("real Hono boundary", () => {
       lastSeenAt: "2026-07-27T12:00:00.000Z",
     });
     runner.fetch.mockResolvedValue(new Response(null, { status: 204 }));
-    sandboxConfig.resolveGlobalGithubToken.mockResolvedValue({
-      ok: true,
-      value: "authority-github-token",
-    });
+    sandboxConfig.resolveGlobalSecret.mockImplementation(async (name: unknown) =>
+      name === "GH_TOKEN"
+        ? { ok: true as const, value: "authority-github-token" }
+        : name === "OPENAI_API_KEY"
+          ? { ok: true as const, value: "authority-openai-key" }
+          : {
+              ok: false as const,
+              error: { reason: "invalid_global_secret", message: "unknown global secret" },
+            },
+    );
     sandboxConfig.status.mockResolvedValue({
       ok: true,
       value: { schemaVersion: 1, revision: 0, activeDigest: null },
@@ -552,8 +546,6 @@ describe("real Hono boundary", () => {
       ok: true,
       value: { schemaVersion: 1, revision: 1, activeDigest: "a".repeat(64) },
     });
-    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: null });
-    sandboxConfig.writePiAuth.mockImplementation(async (record) => ({ ok: true, value: record }));
     sandboxConfig.listRepos.mockResolvedValue({ ok: true, value: [] });
     sandboxConfig.addRepo.mockImplementation(async (input) => ({
       ok: true,
@@ -1139,126 +1131,6 @@ describe("real Hono boundary", () => {
     expect(conflict.status).toBe(409);
     expect(runner.control).not.toHaveBeenCalled();
     expect(runnerRegistry.remove).not.toHaveBeenCalled();
-  });
-
-  it("reports only redacted Pi auth metadata and explicitly reseeds one session", async () => {
-    const bindings = env();
-    bindings.PI_AUTH_JSON = JSON.stringify({
-      "openai-codex": {
-        type: "oauth",
-        access: "honeypot-access",
-        refresh: "honeypot-refresh",
-        expires: 0,
-        accountId: "honeypot-account",
-      },
-      anthropic: {
-        type: "oauth",
-        access: "honeypot-anthropic-access",
-        refresh: "honeypot-anthropic-refresh",
-        expires: 0,
-      },
-    });
-    const status = await app.request(
-      "/api/auth/pi",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      bindings,
-    );
-    expect(status.status).toBe(200);
-    const statusBody = await status.json();
-    expect(statusBody).toMatchObject({
-      source: "bootstrap",
-      updatedAt: null,
-      providers: [
-        { id: "anthropic", type: "oauth", adapter: "unsupported" },
-        { id: "openai-codex", type: "oauth", adapter: "supported" },
-      ],
-    });
-    const serializedStatus = JSON.stringify(statusBody);
-    expect(serializedStatus).toMatch(/"sourceDigest":"[0-9a-f]{64}"/u);
-    expect(serializedStatus).not.toContain("honeypot");
-
-    const reseeded = await app.request(
-      "/api/sessions/a0b1c2d3e4f5/auth/reseed",
-      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
-      bindings,
-    );
-    expect(reseeded.status).toBe(200);
-    expect(sandbox.reseedPiAuth).toHaveBeenCalledTimes(1);
-    expect(await reseeded.json()).toEqual({
-      id: "a0b1c2d3e4f5",
-      updatedAt: "2026-07-29T12:00:00.000Z",
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-    });
-  });
-
-  it("keeps Pi credential writes root-only, schema-decoded, and metadata-only", async () => {
-    const record = await makeInstallationPiAuthRecord(
-      {
-        "openai-codex": {
-          type: "oauth",
-          access: "honeypot-access",
-          refresh: "honeypot-refresh",
-          expires: 0,
-        },
-      },
-      "2026-08-15T12:00:00.000Z",
-      "sync",
-    );
-    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: record });
-    const preferred = await app.request(
-      "/api/auth/pi",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env(),
-    );
-    expect(await preferred.json()).toEqual({
-      source: "sync",
-      sourceDigest: record.digest,
-      updatedAt: record.updatedAt,
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-    });
-
-    const ownerRejected = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          "content-type": "application/json",
-          origin: "http://localhost",
-          "sec-fetch-site": "same-origin",
-        },
-        body: JSON.stringify(record),
-      },
-      env(),
-    );
-    expect(ownerRejected.status).toBe(401);
-    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
-
-    const malformed = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ ...record, unexpectedCredential: "honeypot" }),
-      },
-      env(),
-    );
-    expect(malformed.status).toBe(400);
-    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
-
-    const written = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify(record),
-      },
-      env(),
-    );
-    expect(written.status).toBe(200);
-    expect(sandboxConfig.writePiAuth).toHaveBeenCalledWith(record);
-    const serialized = JSON.stringify(await written.json());
-    expect(serialized).not.toContain("honeypot");
   });
 
   it("allows only the owner browser to control the configured runner", async () => {
@@ -2184,7 +2056,7 @@ describe("real Hono boundary", () => {
     expect(harness.events).toContain("projection:warm");
   });
 
-  it("resumes through real restore, credential, runtime, and state orchestration", async () => {
+  it("resumes through real restore, runtime, and state orchestration", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
@@ -2195,7 +2067,6 @@ describe("real Hono boundary", () => {
           ownedBackupIds: ["backup-1"],
           codexThreadId: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
     useRealSandbox(harness);
@@ -2227,7 +2098,7 @@ describe("real Hono boundary", () => {
     );
   });
 
-  it("vaporizes through real destruction, credential deletion, and authority transition", async () => {
+  it("vaporizes through real destruction and authority transition", async () => {
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
       initialEntries: {
@@ -2235,7 +2106,6 @@ describe("real Hono boundary", () => {
           id: SESSION_ID,
           branch: `scotty/${SESSION_ID}`,
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       initialProjections: {
         [`stats:workspace-created:${SESSION_ID}`]: {
@@ -2262,12 +2132,11 @@ describe("real Hono boundary", () => {
       operation: null,
       ownedBackupIds: [],
     });
-    expect(harness.read(sessionHarnessKeys.credential)).toBeUndefined();
     expect(harness.events).toEqual(
       expect.arrayContaining([
         "schedule:retryVaporizeSession",
         "host:destroy",
-        `storage:delete:${sessionHarnessKeys.credential}`,
+        `storage:delete:${sessionHarnessKeys.environmentVault}`,
         "record:gone",
         `projection:delete:session:${SESSION_ID}`,
       ]),
@@ -2502,10 +2371,10 @@ describe("real Hono boundary", () => {
   });
 
   it("fails repository verification closed when the global GH_TOKEN authority is unavailable", async () => {
-    sandboxConfig.resolveGlobalGithubToken.mockResolvedValue({
+    sandboxConfig.resolveGlobalSecret.mockResolvedValue({
       ok: false,
       error: {
-        reason: "invalid_github_token",
+        reason: "invalid_global_secret",
         message: "Global GH_TOKEN secret is missing or invalid",
       },
     });
@@ -2531,7 +2400,7 @@ describe("real Hono boundary", () => {
   });
 
   it("maps a GitHub authority transport failure to the repository verification envelope", async () => {
-    sandboxConfig.resolveGlobalGithubToken.mockRejectedValue(
+    sandboxConfig.resolveGlobalSecret.mockRejectedValue(
       new Error("simulated SandboxConfig transport failure"),
     );
 
@@ -3992,7 +3861,7 @@ describe("real Hono boundary", () => {
     expect(listed.status).toBe(200);
     const listText = await listed.text();
     expect(listText).toContain("PUBLIC_URL");
-    expect(listText).toContain("$PI_CODING_AGENT_DIR/auth.json");
+    expect(listText).toContain("OPENAI_API_KEY");
     expect(listText).not.toContain("real-secret");
     expect(listText).toContain("GH_TOKEN");
     expect(listText).not.toContain("authority-github-token");

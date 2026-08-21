@@ -69,9 +69,6 @@ import type {
   InstallationPlan,
   InstallationRecoverRequest,
   InstallationResult,
-  PiAuthTargetRequest,
-  PiAuthTargetResult,
-  PiAuthUploadRequest,
   InstallationUninstallRequest,
   InstallationUninstallResult,
 } from "./services.ts";
@@ -644,7 +641,6 @@ const inspectWithProfile = async (
   adoption: AdoptionManifest | undefined,
   token?: string,
   expectedAccountId?: string,
-  githubToken?: string,
 ): Promise<InstallationResult> => {
   const installation = makeInstallationTopology(
     request.installationName,
@@ -792,14 +788,6 @@ const inspectWithProfile = async (
             scriptName: installation.workerName,
             name: "SCOTTY_TOKEN",
             text: token,
-            type: "secret_text",
-          });
-        if (githubToken !== undefined)
-          yield* Workers.putScriptSecret({
-            accountId,
-            scriptName: installation.workerName,
-            name: "GH_TOKEN",
-            text: githubToken,
             type: "secret_text",
           });
         return {
@@ -970,7 +958,6 @@ export async function createInstallation(
             undefined,
             request.token,
             request.expectedAccountId,
-            request.githubToken,
           )
         : await deployWithProfile(
             {
@@ -989,7 +976,6 @@ export async function createInstallation(
         undefined,
         request.token,
         request.expectedAccountId,
-        request.githubToken,
       );
     return deployed;
   } finally {
@@ -1167,128 +1153,6 @@ export async function uninstallInstallation(
             }).pipe(Effect.provide(cloudflareApiLive())),
           { stage: CLOUDFLARE_STAGE },
         ),
-      ),
-    );
-  } finally {
-    await deployment.cleanup();
-  }
-}
-
-const piAuthTargetProgram = Effect.fnUntraced(function* (request: PiAuthTargetRequest) {
-  const environment = yield* Cloudflare.CloudflareEnvironment;
-  const { accountId } = yield* environment;
-  if (accountId !== request.expectedAccountId)
-    return yield* new InstallationDeploymentError({
-      message: "The Cloudflare account does not match the saved Scotty installation.",
-    });
-  const settings = yield* Workers.getScriptScriptAndVersionSetting({
-    accountId,
-    scriptName: request.expectedWorkerName,
-  });
-  const bindings = settings.bindings ?? [];
-  const durableObjectBinding = (name: string) =>
-    bindings.filter(isDurableObjectBinding).find((binding) => binding.name === name);
-  const authBinding = durableObjectBinding("AUTH");
-  const runnerRegistryBinding = durableObjectBinding("RUNNER_REGISTRY");
-  const runnersBinding = durableObjectBinding("RUNNERS");
-  const sandboxBinding = durableObjectBinding("SANDBOX");
-  const sessionsBinding = bindings
-    .filter(isKvBinding)
-    .find((binding) => binding.name === "SESSIONS");
-  const backupBinding = bindings
-    .filter(isR2Binding)
-    .find((binding) => binding.name === "BACKUP_BUCKET");
-  if (
-    authBinding?.className !== "ScottyAuthRegistry" ||
-    runnerRegistryBinding?.className !== "ScottyRunnerRegistry" ||
-    runnersBinding?.className !== "ScottyRunner" ||
-    runnersBinding.scriptName !== request.expectedRunnerWorkerName ||
-    sandboxBinding?.className !== "ScottySandbox" ||
-    sandboxBinding.namespaceId === undefined ||
-    sessionsBinding?.namespaceId === undefined ||
-    backupBinding?.bucketName !== request.expectedBackupBucketName
-  )
-    return yield* new InstallationDeploymentError({
-      message: "The saved Worker does not have the exact Scotty binding topology.",
-    });
-  yield* Workers.getScriptScriptAndVersionSetting({
-    accountId,
-    scriptName: request.expectedRunnerWorkerName,
-  }).pipe(Effect.asVoid);
-  const applications = yield* Containers.listContainerApplications({ accountId });
-  const application = applications.find(
-    (candidate) => candidate.name === request.expectedContainerName,
-  );
-  if (!application || application.durableObjects?.namespaceId !== sandboxBinding.namespaceId)
-    return yield* new InstallationDeploymentError({
-      message: "The saved Scotty Container application is not bound to this Worker.",
-    });
-  const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
-    Stream.filter((candidate) => candidate.title === request.expectedKvTitle),
-    Stream.runHead,
-  );
-  if (Option.isNone(namespace) || namespace.value.id !== sessionsBinding.namespaceId)
-    return yield* new InstallationDeploymentError({
-      message: "The saved Scotty KV namespace is not bound to this Worker.",
-    });
-  yield* R2.getBucket({
-    accountId,
-    bucketName: request.expectedBackupBucketName,
-  }).pipe(Effect.asVoid);
-  const scriptSubdomain = yield* Workers.getScriptSubdomain({
-    accountId,
-    scriptName: request.expectedWorkerName,
-  });
-  if (!scriptSubdomain.enabled)
-    return yield* new InstallationDeploymentError({
-      message: "The saved Scotty Worker has no workers.dev URL.",
-    });
-  const { subdomain } = yield* Workers.getSubdomain({ accountId });
-  const host = `https://${request.expectedWorkerName}.${subdomain}.workers.dev`;
-  if (host !== request.expectedHost)
-    return yield* new InstallationDeploymentError({
-      message: "The saved Worker origin does not match Cloudflare.",
-    });
-  return {
-    accountId,
-    workerName: request.expectedWorkerName,
-    host,
-  } satisfies PiAuthTargetResult;
-});
-
-export async function inspectPiAuthTarget(
-  request: PiAuthTargetRequest,
-): Promise<PiAuthTargetResult> {
-  const deployment = await prepareDeploymentRoot();
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone inspection must remove its extracted payload on every exit
-  try {
-    return await runWithProfile(request.profile, deployment.root, () =>
-      provideAlchemy(piAuthTargetProgram(request).pipe(Effect.provide(cloudflareApiLive()))),
-    );
-  } finally {
-    await deployment.cleanup();
-  }
-}
-
-export async function uploadPiAuthSecret(
-  request: PiAuthUploadRequest,
-): Promise<PiAuthTargetResult> {
-  const deployment = await prepareDeploymentRoot();
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone secret upload must remove its extracted payload on every exit
-  try {
-    return await runWithProfile(request.profile, deployment.root, () =>
-      provideAlchemy(
-        Effect.gen(function* () {
-          const target = yield* piAuthTargetProgram(request);
-          yield* Workers.putScriptSecret({
-            accountId: target.accountId,
-            scriptName: target.workerName,
-            name: "PI_AUTH_JSON",
-            text: request.json,
-            type: "secret_text",
-          });
-          return target;
-        }).pipe(Effect.provide(cloudflareApiLive())),
       ),
     );
   } finally {

@@ -131,13 +131,6 @@ describe("Effect command tree", () => {
         assert.include(approve.stdout.join(""), "--repo");
         assert.strictEqual(approve.stderr.join(""), "");
 
-        const auth = run(["auth", "--help"]);
-        assert.strictEqual(yield* auth.effect, EXIT.OK);
-        assert.include(auth.stdout.join(""), "status");
-        assert.include(auth.stdout.join(""), "sync");
-        assert.notInclude(auth.stdout.join(""), "reseed");
-        assert.strictEqual(auth.stderr.join(""), "");
-
         const skills = run(["skills"]);
         assert.strictEqual(yield* skills.effect, EXIT.OK);
         const skillsHelp = skills.stdout.join("");
@@ -358,21 +351,6 @@ describe("Effect command tree", () => {
       const failedError = failure(yield* Effect.result(failed.effect));
       assert.strictEqual(failedError.code, "not_found");
       assert.strictEqual(failedError.exitCode, EXIT.NOT_FOUND);
-    }),
-  );
-
-  it.effect("requires exactly one auth reseed target", () =>
-    Effect.gen(function* () {
-      const missing = run(["auth", "reseed"]);
-      assert.strictEqual(
-        failure(yield* Effect.result(missing.effect)).message,
-        "Pass exactly one session ID or --all-active",
-      );
-      const both = run(["auth", "reseed", "abc123", "--all-active"]);
-      assert.strictEqual(
-        failure(yield* Effect.result(both.effect)).message,
-        "Pass exactly one session ID or --all-active",
-      );
     }),
   );
 

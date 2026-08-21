@@ -737,7 +737,6 @@ function sanitizedLocalEnvironment(environment = process.env) {
       key.startsWith("CLOUDFLARE_") ||
       key.startsWith("SCOTTY_") ||
       [
-        "PI_AUTH_JSON",
         "GH_TOKEN",
         "GITHUB_TOKEN",
         "OPENAI_API_KEY",

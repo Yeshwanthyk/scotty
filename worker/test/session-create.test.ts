@@ -1,7 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
-import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { isSessionEnvironmentSnapshot } from "../src/environment-contracts";
 import { ScottyError } from "../src/contracts";
 import { InitialSessionStorageFailure } from "../src/session-store";
@@ -11,7 +10,6 @@ import {
   CREATE_INPUT,
   createSessionHarness,
   injectedHarnessFailure,
-  makeStoredCredential,
   type HarnessFailureStage,
   type HarnessOptions,
   SESSION_ID,
@@ -73,7 +71,6 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
     assert.deepStrictEqual(harness.commands, []);
     assert.ok(!harness.events.some((event) => event.startsWith("projection:")));
-    assert.ok(!harness.events.includes("credential:put"));
   });
 
   it("passes the SandboxConfig global GH_TOKEN authority to repository verification", async () => {
@@ -93,7 +90,7 @@ describe("Sandbox create orchestration", () => {
 
   it("fails closed before runtime mutation when the GH_TOKEN authority is unavailable", async () => {
     const harness = await createSessionHarness({
-      sandboxConfigGithubTokenFailure: "rpc-error",
+      sandboxConfigGlobalSecretFailure: "rpc-error",
     });
     const error = await rejection(
       harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
@@ -285,25 +282,6 @@ describe("Sandbox create orchestration", () => {
     assert.notInclude(shell?.content ?? "", secret);
   });
 
-  it("seeds a new session from installation Pi authority", async () => {
-    const installationPiAuthRecord = await makeInstallationPiAuthRecord(
-      { openai: { type: "api_key", key: "installation-key" } },
-      "2026-07-24T11:00:00.000Z",
-      "sync",
-    );
-    const harness = await createSessionHarness({ installationPiAuthRecord });
-    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
-    const stored = harness.read<ReturnType<typeof makeStoredCredential>>(
-      sessionHarnessKeys.credential,
-    );
-    assert.strictEqual(stored?.updatedAt, installationPiAuthRecord.updatedAt);
-    assert.deepInclude(stored?.providers.openai?.credential, {
-      type: "api_key",
-      key: "installation-key",
-    });
-    assert.strictEqual(stored?.providers["openai-codex"], undefined);
-  });
-
   it("recovers a committed booting record through the pre-armed hard-cap schedule after a crash", async () => {
     const crashedHarness = await createSessionHarness({
       crashAfterInitialRecordCommit: true,
@@ -413,7 +391,6 @@ describe("Sandbox create orchestration", () => {
       initialEntries: {
         [sessionHarnessKeys.record]: existing,
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -436,7 +413,6 @@ describe("Sandbox create orchestration", () => {
       },
     );
     assert.ok(!harness.commands.some((command) => command.startsWith("gh repo view")));
-    assert.ok(!harness.events.includes("credential:put"));
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
@@ -467,7 +443,6 @@ describe("Sandbox create orchestration", () => {
     );
 
     assert.strictEqual(replayed.status, "warm");
-    assert.ok(harness.events.includes("credential:put"));
     assert.ok(harness.events.includes("host:exec:workspace"));
     assert.ok(
       harness.events.indexOf("storage:put:scotty:environment-secrets:v1") <
@@ -528,7 +503,6 @@ describe("Sandbox create orchestration", () => {
           codexThreadId: undefined,
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -635,7 +609,6 @@ describe("Sandbox create orchestration", () => {
             codexThreadId: undefined,
           }),
           [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
-          [sessionHarnessKeys.credential]: makeStoredCredential(),
         },
       });
 
@@ -682,9 +655,8 @@ describe("Sandbox create orchestration", () => {
           codexThreadId: undefined,
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
-      transactionFailureCountdown: 2,
+      transactionFailureCountdown: 1,
     });
 
     const error = await rejection(
@@ -728,7 +700,6 @@ describe("Sandbox create orchestration", () => {
           codexThreadId: undefined,
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -758,10 +729,6 @@ describe("Sandbox create orchestration", () => {
   });
 
   const failureCases = [
-    {
-      name: "credential seed",
-      options: { transactionFailureCountdown: 1 },
-    },
     {
       name: "workspace prepare",
       options: { failureStage: "workspacePrepare" satisfies HarnessFailureStage },

@@ -1,6 +1,5 @@
 import { getSandbox } from "@cloudflare/sandbox";
-import { Option, Schema } from "effect";
-import { supportedPiProvider } from "../../protocol/pi-auth";
+import { Option, Predicate, Schema } from "effect";
 import {
   PI_CONSOLE_MAX_RESPONSE_BYTES,
   PI_CONSOLE_MAX_STRING_BYTES,
@@ -9,12 +8,7 @@ import type { Bindings } from "../../worker/src/bindings";
 import { readBoundedUtf8Body } from "../../worker/src/bounded-http";
 import { isSessionEnvironmentSnapshot } from "../../worker/src/environment-contracts";
 import { ContainerProxy } from "../../worker/src/container-session-egress";
-import {
-  decodeJsonValue,
-  SESSION_KV_PREFIX,
-  type SessionRecord,
-  type StoredCredential,
-} from "../../worker/src/contracts";
+import { decodeJsonValue, SESSION_KV_PREFIX, type SessionRecord } from "../../worker/src/contracts";
 import { denyOutbound, makeOutboundByHost } from "../../worker/src/egress";
 import app from "../../worker/src/index";
 import { SESSION_SCHEDULE_CALLBACKS } from "../../worker/src/session-lifecycle";
@@ -24,7 +18,6 @@ import { ScottyAuthRegistry } from "../../worker/src/auth-object";
 import { ScottyRunnerRegistry } from "../../worker/src/runner-registry-object";
 
 const RECORD_KEY = "scotty:session";
-const CREDENTIAL_KEY = "scotty:credential";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
 const SESSION_ID_PATTERN = /^[0-9a-f]{12}$/u;
 const CANARY_STAGE_PATTERN = /^scotty-e2e-[a-f0-9]{32}$/u;
@@ -93,8 +86,8 @@ interface CanaryOrphanProbe {
   readonly authorityStatus: string | null;
   readonly backups: ReadonlyArray<string>;
   readonly createIdempotency: boolean;
-  readonly credentials: boolean;
   readonly githubCredentialCurrent: boolean;
+  readonly openaiCredentialCurrent: boolean;
   readonly incarnation: string;
   readonly kv: boolean;
   readonly runtime: boolean;
@@ -157,9 +150,8 @@ export class ScottySandbox extends Sandbox {
   }
 
   async e2eProbe(): Promise<CanaryOrphanProbe> {
-    const [record, credential, createIdempotency, alarm, schedules, state] = await Promise.all([
+    const [record, createIdempotency, alarm, schedules, state] = await Promise.all([
       this.ctx.storage.get<SessionRecord>(RECORD_KEY),
-      this.ctx.storage.get<StoredCredential>(CREDENTIAL_KEY),
       this.ctx.storage.get(CREATE_IDEMPOTENCY_KEY),
       this.ctx.storage.getAlarm(),
       Promise.all(
@@ -179,17 +171,23 @@ export class ScottySandbox extends Sandbox {
       .map(({ callback }) => callback);
     const runtime = state.status !== "stopped" && state.status !== "stopped_with_code";
     const security =
-      credential && record?.status === "warm"
-        ? await this.e2eSecurityProbe(record, credential, projection)
-        : null;
-    const githubSentinel = isSessionEnvironmentSnapshot(record?.environment)
-      ? record.environment.variables.GH_TOKEN
-      : undefined;
-    const [sessionGithub, globalGithub] = await Promise.all([
-      githubSentinel === undefined
+      record?.status === "warm" ? await this.e2eSecurityProbe(record, projection) : null;
+    const sentinels = isSessionEnvironmentSnapshot(record?.environment)
+      ? record.environment.variables
+      : {};
+    const resolveGlobal = async (name: string): Promise<string | null> => {
+      const result = await this.env.SANDBOX_CONFIG.getByName("account").resolveGlobalSecret(name);
+      return result.ok ? result.value : null;
+    };
+    const [sessionGithub, globalGithub, sessionOpenai, globalOpenai] = await Promise.all([
+      sentinels.GH_TOKEN === undefined
         ? Promise.resolve(null)
-        : this.resolveEnvironmentSecretForProxy({ sentinel: githubSentinel }),
-      this.env.SANDBOX_CONFIG.getByName("account").resolveGlobalGithubToken(),
+        : this.resolveEnvironmentSecretForProxy({ sentinel: sentinels.GH_TOKEN }),
+      resolveGlobal("GH_TOKEN"),
+      sentinels.OPENAI_API_KEY === undefined
+        ? Promise.resolve(null)
+        : this.resolveEnvironmentSecretForProxy({ sentinel: sentinels.OPENAI_API_KEY }),
+      resolveGlobal("OPENAI_API_KEY"),
     ]);
 
     return {
@@ -198,9 +196,10 @@ export class ScottySandbox extends Sandbox {
       authorityStatus: record?.status ?? null,
       backups: backupPage.objects.map(({ key }) => key).sort(),
       createIdempotency: createIdempotency !== undefined,
-      credentials: credential !== undefined,
       githubCredentialCurrent:
-        sessionGithub !== null && globalGithub.ok && sessionGithub.value === globalGithub.value,
+        sessionGithub !== null && globalGithub !== null && sessionGithub.value === globalGithub,
+      openaiCredentialCurrent:
+        sessionOpenai !== null && globalOpenai !== null && sessionOpenai.value === globalOpenai,
       incarnation: this.e2eIncarnation,
       kv: projection !== null,
       runtime,
@@ -216,30 +215,28 @@ export class ScottySandbox extends Sandbox {
 
   private async e2eSecurityProbe(
     record: SessionRecord,
-    credential: StoredCredential,
     projection: string | null,
   ): Promise<CanarySecurityProbe> {
     const root = `/workspace/${record.id}`;
     const surface = await this.exec(
-      `printf '%s\\n' "$GH_TOKEN"; cat ${root}/.pi-agent/auth.json; git -C ${root} config --local --list; curl --silent --output /dev/null --write-out '%{http_code}' https://example.com/`,
+      `printf '%s\\n' "$GH_TOKEN" "$OPENAI_API_KEY"; git -C ${root} config --local --list; curl --silent --output /dev/null --write-out '%{http_code}' https://example.com/`,
       { timeout: 30_000 },
     );
     const serializedSurface = `${surface.stdout}\n${surface.stderr}`;
-    const githubSentinel = isSessionEnvironmentSnapshot(record.environment)
-      ? record.environment.variables.GH_TOKEN
-      : undefined;
-    const githubCredential =
-      githubSentinel === undefined
-        ? null
-        : await this.resolveEnvironmentSecretForProxy({ sentinel: githubSentinel });
-    const realSecrets = [
-      githubCredential?.value,
-      ...Object.values(credential.providers).flatMap((provider) =>
-        provider.credential.type === "api_key"
-          ? [provider.credential.key]
-          : [provider.credential.access, provider.credential.refresh],
-      ),
-    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+    const sentinels = isSessionEnvironmentSnapshot(record.environment)
+      ? record.environment.variables
+      : {};
+    const resolved = (
+      await Promise.all(
+        (["GH_TOKEN", "OPENAI_API_KEY"] as const).map(async (name) => {
+          const sentinel = sentinels[name];
+          return Predicate.isUndefined(sentinel)
+            ? null
+            : this.resolveEnvironmentSecretForProxy({ sentinel });
+        }),
+      )
+    ).filter(Predicate.isNotNull);
+    const realSecrets = resolved.map((entry) => entry.value).filter((value) => value.length > 0);
     const containsRealSecret = (value: string): boolean =>
       realSecrets.some((secret) => value.includes(secret));
 
@@ -247,11 +244,8 @@ export class ScottySandbox extends Sandbox {
       defaultDeny: /(?:403|520)\s*$/u.test(surface.stdout.trim()),
       kvNonSecret: projection !== null && !containsRealSecret(projection),
       sentinelsOnly:
-        Object.entries(credential.providers)
-          .filter(([providerId]) => supportedPiProvider(providerId))
-          .every(([, provider]) => serializedSurface.includes(provider.sentinel)) &&
-        githubSentinel !== undefined &&
-        serializedSurface.includes(githubSentinel) &&
+        resolved.every(({ sentinel }) => serializedSurface.includes(sentinel)) &&
+        !serializedSurface.includes("undefined") &&
         !containsRealSecret(serializedSurface),
     };
   }
@@ -273,7 +267,8 @@ export default {
     if (url.pathname === "/__e2e/config") {
       if (!canaryAuthorized(request, env)) return jsonError(401, "unauthorized");
       if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-      const githubToken = await env.SANDBOX_CONFIG.getByName("account").resolveGlobalGithubToken();
+      const githubToken =
+        await env.SANDBOX_CONFIG.getByName("account").resolveGlobalSecret("GH_TOKEN");
       if (!githubToken.ok) return jsonError(502, "GitHub authority unavailable");
       const github = await fetch("https://api.github.com/user", {
         headers: {
