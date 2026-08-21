@@ -14,7 +14,7 @@ import {
   PI_CONSOLE_MAX_STATUSES,
   PI_CONSOLE_MAX_STRING_BYTES,
 } from "../../protocol/pi-console";
-import { GITHUB_SENTINEL_PREFIX, PI_SENTINEL_PREFIX } from "../src/egress";
+import { PI_SENTINEL_PREFIX } from "../src/egress";
 
 const command = (intent: unknown) => ({
   version: 1,
@@ -284,12 +284,7 @@ describe("Pi console protocol v1", () => {
   );
 
   it("uses the credential authority's exact sentinel prefixes", () => {
-    assert.deepStrictEqual(CREDENTIAL_SENTINEL_PREFIXES, [
-      "scotty-pi-",
-      "scotty-github-",
-      "scotty-env-",
-    ]);
+    assert.deepStrictEqual(CREDENTIAL_SENTINEL_PREFIXES, ["scotty-pi-", "scotty-env-"]);
     assert.strictEqual(PI_SENTINEL_PREFIX, CREDENTIAL_SENTINEL_PREFIXES[0]);
-    assert.strictEqual(GITHUB_SENTINEL_PREFIX, CREDENTIAL_SENTINEL_PREFIXES[1]);
   });
 });

@@ -547,8 +547,6 @@ describe("credential boundary", () => {
         sentinel: "scotty-pi-session-sentinel",
       },
     },
-    githubToken: "real-github-token",
-    githubSentinel: "scotty-github-session-sentinel",
     updatedAt: "2026-01-01T00:00:00.000Z",
   });
   const assertFixedError = (evaluate: () => unknown, message: string): void => {
@@ -664,7 +662,6 @@ describe("credential boundary", () => {
   it("emits sentinel-only auth and OAuth success without disclosing honeypot secrets", () => {
     const realAccess = "honeypot-real-access";
     const realRefresh = "honeypot-real-refresh";
-    const realGithub = "honeypot-real-github";
     const realExpires = 1_800_000_000_000;
     const stored = {
       ...storedCredential(),
@@ -690,7 +687,6 @@ describe("credential boundary", () => {
           sentinel: "scotty-pi-anthropic-sentinel",
         },
       },
-      githubToken: realGithub,
     };
     const containerAuth = piAuthJson(stored);
     const provider = stored.providers["openai-codex"];
@@ -704,7 +700,7 @@ describe("credential boundary", () => {
     assert.ok(containerAuth.includes(provider.sentinel));
     assert.ok(refreshResult.includes(provider.sentinel));
     assert.ok(!containerAuth.includes("anthropic"));
-    for (const secret of [realAccess, realRefresh, realGithub, "honeypot-account"]) {
+    for (const secret of [realAccess, realRefresh, "honeypot-account"]) {
       assert.ok(!containerAuth.includes(secret));
       assert.ok(!refreshResult.includes(secret));
     }

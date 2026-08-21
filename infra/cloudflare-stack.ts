@@ -13,7 +13,7 @@ import {
 
 export { CLOUDFLARE_STAGE };
 
-export const CLOUDFLARE_WORKER_SECRETS = ["GH_TOKEN", "PI_AUTH_JSON", "SCOTTY_TOKEN"] as const;
+export const CLOUDFLARE_WORKER_SECRETS = ["PI_AUTH_JSON", "SCOTTY_TOKEN"] as const;
 
 export const makeCloudflareStackTopology = (
   installation: InstallationTopology,

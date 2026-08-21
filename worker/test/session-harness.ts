@@ -18,10 +18,11 @@ import type {
 } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
-import type {
-  EnvironmentMaterialization,
-  EnvironmentSnapshot,
-  SessionEnvironmentSnapshot,
+import {
+  isSessionEnvironmentSnapshot,
+  type EnvironmentMaterialization,
+  type EnvironmentSnapshot,
+  type SessionEnvironmentSnapshot,
 } from "../src/environment-contracts";
 import type { RepoVerifier } from "../src/repo-verifier";
 import type { SandboxConfigStatus } from "../src/sandbox-config-contracts";
@@ -302,6 +303,7 @@ export interface HarnessOptions {
   readonly sandboxConfigGithubTokenFailure?: "rpc-error" | "throw";
   readonly environmentSnapshot?: EnvironmentSnapshot | SessionEnvironmentSnapshot;
   readonly environmentMaterialization?: EnvironmentMaterialization;
+  readonly omitGithubEnvironmentSecret?: boolean;
   readonly installationPiAuthRecord?: InstallationPiAuthRecord;
   readonly installationPiAuthWriteFailure?: boolean;
   readonly sandboxBundleObjects?: ReadonlyArray<{
@@ -581,8 +583,6 @@ export const makeStoredCredential = (
       sentinel: `scotty-pi-${SESSION_ID}-sentinel-0`,
     },
   },
-  githubToken: "stored-github-token",
-  githubSentinel: `scotty-github-${SESSION_ID}-sentinel`,
   updatedAt: "2026-01-01T00:00:00.000Z",
   ...overrides,
 });
@@ -666,10 +666,34 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     seedDigest(activeDigest);
     seedDigest(pinnedDigest);
   }
+  const initialEntries: InitialStorageEntries = { ...options.initialEntries };
+  const initialRecord = initialEntries[RECORD_KEY];
+  if (
+    initialRecord?.operation?.kind === "create" &&
+    initialRecord.operation.createPhase === "runtime" &&
+    !isSessionEnvironmentSnapshot(initialRecord.environment)
+  ) {
+    const sentinel = `scotty-env-${initialRecord.id}-${"a".repeat(32)}`;
+    initialEntries[RECORD_KEY] = {
+      ...initialRecord,
+      environment: { version: 1, revision: 1, variables: { GH_TOKEN: sentinel } },
+    };
+    initialEntries[ENVIRONMENT_SECRET_VAULT_KEY] = {
+      version: 1,
+      entries: {
+        [sentinel]: {
+          sentinel,
+          sourceScope: "global",
+          name: "GH_TOKEN",
+          value: sandboxConfigGithubToken,
+        },
+      },
+    };
+  }
   const storage = new HarnessStorage(
     events,
     schedules,
-    options.initialEntries ?? {},
+    initialEntries,
     failures,
     options.crashAfterInitialRecordCommit ?? false,
     options.onStorageGet,
@@ -920,8 +944,28 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         }),
         materializeEnvironment: async (repo: unknown) => {
           environmentSnapshotRepos.push(repo);
-          if (options.environmentMaterialization !== undefined)
-            return { ok: true, value: options.environmentMaterialization };
+          if (options.environmentMaterialization !== undefined) {
+            const supplied = options.environmentMaterialization;
+            return {
+              ok: true,
+              value: {
+                ...supplied,
+                variables: {
+                  ...(options.omitGithubEnvironmentSecret === true
+                    ? {}
+                    : {
+                        GH_TOKEN: {
+                          value: sandboxConfigGithubToken,
+                          secret: true,
+                          updatedAt: "legacy",
+                          sourceScope: "global" as const,
+                        },
+                      }),
+                  ...supplied.variables,
+                },
+              },
+            };
+          }
           const snapshot = options.environmentSnapshot ?? { revision: 0, variables: {} };
           return {
             ok: true,
@@ -929,9 +973,19 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
               revision: snapshot.revision,
               ...(typeof repo === "string" ? { repo } : {}),
               variables: Object.fromEntries(
-                Object.entries(snapshot.variables).map(([name, value]) => [
+                [
+                  ...(options.omitGithubEnvironmentSecret === true
+                    ? []
+                    : [["GH_TOKEN", sandboxConfigGithubToken] as const]),
+                  ...Object.entries(snapshot.variables).filter(([name]) => name !== "GH_TOKEN"),
+                ].map(([name, value]) => [
                   name,
-                  { value, secret: false, updatedAt: "legacy", sourceScope: "global" as const },
+                  {
+                    value,
+                    secret: name === "GH_TOKEN",
+                    updatedAt: "legacy",
+                    sourceScope: "global" as const,
+                  },
                 ]),
               ),
             },
@@ -1060,7 +1114,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         accountId: "seed-account-id",
       },
     }),
-    GH_TOKEN: "seed-github-token",
     ...(options.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
     ...(options.previewBase === undefined ? {} : { SCOTTY_PREVIEW_BASE: options.previewBase }),
   };

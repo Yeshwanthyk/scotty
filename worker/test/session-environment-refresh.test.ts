@@ -20,6 +20,7 @@ const previous = {
 };
 const OLD_API_TOKEN_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000000";
 const OLD_REMOVE_ME_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000001";
+const OLD_GITHUB_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000002";
 const current = {
   version: 1 as const,
   revision: 4,
@@ -30,6 +31,7 @@ const secretPrevious = {
   revision: 3,
   variables: {
     KEEP: "old",
+    GH_TOKEN: OLD_GITHUB_SENTINEL,
     API_TOKEN: OLD_API_TOKEN_SENTINEL,
     REMOVE_ME: OLD_REMOVE_ME_SENTINEL,
   },
@@ -60,6 +62,12 @@ const secretMaterialization = {
 const secretVaultState = {
   version: 1 as const,
   entries: {
+    [OLD_GITHUB_SENTINEL]: {
+      sentinel: OLD_GITHUB_SENTINEL,
+      sourceScope: "global" as const,
+      name: "GH_TOKEN",
+      value: "authority-github-token",
+    },
     [OLD_API_TOKEN_SENTINEL]: {
       sentinel: OLD_API_TOKEN_SENTINEL,
       sourceScope: "global" as const,
@@ -90,6 +98,15 @@ const rejection = (operation: Promise<unknown>): Promise<unknown> =>
     () => undefined,
     (error: unknown) => error,
   );
+const assertEnvironmentWithGithub = (
+  actual: unknown,
+  expected: { readonly version: 1; readonly revision: number; readonly variables: object },
+): void => {
+  assert.ok(isSessionEnvironmentSnapshot(actual));
+  const { GH_TOKEN: github, ...variables } = actual.variables;
+  assert.ok(github?.startsWith(`scotty-env-${SESSION_ID}-`));
+  assert.deepStrictEqual({ ...actual, variables }, expected);
+};
 
 describe("Sandbox environment refresh", () => {
   it("reports safe stale metadata without changing the session view", async () => {
@@ -128,7 +145,7 @@ describe("Sandbox environment refresh", () => {
 
     assert.strictEqual(refreshed.stale, false);
     assert.strictEqual(refreshed.appliedRevision, 4);
-    assert.deepStrictEqual(harness.readRecord()?.environment, current);
+    assertEnvironmentWithGithub(harness.readRecord()?.environment, current);
     assert.strictEqual(harness.readRecord()?.operation, null);
     assert.strictEqual(harness.readRecord()?.hardCapAt, hardCapAt);
     assert.strictEqual(harness.appliedEnvironments.at(-1)?.KEEP, "new");
@@ -246,17 +263,11 @@ describe("Sandbox environment refresh", () => {
     assert.notInclude(JSON.stringify(harness.appliedEnvironments), newSecret);
     assert.notInclude(JSON.stringify(harness.piProcessEnvironments), newSecret);
     assert.notInclude(JSON.stringify(harness.writtenFiles), newSecret);
-    assert.deepStrictEqual(harness.read(sessionHarnessKeys.environmentVault), {
-      version: 1,
-      entries: {
-        [newSentinel]: {
-          sentinel: newSentinel,
-          sourceScope: "global",
-          name: "API_TOKEN",
-          value: newSecret,
-        },
-      },
-    });
+    const githubSentinel = committedEnvironment.variables.GH_TOKEN;
+    assert.deepStrictEqual(
+      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: githubSentinel }),
+      { sentinel: githubSentinel, value: "authority-github-token" },
+    );
   });
 
   it("retains secret rotation and removal across an ambiguous apply retry", async () => {
@@ -397,7 +408,7 @@ describe("Sandbox environment refresh", () => {
 
     await harness.sandbox.retryEnvironmentRefresh({ sessionId: SESSION_ID, nonce });
 
-    assert.deepStrictEqual(harness.readRecord()?.environment, newest);
+    assertEnvironmentWithGithub(harness.readRecord()?.environment, newest);
     assert.property(harness.appliedEnvironments.at(-1) ?? {}, "TRANSIENT");
     assert.isUndefined(harness.appliedEnvironments.at(-1)?.TRANSIENT);
   });
@@ -425,7 +436,7 @@ describe("Sandbox environment refresh", () => {
       nonce: pending?.operation?.nonce ?? "missing",
     });
 
-    assert.deepStrictEqual(harness.readRecord()?.environment, current);
+    assertEnvironmentWithGithub(harness.readRecord()?.environment, current);
     assert.strictEqual(harness.readRecord()?.operation, null);
   });
 

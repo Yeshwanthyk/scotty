@@ -98,14 +98,9 @@ export const durableObjectCredentialVaultStorage = (
 
 export const credentialVaultLayer = (
   storage: CredentialVaultStorage,
-  githubSeed: unknown,
-): Layer.Layer<CredentialVault> =>
-  Layer.succeed(CredentialVault)(makeCredentialVault(storage, githubSeed));
+): Layer.Layer<CredentialVault> => Layer.succeed(CredentialVault)(makeCredentialVault(storage));
 
-const makeCredentialVault = (
-  storage: CredentialVaultStorage,
-  githubSeed: unknown,
-): CredentialVaultShape => {
+const makeCredentialVault = (storage: CredentialVaultStorage): CredentialVaultShape => {
   const failure = (reason: CredentialVaultFailureReason, message: string): CredentialVaultFailure =>
     new CredentialVaultFailure({ reason, message });
   const invalidAuthority = (): CredentialVaultFailure =>
@@ -182,10 +177,6 @@ const makeCredentialVault = (
           failure("invalid_seed", "Credential seed is missing or invalid"),
         );
         if (Result.isFailure(decodedSeed)) return Result.fail(decodedSeed.failure);
-        const github = Result.mapError(decodeNonEmptyStringResult(githubSeed), () =>
-          failure("invalid_seed", "GH_TOKEN is missing or invalid"),
-        );
-        if (Result.isFailure(github)) return Result.fail(github.failure);
         const providers =
           "installationRecord" in decodedSeed.success
             ? Result.succeed(decodedSeed.success.installationRecord.providers)
@@ -193,8 +184,6 @@ const makeCredentialVault = (
         if (Result.isFailure(providers)) return Result.fail(providers.failure);
         const credential: StoredCredential = {
           providers: storedProviders(providers.success, decodedSeed.success.providerSentinelSeed),
-          githubToken: github.success,
-          githubSentinel: decodedSeed.success.githubSentinel,
           updatedAt:
             "installationRecord" in decodedSeed.success
               ? decodedSeed.success.installationRecord.updatedAt
@@ -284,7 +273,7 @@ const makeCredentialVault = (
         return Result.succeed(
           Object.values(credential.providers).some(
             (provider) => provider.sentinel === decodedSentinel.success,
-          ) || decodedSentinel.success === credential.githubSentinel
+          )
             ? credential
             : null,
         );

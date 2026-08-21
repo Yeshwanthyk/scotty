@@ -1,6 +1,6 @@
 import type { OutboundHandlerContext } from "@cloudflare/containers";
 import { supportedPiProvider, type PiCredential } from "../../protocol/pi-auth";
-import { GITHUB_SENTINEL_PREFIX, PI_SENTINEL_PREFIX } from "../../protocol/pi-console-shared.mjs";
+import { PI_SENTINEL_PREFIX } from "../../protocol/pi-console-shared.mjs";
 import { Context, Data, Effect, Layer, Option, Result, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import type { Bindings } from "./bindings";
@@ -26,7 +26,7 @@ import {
   type StoredProviderCredential,
 } from "./contracts";
 
-export { GITHUB_SENTINEL_PREFIX, PI_SENTINEL_PREFIX };
+export { PI_SENTINEL_PREFIX };
 
 export const ALLOWED_HOSTS = [
   "api.openai.com",
@@ -398,23 +398,6 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
   return new Response(safeBody, { status: upstream.status, headers: responseHeaders });
 });
 
-export const proxyGitHubProgram = Effect.fnUntraced(function* (request: Request) {
-  const presented = presentedCredential(request.headers);
-  if (!presented) return yield* passThroughProgram(request);
-  const vault = yield* EgressVault;
-  const credential = yield* vault.read(presented);
-  if (!credential || presented !== credential.githubSentinel) return forbidden();
-
-  const headers = sanitizedHeaders(request.headers);
-  const original = request.headers.get("authorization") ?? "";
-  if (original.startsWith("Basic ")) {
-    headers.set("authorization", `Basic ${btoa(`x-access-token:${credential.githubToken}`)}`);
-  } else {
-    headers.set("authorization", `Bearer ${credential.githubToken}`);
-  }
-  return yield* forward(request, new URL(request.url), headers);
-});
-
 export function proxyEnvironmentProgram(
   request: Request,
 ): Effect.Effect<Response, EgressFailure, EnvironmentEgressVault | EgressTransport> {
@@ -447,7 +430,9 @@ function proxyEnvironmentProgramWithScan(
     const headers = sanitizedHeaders(request.headers);
     const headerReplacements = new Map<string, string>();
     for (const [name, value] of headers) {
-      const replaced = replaceEnvironmentSentinels(value, scan.sentinels, values, false);
+      const basic = replaceBasicEnvironmentAuthorization(name, value, scan.sentinels, values);
+      if (basic === null) return forbidden();
+      const replaced = basic ?? replaceEnvironmentSentinels(value, scan.sentinels, values, false);
       if (replaced === null) return forbidden();
       if (replaced !== value) headerReplacements.set(name, replaced);
     }
@@ -507,7 +492,6 @@ export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
   const openAIGeneric = withGeneric(proxyOpenAIProgram);
   const chatGptGeneric = withGeneric(proxyChatGptProgram);
   const oauthGeneric = withGeneric(proxyOAuthRefreshProgram);
-  const gitHubGeneric = withGeneric(proxyGitHubProgram);
   const passThroughGeneric = withGeneric(passThroughProgram);
   const containerSession = (request: Request, env: Bindings, context: EgressContext) =>
     handleContainerSessionEgress(request, env, context);
@@ -515,8 +499,8 @@ export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
     "api.openai.com": openAIGeneric,
     "chatgpt.com": chatGptGeneric,
     "auth.openai.com": oauthGeneric,
-    "github.com": gitHubGeneric,
-    "api.github.com": gitHubGeneric,
+    "github.com": passThroughGeneric,
+    "api.github.com": passThroughGeneric,
     "codeload.github.com": passThroughGeneric,
     "objects.githubusercontent.com": passThroughGeneric,
     "raw.githubusercontent.com": passThroughGeneric,
@@ -580,11 +564,7 @@ function egressVaultLayer(env: Bindings, context: EgressContext): Layer.Layer<Eg
   return Layer.succeed(EgressVault)(
     EgressVault.of({
       read: (sentinel) => {
-        if (
-          !sentinel.startsWith(PI_SENTINEL_PREFIX) &&
-          !sentinel.startsWith(GITHUB_SENTINEL_PREFIX)
-        )
-          return Effect.succeed(null);
+        if (!sentinel.startsWith(PI_SENTINEL_PREFIX)) return Effect.succeed(null);
         return rpc(() => stub.readCredentialForProxy(storedSentinel(sentinel))).pipe(
           Effect.flatMap((value) => {
             if (value === null) return Effect.succeed(null);
@@ -677,6 +657,9 @@ function scanEnvironmentSentinels(request: Request): Effect.Effect<EnvironmentSe
       }
       add(inspectEnvironmentText(name, false, ENVIRONMENT_MAX_SCANNED_COMPONENT_LENGTH));
       add(inspectEnvironmentText(value, true, ENVIRONMENT_MAX_SCANNED_COMPONENT_LENGTH));
+      const basic = decodeBasicAuthorization(name, value);
+      if (basic !== null)
+        add(inspectEnvironmentText(basic, true, ENVIRONMENT_MAX_SCANNED_COMPONENT_LENGTH));
     }
     let body: EnvironmentBodyScan | null = null;
     if (request.body !== null || contentLengthExceedsBodyLimit(request)) {
@@ -852,6 +835,30 @@ function readEnvironmentBody(
       inspectable,
     };
   });
+}
+
+function decodeBasicAuthorization(name: string, value: string): string | null {
+  if (name !== "authorization") return null;
+  const match = /^Basic\s+(.+)$/iu.exec(value);
+  const encoded = match?.[1];
+  if (encoded === undefined) return null;
+  const decoded = Result.try(() => atob(encoded));
+  return Result.isSuccess(decoded) ? decoded.success : null;
+}
+
+function replaceBasicEnvironmentAuthorization(
+  name: string,
+  value: string,
+  sentinels: ReadonlyArray<string>,
+  replacements: Readonly<Record<string, string>>,
+): string | null | undefined {
+  if (name !== "authorization" || !/^Basic\s+/iu.test(value)) return undefined;
+  const decoded = decodeBasicAuthorization(name, value);
+  if (decoded === null) return null;
+  const replaced = replaceEnvironmentSentinels(decoded, sentinels, replacements, false);
+  if (replaced === null) return null;
+  const encoded = Result.try(() => btoa(replaced));
+  return Result.isSuccess(encoded) ? `Basic ${encoded.success}` : null;
 }
 
 function replaceEnvironmentSentinels(

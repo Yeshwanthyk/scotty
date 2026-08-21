@@ -245,7 +245,6 @@ function env(
     SCOTTY_TOKEN: TOKEN,
     PI_AUTH_JSON:
       '{"openai-codex":{"type":"oauth","access":"access","refresh":"refresh","expires":0}}',
-    GH_TOKEN: "github-test-sentinel",
     ASSETS: assets,
     AUTH: authNamespace(),
     RUNNER_REGISTRY: runnerRegistryNamespace(),
@@ -1240,7 +1239,7 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ ...record, githubToken: "honeypot-github" }),
+        body: JSON.stringify({ ...record, unexpectedCredential: "honeypot" }),
       },
       env(),
     );

@@ -173,7 +173,6 @@ function bindings(namespace: Bindings["SANDBOX"]): Bindings {
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "unused",
     PI_AUTH_JSON: "unused",
-    GH_TOKEN: "unused",
   };
 }
 

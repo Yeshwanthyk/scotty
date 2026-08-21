@@ -17,7 +17,6 @@ export interface Bindings {
   ASSETS: Fetcher;
   SCOTTY_TOKEN: string;
   PI_AUTH_JSON: string;
-  GH_TOKEN: string;
   SCOTTY_LOCAL_E2E?: string;
   SCOTTY_LOCAL_BACKUP?: string;
   R2_ACCESS_KEY_ID?: string;

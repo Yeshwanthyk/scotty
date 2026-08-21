@@ -27,7 +27,12 @@ import { sessionRoot } from "../src/workspace";
 
 const ID = "a0b1c2d3e4f5";
 const PI_SENTINEL = `scotty-pi-${ID}-sentinel`;
-const GITHUB_SENTINEL = `scotty-github-${ID}-sentinel`;
+const GH_TOKEN_SENTINEL = `scotty-env-${ID}-${"a".repeat(32)}`;
+const ENVIRONMENT = {
+  version: 1 as const,
+  revision: 1,
+  variables: { GH_TOKEN: GH_TOKEN_SENTINEL },
+};
 const PI_SESSION_TRANSPORT_TOKEN = "c".repeat(64);
 const REAL_ACCESS = "honeypot-real-codex-access";
 const REAL_REFRESH = "honeypot-real-codex-refresh";
@@ -49,8 +54,7 @@ const credential: StoredCredential = {
       sentinel: PI_SENTINEL,
     },
   },
-  githubToken: REAL_GITHUB,
-  githubSentinel: GITHUB_SENTINEL,
+
   updatedAt: "2026-07-22T01:02:03.000Z",
 };
 
@@ -223,9 +227,9 @@ const seedWith = (
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
-  return Effect.flatMap(ContainerAuth, (auth) => auth.seed(ID, storedCredential, options)).pipe(
-    Effect.provide(layer),
-  );
+  return Effect.flatMap(ContainerAuth, (auth) =>
+    auth.seed(ID, storedCredential, { environment: ENVIRONMENT, ...options }),
+  ).pipe(Effect.provide(layer));
 };
 
 const preflightWith = (
@@ -273,9 +277,9 @@ const ensureTerminalWith = (
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
-  return Effect.flatMap(ContainerAuth, (auth) => auth.ensureTerminal(ID, storedCredential)).pipe(
-    Effect.provide(layer),
-  );
+  return Effect.flatMap(ContainerAuth, (auth) =>
+    auth.ensureTerminal(ID, storedCredential, ENVIRONMENT),
+  ).pipe(Effect.provide(layer));
 };
 
 const piSessionWith = (
@@ -283,11 +287,13 @@ const piSessionWith = (
   operation: "ensure" | "quiesce" | "stop",
   storedCredential: StoredCredential = credential,
   transportToken = PI_SESSION_TRANSPORT_TOKEN,
+  environment = ENVIRONMENT,
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
   return Effect.flatMap(ContainerAuth, (auth) => {
-    if (operation === "ensure") return auth.ensurePiSession(ID, storedCredential, transportToken);
+    if (operation === "ensure")
+      return auth.ensurePiSession(ID, storedCredential, transportToken, environment);
     if (operation === "quiesce") return auth.quiescePiSession(ID, transportToken);
     return auth.stopPiSession();
   }).pipe(Effect.provide(layer));
@@ -317,13 +323,12 @@ describe("container auth values", () => {
   it("constructs the exact session path and agent environment", () => {
     assert.strictEqual(sessionRoot(ID), `/workspace/${ID}`);
     assert.strictEqual(terminalShellPath(ID), `/workspace/${ID}/.pi-agent/scotty-shell`);
-    assert.deepStrictEqual(agentEnv(ID, credential), {
+    assert.deepStrictEqual(agentEnv(ID, credential, ENVIRONMENT), {
       CODEX_HOME: `/workspace/${ID}/.codex`,
       PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
       SCOTTY_SESSION_ID: ID,
       GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
-      GH_TOKEN: GITHUB_SENTINEL,
-      GITHUB_SENTINEL,
+      GH_TOKEN: GH_TOKEN_SENTINEL,
       GH_PROMPT_DISABLED: "1",
       GH_NO_UPDATE_NOTIFIER: "1",
       GIT_TERMINAL_PROMPT: "0",
@@ -419,7 +424,7 @@ describe("ContainerAuth", () => {
         packages: [...PI_PACKAGES],
       });
       assert.include(PI_PACKAGES, "/opt/scotty/pi-packages/sources/pi-subagents");
-      assert.ok(writes[5]?.content.includes("password=$GITHUB_SENTINEL"));
+      assert.ok(writes[5]?.content.includes("password=$GH_TOKEN"));
       assert.ok(writes[6]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
       assert.ok(
         writes[6]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
@@ -444,7 +449,7 @@ describe("ContainerAuth", () => {
         `ln -sfn /opt/scotty/skills '/workspace/${ID}/.pi-agent/skills'`,
       );
 
-      const expectedEnv = agentEnv(ID, credential);
+      const expectedEnv = agentEnv(ID, credential, ENVIRONMENT);
       const setEnv = capabilities.calls.find(
         (call): call is Extract<ContainerCall, { operation: "setEnvVars" }> =>
           call.operation === "setEnvVars",
@@ -465,10 +470,13 @@ describe("ContainerAuth", () => {
       capabilities.execFailWhen = (command) => command.includes("gh api user");
       yield* seedWith(capabilities);
       const ghExec = ghIdentityExec(capabilities.calls);
-      assert.deepStrictEqual(ghExec.options, { env: agentEnv(ID, credential), timeout: 20_000 });
+      assert.deepStrictEqual(ghExec.options, {
+        env: agentEnv(ID, credential, ENVIRONMENT),
+        timeout: 20_000,
+      });
       const fallbackExec = fallbackIdentityExec(capabilities.calls);
       assert.deepStrictEqual(fallbackExec.options, {
-        env: agentEnv(ID, credential),
+        env: agentEnv(ID, credential, ENVIRONMENT),
         timeout: 10_000,
       });
       assert.include(
@@ -732,7 +740,7 @@ describe("ContainerAuth", () => {
         new TextDecoder().decode(capabilities.files.get(`/tmp/scotty-pi-session-${ID}.token`)),
         PI_SESSION_TRANSPORT_TOKEN,
       );
-      assert.strictEqual(start?.options?.env?.GH_TOKEN, GITHUB_SENTINEL);
+      assert.strictEqual(start?.options?.env?.GH_TOKEN, GH_TOKEN_SENTINEL);
       assert.ok(!JSON.stringify(start).includes(REAL_GITHUB));
       assert.ok(
         capabilities.calls.some(
@@ -780,18 +788,25 @@ describe("ContainerAuth", () => {
     }),
   );
 
-  it.effect("uses the supplied Pi capability independently of the GitHub credential", () =>
+  it.effect("uses the supplied environment GH_TOKEN independently of the Pi credential", () =>
     Effect.gen(function* () {
       const first = new ProcessSandboxCapabilities();
       const second = new ProcessSandboxCapabilities();
-      const alternateCredential: StoredCredential = {
-        ...credential,
-        githubToken: "alternate-github-token",
-        githubSentinel: "alternate-github-sentinel",
+      const alternateCredential: StoredCredential = { ...credential };
+      const alternateSentinel = `scotty-env-${ID}-${"b".repeat(32)}`;
+      const alternateEnvironment = {
+        ...ENVIRONMENT,
+        variables: { GH_TOKEN: alternateSentinel },
       };
 
       yield* piSessionWith(first, "ensure", credential, PI_SESSION_TRANSPORT_TOKEN);
-      yield* piSessionWith(second, "ensure", alternateCredential, PI_SESSION_TRANSPORT_TOKEN);
+      yield* piSessionWith(
+        second,
+        "ensure",
+        alternateCredential,
+        PI_SESSION_TRANSPORT_TOKEN,
+        alternateEnvironment,
+      );
 
       const tokenPath = `/tmp/scotty-pi-session-${ID}.token`;
       assert.strictEqual(
@@ -806,14 +821,14 @@ describe("ContainerAuth", () => {
       const secondStart = second.calls.find((call) => call.operation === "startProcess");
       assert.strictEqual(
         firstStart?.operation === "startProcess" ? firstStart.options?.env?.GH_TOKEN : undefined,
-        GITHUB_SENTINEL,
+        GH_TOKEN_SENTINEL,
       );
       assert.strictEqual(
         secondStart?.operation === "startProcess" ? secondStart.options?.env?.GH_TOKEN : undefined,
-        alternateCredential.githubSentinel,
+        alternateSentinel,
       );
       assert.notInclude(JSON.stringify(first.calls), REAL_GITHUB);
-      assert.notInclude(JSON.stringify(second.calls), alternateCredential.githubToken);
+      assert.notInclude(JSON.stringify(second.calls), REAL_GITHUB);
     }),
   );
 
@@ -871,7 +886,7 @@ describe("ContainerAuth", () => {
         assert.ok(!surfaces.includes(secret));
       }
       assert.ok(surfaces.includes(PI_SENTINEL));
-      assert.ok(surfaces.includes(GITHUB_SENTINEL));
+      assert.ok(surfaces.includes(GH_TOKEN_SENTINEL));
       assert.ok(surfaces.includes(".scotty"));
     }),
   );
@@ -889,13 +904,12 @@ describe("ContainerAuth", () => {
           key: PI_SENTINEL,
         },
       });
-      assert.deepStrictEqual(agentEnv(ID, apiKeyCredential), {
+      assert.deepStrictEqual(agentEnv(ID, apiKeyCredential, ENVIRONMENT), {
         CODEX_HOME: `/workspace/${ID}/.codex`,
         PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
         SCOTTY_SESSION_ID: ID,
         GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
-        GH_TOKEN: GITHUB_SENTINEL,
-        GITHUB_SENTINEL,
+        GH_TOKEN: GH_TOKEN_SENTINEL,
         GH_PROMPT_DISABLED: "1",
         GH_NO_UPDATE_NOTIFIER: "1",
         GIT_TERMINAL_PROMPT: "0",

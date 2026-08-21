@@ -7,6 +7,7 @@ import {
 } from "../../protocol/pi-console";
 import type { Bindings } from "../../worker/src/bindings";
 import { readBoundedUtf8Body } from "../../worker/src/bounded-http";
+import { isSessionEnvironmentSnapshot } from "../../worker/src/environment-contracts";
 import { ContainerProxy } from "../../worker/src/container-session-egress";
 import {
   decodeJsonValue,
@@ -181,6 +182,15 @@ export class ScottySandbox extends Sandbox {
       credential && record?.status === "warm"
         ? await this.e2eSecurityProbe(record, credential, projection)
         : null;
+    const githubSentinel = isSessionEnvironmentSnapshot(record?.environment)
+      ? record.environment.variables.GH_TOKEN
+      : undefined;
+    const [sessionGithub, globalGithub] = await Promise.all([
+      githubSentinel === undefined
+        ? Promise.resolve(null)
+        : this.resolveEnvironmentSecretForProxy({ sentinel: githubSentinel }),
+      this.env.SANDBOX_CONFIG.getByName("account").resolveGlobalGithubToken(),
+    ]);
 
     return {
       activeLease: record?.operation != null,
@@ -189,7 +199,8 @@ export class ScottySandbox extends Sandbox {
       backups: backupPage.objects.map(({ key }) => key).sort(),
       createIdempotency: createIdempotency !== undefined,
       credentials: credential !== undefined,
-      githubCredentialCurrent: credential?.githubToken === this.env.GH_TOKEN,
+      githubCredentialCurrent:
+        sessionGithub !== null && globalGithub.ok && sessionGithub.value === globalGithub.value,
       incarnation: this.e2eIncarnation,
       kv: projection !== null,
       runtime,
@@ -210,12 +221,19 @@ export class ScottySandbox extends Sandbox {
   ): Promise<CanarySecurityProbe> {
     const root = `/workspace/${record.id}`;
     const surface = await this.exec(
-      `printf '%s\\n' "$GH_TOKEN" "$GITHUB_SENTINEL"; cat ${root}/.pi-agent/auth.json; git -C ${root} config --local --list; curl --silent --output /dev/null --write-out '%{http_code}' https://example.com/`,
+      `printf '%s\\n' "$GH_TOKEN"; cat ${root}/.pi-agent/auth.json; git -C ${root} config --local --list; curl --silent --output /dev/null --write-out '%{http_code}' https://example.com/`,
       { timeout: 30_000 },
     );
     const serializedSurface = `${surface.stdout}\n${surface.stderr}`;
+    const githubSentinel = isSessionEnvironmentSnapshot(record.environment)
+      ? record.environment.variables.GH_TOKEN
+      : undefined;
+    const githubCredential =
+      githubSentinel === undefined
+        ? null
+        : await this.resolveEnvironmentSecretForProxy({ sentinel: githubSentinel });
     const realSecrets = [
-      credential.githubToken,
+      githubCredential?.value,
       ...Object.values(credential.providers).flatMap((provider) =>
         provider.credential.type === "api_key"
           ? [provider.credential.key]
@@ -232,7 +250,8 @@ export class ScottySandbox extends Sandbox {
         Object.entries(credential.providers)
           .filter(([providerId]) => supportedPiProvider(providerId))
           .every(([, provider]) => serializedSurface.includes(provider.sentinel)) &&
-        serializedSurface.includes(credential.githubSentinel) &&
+        githubSentinel !== undefined &&
+        serializedSurface.includes(githubSentinel) &&
         !containsRealSecret(serializedSurface),
     };
   }
@@ -254,16 +273,18 @@ export default {
     if (url.pathname === "/__e2e/config") {
       if (!canaryAuthorized(request, env)) return jsonError(401, "unauthorized");
       if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+      const githubToken = await env.SANDBOX_CONFIG.getByName("account").resolveGlobalGithubToken();
+      if (!githubToken.ok) return jsonError(502, "GitHub authority unavailable");
       const github = await fetch("https://api.github.com/user", {
         headers: {
           accept: "application/vnd.github+json",
-          authorization: `Bearer ${env.GH_TOKEN}`,
+          authorization: `Bearer ${githubToken.value}`,
           "user-agent": "Scotty deployed E2E",
         },
       });
       return Response.json({
         githubStatus: github.status,
-        githubTokenBytes: new TextEncoder().encode(env.GH_TOKEN).byteLength,
+        githubTokenBytes: new TextEncoder().encode(githubToken.value).byteLength,
       });
     }
     const route = /^\/__e2e\/(probe|reconstruct|peer)\/([^/]+)$/u.exec(url.pathname);

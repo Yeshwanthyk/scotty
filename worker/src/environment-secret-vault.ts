@@ -12,7 +12,7 @@ import {
   type EnvironmentSecretSentinel,
   type SessionEnvironmentSnapshot,
 } from "./environment-contracts";
-import { environmentNameIsReserved } from "./environment-policy";
+import { environmentNameIsMaterializable } from "./environment-policy";
 
 export { ENVIRONMENT_SECRET_SENTINEL_PREFIX } from "./environment-contracts";
 
@@ -186,7 +186,7 @@ const makeEnvironmentSecretVault = (
     const decoded = Result.mapError(decodeState(value), invalidState);
     if (Result.isFailure(decoded)) return decoded;
     for (const [key, entry] of Object.entries(decoded.success.entries)) {
-      if (key !== entry.sentinel || environmentNameIsReserved(entry.name)) {
+      if (key !== entry.sentinel || !environmentNameIsMaterializable(entry.name)) {
         return Result.fail(invalidState());
       }
     }
@@ -218,7 +218,11 @@ const makeEnvironmentSecretVault = (
     if (Result.isFailure(decoded)) return decoded;
     for (const [name, variable] of Object.entries(decoded.success.variables)) {
       if (
-        environmentNameIsReserved(name) ||
+        !environmentNameIsMaterializable(name) ||
+        (name === "GH_TOKEN" &&
+          (variable.sourceScope !== "global" ||
+            variable.secret !== true ||
+            variable.value.trim().length === 0)) ||
         (!variable.secret && variable.value.startsWith(ENVIRONMENT_SECRET_SENTINEL_PREFIX))
       )
         return Result.fail(failure("invalid_input", "Environment materialization is invalid"));

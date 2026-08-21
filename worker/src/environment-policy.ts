@@ -4,7 +4,6 @@ const SCOTTY_OWNED_ENVIRONMENT_NAMES = new Set([
   "SCOTTY_SESSION_ID",
   "GIT_CONFIG_GLOBAL",
   "GH_TOKEN",
-  "GITHUB_SENTINEL",
   "GH_PROMPT_DISABLED",
   "GH_NO_UPDATE_NOTIFIER",
   "GIT_TERMINAL_PROMPT",
@@ -30,3 +29,6 @@ const SCOTTY_OWNED_ENVIRONMENT_NAMES = new Set([
 
 export const environmentNameIsReserved = (name: string): boolean =>
   name.startsWith("SCOTTY_") || SCOTTY_OWNED_ENVIRONMENT_NAMES.has(name);
+
+export const environmentNameIsMaterializable = (name: string): boolean =>
+  name === "GH_TOKEN" || !environmentNameIsReserved(name);

@@ -36,7 +36,7 @@ import {
   type EnvironmentVariable,
   type EnvironmentVariablesView,
 } from "./environment-contracts";
-import { environmentNameIsReserved } from "./environment-policy";
+import { environmentNameIsMaterializable, environmentNameIsReserved } from "./environment-policy";
 
 const AUTHORITY_KEY = "scotty:environment:1";
 
@@ -543,7 +543,7 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
           const variables: Record<string, EnvironmentEffectiveVariable> = {};
           for (const [name, { sourceScope, variable }] of Object.entries(
             effectiveVariables(authority, repo),
-          ).filter(([name]) => !environmentNameIsReserved(name)))
+          ).filter(([name]) => environmentNameIsMaterializable(name)))
             variables[name] = {
               value: variable.value,
               secret: variable.secret,

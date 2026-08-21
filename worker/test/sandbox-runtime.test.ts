@@ -78,7 +78,7 @@ describe("SandboxRuntime", () => {
       const command = "git status --porcelain";
       const options: SandboxExecOptions = {
         cwd: "/workspace/a0b1c2d3e4f5",
-        env: { GH_TOKEN: "scotty-github-a0b1c2d3e4f5-token", EMPTY: undefined },
+        env: { GH_TOKEN: `scotty-env-a0b1c2d3e4f5-${"a".repeat(32)}`, EMPTY: undefined },
         timeout: 120_000,
       };
       memory.respond("exec", successResult(command));
@@ -245,7 +245,7 @@ describe("SandboxRuntime", () => {
       const memory = new InMemoryFaultInjectableFake();
       const capabilities = sandboxRuntimeCapabilitiesFake(memory);
       const secretOutput =
-        "scotty-codex-session-secret scotty-github-session-secret ghp_patsecret " +
+        `scotty-codex-session-secret scotty-env-a0b1c2d3e4f5-${"a".repeat(32)} ghp_patsecret ` +
         "github_pat_pat_secret " +
         "x".repeat(1_100);
       memory.respond("exec", failedResult("false", secretOutput, ""));

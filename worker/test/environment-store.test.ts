@@ -282,7 +282,11 @@ describe("EnvironmentStore", () => {
         storage.storage,
         Effect.flatMap(EnvironmentStore, (store) => store.materialize()),
       );
-      assert.notProperty(materialized.variables, "GH_TOKEN");
+      assert.deepInclude(materialized.variables.GH_TOKEN, {
+        value: token,
+        secret: true,
+        sourceScope: "global",
+      });
       const plainFailure = yield* withStore(
         storage.storage,
         Effect.flip(
@@ -324,7 +328,7 @@ describe("EnvironmentStore", () => {
         storage.storage,
         Effect.flip(
           Effect.flatMap(EnvironmentStore, (store) =>
-            store.put("GITHUB_SENTINEL", { value: "sentinel", secret: true }),
+            store.put("CODEX_HOME", { value: "reserved", secret: true }),
           ),
         ),
       );

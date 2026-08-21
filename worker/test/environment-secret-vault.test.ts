@@ -211,6 +211,42 @@ describe("environment secret vault", () => {
     }).pipe(Effect.provide(storage.layer));
   });
 
+  it.effect("materializes global secret GH_TOKEN and rejects unsafe managed variants", () => {
+    const storage = makeStorage();
+    return Effect.gen(function* () {
+      const vault = yield* EnvironmentSecretVault;
+      const snapshot = yield* vault.reconcile(
+        materialization(1, {
+          GH_TOKEN: {
+            value: "real-github-token",
+            secret: true,
+            updatedAt: "one",
+            sourceScope: "global",
+          },
+        }),
+        SESSION_ID,
+      );
+      assert.ok(snapshot.variables.GH_TOKEN?.startsWith(`scotty-env-${SESSION_ID}-`));
+      assert.notInclude(JSON.stringify(snapshot), "real-github-token");
+
+      for (const variable of [
+        { value: "real-github-token", secret: false, sourceScope: "global" as const },
+        { value: "real-github-token", secret: true, sourceScope: "owner/project" as const },
+        { value: "", secret: true, sourceScope: "global" as const },
+      ]) {
+        const invalid = yield* failureOf(
+          vault.reconcile(
+            materialization(2, {
+              GH_TOKEN: { ...variable, updatedAt: "two" },
+            }),
+            SESSION_ID,
+          ),
+        );
+        assert.strictEqual(invalid.reason, "invalid_input");
+      }
+    }).pipe(Effect.provide(storage.layer));
+  });
+
   it.effect("keeps proxy lookup session-bound and deletes the vault lifecycle", () => {
     const storage = makeStorage();
     return Effect.gen(function* () {

@@ -108,6 +108,18 @@ describe("Sandbox create orchestration", () => {
     assert.ok(!harness.events.some((event) => event.startsWith("projection:")));
   });
 
+  it("fails closed before workspace preparation when GH_TOKEN is absent from materialization", async () => {
+    const harness = await createSessionHarness({ omitGithubEnvironmentSecret: true });
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.notInclude(harness.events, "host:exec:workspace");
+    assert.notInclude(JSON.stringify(harness.events), "authority-github-token");
+  });
+
   it("rejects an authenticated missing repository unless --new-repo is explicit", async () => {
     const harness = await createSessionHarness({
       repoVerifier: { verify: () => Effect.succeed({ exists: false }) },
@@ -458,6 +470,10 @@ describe("Sandbox create orchestration", () => {
     assert.ok(harness.events.includes("credential:put"));
     assert.ok(harness.events.includes("host:exec:workspace"));
     assert.ok(
+      harness.events.indexOf("storage:put:scotty:environment-secrets:v1") <
+        harness.events.indexOf("host:exec:workspace"),
+    );
+    assert.ok(
       harness.events.lastIndexOf("record:booting") < harness.events.lastIndexOf("record:warm"),
     );
   });
@@ -668,7 +684,7 @@ describe("Sandbox create orchestration", () => {
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
         [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
-      transactionFailureCountdown: 3,
+      transactionFailureCountdown: 2,
     });
 
     const error = await rejection(

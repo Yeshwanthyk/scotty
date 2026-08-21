@@ -5,7 +5,7 @@ import {
   type PersistedSessionEnvironmentSnapshot,
   type SessionEnvironmentSnapshot,
 } from "./environment-contracts";
-import { environmentNameIsReserved } from "./environment-policy";
+import { environmentNameIsMaterializable, environmentNameIsReserved } from "./environment-policy";
 import { piAuthJson, type StoredCredential } from "./egress";
 import { PiPackageNameSchema, SkillNameSchema } from "./sandbox-config-contracts";
 import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
@@ -194,7 +194,7 @@ const buildMergedSkillsCommand = (
 };
 
 const gitConfig = (): string => `[credential]
-	helper = !f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f
+	helper = !f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f
 	useHttpPath = true
 `;
 
@@ -566,16 +566,14 @@ export function agentEnv(
   const safeEnvironment = isSessionEnvironmentSnapshot(environment) ? environment : undefined;
   return {
     ...Object.fromEntries(
-      Object.entries(safeEnvironment?.variables ?? {}).filter(
-        ([name]) => !environmentNameIsReserved(name),
+      Object.entries(safeEnvironment?.variables ?? {}).filter(([name]) =>
+        environmentNameIsMaterializable(name),
       ),
     ),
     CODEX_HOME: `${sessionRoot(id)}/.codex`,
     PI_CODING_AGENT_DIR: `${sessionRoot(id)}/.pi-agent`,
     SCOTTY_SESSION_ID: id,
     GIT_CONFIG_GLOBAL: `${sessionRoot(id)}/.pi-agent/gitconfig`,
-    GH_TOKEN: credential.githubSentinel,
-    GITHUB_SENTINEL: credential.githubSentinel,
     GH_PROMPT_DISABLED: "1",
     GH_NO_UPDATE_NOTIFIER: "1",
     GIT_TERMINAL_PROMPT: "0",

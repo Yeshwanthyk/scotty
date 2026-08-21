@@ -153,10 +153,15 @@ describe("Sandbox resume orchestration", () => {
     const retainedSecret = "retained-secret";
     const retainedSentinel = `scotty-env-${SESSION_ID}-${"a".repeat(32)}`;
     const staleSentinel = `scotty-env-${SESSION_ID}-${"b".repeat(32)}`;
+    const githubSentinel = `scotty-env-${SESSION_ID}-${"c".repeat(32)}`;
     const retained = {
       version: 1 as const,
       revision: 4,
-      variables: { RELEASE_CHANNEL: "retained", API_TOKEN: retainedSentinel },
+      variables: {
+        RELEASE_CHANNEL: "retained",
+        API_TOKEN: retainedSentinel,
+        GH_TOKEN: githubSentinel,
+      },
     };
     const harness = await createSessionHarness({
       initialEntries: {
@@ -176,6 +181,12 @@ describe("Sandbox resume orchestration", () => {
               sourceScope: "global",
               name: "STALE_TOKEN",
               value: "stale-secret",
+            },
+            [githubSentinel]: {
+              sentinel: githubSentinel,
+              sourceScope: "global",
+              name: "GH_TOKEN",
+              value: "authority-github-token",
             },
           },
         },
@@ -215,6 +226,12 @@ describe("Sandbox resume orchestration", () => {
           sourceScope: "global",
           name: "API_TOKEN",
           value: retainedSecret,
+        },
+        [githubSentinel]: {
+          sentinel: githubSentinel,
+          sourceScope: "global",
+          name: "GH_TOKEN",
+          value: "authority-github-token",
         },
       },
     });

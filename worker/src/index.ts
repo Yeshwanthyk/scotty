@@ -153,14 +153,7 @@ const PROTECTED_ENVIRONMENT_BINDINGS: ReadonlyArray<ProtectedEnvironmentBinding>
   {
     name: "GH_TOKEN",
     secret: true,
-    source: "session-bound GitHub sentinel",
-    destination: "process_environment",
-    managedBy: "scotty",
-  },
-  {
-    name: "GITHUB_SENTINEL",
-    secret: true,
-    source: "session-bound GitHub sentinel",
+    source: "session environment secret sentinel",
     destination: "process_environment",
     managedBy: "scotty",
   },

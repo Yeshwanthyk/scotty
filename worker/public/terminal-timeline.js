@@ -48,7 +48,7 @@ const redactAssembledString = (value) =>
     .replaceAll(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
     // oxlint-disable-next-line eslint/no-control-regex -- streamed remote content must remain terminal-safe after assembly
     .replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
-    .replaceAll(/(?:scotty-pi-|scotty-github-)[A-Za-z0-9_-]+/gu, "[sentinel]")
+    .replaceAll(/(?:scotty-pi-|scotty-env-)[A-Za-z0-9_-]+/gu, "[sentinel]")
     .replaceAll(/(?:ghp_|github_pat_)[A-Za-z0-9_]+/gu, "[credential]")
     // oxlint-disable-next-line eslint/no-control-regex -- streamed remote content excludes terminal control bytes
     .replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, "")

@@ -141,6 +141,7 @@ import {
 } from "./environment-secret-vault";
 import {
   EnvironmentAuthorizationResultSchema,
+  ENVIRONMENT_SECRET_SENTINEL_PREFIX,
   EnvironmentMaterializationSchema,
   isSessionEnvironmentSnapshot,
   type SessionEnvironmentSnapshot,
@@ -169,7 +170,6 @@ import {
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import {
-  GITHUB_SENTINEL_PREFIX,
   PI_SENTINEL_PREFIX,
   makeEnvironmentOutbound,
   makeOutboundByHost,
@@ -255,6 +255,11 @@ const decodeEnvironmentMaterialization = Schema.decodeUnknownResult(
   EnvironmentMaterializationSchema,
   { onExcessProperty: "error" },
 );
+const githubTokenSentinel = (environment: unknown): string | undefined => {
+  if (!isSessionEnvironmentSnapshot(environment)) return undefined;
+  const value = environment.variables.GH_TOKEN;
+  return value?.startsWith(ENVIRONMENT_SECRET_SENTINEL_PREFIX) ? value : undefined;
+};
 const decodeEnvironmentProxyRequest = Schema.decodeUnknownResult(EnvironmentProxyRequestSchema, {
   onExcessProperty: "error",
 });
@@ -709,7 +714,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const vault = credentialVaultLayer(
       // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning CredentialVault adapter
       durableObjectCredentialVaultStorage(ctx.storage),
-      env.GH_TOKEN,
     );
     const environmentSecrets = environmentSecretVaultLayer(
       // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires the per-session environment secret vault to the Session Durable Object
@@ -785,7 +789,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       });
     return result.value;
   });
-
   private readonly readInstallationGithubTokenProgram = Effect.fnUntraced(
     function* (this: Sandbox) {
       const result = yield* Effect.tryPromise({
@@ -2058,14 +2061,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const vault = yield* CredentialVault;
     const workspace = yield* Workspace;
     const installationRecord = yield* this.readInstallationPiAuthProgram();
-    const credential = yield* vault.seed({
+    yield* vault.seed({
       ...(installationRecord === null
         ? { piAuthJson: this.env.PI_AUTH_JSON }
         : { installationRecord }),
       providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-      githubSentinel: `${GITHUB_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
     });
-    const worktree = yield* workspace.prepare(record, credential.githubSentinel, verified);
+    const preparedRecord = yield* this.materializeEnvironmentSnapshotProgram(record, nonce).pipe(
+      Effect.mapError(mapCreateUncertain("materialize")),
+    );
+    const githubToken = githubTokenSentinel(preparedRecord.environment);
+    if (githubToken === undefined)
+      return yield* new SessionCreateUncertain({
+        cause: "GH_TOKEN was not materialized into the session environment",
+        stage: "materialize",
+      });
+    const worktree = yield* workspace.prepare(preparedRecord, githubToken, verified);
     const runtimeRecord = yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       operation: {
@@ -2121,22 +2132,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const containerAuth = yield* ContainerAuth;
     const credential = yield* vault.require;
     const transportToken = yield* store.ensurePiSessionTransportToken;
-    const preparedRecord = yield* this.materializeEnvironmentSnapshotProgram(record, nonce).pipe(
-      Effect.mapError(mapCreateUncertain("materialize")),
-    );
-    yield* this.materializeAndSeedSandboxProgram(preparedRecord, credential, {
+    if (githubTokenSentinel(record.environment) === undefined)
+      return yield* new SessionCreateUncertain({
+        cause: "GH_TOKEN was not materialized into the session environment",
+        stage: "materialize",
+      });
+    yield* this.materializeAndSeedSandboxProgram(record, credential, {
       initialPrompt: prompt,
     });
     yield* containerAuth
-      .ensurePiSession(preparedRecord.id, credential, transportToken, preparedRecord.environment)
+      .ensurePiSession(record.id, credential, transportToken, record.environment)
       .pipe(Effect.mapError(mapCreateUncertain("pi_health")));
-    if (!isSessionEnvironmentSnapshot(preparedRecord.environment))
+    if (!isSessionEnvironmentSnapshot(record.environment))
       return yield* new SessionCreateUncertain({
         cause: "session environment snapshot was not prepared",
         stage: "warm_commit",
       });
     yield* environmentVault
-      .commit(preparedRecord.environment)
+      .commit(record.environment)
       .pipe(Effect.mapError(mapCreateUncertain("warm_commit")));
     const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     return yield* this.updateForOperationProgram(nonce, (current) => ({
@@ -2488,6 +2501,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
           this.upstreamError("Environment materialization failed", undefined, record.id),
         ),
       );
+    if (githubTokenSentinel(snapshot) === undefined)
+      return yield* this.upstreamError("Environment materialization failed", undefined, record.id);
     return yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       environment: snapshot,
@@ -2906,6 +2921,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
             );
           environment = record.environment;
         }
+        if (githubTokenSentinel(environment) === undefined)
+          return yield* this.upstreamError(
+            "Environment materialization failed",
+            undefined,
+            record.id,
+          );
         const runtimeRecord = { ...record, environment };
         yield* this.materializeAndSeedSandboxProgram(runtimeRecord, credential);
         yield* this.restorePiAndHatchProgram(

@@ -6,39 +6,39 @@ import { SESSION_A, event, snapshot } from "./fixtures.ts";
 describe("snapshot and SSE reducer", () => {
   it("redacts every snapshot surface before it enters renderable state", () => {
     const leaked = "scotty-pi-a0b1c2d3e4f5-secret_0";
-    const github = "scotty-github-a0b1c2d3e4f5-secret";
+    const environment = "scotty-env-a0b1c2d3e4f5-secret";
     const live = hydrateSnapshot({
       ...snapshot(),
       state: { label: leaked },
-      messages: [{ role: "assistant", content: github }],
+      messages: [{ role: "assistant", content: environment }],
       activeTools: [
         {
           id: "tool-1",
           name: leaked,
           status: "running",
-          arguments: { token: github },
+          arguments: { token: environment },
         },
       ],
       queue: {
         steer: [{ id: "steer-1", text: leaked }],
-        followUp: [{ id: "follow-1", text: github }],
+        followUp: [{ id: "follow-1", text: environment }],
       },
       pendingUi: [
         {
           id: "dialog-1",
           method: "select",
           title: leaked,
-          options: [github],
+          options: [environment],
         },
       ],
       extensionSurface: {
         statuses: { auth: leaked },
-        widgets: [{ key: "widget", lines: [github], placement: "belowEditor" }],
+        widgets: [{ key: "widget", lines: [environment], placement: "belowEditor" }],
         title: leaked,
       },
       capabilities: {
-        models: [{ provider: leaked, id: github, name: leaked }],
-        thinkingLevels: [github],
+        models: [{ provider: leaked, id: environment, name: leaked }],
+        thinkingLevels: [environment],
         commands: [{ name: "workflows", description: leaked, source: "extension" }],
       },
     });
@@ -53,7 +53,7 @@ describe("snapshot and SSE reducer", () => {
       capabilities: live.capabilities,
     });
     expect(renderedState).not.toContain("scotty-pi-");
-    expect(renderedState).not.toContain("scotty-github-");
+    expect(renderedState).not.toContain("scotty-env-");
     expect(renderedState.match(/\[sentinel\]/gu)?.length).toBeGreaterThan(8);
   });
 
@@ -75,7 +75,7 @@ describe("snapshot and SSE reducer", () => {
         type: "tool_execution_start",
         toolCallId: "tool-1",
         toolName: "bash\u001b[31m",
-        args: { token: "scotty-github-session-secret" },
+        args: { token: "scotty-env-session-secret" },
       }),
       event(2, {
         type: "message_end",

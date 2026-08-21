@@ -385,8 +385,6 @@ export type StoredProviderCredential = typeof StoredProviderCredentialSchema.Typ
 
 export const StoredCredentialSchema = Schema.Struct({
   providers: Schema.Record(Schema.NonEmptyString, StoredProviderCredentialSchema),
-  githubToken: Schema.NonEmptyString,
-  githubSentinel: Schema.NonEmptyString,
   updatedAt: Schema.NonEmptyString,
   refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
 });
@@ -394,7 +392,6 @@ export type StoredCredential = typeof StoredCredentialSchema.Type;
 
 const CredentialSeedCommon = {
   providerSentinelSeed: Schema.NonEmptyString,
-  githubSentinel: Schema.NonEmptyString,
 };
 export const CredentialSeedSchema = Schema.Union([
   Schema.Struct({ ...CredentialSeedCommon, piAuthJson: Schema.NonEmptyString }),

@@ -30,7 +30,6 @@ import {
   passThroughProgram,
   piAccessSentinel,
   proxyChatGptProgram,
-  proxyGitHubProgram,
   proxyOAuthRefreshProgram,
   proxyEnvironmentProgram,
   proxyOpenAIProgram,
@@ -38,7 +37,6 @@ import {
 
 const OPENAI = "scotty-pi-openai-session-sentinel";
 const CODEX = "scotty-pi-openai-codex-session-sentinel";
-const GITHUB = "scotty-github-session-sentinel";
 const HONEYPOT = "never-expose-honeypot-secret";
 const ENVIRONMENT_A = `scotty-env-a0b1c2d3e4f5-${"0".repeat(32)}`;
 const ENVIRONMENT_B = `scotty-env-b0c1d2e3f4a5-${"1".repeat(32)}`;
@@ -60,8 +58,6 @@ const credential: StoredCredential = {
       sentinel: CODEX,
     },
   },
-  githubToken: "real-github-token",
-  githubSentinel: GITHUB,
   updatedAt: "2026-01-02T00:00:00.000Z",
 };
 const lease: CredentialRefreshLease = { credential, nonce: "lease-nonce" };
@@ -269,7 +265,7 @@ describe("credential egress", () => {
     }),
   );
 
-  it.effect("injects ChatGPT token and account id and rejects a GitHub sentinel", () =>
+  it.effect("injects ChatGPT token and account id and rejects an environment sentinel", () =>
     Effect.gen(function* () {
       const requests: Array<Request> = [];
       yield* run(
@@ -286,7 +282,7 @@ describe("credential egress", () => {
       const rejected = yield* run(
         proxyChatGptProgram(
           new Request("https://chatgpt.com/backend-api/me", {
-            headers: { authorization: `Bearer ${GITHUB}` },
+            headers: { authorization: `Bearer ${ENVIRONMENT_A}` },
           }),
         ),
       );
@@ -294,38 +290,33 @@ describe("credential egress", () => {
     }),
   );
 
-  it.effect("keeps GitHub Bearer and Basic credential types separate", () =>
+  it.effect("replaces generic environment sentinels in GitHub Bearer and Basic credentials", () =>
     Effect.gen(function* () {
       const requests: Array<Request> = [];
-      yield* run(
-        proxyGitHubProgram(
+      const resolve: EnvironmentEgressVaultShape["resolve"] = (origin, sentinels) => {
+        assert.ok(origin === "https://api.github.com" || origin === "https://github.com");
+        assert.deepStrictEqual(sentinels, [ENVIRONMENT_A]);
+        return Effect.succeed({ [ENVIRONMENT_A]: "real-github-token" });
+      };
+      yield* runEnvironment(
+        proxyEnvironmentProgram(
           new Request("https://api.github.com/user", {
-            headers: { authorization: `Bearer ${GITHUB}` },
+            headers: { authorization: `Bearer ${ENVIRONMENT_A}` },
           }),
         ),
-        { nativeRequests: requests },
+        { resolve, nativeRequests: requests },
       );
-      yield* run(
-        proxyGitHubProgram(
+      yield* runEnvironment(
+        proxyEnvironmentProgram(
           new Request("https://github.com/o/r.git", {
-            headers: { authorization: `Basic ${btoa(`x-access-token:${GITHUB}`)}` },
+            headers: { authorization: `Basic ${btoa(`x-access-token:${ENVIRONMENT_A}`)}` },
           }),
         ),
-        { nativeRequests: requests },
+        { resolve, nativeRequests: requests },
       );
       assert.equal(requests[0].headers.get("authorization"), "Bearer real-github-token");
       const basic = requests[1].headers.get("authorization") ?? "";
       assert.equal(atob(basic.slice(6)), "x-access-token:real-github-token");
-      assert.equal(
-        (yield* run(
-          proxyGitHubProgram(
-            new Request("https://api.github.com/user", {
-              headers: { authorization: `Bearer ${CODEX}` },
-            }),
-          ),
-        )).status,
-        403,
-      );
     }),
   );
 
@@ -755,7 +746,6 @@ function environmentBindings(
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "unused",
     PI_AUTH_JSON: "unused",
-    GH_TOKEN: "unused",
   };
 }
 
