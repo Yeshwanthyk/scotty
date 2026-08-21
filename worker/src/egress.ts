@@ -212,8 +212,22 @@ function proxyEnvironmentProgramWithScan(
 
 export const passThroughProgram = Effect.fnUntraced(function* (request: Request) {
   const headers = sanitizedHeaders(request.headers);
-  if (headers.has("authorization") || headers.has("proxy-authorization") || headers.has("cookie"))
+  if (headers.has("authorization") || headers.has("proxy-authorization") || headers.has("cookie")) {
+    // Diagnostic: passthrough rejects credential-bearing requests only when the scan found
+    // nothing to substitute; surface it so denials are attributable from logs.
+    console.error(
+      JSON.stringify({
+        event: "egress.passthrough.denied",
+        url: request.url.slice(0, 120),
+        header: headers.has("authorization")
+          ? "authorization"
+          : headers.has("proxy-authorization")
+            ? "proxy-authorization"
+            : "cookie",
+      }),
+    );
     return forbidden();
+  }
   return yield* forward(request, new URL(request.url), headers);
 });
 
@@ -350,6 +364,16 @@ function scanEnvironmentSentinels(request: Request): Effect.Effect<EnvironmentSe
       const basic = decodeBasicAuthorization(name, value);
       if (basic !== null)
         add(inspectEnvironmentText(basic, true, ENVIRONMENT_MAX_SCANNED_COMPONENT_LENGTH));
+      else if (name === "authorization")
+        // Diagnostic: an Authorization header whose Basic payload cannot be decoded is
+        // invisible to substitution and silently denied downstream; surface its shape.
+        console.error(
+          JSON.stringify({
+            event: "egress.scan.auth_unreadable",
+            scheme: value.slice(0, 24),
+            length: value.length,
+          }),
+        );
     }
     let body: EnvironmentBodyScan | null = null;
     if (request.body !== null || contentLengthExceedsBodyLimit(request)) {
