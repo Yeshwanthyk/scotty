@@ -21,6 +21,7 @@ const OLD_API_TOKEN_SENTINEL = "scotty-env-a0b1c2d3e4f5-000000000000000000000000
 const OLD_REMOVE_ME_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000001";
 const OLD_GITHUB_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000002";
 const OLD_OPENAI_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000003";
+const OLD_OPENCODE_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000004";
 const current = {
   version: 1 as const,
   revision: 4,
@@ -33,6 +34,7 @@ const secretPrevious = {
     KEEP: "old",
     GH_TOKEN: OLD_GITHUB_SENTINEL,
     OPENAI_API_KEY: OLD_OPENAI_SENTINEL,
+    OPENCODE_API_KEY: OLD_OPENCODE_SENTINEL,
     API_TOKEN: OLD_API_TOKEN_SENTINEL,
     REMOVE_ME: OLD_REMOVE_ME_SENTINEL,
   },
@@ -75,6 +77,12 @@ const secretVaultState = {
       name: "OPENAI_API_KEY",
       value: "authority-openai-key",
     },
+    [OLD_OPENCODE_SENTINEL]: {
+      sentinel: OLD_OPENCODE_SENTINEL,
+      sourceScope: "global" as const,
+      name: "OPENCODE_API_KEY",
+      value: "authority-opencode-key",
+    },
     [OLD_API_TOKEN_SENTINEL]: {
       sentinel: OLD_API_TOKEN_SENTINEL,
       sourceScope: "global" as const,
@@ -109,9 +117,15 @@ const assertEnvironmentWithGithub = (
   expected: { readonly version: 1; readonly revision: number; readonly variables: object },
 ): void => {
   assert.ok(isSessionEnvironmentSnapshot(actual));
-  const { GH_TOKEN: github, OPENAI_API_KEY: openai, ...variables } = actual.variables;
+  const {
+    GH_TOKEN: github,
+    OPENAI_API_KEY: openai,
+    OPENCODE_API_KEY: opencode,
+    ...variables
+  } = actual.variables;
   assert.ok(github?.startsWith(`scotty-env-${SESSION_ID}-`));
   assert.ok(openai?.startsWith(`scotty-env-${SESSION_ID}-`));
+  assert.ok(opencode?.startsWith(`scotty-env-${SESSION_ID}-`));
   assert.deepStrictEqual({ ...actual, variables }, expected);
 };
 

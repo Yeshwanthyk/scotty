@@ -21,11 +21,12 @@ export function repositoryFromRemote(remote) {
   return match[1];
 }
 
-export function formatLocalDevVars({ rootToken, githubToken, openaiApiKey }) {
+export function formatLocalDevVars({ rootToken, githubToken, openaiApiKey, opencodeApiKey }) {
   return [
     `SCOTTY_TOKEN=${JSON.stringify(rootToken)}`,
     `GH_TOKEN=${JSON.stringify(githubToken)}`,
     `OPENAI_API_KEY=${JSON.stringify(openaiApiKey)}`,
+    `OPENCODE_API_KEY=${JSON.stringify(opencodeApiKey)}`,
     'SANDBOX_TRANSPORT="http"',
     'SCOTTY_LOCAL_E2E="1"',
     "",
@@ -126,6 +127,9 @@ function localInputs() {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   if (typeof openaiApiKey !== "string" || openaiApiKey.trim().length < 20)
     throw new Error("Set OPENAI_API_KEY in the environment before running local live E2E");
+  const opencodeApiKey = process.env.OPENCODE_API_KEY;
+  if (typeof opencodeApiKey !== "string" || opencodeApiKey.trim().length < 20)
+    throw new Error("Set OPENCODE_API_KEY in the environment before running local live E2E");
 
   requireExecutable("docker", ["info"]);
   requireExecutable("gh", ["auth", "status"]);
@@ -139,6 +143,7 @@ function localInputs() {
   return {
     githubToken,
     openaiApiKey: openaiApiKey.trim(),
+    opencodeApiKey: opencodeApiKey.trim(),
     rootToken: randomBytes(32).toString("hex"),
   };
 }
@@ -426,7 +431,7 @@ async function run() {
     envFile,
     persistPath,
     port: options.port,
-    secrets: [inputs.rootToken, inputs.githubToken, inputs.openaiApiKey],
+    secrets: [inputs.rootToken, inputs.githubToken, inputs.openaiApiKey, inputs.opencodeApiKey],
   });
   let cleaned = false;
   let holding = false;

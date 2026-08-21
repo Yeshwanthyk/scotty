@@ -127,6 +127,7 @@ for that secret. Ask the human to run, in their own terminal:
 ```sh
 scotty env set GH_TOKEN --secret --stdin
 scotty env set OPENAI_API_KEY --secret --stdin
+scotty env set OPENCODE_API_KEY --secret --stdin
 ```
 
 Then approve the origins each secret may be used at — one exact HTTPS origin per approval:
@@ -136,6 +137,8 @@ scotty env approvals approve GH_TOKEN https://github.com
 scotty env approvals approve GH_TOKEN https://api.github.com
 scotty env approvals approve GH_TOKEN https://codeload.github.com
 scotty env approvals approve OPENAI_API_KEY https://api.openai.com
+scotty env approvals approve OPENCODE_API_KEY https://opencode.ai
+scotty env approvals approve OPENCODE_API_KEY https://pi.dev
 ```
 
 `scotty env list` shows configured variables (secrets without values) and the protected session
@@ -143,8 +146,9 @@ bindings; `scotty env approvals list` shows approvals and pending observations. 
 request is recorded as a pending observation for the human to approve or reject; never treat a
 pending observation as authorization.
 
-**Done when:** both secrets are configured and every origin a session needs for Git and Pi provider
-requests is approved.
+**Done when:** all three secrets are configured and every origin a session needs for Git and Pi
+provider requests is approved. `OPENCODE_API_KEY` enables the OpenCode Zen/Go model catalog in Pi;
+`https://pi.dev` approval lets Pi refresh that catalog inside sessions.
 
 ### 4. Synchronize the sandbox and verify health
 
@@ -369,8 +373,8 @@ original pin.
 ## Browser authority
 
 Session model credentials come from the installation environment authority (`scotty env set
-GH_TOKEN --secret` and `scotty env set OPENAI_API_KEY --secret`); sessions receive only per-session
-sentinels, never real values.
+GH_TOKEN --secret`, `scotty env set OPENAI_API_KEY --secret`, and `scotty env set
+OPENCODE_API_KEY --secret`); sessions receive only per-session sentinels, never real values.
 
 The Auth Durable Object owns the browser owner, standard clients, pairing, transfer, recovery, and
 revocation. It stores credential digests only. The root authority is bearer-only and recovery

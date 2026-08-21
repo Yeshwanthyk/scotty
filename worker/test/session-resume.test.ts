@@ -151,6 +151,7 @@ describe("Sandbox resume orchestration", () => {
     const staleSentinel = `scotty-env-${SESSION_ID}-${"b".repeat(32)}`;
     const githubSentinel = `scotty-env-${SESSION_ID}-${"c".repeat(32)}`;
     const openaiSentinel = `scotty-env-${SESSION_ID}-${"d".repeat(32)}`;
+    const opencodeSentinel = `scotty-env-${SESSION_ID}-${"e".repeat(32)}`;
     const retained = {
       version: 1 as const,
       revision: 4,
@@ -159,6 +160,7 @@ describe("Sandbox resume orchestration", () => {
         API_TOKEN: retainedSentinel,
         GH_TOKEN: githubSentinel,
         OPENAI_API_KEY: openaiSentinel,
+        OPENCODE_API_KEY: opencodeSentinel,
       },
     };
     const harness = await createSessionHarness({
@@ -190,6 +192,12 @@ describe("Sandbox resume orchestration", () => {
               sourceScope: "global",
               name: "OPENAI_API_KEY",
               value: "authority-openai-key",
+            },
+            [opencodeSentinel]: {
+              sentinel: opencodeSentinel,
+              sourceScope: "global",
+              name: "OPENCODE_API_KEY",
+              value: "authority-opencode-key",
             },
           },
         },
@@ -241,6 +249,12 @@ describe("Sandbox resume orchestration", () => {
           sourceScope: "global",
           name: "OPENAI_API_KEY",
           value: "authority-openai-key",
+        },
+        [opencodeSentinel]: {
+          sentinel: opencodeSentinel,
+          sourceScope: "global",
+          name: "OPENCODE_API_KEY",
+          value: "authority-opencode-key",
         },
       },
     });

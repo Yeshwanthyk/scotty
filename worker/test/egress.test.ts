@@ -218,6 +218,8 @@ describe("pass-through policy", () => {
           ].includes(host),
       );
       assert.deepEqual(passThroughHosts, [
+        "opencode.ai",
+        "pi.dev",
         "codeload.github.com",
         "objects.githubusercontent.com",
         "raw.githubusercontent.com",

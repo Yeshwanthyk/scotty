@@ -533,10 +533,12 @@ describe("real Hono boundary", () => {
         ? { ok: true as const, value: "authority-github-token" }
         : name === "OPENAI_API_KEY"
           ? { ok: true as const, value: "authority-openai-key" }
-          : {
-              ok: false as const,
-              error: { reason: "invalid_global_secret", message: "unknown global secret" },
-            },
+          : name === "OPENCODE_API_KEY"
+            ? { ok: true as const, value: "authority-opencode-key" }
+            : {
+                ok: false as const,
+                error: { reason: "invalid_global_secret", message: "unknown global secret" },
+              },
     );
     sandboxConfig.status.mockResolvedValue({
       ok: true,
@@ -3862,6 +3864,7 @@ describe("real Hono boundary", () => {
     const listText = await listed.text();
     expect(listText).toContain("PUBLIC_URL");
     expect(listText).toContain("OPENAI_API_KEY");
+    expect(listText).toContain("OPENCODE_API_KEY");
     expect(listText).not.toContain("real-secret");
     expect(listText).toContain("GH_TOKEN");
     expect(listText).not.toContain("authority-github-token");

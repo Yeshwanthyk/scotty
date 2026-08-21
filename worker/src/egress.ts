@@ -11,6 +11,8 @@ import { decodeJsonValue } from "./contracts";
 
 export const ALLOWED_HOSTS = [
   "api.openai.com",
+  "opencode.ai",
+  "pi.dev",
   "github.com",
   "api.github.com",
   "codeload.github.com",
@@ -228,6 +230,8 @@ export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
     handleContainerSessionEgress(request, env, context);
   return {
     "api.openai.com": passThroughGeneric,
+    "opencode.ai": passThroughGeneric,
+    "pi.dev": passThroughGeneric,
     "github.com": passThroughGeneric,
     "api.github.com": passThroughGeneric,
     "codeload.github.com": passThroughGeneric,

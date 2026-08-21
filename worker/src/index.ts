@@ -156,6 +156,13 @@ const PROTECTED_ENVIRONMENT_BINDINGS: ReadonlyArray<ProtectedEnvironmentBinding>
     managedBy: "scotty",
   },
   {
+    name: "OPENCODE_API_KEY",
+    secret: true,
+    source: "session environment secret sentinel",
+    destination: "process_environment",
+    managedBy: "scotty",
+  },
+  {
     name: "Pi session transport credential",
     secret: true,
     source: "session-derived transport token",

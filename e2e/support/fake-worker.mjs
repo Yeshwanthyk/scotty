@@ -92,6 +92,7 @@ export class FakeWorkerService {
     this.token = options.token ?? "scotty-e2e-control-token";
     this.realOpenaiSecret = options.realOpenaiSecret ?? "e2e-real-openai-secret-never-expose";
     this.realGithubSecret = options.realGithubSecret ?? "e2e-real-github-secret-never-expose";
+    this.realOpencodeSecret = options.realOpencodeSecret ?? "e2e-real-opencode-secret-never-expose";
     this.sessions = new Map();
     this.projections = new Map();
     this.trackedRepos = new Map();
@@ -166,6 +167,8 @@ export class FakeWorkerService {
       "api.github.com",
       "codeload.github.com",
       "api.openai.com",
+      "opencode.ai",
+      "pi.dev",
       "registry.npmjs.org",
     ]);
     if (!allowed.has(host)) return { allowed: false, status: 403, authorization: null };
@@ -174,7 +177,9 @@ export class FakeWorkerService {
         ? this.realGithubSecret
         : host === "api.openai.com"
           ? this.realOpenaiSecret
-          : null;
+          : host === "opencode.ai" || host === "pi.dev"
+            ? this.realOpencodeSecret
+            : null;
     return {
       allowed: true,
       status: 200,
@@ -780,7 +785,11 @@ export class FakeWorkerService {
       };
       const sentinel = `scotty-sentinel-${id}`;
       this.sessions.set(id, record);
-      this.credentials.set(id, { openai: this.realOpenaiSecret, github: this.realGithubSecret });
+      this.credentials.set(id, {
+        openai: this.realOpenaiSecret,
+        github: this.realGithubSecret,
+        opencode: this.realOpencodeSecret,
+      });
       this.runtimes.set(id, {
         generation: 1,
         worktree: "fixture worktree\n",
@@ -788,6 +797,7 @@ export class FakeWorkerService {
           CODEX_HOME: `/workspace/${id}/.codex`,
           PI_CODING_AGENT_DIR: `/workspace/${id}/.pi-agent`,
           OPENAI_API_KEY: sentinel,
+          OPENCODE_API_KEY: sentinel,
           GH_TOKEN: sentinel,
         },
         gitConfig: `credential.helper=!scotty-sentinel-helper\nremote.origin.url=https://github.com/${record.repo}.git`,

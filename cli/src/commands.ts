@@ -630,7 +630,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
               runtime.stdout(
-                "Scotty is deployed. Set GH_TOKEN and OPENAI_API_KEY with scotty env set next.\n",
+                "Scotty is deployed. Set GH_TOKEN, OPENAI_API_KEY, and OPENCODE_API_KEY with scotty env set next.\n",
               );
             }
           }),

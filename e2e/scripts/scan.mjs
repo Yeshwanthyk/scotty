@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const forbidden = [
   process.env.OPENAI_API_KEY,
+  process.env.OPENCODE_API_KEY,
   process.env.GH_TOKEN,
   process.env.SCOTTY_TOKEN,
   process.env.SCOTTY_E2E_TOKEN,

@@ -42,10 +42,12 @@ test("local live E2E writes isolated Worker inputs", () => {
     rootToken: "root-token",
     githubToken: "github-token",
     openaiApiKey: "openai-key",
+    opencodeApiKey: "opencode-key",
   });
   assert.match(value, /^SCOTTY_TOKEN="root-token"$/mu);
   assert.match(value, /^GH_TOKEN="github-token"$/mu);
   assert.match(value, /^OPENAI_API_KEY="openai-key"$/mu);
+  assert.match(value, /^OPENCODE_API_KEY="opencode-key"$/mu);
   assert.match(value, /^SANDBOX_TRANSPORT="http"$/mu);
   assert.match(value, /^SCOTTY_LOCAL_E2E="1"$/mu);
 });

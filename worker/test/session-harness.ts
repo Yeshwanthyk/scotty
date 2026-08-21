@@ -297,6 +297,7 @@ export interface HarnessOptions {
   readonly environmentMaterialization?: EnvironmentMaterialization;
   readonly omitGithubEnvironmentSecret?: boolean;
   readonly omitOpenaiEnvironmentSecret?: boolean;
+  readonly omitOpencodeEnvironmentSecret?: boolean;
   readonly sandboxBundleObjects?: ReadonlyArray<{
     readonly digest: string;
     readonly gzip: Uint8Array;
@@ -642,12 +643,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   ) {
     const ghSentinel = `scotty-env-${initialRecord.id}-${"a".repeat(32)}`;
     const openaiSentinel = `scotty-env-${initialRecord.id}-${"b".repeat(32)}`;
+    const opencodeSentinel = `scotty-env-${initialRecord.id}-${"c".repeat(32)}`;
     initialEntries[RECORD_KEY] = {
       ...initialRecord,
       environment: {
         version: 1,
         revision: 1,
-        variables: { GH_TOKEN: ghSentinel, OPENAI_API_KEY: openaiSentinel },
+        variables: {
+          GH_TOKEN: ghSentinel,
+          OPENAI_API_KEY: openaiSentinel,
+          OPENCODE_API_KEY: opencodeSentinel,
+        },
       },
     };
     initialEntries[ENVIRONMENT_SECRET_VAULT_KEY] = {
@@ -664,6 +670,12 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           sourceScope: "global",
           name: "OPENAI_API_KEY",
           value: "stored-openai-api-key",
+        },
+        [opencodeSentinel]: {
+          sentinel: opencodeSentinel,
+          sourceScope: "global",
+          name: "OPENCODE_API_KEY",
+          value: "stored-opencode-api-key",
         },
       },
     };
@@ -943,6 +955,16 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                           sourceScope: "global" as const,
                         },
                       }),
+                  ...(options.omitOpencodeEnvironmentSecret === true
+                    ? {}
+                    : {
+                        OPENCODE_API_KEY: {
+                          value: "stored-opencode-api-key",
+                          secret: true,
+                          updatedAt: "legacy",
+                          sourceScope: "global" as const,
+                        },
+                      }),
                   ...supplied.variables,
                 },
               },
@@ -962,14 +984,23 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                   ...(options.omitOpenaiEnvironmentSecret === true
                     ? []
                     : [["OPENAI_API_KEY", "stored-openai-api-key"] as const]),
+                  ...(options.omitOpencodeEnvironmentSecret === true
+                    ? []
+                    : [["OPENCODE_API_KEY", "stored-opencode-api-key"] as const]),
                   ...Object.entries(snapshot.variables).filter(
-                    ([name]) => name !== "GH_TOKEN" && name !== "OPENAI_API_KEY",
+                    ([name]) =>
+                      name !== "GH_TOKEN" &&
+                      name !== "OPENAI_API_KEY" &&
+                      name !== "OPENCODE_API_KEY",
                   ),
                 ].map(([name, value]) => [
                   name,
                   {
                     value,
-                    secret: name === "GH_TOKEN" || name === "OPENAI_API_KEY",
+                    secret:
+                      name === "GH_TOKEN" ||
+                      name === "OPENAI_API_KEY" ||
+                      name === "OPENCODE_API_KEY",
                     updatedAt: "legacy",
                     sourceScope: "global" as const,
                   },

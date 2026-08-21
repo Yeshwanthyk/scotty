@@ -5,6 +5,7 @@ const SCOTTY_OWNED_ENVIRONMENT_NAMES = new Set([
   "GIT_CONFIG_GLOBAL",
   "GH_TOKEN",
   "OPENAI_API_KEY",
+  "OPENCODE_API_KEY",
   "GH_PROMPT_DISABLED",
   "GH_NO_UPDATE_NOTIFIER",
   "GIT_TERMINAL_PROMPT",
@@ -31,7 +32,11 @@ const SCOTTY_OWNED_ENVIRONMENT_NAMES = new Set([
 export const environmentNameIsReserved = (name: string): boolean =>
   name.startsWith("SCOTTY_") || SCOTTY_OWNED_ENVIRONMENT_NAMES.has(name);
 
-export const REQUIRED_GLOBAL_SECRET_NAMES = ["GH_TOKEN", "OPENAI_API_KEY"] as const;
+export const REQUIRED_GLOBAL_SECRET_NAMES = [
+  "GH_TOKEN",
+  "OPENAI_API_KEY",
+  "OPENCODE_API_KEY",
+] as const;
 
 export type RequiredGlobalSecretName = (typeof REQUIRED_GLOBAL_SECRET_NAMES)[number];
 
