@@ -118,7 +118,35 @@ It does not guess an installation or adopt arbitrary resources.
 **Done when:** the managed pointer is private and the installation Worker accepts sandbox
 synchronization.
 
-### 3. Synchronize the sandbox and verify health
+### 3. Configure the environment authority
+
+Sessions receive credentials only through the environment system: global secrets materialized into
+each session as per-session sentinels, and egress released only at exact origins the human approved
+for that secret. Ask the human to run, in their own terminal:
+
+```sh
+scotty env set GH_TOKEN --secret --stdin
+scotty env set OPENAI_API_KEY --secret --stdin
+```
+
+Then approve the origins each secret may be used at — one exact HTTPS origin per approval:
+
+```sh
+scotty env approvals approve GH_TOKEN https://github.com
+scotty env approvals approve GH_TOKEN https://api.github.com
+scotty env approvals approve GH_TOKEN https://codeload.github.com
+scotty env approvals approve OPENAI_API_KEY https://api.openai.com
+```
+
+`scotty env list` shows configured variables (secrets without values) and the protected session
+bindings; `scotty env approvals list` shows approvals and pending observations. A denied egress
+request is recorded as a pending observation for the human to approve or reject; never treat a
+pending observation as authorization.
+
+**Done when:** both secrets are configured and every origin a session needs for Git and Pi provider
+requests is approved.
+
+### 4. Synchronize the sandbox and verify health
 
 Run:
 
@@ -138,7 +166,7 @@ Interpret the results, do not print their hidden values:
 **Done when:** `sandbox sync` returns a digest with remote active state `synchronized` (or its typed
 divergence is reported for human choice) and `doctor` returns `ok: true` in managed mode.
 
-### 4. Establish browser authority and pair
+### 5. Establish browser authority and pair
 
 Explain before invoking recovery: `scotty owner recover` opens a short browser flow and revokes every
 existing browser credential. After the human approves that consequence, run:
@@ -299,10 +327,16 @@ scotty env set NAME VALUE --json
 scotty env set NAME --secret --stdin --json
 scotty env remove NAME --json
 scotty env refresh ID --json
+scotty env approvals list --json
+scotty env approvals approve NAME https://ORIGIN --json
+scotty env approvals reject NAME https://ORIGIN --json
+scotty env approvals revoke NAME https://ORIGIN --json
 ```
 
 Never put a secret value on argv. Use the write-only stdin path. A running session may need
-`env refresh` after its repository or global environment revision changes.
+`env refresh` after its repository or global environment revision changes. Egress approvals are
+per secret name and exact HTTPS origin: a session sentinel is resolved only for approved origins,
+and denied requests land in `approvals list` as pending observations.
 
 **Done when:** the repository or environment projection confirms the intended revision and no secret
 value appeared in command arguments or output.
