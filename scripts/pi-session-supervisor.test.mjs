@@ -141,6 +141,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
       SCOTTY_PI_SESSION_PORT: String(port),
       SCOTTY_PI_SESSION_TOKEN_FILE: tokenFile,
       SCOTTY_WORKSPACE: work,
+      PI_MODEL_ALLOWLIST: "openai-codex/*, anthropic/claude-*",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

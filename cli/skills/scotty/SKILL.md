@@ -150,6 +150,13 @@ pending observation as authorization.
 provider requests is approved. `OPENCODE_API_KEY` enables the OpenCode Zen/Go model catalog in Pi;
 `https://pi.dev` approval lets Pi refresh that catalog inside sessions.
 
+The session model switcher projects a curated subset of Pi's catalog: by default the
+`opencode/*`, `opencode-go/*`, and `openai-codex/*` providers. Set a comma-separated
+`provider/model` glob list to override it (for example `scotty env set PI_MODEL_ALLOWLIST --stdin`
+with `openai/gpt-5*, opencode/*`), or `*` to project everything. Changes apply per session after
+`scotty env refresh <session>`; this curates the console projection only, not the agent's own
+capabilities.
+
 ### 4. Synchronize the sandbox and verify health
 
 Run:

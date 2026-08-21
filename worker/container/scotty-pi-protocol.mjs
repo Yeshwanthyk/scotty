@@ -21,6 +21,16 @@ export const PI_CONSOLE_MAX_WIDGETS = 16;
 export const PI_CONSOLE_MAX_WIDGET_LINES = 20;
 export const PI_CONSOLE_MAX_QUEUE_ITEMS = 100;
 export const PI_CONSOLE_MAX_SELECT_OPTIONS = 100;
+
+// Model projection curation. The allowlist is a `provider/model` glob list read
+// from PI_MODEL_ALLOWLIST in the supervisor environment (materialized by the
+// environment authority, so operators change it with `scotty env set` plus an
+// `env refresh` — no redeploy). Unset falls back to the shipped default so new
+// installs surface the curated providers instead of every catalog entry; `*`
+// opts back into everything. This curates the console projection only, not the
+// agent's own capabilities.
+export const PI_MODEL_ALLOWLIST_ENV = "PI_MODEL_ALLOWLIST";
+export const DEFAULT_PI_MODEL_ALLOWLIST = ["opencode/*", "opencode-go/*", "openai-codex/*"];
 export { PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER };
 
 const maxStringBytes = 16 * 1024;
@@ -951,4 +961,59 @@ export const filterRemoteCommands = (commands) => {
     });
   }
   return [...filtered.values()];
+};
+
+const modelAllowlistEntryToMatcher = (entry) => {
+  const slash = entry.indexOf("/");
+  if (slash < 0) return null;
+  const providerPattern = entry.slice(0, slash);
+  const idPattern = entry.slice(slash + 1);
+  if (providerPattern.length === 0 || idPattern.length === 0) return null;
+  return { providerPattern, idPattern };
+};
+
+const globMatches = (value, pattern) => {
+  if (pattern === "*") return true;
+  if (!pattern.includes("*")) return value === pattern;
+  const segments = pattern.split("*");
+  let cursor = 0;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (segment.length === 0) continue;
+    const found = value.indexOf(segment, cursor);
+    if (index === 0 && found !== 0) return false;
+    if (found < 0) return false;
+    cursor = found + segment.length;
+    if (index > 0) cursor = found + segment.length;
+  }
+  return cursor === value.length || segments[segments.length - 1] === "";
+};
+
+export const parseModelAllowlist = (value) => {
+  if (typeof value !== "string") return null;
+  const entries = value
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0);
+  return entries.length > 0 ? entries : null;
+};
+
+export const modelMatchesAllowlistEntry = (model, entry) => {
+  if (!model || typeof model !== "object") return false;
+  const matcher = modelAllowlistEntryToMatcher(entry);
+  if (matcher === null) return false;
+  const provider = String(model.provider ?? "").toLowerCase();
+  const id = String(model.id ?? "").toLowerCase();
+  return globMatches(provider, matcher.providerPattern) && globMatches(id, matcher.idPattern);
+};
+
+export const filterModelsByAllowlist = (models, allowlistValue) => {
+  const source = Array.isArray(models) ? models : [];
+  const entries =
+    parseModelAllowlist(allowlistValue) ??
+    parseModelAllowlist(DEFAULT_PI_MODEL_ALLOWLIST.join(","));
+  if (entries === null || entries.includes("*")) return source;
+  return source.filter((model) =>
+    entries.some((entry) => modelMatchesAllowlistEntry(model, entry)),
+  );
 };
