@@ -204,14 +204,14 @@ describe("Sandbox vaporize orchestration", () => {
 
     const destroyIndex = harness.events.indexOf("host:destroy");
     const backupIndex = harness.events.indexOf("r2:list:backups/backup-1/");
-    const vaultDeleteIndex = harness.events.indexOf(
-      `storage:delete:${sessionHarnessKeys.environmentVault}`,
+    const idempotencyDeleteIndex = harness.events.indexOf(
+      `storage:delete:${sessionHarnessKeys.createIdempotency}`,
     );
     const goneIndex = harness.events.indexOf("record:gone");
     const projectionIndex = harness.events.indexOf(`projection:delete:session:${SESSION_ID}`);
     assert.ok(destroyIndex < backupIndex);
-    assert.ok(backupIndex < vaultDeleteIndex);
-    assert.ok(vaultDeleteIndex < goneIndex);
+    assert.ok(backupIndex < idempotencyDeleteIndex);
+    assert.ok(idempotencyDeleteIndex < goneIndex);
     assert.ok(goneIndex < projectionIndex);
   });
 
@@ -488,7 +488,7 @@ describe("Sandbox vaporize orchestration", () => {
 
     await harness.sandbox.retryVaporizeSession({ id: SESSION_ID, nonce });
     assert.strictEqual(harness.readRecord()?.status, "gone");
-    assert.strictEqual(harness.read(sessionHarnessKeys.environmentVault), undefined);
+    assert.strictEqual(harness.read(sessionHarnessKeys.createIdempotency), undefined);
   });
 
   it("releases the vaporize lease when initial retry arming fails so a later call can resume", async () => {

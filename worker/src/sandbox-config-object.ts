@@ -3,9 +3,7 @@ import { Effect, Option, Result, Schema } from "effect";
 import type { Bindings } from "./bindings";
 import type { RepositoryRegistryEntry } from "../../protocol/repository";
 import type {
-  EnvironmentApprovalList,
-  EnvironmentApprovalMutationResponse,
-  EnvironmentAuthorizationResult,
+  EnvironmentCredentialBinding,
   EnvironmentMaterialization,
   EnvironmentMutationResponse,
   EnvironmentVariablesView,
@@ -111,38 +109,16 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
     );
   }
 
-  authorizeEnvironmentSecrets(
+  /**
+   * Egress-boundary credential resolution: exact-origin lookup returning the declared
+   * credential binding, or null when the origin is unmapped (deny-by-default).
+   */
+  resolveCredentialForOrigin(
     input: unknown,
-  ): Promise<SandboxConfigRpcResult<EnvironmentAuthorizationResult>> {
+  ): Promise<SandboxConfigRpcResult<EnvironmentCredentialBinding | null>> {
     return this.#runEnvironment(
-      Effect.flatMap(EnvironmentStore, (store) => store.authorizeOrRecordPending(input)),
+      Effect.flatMap(EnvironmentStore, (store) => store.resolveCredentialForOrigin(input)),
     );
-  }
-
-  listEnvironmentApprovals(
-    repo?: unknown,
-  ): Promise<SandboxConfigRpcResult<EnvironmentApprovalList>> {
-    return this.#runEnvironment(
-      Effect.flatMap(EnvironmentStore, (store) => store.listApprovals(repo)),
-    );
-  }
-
-  approveEnvironment(
-    input: unknown,
-  ): Promise<SandboxConfigRpcResult<EnvironmentApprovalMutationResponse>> {
-    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.approve(input)));
-  }
-
-  rejectEnvironment(
-    input: unknown,
-  ): Promise<SandboxConfigRpcResult<EnvironmentApprovalMutationResponse>> {
-    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.reject(input)));
-  }
-
-  revokeEnvironment(
-    input: unknown,
-  ): Promise<SandboxConfigRpcResult<EnvironmentApprovalMutationResponse>> {
-    return this.#runEnvironment(Effect.flatMap(EnvironmentStore, (store) => store.revoke(input)));
   }
 
   putEnvironment(
@@ -220,21 +196,9 @@ export type ScottySandboxConfigStub = {
   readonly materializeEnvironment?: (
     repo?: unknown,
   ) => Promise<SandboxConfigRpcResult<EnvironmentMaterialization>>;
-  readonly authorizeEnvironmentSecrets?: (
+  readonly resolveCredentialForOrigin?: (
     input: unknown,
-  ) => Promise<SandboxConfigRpcResult<EnvironmentAuthorizationResult>>;
-  readonly listEnvironmentApprovals?: (
-    repo?: unknown,
-  ) => Promise<SandboxConfigRpcResult<EnvironmentApprovalList>>;
-  readonly approveEnvironment?: (
-    input: unknown,
-  ) => Promise<SandboxConfigRpcResult<EnvironmentApprovalMutationResponse>>;
-  readonly rejectEnvironment?: (
-    input: unknown,
-  ) => Promise<SandboxConfigRpcResult<EnvironmentApprovalMutationResponse>>;
-  readonly revokeEnvironment?: (
-    input: unknown,
-  ) => Promise<SandboxConfigRpcResult<EnvironmentApprovalMutationResponse>>;
+  ) => Promise<SandboxConfigRpcResult<EnvironmentCredentialBinding | null>>;
   readonly putEnvironment: (
     name: unknown,
     input: unknown,

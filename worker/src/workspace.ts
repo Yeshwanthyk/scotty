@@ -12,7 +12,6 @@ export interface PreparedWorkspace {
 interface WorkspaceShape {
   readonly prepare: (
     record: SessionRecord,
-    githubToken: string,
     verified?: VerifiedRepository,
   ) => Effect.Effect<PreparedWorkspace, SandboxRuntimeFailure>;
 }
@@ -23,10 +22,12 @@ export const workspaceLayer: Layer.Layer<Workspace, never, SandboxRuntime> = Lay
   Workspace,
   Effect.map(SandboxRuntime, (runtime) =>
     Workspace.of({
-      prepare: Effect.fnUntraced(function* (record, githubToken, verified) {
+      prepare: Effect.fnUntraced(function* (record, verified) {
+        // Credentials for github.com are injected at the egress boundary by origin lookup;
+        // the header value here is a static placeholder the proxy replaces wholesale.
         const root = sessionRoot(record.id);
         const url = `https://github.com/${record.repo}.git`;
-        const env = { GH_TOKEN: githubToken, GIT_TERMINAL_PROMPT: "0" };
+        const env = { GH_TOKEN: "scotty-injected", GIT_TERMINAL_PROMPT: "0" };
         const repository =
           verified ??
           (record.repoExistsAtCreate
@@ -46,7 +47,7 @@ export const workspaceLayer: Layer.Layer<Workspace, never, SandboxRuntime> = Lay
         }
 
         const defaultBranch = repository.defaultBranch;
-        const basic = btoa(`x-access-token:${githubToken}`);
+        const basic = btoa(`x-access-token:${env.GH_TOKEN}`);
         yield* runtime.execChecked(
           `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch ${shellQuote(defaultBranch)} --single-branch ${shellQuote(url)} ${shellQuote(root)}`,
           { env, timeout: 180_000 },

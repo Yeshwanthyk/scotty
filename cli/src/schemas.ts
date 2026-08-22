@@ -6,10 +6,7 @@ import {
 } from "../../protocol/repository";
 import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 import {
-  EnvironmentApprovalListSchema,
-  EnvironmentApprovalMutationResponseSchema,
   EnvironmentMutationResponseSchema,
-  EnvironmentPolicyKeyInputSchema,
   EnvironmentViewSchema,
 } from "../../worker/src/environment-contracts";
 import { SessionEnvironmentStatusSchema } from "../../worker/src/contracts";
@@ -335,9 +332,6 @@ export const RunnerRemovalResponseSchema = Schema.Struct({
 
 export const EnvironmentResponseSchema = EnvironmentViewSchema;
 export const EnvironmentMutationSchema = EnvironmentMutationResponseSchema;
-export const EnvironmentApprovalsResponseSchema = EnvironmentApprovalListSchema;
-export const EnvironmentApprovalMutationSchema = EnvironmentApprovalMutationResponseSchema;
-export const EnvironmentApprovalKeySchema = EnvironmentPolicyKeyInputSchema;
 
 export const RepositoryResponseSchema = RepositoryRegistryEntrySchema;
 export const RepositoriesResponseSchema = Schema.Array(RepositoryResponseSchema);
@@ -395,18 +389,6 @@ export const decodeEnvironmentResponse = Schema.decodeUnknownOption(EnvironmentR
 export const decodeEnvironmentMutation = Schema.decodeUnknownOption(EnvironmentMutationSchema, {
   onExcessProperty: "error",
 });
-export const decodeEnvironmentApprovalsResponse = Schema.decodeUnknownOption(
-  EnvironmentApprovalsResponseSchema,
-  { onExcessProperty: "error" },
-);
-export const decodeEnvironmentApprovalMutation = Schema.decodeUnknownOption(
-  EnvironmentApprovalMutationSchema,
-  { onExcessProperty: "error" },
-);
-export const decodeEnvironmentApprovalKey = Schema.decodeUnknownOption(
-  EnvironmentApprovalKeySchema,
-  { onExcessProperty: "error" },
-);
 export const decodeSessionEnvironmentStatus = Schema.decodeUnknownOption(
   SessionEnvironmentStatusSchema,
   { onExcessProperty: "error" },

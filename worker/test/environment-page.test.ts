@@ -19,30 +19,9 @@ describe("environment dashboard", () => {
     expect(environmentScript).toContain("refresh.disabled = !status.refreshable || !status.stale");
   });
 
-  it("loads approvals for the selected scope and exposes clear states", () => {
-    expect(environmentHtml).toContain('id="approvals-loading"');
-    expect(environmentHtml).toContain('id="approvals-pending-empty" hidden');
-    expect(environmentHtml).toContain('id="approvals-decisions-empty" hidden');
-    expect(environmentHtml).toContain('id="approvals-error" role="alert" hidden');
-    expect(environmentHtml).toContain('id="approvals-retry"');
-    expect(environmentHtml).toContain("Secret values are never shown.");
-    expect(environmentScript).toContain('environmentPath("/api/environment/approvals")');
-    expect(environmentScript).toContain("Array.isArray(body?.pending)");
-    expect(environmentScript).toContain("elements.approvalContent.hidden = false");
-    expect(environmentScript).toContain(
-      'elements.approvalRetry.addEventListener("click", () => void loadApprovals())',
-    );
-  });
-
-  it("posts approval decisions without exposing environment values and refreshes", () => {
-    expect(environmentScript).toContain('approvalActionButton(entry, "approve", "Approve")');
-    expect(environmentScript).toContain('approvalActionButton(entry, "reject", "Reject", true)');
-    expect(environmentScript).toContain('approvalActionButton(entry, "revoke", "Revoke", true)');
-    expect(environmentScript).toContain("`/api/environment/approvals/${action}`");
-    expect(environmentScript).toContain('method: "POST"');
-    expect(environmentScript).toContain("body: JSON.stringify({ sourceScope, name, origin })");
-    expect(environmentScript).toContain("await loadApprovals();");
-    expect(environmentScript).toContain('entry.decision !== "revoked"');
+  it("renders declared injection origins without exposing values", () => {
+    expect(environmentScript).toContain('Injection origins: ${origins.join(", ")}');
+    expect(environmentScript).not.toContain("/api/environment/approvals");
     expect(environmentScript).not.toContain("entry.value");
     expect(environmentScript).not.toContain("entry.secret");
   });

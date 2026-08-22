@@ -1,36 +1,25 @@
 import { Clock, Context, Data, Effect, Layer, Result, Schema } from "effect";
 import { RepositoryIdentitySchema, repositoryIdentityKey } from "../../protocol/repository";
 import {
-  EnvironmentApprovalListSchema,
-  EnvironmentApprovalMutationResponseSchema,
-  EnvironmentAuthorizationRequestSchema,
-  EnvironmentAuthorizationResultSchema,
   EnvironmentAuthoritySchema,
   EnvironmentAuthorityV2Schema,
+  EnvironmentAuthorityV3Schema,
+  EnvironmentCredentialBindingSchema,
   EnvironmentMaterializationSchema,
-  ENVIRONMENT_MAX_ORIGIN_POLICIES,
-  ENVIRONMENT_MAX_PENDING_OBSERVATIONS,
   EnvironmentNameSchema,
-  EnvironmentPolicyKeyInputSchema,
+  EnvironmentOriginResolveRequestSchema,
   EnvironmentPutInputSchema,
   EnvironmentSnapshotSchema,
   EnvironmentVariablesViewSchema,
   LegacyEnvironmentAuthoritySchema,
   RepositoryEnvironmentSchema,
   canonicalEnvironmentOrigin,
-  environmentPolicyKey,
-  type EnvironmentApprovalList,
-  type EnvironmentApprovalMutationResponse,
-  type EnvironmentAuthorizationDecision,
-  type EnvironmentAuthorizationRequest,
-  type EnvironmentAuthorizationResult,
   type EnvironmentAuthority,
-  type EnvironmentAuthorityV2,
+  type EnvironmentCredentialBinding,
+  type EnvironmentCredentialScheme,
   type EnvironmentEffectiveVariable,
   type EnvironmentMaterialization,
   type EnvironmentMutationResponse,
-  type EnvironmentOriginPolicy,
-  type EnvironmentPendingObservation,
   type EnvironmentPutInput,
   type EnvironmentSnapshot,
   type EnvironmentVariable,
@@ -49,6 +38,7 @@ export type EnvironmentFailureReason =
   | "invalid_input"
   | "invalid_scope"
   | "invalid_global_secret"
+  | "unmapped_origin"
   | "storage";
 
 export class EnvironmentFailure extends Data.TaggedError("EnvironmentFailure")<{
@@ -77,6 +67,13 @@ interface EnvironmentStoreShape {
   readonly materialize: (
     repo?: unknown,
   ) => Effect.Effect<EnvironmentMaterialization, EnvironmentFailure>;
+  /**
+   * Egress-boundary credential resolution: given a destination origin, return the single
+   * declared credential whose `origins` include it, or null when unmapped (deny-by-default).
+   */
+  readonly resolveCredentialForOrigin: (
+    input: unknown,
+  ) => Effect.Effect<EnvironmentCredentialBinding | null, EnvironmentFailure>;
   readonly put: (
     name: unknown,
     input: unknown,
@@ -86,22 +83,6 @@ interface EnvironmentStoreShape {
     name: unknown,
     repo?: unknown,
   ) => Effect.Effect<EnvironmentMutationResponse, EnvironmentFailure>;
-  /** Called by the future egress boundary, never by materialization. */
-  readonly authorizeOrRecordPending: (
-    input: unknown,
-  ) => Effect.Effect<EnvironmentAuthorizationResult, EnvironmentFailure>;
-  readonly listApprovals: (
-    repo?: unknown,
-  ) => Effect.Effect<EnvironmentApprovalList, EnvironmentFailure>;
-  readonly approve: (
-    input: unknown,
-  ) => Effect.Effect<EnvironmentApprovalMutationResponse, EnvironmentFailure>;
-  readonly reject: (
-    input: unknown,
-  ) => Effect.Effect<EnvironmentApprovalMutationResponse, EnvironmentFailure>;
-  readonly revoke: (
-    input: unknown,
-  ) => Effect.Effect<EnvironmentApprovalMutationResponse, EnvironmentFailure>;
 }
 
 export class EnvironmentStore extends Context.Service<EnvironmentStore, EnvironmentStoreShape>()(
@@ -127,6 +108,7 @@ export const environmentStoreLayer = (
 const StoredEnvironmentAuthoritySchema = Schema.Union([
   LegacyEnvironmentAuthoritySchema,
   EnvironmentAuthorityV2Schema,
+  EnvironmentAuthorityV3Schema,
   EnvironmentAuthoritySchema,
 ]);
 const decodeStoredAuthority = Schema.decodeUnknownResult(StoredEnvironmentAuthoritySchema, {
@@ -146,37 +128,29 @@ const decodeMaterialization = Schema.decodeUnknownResult(EnvironmentMaterializat
 const decodeVariablesView = Schema.decodeUnknownResult(EnvironmentVariablesViewSchema, {
   onExcessProperty: "error",
 });
-const decodeAuthorizationRequest = Schema.decodeUnknownResult(
-  EnvironmentAuthorizationRequestSchema,
+const decodeOriginResolveRequest = Schema.decodeUnknownResult(
+  EnvironmentOriginResolveRequestSchema,
   { onExcessProperty: "error" },
 );
-const decodePolicyKeyInput = Schema.decodeUnknownResult(EnvironmentPolicyKeyInputSchema, {
+const decodeCredentialBinding = Schema.decodeUnknownResult(EnvironmentCredentialBindingSchema, {
   onExcessProperty: "error",
 });
-const decodeApprovalList = Schema.decodeUnknownResult(EnvironmentApprovalListSchema, {
-  onExcessProperty: "error",
-});
-const decodeApprovalMutation = Schema.decodeUnknownResult(
-  EnvironmentApprovalMutationResponseSchema,
-  { onExcessProperty: "error" },
-);
-const decodeAuthorizationResult = Schema.decodeUnknownResult(EnvironmentAuthorizationResultSchema, {
-  onExcessProperty: "error",
-});
-
 type LegacyAuthority = typeof LegacyEnvironmentAuthoritySchema.Type;
 type StoredV2Authority = typeof EnvironmentAuthorityV2Schema.Type;
+type StoredV3Authority = typeof EnvironmentAuthorityV3Schema.Type;
 type RepositoryEnvironments = Readonly<Record<string, typeof RepositoryEnvironmentSchema.Type>>;
-type NormalizedPolicyKey = Pick<EnvironmentOriginPolicy, "sourceScope" | "name" | "origin">;
+
+/** Deterministic preference order when several credentials declare the same origin. */
+const CREDENTIAL_RESOLUTION_PREFERENCE = ["GH_TOKEN", "OPENAI_API_KEY", "OPENCODE_API_KEY"];
+
+const defaultCredentialSchemeFor = (name: string): EnvironmentCredentialScheme =>
+  name === "GH_TOKEN" ? "basic-x-access-token" : "bearer";
 
 const emptyAuthority = (): EnvironmentAuthority => ({
-  version: 3,
+  version: 4,
   revision: 0,
-  policyRevision: 0,
   global: { variables: {} },
   repositories: {},
-  originPolicies: [],
-  pendingObservations: [],
 });
 
 const sameEnvironment = (
@@ -201,7 +175,7 @@ const sameEnvironment = (
   );
 };
 
-/** Canonicalize v2 repository keys without silently losing a conflicting value. */
+/** Canonicalize v2+ repository keys without silently losing a conflicting value. */
 const migrateRepositories = (
   repositories: StoredV2Authority["repositories"],
 ): Result.Result<RepositoryEnvironments, "collision"> => {
@@ -216,24 +190,61 @@ const migrateRepositories = (
   return Result.succeed(normalized);
 };
 
-/** Migrate only validated legacy authorities; policy observations did not exist before v3. */
+/**
+ * Fold v3 approved origin policies into per-variable `origins` lists and drop the separate
+ * policy/pending state; rejected/revoked entries and pending observations are discarded.
+ */
 const migrateAuthority = (
-  value: LegacyAuthority | EnvironmentAuthorityV2,
+  value: LegacyAuthority | StoredV2Authority | StoredV3Authority,
 ): Result.Result<EnvironmentAuthority, "collision"> => {
   const repositories: Result.Result<RepositoryEnvironments, "collision"> =
-    value.version === 1 ? Result.succeed({}) : migrateRepositories(value.repositories);
+    value.version === 1
+      ? Result.succeed({})
+      : migrateRepositories(value.repositories as StoredV2Authority["repositories"]);
   if (Result.isFailure(repositories)) return Result.fail(repositories.failure);
+
+  const approvedByScopeName = new Map<string, string[]>();
+  if (value.version === 3) {
+    for (const policy of value.originPolicies) {
+      if (policy.decision !== "approved") continue;
+      const key = `${policy.sourceScope}\u0000${policy.name}`;
+      const origins = approvedByScopeName.get(key) ?? [];
+      origins.push(policy.origin);
+      approvedByScopeName.set(key, origins);
+    }
+  }
+  const globalVariables =
+    value.version === 1 ? { ...value.variables } : { ...value.global.variables };
+  const applyOrigins = (
+    variables: Record<string, EnvironmentVariable>,
+    scope: string,
+  ): Record<string, EnvironmentVariable> => {
+    const next: Record<string, EnvironmentVariable> = {};
+    for (const [name, variable] of Object.entries(variables)) {
+      const origins = approvedByScopeName.get(`${scope}\u0000${name}`);
+      next[name] =
+        origins === undefined && variable.secret !== true
+          ? variable
+          : {
+              ...variable,
+              ...(origins === undefined ? {} : { origins }),
+              ...(name === "GH_TOKEN" && variable.secret === true
+                ? { scheme: "basic-x-access-token" as const }
+                : {}),
+            };
+    }
+    return next;
+  };
+
+  const repoEnvironments: Record<string, typeof RepositoryEnvironmentSchema.Type> = {};
+  for (const [repo, environment] of Object.entries(repositories.success))
+    repoEnvironments[repo] = { variables: applyOrigins(environment.variables, repo) };
+
   return Result.succeed({
-    version: 3,
+    version: 4,
     revision: value.revision,
-    policyRevision: 0,
-    global:
-      value.version === 1
-        ? { variables: { ...value.variables } }
-        : { variables: { ...value.global.variables } },
-    repositories: repositories.success,
-    originPolicies: [],
-    pendingObservations: [],
+    global: { variables: applyOrigins(globalVariables, "global") },
+    repositories: repoEnvironments,
   });
 };
 
@@ -265,7 +276,7 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
       return Result.succeed({ authority: emptyAuthority(), migrated: false });
     const decoded = Result.mapError(decodeStoredAuthority(value), invalidAuthority);
     if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
-    if (decoded.success.version === 3)
+    if (decoded.success.version === 4)
       return Result.succeed({ authority: decoded.success, migrated: false });
     const migrated = migrateAuthority(decoded.success);
     return Result.isFailure(migrated)
@@ -306,7 +317,7 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
     const decoded = Result.mapError(decodeName(name), invalidInput);
     if (Result.isFailure(decoded)) return decoded;
     if (!requiredGlobalSecretNameIs(decoded.success)) return parseName(decoded.success);
-    if (repo !== undefined || (input !== undefined && input.secret !== true))
+    if (repo !== undefined || (input !== undefined && input.secret === false))
       return Result.fail(invalidInput());
     return Result.succeed(decoded.success);
   };
@@ -350,139 +361,6 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
     return variables;
   };
 
-  const parsePolicyKey = (
-    value: unknown,
-  ): Result.Result<NormalizedPolicyKey, EnvironmentFailure> => {
-    const decoded = Result.mapError(decodePolicyKeyInput(value), invalidInput);
-    if (Result.isFailure(decoded)) return decoded;
-    return Result.succeed({
-      sourceScope:
-        decoded.success.sourceScope === "global"
-          ? "global"
-          : repositoryIdentityKey(decoded.success.sourceScope),
-      name: decoded.success.name,
-      origin: canonicalEnvironmentOrigin(decoded.success.origin),
-    });
-  };
-
-  const policyMatches = (left: NormalizedPolicyKey, right: NormalizedPolicyKey): boolean =>
-    environmentPolicyKey(left) === environmentPolicyKey(right);
-
-  const effectivePolicy = (
-    authority: EnvironmentAuthority,
-    key: NormalizedPolicyKey,
-  ): EnvironmentOriginPolicy | undefined =>
-    authority.originPolicies.find((policy) => policyMatches(policy, key));
-
-  const sortedPolicies = (
-    policies: ReadonlyArray<EnvironmentOriginPolicy>,
-  ): ReadonlyArray<EnvironmentOriginPolicy> =>
-    [...policies].sort(
-      (left, right) =>
-        left.sourceScope.localeCompare(right.sourceScope) ||
-        left.name.localeCompare(right.name) ||
-        left.origin.localeCompare(right.origin),
-    );
-
-  const sortedPending = (
-    pending: ReadonlyArray<EnvironmentPendingObservation>,
-  ): ReadonlyArray<EnvironmentPendingObservation> =>
-    [...pending].sort(
-      (left, right) =>
-        left.sourceScope.localeCompare(right.sourceScope) ||
-        left.name.localeCompare(right.name) ||
-        left.origin.localeCompare(right.origin),
-    );
-
-  const approvalList = (
-    authority: EnvironmentAuthority,
-    repo: string | undefined,
-  ): EnvironmentApprovalList => {
-    const matchesScope = (value: { readonly sourceScope: string }): boolean =>
-      repo === undefined || value.sourceScope === repo;
-    return {
-      revision: authority.revision,
-      policyRevision: authority.policyRevision,
-      approvals: sortedPolicies(authority.originPolicies)
-        .filter(matchesScope)
-        .map((policy) => ({ ...policy })),
-      pending: sortedPending(authority.pendingObservations)
-        .filter(matchesScope)
-        .map((observation) => ({ ...observation })),
-    };
-  };
-
-  const mutation = Effect.fnUntraced(function* (
-    input: unknown,
-    decision: EnvironmentOriginPolicy["decision"],
-  ) {
-    const key = yield* Effect.fromResult(parsePolicyKey(input));
-    const now = new Date(yield* Clock.currentTimeMillis).toISOString();
-    return yield* transact(async (authority, transaction) => {
-      const existing = effectivePolicy(authority, key);
-      const hasPending = authority.pendingObservations.some((observation) =>
-        policyMatches(observation, key),
-      );
-      if (existing?.decision === decision && !hasPending)
-        return Result.succeed({
-          sourceScope: key.sourceScope,
-          name: key.name,
-          origin: key.origin,
-          decision,
-          revision: authority.revision,
-          policyRevision: authority.policyRevision,
-        });
-      if (decision === "approved") {
-        const variables =
-          key.sourceScope === "global"
-            ? authority.global.variables
-            : authority.repositories[key.sourceScope]?.variables;
-        if (variables?.[key.name]?.secret !== true)
-          return Result.fail(
-            invalidInputMessage(
-              "Environment approval requires a currently configured secret variable",
-            ),
-          );
-        if (!hasPending)
-          return Result.fail(
-            invalidInputMessage("Environment approval requires a matching pending observation"),
-          );
-      }
-      const originPolicies = [
-        ...authority.originPolicies.filter((policy) => !policyMatches(policy, key)),
-        {
-          sourceScope: key.sourceScope,
-          name: key.name,
-          origin: key.origin,
-          decision,
-          updatedAt: now,
-        },
-      ];
-      if (originPolicies.length > ENVIRONMENT_MAX_ORIGIN_POLICIES)
-        return Result.fail(invalidInputMessage("Environment origin policy capacity reached"));
-      const next: EnvironmentAuthority = {
-        ...authority,
-        policyRevision: authority.policyRevision + 1,
-        originPolicies,
-        pendingObservations: authority.pendingObservations.filter(
-          (observation) => !policyMatches(observation, key),
-        ),
-      };
-      await transaction.put(next);
-      const encoded = decodeApprovalMutation({
-        sourceScope: key.sourceScope,
-        name: key.name,
-        origin: key.origin,
-        decision,
-        revision: next.revision,
-        policyRevision: next.policyRevision,
-      });
-      return Result.isFailure(encoded)
-        ? Result.fail(invalidAuthority())
-        : Result.succeed(encoded.success);
-    });
-  });
-
   const resolveGlobalSecret = (name: unknown) =>
     Effect.fromResult(parseManagedSecretName(name, undefined, undefined)).pipe(
       Effect.flatMap((resolved) =>
@@ -518,6 +396,43 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
       });
     });
 
+  const resolveCredentialForOrigin = (inputValue: unknown) =>
+    Effect.gen(function* () {
+      const decoded = Result.mapError(decodeOriginResolveRequest(inputValue), invalidInput);
+      if (Result.isFailure(decoded)) return yield* Effect.fail(decoded.failure);
+      const origin = canonicalEnvironmentOrigin(decoded.success.origin);
+      return yield* transact(async (authority) => {
+        const candidates: Array<{ name: string; variable: EnvironmentVariable }> = [];
+        for (const [name, { variable }] of Object.entries(
+          effectiveVariables(authority, undefined),
+        )) {
+          if (variable.secret !== true) continue;
+          if (!(variable.origins ?? []).includes(origin)) continue;
+          candidates.push({ name, variable });
+        }
+        candidates.sort((left, right) => {
+          const leftIndex = CREDENTIAL_RESOLUTION_PREFERENCE.indexOf(left.name);
+          const rightIndex = CREDENTIAL_RESOLUTION_PREFERENCE.indexOf(right.name);
+          if (leftIndex >= 0 || rightIndex >= 0)
+            return (
+              (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) -
+              (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex)
+            );
+          return left.name.localeCompare(right.name);
+        });
+        const chosen = candidates[0];
+        if (chosen === undefined) return Result.succeed(null);
+        const encoded = decodeCredentialBinding({
+          name: chosen.name,
+          scheme: chosen.variable.scheme ?? defaultCredentialSchemeFor(chosen.name),
+          value: chosen.variable.value,
+        });
+        return Result.isFailure(encoded)
+          ? Result.fail(invalidAuthority())
+          : Result.succeed(encoded.success);
+      });
+    });
+
   return EnvironmentStore.of({
     snapshot,
     resolveGlobalSecret,
@@ -542,6 +457,10 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
                 ...(variable.secret || environmentNameIsReserved(name)
                   ? undefined
                   : { value: variable.value }),
+                ...((variable.origins ?? []).length === 0
+                  ? {}
+                  : { origins: [...(variable.origins ?? [])] }),
+                ...(variable.scheme === undefined ? {} : { scheme: variable.scheme }),
               })),
           });
           return Result.isFailure(decoded)
@@ -582,43 +501,72 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
         const name = yield* Effect.fromResult(parseManagedSecretName(nameValue, input, repo));
         const now = new Date(yield* Clock.currentTimeMillis).toISOString();
         return yield* transact(async (authority, transaction) => {
+          const mergeVariable = (
+            existing: EnvironmentVariable | undefined,
+          ): Result.Result<EnvironmentVariable, EnvironmentFailure> => {
+            const created = existing === undefined;
+            const value = input.value ?? (created ? undefined : existing!.value);
+            const secret = input.secret ?? (created ? true : existing!.secret);
+            if (value === undefined || secret === undefined)
+              return Result.fail(
+                created
+                  ? invalidInputMessage("New environment variables require a value")
+                  : invalidInput(),
+              );
+            return Result.succeed({
+              value,
+              secret,
+              updatedAt: now,
+              ...(input.origins === undefined
+                ? existing?.origins === undefined
+                  ? {}
+                  : { origins: existing.origins }
+                : { origins: input.origins }),
+              ...(input.scheme === undefined
+                ? existing?.scheme === undefined
+                  ? {}
+                  : { scheme: existing.scheme }
+                : { scheme: input.scheme }),
+            });
+          };
+          const writeVariable = (
+            variables: Record<string, EnvironmentVariable>,
+          ): Result.Result<Record<string, EnvironmentVariable>, EnvironmentFailure> => {
+            const merged = mergeVariable(variables[name]);
+            return Result.map(merged, (variable) => ({ ...variables, [name]: variable }));
+          };
           if (repo === undefined) {
+            const merged = writeVariable(authority.global.variables);
+            if (Result.isFailure(merged)) return Result.fail(merged.failure);
             const next: EnvironmentAuthority = {
               ...authority,
               revision: authority.revision + 1,
-              global: {
-                variables: {
-                  ...authority.global.variables,
-                  [name]: { value: input.value, secret: input.secret, updatedAt: now },
-                },
-              },
+              global: { variables: merged.success },
             };
             await transaction.put(next);
             return Result.succeed({
               name,
-              secret: input.secret,
+              secret: merged.success[name]!.secret,
               configured: true as const,
               revision: next.revision,
             });
           }
+          const existingVariables = authority.repositories[repo]?.variables ?? {};
+          const merged = writeVariable(existingVariables);
+          if (Result.isFailure(merged)) return Result.fail(merged.failure);
           const next: EnvironmentAuthority = {
             ...authority,
             revision: authority.revision + 1,
             repositories: {
               ...authority.repositories,
-              [repo]: {
-                variables: {
-                  ...authority.repositories[repo]?.variables,
-                  [name]: { value: input.value, secret: input.secret, updatedAt: now },
-                },
-              },
+              [repo]: { variables: merged.success },
             },
           };
           await transaction.put(next);
           return Result.succeed({
             name,
             repo,
-            secret: input.secret,
+            secret: merged.success[name]!.secret,
             configured: true as const,
             revision: next.revision,
           });
@@ -672,122 +620,6 @@ const makeEnvironmentStore = (storage: EnvironmentAuthorityStorage): Environment
           });
         });
       }),
-    authorizeOrRecordPending: (inputValue) =>
-      Effect.gen(function* () {
-        const decoded = Result.mapError(decodeAuthorizationRequest(inputValue), invalidInput);
-        if (Result.isFailure(decoded)) return yield* Effect.fail(decoded.failure);
-        const input: EnvironmentAuthorizationRequest = decoded.success;
-        const origin = canonicalEnvironmentOrigin(input.origin);
-        const normalized = new Map<string, NormalizedPolicyKey>();
-        for (const key of input.keys) {
-          const normalizedKey: NormalizedPolicyKey = {
-            sourceScope:
-              key.sourceScope === "global" ? "global" : repositoryIdentityKey(key.sourceScope),
-            name: key.name,
-            origin,
-          };
-          normalized.set(environmentPolicyKey(normalizedKey), normalizedKey);
-        }
-        const now = new Date(yield* Clock.currentTimeMillis).toISOString();
-        return yield* transact(async (authority, transaction) => {
-          let pendingChanged = false;
-          const newPendingCount = [...normalized.values()].filter((key) => {
-            const variables =
-              key.sourceScope === "global"
-                ? authority.global.variables
-                : authority.repositories[key.sourceScope]?.variables;
-            return (
-              variables?.[key.name]?.secret === true &&
-              effectivePolicy(authority, key) === undefined &&
-              !authority.pendingObservations.some((observation) => policyMatches(observation, key))
-            );
-          }).length;
-          if (
-            authority.pendingObservations.length + newPendingCount >
-            ENVIRONMENT_MAX_PENDING_OBSERVATIONS
-          )
-            return Result.fail(
-              invalidInputMessage("Environment pending observation capacity reached"),
-            );
-          const pendingObservations = [...authority.pendingObservations];
-          const decisions: EnvironmentAuthorizationDecision[] = [...normalized.values()].map(
-            (key) => {
-              const variables =
-                key.sourceScope === "global"
-                  ? authority.global.variables
-                  : authority.repositories[key.sourceScope]?.variables;
-              if (variables?.[key.name]?.secret !== true)
-                return {
-                  sourceScope: key.sourceScope,
-                  name: key.name,
-                  origin: key.origin,
-                  status: "revoked" as const,
-                };
-              const policy = effectivePolicy(authority, key);
-              if (policy !== undefined)
-                return {
-                  sourceScope: key.sourceScope,
-                  name: key.name,
-                  origin: key.origin,
-                  status: policy.decision,
-                };
-              const index = pendingObservations.findIndex((observation) =>
-                policyMatches(observation, key),
-              );
-              if (index < 0) {
-                pendingObservations.push({
-                  sourceScope: key.sourceScope,
-                  name: key.name,
-                  origin: key.origin,
-                  firstObservedAt: now,
-                  lastObservedAt: now,
-                });
-                pendingChanged = true;
-              } else {
-                const existing = pendingObservations[index];
-                if (existing !== undefined && existing.lastObservedAt !== now) {
-                  pendingObservations[index] = { ...existing, lastObservedAt: now };
-                  pendingChanged = true;
-                }
-              }
-              return {
-                sourceScope: key.sourceScope,
-                name: key.name,
-                origin: key.origin,
-                status: "pending" as const,
-              };
-            },
-          );
-          const next: EnvironmentAuthority = pendingChanged
-            ? {
-                ...authority,
-                policyRevision: authority.policyRevision + 1,
-                pendingObservations,
-              }
-            : authority;
-          if (pendingChanged) await transaction.put(next);
-          const result = decodeAuthorizationResult({
-            policyRevision: next.policyRevision,
-            authorized: decisions.every((decision) => decision.status === "approved"),
-            decisions,
-          });
-          return Result.isFailure(result)
-            ? Result.fail(invalidAuthority())
-            : Result.succeed(result.success);
-        });
-      }),
-    listApprovals: (repoValue) =>
-      Effect.gen(function* () {
-        const repo = yield* Effect.fromResult(parseScope(repoValue));
-        return yield* transact(async (authority) => {
-          const decoded = decodeApprovalList(approvalList(authority, repo));
-          return Result.isFailure(decoded)
-            ? Result.fail(invalidAuthority())
-            : Result.succeed(decoded.success);
-        });
-      }),
-    approve: (input) => mutation(input, "approved"),
-    reject: (input) => mutation(input, "rejected"),
-    revoke: (input) => mutation(input, "revoked"),
+    resolveCredentialForOrigin,
   });
 };

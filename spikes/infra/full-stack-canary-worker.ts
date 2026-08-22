@@ -6,7 +6,10 @@ import {
 } from "../../protocol/pi-console";
 import type { Bindings } from "../../worker/src/bindings";
 import { readBoundedUtf8Body } from "../../worker/src/bounded-http";
-import { isSessionEnvironmentSnapshot } from "../../worker/src/environment-contracts";
+import {
+  ENVIRONMENT_INJECTED_PLACEHOLDER,
+  isSessionEnvironmentSnapshot,
+} from "../../worker/src/environment-contracts";
 import { ContainerProxy } from "../../worker/src/container-session-egress";
 import { decodeJsonValue, SESSION_KV_PREFIX, type SessionRecord } from "../../worker/src/contracts";
 import { denyOutbound, makeOutboundByHost } from "../../worker/src/egress";
@@ -31,7 +34,7 @@ interface CanaryBindings extends Omit<Bindings, "SANDBOX"> {
 interface CanarySecurityProbe {
   readonly defaultDeny: boolean;
   readonly kvNonSecret: boolean;
-  readonly sentinelsOnly: boolean;
+  readonly placeholdersOnly: boolean;
 }
 
 const CanarySessionIdSchema = Schema.String.check(Schema.isPattern(SESSION_ID_PATTERN));
@@ -172,21 +175,15 @@ export class ScottySandbox extends Sandbox {
     const runtime = state.status !== "stopped" && state.status !== "stopped_with_code";
     const security =
       record?.status === "warm" ? await this.e2eSecurityProbe(record, projection) : null;
-    const sentinels = isSessionEnvironmentSnapshot(record?.environment)
+    const snapshotVariables = isSessionEnvironmentSnapshot(record?.environment)
       ? record.environment.variables
       : {};
     const resolveGlobal = async (name: string): Promise<string | null> => {
       const result = await this.env.SANDBOX_CONFIG.getByName("account").resolveGlobalSecret(name);
       return result.ok ? result.value : null;
     };
-    const [sessionGithub, globalGithub, sessionOpenai, globalOpenai] = await Promise.all([
-      sentinels.GH_TOKEN === undefined
-        ? Promise.resolve(null)
-        : this.resolveEnvironmentSecretForProxy({ sentinel: sentinels.GH_TOKEN }),
+    const [globalGithub, globalOpenai] = await Promise.all([
       resolveGlobal("GH_TOKEN"),
-      sentinels.OPENAI_API_KEY === undefined
-        ? Promise.resolve(null)
-        : this.resolveEnvironmentSecretForProxy({ sentinel: sentinels.OPENAI_API_KEY }),
       resolveGlobal("OPENAI_API_KEY"),
     ]);
 
@@ -197,9 +194,10 @@ export class ScottySandbox extends Sandbox {
       backups: backupPage.objects.map(({ key }) => key).sort(),
       createIdempotency: createIdempotency !== undefined,
       githubCredentialCurrent:
-        sessionGithub !== null && globalGithub !== null && sessionGithub.value === globalGithub,
+        globalGithub !== null && snapshotVariables.GH_TOKEN === ENVIRONMENT_INJECTED_PLACEHOLDER,
       openaiCredentialCurrent:
-        sessionOpenai !== null && globalOpenai !== null && sessionOpenai.value === globalOpenai,
+        globalOpenai !== null &&
+        snapshotVariables.OPENAI_API_KEY === ENVIRONMENT_INJECTED_PLACEHOLDER,
       incarnation: this.e2eIncarnation,
       kv: projection !== null,
       runtime,
@@ -223,28 +221,24 @@ export class ScottySandbox extends Sandbox {
       { timeout: 30_000 },
     );
     const serializedSurface = `${surface.stdout}\n${surface.stderr}`;
-    const sentinels = isSessionEnvironmentSnapshot(record.environment)
-      ? record.environment.variables
-      : {};
+    const resolveAuthorityValue = async (name: string): Promise<string | null> => {
+      const result = await this.env.SANDBOX_CONFIG.getByName("account").resolveGlobalSecret(name);
+      return result.ok ? result.value : null;
+    };
     const resolved = (
       await Promise.all(
-        (["GH_TOKEN", "OPENAI_API_KEY"] as const).map(async (name) => {
-          const sentinel = sentinels[name];
-          return Predicate.isUndefined(sentinel)
-            ? null
-            : this.resolveEnvironmentSecretForProxy({ sentinel });
-        }),
+        (["GH_TOKEN", "OPENAI_API_KEY"] as const).map(async (name) => resolveAuthorityValue(name)),
       )
     ).filter(Predicate.isNotNull);
-    const realSecrets = resolved.map((entry) => entry.value).filter((value) => value.length > 0);
+    const realSecrets = resolved.map((entry) => entry).filter((value) => value.length > 0);
     const containsRealSecret = (value: string): boolean =>
       realSecrets.some((secret) => value.includes(secret));
 
     return {
       defaultDeny: /(?:403|520)\s*$/u.test(surface.stdout.trim()),
       kvNonSecret: projection !== null && !containsRealSecret(projection),
-      sentinelsOnly:
-        resolved.every(({ sentinel }) => serializedSurface.includes(sentinel)) &&
+      placeholdersOnly:
+        serializedSurface.includes(ENVIRONMENT_INJECTED_PLACEHOLDER) &&
         !serializedSurface.includes("undefined") &&
         !containsRealSecret(serializedSurface),
     };

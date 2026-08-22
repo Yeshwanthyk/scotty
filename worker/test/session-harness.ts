@@ -13,7 +13,9 @@ import type { CreateSessionInput, SessionRecord, WorkspaceCreationMarker } from 
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
 import {
+  ENVIRONMENT_INJECTED_PLACEHOLDER,
   isSessionEnvironmentSnapshot,
+  type EnvironmentCredentialBinding,
   type EnvironmentMaterialization,
   type EnvironmentSnapshot,
   type SessionEnvironmentSnapshot,
@@ -33,7 +35,6 @@ import {
   type SandboxEffectOptions,
 } from "../src/session";
 import { EVIDENCE_RECORD_KEY, RUNTIME_EPOCH_KEY } from "../src/session-store";
-import { ENVIRONMENT_SECRET_VAULT_KEY } from "../src/environment-secret-vault";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
@@ -160,6 +161,23 @@ class InjectedHarnessFailure extends Data.TaggedError("InjectedHarnessFailure")<
 export const injectedHarnessFailure = (message: string): InjectedHarnessFailure =>
   new InjectedHarnessFailure({ message });
 
+/**
+ * Detects the transaction that promotes a staged environment-refresh target into the committed
+ * session snapshot; the `environmentRefreshCommit` failure stage aborts exactly this write so the
+ * lease stays retryable after an ambiguous post-apply commit.
+ */
+const commitsEnvironmentRefreshSnapshot = (value: unknown): boolean => {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as SessionRecord;
+  if (record.operation?.kind !== "refresh" || !isSessionEnvironmentSnapshot(record.environment))
+    return false;
+  const target = record.operation.environmentRefreshTarget;
+  return (
+    isSessionEnvironmentSnapshot(target) &&
+    JSON.stringify(record.environment) === JSON.stringify(target)
+  );
+};
+
 const readHarnessWriteStream = async (stream: ReadableStream<Uint8Array>): Promise<string> => {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
@@ -195,7 +213,6 @@ export type InitialStorageEntries = Partial<{
   [EVIDENCE_RECORD_KEY]: unknown;
   [HATCH_STATE_KEY]: unknown;
   [RUNTIME_EPOCH_KEY]: unknown;
-  [ENVIRONMENT_SECRET_VAULT_KEY]: unknown;
   [SESSION_CONTROL_REVISION_KEY]: unknown;
 }>;
 
@@ -234,8 +251,8 @@ export type HarnessFailureStage =
   | "downTar"
   | "downWriteManifest"
   | "environmentApply"
+  | "environmentRefreshCommit"
   | "environmentRefreshRetrySchedule"
-  | "environmentVaultCommit"
   | "evidenceRetentionSchedulePostInsert"
   | "evidenceRetentionSchedulePreInsert"
   | "evidenceRetentionSchedulePreInsertOnce"
@@ -361,8 +378,6 @@ class HarnessStorage {
   private failNextGet = false;
   private readonly getCounts = new Map<string, number>();
   private transactionTail: Promise<void> = Promise.resolve();
-  private environmentVaultPutCount = 0;
-  private environmentVaultCommitFailureConsumed = false;
 
   constructor(
     private readonly events: string[],
@@ -477,17 +492,6 @@ class HarnessStorage {
           get: async <T>(key: string) => structuredClone(staged.get(key)) as T | undefined,
           put: async <T>(key: string, value: T) => {
             staged.set(key, structuredClone(value));
-            if (key === ENVIRONMENT_SECRET_VAULT_KEY) {
-              this.environmentVaultPutCount += 1;
-              if (
-                this.environmentVaultPutCount === 2 &&
-                !this.environmentVaultCommitFailureConsumed &&
-                this.failures.has("environmentVaultCommit")
-              ) {
-                this.environmentVaultCommitFailureConsumed = true;
-                throw injectedHarnessFailure("injected environment vault commit failure");
-              }
-            }
             mutations.push({ kind: "put", key, value });
           },
           delete: async (key: string) => {
@@ -496,6 +500,16 @@ class HarnessStorage {
             return deleted;
           },
         });
+        if (
+          this.failures.has("environmentRefreshCommit") &&
+          mutations.some(
+            (mutation) =>
+              mutation.kind === "put" &&
+              mutation.key === RECORD_KEY &&
+              commitsEnvironmentRefreshSnapshot(mutation.value),
+          )
+        )
+          throw injectedHarnessFailure("injected environment refresh commit failure");
         this.memory.values.clear();
         for (const [key, value] of staged) this.memory.values.set(key, value);
         for (const mutation of mutations) {
@@ -641,41 +655,23 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     initialRecord.operation.createPhase === "runtime" &&
     !isSessionEnvironmentSnapshot(initialRecord.environment)
   ) {
-    const ghSentinel = `scotty-env-${initialRecord.id}-${"a".repeat(32)}`;
-    const openaiSentinel = `scotty-env-${initialRecord.id}-${"b".repeat(32)}`;
-    const opencodeSentinel = `scotty-env-${initialRecord.id}-${"c".repeat(32)}`;
+    // Session snapshots carry static placeholders for secrets; the real values live only in the
+    // SandboxConfig authority and are injected at the egress boundary by origin lookup.
     initialEntries[RECORD_KEY] = {
       ...initialRecord,
       environment: {
         version: 1,
         revision: 1,
         variables: {
-          GH_TOKEN: ghSentinel,
-          OPENAI_API_KEY: openaiSentinel,
-          OPENCODE_API_KEY: opencodeSentinel,
-        },
-      },
-    };
-    initialEntries[ENVIRONMENT_SECRET_VAULT_KEY] = {
-      version: 1,
-      entries: {
-        [ghSentinel]: {
-          sentinel: ghSentinel,
-          sourceScope: "global",
-          name: "GH_TOKEN",
-          value: sandboxConfigGithubToken,
-        },
-        [openaiSentinel]: {
-          sentinel: openaiSentinel,
-          sourceScope: "global",
-          name: "OPENAI_API_KEY",
-          value: "stored-openai-api-key",
-        },
-        [opencodeSentinel]: {
-          sentinel: opencodeSentinel,
-          sourceScope: "global",
-          name: "OPENCODE_API_KEY",
-          value: "stored-opencode-api-key",
+          ...(options.omitGithubEnvironmentSecret === true
+            ? {}
+            : { GH_TOKEN: ENVIRONMENT_INJECTED_PLACEHOLDER }),
+          ...(options.omitOpenaiEnvironmentSecret === true
+            ? {}
+            : { OPENAI_API_KEY: ENVIRONMENT_INJECTED_PLACEHOLDER }),
+          ...(options.omitOpencodeEnvironmentSecret === true
+            ? {}
+            : { OPENCODE_API_KEY: ENVIRONMENT_INJECTED_PLACEHOLDER }),
         },
       },
     };
@@ -886,6 +882,45 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     SANDBOX: options.sandboxNamespace ?? (undefined as never),
     SANDBOX_CONFIG: {
       getByName: () => ({
+        resolveCredentialForOrigin: async (
+          input: unknown,
+        ): Promise<SandboxConfigRpcResult<EnvironmentCredentialBinding | null>> => {
+          const origin =
+            typeof input === "object" &&
+            input !== null &&
+            "origin" in input &&
+            typeof input.origin === "string"
+              ? input.origin
+              : "";
+          if (origin === "https://github.com" || origin === "https://api.github.com")
+            return {
+              ok: true,
+              value: {
+                name: "GH_TOKEN",
+                scheme: "basic-x-access-token",
+                value: sandboxConfigGithubToken,
+              },
+            };
+          if (origin === "https://api.openai.com")
+            return {
+              ok: true,
+              value: {
+                name: "OPENAI_API_KEY",
+                scheme: "bearer",
+                value: "stored-openai-api-key",
+              },
+            };
+          if (origin === "https://opencode.ai" || origin === "https://api.opencode.ai")
+            return {
+              ok: true,
+              value: {
+                name: "OPENCODE_API_KEY",
+                scheme: "bearer",
+                value: "stored-opencode-api-key",
+              },
+            };
+          return { ok: true, value: null };
+        },
         resolveGlobalSecret: async (name: unknown): Promise<SandboxConfigRpcResult<string>> => {
           if (options.sandboxConfigGlobalSecretFailure === "throw")
             throw injectedHarnessFailure("injected sandbox config global secret failure");
@@ -1524,5 +1559,4 @@ export const sessionHarnessKeys = {
   hatch: HATCH_STATE_KEY,
   record: RECORD_KEY,
   runtimeEpoch: RUNTIME_EPOCH_KEY,
-  environmentVault: ENVIRONMENT_SECRET_VAULT_KEY,
 } as const;

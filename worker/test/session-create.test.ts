@@ -1,7 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
-import { isSessionEnvironmentSnapshot } from "../src/environment-contracts";
+import {
+  isSessionEnvironmentSnapshot,
+  ENVIRONMENT_INJECTED_PLACEHOLDER,
+} from "../src/environment-contracts";
 import { ScottyError } from "../src/contracts";
 import { InitialSessionStorageFailure } from "../src/session-store";
 import { RepoVerifierFailure } from "../src/repo-verifier";
@@ -236,7 +239,7 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(harness.aborts, []);
   });
 
-  it("materializes plain values directly and keeps secrets sentinel-only in session state and env", async () => {
+  it("materializes plain values directly and carries static placeholders for secrets", async () => {
     const secret = "session-secret";
     const harness = await createSessionHarness({
       environmentMaterialization: {
@@ -265,20 +268,19 @@ describe("Sandbox create orchestration", () => {
     const record = harness.readRecord();
     const environment = record?.environment;
     assert.ok(isSessionEnvironmentSnapshot(environment));
-    const sentinel = environment.variables.API_TOKEN;
+    const placeholder = environment.variables.API_TOKEN;
+    assert.strictEqual(placeholder, ENVIRONMENT_INJECTED_PLACEHOLDER);
     assert.strictEqual(environment.version, 1);
     assert.strictEqual(environment.revision, 7);
     assert.strictEqual(environment.variables.PUBLIC_URL, "https://example.test");
-    assert.ok(sentinel?.startsWith(`scotty-env-${SESSION_ID}-`));
-    assert.notStrictEqual(sentinel, secret);
     assert.notInclude(JSON.stringify(record), secret);
     assert.strictEqual(harness.appliedEnvironments[0]?.PUBLIC_URL, "https://example.test");
-    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, sentinel);
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, placeholder);
     assert.notInclude(JSON.stringify(harness.appliedEnvironments[0]), secret);
     assert.strictEqual(harness.appliedEnvironments[0]?.SCOTTY_SESSION_ID, SESSION_ID);
     const shell = harness.writtenFiles.find((file) => file.path.endsWith("/scotty-shell"));
     assert.include(shell?.content ?? "", "export PUBLIC_URL='https://example.test'");
-    assert.include(shell?.content ?? "", `export API_TOKEN='${sentinel}'`);
+    assert.include(shell?.content ?? "", `export API_TOKEN='${placeholder}'`);
     assert.notInclude(shell?.content ?? "", secret);
   });
 
@@ -444,10 +446,6 @@ describe("Sandbox create orchestration", () => {
 
     assert.strictEqual(replayed.status, "warm");
     assert.ok(harness.events.includes("host:exec:workspace"));
-    assert.ok(
-      harness.events.indexOf("storage:put:scotty:environment-secrets:v1") <
-        harness.events.indexOf("host:exec:workspace"),
-    );
     assert.ok(
       harness.events.lastIndexOf("record:booting") < harness.events.lastIndexOf("record:warm"),
     );
@@ -656,7 +654,8 @@ describe("Sandbox create orchestration", () => {
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
       },
-      transactionFailureCountdown: 1,
+      // The warm-commit write is now the only transaction on a runtime-phase replay.
+      transactionFailureCountdown: 0,
     });
 
     const error = await rejection(
