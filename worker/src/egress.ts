@@ -233,12 +233,13 @@ function credentialResolverLayer(
         }).pipe(
           Effect.flatMap((response) => {
             if (!response.ok) {
+              // Diagnostic: dump the raw envelope — undefined error fields are themselves a bug signal.
               console.error(
                 JSON.stringify({
                   event: "egress.resolve.denied",
                   reason: "session_unavailable",
                   detail: "resolver rpc not ok",
-                  error: JSON.stringify(response.error).slice(0, 300),
+                  raw: JSON.stringify(response).slice(0, 500),
                   origin,
                 }),
               );
