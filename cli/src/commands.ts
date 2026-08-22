@@ -229,7 +229,6 @@ const parserUsage = (error: EffectCliError.ShowHelp): CliError => {
       return usage(`Unknown command: ${item.subcommand}`);
     if (Predicate.isTagged(item, "MissingOption")) {
       if (item.option === "repo") return usage("--repo OWNER/NAME is required");
-      if (item.option === "provider") return usage("--provider cloudflare is required");
       if (item.option === "isolation") return usage("--isolation process|docker is required");
     }
     if (Predicate.isTagged(item, "InvalidValue") && item.option === "provider")
@@ -1074,6 +1073,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Create a local workspace when the GitHub repository is missing"),
       ),
       provider: Flag.choice("provider", ["cloudflare"] as const).pipe(
+        Flag.withDefault("cloudflare"),
         Flag.withDescription("Execution provider"),
       ),
       cap: Flag.string("cap").pipe(

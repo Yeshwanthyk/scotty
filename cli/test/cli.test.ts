@@ -2434,7 +2434,7 @@ describe("commands and schemas", () => {
       message: "--repo OWNER/NAME is required",
     });
 
-    const missingProvider = harness();
+    const defaultedProvider = harness();
     expect(
       await main(
         [
@@ -2449,10 +2449,9 @@ describe("commands and schemas", () => {
           "--host",
           "https://worker.example",
         ],
-        missingProvider.deps,
+        defaultedProvider.deps,
       ),
-    ).toBe(EXIT.USAGE);
-    expect(missingProvider.error().error.message).toBe("--provider cloudflare is required");
+    ).not.toBe(EXIT.USAGE);
 
     const unsupportedProvider = harness();
     expect(
