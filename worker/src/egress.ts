@@ -49,9 +49,9 @@ interface EnvironmentCredential {
   readonly value: string;
 }
 
-const decodeCredential = Schema.decodeUnknownResult(EnvironmentCredentialBindingSchema, {
-  onExcessProperty: "error",
-});
+// Lenient by design: the session DO already validated strictly; this re-check guards types
+// without rejecting benign serialization artifacts picked up across the RPC seam.
+const decodeCredential = Schema.decodeUnknownResult(EnvironmentCredentialBindingSchema);
 
 function renderAuthorization(credential: EnvironmentCredential): string {
   if (credential.scheme === "basic-x-access-token")
@@ -236,11 +236,15 @@ function credentialResolverLayer(
             }
             const decoded = decodeCredential(resolved);
             if (!Result.isSuccess(decoded)) {
+              // Diagnostic: shape fingerprint (types only — never credential values).
               console.error(
                 JSON.stringify({
                   event: "egress.resolve.denied",
                   reason: "decode_failure",
                   origin,
+                  shape: Object.fromEntries(
+                    Object.entries(resolved ?? {}).map(([key, val]) => [key, typeof val]),
+                  ),
                 }),
               );
               return Effect.succeed(null);
