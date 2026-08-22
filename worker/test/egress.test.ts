@@ -99,12 +99,9 @@ describe("Egress policy", () => {
     const unmapped = await runEnvironmentOutbound(request, null);
     assert.equal(unmapped.status, 403);
 
-    const failed = await runEnvironmentOutbound(
-      request,
-      Promise.reject(new Error("rpc boom")) as unknown as ResolverResponse,
-    );
+    // lint-allow-double-cast: boundary: the rejection stub intentionally bypasses typing to exercise the resolver catch path
+    const rejected = Promise.reject(new Error("rpc boom")) as unknown as ResolverResponse;
+    const failed = await runEnvironmentOutbound(request, rejected);
     assert.equal(failed.status, 403);
   });
 });
-
-type EgressFailureShape = { status: number; outgoingAuth: string | null };
