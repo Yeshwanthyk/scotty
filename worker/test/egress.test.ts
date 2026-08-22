@@ -1,19 +1,12 @@
 import { assert, describe, it } from "vitest";
 import { ALLOWED_HOSTS, makeEnvironmentOutbound, makeOutboundByHost } from "../src/egress";
 
-type ResolverResponse =
-  | {
-      readonly ok: true;
-      readonly value: {
-        readonly name: string;
-        readonly scheme: "bearer" | "basic-x-access-token";
-        readonly value: string;
-      } | null;
-    }
-  | {
-      readonly ok: false;
-      readonly error: { readonly reason: string; readonly message: string };
-    };
+/** The session DO contract: resolves to the binding itself, or null when unmapped. */
+type ResolverResponse = {
+  readonly name: string;
+  readonly scheme: "bearer" | "basic-x-access-token";
+  readonly value: string;
+} | null;
 
 const runEnvironmentOutbound = (
   request: Request,
@@ -30,9 +23,10 @@ const runEnvironmentOutbound = (
   const env = {
     SANDBOX: {
       idFromString: () => "id",
-      get: () => ({
-        resolveCredentialForOrigin: () => Promise.resolve(resolveResponse),
-      }),
+      get: () =>
+        ({
+          resolveCredentialForOrigin: () => Promise.resolve(resolveResponse),
+        }) as never,
     },
   } as never;
   return handler(request, env, { containerId: "id" } as never).then((response: Response) => ({
@@ -78,10 +72,7 @@ describe("Egress policy", () => {
         headers: { authorization: "Bearer scotty-injected" },
         body: "{}",
       }),
-      {
-        ok: true,
-        value: { name: "OPENCODE_API_KEY", scheme: "bearer", value: "real-key" },
-      },
+      { name: "OPENCODE_API_KEY", scheme: "bearer", value: "real-key" },
     );
     assert.equal(result.status, 200);
     assert.equal(result.outgoingAuth, "Bearer real-key");
@@ -97,10 +88,7 @@ describe("Egress policy", () => {
           "user-agent": "git/2.34.1",
         },
       }),
-      {
-        ok: true,
-        value: { name: "GH_TOKEN", scheme: "basic-x-access-token", value: "real-github-token" },
-      },
+      { name: "GH_TOKEN", scheme: "basic-x-access-token", value: "real-github-token" },
     );
     assert.equal(result.status, 200);
     assert.equal(result.outgoingAuth, expected);
@@ -108,15 +96,12 @@ describe("Egress policy", () => {
 
   it("denies unmapped origins and resolver failures", async () => {
     const request = new Request("https://evil.example/exfil");
-    const unmapped = await runEnvironmentOutbound(request, { ok: true, value: null });
+    const unmapped = await runEnvironmentOutbound(request, null);
     assert.equal(unmapped.status, 403);
 
-    const failed: EgressFailureShape = await runEnvironmentOutbound(request, {
-      ok: false,
-      error: { reason: "vault", message: "Credential resolution failed" },
-    });
+    // lint-allow-double-cast: boundary: the rejection stub intentionally bypasses typing to exercise the resolver catch path
+    const rejected = Promise.reject(new Error("rpc boom")) as unknown as ResolverResponse;
+    const failed = await runEnvironmentOutbound(request, rejected);
     assert.equal(failed.status, 403);
   });
 });
-
-type EgressFailureShape = { status: number; outgoingAuth: string | null };
