@@ -216,42 +216,25 @@ function credentialResolverLayer(
             );
           const stub = env.SANDBOX.get(env.SANDBOX.idFromString(String(containerId)));
           // lint-allow-double-cast: boundary: session DO RPC stubs are loosely typed across the worker seam and responses are schema-checked before use
+          // lint-allow-double-cast: boundary: session DO RPC stubs are loosely typed across the worker seam and responses are schema-checked before use
           const resolve = stub.resolveCredentialForOrigin as unknown as (
             input: EnvironmentOriginResolveRequest,
-          ) => Promise<
-            | { readonly ok: true; readonly value: EnvironmentCredentialBinding | null }
-            | {
-                readonly ok: false;
-                readonly error: { readonly reason: string; readonly message: string };
-              }
-          >;
+          ) => Promise<EnvironmentCredentialBinding | null>;
+          // Contract: resolves to the binding itself (null = unmapped); failures reject.
           return Effect.tryPromise({
             try: () => resolve({ origin }),
             catch: () =>
               new EgressFailure({ reason: "vault", message: "Credential resolution failed" }),
           });
         }).pipe(
-          Effect.flatMap((response) => {
-            if (!response.ok) {
-              // Diagnostic: dump the raw envelope — undefined error fields are themselves a bug signal.
-              console.error(
-                JSON.stringify({
-                  event: "egress.resolve.denied",
-                  reason: "session_unavailable",
-                  detail: "resolver rpc not ok",
-                  raw: JSON.stringify(response).slice(0, 500),
-                  origin,
-                }),
-              );
-              return Effect.succeed(null);
-            }
-            if (response.value === null) {
+          Effect.flatMap((resolved) => {
+            if (resolved === null) {
               console.error(
                 JSON.stringify({ event: "egress.denied", reason: "unmapped_origin", origin }),
               );
               return Effect.succeed(null);
             }
-            const decoded = decodeCredential(response.value);
+            const decoded = decodeCredential(resolved);
             if (!Result.isSuccess(decoded)) {
               console.error(
                 JSON.stringify({
