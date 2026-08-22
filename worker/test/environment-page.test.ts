@@ -20,7 +20,7 @@ describe("environment dashboard", () => {
   });
 
   it("renders declared injection origins without exposing values", () => {
-    expect(environmentScript).toContain("Injection origins: ${origins.join(\", \")}");
+    expect(environmentScript).toContain('Injection origins: ${origins.join(", ")}');
     expect(environmentScript).not.toContain("/api/environment/approvals");
     expect(environmentScript).not.toContain("entry.value");
     expect(environmentScript).not.toContain("entry.secret");

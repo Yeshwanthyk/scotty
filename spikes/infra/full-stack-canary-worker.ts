@@ -194,8 +194,7 @@ export class ScottySandbox extends Sandbox {
       backups: backupPage.objects.map(({ key }) => key).sort(),
       createIdempotency: createIdempotency !== undefined,
       githubCredentialCurrent:
-        globalGithub !== null &&
-        snapshotVariables.GH_TOKEN === ENVIRONMENT_INJECTED_PLACEHOLDER,
+        globalGithub !== null && snapshotVariables.GH_TOKEN === ENVIRONMENT_INJECTED_PLACEHOLDER,
       openaiCredentialCurrent:
         globalOpenai !== null &&
         snapshotVariables.OPENAI_API_KEY === ENVIRONMENT_INJECTED_PLACEHOLDER,
@@ -228,9 +227,7 @@ export class ScottySandbox extends Sandbox {
     };
     const resolved = (
       await Promise.all(
-        (["GH_TOKEN", "OPENAI_API_KEY"] as const).map(async (name) =>
-          resolveAuthorityValue(name),
-        ),
+        (["GH_TOKEN", "OPENAI_API_KEY"] as const).map(async (name) => resolveAuthorityValue(name)),
       )
     ).filter(Predicate.isNotNull);
     const realSecrets = resolved.map((entry) => entry).filter((value) => value.length > 0);
