@@ -470,6 +470,10 @@ const server = createServer(async (request, response) => {
         "content-type": "text/event-stream; charset=utf-8",
         "x-accel-buffering": "no",
       });
+      // Flush a comment frame immediately so buffering hops between this server
+      // and the browser cannot hold an idle stream before its open event. SSE
+      // comments carry no event data and every consumer ignores them.
+      response.write("retry: 3000\n\n: connected\n\n");
       const requestedEpoch = url.searchParams.get("epoch");
       const since = Number.parseInt(url.searchParams.get("since") ?? "0", 10);
       if (requestedEpoch && requestedEpoch !== epoch)
