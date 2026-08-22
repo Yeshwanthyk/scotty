@@ -99,34 +99,6 @@
         <div class="error" id="sessions-error" role="alert" hidden></div>
       </section>
 
-      <section class="panel" aria-labelledby="approvals-heading">
-        <div class="panel-heading">
-          <div>
-            <h2 id="approvals-heading">Origin approvals</h2>
-            <p class="panel-copy">
-              Review observed secret uses by origin. Secret values are never shown.
-            </p>
-          </div>
-        </div>
-        <div class="state" id="approvals-loading">Loading origin approvals…</div>
-        <div class="error" id="approvals-error" role="alert" hidden>
-          <span id="approvals-error-message"></span>
-          <button class="button" id="approvals-retry" type="button">Retry</button>
-        </div>
-        <div id="approvals-content" hidden>
-          <h3>Pending observed uses</h3>
-          <ul class="clients" id="approvals-pending"></ul>
-          <div class="state" id="approvals-pending-empty" hidden>
-            No pending origin uses for this scope.
-          </div>
-          <h3>Existing decisions</h3>
-          <ul class="clients" id="approvals-decisions"></ul>
-          <div class="state" id="approvals-decisions-empty" hidden>
-            No approved, rejected, or revoked decisions for this scope.
-          </div>
-        </div>
-      </section>
-
       <section class="panel">
         <div class="panel-heading">
           <div>

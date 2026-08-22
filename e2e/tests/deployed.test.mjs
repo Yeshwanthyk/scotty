@@ -273,14 +273,14 @@ test(
     assert.equal(
       beforeReconstruction.githubCredentialCurrent,
       true,
-      "the session vault must retain the current Worker GitHub credential",
+      "the container placeholder stays current with the authority credential",
     );
     assert.equal(beforeReconstruction.kv, true);
     assert.ok(beforeReconstruction.backups.length > 0);
     assert.deepEqual(beforeReconstruction.security, {
       defaultDeny: true,
       kvNonSecret: true,
-      sentinelsOnly: true,
+      placeholdersOnly: true,
     });
     assert.ok(beforeReconstruction.schedules.includes("enforceHardCap"));
 
@@ -323,7 +323,7 @@ test(
     assert.deepEqual(resumed.security, {
       defaultDeny: true,
       kvNonSecret: true,
-      sentinelsOnly: true,
+      placeholdersOnly: true,
     });
 
     const down = await runCli(["beam", "down", id, "--json"], { env, cwd, timeoutMs: 180_000 });

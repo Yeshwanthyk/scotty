@@ -13,7 +13,7 @@ import {
   VERSION,
   type CliDependencies,
 } from "../scotty";
-import { BeamUpRequestSchema, EnvironmentApprovalKeySchema } from "../src/schemas";
+import { BeamUpRequestSchema } from "../src/schemas";
 import { Schema } from "effect";
 
 const temporaryDirectories: string[] = [];
@@ -69,7 +69,6 @@ function rejected<T = never>(message: string): Promise<T> {
 }
 
 const decodeBeamUpRequest = Schema.decodeUnknownSync(BeamUpRequestSchema);
-const decodeEnvironmentApprovalKey = Schema.decodeUnknownSync(EnvironmentApprovalKeySchema);
 
 const pendingUpPath = (home: string, host: string, body: unknown): string => {
   const fingerprint = createHash("sha256")
@@ -3567,199 +3566,72 @@ describe("environment commands", () => {
     expect(malformedFetches).toBe(0);
   });
 
-  test("lists and mutates environment approvals with scoped transport and stable JSON", async () => {
+  test("sends declared origins and validates them before transport", async () => {
     const requests: Request[] = [];
-    const bodies: unknown[] = [];
-    const approvalList = {
-      revision: 9,
-      policyRevision: 3,
-      approvals: [
-        {
-          sourceScope: "owner/project",
-          name: "API_TOKEN",
-          origin: "https://api.example",
-          decision: "approved",
-          updatedAt: "2026-08-20T12:00:00.000Z",
-        },
-      ],
-      pending: [
-        {
-          sourceScope: "owner/project",
-          name: "PUBLIC_URL",
-          origin: "https://pending.example",
-          firstObservedAt: "2026-08-20T12:01:00.000Z",
-          lastObservedAt: "2026-08-20T12:02:00.000Z",
-        },
-      ],
-    };
-    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = new Request(input, init);
-      requests.push(request);
-      if (request.method === "GET") return Response.json(approvalList);
-      const key = decodeEnvironmentApprovalKey(await request.clone().json());
-      bodies.push(key);
-      const action = new URL(request.url).pathname.split("/").at(-1);
-      const decision =
-        action === "approve" ? "approved" : action === "reject" ? "rejected" : "revoked";
-      return Response.json({ ...key, decision, revision: 10, policyRevision: 4 });
-    };
-    const shared = { fetch, env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "root" } };
-
-    const listed = harness(shared);
-    expect(await main(["env", "approvals", "list", "--repo", "owner/project"], listed.deps)).toBe(
-      EXIT.OK,
-    );
-    expect(listed.json()).toEqual(approvalList);
-
-    for (const action of ["approve", "reject", "revoke"] as const) {
-      const mutated = harness(shared);
-      expect(
-        await main(
-          [
-            "env",
-            "approvals",
-            action,
-            "API_TOKEN",
-            "https://api.example",
-            "--repo",
-            "owner/project",
-          ],
-          mutated.deps,
-        ),
-      ).toBe(EXIT.OK);
-      expect(mutated.json()).toMatchObject({
-        sourceScope: "owner/project",
-        name: "API_TOKEN",
-        origin: "https://api.example",
-        decision: action === "approve" ? "approved" : action === "reject" ? "rejected" : "revoked",
-      });
-    }
-
-    expect(
-      requests.map((request) => ({
-        method: request.method,
-        pathname: new URL(request.url).pathname,
-        repo: new URL(request.url).searchParams.get("repo"),
-      })),
-    ).toEqual([
-      { method: "GET", pathname: "/api/environment/approvals", repo: "owner/project" },
-      { method: "POST", pathname: "/api/environment/approvals/approve", repo: null },
-      { method: "POST", pathname: "/api/environment/approvals/reject", repo: null },
-      { method: "POST", pathname: "/api/environment/approvals/revoke", repo: null },
-    ]);
-    expect(bodies).toEqual([
-      { sourceScope: "owner/project", name: "API_TOKEN", origin: "https://api.example" },
-      { sourceScope: "owner/project", name: "API_TOKEN", origin: "https://api.example" },
-      { sourceScope: "owner/project", name: "API_TOKEN", origin: "https://api.example" },
-    ]);
-  });
-
-  test("renders approval lists and mutations concisely without secret values", async () => {
-    const approvalList = {
-      revision: 9,
-      policyRevision: 3,
-      approvals: [
-        {
-          sourceScope: "global",
-          name: "API_TOKEN",
-          origin: "https://api.example",
-          decision: "approved",
-          updatedAt: "2026-08-20T12:00:00.000Z",
-        },
-      ],
-      pending: [
-        {
-          sourceScope: "owner/project",
-          name: "PUBLIC_URL",
-          origin: "https://pending.example",
-          firstObservedAt: "2026-08-20T12:01:00.000Z",
-          lastObservedAt: "2026-08-20T12:02:00.000Z",
-        },
-      ],
-    };
-    const human = harness({
-      stdoutIsTTY: true,
-      fetch: async (input) => {
-        const request = new Request(input);
-        return request.method === "GET"
-          ? Response.json(approvalList)
-          : Response.json({
-              sourceScope: "global",
-              name: "API_TOKEN",
-              origin: "https://api.example",
-              decision: "approved",
-              revision: 10,
-              policyRevision: 4,
-            });
-      },
-    });
-    const base = ["--host", "https://worker.example"];
-
-    expect(await main([...base, "env", "approvals", "list"], human.deps)).toBe(EXIT.OK);
-    expect(human.stdout.join("")).toBe(
-      "approved\tglobal\tAPI_TOKEN\thttps://api.example\npending\towner/project\tPUBLIC_URL\thttps://pending.example\n",
-    );
-
-    const mutation = harness({
-      stdoutIsTTY: true,
-      fetch: async () =>
-        Response.json({
-          sourceScope: "global",
-          name: "API_TOKEN",
-          origin: "https://api.example",
-          decision: "approved",
-          revision: 10,
-          policyRevision: 4,
-        }),
-    });
-    expect(
-      await main(
-        [...base, "env", "approvals", "approve", "API_TOKEN", "https://api.example"],
-        mutation.deps,
-      ),
-    ).toBe(EXIT.OK);
-    expect(mutation.stdout.join("")).toBe("Approved global API_TOKEN for https://api.example.\n");
-    expect(`${human.stdout.join("")}\n${mutation.stdout.join("")}`).not.toContain("secret-value");
-  });
-
-  test("validates approval scope and origin before transport and preserves HTTP exits", async () => {
-    let fetches = 0;
     const h = harness({
-      fetch: async () => {
-        fetches += 1;
-        return Response.json({});
+      readStdin: async () => "stdin-secret-never-echo\n",
+      stdoutIsTTY: true,
+      fetch: async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json({ name: "GH_TOKEN", secret: true, configured: true, revision: 2 });
       },
     });
-    const base = ["env", "approvals", "approve", "API_TOKEN", "https://api.example"];
+
     expect(
       await main(
-        [...base.slice(0, -1), "http://api.example", "--host", "https://worker.example"],
+        [
+          "env",
+          "set",
+          "GH_TOKEN",
+          "--origins",
+          "github.com, https://api.github.com,github.com,codeload.github.com",
+          "--secret",
+          "--stdin",
+          "--host",
+          "https://worker.example",
+        ],
         h.deps,
       ),
-    ).toBe(EXIT.USAGE);
-    expect(h.error().error.message).toBe("Origin must be an exact HTTPS origin");
-    expect(fetches).toBe(0);
+    ).toBe(EXIT.OK);
+    expect(await requests[0].clone().json()).toEqual({
+      value: "stdin-secret-never-echo",
+      secret: true,
+      origins: ["https://github.com", "https://api.github.com", "https://codeload.github.com"],
+    });
+    expect(h.stdout.join("")).toBe(
+      "Set GH_TOKEN as secret for https://github.com, https://api.github.com, https://codeload.github.com.\n",
+    );
 
-    const invalidRepo = harness({ fetch: h.deps.fetch });
-    expect(
-      await main(
-        [...base, "--repo", "owner/project/extra", "--host", "https://worker.example"],
-        invalidRepo.deps,
-      ),
-    ).toBe(EXIT.USAGE);
-    expect(invalidRepo.error().error.message).toBe("--repo must be OWNER/NAME");
-
-    const failed = harness({
-      fetch: async () =>
-        Response.json(
-          { error: { code: "not_found", message: "approval missing" } },
-          { status: 404 },
-        ),
+    let fetches = 0;
+    const invalid = harness({
+      fetch: async () => {
+        fetches += 1;
+        return Response.json(
+          { error: { code: "bad_request", message: "Environment variable input is invalid" } },
+          { status: 400 },
+        );
+      },
     });
     expect(
-      await main(["env", "approvals", "list", "--host", "https://worker.example"], failed.deps),
-    ).toBe(EXIT.NOT_FOUND);
-    expect(failed.error().error.code).toBe("not_found");
+      await main(
+        [
+          "env",
+          "set",
+          "GH_TOKEN",
+          "--origins",
+          "https://github.com/extra,path",
+          "--secret",
+          "--stdin",
+          "--host",
+          "https://worker.example",
+        ],
+        invalid.deps,
+      ),
+    ).toBe(EXIT.USAGE);
+    expect(invalid.error().error.message).toBe(
+      "--origins entry must be an exact HTTPS origin without a path, query, fragment, or credentials: https://github.com/extra",
+    );
+    expect(fetches).toBe(0);
   });
 
   test("requires secret values on stdin before transport", async () => {

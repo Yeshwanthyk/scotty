@@ -14,9 +14,6 @@ import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
   decodeInitJournalJson,
-  decodeEnvironmentApprovalKey,
-  decodeEnvironmentApprovalMutation,
-  decodeEnvironmentApprovalsResponse,
   decodeEnvironmentMutation,
   decodeEnvironmentResponse,
   decodeSessionEnvironmentStatus,
@@ -1132,6 +1129,46 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   );
   const environmentPath = (path: string, repo: Option.Option<string>): string =>
     Option.isSome(repo) ? `${path}?repo=${encodeURIComponent(repo.value)}` : path;
+  const ENVIRONMENT_MAX_ORIGINS = 32;
+
+  /**
+   * Parses comma-separated origins into exact HTTPS origins. Bare hosts gain the https scheme so
+   * `--origins github.com` and `--origins https://github.com` are equivalent.
+   */
+  const parseOrigins = Effect.fnUntraced(function* (raw: string) {
+    const entries = raw.split(",");
+    if (entries.some((entry) => entry.trim() === ""))
+      return yield* usage("--origins must be a comma-separated list of hosts or HTTPS origins");
+    if (entries.length > ENVIRONMENT_MAX_ORIGINS)
+      return yield* usage(`--origins accepts at most ${ENVIRONMENT_MAX_ORIGINS} origins`);
+    const origins: string[] = [];
+    for (const entry of entries) {
+      const candidate = entry.trim().toLowerCase();
+      const parsed = Result.try(
+        () => new URL(candidate.startsWith("https://") ? candidate : `https://${candidate}`),
+      );
+      if (Result.isFailure(parsed))
+        return yield* usage(`--origins entry is invalid: ${entry.trim()}`);
+      const url = parsed.success;
+      const canonical = url.origin;
+      if (
+        url.protocol !== "https:" ||
+        url.username !== "" ||
+        url.password !== "" ||
+        url.pathname !== "/" ||
+        url.search !== "" ||
+        url.hash !== "" ||
+        (url.port !== "" && url.port !== "443") ||
+        url.origin === "null" ||
+        canonical.length > 512
+      )
+        return yield* usage(
+          `--origins entry must be an exact HTTPS origin without a path, query, fragment, or credentials: ${entry.trim()}`,
+        );
+      if (!origins.includes(canonical)) origins.push(canonical);
+    }
+    return origins;
+  });
 
   const envList = Command.make("list", { repo: environmentRepoFlag }, ({ repo }) =>
     Effect.gen(function* () {
@@ -1145,11 +1182,13 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         return yield* invalidResponse("Server returned an invalid environment view");
       if (autoJson) outputJson(runtime.stdout, decoded.value);
       else {
-        const lines = decoded.value.variables.map((variable) =>
-          variable.secret
-            ? `${variable.name}\tsecret\tconfigured${Option.isSome(repo) ? `\t${variable.source}` : ""}`
-            : `${variable.name}\tplain\t${variable.value ?? ""}${Option.isSome(repo) ? `\t${variable.source}` : ""}`,
-        );
+        const lines = decoded.value.variables.map((variable) => {
+          const scope = Option.isSome(repo) ? `\t${variable.source}` : "";
+          const origins = variable.origins?.length ? `\t${variable.origins.join(",")}` : "";
+          return variable.secret
+            ? `${variable.name}\tsecret\tconfigured${origins}${scope}`
+            : `${variable.name}\tplain\t${variable.value ?? ""}${origins}${scope}`;
+        });
         runtime.stdout(
           lines.length === 0
             ? Option.isSome(repo)
@@ -1170,9 +1209,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDescription("Store a write-only secret read from stdin"),
       ),
       stdin: Flag.boolean("stdin").pipe(Flag.withDescription("Read the value from stdin")),
+      origins: Flag.string("origins").pipe(
+        Flag.optional,
+        Flag.withDescription(
+          "Comma-separated exact HTTPS origins where this credential may be injected",
+        ),
+      ),
       repo: environmentRepoFlag,
     },
-    ({ name, repo, secret, stdin, value }) =>
+    ({ name, origins, repo, secret, stdin, value }) =>
       Effect.gen(function* () {
         if (!ENVIRONMENT_NAME_PATTERN.test(name))
           return yield* usage("Environment variable name is invalid");
@@ -1183,6 +1228,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           return yield* usage("Do not pass a value when using --stdin");
         if (!stdin && Option.isNone(value))
           return yield* usage("Environment set needs a value or --stdin");
+        const parsedOrigins = Option.isSome(origins)
+          ? yield* parseOrigins(origins.value)
+          : undefined;
         const { autoJson, options, runtime } = yield* commandContext();
         const inputValue = stdin
           ? (yield* Effect.tryPromise({
@@ -1200,13 +1248,25 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           yield* requestJson(
             yield* credentials(options),
             environmentPath(`/api/environment/${encodeURIComponent(name)}`, repo),
-            { method: "PUT", body: JSON.stringify({ value: inputValue, secret }) },
+            {
+              method: "PUT",
+              body: JSON.stringify({
+                value: inputValue,
+                secret,
+                ...(parsedOrigins === undefined ? {} : { origins: parsedOrigins }),
+              }),
+            },
           ),
         );
         if (Option.isNone(decoded))
           return yield* invalidResponse("Server returned an invalid environment update");
         if (autoJson) outputJson(runtime.stdout, decoded.value);
-        else runtime.stdout(`Set ${name} as ${secret ? "secret" : "plain"}.\n`);
+        else
+          runtime.stdout(
+            `Set ${name} as ${secret ? "secret" : "plain"}${
+              parsedOrigins === undefined ? "" : ` for ${parsedOrigins.join(", ")}`
+            }.\n`,
+          );
       }),
   ).pipe(Command.withDescription("Set a global environment variable"));
 
@@ -1266,93 +1326,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Refresh one warm session environment"));
 
-  const envApprovalsList = Command.make("list", { repo: environmentRepoFlag }, ({ repo }) =>
-    Effect.gen(function* () {
-      if (Option.isSome(repo) && !isRepositoryIdentity(repo.value))
-        return yield* usage("--repo must be OWNER/NAME");
-      const { autoJson, options, runtime } = yield* commandContext();
-      const decoded = decodeEnvironmentApprovalsResponse(
-        yield* requestJson(
-          yield* credentials(options),
-          environmentPath("/api/environment/approvals", repo),
-        ),
-      );
-      if (Option.isNone(decoded))
-        return yield* invalidResponse("Server returned an invalid environment approval list");
-      if (autoJson) outputJson(runtime.stdout, decoded.value);
-      else {
-        const lines = [
-          ...decoded.value.approvals.map(
-            (approval) =>
-              `${approval.decision}\t${approval.sourceScope}\t${approval.name}\t${approval.origin}`,
-          ),
-          ...decoded.value.pending.map(
-            (pending) => `pending\t${pending.sourceScope}\t${pending.name}\t${pending.origin}`,
-          ),
-        ];
-        runtime.stdout(
-          lines.length === 0 ? "No environment approvals.\n" : `${lines.join("\n")}\n`,
-        );
-      }
-    }),
-  ).pipe(Command.withDescription("List environment origin approvals"));
-
-  const makeEnvironmentApprovalMutation = (action: "approve" | "reject" | "revoke") =>
-    Command.make(
-      action,
-      {
-        name: Argument.string("name").pipe(Argument.withDescription("Environment variable name")),
-        origin: Argument.string("origin").pipe(Argument.withDescription("Exact HTTPS origin")),
-        repo: environmentRepoFlag,
-      },
-      ({ name, origin, repo }) =>
-        Effect.gen(function* () {
-          if (!ENVIRONMENT_NAME_PATTERN.test(name))
-            return yield* usage("Environment variable name is invalid");
-          if (Option.isSome(repo) && !isRepositoryIdentity(repo.value))
-            return yield* usage("--repo must be OWNER/NAME");
-          const key = decodeEnvironmentApprovalKey({
-            sourceScope: Option.isSome(repo) ? repo.value : "global",
-            name,
-            origin,
-          });
-          if (Option.isNone(key)) return yield* usage("Origin must be an exact HTTPS origin");
-          const { autoJson, options, runtime } = yield* commandContext();
-          const decoded = decodeEnvironmentApprovalMutation(
-            yield* requestJson(
-              yield* credentials(options),
-              `/api/environment/approvals/${action}`,
-              { method: "POST", body: JSON.stringify(key.value) },
-            ),
-          );
-          if (Option.isNone(decoded))
-            return yield* invalidResponse("Server returned an invalid environment approval update");
-          if (autoJson) outputJson(runtime.stdout, decoded.value);
-          else {
-            const decision =
-              decoded.value.decision.charAt(0).toUpperCase() + decoded.value.decision.slice(1);
-            runtime.stdout(
-              `${decision} ${decoded.value.sourceScope} ${decoded.value.name} for ${decoded.value.origin}.\n`,
-            );
-          }
-        }),
-    ).pipe(
-      Command.withDescription(`${action[0].toUpperCase()}${action.slice(1)} an environment origin`),
-    );
-
-  const envApprovals = Command.make("approvals").pipe(
-    Command.withDescription("Manage environment origin approvals"),
-    Command.withSubcommands([
-      envApprovalsList,
-      makeEnvironmentApprovalMutation("approve"),
-      makeEnvironmentApprovalMutation("reject"),
-      makeEnvironmentApprovalMutation("revoke"),
-    ]),
-  );
-
   const environment = Command.make("env").pipe(
     Command.withDescription("Manage global environment variables"),
-    Command.withSubcommands([envList, envSet, envRemove, envRefresh, envApprovals]),
+    Command.withSubcommands([envList, envSet, envRemove, envRefresh]),
   );
 
   const repoAdd = Command.make(

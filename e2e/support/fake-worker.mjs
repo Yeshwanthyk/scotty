@@ -29,6 +29,25 @@ const PUBLIC_SESSION_FIELDS = [
   "codexThreadId",
 ];
 const REPOSITORY_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]+$/u;
+/** Static container-facing placeholder; real credentials exist only behind egress injection. */
+const INJECTED_PLACEHOLDER = "scotty-injected";
+const EGRESS_ALLOWED_HOSTS = new Set([
+  "github.com",
+  "api.github.com",
+  "codeload.github.com",
+  "api.openai.com",
+  "opencode.ai",
+  "pi.dev",
+  "registry.npmjs.org",
+]);
+
+function egressCredentialFor(host) {
+  if (host === "github.com" || host === "api.github.com" || host === "codeload.github.com")
+    return "github";
+  if (host === "api.openai.com") return "openai";
+  if (host === "opencode.ai" || host === "pi.dev") return "opencode";
+  return null;
+}
 
 function isRepositoryIdentity(value) {
   const segments = value.split("/");
@@ -160,30 +179,22 @@ export class FakeWorkerService {
     };
   }
 
-  attemptEgress(id, target, authorization = `Bearer scotty-sentinel-${id}`) {
+  attemptEgress(id, target, authorization) {
     const host = new URL(target).hostname;
-    const allowed = new Set([
-      "github.com",
-      "api.github.com",
-      "codeload.github.com",
-      "api.openai.com",
-      "opencode.ai",
-      "pi.dev",
-      "registry.npmjs.org",
-    ]);
-    if (!allowed.has(host)) return { allowed: false, status: 403, authorization: null };
-    const injected =
-      host === "github.com" || host === "api.github.com"
-        ? this.realGithubSecret
-        : host === "api.openai.com"
-          ? this.realOpenaiSecret
-          : host === "opencode.ai" || host === "pi.dev"
-            ? this.realOpencodeSecret
-            : null;
+    if (!EGRESS_ALLOWED_HOSTS.has(host))
+      return { allowed: false, status: 403, authorization: null };
+    const credential = egressCredentialFor(host);
     return {
       allowed: true,
       status: 200,
-      authorization: authorization.includes(`scotty-sentinel-${id}`) ? injected : authorization,
+      authorization:
+        credential === null
+          ? null
+          : authorization === undefined ||
+              authorization === `Bearer ${INJECTED_PLACEHOLDER}` ||
+              authorization === INJECTED_PLACEHOLDER
+            ? (this.credentials.get(id)?.[credential] ?? null)
+            : authorization,
     };
   }
 
@@ -783,7 +794,6 @@ export class FakeWorkerService {
         codexThreadId: "019f8e2a-11aa-7000-8000-000000000001",
         rolloutEntries: null,
       };
-      const sentinel = `scotty-sentinel-${id}`;
       this.sessions.set(id, record);
       this.credentials.set(id, {
         openai: this.realOpenaiSecret,
@@ -796,11 +806,11 @@ export class FakeWorkerService {
         env: {
           CODEX_HOME: `/workspace/${id}/.codex`,
           PI_CODING_AGENT_DIR: `/workspace/${id}/.pi-agent`,
-          OPENAI_API_KEY: sentinel,
-          OPENCODE_API_KEY: sentinel,
-          GH_TOKEN: sentinel,
+          OPENAI_API_KEY: INJECTED_PLACEHOLDER,
+          OPENCODE_API_KEY: INJECTED_PLACEHOLDER,
+          GH_TOKEN: INJECTED_PLACEHOLDER,
         },
-        gitConfig: `credential.helper=!scotty-sentinel-helper\nremote.origin.url=https://github.com/${record.repo}.git`,
+        gitConfig: `credential.helper=!scotty-git-helper\nremote.origin.url=https://github.com/${record.repo}.git`,
         pi: {
           command: "pi --continue",
           shell: "/usr/local/bin/scotty-pi-shell",

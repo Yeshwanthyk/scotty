@@ -102,7 +102,6 @@ import {
 } from "./sandbox-config-object";
 import { inspectPassiveSession, steerPassiveSession } from "./passive-session";
 import {
-  EnvironmentPolicyKeyInputSchema,
   EnvironmentPutInputSchema,
   type ProtectedEnvironmentBinding,
 } from "./environment-contracts";
@@ -136,10 +135,6 @@ const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrat
 const decodeEnvironmentPutInput = Schema.decodeUnknownOption(EnvironmentPutInputSchema, {
   onExcessProperty: "error",
 });
-const decodeEnvironmentPolicyKeyInput = Schema.decodeUnknownOption(
-  EnvironmentPolicyKeyInputSchema,
-  { onExcessProperty: "error" },
-);
 const PROTECTED_ENVIRONMENT_BINDINGS: ReadonlyArray<ProtectedEnvironmentBinding> = [
   {
     name: "GH_TOKEN",
@@ -455,58 +450,6 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
   return c.json({ client: issued.client });
 });
 
-app.get("/api/environment/approvals", async (c) => {
-  requireEnvironmentManager(c.get("auth"));
-  const repo = c.req.query("repo");
-  if (repo !== undefined && !isRepositoryIdentity(repo))
-    throw badRequest("repo must be OWNER/NAME");
-  const config = sandboxConfig(c.env);
-  if (config.listEnvironmentApprovals === undefined)
-    throw new ScottyError("internal", "Environment approvals are unavailable", {
-      httpStatus: 500,
-      exitCode: 1,
-    });
-  return c.json(unwrapSandboxConfigRpc(await config.listEnvironmentApprovals(repo)));
-});
-
-app.post("/api/environment/approvals/approve", async (c) => {
-  requireEnvironmentManager(c.get("auth"));
-  requireJsonContentType(c.req.raw);
-  const input = parseEnvironmentPolicyKeyInput(await readJsonBody(c.req.raw));
-  const config = sandboxConfig(c.env);
-  if (config.approveEnvironment === undefined)
-    throw new ScottyError("internal", "Environment approvals are unavailable", {
-      httpStatus: 500,
-      exitCode: 1,
-    });
-  return c.json(unwrapSandboxConfigRpc(await config.approveEnvironment(input)));
-});
-
-app.post("/api/environment/approvals/reject", async (c) => {
-  requireEnvironmentManager(c.get("auth"));
-  requireJsonContentType(c.req.raw);
-  const input = parseEnvironmentPolicyKeyInput(await readJsonBody(c.req.raw));
-  const config = sandboxConfig(c.env);
-  if (config.rejectEnvironment === undefined)
-    throw new ScottyError("internal", "Environment approvals are unavailable", {
-      httpStatus: 500,
-      exitCode: 1,
-    });
-  return c.json(unwrapSandboxConfigRpc(await config.rejectEnvironment(input)));
-});
-
-app.post("/api/environment/approvals/revoke", async (c) => {
-  requireEnvironmentManager(c.get("auth"));
-  requireJsonContentType(c.req.raw);
-  const input = parseEnvironmentPolicyKeyInput(await readJsonBody(c.req.raw));
-  const config = sandboxConfig(c.env);
-  if (config.revokeEnvironment === undefined)
-    throw new ScottyError("internal", "Environment approvals are unavailable", {
-      httpStatus: 500,
-      exitCode: 1,
-    });
-  return c.json(unwrapSandboxConfigRpc(await config.revokeEnvironment(input)));
-});
 app.get("/api/environment", async (c) => {
   requireEnvironmentManager(c.get("auth"));
   const repo = c.req.query("repo");
@@ -1204,12 +1147,6 @@ function parseOwnerTransferInput(value: unknown): { readonly targetClientId: str
 function parseGrantConsumeInput(value: unknown, errorMessage: string): { readonly token: string } {
   const decoded = decodeGrantConsumeInput(value);
   if (Option.isNone(decoded)) throw badRequest(errorMessage);
-  return decoded.value;
-}
-
-function parseEnvironmentPolicyKeyInput(value: unknown) {
-  const decoded = decodeEnvironmentPolicyKeyInput(value);
-  if (Option.isNone(decoded)) throw badRequest("Environment approval request is invalid");
   return decoded.value;
 }
 

@@ -119,21 +119,13 @@ import {
   PI_SESSION_TOKEN_HEADER,
 } from "./container-auth";
 import {
-  EnvironmentSecretVault,
-  environmentSecretVaultLayer,
-  durableObjectEnvironmentSecretVaultStorage,
-  EnvironmentProxyRequestSchema,
-  EnvironmentProxyResponseSchema,
-  EnvironmentSecretResolveRequestSchema,
-  EnvironmentSecretResolutionSchema,
-  type EnvironmentProxyResponse,
-  type EnvironmentSecretResolutionResponse,
-} from "./environment-secret-vault";
-import {
-  EnvironmentAuthorizationResultSchema,
-  ENVIRONMENT_SECRET_SENTINEL_PREFIX,
+  ENVIRONMENT_INJECTED_PLACEHOLDER,
+  EnvironmentCredentialBindingSchema,
+  type EnvironmentCredentialBinding,
   EnvironmentMaterializationSchema,
+  EnvironmentOriginResolveRequestSchema,
   isSessionEnvironmentSnapshot,
+  type EnvironmentMaterialization,
   type SessionEnvironmentSnapshot,
 } from "./environment-contracts";
 import { REQUIRED_GLOBAL_SECRET_NAMES } from "./environment-policy";
@@ -230,47 +222,46 @@ const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
 const SANDBOX_PREVIEW_SANDBOX_ID_HEADER = "x-sandbox-preview-sandbox-id";
 const PREVIEW_PORT_PATTERN = /^(?:[1-9][0-9]{3,4})$/u;
-const decodeEnvironmentAuthorizationResult = Schema.decodeUnknownResult(
-  EnvironmentAuthorizationResultSchema,
-  { onExcessProperty: "error" },
-);
 
 const decodeEnvironmentMaterialization = Schema.decodeUnknownResult(
   EnvironmentMaterializationSchema,
   { onExcessProperty: "error" },
 );
-const environmentSecretSentinel = (environment: unknown, name: string): string | undefined => {
-  if (!isSessionEnvironmentSnapshot(environment)) return undefined;
-  const value = environment.variables[name];
-  return value?.startsWith(ENVIRONMENT_SECRET_SENTINEL_PREFIX) ? value : undefined;
+/** Required secrets must be present in the container snapshot; values are static placeholders. */
+const requiredGlobalSecretsPresent = (environment: unknown): boolean => {
+  if (!isSessionEnvironmentSnapshot(environment)) return false;
+  return REQUIRED_GLOBAL_SECRET_NAMES.every((name) => {
+    const value = environment.variables[name];
+    return typeof value === "string" && value.length > 0;
+  });
 };
+const decodeEnvironmentOriginResolveRequest = Schema.decodeUnknownResult(
+  EnvironmentOriginResolveRequestSchema,
+  { onExcessProperty: "error" },
+);
+const decodeEnvironmentCredentialBinding = Schema.decodeUnknownOption(
+  EnvironmentCredentialBindingSchema,
+  { onExcessProperty: "error" },
+);
 
-const requiredGlobalSecretSentinels = (
-  environment: unknown,
-): Record<string, string> | undefined => {
-  if (!isSessionEnvironmentSnapshot(environment)) return undefined;
-  const sentinels: Record<string, string> = {};
-  for (const name of REQUIRED_GLOBAL_SECRET_NAMES) {
-    const value = environmentSecretSentinel(environment, name);
-    if (value === undefined) return undefined;
-    sentinels[name] = value;
-  }
-  return sentinels;
-};
-const decodeEnvironmentProxyRequest = Schema.decodeUnknownResult(EnvironmentProxyRequestSchema, {
-  onExcessProperty: "error",
+/** Container-facing stand-in values for configured secrets. */
+export const environmentSnapshotVariables = (
+  effective: Record<string, { readonly value: string; readonly secret: boolean }>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(effective).map(([name, variable]) => [
+      name,
+      variable.secret ? ENVIRONMENT_INJECTED_PLACEHOLDER : variable.value,
+    ]),
+  );
+
+const materializationToSnapshot = (
+  materialization: EnvironmentMaterialization,
+): SessionEnvironmentSnapshot => ({
+  version: 1 as const,
+  revision: materialization.revision,
+  variables: environmentSnapshotVariables(materialization.variables),
 });
-const decodeEnvironmentProxyResponse = Schema.decodeUnknownResult(EnvironmentProxyResponseSchema, {
-  onExcessProperty: "error",
-});
-const decodeEnvironmentSecretResolveRequest = Schema.decodeUnknownResult(
-  EnvironmentSecretResolveRequestSchema,
-  { onExcessProperty: "error" },
-);
-const decodeEnvironmentSecretResolution = Schema.decodeUnknownResult(
-  EnvironmentSecretResolutionSchema,
-  { onExcessProperty: "error" },
-);
 const adaptSandboxWriteFile = (
   sandbox: Pick<Sandbox, "writeFile">,
   path: string,
@@ -331,7 +322,6 @@ type SandboxServices =
   | BackupStore
   | ContainerEvidenceRecorder
   | ContainerAuth
-  | EnvironmentSecretVault
   | EvidenceStore
   | HatchStore
   | RolloutDiscovery
@@ -702,11 +692,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       runtimeAccess,
       { fetchPortReadiness: env.SCOTTY_LOCAL_E2E === "1" },
     );
-    const environmentSecrets = environmentSecretVaultLayer(
-      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires the per-session environment secret vault to the Session Durable Object
-      durableObjectEnvironmentSecretVaultStorage(ctx.storage),
-    );
-    const runtimeAndVault = Layer.merge(runtime, environmentSecrets);
+    const runtimeAndVault = runtime;
     const backup = backupStoreLayer(
       {
         createBackup: (backupOptions) => this.createBackup(backupOptions),
@@ -2016,13 +2002,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const preparedRecord = yield* this.materializeEnvironmentSnapshotProgram(record, nonce).pipe(
       Effect.mapError(mapCreateUncertain("materialize")),
     );
-    const secrets = requiredGlobalSecretSentinels(preparedRecord.environment);
-    if (secrets === undefined)
+    if (!requiredGlobalSecretsPresent(preparedRecord.environment))
       return yield* new SessionCreateUncertain({
         cause: "required global secrets were not materialized into the session environment",
         stage: "materialize",
       });
-    const worktree = yield* workspace.prepare(preparedRecord, secrets.GH_TOKEN, verified);
+    const worktree = yield* workspace.prepare(preparedRecord, verified);
     const runtimeRecord = yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       operation: {
@@ -2071,11 +2056,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     prompt: string,
     nonce: string,
   ) {
-    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
     const transportToken = yield* store.ensurePiSessionTransportToken;
-    if (requiredGlobalSecretSentinels(record.environment) === undefined)
+    if (!requiredGlobalSecretsPresent(record.environment))
       return yield* new SessionCreateUncertain({
         cause: "required global secrets were not materialized into the session environment",
         stage: "materialize",
@@ -2091,9 +2075,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
         cause: "session environment snapshot was not prepared",
         stage: "warm_commit",
       });
-    yield* environmentVault
-      .commit(record.environment)
-      .pipe(Effect.mapError(mapCreateUncertain("warm_commit")));
     const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     return yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
@@ -2148,8 +2129,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       "Session setup failed",
       false,
     );
-    const environmentVault = yield* EnvironmentSecretVault;
-    yield* Effect.result(environmentVault.delete);
     yield* this.destroyFailedRuntimeProgram(failed.id);
     return yield* this.upstreamError("Session setup failed", failure, failed.id);
   });
@@ -2363,7 +2342,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* this.projectProgram(recordToCommit);
 
     if (Result.isFailure(hardCapSchedule)) {
-      yield* Effect.result((yield* EnvironmentSecretVault).delete);
       yield* this.destroyFailedRuntimeProgram(recordToCommit.id);
       return yield* this.upstreamError(
         "Session setup failed",
@@ -2433,18 +2411,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     nonce: string,
   ) {
     const materialization = yield* this.resolveEnvironmentMaterializationProgram(record);
-    const vault = yield* EnvironmentSecretVault;
-    const committed = isSessionEnvironmentSnapshot(record.environment)
-      ? record.environment
-      : undefined;
-    const snapshot = yield* vault
-      .reconcile(materialization, record.id, committed)
-      .pipe(
-        Effect.mapError(() =>
-          this.upstreamError("Environment materialization failed", undefined, record.id),
-        ),
-      );
-    if (requiredGlobalSecretSentinels(snapshot) === undefined)
+    if (!isSessionEnvironmentSnapshot(materializationToSnapshot(materialization)))
+      return yield* this.upstreamError("Environment materialization failed", undefined, record.id);
+    const snapshot = materializationToSnapshot(materialization);
+    if (!requiredGlobalSecretsPresent(snapshot))
       return yield* this.upstreamError("Environment materialization failed", undefined, record.id);
     return yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
@@ -2508,8 +2478,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     )
       ? record.operation.environmentRefreshTarget
       : undefined;
-    const previousEnvironment = record.operation?.environmentRefreshPrevious;
-    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
     const transportToken = yield* store.ensurePiSessionTransportToken;
@@ -2522,18 +2490,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       record = yield* this.releaseOperationProgram(payload.nonce);
       return yield* this.environmentStatusProgram(record);
     }
-    const committedEnvironment = isSessionEnvironmentSnapshot(previousEnvironment)
-      ? previousEnvironment
-      : priorAppliedEnvironment === undefined && isSessionEnvironmentSnapshot(record.environment)
-        ? record.environment
-        : undefined;
-    const next = yield* environmentVault
-      .reconcile(effective, record.id, committedEnvironment)
-      .pipe(
-        Effect.mapError(() =>
-          this.upstreamError("Environment refresh materialization failed", undefined, record.id),
-        ),
-      );
+    const next = materializationToSnapshot(effective);
     record = yield* this.updateForOperationProgram(payload.nonce, (current) => ({
       ...current,
       operation: current.operation && {
@@ -2573,13 +2530,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       failure: undefined,
       updatedAt,
     }));
-    yield* environmentVault
-      .commit(next)
-      .pipe(
-        Effect.mapError(() =>
-          this.upstreamError("Environment refresh commit failed", undefined, record.id),
-        ),
-      );
     const committed = yield* this.releaseOperationProgram(payload.nonce);
     yield* Effect.sync(() => this.deleteSchedules("retryEnvironmentRefresh"));
     return yield* this.environmentStatusProgram(committed);
@@ -2758,7 +2708,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (authoritative.execution.provider === "runner")
       return yield* this.resumeRunnerSessionProgram();
     const backups = yield* BackupStore;
-    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
     const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
@@ -2793,7 +2742,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* backups.restore(backup);
         let environment: SessionEnvironmentSnapshot;
         if (isSessionEnvironmentSnapshot(record.environment)) {
-          environment = yield* environmentVault.replay(record.environment);
+          environment = record.environment;
         } else {
           record = yield* this.materializeEnvironmentSnapshotProgram(record, operation.nonce);
           if (!isSessionEnvironmentSnapshot(record.environment))
@@ -2804,7 +2753,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
             );
           environment = record.environment;
         }
-        if (requiredGlobalSecretSentinels(environment) === undefined)
+        if (!requiredGlobalSecretsPresent(environment))
           return yield* this.upstreamError(
             "Environment materialization failed",
             undefined,
@@ -2816,7 +2765,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           operation.nonce,
           containerAuth.ensurePiSession(record.id, transportToken, environment),
         );
-        yield* environmentVault.commit(environment);
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
           ...current,
@@ -2860,7 +2808,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     payload: VaporizeRetryPayload,
   ) {
     const backups = yield* BackupStore;
-    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     const current = yield* this.readRecordProgram();
     if (!current) return yield* notFound(payload.id);
@@ -2912,7 +2859,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* this.deleteEvidenceArtifactsProgram(pending);
       yield* evidence.clearForVaporize(payload.nonce);
     }
-    yield* environmentVault.delete;
     yield* store.clearCreateIdempotency;
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     const gone = yield* this.updateForOperationProgram(payload.nonce, (record) => ({
@@ -2980,7 +2926,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     record: SessionRecord,
   ) {
-    const environmentVault = yield* EnvironmentSecretVault;
     const store = yield* SessionStore;
     if (record.execution.provider === "cloudflare" && this.rawContainer?.running === true) {
       const destroyed = yield* Effect.raceFirst(
@@ -2993,7 +2938,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           exitCode: 1,
         });
     }
-    yield* environmentVault.delete;
     yield* store.clearCreateIdempotency;
     yield* removeSessionProjection(record.id);
     yield* Effect.sync(() => this.cancelAllSessionSchedules());
@@ -4640,174 +4584,99 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.renameScottySessionProgram(title));
   }
 
-  private readonly authorizeEnvironmentRequestProgram = Effect.fnUntraced(function* (
+  /**
+   * Egress-boundary credential resolution. The container sends no usable credential; this
+   * returns the binding for the destination origin, or null when unmapped (deny-by-default).
+   */
+  private readonly resolveCredentialForOriginProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     input: unknown,
   ) {
-    const decoded = decodeEnvironmentProxyRequest(input);
-    if (Result.isFailure(decoded)) return yield* badRequest("Environment proxy request is invalid");
+    const decoded = decodeEnvironmentOriginResolveRequest(input);
+    if (Result.isFailure(decoded)) return yield* badRequest("Origin resolve request is invalid");
+    const origin = decoded.success.origin;
     const record = yield* this.readRecordProgram();
     if (record === undefined || record.status === "gone") {
-      // Diagnostic: egress denials are silent at the boundary; surface the branch.
       console.error(
         JSON.stringify({
-          event: "egress.authorize.denied",
+          event: "egress.resolve.denied",
           reason: "session_unavailable",
           detail: "record missing",
-          origin: decoded.success.origin,
+          origin,
         }),
       );
-      return { authorized: false, reason: "session_unavailable" as const };
-    }
-    const vault = yield* EnvironmentSecretVault;
-    const resolutions = yield* vault.readForProxy(decoded.success.sentinels);
-    if (resolutions === null) {
-      // Diagnostic: egress denials are silent at the boundary; surface the branch.
-      console.error(
-        JSON.stringify({
-          event: "egress.authorize.denied",
-          reason: "unknown_sentinel",
-          origin: decoded.success.origin,
-          sentinels: decoded.success.sentinels.length,
-        }),
-      );
-      return { authorized: false, reason: "unknown_sentinel" as const };
+      return null;
     }
     const stub = this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
-    const authorizeEnvironmentSecrets = stub.authorizeEnvironmentSecrets;
-    if (authorizeEnvironmentSecrets === undefined) {
-      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+    const resolveCredential = stub.resolveCredentialForOrigin;
+    if (resolveCredential === undefined) {
       console.error(
         JSON.stringify({
-          event: "egress.authorize.denied",
+          event: "egress.resolve.denied",
           reason: "session_unavailable",
-          detail: "authorizeEnvironmentSecrets missing from binding",
-          origin: decoded.success.origin,
+          detail: "resolveCredentialForOrigin missing from binding",
+          origin,
         }),
       );
-      return { authorized: false, reason: "session_unavailable" as const };
+      return null;
     }
     const result = yield* Effect.result(
       Effect.tryPromise({
-        try: () =>
-          authorizeEnvironmentSecrets({
-            origin: decoded.success.origin,
-            keys: resolutions.map(({ sourceScope, name }) => ({ sourceScope, name })),
-          }),
+        try: () => resolveCredential({ origin }),
         catch: (cause): ScottyError =>
-          this.upstreamError("Environment proxy authorization failed", cause, record.id),
+          this.upstreamError("Environment credential resolution failed", cause, record.id),
       }),
     );
     if (Result.isFailure(result)) {
-      // Diagnostic: egress denials are silent at the boundary; surface the branch.
       console.error(
         JSON.stringify({
-          event: "egress.authorize.denied",
+          event: "egress.resolve.denied",
           reason: "session_unavailable",
-          detail: "authorizeEnvironmentSecrets threw",
+          detail: "resolveCredentialForOrigin threw",
           error: result.failure.message,
+          origin,
         }),
       );
-      return { authorized: false, reason: "session_unavailable" as const };
+      return null;
     }
     if (!result.success.ok) {
-      // Diagnostic: egress denials are silent at the boundary; surface the branch.
       console.error(
         JSON.stringify({
-          event: "egress.authorize.denied",
+          event: "egress.resolve.denied",
           reason: "session_unavailable",
-          detail: "authorizeEnvironmentSecrets not ok",
+          detail: "resolveCredentialForOrigin not ok",
           error: JSON.stringify(result.success.error).slice(0, 400),
+          origin,
         }),
       );
-      return { authorized: false, reason: "session_unavailable" as const };
+      return null;
     }
-    const authorizationResult = decodeEnvironmentAuthorizationResult(result.success.value);
-    if (Result.isFailure(authorizationResult))
-      return yield* this.upstreamError(
-        "Environment proxy authorization failed",
-        authorizationResult.failure,
-        record.id,
-      );
-    const authorization = decodeEnvironmentProxyResponse({
-      authorized: authorizationResult.success.authorized,
-      reason: authorizationResult.success.authorized
-        ? "approved"
-        : (authorizationResult.success.decisions.find(({ status }) => status !== "approved")
-            ?.status ?? "pending"),
-      ...(authorizationResult.success.authorized
-        ? {
-            values: Object.fromEntries(resolutions.map(({ sentinel, value }) => [sentinel, value])),
-          }
-        : {}),
-    });
-    if (Result.isFailure(authorization)) {
-      // Diagnostic: egress denials are silent at the boundary; surface the branch.
+    if (result.success.value === null) {
       console.error(
         JSON.stringify({
-          event: "egress.authorize.denied",
+          event: "egress.resolve.denied",
+          reason: "unmapped_origin",
+          origin,
+        }),
+      );
+      return null;
+    }
+    const decodedBinding = decodeEnvironmentCredentialBinding(result.success.value);
+    if (Option.isNone(decodedBinding)) {
+      console.error(
+        JSON.stringify({
+          event: "egress.resolve.denied",
           reason: "decode_failure",
-          detail: authorization.failure.message,
+          origin,
         }),
       );
-      return yield* this.upstreamError(
-        "Environment proxy authorization failed",
-        authorization.failure,
-        record.id,
-      );
+      return null;
     }
-    if (!authorization.success.authorized) {
-      // Diagnostic: egress denials are silent at the boundary; surface the branch.
-      console.error(
-        JSON.stringify({
-          event: "egress.authorize.denied",
-          reason: authorization.success.reason,
-          origin: decoded.success.origin,
-          keys: resolutions.map(({ sourceScope, name }) => `${sourceScope}/${name}`),
-        }),
-      );
-    }
-    return authorization.success;
+    return decodedBinding.value;
   });
 
-  async authorizeEnvironmentRequest(input: unknown): Promise<EnvironmentProxyResponse> {
-    return this.#run(this.authorizeEnvironmentRequestProgram(input));
-  }
-
-  private readonly resolveEnvironmentSecretProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    input: unknown,
-  ) {
-    const decoded = decodeEnvironmentSecretResolveRequest(input);
-    if (Result.isFailure(decoded)) return yield* badRequest("Environment sentinel is invalid");
-    const record = yield* this.readRecordProgram();
-    if (record === undefined || record.status === "gone") return null;
-    const vault = yield* EnvironmentSecretVault;
-    const resolution = yield* vault
-      .resolve(decoded.success.sentinel)
-      .pipe(
-        Effect.mapError(() =>
-          this.upstreamError("Environment secret resolution failed", undefined, record.id),
-        ),
-      );
-    if (resolution === null) return null;
-    const response = decodeEnvironmentSecretResolution({
-      sentinel: resolution.sentinel,
-      value: resolution.value,
-    });
-    if (Result.isFailure(response))
-      return yield* this.upstreamError(
-        "Environment secret resolution failed",
-        response.failure,
-        record.id,
-      );
-    return response.success;
-  });
-
-  async resolveEnvironmentSecretForProxy(
-    input: unknown,
-  ): Promise<EnvironmentSecretResolutionResponse | null> {
-    return this.#run(this.resolveEnvironmentSecretProgram(input));
+  async resolveCredentialForOrigin(input: unknown): Promise<EnvironmentCredentialBinding | null> {
+    return this.#run(this.resolveCredentialForOriginProgram(input));
   }
 
   async enforceHardCap(payload: HardCapPayload): Promise<void> {

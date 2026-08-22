@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   isSessionEnvironmentSnapshot,
+  ENVIRONMENT_INJECTED_PLACEHOLDER,
   type EnvironmentMaterialization,
 } from "../src/environment-contracts";
 import { ScottyError } from "../src/contracts";
@@ -12,16 +13,12 @@ import {
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
+const PLACEHOLDER = ENVIRONMENT_INJECTED_PLACEHOLDER;
 const previous = {
   version: 1 as const,
   revision: 3,
   variables: { KEEP: "old", REMOVE_ME: "secret-to-remove" },
 };
-const OLD_API_TOKEN_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000000";
-const OLD_REMOVE_ME_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000001";
-const OLD_GITHUB_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000002";
-const OLD_OPENAI_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000003";
-const OLD_OPENCODE_SENTINEL = "scotty-env-a0b1c2d3e4f5-00000000000000000000000000000004";
 const current = {
   version: 1 as const,
   revision: 4,
@@ -32,11 +29,11 @@ const secretPrevious = {
   revision: 3,
   variables: {
     KEEP: "old",
-    GH_TOKEN: OLD_GITHUB_SENTINEL,
-    OPENAI_API_KEY: OLD_OPENAI_SENTINEL,
-    OPENCODE_API_KEY: OLD_OPENCODE_SENTINEL,
-    API_TOKEN: OLD_API_TOKEN_SENTINEL,
-    REMOVE_ME: OLD_REMOVE_ME_SENTINEL,
+    GH_TOKEN: PLACEHOLDER,
+    OPENAI_API_KEY: PLACEHOLDER,
+    OPENCODE_API_KEY: PLACEHOLDER,
+    API_TOKEN: PLACEHOLDER,
+    REMOVE_ME: PLACEHOLDER,
   },
 };
 const secretMaterialization = {
@@ -62,41 +59,6 @@ const secretMaterialization = {
     },
   },
 } satisfies EnvironmentMaterialization;
-const secretVaultState = {
-  version: 1 as const,
-  entries: {
-    [OLD_GITHUB_SENTINEL]: {
-      sentinel: OLD_GITHUB_SENTINEL,
-      sourceScope: "global" as const,
-      name: "GH_TOKEN",
-      value: "authority-github-token",
-    },
-    [OLD_OPENAI_SENTINEL]: {
-      sentinel: OLD_OPENAI_SENTINEL,
-      sourceScope: "global" as const,
-      name: "OPENAI_API_KEY",
-      value: "authority-openai-key",
-    },
-    [OLD_OPENCODE_SENTINEL]: {
-      sentinel: OLD_OPENCODE_SENTINEL,
-      sourceScope: "global" as const,
-      name: "OPENCODE_API_KEY",
-      value: "authority-opencode-key",
-    },
-    [OLD_API_TOKEN_SENTINEL]: {
-      sentinel: OLD_API_TOKEN_SENTINEL,
-      sourceScope: "global" as const,
-      name: "API_TOKEN",
-      value: "old-rotation-secret",
-    },
-    [OLD_REMOVE_ME_SENTINEL]: {
-      sentinel: OLD_REMOVE_ME_SENTINEL,
-      sourceScope: "global" as const,
-      name: "REMOVE_ME",
-      value: "removed-secret",
-    },
-  },
-};
 
 const entries = (operation: ReturnType<typeof makeSessionRecord>["operation"] = null) => ({
   [sessionHarnessKeys.record]: makeSessionRecord({
@@ -123,9 +85,9 @@ const assertEnvironmentWithGithub = (
     OPENCODE_API_KEY: opencode,
     ...variables
   } = actual.variables;
-  assert.ok(github?.startsWith(`scotty-env-${SESSION_ID}-`));
-  assert.ok(openai?.startsWith(`scotty-env-${SESSION_ID}-`));
-  assert.ok(opencode?.startsWith(`scotty-env-${SESSION_ID}-`));
+  assert.strictEqual(github, PLACEHOLDER);
+  assert.strictEqual(openai, PLACEHOLDER);
+  assert.strictEqual(opencode, PLACEHOLDER);
   assert.deepStrictEqual({ ...actual, variables }, expected);
 };
 
@@ -181,15 +143,14 @@ describe("Sandbox environment refresh", () => {
     assert.deepStrictEqual(harness.schedules, []);
   });
 
-  it("keeps the old generation and refresh lease through a failed prune", async () => {
-    const oldSecret = "old-rotation-secret";
+  it("keeps the old generation and refresh lease through an ambiguous post-apply commit", async () => {
     const newSecret = "new-rotation-secret";
     const committed = {
       version: 1 as const,
       revision: 3,
       variables: {
-        API_TOKEN: OLD_API_TOKEN_SENTINEL,
-        REMOVE_ME: OLD_REMOVE_ME_SENTINEL,
+        API_TOKEN: PLACEHOLDER,
+        REMOVE_ME: PLACEHOLDER,
       },
     };
     const harness = await createSessionHarness({
@@ -199,23 +160,6 @@ describe("Sandbox environment refresh", () => {
           status: "warm",
           environment: committed,
         }),
-        [sessionHarnessKeys.environmentVault]: {
-          version: 1,
-          entries: {
-            [OLD_API_TOKEN_SENTINEL]: {
-              sentinel: OLD_API_TOKEN_SENTINEL,
-              sourceScope: "global",
-              name: "API_TOKEN",
-              value: oldSecret,
-            },
-            [OLD_REMOVE_ME_SENTINEL]: {
-              sentinel: OLD_REMOVE_ME_SENTINEL,
-              sourceScope: "global",
-              name: "REMOVE_ME",
-              value: "removed-secret",
-            },
-          },
-        },
       },
       environmentMaterialization: {
         revision: 4,
@@ -229,7 +173,7 @@ describe("Sandbox environment refresh", () => {
         },
       },
       piSessionRunning: true,
-      failureStage: "environmentVaultCommit",
+      failureStage: "environmentRefreshCommit",
     });
 
     const error = await rejection(harness.sandbox.refreshScottyEnvironment());
@@ -237,26 +181,14 @@ describe("Sandbox environment refresh", () => {
     const pending = harness.readRecord();
     assert.strictEqual(pending?.operation?.kind, "refresh");
     assert.strictEqual(pending?.operation?.environmentRefreshPhase, "applying");
-    const pendingEnvironment = pending?.environment;
-    assert.ok(isSessionEnvironmentSnapshot(pendingEnvironment));
-    assert.strictEqual(pendingEnvironment.version, 1);
+    assert.deepStrictEqual(pending?.environment, committed);
     assert.strictEqual(harness.schedules.at(-1)?.callback, "retryEnvironmentRefresh");
-    assert.deepStrictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_API_TOKEN_SENTINEL }),
-      { sentinel: OLD_API_TOKEN_SENTINEL, value: oldSecret },
-    );
-    assert.notInclude(JSON.stringify(pending), oldSecret);
-    assert.deepStrictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_REMOVE_ME_SENTINEL }),
-      { sentinel: OLD_REMOVE_ME_SENTINEL, value: "removed-secret" },
-    );
     assert.notInclude(JSON.stringify(pending), newSecret);
-    assert.notInclude(JSON.stringify(harness.appliedEnvironments), oldSecret);
     assert.notInclude(JSON.stringify(harness.appliedEnvironments), newSecret);
     assert.notInclude(JSON.stringify(harness.piProcessEnvironments), newSecret);
     assert.notInclude(JSON.stringify(harness.writtenFiles), newSecret);
 
-    harness.clearFailure("environmentVaultCommit");
+    harness.clearFailure("environmentRefreshCommit");
     await harness.sandbox.retryEnvironmentRefresh({
       sessionId: SESSION_ID,
       nonce: pending?.operation?.nonce ?? "missing",
@@ -264,30 +196,15 @@ describe("Sandbox environment refresh", () => {
     const committedRecord = harness.readRecord();
     const committedEnvironment = committedRecord?.environment;
     assert.ok(isSessionEnvironmentSnapshot(committedEnvironment));
-    const newSentinel = committedEnvironment.variables.API_TOKEN;
     assert.strictEqual(committedRecord?.operation, null);
-    assert.notStrictEqual(newSentinel, OLD_API_TOKEN_SENTINEL);
-    assert.strictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_API_TOKEN_SENTINEL }),
-      null,
-    );
-    assert.strictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_REMOVE_ME_SENTINEL }),
-      null,
-    );
-    assert.deepStrictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: newSentinel }),
-      { sentinel: newSentinel, value: newSecret },
-    );
+    assert.strictEqual(committedEnvironment.revision, 4);
+    assert.strictEqual(committedEnvironment.variables.API_TOKEN, PLACEHOLDER);
+    assert.notProperty(committedEnvironment.variables, "REMOVE_ME");
     assert.isUndefined(harness.appliedEnvironments.at(-1)?.REMOVE_ME);
+    assert.strictEqual(harness.appliedEnvironments.at(-1)?.API_TOKEN, PLACEHOLDER);
     assert.notInclude(JSON.stringify(harness.appliedEnvironments), newSecret);
     assert.notInclude(JSON.stringify(harness.piProcessEnvironments), newSecret);
     assert.notInclude(JSON.stringify(harness.writtenFiles), newSecret);
-    const githubSentinel = committedEnvironment.variables.GH_TOKEN;
-    assert.deepStrictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: githubSentinel }),
-      { sentinel: githubSentinel, value: "authority-github-token" },
-    );
   });
 
   it("retains secret rotation and removal across an ambiguous apply retry", async () => {
@@ -298,7 +215,6 @@ describe("Sandbox environment refresh", () => {
           status: "warm",
           environment: secretPrevious,
         }),
-        [sessionHarnessKeys.environmentVault]: secretVaultState,
       },
       environmentMaterialization: secretMaterialization,
       piSessionRunning: true,
@@ -312,22 +228,8 @@ describe("Sandbox environment refresh", () => {
     assert.ok(isSessionEnvironmentSnapshot(target));
     const stagedToken = target.variables.API_TOKEN;
     const stagedAdded = target.variables.ADDED;
-    assert.notStrictEqual(stagedToken, OLD_API_TOKEN_SENTINEL);
-    assert.notStrictEqual(stagedAdded, undefined);
-    assert.strictEqual(
-      (await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_API_TOKEN_SENTINEL }))
-        ?.value,
-      "old-rotation-secret",
-    );
-    assert.strictEqual(
-      (await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_REMOVE_ME_SENTINEL }))
-        ?.value,
-      "removed-secret",
-    );
-    assert.deepStrictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: stagedToken }),
-      { sentinel: stagedToken, value: "new-rotation-secret" },
-    );
+    assert.strictEqual(stagedToken, PLACEHOLDER);
+    assert.strictEqual(stagedAdded, PLACEHOLDER);
     assert.notInclude(JSON.stringify(pending), "old-rotation-secret");
     assert.notInclude(JSON.stringify(pending), "new-rotation-secret");
 
@@ -343,14 +245,6 @@ describe("Sandbox environment refresh", () => {
     assert.strictEqual(committed?.operation, null);
     assert.strictEqual(environment.variables.API_TOKEN, stagedToken);
     assert.strictEqual(environment.variables.ADDED, stagedAdded);
-    assert.strictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_API_TOKEN_SENTINEL }),
-      null,
-    );
-    assert.strictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({ sentinel: OLD_REMOVE_ME_SENTINEL }),
-      null,
-    );
     assert.isUndefined(harness.appliedEnvironments.at(-1)?.REMOVE_ME);
     assert.strictEqual(harness.appliedEnvironments.at(-1)?.API_TOKEN, stagedToken);
     assert.strictEqual(harness.appliedEnvironments.at(-1)?.ADDED, stagedAdded);
@@ -546,10 +440,9 @@ describe("Sandbox environment refresh", () => {
           backup: { current: backup },
           ownedBackupIds: [backup.id],
         }),
-        [sessionHarnessKeys.environmentVault]: secretVaultState,
       },
       environmentMaterialization: secretMaterialization,
-      failureStage: "environmentVaultCommit",
+      failureStage: "environmentRefreshCommit",
     });
     harness.injectFailure("environmentRefreshRetrySchedule");
 
@@ -561,7 +454,7 @@ describe("Sandbox environment refresh", () => {
     assert.strictEqual(failed?.backup?.current.id, backup.id);
     assert.include(harness.events, "host:destroy");
 
-    harness.clearFailure("environmentVaultCommit");
+    harness.clearFailure("environmentRefreshCommit");
     harness.clearFailure("environmentRefreshRetrySchedule");
     const resumed = await harness.sandbox.resumeScottySession();
 
@@ -571,7 +464,7 @@ describe("Sandbox environment refresh", () => {
     assert.ok(isSessionEnvironmentSnapshot(resumedEnvironment));
     assert.strictEqual(resumedEnvironment.revision, secretPrevious.revision);
     assert.strictEqual(resumedEnvironment.variables.KEEP, "old");
-    assert.strictEqual(resumedEnvironment.variables.API_TOKEN, OLD_API_TOKEN_SENTINEL);
+    assert.strictEqual(resumedEnvironment.variables.API_TOKEN, PLACEHOLDER);
     assert.notProperty(resumedEnvironment.variables, "ADDED");
     assert.property(resumedEnvironment.variables, "REMOVE_ME");
     assert.strictEqual(harness.appliedEnvironments.at(-1)?.KEEP, "old");
@@ -579,16 +472,7 @@ describe("Sandbox environment refresh", () => {
       harness.appliedEnvironments.at(-1)?.API_TOKEN,
       resumedEnvironment.variables.API_TOKEN,
     );
-    assert.deepStrictEqual(
-      await harness.sandbox.resolveEnvironmentSecretForProxy({
-        sentinel: resumedEnvironment.variables.API_TOKEN,
-      }),
-      {
-        sentinel: resumedEnvironment.variables.API_TOKEN,
-        value: "old-rotation-secret",
-      },
-    );
-    assert.strictEqual(harness.appliedEnvironments.at(-1)?.REMOVE_ME, OLD_REMOVE_ME_SENTINEL);
+    assert.strictEqual(harness.appliedEnvironments.at(-1)?.REMOVE_ME, PLACEHOLDER);
     assert.notInclude(JSON.stringify(resumedRecord), "new-rotation-secret");
     assert.notInclude(JSON.stringify(harness.appliedEnvironments), "new-rotation-secret");
     assert.notInclude(JSON.stringify(harness.piProcessEnvironments), "new-rotation-secret");

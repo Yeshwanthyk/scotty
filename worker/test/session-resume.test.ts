@@ -1,7 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { ScottyError } from "../src/contracts";
-import { isSessionEnvironmentSnapshot } from "../src/environment-contracts";
+import {
+  isSessionEnvironmentSnapshot,
+  ENVIRONMENT_INJECTED_PLACEHOLDER,
+} from "../src/environment-contracts";
 import {
   createSessionHarness,
   type InitialStorageEntries,
@@ -130,14 +133,13 @@ describe("Sandbox resume orchestration", () => {
     const record = harness.readRecord();
     const environment = record?.environment;
     assert.ok(isSessionEnvironmentSnapshot(environment));
-    const sentinel = environment.variables.API_TOKEN;
     assert.strictEqual(environment.version, 1);
-    assert.ok(sentinel?.startsWith(`scotty-env-${SESSION_ID}-`));
+    assert.strictEqual(environment.variables.API_TOKEN, ENVIRONMENT_INJECTED_PLACEHOLDER);
     assert.notInclude(JSON.stringify(record), legacySecret);
     assert.notInclude(JSON.stringify(record), removedLegacySecret);
     assert.notProperty(environment.variables, "REMOVED_TOKEN");
     assert.strictEqual(harness.appliedEnvironments[0]?.RELEASE_CHANNEL, "new-global");
-    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, sentinel);
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, ENVIRONMENT_INJECTED_PLACEHOLDER);
     assert.notInclude(JSON.stringify(harness.appliedEnvironments[0]), legacySecret);
     assert.notInclude(JSON.stringify(harness.appliedEnvironments[0]), removedLegacySecret);
     assert.notInclude(JSON.stringify(harness.writtenFiles), legacySecret);
@@ -146,61 +148,20 @@ describe("Sandbox resume orchestration", () => {
     assert.notInclude(JSON.stringify(harness.piProcessEnvironments), removedLegacySecret);
   });
   it("replays a versioned snapshot without rematerializing installation environment", async () => {
-    const retainedSecret = "retained-secret";
-    const retainedSentinel = `scotty-env-${SESSION_ID}-${"a".repeat(32)}`;
-    const staleSentinel = `scotty-env-${SESSION_ID}-${"b".repeat(32)}`;
-    const githubSentinel = `scotty-env-${SESSION_ID}-${"c".repeat(32)}`;
-    const openaiSentinel = `scotty-env-${SESSION_ID}-${"d".repeat(32)}`;
-    const opencodeSentinel = `scotty-env-${SESSION_ID}-${"e".repeat(32)}`;
     const retained = {
       version: 1 as const,
       revision: 4,
       variables: {
         RELEASE_CHANNEL: "retained",
-        API_TOKEN: retainedSentinel,
-        GH_TOKEN: githubSentinel,
-        OPENAI_API_KEY: openaiSentinel,
-        OPENCODE_API_KEY: opencodeSentinel,
+        API_TOKEN: ENVIRONMENT_INJECTED_PLACEHOLDER,
+        GH_TOKEN: ENVIRONMENT_INJECTED_PLACEHOLDER,
+        OPENAI_API_KEY: ENVIRONMENT_INJECTED_PLACEHOLDER,
+        OPENCODE_API_KEY: ENVIRONMENT_INJECTED_PLACEHOLDER,
       },
     };
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: sleepingRecord({ environment: retained }),
-        [sessionHarnessKeys.environmentVault]: {
-          version: 1,
-          entries: {
-            [retainedSentinel]: {
-              sentinel: retainedSentinel,
-              sourceScope: "global",
-              name: "API_TOKEN",
-              value: retainedSecret,
-            },
-            [staleSentinel]: {
-              sentinel: staleSentinel,
-              sourceScope: "global",
-              name: "STALE_TOKEN",
-              value: "stale-secret",
-            },
-            [githubSentinel]: {
-              sentinel: githubSentinel,
-              sourceScope: "global",
-              name: "GH_TOKEN",
-              value: "authority-github-token",
-            },
-            [openaiSentinel]: {
-              sentinel: openaiSentinel,
-              sourceScope: "global",
-              name: "OPENAI_API_KEY",
-              value: "authority-openai-key",
-            },
-            [opencodeSentinel]: {
-              sentinel: opencodeSentinel,
-              sourceScope: "global",
-              name: "OPENCODE_API_KEY",
-              value: "authority-opencode-key",
-            },
-          },
-        },
       },
       environmentMaterialization: {
         revision: 5,
@@ -226,38 +187,12 @@ describe("Sandbox resume orchestration", () => {
     assert.deepStrictEqual(harness.readRecord()?.environment, retained);
     assert.deepStrictEqual(harness.environmentSnapshotRepos, []);
     assert.strictEqual(harness.appliedEnvironments[0]?.RELEASE_CHANNEL, "retained");
-    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, retainedSentinel);
+    assert.strictEqual(harness.appliedEnvironments[0]?.API_TOKEN, ENVIRONMENT_INJECTED_PLACEHOLDER);
     assert.strictEqual(harness.piProcessEnvironments[0]?.RELEASE_CHANNEL, "retained");
-    assert.strictEqual(harness.piProcessEnvironments[0]?.API_TOKEN, retainedSentinel);
-    assert.deepStrictEqual(harness.read(sessionHarnessKeys.environmentVault), {
-      version: 1,
-      entries: {
-        [retainedSentinel]: {
-          sentinel: retainedSentinel,
-          sourceScope: "global",
-          name: "API_TOKEN",
-          value: retainedSecret,
-        },
-        [githubSentinel]: {
-          sentinel: githubSentinel,
-          sourceScope: "global",
-          name: "GH_TOKEN",
-          value: "authority-github-token",
-        },
-        [openaiSentinel]: {
-          sentinel: openaiSentinel,
-          sourceScope: "global",
-          name: "OPENAI_API_KEY",
-          value: "authority-openai-key",
-        },
-        [opencodeSentinel]: {
-          sentinel: opencodeSentinel,
-          sourceScope: "global",
-          name: "OPENCODE_API_KEY",
-          value: "authority-opencode-key",
-        },
-      },
-    });
+    assert.strictEqual(
+      harness.piProcessEnvironments[0]?.API_TOKEN,
+      ENVIRONMENT_INJECTED_PLACEHOLDER,
+    );
   });
 
   it("rematerializes the pinned sandbox bundle after backup restore", async () => {
