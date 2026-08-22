@@ -175,7 +175,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     assert.strictEqual(forwarded.headers.get("authorization"), null);
     assert.strictEqual(forwarded.headers.get("cookie"), null);
     assert.strictEqual(forwarded.headers.get("x-scotty-root"), null);
-    assert.strictEqual(forwarded.headers.get(PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER), "1");
+    assert.strictEqual(forwarded.headers.get(PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER), null);
     assert.notStrictEqual(forwarded.headers.get(PI_SESSION_TOKEN_HEADER), "attacker-token");
     assert.strictEqual(
       forwarded.headers.get(PI_SESSION_TOKEN_HEADER),
@@ -224,7 +224,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     assert.strictEqual(harness.rawPiRequests[0].headers.get("last-event-id"), "event-4");
     assert.strictEqual(
       harness.rawPiRequests[0].headers.get(PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER),
-      "1",
+      null,
     );
     assert.deepStrictEqual(harness.piRequests, []);
     assert.isFalse(harness.events.some((event) => event.startsWith("host:container:")));

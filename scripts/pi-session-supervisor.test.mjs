@@ -171,10 +171,21 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   const snapshot = await (await fetch(`${url}/snapshot`, { headers: transportHeaders })).json();
   assert.equal(snapshot.state.sessionId, `pi-session-1${String.fromCodePoint(0x2028)}safe`);
   const eventResponse = await fetch(`${url}/events?since=0`, { headers: transportHeaders });
+  assert.equal(eventResponse.status, 200);
   const eventReader = eventResponse.body.getReader();
-  const eventChunk = await eventReader.read();
+  const eventStreamDecoder = new TextDecoder();
+  let eventStreamText = "";
+  for (;;) {
+    const eventChunk = await eventReader.read();
+    if (eventChunk.done) break;
+    eventStreamText += eventStreamDecoder.decode(eventChunk.value, { stream: true });
+    if (/scotty_protocol_error/u.test(eventStreamText)) break;
+  }
   await eventReader.cancel();
-  assert.match(new TextDecoder().decode(eventChunk.value), /scotty_protocol_error/u);
+  // The connect-time comment flush must lead every idle stream so a buffering
+  // hop cannot hold the response before the client observes its open event.
+  assert.match(eventStreamText, /^retry: 3000\n\n: connected\n\n/u);
+  assert.match(eventStreamText, /scotty_protocol_error/u);
   assert.equal(snapshot.messages.length, 1);
   assert.equal(snapshot.messages[0].role, "user");
   assert.equal(snapshot.messages[0].content, "Start the task");

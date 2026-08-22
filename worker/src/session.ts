@@ -4,7 +4,6 @@ import {
   decodePiConsoleRelaySnapshotV1,
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_MAX_RESPONSE_BYTES,
-  PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
   PI_CONSOLE_PROTOCOL_VERSION,
   PI_CONSOLE_PROXY_PREFIX,
   type PiConsoleCommandV1,
@@ -4070,7 +4069,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const targetUrl = new URL(`http://127.0.0.1:${PI_SESSION_PORT}/${action}`);
     targetUrl.search = incomingUrl.search;
     const headers = copyBoundedPassivePiConsoleHeaders(input.request.headers);
-    headers.set(PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER, "1");
+    // Relayed event streams keep the container's SSE heartbeat enabled: its
+    // periodic comments are the only bytes on an idle stream and defeat
+    // buffering hops end to end. The bounded header copy never forwards a
+    // client-supplied value, so this stays server-authoritative.
     headers.set(PI_SESSION_TOKEN_HEADER, transportToken.success);
     const body = input.request.method === "POST" ? await input.request.arrayBuffer() : undefined;
     const relayRequest = new Request(targetUrl, {
