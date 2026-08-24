@@ -30,12 +30,12 @@ export function displayDate(value) {
 function statsCounts(value, includeProjects) {
   const workspacesCreated = count(value.workspacesCreated);
   const warmNow = count(value.warmNow);
-  const sleepingNow = count(value.sleepingNow);
+  const stoppedNow = count(value.stoppedNow);
   const projects = includeProjects ? count(value.projects) : undefined;
   if (
     workspacesCreated === undefined ||
     warmNow === undefined ||
-    sleepingNow === undefined ||
+    stoppedNow === undefined ||
     (includeProjects && projects === undefined)
   )
     return undefined;
@@ -43,7 +43,7 @@ function statsCounts(value, includeProjects) {
     workspacesCreated,
     ...(includeProjects ? { projects } : {}),
     warmNow,
-    sleepingNow,
+    stoppedNow,
   };
 }
 

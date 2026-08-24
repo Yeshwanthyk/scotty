@@ -679,7 +679,7 @@ describe("source Sandbox orchestration authority", () => {
   it("requires evidence to originate from a warm running Cloudflare source", async () => {
     const records = [
       {
-        record: makeSessionRecord({ status: "sleeping" }),
+        record: makeSessionRecord({ status: "stopped" }),
         rawPiContainerRunning: true,
       },
       {
@@ -716,7 +716,7 @@ describe("source Sandbox orchestration authority", () => {
 
   it("requires an authoritative warm Cloudflare source with no operation", async () => {
     for (const record of [
-      makeSessionRecord({ status: "sleeping" }),
+      makeSessionRecord({ status: "stopped" }),
       makeSessionRecord({
         operation: {
           kind: "snapshot",

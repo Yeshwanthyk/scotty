@@ -1,5 +1,5 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
-import { Effect, Option, Predicate, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
 import {
   RepositoryDefaultBranchSchema,
@@ -69,13 +69,7 @@ const decodeShortHexId = Schema.decodeUnknownOption(ShortHexIdSchema);
 const decodeIdempotencyKey = Schema.decodeUnknownOption(IdempotencyKeySchema);
 const decodeProvider = Schema.decodeUnknownOption(ProviderSchema);
 
-export const SessionStatusSchema = Schema.Literals([
-  "booting",
-  "warm",
-  "sleeping",
-  "failed",
-  "gone",
-]);
+export const SessionStatusSchema = Schema.Literals(["provisioning", "warm", "stopped", "gone"]);
 export type SessionStatus = typeof SessionStatusSchema.Type;
 
 export const OperationKindSchema = Schema.Literals([
@@ -90,6 +84,157 @@ export const OperationKindSchema = Schema.Literals([
 ]);
 export type OperationKind = typeof OperationKindSchema.Type;
 
+export const SessionOperationStageSchema = Schema.Literals([
+  "acquired",
+  "setup",
+  "runtime",
+  "checkpoint",
+  "stop",
+  "restore",
+  "refresh",
+  "evidence",
+  "hatch",
+  "publish",
+  "cleanup",
+  "reconcile",
+  "commit",
+]);
+export type SessionOperationStage = typeof SessionOperationStageSchema.Type;
+
+export const SessionOperationProgressSchema = Schema.Literals(["pending", "running", "completed"]);
+export type SessionOperationProgress = typeof SessionOperationProgressSchema.Type;
+
+export const SessionLastProvenEffectSchema = Schema.Literals([
+  "none",
+  "session_created",
+  "runtime_ready",
+  "checkpoint_committed",
+  "runtime_stopped",
+  "resources_absent",
+]);
+export type SessionLastProvenEffect = typeof SessionLastProvenEffectSchema.Type;
+
+export const SessionRetainedStateSchema = Schema.Literals([
+  "session",
+  "runtime",
+  "checkpoint",
+  "operation_lease",
+  "cleanup_authority",
+]);
+export type SessionRetainedState = typeof SessionRetainedStateSchema.Type;
+
+export const SessionOperationAmbiguitySchema = Schema.Literals(["none", "provider_effect_unknown"]);
+export type SessionOperationAmbiguity = typeof SessionOperationAmbiguitySchema.Type;
+
+export const SessionSafeRetrySchema = Schema.Literals([
+  "none",
+  "retry_operation",
+  "reconcile_first",
+]);
+export type SessionSafeRetry = typeof SessionSafeRetrySchema.Type;
+
+export const SessionHumanActionSchema = Schema.Literals([
+  "none",
+  "retry",
+  "inspect",
+  "resume",
+  "vaporize",
+]);
+export type SessionHumanAction = typeof SessionHumanActionSchema.Type;
+
+export const SessionStoppedReasonSchema = Schema.Literals([
+  "snapshot",
+  "inactivity",
+  "hard_cap",
+  "runtime_exit",
+]);
+export type SessionStoppedReason = typeof SessionStoppedReasonSchema.Type;
+
+export const SessionRecoveryActionSchema = Schema.Literals([
+  "none",
+  "resume",
+  "retry",
+  "reconcile",
+  "vaporize",
+]);
+export type SessionRecoveryAction = typeof SessionRecoveryActionSchema.Type;
+
+export const SessionOperationFailureCodeSchema = Schema.Literals([
+  "checkpoint_required",
+  "checkpoint_runtime_unavailable",
+  "create_ambiguous",
+  "create_failed",
+  "down_failed",
+  "environment_refresh_failed",
+  "hatch_failed",
+  "hard_cap_checkpoint_failed",
+  "resume_failed",
+  "runner_runtime_absent",
+  "runtime_stopped",
+  "snapshot_failed",
+]);
+export type SessionOperationFailureCode = typeof SessionOperationFailureCodeSchema.Type;
+
+export const SessionOperationFailureSchema = Schema.Struct({
+  code: SessionOperationFailureCodeSchema,
+  message: Schema.String,
+});
+export type SessionOperationFailure = typeof SessionOperationFailureSchema.Type;
+
+export const SessionOperationOutcomeSchema = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("pending") }),
+  Schema.Struct({ status: Schema.Literal("succeeded") }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    failure: SessionOperationFailureSchema,
+  }),
+]);
+export type SessionOperationOutcome = typeof SessionOperationOutcomeSchema.Type;
+
+export const SessionOperationResultSchema = Schema.Struct({
+  kind: OperationKindSchema,
+  stage: SessionOperationStageSchema,
+  progress: SessionOperationProgressSchema,
+  lastProvenEffect: SessionLastProvenEffectSchema,
+  retainedState: SessionRetainedStateSchema,
+  ambiguity: SessionOperationAmbiguitySchema,
+  safeRetry: SessionSafeRetrySchema,
+  humanAction: SessionHumanActionSchema,
+  outcome: SessionOperationOutcomeSchema,
+  stoppedReason: Schema.optionalKey(SessionStoppedReasonSchema),
+  recoveryAction: SessionRecoveryActionSchema,
+  startedAt: Schema.String,
+  updatedAt: Schema.String,
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (result) => {
+        const pending = result.outcome.status === "pending";
+        const ambiguous = result.ambiguity === "provider_effect_unknown";
+        const succeeded = result.outcome.status === "succeeded";
+        return (
+          pending === (result.progress === "running" && !ambiguous) &&
+          (!ambiguous ||
+            (result.progress === "running" &&
+              result.outcome.status === "failed" &&
+              result.retainedState === "operation_lease" &&
+              result.safeRetry === "reconcile_first" &&
+              result.recoveryAction === "reconcile")) &&
+          (result.progress !== "completed" || result.outcome.status === "failed" || succeeded) &&
+          (!succeeded ||
+            (result.progress === "completed" &&
+              result.stage === "commit" &&
+              result.ambiguity === "none" &&
+              result.safeRetry === "none")) &&
+          (result.lastProvenEffect === "runtime_stopped") === (result.stoppedReason !== undefined)
+        );
+      },
+      { expected: "operation progress, outcome, ambiguity, and proven effects to agree" },
+    ),
+  ),
+);
+export type SessionOperationResult = typeof SessionOperationResultSchema.Type;
+
 export const SessionOperationSchema = Schema.Struct({
   kind: OperationKindSchema,
   nonce: Schema.String,
@@ -98,6 +243,7 @@ export const SessionOperationSchema = Schema.Struct({
   checkpointedBackupId: Schema.optionalKey(Schema.String),
   stopRequestedAt: Schema.optionalKey(Schema.String),
   stopRollbackAt: Schema.optionalKey(Schema.String),
+  stoppedReason: Schema.optionalKey(SessionStoppedReasonSchema),
   environmentRefreshPhase: Schema.optionalKey(Schema.Literals(["pending", "applying"])),
   environmentRefreshTarget: Schema.optionalKey(PersistedSessionEnvironmentSnapshotSchema),
   environmentRefreshPrevious: Schema.optionalKey(PersistedSessionEnvironmentSnapshotSchema),
@@ -139,14 +285,6 @@ export const SessionCreateSetupStageSchema = Schema.Literals([
 ]);
 export type SessionCreateSetupStage = typeof SessionCreateSetupStageSchema.Type;
 
-export const SessionFailureSchema = Schema.Struct({
-  code: Schema.String,
-  message: Schema.String,
-  recoverable: Schema.Boolean,
-  stage: Schema.optionalKey(SessionCreateSetupStageSchema),
-});
-export type SessionFailure = typeof SessionFailureSchema.Type;
-
 export const AgentActivityStateSchema = Schema.Literals([
   "working",
   "waiting",
@@ -183,6 +321,7 @@ export const SessionRecordSchema = Schema.Struct({
   title: Schema.String,
   status: SessionStatusSchema,
   operation: Schema.NullOr(SessionOperationSchema),
+  operationResult: Schema.NullOr(SessionOperationResultSchema),
   execution: ExecutionBindingSchema,
   provider: ProviderSchema,
   runner: Schema.optionalKey(Schema.String),
@@ -205,12 +344,43 @@ export const SessionRecordSchema = Schema.Struct({
   codexThreadId: Schema.optional(Schema.String),
   agentState: Schema.optional(AgentActivityStateSchema),
   lastAgentEventAt: Schema.optional(Schema.String),
-  failure: Schema.optional(SessionFailureSchema),
   sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
   environment: Schema.optionalKey(PersistedSessionEnvironmentSnapshotSchema),
   piSessionTransportToken: PiSessionTransportTokenSchema,
-});
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (record) => {
+        const operationMatchesResult =
+          record.operation === null
+            ? record.operationResult === null || record.operationResult.progress === "completed"
+            : record.operationResult !== null &&
+              record.operationResult.kind === record.operation.kind &&
+              record.operationResult.startedAt === record.operation.startedAt &&
+              record.operationResult.progress === "running";
+        const stoppedIsValid =
+          record.status !== "stopped" ||
+          (record.backup?.current !== undefined &&
+            record.operationResult?.lastProvenEffect === "runtime_stopped" &&
+            (record.operation === null ||
+              record.operation.kind === "resume" ||
+              record.operation.kind === "vaporize"));
+        return operationMatchesResult && stoppedIsValid;
+      },
+      {
+        expected:
+          "the operation lease to match its result and stopped sessions to retain a checkpoint and proven stop",
+      },
+    ),
+  ),
+);
 export type SessionRecord = typeof SessionRecordSchema.Type;
+
+export const SessionControlAuthoritySchema = Schema.Struct({
+  record: SessionRecordSchema,
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type SessionControlAuthority = typeof SessionControlAuthoritySchema.Type;
 
 export const SessionEnvironmentStatusSchema = Schema.Struct({
   id: Schema.String,
@@ -241,20 +411,12 @@ const decodeCurrentSessionRecord = Schema.decodeUnknownEffect(SessionRecordSchem
 const decodeCurrentSessionRecordResult = Schema.decodeUnknownResult(SessionRecordSchema, {
   onExcessProperty: "error",
 });
-const withLegacyCloudflareBinding = (value: unknown): unknown =>
-  Predicate.isObject(value) &&
-  value.version === 1 &&
-  value.provider === "cloudflare" &&
-  !("execution" in value)
-    ? { ...value, execution: { provider: "cloudflare" } }
-    : value;
-export const decodeSessionRecord = (value: unknown) =>
-  decodeCurrentSessionRecord(withLegacyCloudflareBinding(value));
-export const decodeSessionRecordResult = (value: unknown) =>
-  decodeCurrentSessionRecordResult(withLegacyCloudflareBinding(value));
+export const decodeSessionRecord = decodeCurrentSessionRecord;
+export const decodeSessionRecordResult = decodeCurrentSessionRecordResult;
 
 export const SessionProjectionSchema = Schema.Struct({
   version: Schema.Literal(1),
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   id: Schema.String,
   title: Schema.String,
   status: SessionStatusSchema,
@@ -272,7 +434,7 @@ export const SessionProjectionSchema = Schema.Struct({
   updatedAt: Schema.String,
   hardCapAt: Schema.String,
   projectedAt: Schema.String,
-  failure: Schema.optionalKey(SessionFailureSchema),
+  operationResult: Schema.optionalKey(SessionOperationResultSchema),
   sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
 });
 export type SessionProjection = typeof SessionProjectionSchema.Type;
@@ -301,7 +463,7 @@ const StatsCountSchema = Schema.Number.check(Schema.isInt(), Schema.isGreaterTha
 const StatsCountsFields = {
   workspacesCreated: StatsCountSchema,
   warmNow: StatsCountSchema,
-  sleepingNow: StatsCountSchema,
+  stoppedNow: StatsCountSchema,
 };
 
 export const StatsResponseSchema = Schema.Struct({
@@ -622,9 +784,14 @@ export function parseProvider(value: unknown): Provider {
   return decoded.value;
 }
 
-export function toProjection(record: SessionRecord, now: Date): SessionProjection {
+export function toProjection(
+  record: SessionRecord,
+  revision: number,
+  now: Date,
+): SessionProjection {
   return {
     version: 1,
+    revision,
     id: record.id,
     title: record.title,
     status: record.status,
@@ -642,7 +809,7 @@ export function toProjection(record: SessionRecord, now: Date): SessionProjectio
     updatedAt: record.updatedAt,
     hardCapAt: record.hardCapAt,
     projectedAt: now.toISOString(),
-    failure: record.failure,
+    operationResult: record.operationResult ?? undefined,
     sandboxBundle: record.sandboxBundle,
   };
 }

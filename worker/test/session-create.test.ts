@@ -18,7 +18,7 @@ import {
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
-import { makeSessionRecord } from "./support";
+import { makeSessionRecord, sessionOperationFailure } from "./support";
 
 const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
   {
@@ -211,8 +211,8 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(created.sandboxBundle, { digest: null, manifestVersion: 1 });
     assert.deepStrictEqual(harness.read(sessionHarnessKeys.createIdempotency), CREATE_IDEMPOTENCY);
 
-    const recordIndex = harness.events.indexOf("record:booting");
-    const projectionIndex = harness.events.indexOf("projection:booting");
+    const recordIndex = harness.events.indexOf("record:provisioning");
+    const projectionIndex = harness.events.indexOf("projection:provisioning");
     const hardCapIndex = harness.events.indexOf("schedule:enforceHardCap");
     const warmIndex = harness.events.lastIndexOf("record:warm");
     const warmProjectionIndex = harness.events.lastIndexOf("projection:warm");
@@ -284,7 +284,7 @@ describe("Sandbox create orchestration", () => {
     assert.notInclude(shell?.content ?? "", secret);
   });
 
-  it("recovers a committed booting record through the pre-armed hard-cap schedule after a crash", async () => {
+  it("recovers a committed provisioning record through the pre-armed hard-cap schedule after a crash", async () => {
     const crashedHarness = await createSessionHarness({
       crashAfterInitialRecordCommit: true,
     });
@@ -298,7 +298,7 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(crash.cause.message, "simulated DO crash after initial record commit");
     const committed = crashedHarness.readRecord();
     assert.ok(committed);
-    assert.strictEqual(committed.status, "booting");
+    assert.strictEqual(committed.status, "provisioning");
     assert.ok(committed.operation);
     assert.strictEqual(committed.operation.kind, "create");
     assert.strictEqual(committed.operation.createPhase, "setup");
@@ -322,6 +322,10 @@ describe("Sandbox create orchestration", () => {
             ...committed.operation,
             startedAt: "2026-01-01T00:00:00.000Z",
           },
+          operationResult: committed.operationResult && {
+            ...committed.operationResult,
+            startedAt: "2026-01-01T00:00:00.000Z",
+          },
         },
       },
     });
@@ -329,14 +333,13 @@ describe("Sandbox create orchestration", () => {
     await reconstructed.sandbox.enforceHardCap({ hardCapAt: hardCap.payload.hardCapAt });
 
     const failed = reconstructed.readRecord();
-    assert.strictEqual(failed?.status, "failed");
+    assert.strictEqual(failed?.status, "provisioning");
     assert.strictEqual(failed?.operation, null);
-    assert.deepStrictEqual(failed?.failure, {
+    assert.deepStrictEqual(sessionOperationFailure(failed), {
       code: "hard_cap_checkpoint_failed",
       message: "A session operation exceeded the hard-cap grace period",
-      recoverable: false,
     });
-    assert.ok(reconstructed.events.includes("projection:failed"));
+    assert.ok(reconstructed.events.includes("projection:provisioning"));
     assert.ok(reconstructed.events.includes("host:destroy"));
   });
 
@@ -373,11 +376,11 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(verifierCalls, 0);
   });
 
-  it("reconciles a matching booting create through Pi with the same identity and payload", async () => {
+  it("reconciles a matching provisioning create through Pi with the same identity and payload", async () => {
     const nonce = "create-before-do-restart";
     const existing = makeSessionRecord({
       id: SESSION_ID,
-      status: "booting",
+      status: "provisioning",
       operation: {
         kind: "create",
         nonce,
@@ -424,7 +427,7 @@ describe("Sandbox create orchestration", () => {
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
-          status: "booting",
+          status: "provisioning",
           operation: {
             kind: "create",
             nonce,
@@ -447,7 +450,7 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(replayed.status, "warm");
     assert.ok(harness.events.includes("host:exec:workspace"));
     assert.ok(
-      harness.events.lastIndexOf("record:booting") < harness.events.lastIndexOf("record:warm"),
+      harness.events.lastIndexOf("record:provisioning") < harness.events.lastIndexOf("record:warm"),
     );
   });
 
@@ -457,7 +460,7 @@ describe("Sandbox create orchestration", () => {
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
-          status: "booting",
+          status: "provisioning",
           operation: {
             kind: "create",
             nonce,
@@ -490,7 +493,7 @@ describe("Sandbox create orchestration", () => {
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
-          status: "booting",
+          status: "provisioning",
           operation: {
             kind: "create",
             nonce,
@@ -596,7 +599,7 @@ describe("Sandbox create orchestration", () => {
         initialEntries: {
           [sessionHarnessKeys.record]: makeSessionRecord({
             id: SESSION_ID,
-            status: "booting",
+            status: "provisioning",
             operation: {
               kind: "create",
               nonce,
@@ -619,18 +622,16 @@ describe("Sandbox create orchestration", () => {
         error.message,
         "Pi session creation is ambiguous (stage: seed) [transport] Sandbox directory transport failed",
       );
-      assert.strictEqual(harness.readRecord()?.status, "booting");
+      assert.strictEqual(harness.readRecord()?.status, "provisioning");
       assert.deepInclude(harness.readRecord()?.operation, {
         kind: "create",
         nonce,
         createPhase: "runtime",
       });
-      assert.deepStrictEqual(harness.readRecord()?.failure, {
+      assert.deepStrictEqual(sessionOperationFailure(harness.readRecord()), {
         code: "create_ambiguous",
         message:
           "Pi session creation is ambiguous (stage: seed) [transport] Sandbox directory transport failed",
-        recoverable: true,
-        stage: "seed",
       });
       assert.ok(!harness.events.includes("host:destroy"));
     });
@@ -642,7 +643,7 @@ describe("Sandbox create orchestration", () => {
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
-          status: "booting",
+          status: "provisioning",
           operation: {
             kind: "create",
             nonce,
@@ -664,30 +665,27 @@ describe("Sandbox create orchestration", () => {
 
     assert.ok(error instanceof ScottyError);
     assert.strictEqual(error.message, "Pi session creation is ambiguous (stage: warm_commit)");
-    assert.strictEqual(harness.readRecord()?.status, "booting");
+    assert.strictEqual(harness.readRecord()?.status, "provisioning");
     assert.deepInclude(harness.readRecord()?.operation, {
       kind: "create",
       nonce,
       createPhase: "runtime",
     });
     assert.strictEqual(harness.readRecord()?.codexThreadId, undefined);
-    assert.deepStrictEqual(harness.readRecord()?.failure, {
+    assert.deepStrictEqual(sessionOperationFailure(harness.readRecord()), {
       code: "create_ambiguous",
       message: "Pi session creation is ambiguous (stage: warm_commit)",
-      recoverable: true,
-      stage: "warm_commit",
     });
-    assert.ok(!harness.events.includes("record:failed"));
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
-  it("reconciles a matching booting create from its durable runtime phase", async () => {
+  it("reconciles a matching provisioning create from its durable runtime phase", async () => {
     const nonce = "create-before-unknown-replay";
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
-          status: "booting",
+          status: "provisioning",
           operation: {
             kind: "create",
             nonce,
@@ -705,7 +703,7 @@ describe("Sandbox create orchestration", () => {
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
 
     assert.strictEqual(harness.readRecord()?.status, "warm");
-    assert.strictEqual(harness.readRecord()?.failure, undefined);
+    assert.strictEqual(sessionOperationFailure(harness.readRecord()), undefined);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
@@ -739,7 +737,7 @@ describe("Sandbox create orchestration", () => {
   ] satisfies ReadonlyArray<{ readonly name: string; readonly options: HarnessOptions }>;
 
   for (const testCase of failureCases) {
-    it(`persists non-recoverable failed state and destroys after ${testCase.name} failure`, async () => {
+    it(`persists a failed operation result and destroys after ${testCase.name} failure`, async () => {
       const harness = await createSessionHarness(testCase.options);
 
       await assertUpstreamFailure(
@@ -747,16 +745,17 @@ describe("Sandbox create orchestration", () => {
       );
 
       const failed = harness.readRecord();
-      assert.strictEqual(failed?.status, "failed");
+      assert.strictEqual(failed?.status, "provisioning");
       assert.strictEqual(failed?.operation, null);
-      assert.deepStrictEqual(failed?.failure, {
+      assert.deepStrictEqual(sessionOperationFailure(failed), {
         code: "create_failed",
         message: "Session setup failed",
-        recoverable: false,
       });
-      assert.ok(harness.events.includes("projection:failed"));
+      assert.ok(harness.events.includes("projection:provisioning"));
       assert.ok(harness.events.includes("host:destroy"));
-      assert.ok(harness.events.indexOf("record:failed") < harness.events.indexOf("host:destroy"));
+      assert.ok(
+        harness.events.indexOf("record:provisioning") < harness.events.indexOf("host:destroy"),
+      );
     });
   }
 
@@ -788,7 +787,7 @@ describe("Sandbox create orchestration", () => {
 
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
 
-    const recordIndex = harness.events.indexOf("record:booting");
+    const recordIndex = harness.events.indexOf("record:provisioning");
     const authIndex = harness.events.indexOf("host:mkdir");
     assert.ok(recordIndex >= 0);
     assert.ok(authIndex >= 0);

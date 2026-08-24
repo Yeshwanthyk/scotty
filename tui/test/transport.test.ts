@@ -262,7 +262,7 @@ describe("HttpConsoleTransport", () => {
               url: "https://scotty.example/s/created-session",
               branch: "scotty/created-session",
               provider: "cloudflare",
-              status: "booting",
+              status: "provisioning",
             });
           if (request.method === "DELETE") return Response.json({ id: SESSION_A, status: "gone" });
           return Response.json(session(SESSION_A));

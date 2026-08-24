@@ -121,7 +121,7 @@ const PUBLIC_AUTH_MUTATIONS = new Set([
   "POST /api/auth/pairings/consume",
   "POST /api/auth/recovery-grants/consume",
 ]);
-const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["booting", "warm", "sleeping", "failed"]);
+const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["provisioning", "warm", "stopped"]);
 const RUNNER_REGISTRY_OBJECT_NAME = "account";
 const SANDBOX_BUNDLE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
@@ -1411,7 +1411,7 @@ async function assertCloudflarePiAccess(sandbox: ScottySandbox): Promise<void> {
     throw wrongState(
       session.status,
       "access",
-      session.status === "sleeping"
+      session.status === "stopped"
         ? "Resume the session from Home before opening the worklog"
         : undefined,
     );
@@ -1438,7 +1438,7 @@ async function createTrackedSession(
         createdAt: session.createdAt,
       }).pipe(Effect.provide(projectionLayers(env)), Effect.scoped),
     );
-  if (session.status !== "failed" && session.status !== "gone") {
+  if (session.operationResult?.outcome.status !== "failed" && session.status !== "gone") {
     const entry = unwrapSandboxConfigRpc(
       await sandboxConfig(env).addRepo({
         repo: session.repo,

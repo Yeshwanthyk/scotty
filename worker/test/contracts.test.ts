@@ -22,6 +22,22 @@ import {
 } from "../src/contracts";
 import {} from "../src/egress";
 
+const stoppedOperationResult = {
+  kind: "snapshot" as const,
+  stage: "commit" as const,
+  progress: "completed" as const,
+  lastProvenEffect: "runtime_stopped" as const,
+  retainedState: "checkpoint" as const,
+  ambiguity: "none" as const,
+  safeRetry: "none" as const,
+  humanAction: "resume" as const,
+  outcome: { status: "succeeded" as const },
+  stoppedReason: "snapshot" as const,
+  recoveryAction: "resume" as const,
+  startedAt: "2026-01-01T00:00:01.000Z",
+  updatedAt: "2026-01-01T00:01:00.000Z",
+};
+
 describe("request contracts", () => {
   it("parses and bounds create input", () => {
     assert.deepStrictEqual(
@@ -127,6 +143,7 @@ describe("request contracts", () => {
       title: "Package Pi extensions",
       status: "warm",
       operation: { kind: "snapshot", nonce: "private", startedAt: "2026-01-01T00:00:01.000Z" },
+      operationResult: null,
       execution: { provider: "cloudflare" },
       provider: "cloudflare",
       repo: "owner/project",
@@ -140,8 +157,9 @@ describe("request contracts", () => {
       ownedBackupIds: [],
       piSessionTransportToken: "a".repeat(64),
     };
-    const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));
+    const projection = toProjection(record, 7, new Date("2026-01-01T00:00:02.000Z"));
     assert.ok(!("operation" in projection));
+    assert.strictEqual(projection.revision, 7);
     assert.isUndefined(projection.deleting);
     assert.deepInclude(toSessionView(projection, Date.parse("2026-01-01T01:00:00.000Z")), {
       title: "Package Pi extensions",
@@ -158,6 +176,7 @@ describe("request contracts", () => {
           startedAt: "2026-01-01T00:00:03.000Z",
         },
       },
+      8,
       new Date("2026-01-01T00:00:04.000Z"),
     );
     assert.strictEqual(deleting.deleting, true);
@@ -167,6 +186,7 @@ describe("request contracts", () => {
   it("floors partial seconds in session views", () => {
     const projection = {
       version: 1 as const,
+      revision: 1,
       id: "a0b1c2d3e4f5",
       title: "Package Pi extensions",
       status: "warm" as const,
@@ -190,8 +210,9 @@ const persistedRecord = {
   version: 1,
   id: "a0b1c2d3e4f5",
   title: "Package Pi extensions",
-  status: "sleeping",
+  status: "stopped",
   operation: null,
+  operationResult: stoppedOperationResult,
   execution: { provider: "cloudflare" },
   provider: "cloudflare",
   repo: "owner/project",
@@ -244,13 +265,13 @@ describe("stats schemas", () => {
 
     const stats = decodeStatsResponse({
       trackingSince: marker.value.createdAt,
-      overall: { workspacesCreated: 1, projects: 1, warmNow: 1, sleepingNow: 0 },
+      overall: { workspacesCreated: 1, projects: 1, warmNow: 1, stoppedNow: 0 },
       projects: [
         {
           repository: marker.value.repository,
           workspacesCreated: 1,
           warmNow: 1,
-          sleepingNow: 0,
+          stoppedNow: 0,
           lastCreated: marker.value.createdAt,
         },
       ],
@@ -268,16 +289,15 @@ describe("stats schemas", () => {
 });
 
 describe("persisted session schemas", () => {
-  it.effect("upgrades legacy Cloudflare records before current decoding", () =>
+  it.effect("rejects records without an explicit execution binding", () =>
     Effect.gen(function* () {
       const legacyRecord = Object.fromEntries(
         Object.entries(persistedRecord).filter(([key]) => key !== "execution"),
       );
       assert.notProperty(legacyRecord, "execution");
 
-      const decoded = yield* decodeSessionRecord(legacyRecord);
-
-      assert.deepStrictEqual(decoded, persistedRecord);
+      const decoded = yield* Effect.result(decodeSessionRecord(legacyRecord));
+      assert.ok(Result.isFailure(decoded));
     }),
   );
 
@@ -290,7 +310,6 @@ describe("persisted session schemas", () => {
         backup: { ...persistedRecord.backup, previous: undefined },
         backupExpiresAt: undefined,
         codexThreadId: undefined,
-        failure: undefined,
       };
       assert.deepStrictEqual(
         yield* decodeSessionRecord(withPersistedUndefined),
@@ -322,6 +341,30 @@ describe("persisted session schemas", () => {
       for (const malformed of [
         { ...persistedRecord, title: undefined },
         { ...persistedRecord, status: "unknown" },
+        { ...persistedRecord, status: "booting" },
+        { ...persistedRecord, status: "sleeping" },
+        { ...persistedRecord, status: "failed" },
+        { ...persistedRecord, backup: undefined },
+        {
+          ...persistedRecord,
+          operationResult: { ...stoppedOperationResult, progress: "running" },
+        },
+        {
+          ...persistedRecord,
+          operationResult: {
+            ...stoppedOperationResult,
+            ambiguity: "provider_effect_unknown",
+            safeRetry: "none",
+          },
+        },
+        {
+          ...persistedRecord,
+          operationResult: { ...stoppedOperationResult, stage: "unknown" },
+        },
+        {
+          ...persistedRecord,
+          operationResult: { ...stoppedOperationResult, privateNonce: "must-not-persist" },
+        },
         { ...persistedRecord, operation: undefined },
         {
           ...persistedRecord,
@@ -416,6 +459,7 @@ describe("persisted session schemas", () => {
       title: "Package Pi extensions",
       status: "warm",
       operation: null,
+      operationResult: null,
       execution: { provider: "cloudflare" },
       provider: "cloudflare",
       repo: "owner/project",
@@ -430,7 +474,7 @@ describe("persisted session schemas", () => {
       piSessionTransportToken: "a".repeat(64),
       sandboxBundle: { digest, manifestVersion: 1 },
     };
-    const projection = toProjection(record, new Date("2026-01-01T00:00:02.000Z"));
+    const projection = toProjection(record, 2, new Date("2026-01-01T00:00:02.000Z"));
     assert.deepStrictEqual(projection.sandboxBundle, { digest, manifestVersion: 1 });
     assert.ok(!("skills" in projection));
     assert.ok(!("piPackages" in projection));
@@ -440,6 +484,7 @@ describe("persisted session schemas", () => {
     const projection = {
       version: 1,
       id: persistedRecord.id,
+      revision: 2,
       title: persistedRecord.title,
       status: persistedRecord.status,
       provider: persistedRecord.provider,
@@ -458,8 +503,8 @@ describe("persisted session schemas", () => {
     assert.ok(Option.isNone(decodeSessionProjection({ ...projection, status: "unknown" })));
   });
 
-  it("requires an explicit stop request and matching committed backup before sleeping", () => {
-    const warm = { ...persistedRecord, status: "warm" as const };
+  it("requires an explicit stop request and matching committed backup before stopping", () => {
+    const warm = { ...persistedRecord, status: "warm" as const, operationResult: null };
     assert.isFalse(hasCommittedManagedStop({ ...warm, operation: null }));
     assert.isFalse(
       hasCommittedManagedStop({

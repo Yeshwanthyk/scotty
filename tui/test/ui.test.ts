@@ -150,7 +150,7 @@ describe("composer key routing", () => {
     let releaseRefresh: (() => void) | undefined;
     fixture.transport.fleet = [
       session(SESSION_A),
-      session(SESSION_B, { status: "sleeping", provider: "runner" }),
+      session(SESSION_B, { status: "stopped", provider: "runner" }),
     ];
     fixture.transport.listGate = new Promise<void>((resolve) => {
       releaseRefresh = resolve;
@@ -198,7 +198,7 @@ describe("composer key routing", () => {
     const fixture = componentFixture(true);
     fixture.transport.fleet = [
       session(SESSION_A),
-      session(SESSION_B, { status: "sleeping", provider: "runner" }),
+      session(SESSION_B, { status: "stopped", provider: "runner" }),
     ];
     await fixture.controller.openSessionsPicker();
     fixture.component.render(120);

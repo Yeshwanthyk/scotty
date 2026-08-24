@@ -4,9 +4,7 @@ import { Option, Result } from "effect";
 import { CliError, EXIT, type ExitCode, type Writer } from "./core";
 import {
   decodeNonEmptyString,
-  decodeRawSessionFailure,
   decodeRecoveryGrantResponse,
-  decodeString,
   decodeUpResponse,
   type AttachOutput,
   type BeamUpOutput,
@@ -188,7 +186,6 @@ export function stableSession(record: SessionResponse): StableSession {
   const codexThreadId = optionalString(record.codexThreadId);
   const agentState = optionalString(record.agentState);
   const lastAgentEventAt = optionalString(record.lastAgentEventAt);
-  const failure = decodeRawSessionFailure(record.failure);
   const sandboxBundle =
     record.sandboxBundle === undefined
       ? undefined
@@ -197,6 +194,7 @@ export function stableSession(record: SessionResponse): StableSession {
           manifestVersion: record.sandboxBundle.manifestVersion,
         };
   return {
+    revision: record.revision,
     id: record.id,
     title: record.title,
     status: record.status,
@@ -213,15 +211,7 @@ export function stableSession(record: SessionResponse): StableSession {
     ...(codexThreadId ? { codexThreadId } : {}),
     ...(agentState ? { agentState } : {}),
     ...(lastAgentEventAt ? { lastAgentEventAt } : {}),
-    ...(Option.isSome(failure)
-      ? {
-          failure: {
-            code: Option.getOrUndefined(decodeString(failure.value.code)) ?? "unknown",
-            message: Option.getOrUndefined(decodeString(failure.value.message)) ?? "Session failed",
-            recoverable: failure.value.recoverable === true,
-          },
-        }
-      : {}),
+    ...(record.operationResult === undefined ? {} : { operationResult: record.operationResult }),
     ...(sandboxBundle ? { sandboxBundle } : {}),
   };
 }

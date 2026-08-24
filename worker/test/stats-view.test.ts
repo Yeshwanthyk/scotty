@@ -3,13 +3,13 @@ import { displayDate, statsResponse } from "../public/stats-view.js";
 
 const stats = {
   trackingSince: "2026-07-28T10:00:00.000Z",
-  overall: { workspacesCreated: 2, projects: 1, warmNow: 1, sleepingNow: 1 },
+  overall: { workspacesCreated: 2, projects: 1, warmNow: 1, stoppedNow: 1 },
   projects: [
     {
       repository: "owner/project",
       workspacesCreated: 2,
       warmNow: 1,
-      sleepingNow: 1,
+      stoppedNow: 1,
       lastCreated: "2026-07-29T10:00:00.000Z",
     },
   ],
@@ -31,12 +31,12 @@ describe("stats view", () => {
     assert.deepStrictEqual(
       statsResponse({
         trackingSince: null,
-        overall: { workspacesCreated: 0, projects: 0, warmNow: 0, sleepingNow: 0 },
+        overall: { workspacesCreated: 0, projects: 0, warmNow: 0, stoppedNow: 0 },
         projects: [],
       }),
       {
         trackingSince: null,
-        overall: { workspacesCreated: 0, projects: 0, warmNow: 0, sleepingNow: 0 },
+        overall: { workspacesCreated: 0, projects: 0, warmNow: 0, stoppedNow: 0 },
         projects: [],
       },
     );

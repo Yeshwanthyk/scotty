@@ -38,17 +38,89 @@ export const TuiConfigSchema = Schema.Struct({
 });
 export type TuiConfig = typeof TuiConfigSchema.Type;
 
-const SessionStatusSchema = Schema.Literals(["booting", "warm", "sleeping", "failed", "gone"]);
+const SessionStatusSchema = Schema.Literals(["provisioning", "warm", "stopped", "gone"]);
 const ProviderSchema = Schema.Literals(["cloudflare", "runner"]);
 const ActivitySchema = Schema.Literals(["working", "waiting", "completed", "tool-stalled"]);
-const FailureSchema = Schema.Struct({
-  code: ShortStringSchema,
-  message: ShortStringSchema,
-  recoverable: Schema.Boolean,
+const SessionOperationResultSchema = Schema.Struct({
+  kind: Schema.Literals([
+    "create",
+    "snapshot",
+    "resume",
+    "refresh",
+    "evidence",
+    "hatch",
+    "down",
+    "vaporize",
+  ]),
+  stage: Schema.Literals([
+    "acquired",
+    "setup",
+    "runtime",
+    "checkpoint",
+    "stop",
+    "restore",
+    "refresh",
+    "evidence",
+    "hatch",
+    "publish",
+    "cleanup",
+    "reconcile",
+    "commit",
+  ]),
+  progress: Schema.Literals(["pending", "running", "completed"]),
+  lastProvenEffect: Schema.Literals([
+    "none",
+    "session_created",
+    "runtime_ready",
+    "checkpoint_committed",
+    "runtime_stopped",
+    "resources_absent",
+  ]),
+  retainedState: Schema.Literals([
+    "session",
+    "runtime",
+    "checkpoint",
+    "operation_lease",
+    "cleanup_authority",
+  ]),
+  ambiguity: Schema.Literals(["none", "provider_effect_unknown"]),
+  safeRetry: Schema.Literals(["none", "retry_operation", "reconcile_first"]),
+  humanAction: Schema.Literals(["none", "retry", "inspect", "resume", "vaporize"]),
+  outcome: Schema.Union([
+    Schema.Struct({ status: Schema.Literal("pending") }),
+    Schema.Struct({ status: Schema.Literal("succeeded") }),
+    Schema.Struct({
+      status: Schema.Literal("failed"),
+      failure: Schema.Struct({
+        code: Schema.Literals([
+          "checkpoint_required",
+          "checkpoint_runtime_unavailable",
+          "create_ambiguous",
+          "create_failed",
+          "down_failed",
+          "environment_refresh_failed",
+          "hatch_failed",
+          "hard_cap_checkpoint_failed",
+          "resume_failed",
+          "runner_runtime_absent",
+          "runtime_stopped",
+          "snapshot_failed",
+        ]),
+        message: ShortStringSchema,
+      }),
+    }),
+  ]),
+  stoppedReason: Schema.optionalKey(
+    Schema.Literals(["snapshot", "inactivity", "hard_cap", "runtime_exit"]),
+  ),
+  recoveryAction: Schema.Literals(["none", "resume", "retry", "reconcile", "vaporize"]),
+  startedAt: ShortStringSchema,
+  updatedAt: ShortStringSchema,
 });
 
 export const FleetSessionSchema = Schema.Struct({
   version: Schema.Literal(1),
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   id: SessionIdSchema,
   title: ShortStringSchema,
   status: SessionStatusSchema,
@@ -65,7 +137,7 @@ export const FleetSessionSchema = Schema.Struct({
   updatedAt: ShortStringSchema,
   hardCapAt: ShortStringSchema,
   projectedAt: ShortStringSchema,
-  failure: Schema.optionalKey(FailureSchema),
+  operationResult: Schema.optionalKey(SessionOperationResultSchema),
   ageSeconds: Schema.optionalKey(Schema.Finite),
   capRemainingSeconds: Schema.optionalKey(Schema.Finite),
 });

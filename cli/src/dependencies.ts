@@ -216,7 +216,7 @@ const finalizePendingUp = Effect.fnUntraced(function* (
   pending: { readonly path: string },
   output: { readonly status: string },
 ) {
-  if (output.status !== "booting") yield* clearPendingUp(pending.path);
+  if (output.status !== "provisioning") yield* clearPendingUp(pending.path);
 });
 
 export const sessionAbsent = Effect.fnUntraced(function* (

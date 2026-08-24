@@ -207,16 +207,18 @@ scotty beam up "PROMPT" --title "OUTCOME" --repo OWNER/NAME \
 
 Use `--new-repo` only when the human asks for a missing-repository workspace. The stable launch
 projection contains `id`, `title`, `url`, `branch`, `provider`, and `status`. Keep the exact `id`.
-If it is `booting`, poll `scotty ls --json`, select only that ID, and stop at `warm`, `sleeping`, or
-`failed` (or after a bounded three-minute wait, such as 36 five-second polls). A launch is complete
-only after the final status is observed. For failure, report `failure.code`, `failure.message`, and
-`failure.recoverable` when present, then one concrete next action.
+If it is `provisioning`, poll `scotty ls --json`, select only that ID, and stop when it becomes
+`warm` or its `operationResult.outcome` becomes `failed` (or after a bounded three-minute wait, such
+as 36 five-second polls). A launch is complete only after the final result is observed. For failure,
+report `operationResult.outcome.failure.code`, `operationResult.outcome.failure.message`, and the
+result's `safeRetry` and `humanAction`, then one concrete next action.
 
 `scotty ls --json` is the fleet projection for **observe**. It includes session identity, title,
-status, provider, repository/branch, cap timestamps, agent state, sandbox digest, and a typed failure
-when available. Do not treat a cached row as proof of live Pi state; use `inspect` for that.
+status, provider, repository/branch, cap timestamps, agent state, sandbox digest, revision, and a
+typed operation result when available. Do not treat a cached row as proof of live Pi state; use
+`inspect` for that.
 
-**Done when:** the exact session ID has a terminal observation for this action, or the still-booting
+**Done when:** the exact session ID has a terminal observation for this action, or the still-provisioning
 state and bounded timeout are explicitly reported.
 
 ## Inspect, steer, and attach
@@ -289,13 +291,14 @@ viewport, the after run has real WebM, and every published reference is exact, c
 
 ## Lifecycle: snapshot, resume, down, vaporize
 
-The normal state path is `booting -> warm -> sleeping -> booting -> warm`; failures may enter
-`failed`, and vaporize ends at `gone`.
+The normal state path is `provisioning -> warm -> stopped -> provisioning -> warm`; operation
+failures retain the last proven lifecycle, and vaporize ends at `gone`.
 
 - Checkpoint a warm session with `scotty snapshot ID --json`. Read the returned `id`, `status`, and
   optional `backupId`; snapshot stops Pi before synchronization and backup.
-- Restore a sleeping or recoverably failed session with `scotty resume ID --json`. Resume requires
-  the current backup. If it returns `booting`, observe the exact ID with `scotty ls --json`.
+- Restore a stopped session with `scotty resume ID --json`. Resume requires the current backup. If
+  it returns `provisioning`, observe the exact ID with `scotty ls --json` and use its operation
+  result to distinguish progress, deterministic failure, and an ambiguous provider effect.
 - From the matching local Git repository, run `scotty beam down ID --json`. Read `branch`, `sha`,
   `rolloutPath`, and `resumeCmd`; run a non-null `resumeCmd` only when the human wants local
   continuation. Do not compose a rollout or resume command.

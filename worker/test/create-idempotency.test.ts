@@ -12,7 +12,7 @@ describe("create idempotency", () => {
   it("replays the same normalized request without creating another Sandbox", () => {
     const existing = makeSessionRecord({
       id: "aaaaaaaaaaaa",
-      status: "booting",
+      status: "provisioning",
       branch: "scotty/aaaaaaaaaaaa",
     });
     assert.deepStrictEqual(decideIdempotentCreate(existing, Option.some(metadata), metadata), {

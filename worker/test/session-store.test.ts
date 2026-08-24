@@ -207,10 +207,10 @@ runContractSuite<SessionRecordStorageFactory>(
           active,
         );
 
-        const sleepingStorage = make(record({ status: "sleeping" })).storage;
+        const stoppedStorage = make(record({ status: "provisioning" })).storage;
         const wrongStateResult = yield* Effect.result(
           withStore(
-            sleepingStorage,
+            stoppedStorage,
             Effect.flatMap(SessionStore, (store) =>
               store.acquireOperation("snapshot", ["warm"], "new"),
             ),
@@ -218,7 +218,7 @@ runContractSuite<SessionRecordStorageFactory>(
         );
         assert.deepInclude(failure(wrongStateResult), {
           code: "wrong_state",
-          message: "Cannot snapshot a session in sleeping state",
+          message: "Cannot snapshot a session in provisioning state",
         });
       }),
     );
@@ -294,7 +294,7 @@ runContractSuite<SessionRecordStorageFactory>(
           withStore(
             storage,
             Effect.flatMap(SessionStore, (store) =>
-              store.updateForOperation("stale", (current) => ({ ...current, status: "sleeping" })),
+              store.updateForOperation("stale", (current) => ({ ...current, status: "stopped" })),
             ),
           ),
         );
@@ -348,12 +348,15 @@ runContractSuite<SessionRecordStorageFactory>(
               store.failOperation("held", "resume_failed", "Session restore failed", true),
             ),
           );
-          assert.deepStrictEqual(failed.failure, {
-            code: "resume_failed",
-            message: "Session restore failed",
-            recoverable: true,
+          assert.deepStrictEqual(failed.operationResult?.outcome, {
+            status: "failed",
+            failure: { code: "resume_failed", message: "Session restore failed" },
           });
-          assert.strictEqual(failed.status, "failed");
+          assert.strictEqual(
+            failed.operationResult?.safeRetry,
+            backup === undefined ? "retry_operation" : "none",
+          );
+          assert.strictEqual(failed.status, "warm");
           assert.strictEqual(failed.operation, null);
         }
       }),
@@ -382,16 +385,15 @@ runContractSuite<SessionRecordStorageFactory>(
           storage,
           Effect.flatMap(SessionStore, (store) => store.markHardCapFailure(observed, "timed out")),
         );
-        assert.deepInclude(Option.getOrThrow(failed), {
+        const hardCapFailed = Option.getOrThrow(failed);
+        assert.strictEqual(hardCapFailed.status, "warm");
+        assert.strictEqual(hardCapFailed.operation, null);
+        assert.strictEqual(hardCapFailed.operationResult?.ambiguity, "none");
+        assert.deepStrictEqual(hardCapFailed.operationResult?.outcome, {
           status: "failed",
-          operation: null,
-          failure: {
-            code: "hard_cap_checkpoint_failed",
-            message: "timed out",
-            recoverable: false,
-          },
-          updatedAt: "2026-04-05T06:07:08.000Z",
+          failure: { code: "hard_cap_checkpoint_failed", message: "timed out" },
         });
+        assert.strictEqual(hardCapFailed.updatedAt, "2026-04-05T06:07:08.000Z");
       }),
     );
 
@@ -417,24 +419,26 @@ runContractSuite<SessionRecordStorageFactory>(
           managedStorage,
           Effect.flatMap(SessionStore, (store) => store.recordRuntimeStop),
         );
-        assert.deepInclude(Option.getOrThrow(managed), {
-          status: "sleeping",
-          operation: null,
-          failure: undefined,
-        });
+        const managedRecord = Option.getOrThrow(managed);
+        assert.strictEqual(managedRecord.status, "stopped");
+        assert.strictEqual(managedRecord.operation, null);
+        assert.strictEqual(managedRecord.operationResult?.lastProvenEffect, "runtime_stopped");
+        assert.deepStrictEqual(managedRecord.operationResult?.outcome, { status: "succeeded" });
+        assert.strictEqual(managedRecord.operationResult?.stoppedReason, "runtime_exit");
 
         const unmanagedStorage = make(record({ backup })).storage;
         const unmanaged = yield* withStore(
           unmanagedStorage,
           Effect.flatMap(SessionStore, (store) => store.recordRuntimeStop),
         );
-        assert.deepInclude(Option.getOrThrow(unmanaged), {
+        const unmanagedRecord = Option.getOrThrow(unmanaged);
+        assert.strictEqual(unmanagedRecord.status, "stopped");
+        assert.strictEqual(unmanagedRecord.operation, null);
+        assert.deepStrictEqual(unmanagedRecord.operationResult?.outcome, {
           status: "failed",
-          operation: null,
           failure: {
             code: "runtime_stopped",
             message: "Sandbox runtime stopped before a managed checkpoint",
-            recoverable: true,
           },
         });
       }),

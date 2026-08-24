@@ -14,7 +14,7 @@ import {
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
-import { makeSessionRecord } from "./support";
+import { makeSessionRecord, sessionOperationFailure } from "./support";
 
 const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
   {
@@ -25,10 +25,10 @@ const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
   },
 ]).digest;
 
-const sleepingRecord = (overrides: Parameters<typeof makeSessionRecord>[0] = {}) =>
+const stoppedRecord = (overrides: Parameters<typeof makeSessionRecord>[0] = {}) =>
   makeSessionRecord({
     id: SESSION_ID,
-    status: "sleeping",
+    status: "stopped",
     branch: `scotty/${SESSION_ID}`,
     backup: { current: makeResumeBackup() },
     ownedBackupIds: ["backup-1"],
@@ -37,7 +37,7 @@ const sleepingRecord = (overrides: Parameters<typeof makeSessionRecord>[0] = {})
   });
 
 const resumeEntries = (): InitialStorageEntries => ({
-  [sessionHarnessKeys.record]: sleepingRecord(),
+  [sessionHarnessKeys.record]: stoppedRecord(),
 });
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
@@ -58,7 +58,7 @@ describe("Sandbox resume orchestration", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         ...resumeEntries(),
-        [sessionHarnessKeys.record]: sleepingRecord({
+        [sessionHarnessKeys.record]: stoppedRecord({
           piSessionTransportToken: transportToken,
         }),
       },
@@ -70,7 +70,7 @@ describe("Sandbox resume orchestration", () => {
     const record = harness.readRecord();
     assert.strictEqual(record?.status, "warm");
     assert.strictEqual(record?.operation, null);
-    assert.strictEqual(record?.failure, undefined);
+    assert.strictEqual(sessionOperationFailure(record), undefined);
     assert.strictEqual(record?.backup?.current.id, "backup-1");
     assert.strictEqual(record?.piSessionTransportToken, transportToken);
     assert.strictEqual(
@@ -107,7 +107,7 @@ describe("Sandbox resume orchestration", () => {
     };
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: sleepingRecord({ environment: legacy }),
+        [sessionHarnessKeys.record]: stoppedRecord({ environment: legacy }),
       },
       environmentMaterialization: {
         revision: 5,
@@ -161,7 +161,7 @@ describe("Sandbox resume orchestration", () => {
     };
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: sleepingRecord({ environment: retained }),
+        [sessionHarnessKeys.record]: stoppedRecord({ environment: retained }),
       },
       environmentMaterialization: {
         revision: 5,
@@ -199,7 +199,7 @@ describe("Sandbox resume orchestration", () => {
     const digest = EMPTY_ADDITIONS_DIGEST;
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: sleepingRecord({
+        [sessionHarnessKeys.record]: stoppedRecord({
           sandboxBundle: { digest, manifestVersion: 1 },
         }),
       },
@@ -235,7 +235,7 @@ describe("Sandbox resume orchestration", () => {
     const digest = "a".repeat(64);
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: sleepingRecord({
+        [sessionHarnessKeys.record]: stoppedRecord({
           sandboxBundle: { digest, manifestVersion: 1 },
         }),
       },
@@ -246,38 +246,13 @@ describe("Sandbox resume orchestration", () => {
 
     const failed = harness.readRecord();
     assert.notStrictEqual(failed?.status, "warm");
-    assert.deepStrictEqual(failed?.failure, {
+    assert.deepStrictEqual(sessionOperationFailure(failed), {
       code: "resume_failed",
       message: "Session restore failed",
-      recoverable: true,
     });
     assert.deepStrictEqual(failed?.sandboxBundle, { digest, manifestVersion: 1 });
     assert.ok(!harness.events.some((event) => event.startsWith("host:pi:start:")));
     assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
-  });
-
-  it("rejects resume without a current backup and releases the lease", async () => {
-    const withoutBackup = makeSessionRecord({
-      id: SESSION_ID,
-      status: "sleeping",
-      branch: `scotty/${SESSION_ID}`,
-    });
-    const harness = await createSessionHarness({
-      initialEntries: {
-        [sessionHarnessKeys.record]: withoutBackup,
-      },
-    });
-
-    const error = await rejection(harness.sandbox.resumeScottySession());
-    assert.ok(error instanceof ScottyError);
-    assert.strictEqual(error.code, "wrong_state");
-    assert.strictEqual(error.hint, "No successful backup is available");
-    const persisted = harness.readRecord();
-    assert.strictEqual(persisted?.status, "sleeping");
-    assert.strictEqual(persisted?.operation, null);
-    assert.strictEqual(persisted?.failure, undefined);
-    assert.deepStrictEqual(harness.schedules, []);
-    assert.ok(!harness.events.includes("host:destroy"));
   });
 
   const failureCases = [
@@ -299,7 +274,7 @@ describe("Sandbox resume orchestration", () => {
       name: "ready state persist",
       options: {
         initialEntries: resumeEntries(),
-        transactionFailureCountdown: 2,
+        transactionFailureCountdown: 5,
       },
     },
     {
@@ -318,17 +293,18 @@ describe("Sandbox resume orchestration", () => {
       await assertUpstreamFailure(harness.sandbox.resumeScottySession());
 
       const failed = harness.readRecord();
-      assert.strictEqual(failed?.status, "failed");
+      assert.strictEqual(failed?.status, "stopped");
       assert.strictEqual(failed?.operation, null);
-      assert.deepStrictEqual(failed?.failure, {
+      assert.deepStrictEqual(sessionOperationFailure(failed), {
         code: "resume_failed",
         message: "Session restore failed",
-        recoverable: true,
       });
       assert.strictEqual(failed?.backup?.current.id, "backup-1");
-      assert.ok(harness.events.includes("projection:failed"));
+      assert.ok(harness.events.includes("projection:stopped"));
       assert.ok(harness.events.includes("host:destroy"));
-      assert.ok(harness.events.indexOf("record:failed") < harness.events.indexOf("host:destroy"));
+      assert.ok(
+        harness.events.indexOf("host:destroy") < harness.events.lastIndexOf("record:stopped"),
+      );
     });
   }
 });

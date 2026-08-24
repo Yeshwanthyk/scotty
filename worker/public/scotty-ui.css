@@ -380,7 +380,7 @@ body.scotty-ui {
   box-shadow: 0 0 0 3px rgb(207 99 63 / 0.13);
 }
 
-.sessions-page .status-sleeping .status-line,
+.sessions-page .status-stopped .status-line,
 .sessions-page .status-stopping .status-line {
   background: rgb(198 154 93 / 0.11);
   color: #dab77e;
@@ -847,20 +847,6 @@ body.scotty-ui {
 
   .sessions-page .confirmation .button-danger-confirm {
     flex: 1;
-  }
-
-  .sessions-page .sleeping-group {
-    margin-top: 6px;
-  }
-
-  .sessions-page .sleeping-group summary {
-    min-height: 44px;
-    padding-inline: 10px;
-  }
-
-  .sessions-page .sleeping-group summary:focus-visible {
-    outline: 2px solid var(--focus);
-    outline-offset: 2px;
   }
 }
 

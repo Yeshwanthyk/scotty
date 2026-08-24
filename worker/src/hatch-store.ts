@@ -319,7 +319,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
       record.success.operation?.nonce !== operationNonce ||
       (record.success.operation.kind !== "snapshot" &&
         record.success.operation.kind !== "resume") ||
-      (record.success.status !== "warm" && record.success.status !== "booting")
+      (record.success.status !== "warm" && record.success.status !== "provisioning")
     )
       return Result.fail(changed());
     return record;
@@ -802,13 +802,14 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           const lease = await requireRestoreLease(transaction, hatch.sessionId, operationNonce);
           if (Result.isFailure(lease)) return Result.fail(lease.failure);
         } else if (authority === "failed_runtime") {
-          if (record.success.status !== "failed") return Result.fail(changed());
+          if (record.success.operationResult?.outcome.status !== "failed")
+            return Result.fail(changed());
         } else if (authority === "hard_cap") {
           if (target !== "stopped" || record.success.operation?.kind !== "evidence")
             return Result.fail(changed());
         } else if (authority === "runtime_start") {
           const managedRestore =
-            record.success.status === "sleeping" ||
+            record.success.status === "stopped" ||
             record.success.operation?.kind === "snapshot" ||
             record.success.operation?.kind === "resume";
           if (

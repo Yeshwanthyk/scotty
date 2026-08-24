@@ -43,7 +43,12 @@ import {
   type EvidenceTerminalStatus,
 } from "./evidence-contracts";
 import { constantTimeStringEqual } from "./digest";
-import type { SessionEvidenceTransaction, SessionRecordStorage } from "./session-store";
+import {
+  completeOperationResult,
+  startOperationResult,
+  type SessionEvidenceTransaction,
+  type SessionRecordStorage,
+} from "./session-store";
 
 export interface AcceptEvidenceJobInput {
   readonly jobId: string;
@@ -458,6 +463,7 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
       await transaction.putRecord({
         ...session.success,
         operation: null,
+        operationResult: completeOperationResult(session.success, session.success.operation, now),
         updatedAt: now,
       });
       return Result.succeed(summary);
@@ -619,13 +625,15 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
           activeJob: active,
         };
         await transaction.putEvidence(nextState);
+        const operation = {
+          kind: "evidence" as const,
+          nonce: input.operationNonce,
+          startedAt: acceptedAt,
+        };
         await transaction.putRecord({
           ...record,
-          operation: {
-            kind: "evidence",
-            nonce: input.operationNonce,
-            startedAt: acceptedAt,
-          },
+          operation,
+          operationResult: startOperationResult(record, operation, acceptedAt),
           updatedAt: acceptedAt,
         });
         return Result.succeed(active);

@@ -88,7 +88,7 @@ const runnerDispatchFailure = (): RunnerDispatchResult => ({
 });
 
 describe("Sandbox lifecycle machine", () => {
-  it.effect("stops an idle runner into sleeping without a Cloudflare checkpoint", () =>
+  it.effect("does not mark an idle runner stopped without a complete checkpoint", () =>
     Effect.gen(function* () {
       const harness = yield* createTestHarness({
         initialEntries: {
@@ -98,7 +98,8 @@ describe("Sandbox lifecycle machine", () => {
 
       yield* Effect.promise(() => harness.sandbox.onActivityExpired());
 
-      assert.strictEqual(harness.readRecord()?.status, "sleeping");
+      assert.strictEqual(harness.readRecord()?.status, "provisioning");
+      assert.strictEqual(harness.readRecord()?.operationResult?.outcome.status, "failed");
       assert.strictEqual(harness.runnerOperations.length, 1);
       assert.ok(Predicate.isTagged("StopRuntime")(harness.runnerOperations[0]));
       assert.ok(!harness.events.includes("host:stop"));
@@ -106,7 +107,7 @@ describe("Sandbox lifecycle machine", () => {
     }),
   );
 
-  it.effect("stops a hard-capped runner into sleeping without removing its runtime", () =>
+  it.effect("does not mark a hard-capped runner stopped without a complete checkpoint", () =>
     Effect.gen(function* () {
       const record = runnerRecord();
       const harness = yield* createTestHarness({
@@ -117,7 +118,8 @@ describe("Sandbox lifecycle machine", () => {
 
       yield* Effect.promise(() => harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt }));
 
-      assert.strictEqual(harness.readRecord()?.status, "sleeping");
+      assert.strictEqual(harness.readRecord()?.status, "provisioning");
+      assert.strictEqual(harness.readRecord()?.operationResult?.outcome.status, "failed");
       assert.strictEqual(harness.runnerOperations.length, 1);
       assert.ok(Predicate.isTagged("StopRuntime")(harness.runnerOperations[0]));
       assert.ok(!harness.runnerOperations.some(Predicate.isTagged("RemoveRuntime")));
@@ -186,8 +188,9 @@ describe("Sandbox lifecycle machine", () => {
       yield* Effect.promise(() => harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt }));
 
       assert.strictEqual(stopAttempts, 2);
-      assert.strictEqual(harness.readRecord()?.status, "sleeping");
+      assert.strictEqual(harness.readRecord()?.status, "provisioning");
       assert.strictEqual(harness.readRecord()?.operation, null);
+      assert.strictEqual(harness.readRecord()?.operationResult?.outcome.status, "failed");
     }),
   );
 
@@ -327,19 +330,21 @@ describe("Sandbox lifecycle machine", () => {
         );
 
         const failed = harness.readRecord();
-        assert.strictEqual(failed?.status, "failed");
+        assert.strictEqual(failed?.status, "provisioning");
         assert.strictEqual(failed?.operation, null);
-        assert.deepStrictEqual(failed?.failure, {
-          code: "hard_cap_checkpoint_failed",
-          message: "A session operation exceeded the hard-cap grace period",
-          recoverable: false,
+        assert.deepStrictEqual(failed?.operationResult?.outcome, {
+          status: "failed",
+          failure: {
+            code: "hard_cap_checkpoint_failed",
+            message: "A session operation exceeded the hard-cap grace period",
+          },
         });
-        assert.ok(harness.events.includes("projection:failed"));
+        assert.ok(harness.events.includes("projection:provisioning"));
         assert.ok(harness.events.includes("host:destroy"));
       }),
   );
 
-  it.effect("onActivityExpired checkpoints an idle warm session and stops into sleeping", () =>
+  it.effect("onActivityExpired checkpoints an idle warm session and stops into stopped", () =>
     Effect.gen(function* () {
       const record = makeSessionRecord();
       const harness = yield* createTestHarness({
@@ -352,20 +357,20 @@ describe("Sandbox lifecycle machine", () => {
 
       yield* Effect.promise(() => harness.sandbox.onActivityExpired());
 
-      const sleeping = harness.readRecord();
-      assert.strictEqual(sleeping?.status, "sleeping");
-      assert.strictEqual(sleeping?.operation, null);
-      assert.strictEqual(sleeping?.backup?.current.id, "backup-1");
+      const stopped = harness.readRecord();
+      assert.strictEqual(stopped?.status, "stopped");
+      assert.strictEqual(stopped?.operation, null);
+      assert.strictEqual(stopped?.backup?.current.id, "backup-1");
       assert.ok(
         harness.events.indexOf("host:pi:kill") < harness.events.indexOf("host:createBackup"),
       );
       assert.ok(harness.events.includes("host:createBackup"));
       assert.ok(harness.events.includes("host:stop"));
-      assert.ok(harness.events.includes("projection:sleeping"));
+      assert.ok(harness.events.includes("projection:stopped"));
     }),
   );
 
-  it.effect("onStop turns a committed managed stop into sleeping", () =>
+  it.effect("onStop turns a committed managed stop into stopped", () =>
     Effect.gen(function* () {
       const now = yield* currentTestTime;
       const committed = managedStopRecord(now, {
@@ -377,11 +382,11 @@ describe("Sandbox lifecycle machine", () => {
 
       yield* Effect.promise(() => harness.sandbox.onStop());
 
-      const sleeping = harness.readRecord();
-      assert.strictEqual(sleeping?.status, "sleeping");
-      assert.strictEqual(sleeping?.operation, null);
-      assert.strictEqual(sleeping?.failure, undefined);
-      assert.ok(harness.events.includes("projection:sleeping"));
+      const stopped = harness.readRecord();
+      assert.strictEqual(stopped?.status, "stopped");
+      assert.strictEqual(stopped?.operation, null);
+      assert.strictEqual(stopped?.operationResult?.outcome.status, "succeeded");
+      assert.ok(harness.events.includes("projection:stopped"));
     }),
   );
 
@@ -398,14 +403,16 @@ describe("Sandbox lifecycle machine", () => {
       yield* Effect.promise(() => harness.sandbox.onStop());
 
       const failed = harness.readRecord();
-      assert.strictEqual(failed?.status, "failed");
+      assert.strictEqual(failed?.status, "stopped");
       assert.strictEqual(failed?.operation, null);
-      assert.deepStrictEqual(failed?.failure, {
-        code: "runtime_stopped",
-        message: "Sandbox runtime stopped before a managed checkpoint",
-        recoverable: true,
+      assert.deepStrictEqual(failed?.operationResult?.outcome, {
+        status: "failed",
+        failure: {
+          code: "runtime_stopped",
+          message: "Sandbox runtime stopped before a managed checkpoint",
+        },
       });
-      assert.ok(harness.events.includes("projection:failed"));
+      assert.ok(harness.events.includes("projection:stopped"));
     }),
   );
 
@@ -478,6 +485,10 @@ describe("Sandbox lifecycle machine", () => {
       assert.strictEqual(held?.status, "warm");
       assert.strictEqual(held?.operation, null);
       assert.strictEqual(held?.backup, undefined);
+      assert.deepStrictEqual(held?.operationResult?.outcome, {
+        status: "failed",
+        failure: { code: "snapshot_failed", message: "Session stop failed" },
+      });
       assert.ok(!harness.events.includes("host:stop"));
       assert.ok(!harness.schedules.some(({ callback }) => callback === "finalizeManagedStop"));
     }),
@@ -499,6 +510,10 @@ describe("Sandbox lifecycle machine", () => {
       assert.strictEqual(held?.status, "warm");
       assert.strictEqual(held?.operation, null);
       assert.strictEqual(held?.backup, undefined);
+      assert.deepStrictEqual(held?.operationResult?.outcome, {
+        status: "failed",
+        failure: { code: "snapshot_failed", message: "Managed idle checkpoint failed" },
+      });
       assert.ok(!harness.events.includes("host:stop"));
     }),
   );
@@ -521,6 +536,10 @@ describe("Sandbox lifecycle machine", () => {
       assert.strictEqual(record?.status, "warm");
       assert.strictEqual(record?.operation, null);
       assert.strictEqual(record?.backup, undefined);
+      assert.deepStrictEqual(record?.operationResult?.outcome, {
+        status: "failed",
+        failure: { code: "snapshot_failed", message: "Snapshot failed" },
+      });
       assert.ok(harness.events.includes(`host:pi:fetch:43117:/quiesce`));
       assert.ok(!harness.events.includes("host:pi:kill"));
       assert.ok(!harness.events.includes("host:createBackup"));
@@ -548,32 +567,36 @@ describe("Sandbox lifecycle machine", () => {
     }),
   );
 
-  it.effect("enforceHardCap recovers an abandoned operation by marking the session failed", () =>
-    Effect.gen(function* () {
-      const now = yield* currentTestTime;
-      const abandoned = makeSessionRecord({
-        operation: {
-          kind: "down",
-          nonce: "abandoned-down",
-          startedAt: isoAt(now - (5 * 60_000 + 1)),
-        },
-      });
-      const harness = yield* createTestHarness({
-        initialEntries: { [sessionHarnessKeys.record]: abandoned },
-      });
+  it.effect(
+    "enforceHardCap records an abandoned operation failure without changing lifecycle",
+    () =>
+      Effect.gen(function* () {
+        const now = yield* currentTestTime;
+        const abandoned = makeSessionRecord({
+          operation: {
+            kind: "down",
+            nonce: "abandoned-down",
+            startedAt: isoAt(now - (5 * 60_000 + 1)),
+          },
+        });
+        const harness = yield* createTestHarness({
+          initialEntries: { [sessionHarnessKeys.record]: abandoned },
+        });
 
-      yield* Effect.promise(() =>
-        harness.sandbox.enforceHardCap({ hardCapAt: abandoned.hardCapAt }),
-      );
+        yield* Effect.promise(() =>
+          harness.sandbox.enforceHardCap({ hardCapAt: abandoned.hardCapAt }),
+        );
 
-      const failed = harness.readRecord();
-      assert.strictEqual(failed?.status, "failed");
-      assert.strictEqual(failed?.operation, null);
-      assert.strictEqual(
-        failed?.failure?.message,
-        "A session operation exceeded the hard-cap grace period",
-      );
-      assert.ok(harness.events.includes("host:destroy"));
-    }),
+        const failed = harness.readRecord();
+        assert.strictEqual(failed?.status, "provisioning");
+        assert.strictEqual(failed?.operation, null);
+        assert.strictEqual(
+          failed?.operationResult?.outcome.status === "failed"
+            ? failed.operationResult.outcome.failure.message
+            : undefined,
+          "A session operation exceeded the hard-cap grace period",
+        );
+        assert.ok(harness.events.includes("host:destroy"));
+      }),
   );
 });

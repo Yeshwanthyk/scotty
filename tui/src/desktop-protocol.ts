@@ -118,6 +118,7 @@ const projectString = (value: string, maxLength: number): string =>
   truncateRemoteString(redactRemoteString(value), maxLength);
 
 const projectFleetSession = (session: FleetSession) => ({
+  revision: session.revision,
   id: session.id,
   title: projectString(session.title, 120),
   status: session.status,
@@ -133,14 +134,7 @@ const projectFleetSession = (session: FleetSession) => ({
   projectedAt: projectString(session.projectedAt, 1024),
   ageSeconds: session.ageSeconds,
   capRemainingSeconds: session.capRemainingSeconds,
-  failure:
-    session.failure === undefined
-      ? undefined
-      : {
-          code: projectString(session.failure.code, 1024),
-          message: projectString(session.failure.message, 1024),
-          recoverable: session.failure.recoverable,
-        },
+  operationResult: session.operationResult,
 });
 
 const projectLive = (live: LiveProjection | undefined) => {

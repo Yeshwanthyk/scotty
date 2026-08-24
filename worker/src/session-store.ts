@@ -9,6 +9,9 @@ import {
   type OperationKind,
   type AgentActivityState,
   type PiSessionTransportToken,
+  type SessionControlAuthority,
+  type SessionOperationFailureCode,
+  type SessionOperationResult,
   type SessionRecord,
   type SessionStatus,
 } from "./contracts";
@@ -39,11 +42,6 @@ export const createPiSessionTransportToken = (): PiSessionTransportToken => {
 class SessionControlRevisionFailure extends Data.TaggedError("SessionControlRevisionFailure")<{
   readonly reason: "invalid" | "exhausted";
 }> {}
-
-export interface SessionControlAuthority {
-  readonly record: SessionRecord;
-  readonly revision: number;
-}
 
 export interface SessionControlGate {
   readonly run: <A>(operation: () => Promise<A>) => Promise<A>;
@@ -116,6 +114,129 @@ export interface SessionRecordStorage {
 }
 
 type SessionOperation = NonNullable<SessionRecord["operation"]>;
+
+const operationStages = {
+  create: "setup",
+  snapshot: "checkpoint",
+  resume: "restore",
+  refresh: "refresh",
+  evidence: "evidence",
+  hatch: "hatch",
+  down: "publish",
+  vaporize: "cleanup",
+} as const satisfies Record<OperationKind, SessionOperationResult["stage"]>;
+
+const operationStage = (kind: OperationKind): SessionOperationResult["stage"] =>
+  operationStages[kind];
+
+export const startOperationResult = (
+  record: SessionRecord,
+  operation: SessionOperation,
+  updatedAt: string,
+): SessionOperationResult => ({
+  kind: operation.kind,
+  stage: operationStage(operation.kind),
+  progress: "running",
+  lastProvenEffect:
+    record.status === "warm"
+      ? "runtime_ready"
+      : record.status === "stopped"
+        ? "runtime_stopped"
+        : "session_created",
+  retainedState: record.status === "stopped" ? "checkpoint" : "operation_lease",
+  ambiguity: "none",
+  safeRetry: "none",
+  humanAction: "none",
+  outcome: { status: "pending" },
+  ...(record.status === "stopped"
+    ? { stoppedReason: record.operationResult?.stoppedReason ?? ("runtime_exit" as const) }
+    : {}),
+  recoveryAction: "none",
+  startedAt: operation.startedAt,
+  updatedAt,
+});
+
+export const completeOperationResult = (
+  record: SessionRecord,
+  operation: SessionOperation,
+  updatedAt: string,
+): SessionOperationResult => {
+  const stopped = record.status === "stopped";
+  return {
+    kind: operation.kind,
+    stage: "commit",
+    progress: "completed",
+    lastProvenEffect:
+      record.status === "gone"
+        ? "resources_absent"
+        : stopped
+          ? "runtime_stopped"
+          : record.status === "warm"
+            ? "runtime_ready"
+            : "session_created",
+    retainedState:
+      record.status === "gone" ? "cleanup_authority" : stopped ? "checkpoint" : "session",
+    ambiguity: "none",
+    safeRetry: "none",
+    humanAction: stopped ? "resume" : "none",
+    outcome: { status: "succeeded" },
+    ...(stopped ? { stoppedReason: operation.stoppedReason ?? "runtime_exit" } : {}),
+    recoveryAction: stopped ? "resume" : "none",
+    startedAt: operation.startedAt,
+    updatedAt,
+  };
+};
+
+const failedOperationResult = (
+  record: SessionRecord,
+  operation: SessionOperation,
+  updatedAt: string,
+  code: SessionOperationFailureCode,
+  message: string,
+  safeToRetry: boolean,
+): SessionOperationResult => ({
+  kind: operation.kind,
+  stage: operationStage(operation.kind),
+  progress: "completed",
+  lastProvenEffect:
+    record.status === "warm"
+      ? "runtime_ready"
+      : record.status === "stopped"
+        ? "runtime_stopped"
+        : record.status === "gone"
+          ? "resources_absent"
+          : "session_created",
+  retainedState: record.backup?.current ? "checkpoint" : "session",
+  ambiguity: "none",
+  safeRetry: safeToRetry && !record.backup?.current ? "retry_operation" : "none",
+  humanAction: record.backup?.current ? "resume" : safeToRetry ? "retry" : "inspect",
+  outcome: { status: "failed", failure: { code, message } },
+  recoveryAction: record.backup?.current ? "resume" : safeToRetry ? "retry" : "vaporize",
+  startedAt: operation.startedAt,
+  updatedAt,
+});
+
+const failedRuntimeStoppedRecord = (record: SessionRecord, updatedAt: string): SessionRecord => {
+  const result = record.operationResult;
+  if (result?.outcome.status !== "failed") return record;
+  const checkpointRetained = record.backup?.current !== undefined;
+  return {
+    ...record,
+    status: checkpointRetained ? "stopped" : "provisioning",
+    operation: null,
+    operationResult: {
+      ...result,
+      lastProvenEffect: "runtime_stopped",
+      retainedState: checkpointRetained ? "checkpoint" : "session",
+      safeRetry: checkpointRetained ? "none" : result.safeRetry,
+      humanAction: checkpointRetained ? "resume" : result.humanAction,
+      stoppedReason: "runtime_exit",
+      recoveryAction: checkpointRetained ? "resume" : result.recoveryAction,
+      updatedAt,
+    },
+    updatedAt,
+  };
+};
 type InitialSessionDecision = Exclude<CreateIdempotencyDecision, { readonly kind: "conflict" }>;
 
 export class InitialSessionStorageFailure extends Data.TaggedError("InitialSessionStorageFailure")<{
@@ -142,6 +263,7 @@ interface SessionStoreShape {
     allowed: ReadonlyArray<SessionStatus>,
     nonce: string,
     replaceOperationOlderThanMs?: number,
+    stoppedReason?: SessionOperation["stoppedReason"],
   ) => Effect.Effect<SessionOperation, ScottyError>;
   readonly updateForOperation: (
     nonce: string,
@@ -161,10 +283,13 @@ interface SessionStoreShape {
     message: string,
   ) => Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly recordRuntimeStop: Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
+  readonly recordFailedRuntimeDestroyed: (
+    sessionId: string,
+  ) => Effect.Effect<Option.Option<SessionRecord>, ScottyError>;
   readonly claimManagedStopRollback: (nonce: string) => Effect.Effect<boolean, ScottyError>;
   readonly failOperation: (
     nonce: string,
-    code: string,
+    code: SessionOperationFailureCode,
     message: string,
     recoverable: boolean,
   ) => Effect.Effect<SessionRecord, ScottyError>;
@@ -340,7 +465,20 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
       const current = decoded.success;
       if (current.operation?.nonce !== nonce)
         return Result.fail(conflict("Session operation lease changed"));
-      const next = update(current);
+      const proposed = update(current);
+      const next =
+        current.operation !== null &&
+        proposed.operation === null &&
+        proposed.operationResult?.outcome.status !== "failed"
+          ? {
+              ...proposed,
+              operationResult: completeOperationResult(
+                proposed,
+                current.operation,
+                proposed.updatedAt,
+              ),
+            }
+          : proposed;
       await transaction.put(next);
       return Result.succeed(next);
     });
@@ -442,7 +580,7 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
       });
     }),
     acquireOperation: Effect.fnUntraced(
-      function* (kind, allowed, nonce, replaceOperationOlderThanMs) {
+      function* (kind, allowed, nonce, replaceOperationOlderThanMs, stoppedReason) {
         const nowMillis = yield* Clock.currentTimeMillis;
         const now = new Date(nowMillis).toISOString();
         return yield* transact(async (transaction) => {
@@ -462,8 +600,18 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
             nowMillis - operationStartedAt >= replaceOperationOlderThanMs;
           if (record.operation && !canReplaceOperation)
             return Result.fail(conflict(`Session is already running ${record.operation.kind}`));
-          const operation = { kind, nonce, startedAt: now };
-          await transaction.put({ ...record, operation, updatedAt: now });
+          const operation = {
+            kind,
+            nonce,
+            startedAt: now,
+            ...(stoppedReason ? { stoppedReason } : {}),
+          };
+          await transaction.put({
+            ...record,
+            operation,
+            operationResult: startOperationResult(record, operation, now),
+            updatedAt: now,
+          });
           return Result.succeed(operation);
         });
       },
@@ -523,7 +671,12 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const record = decoded.success;
         if (record.operation?.nonce !== nonce) return Result.succeed(undefined);
-        const next = { ...record, operation: null, updatedAt: now };
+        const next = {
+          ...record,
+          operation: null,
+          operationResult: completeOperationResult(record, record.operation, now),
+          updatedAt: now,
+        };
         await transaction.put(next);
         return Result.succeed(next);
       });
@@ -537,15 +690,20 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const current = decoded.success;
         if (!hardCapObservationIsCurrent(observed, current)) return Result.succeed(Option.none());
+        const operation =
+          current.operation ??
+          ({ kind: "snapshot", nonce: "hard-cap", startedAt: current.updatedAt } as const);
         const failed: SessionRecord = {
           ...current,
-          status: "failed",
           operation: null,
-          failure: {
-            code: "hard_cap_checkpoint_failed",
+          operationResult: failedOperationResult(
+            current,
+            operation,
+            updatedAt,
+            "hard_cap_checkpoint_failed",
             message,
-            recoverable: Boolean(current.backup?.current),
-          },
+            Boolean(current.backup?.current),
+          ),
           updatedAt,
         };
         await transaction.put(failed);
@@ -561,31 +719,65 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const record = decoded.success;
         if (
-          record.status === "sleeping" ||
-          record.status === "failed" ||
+          record.status === "stopped" ||
           record.status === "gone" ||
           record.operation?.kind === "vaporize"
         )
           return Result.succeed(Option.none());
-        const next: SessionRecord = hasCommittedManagedStop(record)
-          ? {
-              ...record,
-              status: "sleeping",
-              operation: null,
-              failure: undefined,
-              updatedAt,
-            }
-          : {
-              ...record,
-              status: "failed",
-              operation: record.operation?.kind === "evidence" ? record.operation : null,
-              failure: {
-                code: "runtime_stopped",
-                message: "Sandbox runtime stopped before a managed checkpoint",
-                recoverable: Boolean(record.backup?.current),
-              },
-              updatedAt,
-            };
+        const operation = record.operation;
+        const next: SessionRecord =
+          operation !== null && hasCommittedManagedStop(record)
+            ? {
+                ...record,
+                status: "stopped",
+                operation: null,
+                operationResult: completeOperationResult(
+                  { ...record, status: "stopped" },
+                  operation,
+                  updatedAt,
+                ),
+                updatedAt,
+              }
+            : failedRuntimeStoppedRecord(
+                {
+                  ...record,
+                  operation: record.operation?.kind === "evidence" ? record.operation : null,
+                  operationResult: failedOperationResult(
+                    record,
+                    record.operation ?? {
+                      kind: "snapshot",
+                      nonce: "runtime-stop",
+                      startedAt: record.updatedAt,
+                    },
+                    updatedAt,
+                    "runtime_stopped",
+                    "Sandbox runtime stopped before a managed checkpoint",
+                    Boolean(record.backup?.current),
+                  ),
+                  updatedAt,
+                },
+                updatedAt,
+              );
+        await transaction.put(next);
+        return Result.succeed(Option.some(next));
+      });
+    }),
+    recordFailedRuntimeDestroyed: Effect.fnUntraced(function* (sessionId) {
+      const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+      return yield* transact(async (transaction) => {
+        const stored = await transaction.get();
+        if (stored === undefined) return Result.succeed(Option.none());
+        const decoded = decode(stored);
+        if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
+        const record = decoded.success;
+        if (
+          record.id !== sessionId ||
+          record.status === "gone" ||
+          record.operation?.kind === "vaporize" ||
+          record.operationResult?.outcome.status !== "failed"
+        )
+          return Result.succeed(Option.none());
+        const next = failedRuntimeStoppedRecord(record, updatedAt);
         await transaction.put(next);
         return Result.succeed(Option.some(next));
       });
@@ -615,13 +807,23 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
     }),
     failOperation: Effect.fnUntraced(function* (nonce, code, message, recoverable) {
       const now = new Date(yield* Clock.currentTimeMillis).toISOString();
-      return yield* updateForOperation(nonce, (record) => ({
-        ...record,
-        status: "failed",
-        operation: null,
-        failure: { code, message, recoverable },
-        updatedAt: now,
-      }));
+      return yield* updateForOperation(nonce, (record) => {
+        const operation = record.operation;
+        if (operation === null) return record;
+        return {
+          ...record,
+          operation: null,
+          operationResult: failedOperationResult(
+            record,
+            operation,
+            now,
+            code,
+            message,
+            recoverable,
+          ),
+          updatedAt: now,
+        };
+      });
     }),
   });
 };

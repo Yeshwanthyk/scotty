@@ -24,5 +24,5 @@ authentication-page CSP without `unsafe-inline` scripts.
 The pages assume these same-origin endpoints:
 
 - `GET /api/sessions` returns either an array of session projections or `{ "sessions": [...] }` with `id` and `status` fields.
-- `GET /api/stats` returns retained workspace creation counts grouped by repository identity and joined to current warm or sleeping session projections.
+- `GET /api/stats` returns retained workspace creation counts grouped by repository identity and joined to current warm or stopped session projections.
 - `POST /api/sessions/:id/resume` starts restore/resume and returns a successful HTTP status when accepted.
