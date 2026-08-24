@@ -3,7 +3,7 @@
 Status: implementation approved 2026-07-24. Production migration and recovery remain separate
 operator-approved gates.
 
-This packet replaces Scotty's browser-side multi-admin model with the settled token-registration
+This packet replaces Scotty's browser-side multi-admin model with the settled client-registration
 model:
 
 - Browser registration uses opaque, independently revocable client credentials.
@@ -11,7 +11,8 @@ model:
 - Only the owner can register, list, revoke, or promote devices.
 - Moving ownership to an accessible registered device requires explicit owner transfer and target
   acceptance.
-- Losing the owner device requires a short-lived recovery grant issued with `SCOTTY_TOKEN`.
+- Losing the owner device requires a short-lived recovery grant issued by the installation root
+  identity through `scotty owner recover`.
 - Passkeys, user accounts, email recovery, and external identity providers are out of scope.
 
 The live infrastructure, session, credential-isolation, ownership, and lifecycle contracts are in
@@ -35,37 +36,38 @@ Keep these existing properties:
 - Revoked browsers fail authenticated HTTP immediately. Their terminal heartbeat fails, and the
   Sandbox Durable Object kills the isolated PTY process when the 45-second attachment lease
   expires.
-- `SCOTTY_TOKEN` remains the CLI and break-glass root credential. It continues to authorize
-  operational session API calls through `Authorization: Bearer`.
+- The installation root identity remains the setup/deployment and break-glass recovery credential.
+- Normal session API calls use a paired client identity rather than a global root credential.
 
 Replace these current properties:
 
 - Stored `access:read` and `access:write` scopes are not ownership.
 - `registerBootstrapClient` must not mint additional administrators.
-- The root token must not be accepted from a browser cookie or `?t=` query parameter.
+- The root bearer must not be accepted as a browser credential or URL query parameter.
 - Worker-side scope checks must not authorize a later, unauthenticated Auth Durable Object
   mutation.
 - Owner logout, owner expiry, and v1 migration must not silently leave an ambiguous successor.
 - The fake Worker, CLI browser launcher, route tests, and deployed canary must stop treating the
-  root token as a browser credential.
+  installation root credential as a browser credential.
 
 ## 2. Trust model and security boundary
 
 The trusted computing base is:
 
 - The deployed Worker and singleton Auth Durable Object code.
-- Cloudflare's Worker secret binding containing `SCOTTY_TOKEN`.
+- Cloudflare's Worker secret binding containing the installation root credential.
 - Auth Durable Object transactional storage.
 - The current owner browser profile while its client credential remains secret.
-- The operator's protected copy of `SCOTTY_TOKEN`, normally stored in mode-`0600`
-  `~/.scotty.json` and backed up outside the laptop.
+- The operator's protected root identity is held by the OS credential store or the private XDG
+  fallback `${XDG_STATE_HOME:-~/.local/state}/scotty/credentials/root` (mode `0600`). It is backed
+  up outside the laptop.
 
 The token model cannot distinguish the operator from malware holding the same bearer credential.
 Possession is authority:
 
-- A stolen owner cookie can act as the owner until transfer, recovery, revocation, or expiry.
-- A stolen `SCOTTY_TOKEN` is root and can perform break-glass recovery.
-- If both the owner credential and every protected copy of `SCOTTY_TOKEN` are lost, recovery is
+- A stolen owner client credential can act as the owner until transfer, recovery, revocation, or expiry.
+- A stolen root identity can perform break-glass recovery.
+- If both the owner credential and every protected root identity are lost, recovery is
   intentionally impossible.
 
 The implementation must prevent a standard client, stale owner request, intercepted transfer for a
@@ -75,8 +77,8 @@ different target, replayed grant, or concurrent transition from becoming owner.
 
 Use these terms consistently in code, API responses, UI, tests, and documentation:
 
-- **Root credential:** deploy-time `SCOTTY_TOKEN`; CLI bearer and break-glass authority, never a
-  browser session.
+- **Root credential:** installation root identity; bearer authority for setup/deployment and
+  break-glass recovery, never a browser session or normal session client.
 - **Client:** one registered browser with one opaque credential.
 - **Standard client:** a client allowed to read/write sessions and connect terminals, but not
   manage device authority.
@@ -238,9 +240,10 @@ consumeTerminalTicket(ticketCredential, sessionId)
 The Worker must not authorize an owner command by passing a client ID, scope list, `isOwner`
 boolean, or previously authenticated client view. Those are staleable observations.
 
-`SCOTTY_TOKEN` is stable outside Auth Durable Object state, so it has no ownership race. The Worker
-validates the bearer form, and the Auth Durable Object RPC boundary independently compares the
-presented root credential against its Worker secret binding before issuing a recovery grant. The
+The installation root identity is stable outside Auth Durable Object state, so it has no ownership
+race. The Worker validates the bearer form, and the Auth Durable Object RPC boundary independently
+compares the presented root credential against its Worker secret binding only when issuing a
+recovery grant. Normal session and client-management requests use the paired client identity. The
 root value is never persisted or returned.
 
 ## 8. Transition contracts
@@ -286,8 +289,9 @@ Write:
 
 Publication:
 
-- Return `/owner-transfer#token=...` once with `Cache-Control: no-store`.
-- The Devices page may render the existing QR representation and copy action.
+- Return a no-store owner-transfer browser flow once; the one-use capability stays in the browser
+  fragment and is never printed, logged, or copied by the CLI.
+- The Devices page may render an internal launch or QR control without exposing the capability value.
 - Client-list and transfer-status reads expose metadata only, never the secret or digest.
 
 ### 8.3 Accept an owner transfer
@@ -314,8 +318,8 @@ Write:
 
 Publication:
 
-- Return the rotated owner credential once.
-- Replace the target's browser cookie in the same HTTP response.
+- Rotate the target's browser client credential in the same response and let the browser store it
+  as its HttpOnly session cookie; never print or return the raw credential.
 - The old owner fails every later owner and client authentication.
 
 Opening the link on the wrong browser must return the same generic invalid-transfer response as an
@@ -345,12 +349,14 @@ Trigger: the operator has no usable owner browser and runs `scotty owner recover
 
 Issue:
 
-- Accept only `Authorization: Bearer SCOTTY_TOKEN`.
-- Reject root cookies and root query parameters.
+- Accept only the installation root identity as an `Authorization: Bearer` request from the CLI.
+- Reject root credentials presented as browser cookies or URL queries; browser authority is always a
+  registered client.
 - Generate a 256-bit, five-minute recovery credential.
 - Persist only its digest, expiry, and current epoch.
 - Replace any older recovery grant.
-- Return `/recover#token=...` once to the CLI.
+- Return a one-use recovery browser flow to the CLI. The CLI validates its origin and expiry, opens
+  it without printing the secret-bearing URL, and emits only the sanitized opened/expiry result.
 
 Consume:
 
@@ -360,7 +366,8 @@ Consume:
 - Clear every pairing, transfer, recovery grant, and terminal ticket.
 - Create a new client with a fresh credential.
 - Claim that client as owner and increment the epoch.
-- Return the owner credential once in the hardened cookie.
+- Set the fresh owner browser session in the hardened cookie response; the raw credential never enters
+  CLI output, logs, or persisted Worker state.
 
 Recovery is intentionally a destructive access reset. Existing session records, backups,
 containers, worktrees, and Codex credentials are unaffected.
@@ -427,7 +434,7 @@ Remove:
 - `registeredRootBrowserRedirect`.
 - Root-token comparison against `__Host-scotty`.
 - `allowRootQuery`.
-- `?t=SCOTTY_TOKEN` on pages and PTY routes.
+- Root bearer browser handoffs on pages and PTY routes.
 
 Every unsafe cookie-authenticated method requires:
 
@@ -452,7 +459,8 @@ expired grant, or already-consumed grant.
 - A separate "This device" badge for the current cookie.
 - "Make primary" on active standard devices.
 - "Revoke" on standard devices.
-- Pending-transfer target, expiry, copy/QR actions, and cancellation.
+- Pending-transfer target, expiry, internal launch/QR controls, and cancellation; no raw capability is
+  displayed or copied.
 
 The UI never infers authority from label, user agent, list order, last-seen time, or local state.
 
@@ -460,11 +468,11 @@ The UI never infers authority from label, user agent, list order, last-seen time
 
 `/owner-transfer`:
 
-- Reads the token from the fragment.
+- Reads the one-use capability from the fragment.
 - Calls `history.replaceState` before any network operation.
 - Requires an explicit user click; link scanners and prefetchers must not transfer ownership.
 - Submits with the target's existing client cookie.
-- Replaces that cookie with the rotated owner credential.
+- Replaces that browser session with the rotated owner credential without exposing its raw value.
 - Shows a generic invalid/expired/wrong-device error.
 
 ### Recovery
@@ -501,31 +509,48 @@ Add:
 
 ```text
 scotty owner recover [--json]
+scotty client pair ORIGIN
+scotty client status [--json]
+scotty client unpair [--json]
+scotty tui
 ```
 
 Behavior:
 
-- Resolve host and root token through the existing flag, environment, and `~/.scotty.json`
-  precedence.
-- POST to `/api/auth/recovery-grants` with bearer auth.
-- Validate the same-origin recovery URL and expiry with Effect Schema.
-- Open the URL through `BrowserLauncher`.
-- Never print the tokenized URL or recovery credential.
+- Resolve the installation origin from the XDG installation pointer and the root identity from the OS
+  credential store or its private XDG fallback for owner recovery. Do not use a global client or
+  browser credential.
+- POST to `/api/auth/recovery-grants` with the root bearer only for recovery-grant issuance.
+- Validate the same-origin recovery browser flow and expiry with Effect Schema.
+- Open the flow through `BrowserLauncher`.
+- Never print, return, log, or ask a human to copy the secret-bearing URL or recovery credential.
 - Human output reports that recovery opened and its expiry.
 - JSON output includes only `{ "opened": true, "expiresAt": "..." }`.
 
-Change `browserUrl` so `scotty beam up` and `scotty attach` open clean `/s/:id` URLs without receiving or
-injecting the root token. Their existing safe JSON output remains unchanged.
+`client pair ORIGIN` validates the exact installation origin, reads the one-use value from a no-echo
+stdin prompt, and stores only the resulting client identity in the OS credential store or the
+canonical private XDG fallback `${XDG_STATE_HOME:-~/.local/state}/scotty/credentials/client`.
+`client status` performs a fresh request and confirms the current client ID. `client unpair` logs out
+the current standard client and removes that local identity; an owner must transfer ownership or use
+recovery instead. `tui` reads the stored client identity and has no pairing flow of its own.
+
+Change `browserUrl` so `scotty beam up` and `scotty attach` open clean `/s/:id` URLs without receiving
+or injecting installation authority. Their existing safe JSON output remains unchanged.
 
 On a replacement laptop the operator flow is:
 
 ```text
 scotty recover --name <installation-name>
 scotty owner recover
+scotty client pair <origin>
+scotty client status --json
+scotty tui
 ```
 
-The operator recovers installation access through the approved Cloudflare profile. The CLI rotates
-`SCOTTY_TOKEN`, stores it in the local mode-0600 config, and does not provide it to the browser.
+The operator recovers installation access through the approved Cloudflare profile, completes owner
+recovery in the browser, and pairs the replacement terminal. The client identity is stored in the OS
+credential store or the canonical private XDG fallback; no root or browser credential is provided to
+the TUI.
 
 ## 13. Version-1 migration
 
@@ -565,15 +590,17 @@ Cutover sequence:
 
 1. Deploy the complete dual-decoder implementation to a disposable stage seeded with a realistic
    v1 multi-admin authority.
-2. Prove recovery creates one owner, old cookies fail, a standard client can be paired, ownership
-   can transfer, and stale credentials cannot perform owner commands.
+2. Prove recovery creates one owner, legacy browser credentials fail, a standard client can be paired
+   with `scotty client pair`, `scotty client status` confirms it, ownership can transfer, and stale
+   credentials cannot perform owner commands.
 3. Prove terminal heartbeats fail after recovery and isolated PTY processes are killed within the
    45-second lease bound.
-4. Prepare the v2-aware rollback artifact, production command transcript, and protected
-   `SCOTTY_TOKEN` copy.
-5. Deploy production, immediately run `scotty owner recover` on the intended owner browser,
-   re-pair trusted devices, then rotate `SCOTTY_TOKEN` because older query URLs may exist in
-   history or logs.
+4. Prepare the v2-aware rollback artifact, production command transcript, and protected root identity
+   copy in the approved OS/XDG credential store.
+5. Deploy production, run `scotty owner recover` from the intended terminal, complete the browser
+   flow, and pair trusted devices with `scotty client pair`; verify each with `scotty client status`.
+   Never copy a browser credential or secret-bearing URL. Rotate the root identity only through the
+   approved secret-management path if exposure is suspected.
 
 Do not run destructive recovery tests against a shared or production host. The current
 `deployed-routes` test must become disposable-only or use a non-mutating pre-provisioned client
@@ -630,13 +657,13 @@ Files:
 Work:
 
 - Add owner-transfer and recovery routes.
-- Remove browser root token paths.
+- Remove browser root-credential paths.
 - Pass actor credentials to Auth Durable Object commands.
 - Add cookie-mutation same-origin policy and error mappings.
 - Refresh extended owner cookies.
 
-Gate: route tests prove no root query/cookie path, no split owner authorization, correct cookie
-rotation, and generic grant failures.
+Gate: route tests prove no browser root-credential handoff, no split owner authorization, correct
+cookie rotation, and generic grant failures.
 
 ### Wave 3 — browser and CLI flows
 
@@ -673,9 +700,9 @@ Files:
 
 Work:
 
-- Replace fake root-cookie shortcuts with the owner/recovery protocol.
+- Replace fake browser-root shortcuts with the owner/recovery protocol.
 - Make all destructive auth proof disposable-stage-only.
-- Seed v1 multi-admin state and exercise migration, recovery, pairing, transfer, stale-cookie
+- Seed v1 multi-admin state and exercise migration, recovery, pairing, transfer, stale-client
   rejection, and terminal cleanup.
 - Perform the production cutover only after the disposable gate and explicit operator approval.
 
@@ -722,8 +749,9 @@ bounded invariant exploration.
 
 Prove:
 
-- Root bearer remains valid for CLI session operations and recovery issuance.
-- Root cookie and `?t=` fail everywhere.
+- Root bearer remains valid for installation operations and recovery-grant issuance; normal session
+  operations require a paired client identity.
+- Browser routes reject root credentials presented as browser auth.
 - Cookie mutations fail without same-origin headers.
 - Standard clients receive `401` for every owner route.
 - Transfer/recovery fragments never reach request URLs, responses, logs, history, JSON output, or
@@ -738,7 +766,7 @@ The disposable canary must execute:
 seed v1 multi-admin authority
 → deploy v2
 → recover owner A
-→ reject every v1 cookie
+→ reject every legacy browser credential
 → pair standard B
 → transfer A to B
 → reject A
@@ -774,7 +802,7 @@ This work is complete only when:
   issue pairings, list/revoke clients, or start/cancel transfer.
 - Transfer requires the bound target's credential, rotates it, revokes the old owner, and defeats
   replay and stale epochs.
-- Root recovery uses bearer `SCOTTY_TOKEN`, never exposes it to the browser, and resets all browser
+- Root recovery uses the installation bearer identity, never exposes it to the browser, and resets all browser
   authority.
 - Moving to a new laptop works through standard pairing plus transfer when the old owner is
   available, or `scotty owner recover` when it is not.
@@ -788,5 +816,5 @@ This work is complete only when:
 Implementation was approved on 2026-07-24. Wave 0 binding-document edits and Waves 1–4 local and
 disposable-stage work are authorized.
 
-Production migration, destructive recovery against production, root-token rotation, and production
+Production migration, destructive recovery against production, root-identity rotation, and production
 deployment remain separate operator-approved gates after local and disposable proof.

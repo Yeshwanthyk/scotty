@@ -47,7 +47,7 @@ The agent probes, parses, and reports. The human supplies identity, authority, a
 | GitHub            | Run status probes and wait                                                                 | Complete `gh auth login` in the human's own terminal                                           |
 | Mutations         | Show the plan or impact and ask before `--yes`, deployment, recovery, removal, or vaporize | Approve the named resource change; `--yes` skips confirmation, not validation                  |
 | Browser authority | Explain owner recovery and revocation                                                      | Complete the browser recovery or ownership flow                                                |
-| Pairing           | Give the verified origin and wait for confirmation                                         | Create the one-use pairing value and enter it at the no-echo prompt in the human terminal      |
+| Pairing           | Give the verified origin and wait for confirmation                                         | Create the one-use pairing value and enter it at the no-echo `scotty client pair` prompt       |
 
 Credentials stay in their owning terminal, browser, Worker secret boundary, or designated private
 credential store. Ask whether a secure human action is complete, never for a real credential value.
@@ -190,12 +190,19 @@ Give the human the exact verified Worker origin as a local instruction. They ope
 create a one-use pairing value, and in their own terminal run:
 
 ```sh
-scotty tui pair ORIGIN
+scotty client pair ORIGIN
+scotty client status --json
 scotty tui
 ```
 
-They paste the value at the no-echo prompt. The agent waits for confirmation that the paired-client
-configuration was written privately and the fleet console opened.
+They enter the one-use value at the no-echo prompt. `scotty client pair` writes the client identity
+to the OS credential store when available, with the private fallback
+`${XDG_STATE_HOME:-~/.local/state}/scotty/credentials/client`; it never prints the credential or a
+secret-bearing browser URL. `client status` verifies fresh authentication before the fleet console
+opens.
+
+The TUI reads that paired identity. Pairing and identity removal are separate `client` commands; do
+not pass a browser cookie or a recovery value to the TUI.
 
 **Done when:** the intended browser owns the installation and the current human terminal can open
 `scotty tui`. Report identifiers, redacted provider metadata, `doctor` status, owner completion, and
@@ -378,13 +385,18 @@ OPENCODE_API_KEY --secret`); containers see only the static `scotty-injected` pl
 values exist only behind the egress boundary.
 
 The Auth Durable Object owns the browser owner, standard clients, pairing, transfer, recovery, and
-revocation. It stores credential digests only. The root authority is bearer-only and recovery
-authority; it is not a browser cookie or a URL. A standard paired client has session read/write
-scope; owner-only browser management must stay in the primary browser or the recovery flow.
+revocation. It stores credential digests only. Normal CLI session commands use the paired client
+identity, not a global root credential. The root authority is bearer-only for installation control
+and owner recovery; it is not a browser cookie or a URL. A standard paired client has session
+read/write scope; owner-only browser management must stay in the primary browser or the recovery
+flow.
 
 `doctor` and a session URL do not prove browser authority. `owner recover` revokes all existing
-browser credentials, and the human must finish the browser flow before pairing a new terminal. Keep
-pairing values and browser cookies in the human browser/terminal boundary.
+browser credentials, and the human must finish the browser flow before pairing a new terminal. Use
+`scotty client status --json` to verify the current terminal identity and
+`scotty client unpair --json` to revoke/remove a standard client; an owner must transfer ownership
+or use recovery instead. Keep pairing values and browser cookies in the human browser/terminal
+boundary.
 
 **Done when:** browser ownership is confirmed by the human rather than inferred from a URL.
 

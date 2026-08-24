@@ -1,22 +1,10 @@
 #!/usr/bin/env bun
-import { defaultConfigPath, loadConfig, saveConfig } from "./config.ts";
 import {
-  DESKTOP_MAX_COMMAND_BYTES,
   DESKTOP_PROTOCOL_VERSION,
   encodeDesktopFrame,
   type DesktopFrame,
 } from "./desktop-protocol.ts";
-import { makeDesktopSidecar } from "./desktop-sidecar.ts";
-import { safeErrorMessage } from "./errors.ts";
-import { HttpConsoleTransport } from "./transport.ts";
-
-const encoder = new TextEncoder();
-
-const configPathFromArguments = (args: ReadonlyArray<string>): string => {
-  if (args.length === 0) return defaultConfigPath();
-  if (args.length === 2 && args[0] === "--config" && args[1] !== undefined) return args[1];
-  throw new TypeError("Usage: scotty-console-sidecar [--config PATH]");
-};
+import { TuiError, safeErrorMessage } from "./errors.ts";
 
 class StdoutFrameWriter {
   readonly #controls: string[] = [];
@@ -82,47 +70,16 @@ class StdoutFrameWriter {
   }
 }
 
-const run = async (configPath: string, writer: StdoutFrameWriter): Promise<void> => {
-  let config = await loadConfig(configPath);
-  const transport = new HttpConsoleTransport(config, {
-    onCredential: async (credential) => {
-      config = { ...config, credential };
-      await saveConfig(config, configPath);
-    },
-  });
-  const sidecar = makeDesktopSidecar(transport, (frame) => writer.write(frame));
-  await sidecar.start();
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for await (const chunk of process.stdin) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let newline = buffer.indexOf("\n");
-    while (newline >= 0) {
-      const line = buffer.slice(0, newline).trimEnd();
-      buffer = buffer.slice(newline + 1);
-      if (line && !(await sidecar.handleLine(line))) {
-        await writer.drain();
-        return;
-      }
-      newline = buffer.indexOf("\n");
-    }
-    if (encoder.encode(buffer).byteLength > DESKTOP_MAX_COMMAND_BYTES) {
-      await sidecar.handleLine(buffer);
-      sidecar.stop();
-      await writer.drain();
-      return;
-    }
-  }
-  const tail = `${buffer}${decoder.decode()}`.trim();
-  if (tail) await sidecar.handleLine(tail);
-  sidecar.stop();
-  await writer.drain();
+const run = async (_args: ReadonlyArray<string>, _writer: StdoutFrameWriter): Promise<void> => {
+  throw new TuiError(
+    "config_missing",
+    "The desktop sidecar requires a canonical client identity from the Scotty CLI; it does not read a TUI config file",
+  );
 };
 
 const writer = new StdoutFrameWriter();
 process.stdout.on("error", () => writer.fail());
-const main = async (): Promise<void> => run(configPathFromArguments(process.argv.slice(2)), writer);
+const main = async (): Promise<void> => run(process.argv.slice(2), writer);
 
 if (import.meta.main)
   void main().catch(async (error: unknown) => {

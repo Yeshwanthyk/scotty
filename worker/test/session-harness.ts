@@ -1168,7 +1168,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       sandboxBundleDeletedKeys,
     ),
     ASSETS: undefined as never,
-    SCOTTY_TOKEN: "test-token",
+    SCOTTY_ROOT_VERIFIER_BOOTSTRAP: "test-token",
     ...(options.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
     ...(options.previewBase === undefined ? {} : { SCOTTY_PREVIEW_BASE: options.previewBase }),
   };

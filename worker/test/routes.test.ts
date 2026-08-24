@@ -32,6 +32,9 @@ const sandboxTarget = vi.hoisted((): { current: unknown } => ({
 }));
 
 const auth = vi.hoisted(() => ({
+  authenticateRoot: vi.fn(),
+  initializeRoot: vi.fn(),
+  rotateRoot: vi.fn(),
   acceptOwnerTransfer: vi.fn(),
   authenticate: vi.fn(),
   cancelOwnerTransfer: vi.fn(),
@@ -122,6 +125,11 @@ const REGISTERED_CLIENT = {
   expiresAt: "2026-08-21T12:00:00.000Z",
   lastSeenAt: "2026-07-22T12:00:00.000Z",
   current: true,
+};
+const STANDARD_CLIENT = {
+  ...REGISTERED_CLIENT,
+  scopes: ["sessions:read", "sessions:write"],
+  role: "standard",
 };
 
 function authNamespace(): import("../src/auth-object").ScottyAuthRegistryNamespace {
@@ -272,7 +280,7 @@ function env(
     },
   };
   return {
-    SCOTTY_TOKEN: TOKEN,
+    SCOTTY_ROOT_VERIFIER_BOOTSTRAP: TOKEN,
     ASSETS: assets,
     AUTH: authNamespace(),
     RUNNER_REGISTRY: runnerRegistryNamespace(),
@@ -515,13 +523,25 @@ describe("real Hono boundary", () => {
       createdAt: "2026-08-08T12:00:00.000Z",
       updatedAt: "2026-08-08T12:00:02.000Z",
     });
-    auth.authenticate.mockResolvedValue({
-      ok: true,
-      value: {
-        client: REGISTERED_CLIENT,
-        renewed: false,
-      },
-    });
+    auth.authenticate.mockImplementation(async (credential: string) =>
+      credential === CLIENT_CREDENTIAL
+        ? {
+            ok: true,
+            value: {
+              client: REGISTERED_CLIENT,
+              renewed: false,
+            },
+          }
+        : {
+            ok: false,
+            error: { reason: "credential_invalid", message: "Client authorization failed" },
+          },
+    );
+    auth.authenticateRoot.mockImplementation(async (credential: string) =>
+      credential === TOKEN
+        ? { ok: true, value: { generation: 1 } }
+        : { ok: false, error: { reason: "forbidden", message: "Root authorization failed" } },
+    );
     runnerRegistry.authenticate.mockImplementation(async (name: string, credential: string) =>
       name !== "test-runner"
         ? { ok: false, error: { reason: "runner_missing", message: "Runner not found" } }
@@ -905,7 +925,7 @@ describe("real Hono boundary", () => {
   it("reports providers separately from dynamically named runners", async () => {
     const providers = await app.request(
       "/api/providers",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(providers.status).toBe(200);
@@ -916,7 +936,7 @@ describe("real Hono boundary", () => {
 
     const runners = await app.request(
       "/api/runners",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(runners.status).toBe(200);
@@ -979,7 +999,7 @@ describe("real Hono boundary", () => {
     } as KVNamespace;
     const assigned = await app.request(
       "/api/runners",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       { ...env(), SESSIONS: sessions },
     );
     await expect(assigned.json()).resolves.toEqual([
@@ -993,7 +1013,7 @@ describe("real Hono boundary", () => {
     });
     const unavailable = await app.request(
       "/api/providers",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     await expect(unavailable.json()).resolves.toEqual([
@@ -1002,13 +1022,19 @@ describe("real Hono boundary", () => {
     ]);
   });
 
-  it("registers and rotates named runners only with the CLI root credential", async () => {
+  it("lets a standard paired client register and rotate named runners", async () => {
+    auth.authenticate.mockResolvedValue({
+      ok: true,
+      value: { client: STANDARD_CLIENT, renewed: false },
+    });
     const created = await app.request(
       "/api/runners",
       {
         method: "POST",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/json",
         },
         body: JSON.stringify({ name: "garage", replace: false }),
@@ -1043,7 +1069,9 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/json",
         },
         body: JSON.stringify({ name: "test-runner", replace: true }),
@@ -1067,14 +1095,18 @@ describe("real Hono boundary", () => {
       },
       env(),
     );
-    expect(ownerBrowser.status).toBe(401);
+    expect(ownerBrowser.status).toBe(200);
   });
 
-  it("prepares immutable sandbox inputs before one root-authenticated activation", async () => {
+  it("lets a standard paired client prepare and activate immutable sandbox inputs", async () => {
+    auth.authenticate.mockResolvedValue({
+      ok: true,
+      value: { client: STANDARD_CLIENT, renewed: false },
+    });
     const bindings = env();
     const configuration = await app.request(
       "/api/sandbox/configuration",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       bindings,
     );
     expect(configuration.status).toBe(200);
@@ -1092,7 +1124,9 @@ describe("real Hono boundary", () => {
       {
         method: "PUT",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/gzip",
         },
         body: TEST_SANDBOX_PLUGIN_BUNDLE,
@@ -1110,7 +1144,9 @@ describe("real Hono boundary", () => {
       {
         method: "PUT",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/json",
         },
         body: TEST_SANDBOX_SNAPSHOT.snapshotJson,
@@ -1129,7 +1165,9 @@ describe("real Hono boundary", () => {
       {
         method: "PUT",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/gzip",
         },
         body: TEST_SANDBOX_PLUGIN_BUNDLE,
@@ -1152,7 +1190,9 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/json",
         },
         body: JSON.stringify(activationBody),
@@ -1172,7 +1212,9 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/json",
         },
         body: JSON.stringify({ ...activationBody, idempotencyKey: "sandbox-sync-key-003" }),
@@ -1190,7 +1232,9 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/json",
         },
         body: JSON.stringify(activationBody),
@@ -1211,7 +1255,7 @@ describe("real Hono boundary", () => {
       },
       bindings,
     );
-    expect(ownerBrowser.status).toBe(401);
+    expect(ownerBrowser.status).toBe(200);
   });
 
   it("disables and removes only unassigned registered runners", async () => {
@@ -1219,7 +1263,7 @@ describe("real Hono boundary", () => {
       "/api/runners/test-runner",
       {
         method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       },
       env(),
     );
@@ -1265,7 +1309,7 @@ describe("real Hono boundary", () => {
       "/api/runners/test-runner",
       {
         method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       },
       { ...env(), SESSIONS: sessions },
     );
@@ -1274,7 +1318,11 @@ describe("real Hono boundary", () => {
     expect(runnerRegistry.remove).not.toHaveBeenCalled();
   });
 
-  it("allows only the owner browser to control the configured runner", async () => {
+  it("lets a standard paired client control the configured runner", async () => {
+    auth.authenticate.mockResolvedValue({
+      ok: true,
+      value: { client: STANDARD_CLIENT, renewed: false },
+    });
     for (const action of ["enable", "drain", "disable", "disconnect"]) {
       const response = await app.request(
         `/api/runners/test-runner/${action}`,
@@ -1296,27 +1344,6 @@ describe("real Hono boundary", () => {
       "disable",
       "disconnect",
     ]);
-
-    auth.authenticate.mockResolvedValueOnce({
-      ok: true,
-      value: {
-        client: { ...REGISTERED_CLIENT, role: "standard" },
-        renewed: false,
-      },
-    });
-    const standard = await app.request(
-      "/api/runners/test-runner/drain",
-      {
-        method: "POST",
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          origin: "http://localhost",
-          "sec-fetch-site": "same-origin",
-        },
-      },
-      env(),
-    );
-    expect(standard.status).toBe(401);
 
     const unknownRunner = await app.request(
       "/api/runners/helium/drain",
@@ -1355,7 +1382,10 @@ describe("real Hono boundary", () => {
       "/api/sessions",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({
           title: "  Ship dashboard  ",
           prompt: " ship it ",
@@ -1408,7 +1438,10 @@ describe("real Hono boundary", () => {
       "/api/sessions",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({
           title: "Ship dashboard",
           prompt: "ship it",
@@ -1433,7 +1466,7 @@ describe("real Hono boundary", () => {
     const request = {
       method: "POST",
       headers: {
-        authorization: `Bearer ${TOKEN}`,
+        authorization: `Bearer ${CLIENT_CREDENTIAL}`,
         "content-type": "application/json",
         "idempotency-key": "01234567-89ab-4cde-8fab-0123456789ab",
       },
@@ -1475,7 +1508,7 @@ describe("real Hono boundary", () => {
     const harness = await createSessionHarness();
     useRealSandbox(harness);
     const headers = {
-      authorization: `Bearer ${TOKEN}`,
+      authorization: `Bearer ${CLIENT_CREDENTIAL}`,
       "content-type": "application/json",
       "idempotency-key": "01234567-89ab-4cde-8fab-0123456789ab",
     };
@@ -1540,7 +1573,10 @@ describe("real Hono boundary", () => {
       "/api/sessions",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({
           title: "Ship repository",
           prompt: "ship it",
@@ -1571,7 +1607,10 @@ describe("real Hono boundary", () => {
       "/api/sessions",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({
           title: "Ship repository",
           prompt: "ship it",
@@ -1602,7 +1641,7 @@ describe("real Hono boundary", () => {
     const request = {
       method: "POST",
       headers: {
-        authorization: `Bearer ${TOKEN}`,
+        authorization: `Bearer ${CLIENT_CREDENTIAL}`,
         "content-type": "application/json",
         "idempotency-key": "01234567-89ab-4cde-8fab-0123456789ab",
       },
@@ -1645,7 +1684,10 @@ describe("real Hono boundary", () => {
         "/api/sessions",
         {
           method: "POST",
-          headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+          headers: {
+            authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+            "content-type": "application/json",
+          },
           body: JSON.stringify({
             title: "Track workspace",
             prompt: "ship it",
@@ -1685,7 +1727,7 @@ describe("real Hono boundary", () => {
     const request = {
       method: "POST",
       headers: {
-        authorization: `Bearer ${TOKEN}`,
+        authorization: `Bearer ${CLIENT_CREDENTIAL}`,
         "content-type": "application/json",
         "idempotency-key": "stats-marker-retry-0001",
       },
@@ -1730,7 +1772,7 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
           "content-type": "application/json",
           "idempotency-key": "short",
         },
@@ -1747,7 +1789,10 @@ describe("real Hono boundary", () => {
       "/api/sessions",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: "{",
       },
       env(),
@@ -1763,7 +1808,10 @@ describe("real Hono boundary", () => {
       "/api/sessions",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({
           title: "Ship project",
           prompt: "ship it",
@@ -1785,7 +1833,10 @@ describe("real Hono boundary", () => {
       "/api/sessions/a0b1c2d3e4f5/pr",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
       },
       env(),
     );
@@ -1807,7 +1858,7 @@ describe("real Hono boundary", () => {
     sandbox.readScottyArchiveStream.mockResolvedValue(new Blob(["archive"]).stream());
     const response = await app.request(
       "/api/sessions/a0b1c2d3e4f5/down",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(response.status).toBe(200);
@@ -1844,7 +1895,7 @@ describe("real Hono boundary", () => {
       entry.mock.mockResolvedValueOnce(entry.output);
       const response = await app.request(
         entry.path,
-        { method: entry.method, headers: { authorization: `Bearer ${TOKEN}` } },
+        { method: entry.method, headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
         env(),
       );
       expect(response.status).toBe(200);
@@ -1947,7 +1998,7 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({ message: "check the focused tests" }),
@@ -2060,7 +2111,7 @@ describe("real Hono boundary", () => {
         {
           method: "POST",
           headers: {
-            authorization: `Bearer ${TOKEN}`,
+            authorization: `Bearer ${CLIENT_CREDENTIAL}`,
             "content-type": "application/json",
           },
           body: JSON.stringify({ message: "continue" }),
@@ -2106,7 +2157,7 @@ describe("real Hono boundary", () => {
         {
           method: "POST",
           headers: {
-            authorization: `Bearer ${TOKEN}`,
+            authorization: `Bearer ${CLIENT_CREDENTIAL}`,
             "content-type": "application/json",
           },
           body: JSON.stringify(body),
@@ -2120,7 +2171,7 @@ describe("real Hono boundary", () => {
       {
         method: "POST",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({ message: "é".repeat(8_193) }),
@@ -2141,7 +2192,7 @@ describe("real Hono boundary", () => {
       );
       const response = await app.request(
         "/api/sessions/a0b1c2d3e4f5/inspect",
-        { headers: { authorization: `Bearer ${TOKEN}` } },
+        { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
         env(),
       );
       expect(response.status).toBe(status === 409 ? 409 : 502);
@@ -2150,7 +2201,7 @@ describe("real Hono boundary", () => {
     sandbox.fetch.mockRejectedValueOnce(new TypeError("passive target unavailable"));
     const unavailable = await app.request(
       "/api/sessions/a0b1c2d3e4f5/inspect",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(unavailable.status).toBe(502);
@@ -2176,7 +2227,7 @@ describe("real Hono boundary", () => {
       {
         method: "PATCH",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({ title: "  Package Pi extensions  " }),
@@ -2214,7 +2265,7 @@ describe("real Hono boundary", () => {
 
     const response = await app.request(
       `/api/sessions/${SESSION_ID}/resume`,
-      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
+      { method: "POST", headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
 
@@ -2261,7 +2312,7 @@ describe("real Hono boundary", () => {
 
     const response = await app.request(
       `/api/sessions/${SESSION_ID}`,
-      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      { method: "DELETE", headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
 
@@ -2299,7 +2350,7 @@ describe("real Hono boundary", () => {
     } as KVNamespace;
     const response = await app.request(
       "/api/sessions",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       { ...env(), SESSIONS: sessions },
     );
     expect(response.status).toBe(200);
@@ -2363,7 +2414,7 @@ describe("real Hono boundary", () => {
 
     const response = await app.request(
       "/api/stats",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       { ...env(), SESSIONS: sessions },
     );
     expect(response.status).toBe(200);
@@ -2447,7 +2498,7 @@ describe("real Hono boundary", () => {
 
     const response = await app.request(
       "/api/repos",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       { ...env(), SESSIONS: sessions },
     );
     expect(response.status).toBe(200);
@@ -2468,7 +2519,7 @@ describe("real Hono boundary", () => {
     const deleteCountAfterRepair = deleteKey.mock.calls.length;
     const matching = await app.request(
       "/api/repos",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       { ...env(), SESSIONS: sessions },
     );
     expect(matching.status).toBe(200);
@@ -2476,7 +2527,11 @@ describe("real Hono boundary", () => {
     expect(deleteKey).toHaveBeenCalledTimes(deleteCountAfterRepair);
   });
 
-  it("verifies a repository through GitHub before adding authority", async () => {
+  it("lets a standard paired client verify and register a repository", async () => {
+    auth.authenticate.mockResolvedValue({
+      ok: true,
+      value: { client: STANDARD_CLIENT, renewed: false },
+    });
     const fetch = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(Response.json({ default_branch: "trunk" }, { status: 200 }));
@@ -2492,7 +2547,12 @@ describe("real Hono boundary", () => {
       "/api/repos",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ repo: "owner/project" }),
       },
       env(),
@@ -2528,7 +2588,10 @@ describe("real Hono boundary", () => {
       "/api/repos",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ repo: "owner/project" }),
       },
       env(),
@@ -2553,7 +2616,10 @@ describe("real Hono boundary", () => {
       "/api/repos",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ repo: "owner/project" }),
       },
       env(),
@@ -2576,7 +2642,10 @@ describe("real Hono boundary", () => {
       "/api/repos",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ repo: "owner/missing" }),
       },
       { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
@@ -2590,7 +2659,10 @@ describe("real Hono boundary", () => {
       "/api/repos",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ repo: "owner/unavailable" }),
       },
       { ...env(), SESSIONS: Object.assign(env().SESSIONS, { put }) },
@@ -2609,7 +2681,10 @@ describe("real Hono boundary", () => {
       "/api/sessions",
       {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({
           title: "Failed repository",
           prompt: "fail it",
@@ -2644,7 +2719,7 @@ describe("real Hono boundary", () => {
       "/api/repos/owner/project",
       {
         method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       },
       { ...env(), SESSIONS: sessions },
     );
@@ -2678,7 +2753,7 @@ describe("real Hono boundary", () => {
       "/api/repos/owner/project",
       {
         method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       },
       { ...env(), SESSIONS: sessions },
     );
@@ -2712,7 +2787,7 @@ describe("real Hono boundary", () => {
 
     const response = await app.request(
       "/api/repos/owner/project",
-      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      { method: "DELETE", headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       { ...env(), SESSIONS: sessions },
     );
     expect(response.status).toBe(500);
@@ -2726,7 +2801,7 @@ describe("real Hono boundary", () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const response = await app.request(
       "/api/sessions",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       { ...env(), SESSIONS: sessions },
     );
     expect(response.status).toBe(500);
@@ -2821,6 +2896,13 @@ describe("real Hono boundary", () => {
     });
     expect(auth.issueRecoveryGrant).toHaveBeenCalledWith(TOKEN, "recovery-test-key-0001");
     expect(JSON.stringify(issuedBody)).not.toContain(TOKEN);
+
+    const deniedManagement = await app.request(
+      "/api/sandbox/configuration",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env(),
+    );
+    expect(deniedManagement.status).toBe(401);
 
     const deniedCookie = await app.request(
       "/api/auth/recovery-grants",
@@ -3123,6 +3205,20 @@ describe("real Hono boundary", () => {
         },
       ],
       [
+        `/api/auth/clients/${REGISTERED_CLIENT.id}`,
+        {
+          method: "DELETE",
+          headers: { origin: "http://localhost" },
+        },
+      ],
+      [
+        "/api/auth/recovery-grants",
+        {
+          method: "POST",
+          headers: { origin: "http://localhost" },
+        },
+      ],
+      [
         "/api/auth/owner-transfers/333333333333",
         {
           method: "DELETE",
@@ -3180,6 +3276,15 @@ describe("real Hono boundary", () => {
   });
 
   it("rejects the root token in query parameters and cookies", async () => {
+    auth.authenticate
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { reason: "credential_invalid", message: "Client credential is invalid" },
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { reason: "credential_invalid", message: "Client credential is invalid" },
+      });
     const response = await app.request(`/s/a0b1c2d3e4f5?t=${TOKEN}`, undefined, env());
     expect(response.status).toBe(401);
     expect(response.headers.get("set-cookie")).toBeNull();
@@ -3194,7 +3299,7 @@ describe("real Hono boundary", () => {
 
     const apiQuery = await app.request(
       `/api/sessions?t=${TOKEN}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(apiQuery.status).toBe(401);
@@ -3243,14 +3348,14 @@ describe("real Hono boundary", () => {
 
     const rootBearer = await app.request(
       "/sessions",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(rootBearer.status).toBe(401);
 
     const sessionRootBearer = await app.request(
       "/s/a0b1c2d3e4f5",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(sessionRootBearer.status).toBe(401);
@@ -3385,7 +3490,7 @@ describe("real Hono boundary", () => {
 
     const rootBearer = await app.request(
       `/api/sessions/${SESSION_ID}/evidence/${accepted.jobId}`,
-      { headers: { ...headers, authorization: `Bearer ${TOKEN}` } },
+      { headers: { ...headers, authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       testEnv,
     );
     expect(rootBearer.status).toBe(401);
@@ -3970,7 +4075,11 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("location")).toBe("/sessions");
   });
 
-  it("manages global environment through root and primary-device credentials without leaks", async () => {
+  it("lets a standard paired client manage global environment without leaks", async () => {
+    auth.authenticate.mockResolvedValue({
+      ok: true,
+      value: { client: STANDARD_CLIENT, renewed: false },
+    });
     sandboxConfig.listEnvironment.mockResolvedValue({
       ok: true,
       value: {
@@ -4000,7 +4109,7 @@ describe("real Hono boundary", () => {
     });
     const listed = await app.request(
       "/api/environment",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(listed.status).toBe(200);
@@ -4042,7 +4151,9 @@ describe("real Hono boundary", () => {
       {
         method: "PUT",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
           "content-type": "application/json",
         },
         body: JSON.stringify({ value: "authority-github-token", secret: true }),
@@ -4062,7 +4173,14 @@ describe("real Hono boundary", () => {
 
     const removed = await app.request(
       "/api/environment/PUBLIC_URL",
-      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      {
+        method: "DELETE",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
       env(),
     );
     expect(removed.status).toBe(200);
@@ -4097,7 +4215,7 @@ describe("real Hono boundary", () => {
     const listed = await app.request(
       "/api/environment?repo=owner%2Fproject",
       {
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       },
       env(),
     );
@@ -4110,7 +4228,7 @@ describe("real Hono boundary", () => {
       {
         method: "PUT",
         headers: {
-          authorization: `Bearer ${TOKEN}`,
+          authorization: `Bearer ${CLIENT_CREDENTIAL}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({ value: "stable", secret: false }),
@@ -4126,7 +4244,7 @@ describe("real Hono boundary", () => {
 
     const removed = await app.request(
       "/api/environment/CHANNEL?repo=owner%2Fproject",
-      { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } },
+      { method: "DELETE", headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(removed.status).toBe(200);
@@ -4135,7 +4253,7 @@ describe("real Hono boundary", () => {
     const malformed = await app.request(
       "/api/environment?repo=owner%2Fproject%2Fextra",
       {
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       },
       env(),
     );
@@ -4183,14 +4301,14 @@ describe("real Hono boundary", () => {
     for (const request of [
       new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty-ticket", {
         method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       }),
       new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty?client=123456abcdef", {
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       }),
       new Request("http://localhost/api/sessions/a0b1c2d3e4f5/pty/123456abcdef", {
         method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` },
       }),
     ]) {
       const response = await app.request(request, undefined, env());
@@ -4201,7 +4319,7 @@ describe("real Hono boundary", () => {
   it("rejects invalid ids before creating a Durable Object stub", async () => {
     const response = await app.request(
       "/api/sessions/INVALID",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { headers: { authorization: `Bearer ${CLIENT_CREDENTIAL}` } },
       env(),
     );
     expect(response.status).toBe(400);

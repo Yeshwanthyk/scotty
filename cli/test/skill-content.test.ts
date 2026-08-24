@@ -39,7 +39,9 @@ const commandFamilies = [
   "scotty runner serve",
   "scotty runner list",
   "scotty runner remove",
-  "scotty tui pair",
+  "scotty client pair",
+  "scotty client status",
+  "scotty client unpair",
   "scotty tui",
 ] as const;
 
@@ -49,7 +51,8 @@ const setupCriticalCommands = [
   "scotty sandbox sync",
   "scotty doctor",
   "scotty owner recover",
-  "scotty tui pair",
+  "scotty client pair",
+  "scotty client status",
   "scotty tui",
 ] as const;
 
@@ -111,6 +114,9 @@ describe("Scotty Skill content contract", () => {
       /never relay its URL or value/i,
       /never for a real credential value/i,
       /--delete-data`?\s+only after explicit approval/i,
+      /XDG_STATE_HOME.*credentials\/client/iu,
+      /scotty client status/iu,
+      /scotty client unpair/iu,
     ])
       expect(source).toMatch(contract);
   });
@@ -130,6 +136,8 @@ describe("Scotty Skill content contract", () => {
       /\bscotty up\b/iu,
       /\bscotty down\b/iu,
       /\bscotty vaporize\b/iu,
+      /\bscotty tui pair\b/iu,
+      /--config\b/iu,
     ])
       expect(source).not.toMatch(stale);
 

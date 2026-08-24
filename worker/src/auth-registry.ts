@@ -23,6 +23,12 @@ export type StandardAuthScope = typeof StandardAuthScopeSchema.Type;
 export const AuthScopeSchema = Schema.Literals(ADMIN_AUTH_SCOPES);
 export type AuthScope = typeof AuthScopeSchema.Type;
 
+const RootAuthorityRecordSchema = Schema.Struct({
+  credentialDigest: Schema.String,
+  generation: Schema.Number,
+});
+export type RootAuthorityRecord = typeof RootAuthorityRecordSchema.Type;
+
 const AuthClientRecordSchema = Schema.Struct({
   id: Schema.String,
   credentialDigest: Schema.String,
@@ -74,6 +80,7 @@ const RecoveryGrantRecordSchema = Schema.Struct({
   id: Schema.String,
   credentialDigest: Schema.String,
   ownerEpoch: Schema.Number,
+  rootGeneration: Schema.optionalKey(Schema.Number),
   createdAt: Schema.String,
   expiresAt: Schema.String,
   idempotencyKeyDigest: Schema.optionalKey(Schema.String),
@@ -93,6 +100,7 @@ type HatchHandoffRecord = typeof HatchHandoffRecordSchema.Type;
 
 export const AuthAuthoritySchema = Schema.Struct({
   version: Schema.Literal(2),
+  root: RootAuthorityRecordSchema,
   ownership: OwnershipStateSchema,
   clients: Schema.Array(AuthClientRecordSchema),
   pairings: Schema.Array(PairingGrantRecordSchema),
@@ -247,7 +255,22 @@ export interface AuthAuthorityStorage {
   ) => Promise<A>;
 }
 
+export interface RootAuthorityView {
+  readonly generation: number;
+}
+
 interface AuthRegistryShape {
+  readonly initializeRoot: (
+    rootCredential: unknown,
+    bootstrapVerifier: unknown,
+  ) => Effect.Effect<RootAuthorityView, AuthRegistryFailure>;
+  readonly authenticateRoot: (
+    rootCredential: unknown,
+  ) => Effect.Effect<RootAuthorityView, AuthRegistryFailure>;
+  readonly rotateRoot: (
+    rootCredential: unknown,
+    replacementCredential: unknown,
+  ) => Effect.Effect<RootAuthorityView, AuthRegistryFailure>;
   readonly authenticate: (
     credential: unknown,
   ) => Effect.Effect<AuthenticatedClient, AuthRegistryFailure>;
@@ -284,6 +307,7 @@ interface AuthRegistryShape {
     replacement: unknown,
   ) => Effect.Effect<IssuedClientCredential, AuthRegistryFailure>;
   readonly issueRecoveryGrant: (
+    rootCredential: unknown,
     candidate: unknown,
   ) => Effect.Effect<IssuedRecoveryGrant, AuthRegistryFailure>;
   readonly consumeRecoveryGrant: (
@@ -345,14 +369,6 @@ const decodeRecoveryGrantCandidate = Schema.decodeUnknownResult(RecoveryGrantCan
 const decodeHatchHandoffCandidate = Schema.decodeUnknownResult(HatchHandoffCandidateSchema, {
   onExcessProperty: "error",
 });
-const emptyAuthority = (): AuthAuthority => ({
-  version: 2,
-  ownership: { state: "unclaimed", epoch: 0 },
-  clients: [],
-  pairings: [],
-  hatchHandoffs: [],
-});
-
 const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
   const failure = (reason: AuthRegistryFailureReason, message: string): AuthRegistryFailure =>
     new AuthRegistryFailure({ reason, message });
@@ -367,7 +383,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
     value: unknown | undefined,
     nowMillis: number,
   ): Result.Result<AuthAuthority, AuthRegistryFailure> => {
-    if (value === undefined) return Result.succeed(emptyAuthority());
+    if (value === undefined) return Result.fail(invalidAuthority());
     const v2 = decodeAuthorityV2(value);
     if (Result.isSuccess(v2))
       return validAuthority(v2.success)
@@ -445,6 +461,106 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
   };
 
   return AuthRegistry.of({
+    initializeRoot: (rootCredential, bootstrapVerifier) =>
+      Effect.gen(function* () {
+        const nowMillis = yield* Clock.currentTimeMillis;
+        return yield* Effect.tryPromise({
+          try: () =>
+            storage.transaction(async (transaction) => {
+              if (!validRootCredential(rootCredential) || !validRootVerifier(bootstrapVerifier))
+                return Result.fail(rootForbidden(failure));
+              const credentialDigest = await sha256Hex(rootCredential);
+              const stored = await transaction.get();
+              if (stored !== undefined) {
+                const decoded = parseAuthority(stored, nowMillis);
+                if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
+                if (safeDigestEqual(credentialDigest, decoded.success.root.credentialDigest)) {
+                  await transaction.put(decoded.success);
+                  return Result.succeed({ generation: decoded.success.root.generation });
+                }
+                if (
+                  !safeDigestEqual(credentialDigest, bootstrapVerifier) ||
+                  !canIncrementEpoch(decoded.success.root.generation)
+                )
+                  return Result.fail(rootForbidden(failure));
+                const authority: AuthAuthority = {
+                  version: 2,
+                  root: {
+                    credentialDigest,
+                    generation: decoded.success.root.generation + 1,
+                  },
+                  ownership: decoded.success.ownership,
+                  clients: decoded.success.clients,
+                  pairings: decoded.success.pairings,
+                  ...(decoded.success.ownerTransfer === undefined
+                    ? {}
+                    : { ownerTransfer: decoded.success.ownerTransfer }),
+                  ...(decoded.success.hatchHandoffs === undefined
+                    ? {}
+                    : { hatchHandoffs: decoded.success.hatchHandoffs }),
+                };
+                await transaction.put(authority);
+                return Result.succeed({ generation: authority.root.generation });
+              }
+              if (!safeDigestEqual(credentialDigest, bootstrapVerifier))
+                return Result.fail(rootForbidden(failure));
+              const authority: AuthAuthority = {
+                version: 2,
+                root: { credentialDigest, generation: 1 },
+                ownership: { state: "unclaimed", epoch: 0 },
+                clients: [],
+                pairings: [],
+                hatchHandoffs: [],
+              };
+              await transaction.put(authority);
+              return Result.succeed({ generation: 1 });
+            }),
+          catch: storageFailure,
+        }).pipe(Effect.flatMap(Effect.fromResult));
+      }),
+
+    authenticateRoot: (rootCredential) =>
+      transact(async (authority) => {
+        const root = await verifyRoot(authority, rootCredential, failure);
+        if (Result.isFailure(root)) return Result.fail(root.failure);
+        return Result.succeed({ value: { generation: root.success.generation }, authority });
+      }),
+
+    rotateRoot: (rootCredential, replacementCredential) =>
+      transact(async (authority) => {
+        const root = await verifyRoot(authority, rootCredential, failure);
+        if (Result.isFailure(root)) return Result.fail(root.failure);
+        if (
+          !validRootCredential(replacementCredential) ||
+          !canIncrementEpoch(root.success.generation)
+        )
+          return Result.fail(invalidInput());
+        const credentialDigest = await sha256Hex(replacementCredential);
+        if (safeDigestEqual(credentialDigest, root.success.credentialDigest))
+          return Result.fail(invalidInput());
+        const nextRoot: RootAuthorityRecord = {
+          credentialDigest,
+          generation: root.success.generation + 1,
+        };
+        const nextAuthority: AuthAuthority = {
+          version: 2,
+          root: nextRoot,
+          ownership: authority.ownership,
+          clients: authority.clients,
+          pairings: authority.pairings,
+          ...(authority.ownerTransfer === undefined
+            ? {}
+            : { ownerTransfer: authority.ownerTransfer }),
+          ...(authority.hatchHandoffs === undefined
+            ? {}
+            : { hatchHandoffs: authority.hatchHandoffs }),
+        };
+        return Result.succeed({
+          value: { generation: nextRoot.generation },
+          authority: nextAuthority,
+        });
+      }),
+
     authenticate: (credentialValue) =>
       transact(async (authority, nowMillis) => {
         const authenticated = await authenticateClient(
@@ -569,6 +685,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           return Result.fail(failure("client_missing", "Registered client was not found"));
         const nextAuthority: AuthAuthority = {
           version: 2,
+          root: authority.root,
           ownership: authority.ownership,
           clients: authority.clients.map((candidate) =>
             candidate.id === clientId ? { ...candidate, revokedAt: toIso(nowMillis) } : candidate,
@@ -595,6 +712,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           );
         const nextAuthority: AuthAuthority = {
           version: 2,
+          root: authority.root,
           ownership: authority.ownership,
           clients: authority.clients.map((candidate) =>
             candidate.id === client.success.id
@@ -695,6 +813,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           value: undefined,
           authority: {
             version: 2,
+            root: authority.root,
             ownership: authority.ownership,
             clients: authority.clients,
             pairings: authority.pairings,
@@ -759,6 +878,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
         if (targetIndex < 0) return Result.fail(invalidAuthority());
         const nextAuthority: AuthAuthority = {
           version: 2,
+          root: authority.root,
           ownership: {
             state: "claimed",
             ownerClientId: target.success.id,
@@ -780,8 +900,10 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
         });
       }),
 
-    issueRecoveryGrant: (candidateValue) =>
+    issueRecoveryGrant: (rootCredential, candidateValue) =>
       transact(async (authority, nowMillis) => {
+        const root = await verifyRoot(authority, rootCredential, failure);
+        if (Result.isFailure(root)) return Result.fail(root.failure);
         const decoded = Result.mapError(decodeRecoveryGrantCandidate(candidateValue), invalidInput);
         if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
         const candidate = decoded.success;
@@ -806,6 +928,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
           id: candidate.credential.id,
           credentialDigest: await sha256Hex(candidate.credential.secret),
           ownerEpoch: authority.ownership.epoch,
+          rootGeneration: root.success.generation,
           createdAt: toIso(nowMillis),
           expiresAt: toIso(nowMillis + candidate.ttlMillis),
           ...(idempotencyKeyDigest === undefined ? {} : { idempotencyKeyDigest }),
@@ -831,6 +954,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
         if (
           !safeDigestEqual(digest, grant.credentialDigest) ||
           grant.ownerEpoch !== authority.ownership.epoch ||
+          grant.rootGeneration !== authority.root.generation ||
           !canIncrementEpoch(authority.ownership.epoch)
         )
           return Result.fail(invalid);
@@ -846,6 +970,7 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
         ];
         const nextAuthority: AuthAuthority = {
           version: 2,
+          root: authority.root,
           ownership: {
             state: "claimed",
             ownerClientId: client.success.record.id,
@@ -950,6 +1075,18 @@ const makeAuthRegistry = (storage: AuthAuthorityStorage): AuthRegistryShape => {
   });
 };
 
+async function verifyRoot(
+  authority: AuthAuthority,
+  credentialValue: unknown,
+  failure: (reason: AuthRegistryFailureReason, message: string) => AuthRegistryFailure,
+): Promise<Result.Result<RootAuthorityRecord, AuthRegistryFailure>> {
+  if (!validRootCredential(credentialValue)) return Result.fail(rootForbidden(failure));
+  const digest = await sha256Hex(credentialValue);
+  return safeDigestEqual(digest, authority.root.credentialDigest)
+    ? Result.succeed(authority.root)
+    : Result.fail(rootForbidden(failure));
+}
+
 async function authenticateClient(
   authority: AuthAuthority,
   credentialValue: unknown,
@@ -1005,6 +1142,14 @@ function formatCredential(prefix: string, candidate: CredentialCandidate): strin
   return `${prefix}.${candidate.id}.${candidate.secret}`;
 }
 
+function validRootCredential(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 16 && value.length <= 512;
+}
+
+function validRootVerifier(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+}
+
 function validCandidate(candidate: CredentialCandidate): boolean {
   return validClientId(candidate.id) && validSecret(candidate.secret);
 }
@@ -1039,6 +1184,7 @@ function validAuthority(authority: AuthAuthority): boolean {
     authority.pairings.length <= MAX_PAIRINGS &&
     hatchHandoffs.length <= MAX_HATCH_HANDOFFS &&
     validEpoch(authority.ownership.epoch) &&
+    validRootAuthorityRecord(authority.root) &&
     (authority.ownership.state === "unclaimed" || Boolean(owner && !owner.revokedAt)) &&
     uniqueIds(authority.clients) &&
     uniqueIds(authority.pairings) &&
@@ -1060,7 +1206,17 @@ function validAuthority(authority: AuthAuthority): boolean {
           (client) => client.id === transfer.targetClientId && client.revokedAt === undefined,
         ))) &&
     (recovery === undefined ||
-      (validRecoveryGrantRecord(recovery) && recovery.ownerEpoch === authority.ownership.epoch))
+      (validRecoveryGrantRecord(recovery) &&
+        recovery.ownerEpoch === authority.ownership.epoch &&
+        recovery.rootGeneration === authority.root.generation))
+  );
+}
+
+function validRootAuthorityRecord(root: RootAuthorityRecord): boolean {
+  return (
+    /^[0-9a-f]{64}$/u.test(root.credentialDigest) &&
+    validEpoch(root.generation) &&
+    root.generation > 0
   );
 }
 
@@ -1109,6 +1265,8 @@ function validRecoveryGrantRecord(grant: RecoveryGrantRecord): boolean {
   return (
     validStoredCredential(grant.id, grant.credentialDigest) &&
     validEpoch(grant.ownerEpoch) &&
+    (grant.rootGeneration === undefined ||
+      (validEpoch(grant.rootGeneration) && grant.rootGeneration > 0)) &&
     validRecordTimestamps(grant) &&
     validOptionalDigest(grant.idempotencyKeyDigest)
   );
@@ -1205,6 +1363,7 @@ function purgeExpired(authority: AuthAuthority, nowMillis: number): AuthAuthorit
     return authority;
   return {
     version: 2,
+    root: authority.root,
     ownership: authority.ownership,
     clients,
     pairings,
@@ -1308,4 +1467,10 @@ function handoffInvalid(
   failure: (reason: AuthRegistryFailureReason, message: string) => AuthRegistryFailure,
 ): AuthRegistryFailure {
   return failure("handoff_invalid", "Hatch handoff is invalid or expired");
+}
+
+function rootForbidden(
+  failure: (reason: AuthRegistryFailureReason, message: string) => AuthRegistryFailure,
+): AuthRegistryFailure {
+  return failure("forbidden", "Root authorization failed");
 }

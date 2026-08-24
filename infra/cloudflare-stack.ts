@@ -13,7 +13,7 @@ import {
 
 export { CLOUDFLARE_STAGE };
 
-export const CLOUDFLARE_WORKER_SECRETS = ["SCOTTY_TOKEN"] as const;
+export const CLOUDFLARE_WORKER_SECRETS = [] as const;
 
 export const makeCloudflareStackTopology = (
   installation: InstallationTopology,
@@ -239,9 +239,6 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
       ...topology.vars,
     },
   }).pipe(removalPolicy);
-  yield* worker.bind("InheritedWorkerSecrets", {
-    bindings: CLOUDFLARE_WORKER_SECRETS.map((name) => ({ type: "inherit", name })),
-  });
   const container = yield* Cloudflare.Containers.ContainerPlatform(topology.container.logicalId, {
     name: topology.container.name,
     context: topology.container.context,

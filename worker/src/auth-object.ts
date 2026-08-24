@@ -15,8 +15,8 @@ import {
   type IssuedPairingGrant,
   type IssuedRecoveryGrant,
   type OwnerTransferView,
+  type RootAuthorityView,
 } from "./auth-registry";
-import { constantTimeStringEqual } from "./digest";
 
 const PAIRING_TTL_MILLIS = 5 * 60 * 1_000;
 const CLIENT_TTL_MILLIS = 30 * 24 * 60 * 60 * 1_000;
@@ -39,6 +39,39 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
     this.layer = authRegistryLayer(durableObjectAuthAuthorityStorage(ctx.storage));
+  }
+
+  initializeRoot(rootCredential: string): Promise<AuthRpcResult<RootAuthorityView>> {
+    return this.#run(
+      Effect.flatMap(AuthRegistry, (registry) =>
+        registry.initializeRoot(rootCredential, this.env.SCOTTY_ROOT_VERIFIER_BOOTSTRAP),
+      ),
+    );
+  }
+
+  authenticateRoot(rootCredential: string): Promise<AuthRpcResult<RootAuthorityView>> {
+    const bootstrapVerifier = this.env.SCOTTY_ROOT_VERIFIER_BOOTSTRAP;
+    return this.#run(
+      Effect.gen(function* () {
+        const registry = yield* AuthRegistry;
+        yield* registry.initializeRoot(rootCredential, bootstrapVerifier);
+        return yield* registry.authenticateRoot(rootCredential);
+      }),
+    );
+  }
+
+  rotateRoot(
+    rootCredential: string,
+    replacementCredential: string,
+  ): Promise<AuthRpcResult<RootAuthorityView>> {
+    const bootstrapVerifier = this.env.SCOTTY_ROOT_VERIFIER_BOOTSTRAP;
+    return this.#run(
+      Effect.gen(function* () {
+        const registry = yield* AuthRegistry;
+        yield* registry.initializeRoot(rootCredential, bootstrapVerifier);
+        return yield* registry.rotateRoot(rootCredential, replacementCredential);
+      }),
+    );
   }
 
   authenticate(credential: string): Promise<AuthRpcResult<AuthenticatedClient>> {
@@ -138,26 +171,21 @@ export class ScottyAuthRegistry extends DurableObject<Bindings> {
     );
   }
 
-  async issueRecoveryGrant(
+  issueRecoveryGrant(
     rootCredential: string,
     idempotencyKey?: string,
   ): Promise<AuthRpcResult<IssuedRecoveryGrant>> {
-    if (
-      !this.env.SCOTTY_TOKEN ||
-      !(await constantTimeStringEqual(rootCredential, this.env.SCOTTY_TOKEN))
-    )
-      return {
-        ok: false,
-        error: { reason: "forbidden", message: "Recovery authorization failed" },
-      };
+    const bootstrapVerifier = this.env.SCOTTY_ROOT_VERIFIER_BOOTSTRAP;
     return this.#run(
-      Effect.flatMap(AuthRegistry, (registry) =>
-        registry.issueRecoveryGrant({
+      Effect.gen(function* () {
+        const registry = yield* AuthRegistry;
+        yield* registry.initializeRoot(rootCredential, bootstrapVerifier);
+        return yield* registry.issueRecoveryGrant(rootCredential, {
           credential: randomCredentialCandidate(),
           ttlMillis: RECOVERY_TTL_MILLIS,
           ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
-        }),
-      ),
+        });
+      }),
     );
   }
 
@@ -229,6 +257,7 @@ export type ScottyAuthRegistryStub = Pick<
   ScottyAuthRegistry,
   | "acceptOwnerTransfer"
   | "authenticate"
+  | "authenticateRoot"
   | "cancelOwnerTransfer"
   | "consumeHatchHandoff"
   | "consumePairing"
@@ -237,9 +266,11 @@ export type ScottyAuthRegistryStub = Pick<
   | "issueHatchHandoff"
   | "issuePairing"
   | "issueRecoveryGrant"
+  | "initializeRoot"
   | "listClients"
   | "logoutClient"
   | "revokeClient"
+  | "rotateRoot"
   | "startOwnerTransfer"
 >;
 

@@ -14,12 +14,17 @@ import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer
 import {
   beamUpSession,
   credentials,
+  installationOrigin,
   readConfig,
-  readRootCredential,
+  rootCredentials,
   secureWrite,
+  sha256Hex,
 } from "./dependencies";
 import {
   decodeInitJournalJson,
+  decodeClientCredential,
+  decodeAuthLogoutResponse,
+  decodeAuthMeResponse,
   decodeEnvironmentMutation,
   decodeEnvironmentResponse,
   decodeSessionEnvironmentStatus,
@@ -67,14 +72,10 @@ import {
   type SandboxActivationPlan,
   type SandboxSyncTarget,
 } from "./sandbox-sync";
-import {
-  installationStatePath,
-  operationStatePath,
-  rootCredentialPath,
-  stateLockPath,
-} from "./local-paths";
+import { installationStatePath, operationStatePath, stateLockPath } from "./local-paths";
 import {
   BrowserLauncher,
+  CredentialStore,
   CliRuntime,
   CliUpgrader,
   FileSystem as CliFileSystem,
@@ -95,7 +96,18 @@ import {
   parseInstallationName,
 } from "../../infra/installation.ts";
 import { TuiError, safeErrorMessage } from "../../tui/src/errors.ts";
-import { pairTuiClient, runTuiConsole } from "../../tui/src/main.ts";
+import { runTuiConsole } from "../../tui/src/main.ts";
+import { consumePairing } from "../../tui/src/pairing.ts";
+import { readSecretLine } from "../../tui/src/secret-input.ts";
+import {
+  loadRootIdentity,
+  loadClientIdentity,
+  removeClientIdentity,
+  removeRootIdentity,
+  saveClientIdentity,
+  saveRootIdentity,
+  type LocalIdentityError,
+} from "./local-identity";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 import { ENVIRONMENT_NAME_PATTERN } from "../../worker/src/environment-contracts.ts";
 import { PiThinkingLevelSchema } from "../../protocol/sandbox-config.ts";
@@ -168,6 +180,19 @@ const tuiFailure = (error: unknown): CliError => {
     "Check the paired-client configuration and retry.",
     EXIT.GENERIC,
   );
+};
+
+const localIdentityUpdateFailure = (error: LocalIdentityError): CliError =>
+  new CliError(
+    "local_identity_invalid",
+    `Scotty ${error.kind} identity could not be updated safely`,
+    "Retry; if this persists, inspect the local credential store before changing remote state.",
+    error.reason === "empty" || error.reason.includes("permission") ? EXIT.USAGE : EXIT.GENERIC,
+  );
+
+const clientIdFromCredential = (credential: string): string | undefined => {
+  const [, id] = credential.split(".");
+  return id !== undefined && /^[0-9a-f]{12}$/u.test(id) ? id : undefined;
 };
 
 const synchronizeInstallationSandbox = Effect.fnUntraced(function* (
@@ -394,6 +419,38 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
 
   const rootToken = (): string =>
     `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
+
+  const rootVerifier = (credential: string) => sha256Hex(credential);
+
+  const loadSetupRoot = Effect.fnUntraced(function* (expectedVerifier: string) {
+    const credential = yield* loadRootIdentity().pipe(Effect.mapError(localIdentityUpdateFailure));
+    if (credential === undefined)
+      return yield* new CliError(
+        "local_identity_missing",
+        "The pending setup root identity is missing",
+        "Restore the original local root identity before resuming this operation.",
+        EXIT.GENERIC,
+      );
+    if ((yield* rootVerifier(credential)) !== expectedVerifier)
+      return yield* new CliError(
+        "local_identity_conflict",
+        "The pending setup root identity does not match its journal",
+        "Restore the original local root identity before resuming this operation.",
+        EXIT.GENERIC,
+      );
+    return credential;
+  });
+
+  const issueOwnerRecovery = Effect.fnUntraced(function* (host: string, credential: string) {
+    const browser = yield* BrowserLauncher;
+    const raw = yield* requestJson({ host, token: credential }, "/api/auth/recovery-grants", {
+      method: "POST",
+    });
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const recovery = yield* Effect.fromResult(stableRecoveryGrant(raw, host, nowMillis));
+    yield* browser.open(recovery.url);
+    return recovery.expiresAt;
+  });
 
   const managedConfig = (deployed: InstallationResult, adoptionManifestPath?: string) => ({
     version:
@@ -640,8 +697,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 );
             }
             const token = Option.isSome(existingJournal)
-              ? existingJournal.value.token
+              ? yield* loadSetupRoot(existingJournal.value.rootVerifier)
               : rootToken();
+            const verifier = yield* rootVerifier(token);
             const journal = {
               version:
                 evidenceEnabled === true
@@ -665,10 +723,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 : { previewBase: preview.base, previewZoneId: preview.zoneId }),
               ...(evidenceEnabled === true ? { evidenceEnabled } : {}),
               planFingerprint: plan.fingerprint,
-              token,
+              rootVerifier: verifier,
             };
-            if (Option.isNone(existingJournal))
+            if (Option.isNone(existingJournal)) {
+              yield* saveRootIdentity(token).pipe(Effect.mapError(localIdentityUpdateFailure));
               yield* secureWrite(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
+            }
             yield* secureWrite(
               journalPath,
               `${JSON.stringify({ ...journal, phase: "apply_started" }, null, 2)}\n`,
@@ -679,7 +739,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               );
             const deployed = yield* creator.create({
               ...deploymentTarget,
-              token,
+              rootVerifierBootstrap: verifier,
               expectedAccountId: plan.accountId,
               expectedPlanFingerprint: plan.fingerprint,
               mode: Option.isSome(existingJournal) ? "resume" : "fresh",
@@ -687,12 +747,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const host = yield* Effect.fromResult(normalizeHost(deployed.host));
             const configPath = sandboxConfigPath(runtime.home, runtime.env);
             const statePath = installationStatePath(runtime.home, runtime.env);
-            const credentialPath = rootCredentialPath(runtime.home, runtime.env);
             yield* secureWrite(
               statePath,
               `${JSON.stringify(managedConfig({ ...deployed, host }), null, 2)}\n`,
             );
-            yield* secureWrite(credentialPath, `${token}\n`);
             yield* saveSandboxConfig(
               configPath,
               standardSandboxConfig({
@@ -705,6 +763,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 },
               }),
             );
+            yield* issueOwnerRecovery(host, token);
             yield* fileSystem
               .remove(journalPath)
               .pipe(
@@ -730,17 +789,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               host,
               rootTokenRotated: true,
             };
-            yield* synchronizeInstallationSandbox(
-              runtime.home,
-              runtime.env,
-              { host, token },
-              () => Effect.void,
-            );
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
               runtime.stdout(
-                "Scotty is deployed. Set GH_TOKEN, OPENAI_API_KEY, and OPENCODE_API_KEY with scotty env set next.\n",
+                "Scotty is deployed. Complete owner recovery in the opened browser, then pair this client.\n",
               );
             }
           }),
@@ -842,7 +895,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
 
         const configPath = sandboxConfigPath(runtime.home, runtime.env);
         const statePath = installationStatePath(runtime.home, runtime.env);
-        const credentialPath = rootCredentialPath(runtime.home, runtime.env);
         const journalPath = operationStatePath(
           runtime.home,
           runtime.env,
@@ -865,16 +917,30 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               existingJournal.previewBase === inspected.previewBase &&
               existingJournal.previewZoneId === inspected.previewZoneId &&
               existingJournal.evidenceEnabled === inspected.evidenceEnabled &&
-              existingJournal.adoptionManifestPath === adoptionManifestPath;
-            const token =
-              journalMatchesTarget && existingJournal.token ? existingJournal.token : rootToken();
+              existingJournal.adoptionManifestPath === adoptionManifestPath &&
+              typeof existingJournal.rootVerifier === "string";
+            const token = journalMatchesTarget
+              ? yield* loadSetupRoot(existingJournal.rootVerifier ?? "")
+              : rootToken();
+            const verifier = yield* rootVerifier(token);
+            if (!journalMatchesTarget)
+              yield* saveRootIdentity(token).pipe(Effect.mapError(localIdentityUpdateFailure));
             yield* secureWrite(
               journalPath,
-              `${JSON.stringify({ ...managedConfig(inspected, adoptionManifestPath), token }, null, 2)}\n`,
+              `${JSON.stringify(
+                {
+                  ...managedConfig(inspected, adoptionManifestPath),
+                  operation: "recover",
+                  phase: "apply_started",
+                  rootVerifier: verifier,
+                },
+                null,
+                2,
+              )}\n`,
             );
             const recovered = yield* recovery.recover({
               ...deploymentTarget,
-              token,
+              rootVerifierBootstrap: verifier,
               expectedAccountId: inspected.accountId,
               expectedWorkerName: inspected.workerName,
               expectedRunnerWorkerName: inspected.runnerWorkerName,
@@ -889,6 +955,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                   }),
             });
             const host = yield* Effect.fromResult(normalizeHost(recovered.host));
+            yield* issueOwnerRecovery(host, token);
             yield* secureWrite(
               statePath,
               `${JSON.stringify(
@@ -897,7 +964,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 2,
               )}\n`,
             );
-            yield* secureWrite(credentialPath, `${token}\n`);
             yield* fileSystem
               .remove(journalPath)
               .pipe(
@@ -950,7 +1016,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           return yield* usage("uninstall does not accept --host or --token-file");
         const configPath = sandboxConfigPath(runtime.home, runtime.env);
         const statePath = installationStatePath(runtime.home, runtime.env);
-        const credentialPath = rootCredentialPath(runtime.home, runtime.env);
         const config = yield* readConfig(statePath);
         if (!config.installationName || !config.profile)
           return yield* usage(
@@ -1023,7 +1088,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             : { adoptionManifestPath: config.adoptionManifestPath }),
         });
         const fileSystem = yield* CliFileSystem;
-        for (const path of [configPath, statePath, credentialPath])
+        yield* removeClientIdentity().pipe(Effect.mapError(localIdentityUpdateFailure));
+        yield* removeRootIdentity().pipe(Effect.mapError(localIdentityUpdateFailure));
+        for (const path of [configPath, statePath])
           yield* fileSystem
             .remove(path)
             .pipe(
@@ -1086,7 +1153,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             "No managed Scotty installation is configured",
             "Run scotty init or scotty recover first.",
           );
-        const token = yield* readRootCredential(runtime.home, runtime.env);
+        const auth = yield* credentials(options);
         yield* ensureDocker();
         const deployer = yield* InstallationDeployer;
         const request = {
@@ -1128,10 +1195,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           yield* synchronizeInstallationSandbox(
             runtime.home,
             runtime.env,
-            {
-              host: yield* Effect.fromResult(normalizeHost(config.host)),
-              token,
-            },
+            { ...auth, host: yield* Effect.fromResult(normalizeHost(config.host)) },
             sandboxActivationApproval(runtime, yes, autoJson),
           );
           if (autoJson) outputJson(runtime.stdout, result);
@@ -1183,7 +1247,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         yield* synchronizeInstallationSandbox(
           runtime.home,
           runtime.env,
-          { host, token },
+          { ...auth, host },
           sandboxActivationApproval(runtime, yes, autoJson),
         );
         if (autoJson) outputJson(runtime.stdout, result);
@@ -1673,20 +1737,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const ownerRecover = Command.make("recover", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
-      const browser = yield* BrowserLauncher;
-      const auth = yield* credentials(options);
-      const raw = yield* requestJson(auth, "/api/auth/recovery-grants", {
-        method: "POST",
-      });
-      const nowMillis = yield* Clock.currentTimeMillis;
-      const recovery = yield* Effect.fromResult(stableRecoveryGrant(raw, auth.host, nowMillis));
-      yield* browser.open(recovery.url);
-      const result = { opened: true, expiresAt: recovery.expiresAt };
+      const auth = yield* rootCredentials(options);
+      const expiresAt = yield* issueOwnerRecovery(auth.host, auth.token);
+      const result = { opened: true, expiresAt };
       if (autoJson) outputJson(runtime.stdout, result);
-      else
-        runtime.stdout(
-          `Opened owner recovery in your browser. It expires at ${recovery.expiresAt}.\n`,
-        );
+      else runtime.stdout(`Opened owner recovery in your browser. It expires at ${expiresAt}.\n`);
     }),
   ).pipe(Command.withDescription("Recover ownership on a replacement device"));
 
@@ -2200,54 +2255,134 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([beamUp, down, vaporize]),
   );
 
-  const tuiPair = Command.make(
+  const clientPair = Command.make(
     "pair",
     {
       origin: Argument.string("origin").pipe(
         Argument.withDescription("Exact Scotty Worker origin"),
       ),
       label: Flag.string("label").pipe(
-        Flag.withDefault("scotty tui"),
+        Flag.withDefault("scotty cli"),
         Flag.withDescription("Label for this standard client"),
       ),
-      config: Flag.path("config").pipe(
-        Flag.optional,
-        Flag.withDescription("Paired-client configuration path"),
-      ),
     },
-    ({ config, label, origin }) =>
+    ({ label, origin }) =>
       Effect.gen(function* () {
-        yield* Effect.tryPromise({
+        const { autoJson, options, runtime } = yield* commandContext();
+        const expectedOrigin = yield* installationOrigin(options, origin);
+        const pairingInput = yield* Effect.tryPromise({
           try: () =>
-            pairTuiClient({
-              origin,
+            runtime.stdinIsTTY
+              ? readSecretLine("Pairing credential or URL: ")
+              : runtime.readStdin(),
+          catch: tuiFailure,
+        });
+        const paired = yield* Effect.tryPromise({
+          try: () =>
+            consumePairing({
+              origin: expectedOrigin,
+              pairingInput,
               label,
-              ...(Option.isSome(config) ? { configPath: config.value } : {}),
+              fetch: (input, init) => runtime.hostFetch(new Request(input, init)),
             }),
           catch: tuiFailure,
         });
+        yield* saveClientIdentity(paired.credential).pipe(
+          Effect.mapError(localIdentityUpdateFailure),
+        );
+        const clientId = clientIdFromCredential(paired.credential);
+        if (clientId === undefined)
+          return yield* invalidResponse("Pairing returned an invalid client identity");
+        const result = { origin: expectedOrigin, clientId, status: "paired" as const };
+        if (autoJson) outputJson(runtime.stdout, result);
+        else runtime.stdout(`Paired client ${clientId} with ${expectedOrigin}.\n`);
       }),
-  ).pipe(Command.withDescription("Pair this terminal as a standard Scotty client"));
+  ).pipe(Command.withDescription("Pair this CLI as a standard Scotty client"));
 
-  const tui = Command.make(
-    "tui",
-    {
-      config: Flag.path("config").pipe(
-        Flag.optional,
-        Flag.withDescription("Paired-client configuration path"),
-      ),
-    },
-    ({ config }) =>
-      Effect.gen(function* () {
-        yield* Effect.tryPromise({
-          try: () => runTuiConsole(Option.getOrUndefined(config)),
-          catch: tuiFailure,
-        });
-      }),
-  ).pipe(
-    Command.withDescription("Open the interactive Scotty fleet console"),
-    Command.withSubcommands([tuiPair]),
+  const clientStatus = Command.make("status", {}, () =>
+    Effect.gen(function* () {
+      const { autoJson, options, runtime } = yield* commandContext();
+      const auth = yield* credentials(options);
+      const raw = yield* requestJson(auth, "/api/auth/me", { cache: "no-store" });
+      const decoded = decodeAuthMeResponse(raw);
+      const clientId = clientIdFromCredential(auth.credential);
+      if (
+        Option.isNone(decoded) ||
+        clientId === undefined ||
+        decoded.value.client.id !== clientId ||
+        decoded.value.client.current === false
+      )
+        return yield* invalidResponse("Server did not confirm the current client identity");
+      const result = {
+        origin: auth.host,
+        scopes: decoded.value.scopes,
+        client: decoded.value.client,
+      };
+      if (autoJson) outputJson(runtime.stdout, result);
+      else
+        runtime.stdout(
+          `${decoded.value.client.label} (${clientId}) is paired as ${decoded.value.client.role}.\n`,
+        );
+    }),
+  ).pipe(Command.withDescription("Verify this client with a fresh authentication request"));
+
+  const clientUnpair = Command.make("unpair", {}, () =>
+    Effect.gen(function* () {
+      const { autoJson, options, runtime } = yield* commandContext();
+      const auth = yield* credentials(options);
+      const clientId = clientIdFromCredential(auth.credential);
+      if (clientId === undefined)
+        return yield* new CliError(
+          "local_identity_invalid",
+          "Scotty client identity is invalid",
+          `Run scotty client pair ${auth.host} to replace it.`,
+          EXIT.USAGE,
+        );
+      const raw = yield* requestJson(auth, "/api/auth/logout", { method: "POST" });
+      if (Option.isNone(decodeAuthLogoutResponse(raw)))
+        return yield* invalidResponse("Server did not confirm client logout");
+      yield* removeClientIdentity().pipe(Effect.mapError(localIdentityUpdateFailure));
+      const result = { origin: auth.host, clientId, status: "unpaired" as const };
+      if (autoJson) outputJson(runtime.stdout, result);
+      else runtime.stdout(`Unpaired client ${clientId}.\n`);
+    }),
+  ).pipe(Command.withDescription("Revoke this client and remove its local identity"));
+
+  const client = Command.make("client").pipe(
+    Command.withDescription("Manage this CLI client identity"),
+    Command.withSubcommands([clientPair, clientStatus, clientUnpair]),
   );
+
+  const tui = Command.make("tui", {}, () =>
+    Effect.gen(function* () {
+      const { options } = yield* commandContext();
+      const origin = yield* installationOrigin(options);
+      const credential = yield* loadClientIdentity().pipe(
+        Effect.mapError(localIdentityUpdateFailure),
+      );
+      if (credential === undefined)
+        return yield* usage(
+          "Scotty client identity is not configured",
+          `Run scotty client pair ${origin}.`,
+        );
+      const decodedCredential = decodeClientCredential(credential);
+      if (Option.isNone(decodedCredential))
+        return yield* usage(
+          "Scotty client identity is invalid",
+          `Run scotty client pair ${origin} to replace it.`,
+        );
+      const identityContext = yield* Effect.context<CliRuntime | CredentialStore | CliFileSystem>();
+      yield* Effect.tryPromise({
+        try: () =>
+          runTuiConsole({ version: 1, origin, credential: decodedCredential.value }, (renewed) =>
+            Effect.runPromiseWith(identityContext)(
+              saveClientIdentity(renewed).pipe(Effect.mapError(localIdentityUpdateFailure)),
+            ),
+          ),
+        catch: tuiFailure,
+      });
+    }),
+  ).pipe(Command.withDescription("Open the interactive Scotty fleet console"));
 
   return scotty.pipe(
     Command.withSubcommands([
@@ -2271,6 +2406,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       sandbox,
       tools,
       runner,
+      client,
       tui,
     ]),
   );

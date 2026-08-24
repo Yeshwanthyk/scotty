@@ -26,7 +26,21 @@ export const installationStatePath = (home: string, env: LocalPathEnvironment): 
   join(scottyStateRoot(home, env), "installation.json");
 
 export const rootCredentialPath = (home: string, env: LocalPathEnvironment): string =>
-  join(scottyStateRoot(home, env), "credentials", "root");
+  join(credentialDirectoryPath(home, env), "root");
+
+export const credentialDirectoryPath = (home: string, env: LocalPathEnvironment): string =>
+  join(scottyStateRoot(home, env), "credentials");
+
+export const clientCredentialPath = (home: string, env: LocalPathEnvironment): string =>
+  join(credentialDirectoryPath(home, env), "client");
+
+export type LocalCredentialName = "root" | "client";
+
+export const localCredentialPath = (
+  home: string,
+  env: LocalPathEnvironment,
+  name: LocalCredentialName,
+): string => join(credentialDirectoryPath(home, env), name);
 
 export const operationStatePath = (home: string, env: LocalPathEnvironment, name: string): string =>
   join(scottyStateRoot(home, env), "operations", name);

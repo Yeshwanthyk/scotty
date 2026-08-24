@@ -1,9 +1,6 @@
-import { chmod, mkdtemp, readFile, stat, symlink } from "node:fs/promises";
 import { EventEmitter } from "node:events";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { defaultConfigPath, defaultStateDirectory, loadConfig, saveConfig } from "../src/config.ts";
+import { defaultStateDirectory, normalizeOrigin } from "../src/config.ts";
 import { consumePairing } from "../src/pairing.ts";
 import { readSecretLine } from "../src/secret-input.ts";
 import type { FetchImplementation } from "../src/transport.ts";
@@ -11,15 +8,14 @@ import type { FetchImplementation } from "../src/transport.ts";
 const CLIENT_CREDENTIAL = `scotty_client.0123456789ab.${"c".repeat(32)}`;
 const PAIRING_CREDENTIAL = `scotty_pair.abcdef012345.${"p".repeat(32)}`;
 
-describe("paired-client config", () => {
-  it("uses Scotty-owned XDG config and state paths independently of Pi", () => {
+describe("TUI config boundary", () => {
+  it("keeps TUI state under the XDG state root while identity stays CLI-owned", () => {
     const previousState = process.env.XDG_STATE_HOME;
     const previousConfig = process.env.XDG_CONFIG_HOME;
     process.env.XDG_STATE_HOME = "/tmp/scotty-xdg-state";
     process.env.XDG_CONFIG_HOME = "/tmp/scotty-xdg-config";
     try {
       expect(defaultStateDirectory()).toBe("/tmp/scotty-xdg-state/scotty/tui");
-      expect(defaultConfigPath()).toBe("/tmp/scotty-xdg-config/scotty/tui.json");
     } finally {
       if (previousState === undefined) delete process.env.XDG_STATE_HOME;
       else process.env.XDG_STATE_HOME = previousState;
@@ -28,59 +24,18 @@ describe("paired-client config", () => {
     }
   });
 
-  it("stores only the exact origin and standard-client cookie with mode 0600", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "scotty-tui-config-"));
-    const path = join(directory, "config.json");
-    await saveConfig(
-      { version: 1, origin: "https://scotty.example", credential: CLIENT_CREDENTIAL },
-      path,
+  it("normalizes only exact installation origins", () => {
+    expect(normalizeOrigin("https://scotty.example/")).toBe("https://scotty.example");
+    expect(normalizeOrigin("http://localhost/")).toBe("http://localhost");
+    expect(() => normalizeOrigin("https://scotty.example/path")).toThrow(
+      "Origin must not contain credentials, a path, or query",
     );
-
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
-    expect(await loadConfig(path)).toEqual({
-      version: 1,
-      origin: "https://scotty.example",
-      credential: CLIENT_CREDENTIAL,
-    });
-    const text = await readFile(path, "utf8");
-    expect(text).not.toContain("Bearer");
-    expect(text).not.toContain("SCOTTY_TOKEN");
-    expect(text).not.toContain("PI_CODING_AGENT_DIR");
-  });
-
-  it("explains how to pair when config is missing", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "scotty-tui-missing-"));
-    const path = join(directory, "config.json");
-
-    await expect(loadConfig(path)).rejects.toMatchObject({
-      code: "config_missing",
-      message: `No paired-client config found at ${path}. Pair this device with: scotty tui pair <origin>`,
-    });
-  });
-
-  it("rejects a symlinked config", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "scotty-tui-symlink-"));
-    const target = join(directory, "target.json");
-    const path = join(directory, "config.json");
-    await saveConfig(
-      { version: 1, origin: "https://scotty.example", credential: CLIENT_CREDENTIAL },
-      target,
+    expect(() => normalizeOrigin("https://scotty.example?query")).toThrow(
+      "Origin must not contain credentials, a path, or query",
     );
-    await symlink(target, path);
-
-    await expect(loadConfig(path)).rejects.toMatchObject({ code: "config_permissions" });
-  });
-
-  it("rejects group/world-readable config", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "scotty-tui-mode-"));
-    const path = join(directory, "config.json");
-    await saveConfig(
-      { version: 1, origin: "https://scotty.example", credential: CLIENT_CREDENTIAL },
-      path,
+    expect(() => normalizeOrigin("http://scotty.example")).toThrow(
+      "Origin must use HTTPS (or localhost HTTP)",
     );
-    await chmod(path, 0o644);
-
-    await expect(loadConfig(path)).rejects.toMatchObject({ code: "config_permissions" });
   });
 });
 

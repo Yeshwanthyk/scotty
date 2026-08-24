@@ -32,7 +32,7 @@ const PreparedUploadSchema = Schema.Struct({
 
 export type SandboxSyncTarget = ApiRequestTarget & {
   readonly host: string;
-  readonly token: string;
+  readonly credential: string;
 };
 
 export interface SandboxActivationPlan {

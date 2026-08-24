@@ -37,13 +37,15 @@ import { FetchHttpClient } from "effect/unstable/http";
 import { sha256BytesHex, sha256Hex } from "./digest";
 import {
   authRegistry,
+  authenticateRequest,
+  authenticateRootRequest,
   browserLabel,
   clearClientAuthCookie,
   type AuthPrincipal,
   type AuthVariables,
   refreshClientAuthCookie,
   requestClientCredential,
-  requireAuthRequest,
+  requireAuthenticatedPrincipal,
   requireAuthScope,
   requireClientCookieRequest,
   requireClientCredential,
@@ -299,10 +301,16 @@ app.use("/api/*", async (c, next) => {
     return;
   }
 
-  const principal: AuthPrincipal = await requireAuthRequest(c.req.raw, c.env);
+  const principalCandidate: AuthPrincipal | undefined = allowsRootAuthority(
+    c.req.method,
+    url.pathname,
+  )
+    ? await authenticateRootRequest(c.req.raw, c.env)
+    : await authenticateRequest(c.req.raw, c.env);
+  const principal = requireAuthenticatedPrincipal(principalCandidate);
   c.set("auth", principal);
   refreshClientAuthCookie(c, principal);
-  if (isUnsafeMethod(c.req.method) && principal.kind === "client")
+  if (isUnsafeMethod(c.req.method) && principal.kind === "client" && principal.source === "cookie")
     requireCookieMutationSecurity(c.req.raw);
   await next();
 });
@@ -460,7 +468,7 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
 });
 
 app.get("/api/environment", async (c) => {
-  requireEnvironmentManager(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:read");
   const repo = c.req.query("repo");
   if (repo !== undefined && !isRepositoryIdentity(repo))
     throw badRequest("repo must be OWNER/NAME");
@@ -469,7 +477,7 @@ app.get("/api/environment", async (c) => {
 });
 
 app.put("/api/environment/:name", async (c) => {
-  requireEnvironmentManager(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
   const input = decodeEnvironmentPutInput(await readJsonBody(c.req.raw));
   if (Option.isNone(input)) throw badRequest("Environment variable input is invalid");
@@ -484,7 +492,7 @@ app.put("/api/environment/:name", async (c) => {
 });
 
 app.delete("/api/environment/:name", async (c) => {
-  requireEnvironmentManager(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:write");
   const repo = c.req.query("repo");
   if (repo !== undefined && !isRepositoryIdentity(repo))
     throw badRequest("repo must be OWNER/NAME");
@@ -514,7 +522,7 @@ app.get("/api/runners", async (c) => {
 });
 
 app.post("/api/runners", async (c) => {
-  requireRootPrincipal(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
   const decoded = decodeRunnerRegistrationInput(await readJsonBody(c.req.raw));
   if (Option.isNone(decoded) || !RUNNER_NAME_PATTERN.test(decoded.value.name))
@@ -533,7 +541,7 @@ app.post("/api/runners", async (c) => {
 });
 
 app.delete("/api/runners/:name", async (c) => {
-  requireRootPrincipal(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:write");
   const name = await requireRegisteredRunnerName(c.env, c.req.param("name"));
   const assignedSessions = await assignedRunnerSessionCount(c.env, name);
   if (assignedSessions > 0)
@@ -550,12 +558,12 @@ app.delete("/api/runners/:name", async (c) => {
 });
 
 app.get("/api/sandbox/configuration", async (c) => {
-  requireRootPrincipal(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:read");
   return c.json(unwrapSandboxConfigRpc(await sandboxConfig(c.env).status()));
 });
 
 app.put("/api/sandbox/plugin-bundles/:digest", async (c) => {
-  requireRootPrincipal(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:write");
   const digest = c.req.param("digest");
   if (!SANDBOX_BUNDLE_DIGEST_PATTERN.test(digest))
     throw badRequest("Plugin bundle digest is invalid");
@@ -590,7 +598,7 @@ app.put("/api/sandbox/plugin-bundles/:digest", async (c) => {
 });
 
 app.put("/api/sandbox/snapshots/:digest", async (c) => {
-  requireRootPrincipal(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:write");
   const digest = c.req.param("digest");
   if (!SANDBOX_BUNDLE_DIGEST_PATTERN.test(digest))
     throw badRequest("Sandbox snapshot digest is invalid");
@@ -633,7 +641,7 @@ app.put("/api/sandbox/snapshots/:digest", async (c) => {
 });
 
 app.post("/api/sandbox/configuration/activate", async (c) => {
-  requireRootPrincipal(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:write");
   requireJsonContentType(c.req.raw);
   const body: unknown = await c.req.json().catch(() => {
     throw badRequest("Request body must be valid JSON");
@@ -676,7 +684,7 @@ app.post("/api/sandbox/configuration/activate", async (c) => {
 });
 
 app.post("/api/runners/:name/:action", async (c) => {
-  requireOwnerPrincipal(c.get("auth"));
+  requireAuthScope(c.get("auth"), "sessions:write");
   const name = await requireRegisteredRunnerName(c.env, c.req.param("name"));
   const action = parseRunnerControlAction(c.req.param("action"));
   const runner = c.env.RUNNERS.getByName(name);
@@ -1254,17 +1262,7 @@ async function requireEvidenceBrowser(request: Request, env: Bindings): Promise<
 }
 
 function requireEnvironmentManager(principal: AuthPrincipal): void {
-  if (principal.kind === "root") return;
-  requireOwnerPrincipal(principal);
-}
-
-function requireRootPrincipal(principal: AuthPrincipal): void {
-  if (principal.kind === "root") return;
-  throw new ScottyError("auth", "The CLI root credential is required", {
-    httpStatus: 401,
-    exitCode: 4,
-    hint: "Run this command from a machine configured with scotty init.",
-  });
+  requireAuthScope(principal, "sessions:read");
 }
 
 async function requireRegisteredRunnerName(env: Bindings, value: string): Promise<string> {
@@ -1399,6 +1397,10 @@ function requireCookieMutationSecurity(request: Request): void {
 function requirePublicMutationSecurity(request: Request): void {
   requireCookieMutationSecurity(request);
   requireJsonContentType(request);
+}
+
+function allowsRootAuthority(method: string, pathname: string): boolean {
+  return method === "POST" && pathname === "/api/auth/recovery-grants";
 }
 
 function isUnsafeMethod(method: string): boolean {

@@ -1,5 +1,5 @@
 # Copy to .dev.vars; never commit the populated file.
-SCOTTY_TOKEN="replace-with-a-random-32-byte-token"
+SCOTTY_ROOT_VERIFIER_BOOTSTRAP="replace-with-the-root-token-sha256-hex-digest"
 R2_ACCESS_KEY_ID="replace"
 R2_SECRET_ACCESS_KEY="replace"
 CLOUDFLARE_ACCOUNT_ID="replace"

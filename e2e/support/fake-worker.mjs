@@ -749,7 +749,7 @@ export class FakeWorkerService {
         401,
         "auth",
         "Authentication required",
-        "Use managed config, SCOTTY_TOKEN, or --token-file",
+        "Use scotty client pair ORIGIN to configure this client.",
       );
     if (principal.kind === "client" && request.method !== "GET" && !this.#sameOrigin(request))
       return error(400, "bad_request", "Request must come from this Scotty origin");

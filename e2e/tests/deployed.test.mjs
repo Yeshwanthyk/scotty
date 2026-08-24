@@ -157,10 +157,14 @@ test(
   async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-deployed-e2e-home-"));
     t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const credentialDirectory = path.join(home, ".local", "state", "scotty", "credentials");
+    fs.mkdirSync(credentialDirectory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(credentialDirectory, "root"), `${process.env.SCOTTY_E2E_TOKEN}\n`, {
+      mode: 0o600,
+    });
     const env = {
       HOME: home,
       SCOTTY_HOST: host,
-      SCOTTY_TOKEN: process.env.SCOTTY_E2E_TOKEN,
     };
     const cwd = process.env.SCOTTY_E2E_LOCAL_REPO;
     assert.ok(

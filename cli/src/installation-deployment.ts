@@ -639,7 +639,7 @@ const inspectWithProfile = async (
   request: InstallationInspectRequest,
   root: string,
   adoption: AdoptionManifest | undefined,
-  token?: string,
+  rootVerifierBootstrap?: string,
   expectedAccountId?: string,
 ): Promise<InstallationResult> => {
   const installation = makeInstallationTopology(
@@ -782,13 +782,13 @@ const inspectWithProfile = async (
             message: "The Scotty Worker has no workers.dev URL.",
           });
         const { subdomain } = yield* Workers.getSubdomain({ accountId });
-        if (token !== undefined)
+        if (rootVerifierBootstrap !== undefined)
           yield* Workers.putScriptSecret({
             accountId,
             scriptName: installation.workerName,
-            name: "SCOTTY_TOKEN",
-            text: token,
-            type: "secret_text",
+            name: "SCOTTY_ROOT_VERIFIER_BOOTSTRAP",
+            text: rootVerifierBootstrap,
+            type: "plain_text",
           });
         return {
           installationName: request.installationName,
@@ -956,7 +956,7 @@ export async function createInstallation(
             request,
             deployment.root,
             undefined,
-            request.token,
+            request.rootVerifierBootstrap,
             request.expectedAccountId,
           )
         : await deployWithProfile(
@@ -974,7 +974,7 @@ export async function createInstallation(
         request,
         deployment.root,
         undefined,
-        request.token,
+        request.rootVerifierBootstrap,
         request.expectedAccountId,
       );
     return deployed;
@@ -1210,7 +1210,7 @@ export async function recoverInstallation(
       request,
       deployment.root,
       adoption,
-      request.token,
+      request.rootVerifierBootstrap,
       request.expectedAccountId,
     );
   } finally {

@@ -77,10 +77,12 @@ export async function runCli(args, options = {}) {
 }
 
 export function cliEnvironment(service, home) {
+  const credentials = path.join(home, ".local", "state", "scotty", "credentials");
+  fs.mkdirSync(credentials, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(credentials, "root"), `${service.token}\n`, { mode: 0o600 });
   return {
     HOME: home,
     SCOTTY_HOST: service.url,
-    SCOTTY_TOKEN: service.token,
   };
 }
 

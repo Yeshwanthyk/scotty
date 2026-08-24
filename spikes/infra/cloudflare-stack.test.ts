@@ -169,7 +169,7 @@ describe("Cloudflare stack topology", () => {
       sandboxBundleBucketName: "scotty-home-sandbox-bundles",
       workerLogicalId: "Worker",
     });
-    assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["SCOTTY_TOKEN"]);
+    assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, []);
     const topology = makeCloudflareStackTopology(installation);
     assert.strictEqual(topology.worker.name, "scotty-home-worker");
     assert.strictEqual(topology.worker.main, "worker/src/index.ts");
@@ -469,8 +469,12 @@ describe("Cloudflare stack source contract", () => {
 
   it("keeps credentials out of Alchemy props and state", () => {
     assert.notMatch(source, /SecretsStore|WriteOnlySecret|secret_text|\bvalue\s*:/u);
-    assert.match(source, /worker\.bind\("InheritedWorkerSecrets"/u);
-    assert.match(source, /type: "inherit", name/u);
+    assert.notMatch(source, /worker\.bind\("InheritedWorkerSecrets"/u);
+    assert.notMatch(source, /SCOTTY_TOKEN/u);
+    assert.notMatch(installationDeploymentSource, /SCOTTY_TOKEN/u);
+    assert.match(installationDeploymentSource, /name: "SCOTTY_ROOT_VERIFIER_BOOTSTRAP"/u);
+    assert.match(installationDeploymentSource, /type: "plain_text"/u);
+    assert.notMatch(installationDeploymentSource, /type: "secret_text"/u);
   });
 
   it("uses prebuilt runner entrypoints when embedded deployment is enabled", () => {
