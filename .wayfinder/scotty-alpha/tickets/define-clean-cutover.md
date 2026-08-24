@@ -56,7 +56,6 @@ resources; legacy sandbox config and remote package installation; and parallel s
 canonical replacement is one allowed `pi` config object, one pinned snapshot, one RPC supervisor,
 one built-in standard tool Plugin, and product-owned dormant Hatch and capture capabilities.
 
-
 ## Inherited local-state cutover
 
 The alpha target uses only the XDG config, state, and cache roots. Remove `~/.scotty`,
@@ -64,7 +63,6 @@ The alpha target uses only the XDG config, state, and cache roots. Remove `~/.sc
 adoption compatibility files, stale pending-up files, and Runner Session credential mounts. The
 current unshipped development machine may discard all legacy local Scotty state and start fresh.
 Do not ship a compatibility reader or retain a secret backup.
-
 
 ## Inherited trusted-Runner cutover
 
@@ -132,17 +130,17 @@ offered providers pass their release gates.
 
 The slices must leave exactly these canonical families:
 
-| Area | Keep | Remove with its replacement |
-|---|---|---|
-| Session | `provisioning`, `warm`, `stopped`, `gone`, plus operation and recovery records | `booting`, `sleeping`, `failed`, transition states, migration unions, and legacy decoders |
-| Configuration | one XDG private config, one normalized immutable deployed snapshot, one activation record | `.scotty` files, old sandbox schemas, hardcoded Pi choices, remote package sources, and parallel setup paths |
-| Credentials | wrapping key, Credential ciphertext generations, immutable Session grants, typed brokers, memory-only sentinels | Config-owned secrets, global required-secret lists, raw env/file/argument credentials, static placeholders, and direct egress injection |
-| Repository | GitHub bridge, verified Mirror, deterministic Session Fork, exact prepared Publish point | direct GitHub Session clones, `gh`, token Git helpers, hidden commits, inferred checks, force-push, and public-import side paths |
-| Runtime | one supervised Pi RPC process, config-driven behavior, exact setup and image | direct Pi startup, a second shell authority, Codex CLI/config, hardcoded package and trust settings |
-| Local state | canonical XDG roots, device identity credentials, secret-free hints, bounded disposable data | legacy roots, duplicate client/TUI stores, pending-up files, copied Runner credentials, and compatibility readers |
-| Runner | certified Docker adapter, typed protocol, brokers, checkpoints, Hatch/capture relay, proven cleanup | production host process, generic host exec, arbitrary images, direct network, credential mounts, stub HTTP, and connection-as-readiness |
-| Product surfaces | one executable, CLI/TUI, settled browser assets | desktop application, sidecar, old commands, old envelopes, and compatibility packaging |
-| Experiments | production providers, owner-local contract tests, `e2e/canaries/`, retained research | the complete `spikes/` tree and every source, script, package, or config dependency on it |
+| Area             | Keep                                                                                                            | Remove with its replacement                                                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Session          | `provisioning`, `warm`, `stopped`, `gone`, plus operation and recovery records                                  | `booting`, `sleeping`, `failed`, transition states, migration unions, and legacy decoders                                               |
+| Configuration    | one XDG private config, one normalized immutable deployed snapshot, one activation record                       | `.scotty` files, old sandbox schemas, hardcoded Pi choices, remote package sources, and parallel setup paths                            |
+| Credentials      | wrapping key, Credential ciphertext generations, immutable Session grants, typed brokers, memory-only sentinels | Config-owned secrets, global required-secret lists, raw env/file/argument credentials, static placeholders, and direct egress injection |
+| Repository       | GitHub bridge, verified Mirror, deterministic Session Fork, exact prepared Publish point                        | direct GitHub Session clones, `gh`, token Git helpers, hidden commits, inferred checks, force-push, and public-import side paths        |
+| Runtime          | one supervised Pi RPC process, config-driven behavior, exact setup and image                                    | direct Pi startup, a second shell authority, Codex CLI/config, hardcoded package and trust settings                                     |
+| Local state      | canonical XDG roots, device identity credentials, secret-free hints, bounded disposable data                    | legacy roots, duplicate client/TUI stores, pending-up files, copied Runner credentials, and compatibility readers                       |
+| Runner           | certified Docker adapter, typed protocol, brokers, checkpoints, Hatch/capture relay, proven cleanup             | production host process, generic host exec, arbitrary images, direct network, credential mounts, stub HTTP, and connection-as-readiness |
+| Product surfaces | one executable, CLI/TUI, settled browser assets                                                                 | desktop application, sidecar, old commands, old envelopes, and compatibility packaging                                                  |
+| Experiments      | production providers, owner-local contract tests, `e2e/canaries/`, retained research                            | the complete `spikes/` tree and every source, script, package, or config dependency on it                                               |
 
 Deleting a writer comes before declaring its old data irrelevant. Deleting a reader comes after no
 canonical operation can produce the old shape. Projection stores are rebuilt from the new owners;

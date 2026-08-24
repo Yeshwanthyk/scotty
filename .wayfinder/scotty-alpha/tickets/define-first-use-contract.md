@@ -73,7 +73,6 @@ Local Pi is not a prerequisite. `scotty init` generates the standard config, ask
 model, and thinking choices, and writes only allowed non-secret Pi behavior settings. Sync pins
 them in the deployed snapshot. Pi login remains a separate protected credential operation.
 
-
 ## Refined local identity flow
 
 Setup stores root recovery in the OS credential store or the private state fallback, establishes

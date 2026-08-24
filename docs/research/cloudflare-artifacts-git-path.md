@@ -180,15 +180,16 @@ path. It does not prove a private GitHub import, ongoing Mirror refresh, or Scot
 Session-sentinel proxy. Those remain application-owned mechanisms.
 
 ## Evidence ledger
+
 ## Evidence ledger
 
-| Claimed capability | Source result | Confidence boundary |
-|---|---|---|
-| GitHub → Artifacts | `Artifacts.import()` and REST `.../repos/:name/import`; official examples use public GitHub HTTPS | One-time import is proven; ongoing mirror is not |
-| Per-Session fork | `repo.fork()` / REST `/fork`; exact SDK example maps Sandbox ID to repo | Session mapping/lifecycle is Scotty-owned |
-| Normal clone/push | Standard Artifacts smart HTTP; `read`/`write` scopes; Sandbox example runs `git clone` and `git push` | Deployed egress and runner controls need testing |
-| Narrow token mint/revoke | `createToken`, `listTokens`, `revokeToken`; REST POST/GET/DELETE routes | No atomic replace; immediate propagation needs testing |
-| Real GitHub credential out of Session | Public import + Artifacts-only remote/token in exact Sandbox example | Private-source control-plane design and all leakage invariants need testing |
+| Claimed capability                    | Source result                                                                                         | Confidence boundary                                                         |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| GitHub → Artifacts                    | `Artifacts.import()` and REST `.../repos/:name/import`; official examples use public GitHub HTTPS     | One-time import is proven; ongoing mirror is not                            |
+| Per-Session fork                      | `repo.fork()` / REST `/fork`; exact SDK example maps Sandbox ID to repo                               | Session mapping/lifecycle is Scotty-owned                                   |
+| Normal clone/push                     | Standard Artifacts smart HTTP; `read`/`write` scopes; Sandbox example runs `git clone` and `git push` | Deployed egress and runner controls need testing                            |
+| Narrow token mint/revoke              | `createToken`, `listTokens`, `revokeToken`; REST POST/GET/DELETE routes                               | No atomic replace; immediate propagation needs testing                      |
+| Real GitHub credential out of Session | Public import + Artifacts-only remote/token in exact Sandbox example                                  | Private-source control-plane design and all leakage invariants need testing |
 
 ## Primary sources
 

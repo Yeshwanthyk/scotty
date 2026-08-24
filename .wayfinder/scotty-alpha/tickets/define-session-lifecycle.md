@@ -23,12 +23,12 @@ are evidence only. Ambiguous results keep the owning operation open.
 
 Scotty uses four stable Session lifecycle states:
 
-| State | Meaning |
-|---|---|
-| `provisioning` | The Session record exists, its immutable identity is pinned, and Create has not yet committed the first usable runtime and baseline checkpoint. |
-| `warm` | Provider compute, the restored workspace, Session Fork, Pi RPC, and credential broker are usable. Hatch, screenshot, and video capabilities are available but dormant until requested. A client connection and an open Hatch are not required. |
-| `stopped` | Session compute and old Hatch access are stopped. The record states why it stopped, the current checkpoint when one exists, and which recovery action is allowed. |
-| `gone` | Active Session authority is terminal. No runtime, Fork, Hatch access, Session grant, schedule, active operation, or list projection remains. Only a minimal tombstone and policy-retained backup or evidence references may remain. |
+| State          | Meaning                                                                                                                                                                                                                                        |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provisioning` | The Session record exists, its immutable identity is pinned, and Create has not yet committed the first usable runtime and baseline checkpoint.                                                                                                |
+| `warm`         | Provider compute, the restored workspace, Session Fork, Pi RPC, and credential broker are usable. Hatch, screenshot, and video capabilities are available but dormant until requested. A client connection and an open Hatch are not required. |
+| `stopped`      | Session compute and old Hatch access are stopped. The record states why it stopped, the current checkpoint when one exists, and which recovery action is allowed.                                                                              |
+| `gone`         | Active Session authority is terminal. No runtime, Fork, Hatch access, Session grant, schedule, active operation, or list projection remains. Only a minimal tombstone and policy-retained backup or evidence references may remain.            |
 
 Create is the only transition from no record to `provisioning`. A successful Create moves to
 `warm`. Snapshot leaves the Session `warm`. Explicit Sleep, inactivity, hard cap, runtime loss, and

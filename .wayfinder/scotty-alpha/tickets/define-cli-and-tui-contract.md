@@ -45,7 +45,6 @@ and thinking choices, plan Plugin changes, show collisions, and expose each setu
 stage. The TUI connects to the Session's one Pi RPC supervisor. Session-only model and thinking
 changes persist for Resume but never rewrite Installation config.
 
-
 ## Resolution
 
 Use explicit noun-first commands and make a clean alpha cut. Remove the old `beam`, top-level
@@ -208,14 +207,14 @@ ciphertext, sentinel, provider token, raw provider response, unsafe URL, or secr
 
 Keep the stable exit taxonomy:
 
-| Exit | Meaning |
-|---:|---|
-| `0` | Success, including a truthful `human_action_required` pause |
-| `1` | Operational failure, blocked result, provider ambiguity, timeout, or invalid response |
-| `2` | Usage, local configuration, explicit cancellation, or missing noninteractive approval |
-| `3` | Target not found |
-| `4` | Authentication or authorization failure |
-| `5` | Wrong state, revision conflict, lease conflict, or another safe coordination conflict |
+| Exit | Meaning                                                                               |
+| ---: | ------------------------------------------------------------------------------------- |
+|  `0` | Success, including a truthful `human_action_required` pause                           |
+|  `1` | Operational failure, blocked result, provider ambiguity, timeout, or invalid response |
+|  `2` | Usage, local configuration, explicit cancellation, or missing noninteractive approval |
+|  `3` | Target not found                                                                      |
+|  `4` | Authentication or authorization failure                                               |
+|  `5` | Wrong state, revision conflict, lease conflict, or another safe coordination conflict |
 
 The envelope's typed code and stage are authoritative; exit codes are only coarse process classes.
 Help and version remain human text unless their own explicit JSON form is later specified.
@@ -291,7 +290,6 @@ reports canonical XDG roots, permissions, retention, blocked pruning, and unreso
 Safe local pruning runs automatically; alpha adds no broad local inspect, prune, or reset subtree.
 `uninstall` proves remote Installation deletion before it removes root recovery and other local
 state. Local journals are resume hints and never replace a fresh owner read.
-
 
 ## Refined Runner commands
 

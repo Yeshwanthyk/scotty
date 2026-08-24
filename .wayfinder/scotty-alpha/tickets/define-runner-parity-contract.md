@@ -29,7 +29,6 @@ It must prepare the same exact commit, base, check policy, configuration snapsho
 the same no-force-push controlled pull-request flow; inspect ambiguous writes; preserve human pull-
 request state; and prove Fork cleanup. Runner-local Git state is never Publish authority.
 
-
 ## Inherited thin-Sandbox contract
 
 Every offered runner must use the same pinned Pi release, one RPC supervisor, sanitized Pi behavior
@@ -37,14 +36,12 @@ settings, selected standard and administrator Plugins, dormant Hatch and capture
 sentinel brokers, readiness probes, staged failures, and Resume behavior as Cloudflare. A local
 binary, connected runner, or separate dev image is not parity proof.
 
-
 ## Inherited local-state contract
 
 A Runner uses a separate private root and may persist only its registration identity, workspace,
 secret-free receipts, and recovery fences. Session sentinels exist only in broker memory for the
 current epoch. Unresolved records never age out. Acknowledged terminal receipts retain at most
 seven days or 250 records. Runner cleanup must prove each remote and local effect separately.
-
 
 ## Resolution
 
@@ -142,11 +139,11 @@ activation, and proves readiness before Warm.
 
 Runner desired mode is separate from connection and Session lifecycle:
 
-| Mode | Contract |
-|---|---|
-| `accepting` | Create and Resume may reserve capacity. |
-| `draining` | Create and Resume are blocked. Existing Warm Sessions may finish or stop cleanly. Snapshot, stop, inspection, and cleanup remain available. |
-| `disabled` | New broker authority is fenced and active compute is stopped through the safety path. Only inspection, reconciliation, and cleanup remain available. |
+| Mode        | Contract                                                                                                                                             |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `accepting` | Create and Resume may reserve capacity.                                                                                                              |
+| `draining`  | Create and Resume are blocked. Existing Warm Sessions may finish or stop cleanly. Snapshot, stop, inspection, and cleanup remain available.          |
+| `disabled`  | New broker authority is fenced and active compute is stopped through the safety path. Only inspection, reconciliation, and cleanup remain available. |
 
 Changing mode never retargets a Session or claims its runtime stopped before proof.
 

@@ -90,7 +90,6 @@ revoke standard clients, and start explicit ownership transfer. A paired termina
 device or remove the owner. Root recovery remains outside browser state and replaces ownership only
 through the separate recovery flow.
 
-
 ## Refined Runner surface
 
 Runner views must separate registration, accepting/draining/disabled mode, connection, certified

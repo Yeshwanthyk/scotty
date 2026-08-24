@@ -33,7 +33,6 @@ The private Scotty config owns desired Pi behavior settings. Scotty does not cop
 Pi settings, auth, package stores, sessions, or update state. Local build caches and diagnostics
 for the production Sandbox image are non-authoritative and must be bounded and safe to delete.
 
-
 ## Resolution
 
 Local Scotty state is a private operational aid, never a second control plane. Desired input,

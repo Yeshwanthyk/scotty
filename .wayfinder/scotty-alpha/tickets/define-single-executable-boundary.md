@@ -42,7 +42,6 @@ atomic secret-free journals, bounded diagnostics and caches, safe automatic prun
 inspection, narrow self-unpair, and proven uninstall cleanup. It must not ship a legacy
 `~/.scotty` reader or broad local reset authority.
 
-
 ## Resolution
 
 “Single executable” is Scotty's local distribution and operator boundary, not a claim that the
