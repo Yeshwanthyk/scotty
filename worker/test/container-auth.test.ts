@@ -33,6 +33,12 @@ const ENVIRONMENT = {
 };
 const PI_SESSION_TRANSPORT_TOKEN = "c".repeat(64);
 const REAL_GITHUB = "honeypot-real-github-token";
+const PI_SETTINGS: NonNullable<ContainerAuthSeedOptions["pi"]> = {
+  defaultProvider: "openai",
+  defaultModel: "gpt-5.6-sol",
+  defaultThinkingLevel: "medium",
+  theme: "dark",
+};
 
 type ContainerCall =
   | { readonly operation: "mkdir"; readonly path: string; readonly recursive?: boolean }
@@ -190,7 +196,7 @@ const seedWith = (capabilities: SandboxRuntimeCapabilities, options?: ContainerA
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = containerAuthLayer.pipe(Layer.provide(runtimeLayer));
   return Effect.flatMap(ContainerAuth, (auth) =>
-    auth.seed(ID, { environment: ENVIRONMENT, ...options }),
+    auth.seed(ID, { environment: ENVIRONMENT, pi: PI_SETTINGS, ...options }),
   ).pipe(Effect.provide(layer));
 };
 
@@ -263,8 +269,6 @@ const failed = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRunt
 describe("container auth values", () => {
   it("uses only immutable image-local Pi packages at sandbox startup", () => {
     assert.deepStrictEqual(PI_PACKAGES, [
-      "/opt/scotty/pi-packages/sources/pi-subagents",
-      "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
       "/opt/scotty/pi-packages/sources/scotty-browser-test",
       "/opt/scotty/pi-packages/sources/scotty-hatch",
     ]);
@@ -280,7 +284,6 @@ describe("container auth values", () => {
     assert.strictEqual(sessionRoot(ID), `/workspace/${ID}`);
     assert.strictEqual(terminalShellPath(ID), `/workspace/${ID}/.pi-agent/scotty-shell`);
     assert.deepStrictEqual(agentEnv(ID, ENVIRONMENT), {
-      CODEX_HOME: `/workspace/${ID}/.codex`,
       PI_CODING_AGENT_DIR: `/workspace/${ID}/.pi-agent`,
       SCOTTY_SESSION_ID: ID,
       GIT_CONFIG_GLOBAL: `/workspace/${ID}/.pi-agent/gitconfig`,
@@ -332,25 +335,13 @@ describe("container auth values", () => {
 });
 
 describe("ContainerAuth", () => {
-  it.effect("seeds zero built-ins/extras and keeps subagents available", () =>
+  it.effect("seeds only pinned Pi configuration and resources", () =>
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       yield* seedWith(capabilities);
       assert.deepStrictEqual(
         capabilities.calls.map((call) => call.operation),
-        [
-          "mkdir",
-          "mkdir",
-          "writeFile",
-          "writeFile",
-          "writeFile",
-          "writeFile",
-          "writeFile",
-          "writeFile",
-          "exec",
-          "setEnvVars",
-          "exec",
-        ],
+        ["mkdir", "writeFile", "writeFile", "writeFile", "writeFile", "exec", "setEnvVars", "exec"],
       );
       const writes = capabilities.calls.filter(
         (call): call is Extract<ContainerCall, { operation: "writeFile" }> =>
@@ -359,40 +350,30 @@ describe("ContainerAuth", () => {
       assert.deepStrictEqual(
         writes.map((write) => write.path),
         [
-          `/workspace/${ID}/.codex/config.toml`,
-          `/workspace/${ID}/.codex/AGENTS.md`,
           `/workspace/${ID}/.pi-agent/settings.json`,
           `/workspace/${ID}/.pi-agent/AGENTS.md`,
           `/workspace/${ID}/.pi-agent/gitconfig`,
           `/workspace/${ID}/.pi-agent/scotty-shell`,
         ],
       );
-      assert.deepInclude(JSON.parse(writes[2]?.content ?? ""), {
+      assert.deepInclude(JSON.parse(writes[0]?.content ?? ""), {
         defaultProvider: "openai",
         defaultModel: "gpt-5.6-sol",
         theme: "dark",
-        packages: [...PI_PACKAGES],
+        packages: [],
       });
-      assert.include(PI_PACKAGES, "/opt/scotty/pi-packages/sources/pi-subagents");
-      assert.ok(writes[4]?.content.includes("password=$GH_TOKEN"));
-      assert.ok(writes[5]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
+      assert.ok(writes[2]?.content.includes("password=$GH_TOKEN"));
+      assert.ok(writes[3]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
       assert.ok(
-        writes[5]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
+        writes[3]?.content.includes(`export PI_CODING_AGENT_DIR='/workspace/${ID}/.pi-agent'`),
       );
-      assert.ok(writes[5]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
-      assert.ok(!writes[5]?.content.includes(REAL_GITHUB));
+      assert.ok(writes[3]?.content.includes("exec /usr/local/bin/scotty-pi-shell"));
+      assert.ok(!writes[3]?.content.includes(REAL_GITHUB));
 
       const skillsExec = chmodExecCommand(capabilities.calls);
       const merged = mergedSkillsPath(ID);
       assert.include(skillsExec, `mkdir -p '${merged}'`);
-      assert.include(
-        skillsExec,
-        `for skill in /opt/scotty/skills/*; do [ -e "$skill" ] || continue; ln -sfn "$skill" '${merged}/'; done`,
-      );
-      assert.notInclude(skillsExec, `ln -sfn /opt/scotty/skills/* '${merged}/'`);
-      assert.include(skillsExec, `ln -sfn '${merged}' '/workspace/${ID}/.codex/skills'`);
       assert.include(skillsExec, `ln -sfn '${merged}' '/workspace/${ID}/.pi-agent/skills'`);
-      assert.notInclude(skillsExec, `ln -sfn /opt/scotty/skills '/workspace/${ID}/.codex/skills'`);
       assert.notInclude(
         skillsExec,
         `ln -sfn /opt/scotty/skills '/workspace/${ID}/.pi-agent/skills'`,
@@ -435,168 +416,30 @@ describe("ContainerAuth", () => {
     }),
   );
 
-  it.effect("seeds merged skills and additive Pi packages from installation extras", () =>
+  it.effect("seeds only pinned extension and Skill paths from the active snapshot", () =>
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
-      yield* seedWith(capabilities, {
+      const options = {
         bundleRoot,
-        extraSkills: [{ name: "custom-skill" }, { name: "another-skill" }],
-        extraPackages: [{ name: "custom-package" }, { name: "@scope/custom-package" }],
-      });
+        extensionPaths: [`${bundleRoot}/plugins/custom/index.ts`],
+        skillPaths: [{ name: "custom-skill", path: `${bundleRoot}/plugins/custom-skill` }],
+      };
+      yield* seedWith(capabilities, options);
+      yield* preflightWith(capabilities, options);
       const writes = capabilities.calls.filter(
         (call): call is Extract<ContainerCall, { operation: "writeFile" }> =>
           call.operation === "writeFile",
       );
-      assert.deepInclude(JSON.parse(writes[2]?.content ?? ""), {
-        packages: [
-          ...PI_PACKAGES,
-          `${bundleRoot}/pi-packages/custom-package`,
-          `${bundleRoot}/pi-packages/@scope/custom-package`,
-        ],
+      assert.deepInclude(JSON.parse(writes[0]?.content ?? ""), {
+        packages: [],
+        extensions: [`${bundleRoot}/plugins/custom/index.ts`],
+        skills: [`${bundleRoot}/plugins/custom-skill`],
       });
       const skillsExec = chmodExecCommand(capabilities.calls);
       assert.include(
         skillsExec,
-        `ln -sfn '${bundleRoot}/skills/custom-skill' '/workspace/${ID}/.scotty/merged-skills/custom-skill'`,
-      );
-      assert.include(
-        skillsExec,
-        `ln -sfn '${bundleRoot}/skills/another-skill' '/workspace/${ID}/.scotty/merged-skills/another-skill'`,
-      );
-    }),
-  );
-
-  it.effect("fails when installation skill names are configured more than once", () =>
-    Effect.gen(function* () {
-      const capabilities = new CapturingSandboxCapabilities();
-      const result = yield* Effect.result(
-        seedWith(capabilities, {
-          bundleRoot: `/workspace/${ID}/.scotty/sandbox/deadbeef`,
-          extraSkills: [{ name: "duplicate" }, { name: "duplicate" }],
-        }),
-      );
-      const error = failed(result);
-      assert.deepStrictEqual(
-        error,
-        new SandboxRuntimeFailure({
-          reason: "nonzero_exit",
-          message: "Sandbox configured skill names must be unique",
-        }),
-      );
-      assert.deepStrictEqual(capabilities.calls, []);
-    }),
-  );
-
-  it.effect("replays extra skill links when the target already points at the bundle skill", () =>
-    Effect.gen(function* () {
-      const capabilities = new CapturingSandboxCapabilities();
-      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
-      const options = {
-        bundleRoot,
-        extraSkills: [{ name: "custom-skill" }],
-      };
-      yield* seedWith(capabilities, options);
-      yield* seedWith(capabilities, options);
-      const skillsExec = chmodExecCommand(capabilities.calls);
-      const target = `${mergedSkillsPath(ID)}/custom-skill`;
-      const source = `${bundleRoot}/skills/custom-skill`;
-      assert.include(
-        skillsExec,
-        `{ [ ! -e '${target}' ] || [ "$(readlink '${target}')" = '${source}' ]; } && ln -sfn '${source}' '${target}'`,
-      );
-      assert.notInclude(skillsExec, `test ! -e '${target}'`);
-    }),
-  );
-
-  it.effect("fails closed when an extra skill collides with a merged entry", () =>
-    Effect.gen(function* () {
-      const capabilities = new CapturingSandboxCapabilities();
-      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
-      const merged = mergedSkillsPath(ID);
-      const collisionCommand = `readlink '${merged}/impeccable'`;
-      capabilities.execFailWhen = (command) => command.includes(collisionCommand);
-      const error = failed(
-        yield* Effect.result(
-          seedWith(capabilities, {
-            bundleRoot,
-            extraSkills: [{ name: "impeccable" }],
-          }),
-        ),
-      );
-      assert.deepStrictEqual(error.reason, "nonzero_exit");
-      assert.include(chmodExecCommand(capabilities.calls), collisionCommand);
-    }),
-  );
-
-  it.effect("preflight accepts settings written by seed", () =>
-    Effect.gen(function* () {
-      const capabilities = new CapturingSandboxCapabilities();
-      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
-      const options = {
-        bundleRoot,
-        extraSkills: [{ name: "custom-skill" }],
-        extraPackages: [{ name: "@scope/custom-package" }],
-      };
-      yield* seedWith(capabilities, options);
-      yield* preflightWith(capabilities, options);
-    }),
-  );
-
-  it.effect("preserves seeded extra Pi packages when ensurePiSession refreshes auth", () =>
-    Effect.gen(function* () {
-      const capabilities = new ProcessSandboxCapabilities();
-      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
-      yield* seedWith(capabilities, {
-        bundleRoot,
-        extraPackages: [{ name: "custom-package" }],
-      });
-      yield* piSessionWith(capabilities, "ensure");
-      const settingsWrites = capabilities.calls.filter(
-        (call): call is Extract<ContainerCall, { operation: "writeFile" }> =>
-          call.operation === "writeFile" &&
-          call.path === `/workspace/${ID}/.pi-agent/settings.json`,
-      );
-      const lastSettingsWrite = settingsWrites.at(-1);
-      assert.ok(lastSettingsWrite);
-      assert.deepInclude(JSON.parse(lastSettingsWrite.content), {
-        packages: [...PI_PACKAGES, `${bundleRoot}/pi-packages/custom-package`],
-      });
-    }),
-  );
-
-  it.effect("preflight rejects an extra package path outside the bundle root", () =>
-    Effect.gen(function* () {
-      const capabilities = new CapturingSandboxCapabilities();
-      const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
-      const settingsPath = `/workspace/${ID}/.pi-agent/settings.json`;
-      capabilities.files.set(
-        settingsPath,
-        new TextEncoder().encode(
-          JSON.stringify({
-            packages: [...PI_PACKAGES, `${bundleRoot}/pi-packages/custom-package`],
-          }),
-        ),
-      );
-      const error = failed(
-        yield* Effect.result(
-          preflightWith(capabilities, {
-            bundleRoot,
-            extraPackages: [{ name: "../outside" }],
-          }),
-        ),
-      );
-      assert.deepStrictEqual(
-        error,
-        new SandboxRuntimeFailure({
-          reason: "nonzero_exit",
-          message: "Sandbox extra package path is outside the bundle root",
-        }),
-      );
-      assert.ok(
-        !capabilities.calls.some(
-          (call) => call.operation === "exec" && call.command.includes("../outside"),
-        ),
+        `ln -sfn '${bundleRoot}/plugins/custom-skill' '/workspace/${ID}/.scotty/merged-skills/custom-skill'`,
       );
     }),
   );
@@ -654,20 +497,15 @@ describe("ContainerAuth", () => {
     Effect.gen(function* () {
       const capabilities = new ProcessSandboxCapabilities();
       yield* piSessionWith(capabilities, "ensure");
-      const settingsWriteIndex = capabilities.calls.findIndex(
-        (call) =>
-          call.operation === "writeFile" &&
-          call.path === `/workspace/${ID}/.pi-agent/settings.json`,
-      );
-      const settingsModeIndex = capabilities.calls.findIndex(
-        (call) =>
-          call.operation === "exec" &&
-          call.command.includes(`chmod 600 '/workspace/${ID}/.pi-agent/settings.json'`),
-      );
       const startIndex = capabilities.calls.findIndex((call) => call.operation === "startProcess");
-      assert.ok(settingsWriteIndex >= 0);
-      assert.ok(settingsModeIndex > settingsWriteIndex);
-      assert.ok(startIndex > settingsModeIndex);
+      assert.ok(startIndex >= 0);
+      assert.ok(
+        !capabilities.calls.some(
+          (call) =>
+            call.operation === "writeFile" &&
+            call.path === `/workspace/${ID}/.pi-agent/settings.json`,
+        ),
+      );
       assert.ok(
         !capabilities.calls.some(
           (call) => call.operation === "writeFile" && call.path.endsWith("/.pi-agent/auth.json"),
@@ -805,8 +643,8 @@ describe("ContainerAuth", () => {
       const second = new CapturingSandboxCapabilities();
       yield* seedWith(first);
       yield* seedWith(second);
-      assert.strictEqual(first.calls.length, 11);
-      assert.strictEqual(second.calls.length, 11);
+      assert.strictEqual(first.calls.length, 8);
+      assert.strictEqual(second.calls.length, 8);
       assert.notStrictEqual(first.calls, second.calls);
       assert.deepStrictEqual(first.calls, second.calls);
     }),

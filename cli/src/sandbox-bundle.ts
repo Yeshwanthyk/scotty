@@ -1,18 +1,19 @@
 import { createHash } from "node:crypto";
 import { Schema } from "effect";
-import { CliError, EXIT } from "./core";
 import {
-  GitCommitSchema,
-  GitRepositorySchema,
-  PiPackageNameSchema,
-  SANDBOX_CONFIG_SCHEMA_VERSION,
-  SandboxDigestSchema,
-  SkillNameSchema,
-  formatSandboxStatus,
-  type SandboxConfig,
-} from "./sandbox-config-contracts";
+  DeployedSnapshotSchema,
+  DigestSchema,
+  PluginBundleManifestSchema,
+  type DeployedSnapshot,
+  type PluginBundleManifest,
+  type SandboxFileModeClass,
+  type SandboxFileRecord,
+  type ScottyConfig,
+} from "../../protocol/sandbox-config";
+import { CliError, EXIT } from "./core";
 
 export const SANDBOX_BUNDLE_SCHEMA_VERSION = 1 as const;
+export const SandboxDigestSchema = DigestSchema;
 
 export const SANDBOX_MAX_FILE_BYTES = 1_048_576;
 export const SANDBOX_MAX_SKILL_BYTES = 4_194_304;
@@ -34,67 +35,18 @@ export const SANDBOX_EXCLUDED_BASENAMES = new Set([
   "Thumbs.db",
   "__pycache__",
 ]);
-
 export const SANDBOX_EXCLUDED_SUFFIXES = [".pyc", ".swp", ".swo"];
 
-export const SandboxFileModeClassSchema = Schema.Literals(["regular", "executable"]);
-export const SandboxFileRecordSchema = Schema.Struct({
-  path: Schema.NonEmptyString,
-  size: Schema.Int,
-  modeClass: SandboxFileModeClassSchema,
-  digest: SandboxDigestSchema,
-});
-export const SandboxSkillManifestSchema = Schema.Struct({
-  name: SkillNameSchema,
-  digest: SandboxDigestSchema,
-  hasExecutableContent: Schema.Boolean,
-  files: Schema.Array(SandboxFileRecordSchema),
-});
-export const SandboxPiPackageManifestSchema = Schema.Struct({
-  name: PiPackageNameSchema,
-  repository: GitRepositorySchema,
-  requestedRef: Schema.NonEmptyString,
-  commit: GitCommitSchema,
-  lockDigest: Schema.NullOr(SandboxDigestSchema),
-  digest: SandboxDigestSchema,
-  files: Schema.Array(SandboxFileRecordSchema),
-});
-export const SandboxBundleManifestSchema = Schema.Struct({
-  schemaVersion: Schema.Literal(SANDBOX_BUNDLE_SCHEMA_VERSION),
-  skills: Schema.Array(SandboxSkillManifestSchema),
-  piPackages: Schema.Array(SandboxPiPackageManifestSchema),
-});
-export const SandboxSyncOutputSchema = Schema.Struct({
-  schemaVersion: Schema.Literal(SANDBOX_CONFIG_SCHEMA_VERSION),
-  digest: SandboxDigestSchema,
-  bytes: Schema.Int,
-  fileCount: Schema.Int,
-  skills: Schema.Array(Schema.Struct({ name: SkillNameSchema, path: Schema.NonEmptyString })),
-  piPackages: Schema.Array(
-    Schema.Struct({
-      name: PiPackageNameSchema,
-      repository: GitRepositorySchema,
-      commit: GitCommitSchema,
-      requestedRef: Schema.NonEmptyString,
-    }),
-  ),
-  remote: Schema.Struct({
-    status: Schema.Literals(["not_queried", "unavailable", "synchronized", "diverged"]),
-    activeDigest: Schema.NullOr(SandboxDigestSchema),
-  }),
-});
+export type { PluginBundleManifest, SandboxFileModeClass, SandboxFileRecord };
 
-export type SandboxFileModeClass = typeof SandboxFileModeClassSchema.Type;
-export type SandboxFileRecord = typeof SandboxFileRecordSchema.Type;
-export type SandboxSkillManifest = typeof SandboxSkillManifestSchema.Type;
-export type SandboxPiPackageManifest = typeof SandboxPiPackageManifestSchema.Type;
-export type SandboxBundleManifest = typeof SandboxBundleManifestSchema.Type;
-export type SandboxSyncOutput = typeof SandboxSyncOutputSchema.Type;
-
-const encodeSandboxBundleManifest = Schema.encodeSync(SandboxBundleManifestSchema);
-const encodeSandboxSyncOutput = Schema.encodeSync(SandboxSyncOutputSchema);
-const decodeSandboxBundleManifestJson = Schema.decodeUnknownResult(
-  Schema.fromJsonString(SandboxBundleManifestSchema),
+const encodePluginBundleManifest = Schema.encodeSync(PluginBundleManifestSchema);
+const encodeDeployedSnapshot = Schema.encodeSync(DeployedSnapshotSchema);
+const decodePluginBundleManifestJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(PluginBundleManifestSchema),
+  { onExcessProperty: "error" },
+);
+const decodeDeployedSnapshotJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(DeployedSnapshotSchema),
   { onExcessProperty: "error" },
 );
 
@@ -114,7 +66,9 @@ export const compareUtf8 = (left: string, right: string): number =>
   Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 
 export const sha256Bytes = (bytes: Uint8Array): string =>
-  createHash("sha256").update(bytes).digest("hex");
+  `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
+export const sha256Text = (text: string): string => sha256Bytes(new TextEncoder().encode(text));
 
 export const isExcludedBasename = (name: string): boolean => {
   if (SANDBOX_EXCLUDED_BASENAMES.has(name)) return true;
@@ -125,8 +79,7 @@ export const isExcludedBasename = (name: string): boolean => {
 export const isSafeBundlePath = (path: string): boolean => {
   if (path.length === 0 || path.length > SANDBOX_MAX_PATH_BYTES) return false;
   if (path.startsWith("/") || path.includes("\0") || path.includes("\\")) return false;
-  const parts = path.split("/");
-  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
+  return path.split("/").every((part) => part.length > 0 && part !== "." && part !== "..");
 };
 
 export const itemContentDigest = (files: ReadonlyArray<SandboxFileRecord>): string => {
@@ -141,43 +94,57 @@ export const itemContentDigest = (files: ReadonlyArray<SandboxFileRecord>): stri
     hash.update(file.digest);
     hash.update("\n");
   }
-  return hash.digest("hex");
+  return `sha256:${hash.digest("hex")}`;
 };
 
-export const encodeBundleManifestJson = (manifest: SandboxBundleManifest): string =>
-  `${JSON.stringify(encodeSandboxBundleManifest(manifest), null, 2)}\n`;
+export const encodeBundleManifestJson = (manifest: PluginBundleManifest): string =>
+  `${JSON.stringify(encodePluginBundleManifest(manifest), null, 2)}\n`;
 
-export const decodeBundleManifestText = decodeSandboxBundleManifestJson;
+export const encodeDeployedSnapshotJson = (snapshot: DeployedSnapshot): string =>
+  `${JSON.stringify(encodeDeployedSnapshot(snapshot), null, 2)}\n`;
 
-export type SandboxRemoteSnapshot = SandboxSyncOutput["remote"] & {
+export const decodeBundleManifestText = decodePluginBundleManifestJson;
+export const decodeDeployedSnapshotText = decodeDeployedSnapshotJson;
+
+export interface SandboxRemoteSnapshot {
   readonly status: "synchronized" | "diverged";
-};
+  readonly activeSnapshotDigest: string | null;
+  readonly revision: number;
+}
+
+export interface SandboxSyncOutput {
+  readonly schemaVersion: 1;
+  readonly snapshotDigest: string;
+  readonly pluginBundleDigest: string;
+  readonly configDigest: string;
+  readonly bytes: number;
+  readonly fileCount: number;
+  readonly plugins: ReadonlyArray<{ readonly id: string; readonly type: string }>;
+  readonly remote: SandboxRemoteSnapshot;
+}
 
 export const sandboxSyncOutput = (
-  config: SandboxConfig,
-  digest: string,
-  bytes: number,
-  fileCount: number,
+  config: ScottyConfig,
+  prepared: {
+    readonly snapshotDigest: string;
+    readonly pluginBundleDigest: string;
+    readonly snapshot: DeployedSnapshot;
+    readonly bytes: number;
+    readonly fileCount: number;
+  },
   remote: SandboxRemoteSnapshot,
 ): SandboxSyncOutput => ({
-  schemaVersion: SANDBOX_CONFIG_SCHEMA_VERSION,
-  digest,
-  bytes,
-  fileCount,
-  skills: config.skills,
-  piPackages: config.piPackages,
+  schemaVersion: 1,
+  snapshotDigest: prepared.snapshotDigest,
+  pluginBundleDigest: prepared.pluginBundleDigest,
+  configDigest: prepared.snapshot.configDigest,
+  bytes: prepared.bytes,
+  fileCount: prepared.fileCount,
+  plugins: config.plugins.filter((plugin) => plugin.enabled).map(({ id, type }) => ({ id, type })),
   remote,
 });
 
-export const encodeSandboxSyncJson = (output: SandboxSyncOutput): unknown =>
-  encodeSandboxSyncOutput(output);
+export const encodeSandboxSyncJson = (output: SandboxSyncOutput): unknown => output;
 
 export const formatSandboxSync = (output: SandboxSyncOutput): string =>
-  `Prepared sandbox bundle ${output.digest} (${output.bytes} bytes, ${output.fileCount} files).\n${formatSandboxStatus(
-    {
-      schemaVersion: output.schemaVersion,
-      skills: output.skills,
-      piPackages: output.piPackages,
-      remote: output.remote,
-    },
-  )}`;
+  `Prepared snapshot ${output.snapshotDigest} and Plugin bundle ${output.pluginBundleDigest} (${output.bytes} bytes, ${output.fileCount} files).\nActive revision ${output.remote.revision}.\n`;

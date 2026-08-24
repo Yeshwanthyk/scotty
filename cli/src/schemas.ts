@@ -160,7 +160,8 @@ export const OperationResponseSchema = Schema.Struct({
   status: SessionStatusSchema,
 });
 const SessionSandboxBundleSchema = Schema.Struct({
-  digest: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  digest: Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/u)),
   manifestVersion: Schema.Literal(1),
 });
 export const SessionResponseSchema = Schema.Struct({
@@ -182,7 +183,7 @@ export const SessionResponseSchema = Schema.Struct({
   agentState: Schema.optionalKey(Schema.Unknown),
   lastAgentEventAt: Schema.optionalKey(Schema.Unknown),
   operationResult: Schema.optionalKey(SessionOperationResultSchema),
-  sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
+  sandboxBundle: SessionSandboxBundleSchema,
 });
 export const SessionsResponseSchema = Schema.Array(SessionResponseSchema);
 export const StableSessionSchema = Schema.Struct({
@@ -204,7 +205,7 @@ export const StableSessionSchema = Schema.Struct({
   agentState: Schema.optionalKey(Schema.NonEmptyString),
   lastAgentEventAt: Schema.optionalKey(Schema.NonEmptyString),
   operationResult: Schema.optionalKey(SessionOperationResultSchema),
-  sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
+  sandboxBundle: SessionSandboxBundleSchema,
 });
 export type StableSession = typeof StableSessionSchema.Type;
 export const InspectResponseSchema = PiConsoleSnapshotV1Schema;

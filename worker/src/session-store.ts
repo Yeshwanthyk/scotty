@@ -251,7 +251,7 @@ interface SessionStoreShape {
   readonly put: (record: SessionRecord) => Effect.Effect<void, ScottyError>;
   readonly clearCreateIdempotency: Effect.Effect<void, ScottyError>;
   readonly inspectInitial: (
-    record: SessionRecord,
+    record: Pick<SessionRecord, "id">,
     idempotency: CreateIdempotencyMetadata | undefined,
   ) => Effect.Effect<InitialSessionDecision, ScottyError | InitialSessionStorageFailure>;
   readonly createInitial: (
@@ -496,7 +496,7 @@ const makeSessionStore = (storage: SessionRecordStorage): SessionStoreShape => {
   const decideInitial = (
     storedRecord: unknown | undefined,
     storedIdempotency: unknown,
-    record: SessionRecord,
+    record: Pick<SessionRecord, "id">,
     idempotency: CreateIdempotencyMetadata | undefined,
   ): Result.Result<InitialSessionDecision, ScottyError> => {
     let existing: SessionRecord | undefined;

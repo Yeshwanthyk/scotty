@@ -1,6 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import {
   isSessionEnvironmentSnapshot,
   ENVIRONMENT_INJECTED_PLACEHOLDER,
@@ -17,17 +16,11 @@ import {
   type HarnessOptions,
   SESSION_ID,
   sessionHarnessKeys,
+  TEST_SANDBOX_SNAPSHOT,
+  testSandboxConfigStatus,
+  testSandboxSnapshot,
 } from "./session-harness";
 import { makeSessionRecord, sessionOperationFailure } from "./support";
-
-const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
-  {
-    path: "manifest.json",
-    type: "file",
-    modeClass: "regular",
-    bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
-  },
-]).digest;
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
   operation.then(
@@ -207,8 +200,12 @@ describe("Sandbox create orchestration", () => {
     assert.match(record?.piSessionTransportToken ?? "", /^[0-9a-f]{64}$/u);
     assert.ok(!("piSessionTransportToken" in created));
     assert.notStrictEqual(record?.piSessionTransportToken, "stored-github-token");
-    assert.deepStrictEqual(record?.sandboxBundle, { digest: null, manifestVersion: 1 });
-    assert.deepStrictEqual(created.sandboxBundle, { digest: null, manifestVersion: 1 });
+    assert.deepStrictEqual(record?.sandboxBundle, {
+      revision: TEST_SANDBOX_SNAPSHOT.revision,
+      digest: TEST_SANDBOX_SNAPSHOT.digest,
+      manifestVersion: 1,
+    });
+    assert.deepStrictEqual(created.sandboxBundle, record?.sandboxBundle);
     assert.deepStrictEqual(harness.read(sessionHarnessKeys.createIdempotency), CREATE_IDEMPOTENCY);
 
     const recordIndex = harness.events.indexOf("record:provisioning");
@@ -759,7 +756,7 @@ describe("Sandbox create orchestration", () => {
     });
   }
 
-  it("persists a null sandbox bundle pin on fresh create", async () => {
+  it("persists the active snapshot revision and digest on fresh create", async () => {
     const harness = await createSessionHarness();
 
     const created = await harness.sandbox.createScottySession(
@@ -769,20 +766,22 @@ describe("Sandbox create orchestration", () => {
     );
 
     assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
-      digest: null,
+      revision: TEST_SANDBOX_SNAPSHOT.revision,
+      digest: TEST_SANDBOX_SNAPSHOT.digest,
       manifestVersion: 1,
     });
     assert.deepStrictEqual(created.sandboxBundle, {
-      digest: null,
+      revision: TEST_SANDBOX_SNAPSHOT.revision,
+      digest: TEST_SANDBOX_SNAPSHOT.digest,
       manifestVersion: 1,
     });
     assert.strictEqual(harness.sandboxConfigStatusCallCount(), 1);
   });
 
   it("persists the active sandbox digest before workspace setup", async () => {
-    const digest = EMPTY_ADDITIONS_DIGEST;
+    const active = testSandboxSnapshot(2);
     const harness = await createSessionHarness({
-      sandboxConfigStatus: { schemaVersion: 1, revision: 2, activeDigest: digest },
+      sandboxConfigStatus: testSandboxConfigStatus(2),
     });
 
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
@@ -793,17 +792,17 @@ describe("Sandbox create orchestration", () => {
     assert.ok(authIndex >= 0);
     assert.ok(recordIndex < authIndex);
     assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
-      digest,
+      revision: active.revision,
+      digest: active.digest,
       manifestVersion: 1,
     });
   });
 
   it("keeps the initial sandbox bundle pin across create replay after config changes", async () => {
-    const digestA = EMPTY_ADDITIONS_DIGEST;
-    const digestB = "b".repeat(64);
+    const snapshotA = testSandboxSnapshot(1);
     const crashedHarness = await createSessionHarness({
       crashAfterInitialRecordCommit: true,
-      sandboxConfigStatus: { schemaVersion: 1, revision: 1, activeDigest: digestA },
+      sandboxConfigStatus: testSandboxConfigStatus(1),
     });
 
     const crash = await rejection(
@@ -812,7 +811,11 @@ describe("Sandbox create orchestration", () => {
     assert.ok(crash instanceof InitialSessionStorageFailure);
     const committed = crashedHarness.readRecord();
     assert.ok(committed);
-    assert.deepStrictEqual(committed.sandboxBundle, { digest: digestA, manifestVersion: 1 });
+    assert.deepStrictEqual(committed.sandboxBundle, {
+      revision: snapshotA.revision,
+      digest: snapshotA.digest,
+      manifestVersion: 1,
+    });
     assert.strictEqual(crashedHarness.sandboxConfigStatusCallCount(), 1);
 
     const replayHarness = await createSessionHarness({
@@ -820,7 +823,7 @@ describe("Sandbox create orchestration", () => {
         [sessionHarnessKeys.record]: committed,
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
       },
-      sandboxConfigStatus: { schemaVersion: 1, revision: 2, activeDigest: digestB },
+      sandboxConfigStatus: testSandboxConfigStatus(2),
     });
 
     const replayed = await replayHarness.sandbox.createScottySession(
@@ -830,20 +833,22 @@ describe("Sandbox create orchestration", () => {
     );
 
     assert.deepStrictEqual(replayHarness.readRecord()?.sandboxBundle, {
-      digest: digestA,
+      revision: snapshotA.revision,
+      digest: snapshotA.digest,
       manifestVersion: 1,
     });
     assert.deepStrictEqual(replayed.sandboxBundle, {
-      digest: digestA,
+      revision: snapshotA.revision,
+      digest: snapshotA.digest,
       manifestVersion: 1,
     });
     assert.strictEqual(replayHarness.sandboxConfigStatusCallCount(), 0);
   });
 
   it("materializes the pinned sandbox bundle during create", async () => {
-    const digest = EMPTY_ADDITIONS_DIGEST;
+    const active = testSandboxSnapshot(2);
     const harness = await createSessionHarness({
-      sandboxConfigStatus: { schemaVersion: 1, revision: 2, activeDigest: digest },
+      sandboxConfigStatus: testSandboxConfigStatus(2),
     });
 
     const created = await harness.sandbox.createScottySession(
@@ -867,19 +872,20 @@ describe("Sandbox create orchestration", () => {
     assert.ok(hostWriteFileEventIndex(harness.events, verifiedIndex) > mkdirIndex);
     assert.ok(harness.events.some((event) => event.startsWith("host:pi:start:")));
     assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
-      digest,
+      revision: active.revision,
+      digest: active.digest,
       manifestVersion: 1,
     });
     assert.deepStrictEqual(created.sandboxBundle, {
-      digest,
+      revision: active.revision,
+      digest: active.digest,
       manifestVersion: 1,
     });
   });
 
   it("does not reach warm when the pinned sandbox bundle is missing", async () => {
-    const digest = "a".repeat(64);
     const harness = await createSessionHarness({
-      sandboxConfigStatus: { schemaVersion: 1, revision: 2, activeDigest: digest },
+      sandboxConfigStatus: testSandboxConfigStatus(2),
       seedPinnedSandboxBundle: false,
     });
 

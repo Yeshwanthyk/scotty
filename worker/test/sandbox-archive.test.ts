@@ -44,7 +44,7 @@ describe("worker sandbox archive validation", () => {
   it.effect("accepts a deterministic round-trip archive", () =>
     Effect.gen(function* () {
       const built = createDeterministicTarGz([
-        fileMember("manifest.json", '{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+        fileMember("manifest.json", '{"schemaVersion":1,"plugins":[]}\n'),
       ]);
       const validated = yield* validateSandboxArchive(built.archive, built.digest);
       assert.strictEqual(validated.digest, built.digest);
@@ -54,7 +54,7 @@ describe("worker sandbox archive validation", () => {
   it.effect("rejects digest mismatch and invalid gzip", () =>
     Effect.gen(function* () {
       const built = createDeterministicTarGz([
-        fileMember("manifest.json", '{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+        fileMember("manifest.json", '{"schemaVersion":1,"plugins":[]}\n'),
       ]);
       const mismatch = yield* Effect.result(validateSandboxArchive(built.archive, "b".repeat(64)));
       assert.ok(Result.isFailure(mismatch));
@@ -68,9 +68,7 @@ describe("worker sandbox archive validation", () => {
   it.effect("rejects unsupported tar member types", () =>
     Effect.gen(function* () {
       const tar = patchHeader(
-        encodeUstarArchive([
-          fileMember("manifest.json", '{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
-        ]),
+        encodeUstarArchive([fileMember("manifest.json", '{"schemaVersion":1,"plugins":[]}\n')]),
         (header) => {
           header[156] = 50;
         },

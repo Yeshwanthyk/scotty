@@ -203,7 +203,8 @@ export const checkCliStandaloneDeploy = async ({
       mkdir(cwd, { recursive: true }),
       mkdir(scratch, { recursive: true }),
     ]);
-    const configPath = join(home, ".scotty.json");
+    const configPath = join(home, ".local", "state", "scotty", "installation.json");
+    await mkdir(dirname(configPath), { recursive: true });
     const configBody = `${JSON.stringify(CLEAN_ROOM_CONFIG, null, 2)}\n`;
     await writeFile(configPath, configBody, { mode: 0o600 });
     await chmod(configPath, 0o600);
@@ -228,7 +229,14 @@ export const checkCliStandaloneDeploy = async ({
       timeout: STANDALONE_DEPLOY_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });
-    const diagnosticPath = join(home, ".scotty", "diagnostics", "uninstall-apply.json");
+    const diagnosticPath = join(
+      home,
+      ".local",
+      "state",
+      "scotty",
+      "diagnostics",
+      "uninstall-apply.json",
+    );
     const diagnosticBody = await readFile(diagnosticPath, "utf8");
     diagnostic = JSON.parse(diagnosticBody);
     assertCondition(

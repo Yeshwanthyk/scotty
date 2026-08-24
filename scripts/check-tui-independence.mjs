@@ -145,7 +145,8 @@ if (failures.length === 0) {
       for (const [label, path] of [
         ["Pi authority", piAuthorityTrap],
         ["Pi log", piLogTrap],
-        ["root Scotty config", join(home, ".scotty.json")],
+        ["Scotty config", join(work, "config", "scotty", "config.json")],
+        ["Scotty state", join(work, "state", "scotty")],
         ["legacy pi-scotty config", join(work, "config", "pi-scotty")],
       ])
         if (

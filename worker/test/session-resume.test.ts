@@ -1,5 +1,4 @@
 import { assert, describe, it } from "@effect/vitest";
-import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { ScottyError } from "../src/contracts";
 import {
   isSessionEnvironmentSnapshot,
@@ -13,17 +12,9 @@ import {
   type HarnessOptions,
   SESSION_ID,
   sessionHarnessKeys,
+  TEST_SANDBOX_SNAPSHOT,
 } from "./session-harness";
 import { makeSessionRecord, sessionOperationFailure } from "./support";
-
-const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
-  {
-    path: "manifest.json",
-    type: "file",
-    modeClass: "regular",
-    bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
-  },
-]).digest;
 
 const stoppedRecord = (overrides: Parameters<typeof makeSessionRecord>[0] = {}) =>
   makeSessionRecord({
@@ -196,11 +187,11 @@ describe("Sandbox resume orchestration", () => {
   });
 
   it("rematerializes the pinned sandbox bundle after backup restore", async () => {
-    const digest = EMPTY_ADDITIONS_DIGEST;
+    const { digest, revision } = TEST_SANDBOX_SNAPSHOT;
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: stoppedRecord({
-          sandboxBundle: { digest, manifestVersion: 1 },
+          sandboxBundle: { revision, digest, manifestVersion: 1 },
         }),
       },
     });
@@ -224,19 +215,20 @@ describe("Sandbox resume orchestration", () => {
     );
     assert.ok(harness.events.some((event) => event.startsWith("host:pi:start:")));
     assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
+      revision,
       digest,
       manifestVersion: 1,
     });
-    assert.deepStrictEqual(resumed.sandboxBundle, { digest, manifestVersion: 1 });
+    assert.deepStrictEqual(resumed.sandboxBundle, { revision, digest, manifestVersion: 1 });
     assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
   });
 
   it("does not reach warm when the pinned sandbox bundle is missing", async () => {
-    const digest = "a".repeat(64);
+    const { digest, revision } = TEST_SANDBOX_SNAPSHOT;
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: stoppedRecord({
-          sandboxBundle: { digest, manifestVersion: 1 },
+          sandboxBundle: { revision, digest, manifestVersion: 1 },
         }),
       },
       seedPinnedSandboxBundle: false,
@@ -250,7 +242,7 @@ describe("Sandbox resume orchestration", () => {
       code: "resume_failed",
       message: "Session restore failed",
     });
-    assert.deepStrictEqual(failed?.sandboxBundle, { digest, manifestVersion: 1 });
+    assert.deepStrictEqual(failed?.sandboxBundle, { revision, digest, manifestVersion: 1 });
     assert.ok(!harness.events.some((event) => event.startsWith("host:pi:start:")));
     assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
   });

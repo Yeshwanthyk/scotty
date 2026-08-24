@@ -1,12 +1,17 @@
 import { Context, Data, Effect, Layer, Predicate } from "effect";
+import { sha256BytesHex } from "./digest";
 
 export const SANDBOX_BUNDLE_MAX_GZIP_BYTES = 48 * 1024 * 1024;
+export const SANDBOX_SNAPSHOT_MAX_BYTES = 512 * 1024;
 
-export const sandboxBundleTarGzKey = (digest: string): string =>
-  `sandbox-bundles/sha256/${digest}/bundle.tar.gz`;
+const digestHex = (digest: string): string =>
+  digest.startsWith("sha256:") ? digest.slice(7) : digest;
 
-export const sandboxBundleManifestKey = (digest: string): string =>
-  `sandbox-bundles/sha256/${digest}/manifest.json`;
+export const sandboxPluginBundleTarGzKey = (digest: string): string =>
+  `plugin-bundles/sha256/${digestHex(digest)}/bundle.tar.gz`;
+
+export const sandboxSnapshotKey = (digest: string): string =>
+  `sandbox-snapshots/sha256/${digestHex(digest)}/snapshot.json`;
 
 export interface SandboxBundleObjectMetadata {
   readonly key: string;
@@ -27,19 +32,12 @@ export interface SandboxBundleCapabilities {
     metadata: SandboxBundlePutMetadata,
     onlyIf: R2Conditional,
   ) => Promise<SandboxBundleObjectMetadata | null>;
-  readonly head: (key: string) => Promise<SandboxBundleObjectMetadata | undefined>;
   readonly get: (
     key: string,
   ) => Promise<
     | { readonly metadata: SandboxBundleObjectMetadata; readonly body: ReadableStream<Uint8Array> }
     | undefined
   >;
-}
-
-export interface SandboxBundlePutInput {
-  readonly digest: string;
-  readonly gzipBytes: Uint8Array;
-  readonly manifestJson: string;
 }
 
 export type SandboxBundleFailureReason = "metadata_mismatch" | "missing" | "too_large" | "upstream";
@@ -49,15 +47,25 @@ export class SandboxBundleFailure extends Data.TaggedError("SandboxBundleFailure
   readonly message: string;
 }> {}
 
-export interface SandboxBundleGetResult {
-  readonly gzipBytes: Uint8Array;
-}
-
 interface SandboxBundleStoreShape {
-  readonly putBundle: (input: SandboxBundlePutInput) => Effect.Effect<void, SandboxBundleFailure>;
-  readonly getBundle: (
+  readonly putPluginBundle: (
     digest: string,
-  ) => Effect.Effect<SandboxBundleGetResult, SandboxBundleFailure>;
+    gzipBytes: Uint8Array,
+  ) => Effect.Effect<void, SandboxBundleFailure>;
+  readonly putSnapshot: (input: {
+    readonly snapshotDigest: string;
+    readonly snapshotJson: string;
+    readonly pluginBundleDigest: string;
+  }) => Effect.Effect<void, SandboxBundleFailure>;
+  readonly getPluginBundle: (
+    digest: string,
+  ) => Effect.Effect<{ readonly gzipBytes: Uint8Array }, SandboxBundleFailure>;
+  readonly getSnapshot: (
+    digest: string,
+  ) => Effect.Effect<
+    { readonly snapshotJson: string; readonly pluginBundleDigest: string },
+    SandboxBundleFailure
+  >;
 }
 
 export class SandboxBundleStore extends Context.Service<
@@ -67,40 +75,28 @@ export class SandboxBundleStore extends Context.Service<
 
 const metadataMatches = (
   metadata: SandboxBundleObjectMetadata | undefined,
-  expected: {
-    readonly key: string;
-    readonly size: number;
-    readonly contentType: string;
-    readonly digest: string;
-  },
+  expected: SandboxBundleObjectMetadata,
 ): boolean =>
   metadata !== undefined &&
   metadata.key === expected.key &&
   metadata.size === expected.size &&
   metadata.contentType === expected.contentType &&
-  metadata.customMetadata.digest === expected.digest;
+  Object.keys(metadata.customMetadata).length === Object.keys(expected.customMetadata).length &&
+  Object.entries(expected.customMetadata).every(
+    ([name, value]) => metadata.customMetadata[name] === value,
+  );
 
-const reportSandboxBundleStorageFailure = (
-  operation: "put" | "head" | "get",
-  cause: unknown,
-): void => {
+const reportStorageFailure = (operation: "put" | "get", cause: unknown): void => {
   // oxlint-disable scotty/no-unknown-error-message -- boundary: native R2 rejection telemetry is redacted and never drives domain behavior
   const message = Predicate.isError(cause)
     ? cause.message.replaceAll(/[A-Za-z0-9_=-]{40,}/gu, "[redacted]").slice(0, 300)
     : undefined;
   // oxlint-enable scotty/no-unknown-error-message
-  console.error("Sandbox bundle storage failed", {
+  console.error("Sandbox immutable storage failed", {
     operation,
     error: Predicate.isError(cause) ? cause.name : typeof cause,
     ...(message === undefined || message.length === 0 ? {} : { message }),
   });
-};
-
-const reportSandboxBundleVerificationFailure = (
-  operation: "put" | "head" | "get",
-  reason: "missing" | "metadata_mismatch" | "too_large",
-): void => {
-  console.error("Sandbox bundle verification failed", { operation, reason });
 };
 
 const readBoundedStream = async (
@@ -141,117 +137,172 @@ const makeSandboxBundleStore = (
     key: string,
     bytes: Uint8Array,
     contentType: string,
-    digest: string,
+    customMetadata: Readonly<Record<string, string>>,
   ) {
-    const customMetadata = { digest };
-    const expected = { key, size: bytes.byteLength, contentType, digest };
-    const put = Effect.tryPromise({
+    const expected: SandboxBundleObjectMetadata = {
+      key,
+      size: bytes.byteLength,
+      contentType,
+      customMetadata,
+    };
+    const computedDigest = yield* Effect.tryPromise({
+      try: () => sha256BytesHex(bytes),
+      catch: () =>
+        new SandboxBundleFailure({
+          reason: "upstream",
+          message: "Immutable content digest failed",
+        }),
+    });
+    if (`sha256:${computedDigest}` !== customMetadata.digest)
+      return yield* new SandboxBundleFailure({
+        reason: "metadata_mismatch",
+        message: "Immutable content digest mismatch",
+      });
+    const putResult = yield* Effect.tryPromise({
       try: () =>
         capabilities.put(key, bytes, { contentType, customMetadata }, { etagDoesNotMatch: "*" }),
       catch: (cause) => {
-        reportSandboxBundleStorageFailure("put", cause);
+        reportStorageFailure("put", cause);
         return new SandboxBundleFailure({
           reason: "upstream",
-          message: "Sandbox bundle storage failed",
+          message: "Immutable storage failed",
         });
       },
     });
-    const head = Effect.tryPromise({
-      try: () => capabilities.head(key),
-      catch: (cause) => {
-        reportSandboxBundleStorageFailure("head", cause);
-        return new SandboxBundleFailure({
-          reason: "upstream",
-          message: "Sandbox bundle storage failed",
-        });
-      },
-    });
-    const putResult = yield* put;
     if (putResult !== null) {
       if (metadataMatches(putResult, expected)) return;
-      reportSandboxBundleVerificationFailure("put", "metadata_mismatch");
       return yield* new SandboxBundleFailure({
         reason: "metadata_mismatch",
-        message: "Sandbox bundle storage metadata mismatch",
+        message: "Immutable storage metadata mismatch",
       });
     }
-    const headResult = yield* head;
-    if (metadataMatches(headResult, expected)) return;
-    if (headResult !== undefined) {
-      reportSandboxBundleVerificationFailure("head", "metadata_mismatch");
+    const existing = yield* getObject(key, bytes.byteLength);
+    if (!metadataMatches(existing.metadata, expected))
       return yield* new SandboxBundleFailure({
         reason: "metadata_mismatch",
-        message: "Sandbox bundle storage metadata mismatch",
+        message: "Immutable storage metadata mismatch",
       });
-    }
-    reportSandboxBundleVerificationFailure("head", "missing");
-    return yield* new SandboxBundleFailure({
-      reason: "upstream",
-      message: "Sandbox bundle storage failed",
+    const existingDigest = yield* Effect.tryPromise({
+      try: () => sha256BytesHex(existing.bytes),
+      catch: () =>
+        new SandboxBundleFailure({
+          reason: "upstream",
+          message: "Immutable content digest failed",
+        }),
     });
+    if (`sha256:${existingDigest}` !== customMetadata.digest)
+      return yield* new SandboxBundleFailure({
+        reason: "metadata_mismatch",
+        message: "Immutable content digest mismatch",
+      });
   });
 
-  return SandboxBundleStore.of({
-    putBundle: Effect.fnUntraced(function* (input: SandboxBundlePutInput) {
-      const manifestBytes = new TextEncoder().encode(input.manifestJson);
-      yield* createOnlyObject(
-        sandboxBundleTarGzKey(input.digest),
-        input.gzipBytes,
-        "application/gzip",
-        input.digest,
-      );
-      yield* createOnlyObject(
-        sandboxBundleManifestKey(input.digest),
-        manifestBytes,
-        "application/json",
-        input.digest,
-      );
-    }),
-    getBundle: Effect.fnUntraced(function* (digest: string) {
-      const key = sandboxBundleTarGzKey(digest);
+  function getObject(key: string, maxBytes: number) {
+    return Effect.gen(function* () {
       const object = yield* Effect.tryPromise({
         try: () => capabilities.get(key),
         catch: (cause) => {
-          reportSandboxBundleStorageFailure("get", cause);
+          reportStorageFailure("get", cause);
           return new SandboxBundleFailure({
             reason: "upstream",
-            message: "Sandbox bundle storage failed",
+            message: "Immutable storage failed",
           });
         },
       });
-      if (object === undefined) {
-        reportSandboxBundleVerificationFailure("get", "missing");
+      if (object === undefined)
         return yield* new SandboxBundleFailure({
           reason: "missing",
-          message: "Sandbox bundle is missing",
+          message: "Immutable input is missing",
         });
-      }
-      const metadataDigest = object.metadata.customMetadata.digest;
-      if (metadataDigest !== undefined && metadataDigest !== digest) {
-        reportSandboxBundleVerificationFailure("get", "metadata_mismatch");
-        return yield* new SandboxBundleFailure({
-          reason: "metadata_mismatch",
-          message: "Sandbox bundle storage metadata mismatch",
-        });
-      }
-      const gzipBytes = yield* Effect.tryPromise({
-        try: () => readBoundedStream(object.body, SANDBOX_BUNDLE_MAX_GZIP_BYTES),
+      const bytes = yield* Effect.tryPromise({
+        try: () => readBoundedStream(object.body, maxBytes),
         catch: (cause) => {
-          reportSandboxBundleStorageFailure("get", cause);
+          reportStorageFailure("get", cause);
           return new SandboxBundleFailure({
             reason: "upstream",
-            message: "Sandbox bundle storage failed",
+            message: "Immutable storage failed",
           });
         },
       });
-      if (gzipBytes === undefined) {
-        reportSandboxBundleVerificationFailure("get", "too_large");
+      if (bytes === undefined)
         return yield* new SandboxBundleFailure({
           reason: "too_large",
-          message: "Sandbox bundle exceeds the size limit",
+          message: "Immutable input exceeds the size limit",
         });
-      }
-      return { gzipBytes };
+      if (object.metadata.key !== key || object.metadata.size !== bytes.byteLength)
+        return yield* new SandboxBundleFailure({
+          reason: "metadata_mismatch",
+          message: "Immutable storage metadata mismatch",
+        });
+      return { metadata: object.metadata, bytes };
+    });
+  }
+
+  const verifyContentDigest = Effect.fnUntraced(function* (bytes: Uint8Array, digest: string) {
+    const computed = yield* Effect.tryPromise({
+      try: () => sha256BytesHex(bytes),
+      catch: () =>
+        new SandboxBundleFailure({
+          reason: "upstream",
+          message: "Immutable content digest failed",
+        }),
+    });
+    if (`sha256:${computed}` !== digest)
+      return yield* new SandboxBundleFailure({
+        reason: "metadata_mismatch",
+        message: "Immutable content digest mismatch",
+      });
+  });
+
+  return SandboxBundleStore.of({
+    putPluginBundle: (digest, gzipBytes) =>
+      createOnlyObject(sandboxPluginBundleTarGzKey(digest), gzipBytes, "application/gzip", {
+        digest,
+      }),
+    putSnapshot: ({ snapshotDigest, snapshotJson, pluginBundleDigest }) =>
+      createOnlyObject(
+        sandboxSnapshotKey(snapshotDigest),
+        new TextEncoder().encode(snapshotJson),
+        "application/json",
+        { digest: snapshotDigest, pluginBundleDigest },
+      ),
+    getPluginBundle: Effect.fnUntraced(function* (digest: string) {
+      const key = sandboxPluginBundleTarGzKey(digest);
+      const object = yield* getObject(key, SANDBOX_BUNDLE_MAX_GZIP_BYTES);
+      if (
+        !metadataMatches(object.metadata, {
+          key,
+          size: object.bytes.byteLength,
+          contentType: "application/gzip",
+          customMetadata: { digest },
+        })
+      )
+        return yield* new SandboxBundleFailure({
+          reason: "metadata_mismatch",
+          message: "Plugin bundle metadata mismatch",
+        });
+      yield* verifyContentDigest(object.bytes, digest);
+      return { gzipBytes: object.bytes };
+    }),
+    getSnapshot: Effect.fnUntraced(function* (digest: string) {
+      const key = sandboxSnapshotKey(digest);
+      const object = yield* getObject(key, SANDBOX_SNAPSHOT_MAX_BYTES);
+      const pluginBundleDigest = object.metadata.customMetadata.pluginBundleDigest;
+      if (
+        pluginBundleDigest === undefined ||
+        !metadataMatches(object.metadata, {
+          key,
+          size: object.bytes.byteLength,
+          contentType: "application/json",
+          customMetadata: { digest, pluginBundleDigest },
+        })
+      )
+        return yield* new SandboxBundleFailure({
+          reason: "metadata_mismatch",
+          message: "Snapshot metadata mismatch",
+        });
+      yield* verifyContentDigest(object.bytes, digest);
+      return { snapshotJson: new TextDecoder().decode(object.bytes), pluginBundleDigest };
     }),
   });
 };
@@ -272,8 +323,6 @@ export const r2SandboxBundleCapabilities = (bucket: R2Bucket): SandboxBundleCapa
         customMetadata: { ...metadata.customMetadata },
       })
       .then((object) => (object === null ? null : r2Metadata(object))),
-  head: (key) =>
-    bucket.head(key).then((object) => (object === null ? undefined : r2Metadata(object))),
   get: (key) =>
     bucket
       .get(key)

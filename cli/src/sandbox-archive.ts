@@ -8,7 +8,7 @@ import {
   isSafeBundlePath,
   sandboxArchiveInvalid,
   sha256Bytes,
-  type SandboxBundleManifest,
+  type PluginBundleManifest,
   type SandboxFileModeClass,
 } from "./sandbox-bundle";
 
@@ -242,12 +242,16 @@ const filesFromMembers = (members: ReadonlyArray<ParsedTarMember>): Map<string, 
 export const validateSandboxArchive = (
   bytes: Uint8Array,
 ): Result.Result<
-  { readonly digest: string; readonly manifest: SandboxBundleManifest },
+  {
+    readonly digest: string;
+    readonly manifest: PluginBundleManifest;
+    readonly members: ReadonlyArray<ParsedTarMember>;
+  },
   ReturnType<typeof sandboxArchiveInvalid>
 > => {
   const tar = gunzipSandboxArchive(bytes);
   if (Result.isFailure(tar)) return Result.fail(tar.failure);
-  const digest = sha256Bytes(tar.success);
+  const digest = sha256Bytes(bytes);
   const parsed = parseSandboxTar(tar.success);
   if (Result.isFailure(parsed)) return Result.fail(parsed.failure);
   const files = filesFromMembers(parsed.success);
@@ -269,13 +273,9 @@ export const validateSandboxArchive = (
     );
   const manifest = decoded.success;
   const expected = new Map<string, { readonly size: number; readonly digest: string }>();
-  for (const skill of manifest.skills) {
-    for (const file of skill.files)
-      expected.set(`skills/${skill.name}/${file.path}`, { size: file.size, digest: file.digest });
-  }
-  for (const item of manifest.piPackages) {
+  for (const item of manifest.plugins) {
     for (const file of item.files)
-      expected.set(`pi-packages/${item.name}/${file.path}`, {
+      expected.set(`plugins/${item.pluginId}/${file.path}`, {
         size: file.size,
         digest: file.digest,
       });
@@ -306,5 +306,5 @@ export const validateSandboxArchive = (
         "Rebuild the sandbox bundle, then retry.",
       ),
     );
-  return Result.succeed({ digest, manifest });
+  return Result.succeed({ digest, manifest, members: parsed.success });
 };

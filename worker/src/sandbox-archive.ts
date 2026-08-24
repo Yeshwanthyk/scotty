@@ -1,9 +1,6 @@
 import { Data, Effect, Result, Schema } from "effect";
 import { sha256BytesHex } from "./digest";
-import {
-  SandboxBundleManifestSchema,
-  type SandboxBundleManifest,
-} from "./sandbox-config-contracts";
+import { PluginBundleManifestSchema, type PluginBundleManifest } from "./sandbox-config-contracts";
 
 export const SANDBOX_MAX_FILE_BYTES = 1_048_576;
 export const SANDBOX_MAX_BUNDLE_FILES = 8_192;
@@ -154,7 +151,7 @@ export const gunzipSandboxArchive = (
   });
 
 const decodeBundleManifestText = Schema.decodeUnknownResult(
-  Schema.fromJsonString(SandboxBundleManifestSchema),
+  Schema.fromJsonString(PluginBundleManifestSchema),
   { onExcessProperty: "error" },
 );
 
@@ -168,7 +165,7 @@ const filesFromMembers = (members: ReadonlyArray<ParsedTarMember>): Map<string, 
 
 export interface ValidatedSandboxArchive {
   readonly digest: string;
-  readonly manifest: SandboxBundleManifest;
+  readonly manifest: PluginBundleManifest;
   readonly manifestJson: string;
   readonly members: ReadonlyArray<ParsedTarMember>;
 }
@@ -178,15 +175,15 @@ export const validateSandboxArchive = (
   expectedDigest: string,
 ): Effect.Effect<ValidatedSandboxArchive, SandboxArchiveInvalid> =>
   Effect.gen(function* () {
-    const tar = yield* gunzipSandboxArchive(gzipBytes);
     const digest = yield* Effect.tryPromise({
-      try: () => sha256BytesHex(tar),
+      try: () => sha256BytesHex(gzipBytes).then((hex) => `sha256:${hex}`),
       catch: () => sandboxArchiveInvalid("Sandbox archive digest computation failed"),
     });
     if (digest !== expectedDigest)
       return yield* Effect.fail(
         sandboxArchiveInvalid("Sandbox archive digest does not match the path digest"),
       );
+    const tar = yield* gunzipSandboxArchive(gzipBytes);
     const parsed = parseSandboxTar(tar);
     if (Result.isFailure(parsed)) return yield* Effect.fail(parsed.failure);
     const files = filesFromMembers(parsed.success);
@@ -199,13 +196,9 @@ export const validateSandboxArchive = (
       return yield* Effect.fail(sandboxArchiveInvalid("Sandbox archive manifest is invalid"));
     const manifest = decoded.success;
     const expected = new Map<string, { readonly size: number; readonly digest: string }>();
-    for (const skill of manifest.skills) {
-      for (const file of skill.files)
-        expected.set(`skills/${skill.name}/${file.path}`, { size: file.size, digest: file.digest });
-    }
-    for (const item of manifest.piPackages) {
+    for (const item of manifest.plugins) {
       for (const file of item.files)
-        expected.set(`pi-packages/${item.name}/${file.path}`, {
+        expected.set(`plugins/${item.pluginId}/${file.path}`, {
           size: file.size,
           digest: file.digest,
         });
@@ -218,7 +211,7 @@ export const validateSandboxArchive = (
           sandboxArchiveInvalid("Sandbox archive contains a file missing from the manifest"),
         );
       const contentDigest = yield* Effect.tryPromise({
-        try: () => sha256BytesHex(content),
+        try: () => sha256BytesHex(content).then((hex) => `sha256:${hex}`),
         catch: () => sandboxArchiveInvalid("Sandbox archive file digest computation failed"),
       });
       if (content.byteLength !== record.size || contentDigest !== record.digest)

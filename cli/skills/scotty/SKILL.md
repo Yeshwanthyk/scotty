@@ -158,10 +158,15 @@ scotty sandbox sync --json
 scotty doctor --json
 ```
 
+In a non-interactive shell, first inspect the reported change plan, then rerun the approved
+activation as `scotty sandbox sync --yes --json`. An interactive TTY prints the same plan and asks
+for approval before uploading or activating anything.
+
 Interpret the results, do not print their hidden values:
 
-- `sandbox sync` reports `schemaVersion`, bundle `digest`, `bytes`, `fileCount`, configured
-  `skills`, `piPackages`, and `remote.status` plus `remote.activeDigest`.
+- `sandbox sync` reports `schemaVersion`, `snapshotDigest`, `pluginBundleDigest`, `configDigest`,
+  `bytes`, `fileCount`, configured `plugins`, and `remote.status` plus
+  `remote.activeSnapshotDigest` and `remote.revision`.
 - `doctor` must return `ok: true`, normally with `mode: "managed"` and installation/profile/resource
   identifiers. It proves config identity, reachability, and root-authenticated Worker access; it
   does not prove browser ownership or pairing.
@@ -345,28 +350,25 @@ value appeared in command arguments or output.
 
 ## Sandbox customization
 
-The standard image toolset and built-in Pi packages remain available. Extra Skills and Git-backed Pi
-packages are installation-scoped sources:
+The standard image toolset remains available. Declare every installation Plugin in the strict XDG
+configuration at `~/.config/scotty/config.json`; Plugin sources are local absolute paths or approved
+built-ins only. Synchronize the complete desired document with:
 
 ```sh
-scotty sandbox add SOURCE [--ref REF] --json
-scotty sandbox remove NAME --json
-scotty sandbox list --json
 scotty sandbox sync --json
 ```
 
-A local Skill source contains its checked-in `SKILL.md`. A Git package requires an explicit ref that
-resolves to a commit; do not use a moving ref as the lock. `sandbox list` shows local desired sources
-and remote status. `sandbox sync` builds a deterministic bundle, reports its digest, and activates
-that immutable digest in the installation. `remote.status` distinguishes `not_queried`,
-`unavailable`, `synchronized`, and `diverged`.
+A local Skill source contains its checked-in `SKILL.md`. `sandbox sync` validates the entire Plugin
+and setup graph, builds deterministic immutable Plugin and snapshot inputs, displays their complete
+change plan, and asks before activation. Use `--yes` only after separately approving that plan in a
+non-interactive workflow.
 
-New sessions pin the active digest. Removing a source or activating a newer bundle does not rewrite
-a running session, its built-in image tools, or an existing backup; resume restores the session's
-original pin.
+New sessions pin the active snapshot revision and digest. Changing the configuration or activating a
+newer snapshot does not rewrite a running session or an existing backup; resume restores the
+session's original pin.
 
-**Done when:** the desired source list is valid, sync returns a digest, and remote active state is
-`synchronized` or its typed divergence is reported for human choice.
+**Done when:** the desired Plugin graph is valid, the reported plan is approved, and sync returns
+`remote.status: "synchronized"` for the intended snapshot digest.
 
 ## Browser authority
 

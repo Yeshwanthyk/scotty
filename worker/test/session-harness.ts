@@ -6,7 +6,6 @@ import type {
   RestoreBackupResult,
 } from "@cloudflare/sandbox";
 import { Data, Effect, Match, Result } from "effect";
-import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import type { RunnerOperation } from "../../protocol/runner";
 import type { Bindings } from "../src/bindings";
 import type { CreateSessionInput, SessionRecord, WorkspaceCreationMarker } from "../src/contracts";
@@ -23,7 +22,7 @@ import {
 import type { RepoVerifier } from "../src/repo-verifier";
 import type { SandboxConfigStatus } from "../src/sandbox-config-contracts";
 import type { SandboxConfigRpcResult } from "../src/sandbox-config-object";
-import { sandboxBundleTarGzKey } from "../src/sandbox-bundle-store";
+import { sandboxPluginBundleTarGzKey, sandboxSnapshotKey } from "../src/sandbox-bundle-store";
 import { HATCH_STATE_KEY, SESSION_CONTROL_REVISION_KEY } from "../src/session-store";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
@@ -36,10 +35,22 @@ import {
 } from "../src/session";
 import { EVIDENCE_RECORD_KEY, RUNTIME_EPOCH_KEY } from "../src/session-store";
 import { InMemoryFaultInjectableFake } from "./support";
+import {
+  TEST_SANDBOX_PLUGIN_BUNDLE,
+  TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST,
+  TEST_SANDBOX_SNAPSHOT,
+  testSandboxConfigStatus,
+  testSandboxSnapshot,
+} from "./support/sandbox-snapshot";
+export {
+  TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST,
+  TEST_SANDBOX_SNAPSHOT,
+  testSandboxConfigStatus,
+  testSandboxSnapshot,
+} from "./support/sandbox-snapshot";
 
 const RECORD_KEY = "scotty:session";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
-const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const SANDBOX_BUNDLE_CONTENT_TYPE = "application/gzip";
 
 interface StoredSandboxBundleObject {
@@ -48,25 +59,30 @@ interface StoredSandboxBundleObject {
   readonly customMetadata: Readonly<Record<string, string>>;
 }
 
-const emptyAdditionsBundleGzip = (): Uint8Array =>
-  createDeterministicTarGz([
-    {
-      path: "manifest.json",
-      type: "file",
-      modeClass: "regular",
-      bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
-    },
-  ]).archive;
-
 const seedSandboxBundleObject = (
   objects: Map<string, StoredSandboxBundleObject>,
   digest: string,
   gzip: Uint8Array,
 ): void => {
-  objects.set(sandboxBundleTarGzKey(digest), {
+  objects.set(sandboxPluginBundleTarGzKey(digest), {
     bytes: Uint8Array.from(gzip),
     contentType: SANDBOX_BUNDLE_CONTENT_TYPE,
     customMetadata: { digest },
+  });
+};
+
+const seedSandboxSnapshot = (
+  objects: Map<string, StoredSandboxBundleObject>,
+  revision: number,
+  digest: string,
+): void => {
+  const prepared = testSandboxSnapshot(revision);
+  if (prepared.digest !== digest) return;
+  seedSandboxBundleObject(objects, TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST, TEST_SANDBOX_PLUGIN_BUNDLE);
+  objects.set(sandboxSnapshotKey(digest), {
+    bytes: new TextEncoder().encode(prepared.snapshotJson),
+    contentType: "application/json",
+    customMetadata: { digest, pluginBundleDigest: TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST },
   });
 };
 
@@ -627,26 +643,21 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
   let sandboxConfigStatusCalls = 0;
-  const defaultSandboxConfigStatus: SandboxConfigStatus = {
-    schemaVersion: 1,
-    revision: 0,
-    activeDigest: null,
-  };
+  const defaultSandboxConfigStatus = testSandboxConfigStatus(TEST_SANDBOX_SNAPSHOT.revision);
   const sandboxConfigStatus = options.sandboxConfigStatus ?? defaultSandboxConfigStatus;
   const sandboxConfigGithubToken = options.sandboxConfigGithubToken ?? "authority-github-token";
   const sandboxBundleObjectMap = new Map<string, StoredSandboxBundleObject>();
   for (const { digest, gzip } of options.sandboxBundleObjects ?? [])
     seedSandboxBundleObject(sandboxBundleObjectMap, digest, gzip);
   const pinnedDigest = options.initialEntries?.[RECORD_KEY]?.sandboxBundle?.digest;
-  const activeDigest = sandboxConfigStatus.activeDigest;
-  const seedDigest = (digest: string | null | undefined): void => {
-    if (typeof digest !== "string" || !SHA256_HEX.test(digest)) return;
-    if (sandboxBundleObjectMap.has(sandboxBundleTarGzKey(digest))) return;
-    seedSandboxBundleObject(sandboxBundleObjectMap, digest, emptyAdditionsBundleGzip());
+  const activeSnapshot = sandboxConfigStatus.activeSnapshot;
+  const seedSnapshot = (revision: number | undefined, digest: string | undefined): void => {
+    if (revision === undefined || digest === undefined) return;
+    seedSandboxSnapshot(sandboxBundleObjectMap, revision, digest);
   };
   if (options.seedPinnedSandboxBundle ?? true) {
-    seedDigest(activeDigest);
-    seedDigest(pinnedDigest);
+    seedSnapshot(activeSnapshot?.revision, activeSnapshot?.snapshotDigest);
+    seedSnapshot(options.initialEntries?.[RECORD_KEY]?.sandboxBundle?.revision, pinnedDigest);
   }
   const initialEntries: InitialStorageEntries = { ...options.initialEntries };
   const initialRecord = initialEntries[RECORD_KEY];
@@ -955,7 +966,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         },
         activate: async () => ({
           ok: true,
-          value: { schemaVersion: 1, revision: 1, activeDigest: null },
+          value: defaultSandboxConfigStatus,
         }),
         listEnvironment: async () => ({
           ok: true,
@@ -1342,9 +1353,9 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       },
     },
     mkdir: {
-      value: async (_path: string): Promise<void> => {
+      value: async (path: string): Promise<void> => {
         events.push("host:mkdir");
-        if (options.failureStage === "containerAuthSeed")
+        if (options.failureStage === "containerAuthSeed" && path.endsWith("/.pi-agent"))
           throw injectedHarnessFailure("injected container auth failure");
       },
     },

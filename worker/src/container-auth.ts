@@ -1,4 +1,5 @@
-import { Context, Effect, Layer, Option, Result, Schema } from "effect";
+import { Context, Effect, Layer } from "effect";
+import type { PiSettings, SandboxToolCommand } from "../../protocol/sandbox-config";
 import type { PiSessionTransportToken, SessionRecord } from "./contracts";
 import {
   isSessionEnvironmentSnapshot,
@@ -6,13 +7,10 @@ import {
   type SessionEnvironmentSnapshot,
 } from "./environment-contracts";
 import { environmentNameIsMaterializable, environmentNameIsReserved } from "./environment-policy";
-import { PiPackageNameSchema, SkillNameSchema } from "./sandbox-config-contracts";
 import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
 export const PI_PACKAGES = [
-  "/opt/scotty/pi-packages/sources/pi-subagents",
-  "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
   "/opt/scotty/pi-packages/sources/scotty-browser-test",
   "/opt/scotty/pi-packages/sources/scotty-hatch",
 ] as const;
@@ -24,167 +22,35 @@ export const PI_SESSION_TOKEN_HEADER = "x-scotty-pi-session";
 const piSessionTokenPath = (id: SessionRecord["id"]): string =>
   `/tmp/scotty-pi-session-${id}.token`;
 
-const codexConfig = (id: SessionRecord["id"]): string => `model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
-
-[features]
-plugins = false
-
-[mcp_servers]
-
-[projects.${JSON.stringify(sessionRoot(id))}]
-trust_level = "trusted"
-`;
-
 export const mergedSkillsPath = (id: SessionRecord["id"]): string =>
   `${sessionRoot(id)}/.scotty/merged-skills`;
-
-const extraPackagePath = (bundleRoot: string, name: string): string =>
-  `${bundleRoot}/pi-packages/${name}`;
-
-const extraSkillSourcePath = (bundleRoot: string, name: string): string =>
-  `${bundleRoot}/skills/${name}`;
-
-const decodeSkillName = Schema.decodeUnknownOption(SkillNameSchema);
-const decodePiPackageName = Schema.decodeUnknownOption(PiPackageNameSchema);
-
-const pathUnderRoot = (root: string, path: string): boolean =>
-  path === root || path.startsWith(`${root}/`);
 
 const extraSkillLinkCommand = (target: string, source: string): string =>
   `{ [ ! -e ${shellQuote(target)} ] || [ "$(readlink ${shellQuote(target)})" = ${shellQuote(source)} ]; } && ln -sfn ${shellQuote(source)} ${shellQuote(target)}`;
 
-const resolveSeedExtras = (
-  options?: ContainerAuthSeedOptions,
-): Effect.Effect<
-  {
-    readonly extraSkills: ReadonlyArray<{ readonly name: string }>;
-    readonly extraPackagePaths: ReadonlyArray<string>;
-    readonly bundleRoot: string | undefined;
-  },
-  SandboxRuntimeFailure
-> =>
-  Effect.gen(function* () {
-    const extraSkills = options?.extraSkills ?? [];
-    const extraPackages = options?.extraPackages ?? [];
-    const bundleRoot = options?.bundleRoot;
-    if (extraSkills.length === 0 && extraPackages.length === 0)
-      return { extraSkills, extraPackagePaths: [], bundleRoot };
-    if (bundleRoot === undefined)
-      return yield* new SandboxRuntimeFailure({
-        reason: "nonzero_exit",
-        message: "Sandbox bundle root is required when extras are configured",
-      });
-    const configuredNames = new Set<string>();
-    for (const skill of extraSkills) {
-      if (configuredNames.has(skill.name))
-        return yield* new SandboxRuntimeFailure({
-          reason: "nonzero_exit",
-          message: "Sandbox configured skill names must be unique",
-        });
-      configuredNames.add(skill.name);
-      if (Option.isNone(decodeSkillName(skill.name)))
-        return yield* new SandboxRuntimeFailure({
-          reason: "nonzero_exit",
-          message: "Sandbox extra skill name is invalid",
-        });
-    }
-    const extraPackagePaths: string[] = [];
-    for (const pkg of extraPackages) {
-      if (configuredNames.has(pkg.name))
-        return yield* new SandboxRuntimeFailure({
-          reason: "nonzero_exit",
-          message: "Sandbox configured source names must be unique",
-        });
-      configuredNames.add(pkg.name);
-      const packagePath = extraPackagePath(bundleRoot, pkg.name);
-      if (
-        Option.isNone(decodePiPackageName(pkg.name)) ||
-        !pathUnderRoot(bundleRoot, packagePath) ||
-        packagePath.includes(".staging-")
-      )
-        return yield* new SandboxRuntimeFailure({
-          reason: "nonzero_exit",
-          message: "Sandbox extra package path is outside the bundle root",
-        });
-      extraPackagePaths.push(packagePath);
-    }
-    return { extraSkills, extraPackagePaths, bundleRoot };
-  });
-
-const PiSettingsPackagesSchema = Schema.Struct({
-  packages: Schema.optional(Schema.Array(Schema.String)),
-});
-const decodePiSettingsPackages = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(PiSettingsPackagesSchema),
-  { onExcessProperty: "ignore" },
-);
-
-const piSettingsParseFailure = (): SandboxRuntimeFailure =>
-  new SandboxRuntimeFailure({
-    reason: "nonzero_exit",
-    message: "Sandbox Pi settings could not be parsed",
-  });
-
-const existingExtraPackagePaths = Effect.fnUntraced(function* (
-  runtime: SandboxRuntime["Service"],
-  settingsPath: string,
-) {
-  const settingsBytes = yield* runtime
-    .readFile(settingsPath, 65_536)
-    .pipe(Effect.catchTag("SandboxRuntimeFailure", () => Effect.succeed(undefined)));
-  if (settingsBytes === undefined) return [] as ReadonlyArray<string>;
-  const decoded = yield* Effect.result(
-    decodePiSettingsPackages(new TextDecoder().decode(settingsBytes)),
-  );
-  if (Result.isFailure(decoded)) return [] as ReadonlyArray<string>;
-  const packages = decoded.success.packages ?? [];
-  if (packages.length < PI_PACKAGES.length) return [] as ReadonlyArray<string>;
-  for (let index = 0; index < PI_PACKAGES.length; index += 1) {
-    if (packages[index] !== PI_PACKAGES[index]) return [] as ReadonlyArray<string>;
-  }
-  return packages.slice(PI_PACKAGES.length);
-});
-
-const piSettings = (extraPackagePaths: ReadonlyArray<string> = []): string =>
+const piSettings = (
+  settings: PiSettings,
+  extensionPaths: ReadonlyArray<string>,
+  skillPaths: ReadonlyArray<{ readonly path: string }>,
+): string =>
   JSON.stringify({
-    defaultProvider: "openai",
-    defaultModel: "gpt-5.6-sol",
-    defaultThinkingLevel: "high",
-    steeringMode: "one-at-a-time",
-    theme: "dark",
-    hideThinkingBlock: false,
-    quietStartup: true,
-    defaultProjectTrust: "always",
-    compaction: {
-      enabled: true,
-      reserveTokens: 40960,
-      keepRecentTokens: 20000,
-    },
-    packages: [...PI_PACKAGES, ...extraPackagePaths],
+    ...settings,
+    defaultProjectTrust: "never",
+    packages: [],
+    extensions: extensionPaths,
+    skills: skillPaths.map((skill) => skill.path),
   });
 
 const buildMergedSkillsCommand = (
   id: SessionRecord["id"],
-  extraSkills: ReadonlyArray<{ readonly name: string }>,
-  bundleRoot: string | undefined,
+  skills: ReadonlyArray<{ readonly name: string; readonly path: string }>,
 ): string => {
   const merged = mergedSkillsPath(id);
-  const codexSkills = `${sessionRoot(id)}/.codex/skills`;
   const piSkills = `${sessionRoot(id)}/.pi-agent/skills`;
-  const parts = [
-    `mkdir -p ${shellQuote(merged)}`,
-    `for skill in /opt/scotty/skills/*; do [ -e "$skill" ] || continue; ln -sfn "$skill" ${shellQuote(`${merged}/`)}; done`,
-  ];
-  for (const skill of extraSkills) {
-    parts.push(
-      extraSkillLinkCommand(
-        `${merged}/${skill.name}`,
-        extraSkillSourcePath(bundleRoot!, skill.name),
-      ),
-    );
+  const parts = [`mkdir -p ${shellQuote(merged)}`];
+  for (const skill of skills) {
+    parts.push(extraSkillLinkCommand(`${merged}/${skill.name}`, skill.path));
   }
-  parts.push(`ln -sfn ${shellQuote(merged)} ${shellQuote(codexSkills)}`);
   parts.push(`ln -sfn ${shellQuote(merged)} ${shellQuote(piSkills)}`);
   return parts.join(" && ");
 };
@@ -219,7 +85,7 @@ export const sandboxAgentsInstructions = `- Read and follow the repository AGENT
 - Use \`uv\` and \`uvx\` for Python. Use the repository's declared JavaScript package manager; use Corepack only when it declares Yarn or pnpm.
 - If a required tool is absent or a dependency download is blocked by Scotty policy (including HTTP 520), stop after one bounded retry. Run the focused checks that are available and report the exact unavailable gate. If publication was requested, continue to commit, push, and open the PR so CI can run the locked full gate.
 - Don't build a missing toolchain from source, install a third-party embedded toolchain, add temporary module replacements, or bypass the proxy with direct arbitrary-host downloads unless the user explicitly asks.
-- Use matching skills under \`$PI_CODING_AGENT_DIR/skills\` or \`$CODEX_HOME/skills\`; read the selected \`SKILL.md\` before acting.
+- Use matching skills under \`$PI_CODING_AGENT_DIR/skills\`; read the selected \`SKILL.md\` before acting.
 - Identify the required work before acting.
 - Keep a short ordered checklist in progress updates.
 - Complete prerequisites before dependents.
@@ -233,8 +99,10 @@ export const sandboxAgentsInstructions = `- Read and follow the repository AGENT
 
 export interface ContainerAuthSeedOptions {
   readonly initialPrompt?: string;
-  readonly extraSkills?: ReadonlyArray<{ readonly name: string }>;
-  readonly extraPackages?: ReadonlyArray<{ readonly name: string }>;
+  readonly pi?: PiSettings;
+  readonly extensionPaths?: ReadonlyArray<string>;
+  readonly skillPaths?: ReadonlyArray<{ readonly name: string; readonly path: string }>;
+  readonly toolCommands?: ReadonlyArray<SandboxToolCommand & { readonly path: string }>;
   readonly bundleRoot?: string;
   readonly environment?: PersistedSessionEnvironmentSnapshot;
 }
@@ -277,109 +145,51 @@ export class ContainerAuth extends Context.Service<ContainerAuth, ContainerAuthS
 export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntime> = Layer.effect(
   ContainerAuth,
   Effect.map(SandboxRuntime, (runtime) => {
-    const writePiSettings = Effect.fnUntraced(function* (id: SessionRecord["id"]) {
-      const piHome = `${sessionRoot(id)}/.pi-agent`;
-      const settingsPath = `${piHome}/settings.json`;
-      yield* runtime.mkdir(piHome, { recursive: true });
-      const extraPackagePaths = yield* existingExtraPackagePaths(runtime, settingsPath);
-      yield* runtime.writeFile(settingsPath, piSettings(extraPackagePaths));
-      yield* runtime.execChecked(`chmod 600 ${shellQuote(settingsPath)}`);
-    });
     const preflight = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
       options?: ContainerAuthSeedOptions,
     ) {
-      const { extraSkills, extraPackagePaths, bundleRoot } = yield* resolveSeedExtras(options);
-      for (const packagePath of PI_PACKAGES)
-        yield* runtime.execChecked(`test -d ${shellQuote(packagePath)}`);
-      for (const packagePath of extraPackagePaths) {
-        if (
-          bundleRoot === undefined ||
-          !pathUnderRoot(bundleRoot, packagePath) ||
-          packagePath.includes(".staging-")
-        )
-          return yield* new SandboxRuntimeFailure({
-            reason: "nonzero_exit",
-            message: "Sandbox extra package path is outside the bundle root",
-          });
-        yield* runtime.execChecked(`test -d ${shellQuote(packagePath)}`);
-      }
-      const merged = mergedSkillsPath(id);
-      for (const skill of extraSkills) {
-        if (Option.isNone(decodeSkillName(skill.name)))
-          return yield* new SandboxRuntimeFailure({
-            reason: "nonzero_exit",
-            message: "Sandbox extra skill name is invalid",
-          });
-        const skillPath = `${merged}/${skill.name}`;
-        if (skillPath.includes(".staging-"))
-          return yield* new SandboxRuntimeFailure({
-            reason: "nonzero_exit",
-            message: "Sandbox configured path references a staging directory",
-          });
-        yield* runtime.execChecked(`test -e ${shellQuote(skillPath)}`);
-      }
-      const settingsBytes = yield* runtime.readFile(
-        `${sessionRoot(id)}/.pi-agent/settings.json`,
-        65_536,
-      );
-      const settings = yield* decodePiSettingsPackages(
-        new TextDecoder().decode(settingsBytes),
-      ).pipe(Effect.mapError(() => piSettingsParseFailure()));
-      const packages = settings.packages ?? [];
-      if (packages.length !== PI_PACKAGES.length + extraPackagePaths.length)
-        return yield* new SandboxRuntimeFailure({
-          reason: "nonzero_exit",
-          message: "Sandbox Pi settings packages do not match the configured bundle",
-        });
-      for (let index = 0; index < PI_PACKAGES.length; index += 1) {
-        if (packages[index] !== PI_PACKAGES[index])
-          return yield* new SandboxRuntimeFailure({
-            reason: "nonzero_exit",
-            message: "Sandbox Pi settings packages do not start with built-in packages",
-          });
-      }
-      for (let index = 0; index < extraPackagePaths.length; index += 1) {
-        const packagePath = extraPackagePaths[index]!;
-        if (packages[PI_PACKAGES.length + index] !== packagePath)
-          return yield* new SandboxRuntimeFailure({
-            reason: "nonzero_exit",
-            message: "Sandbox Pi settings packages do not match the configured bundle",
-          });
-        if (packagePath.includes(".staging-"))
-          return yield* new SandboxRuntimeFailure({
-            reason: "nonzero_exit",
-            message: "Sandbox configured path references a staging directory",
-          });
+      for (const extensionPath of options?.extensionPaths ?? [])
+        yield* runtime.execChecked(`test -f ${shellQuote(extensionPath)}`);
+      for (const skill of options?.skillPaths ?? [])
+        yield* runtime.execChecked(`test -f ${shellQuote(`${skill.path}/SKILL.md`)}`);
+      for (const command of options?.toolCommands ?? []) {
+        yield* runtime.execChecked(`test -x ${shellQuote(command.path)}`);
+        yield* runtime.execChecked(command.probe.map(shellQuote).join(" "));
       }
     });
     const seed = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
       options?: ContainerAuthSeedOptions,
     ) {
-      const { extraSkills, extraPackagePaths } = yield* resolveSeedExtras(options);
-      const codexHome = `${sessionRoot(id)}/.codex`;
+      if (options?.pi === undefined)
+        return yield* new SandboxRuntimeFailure({
+          reason: "nonzero_exit",
+          message: "Pinned Pi settings are required to seed the Session",
+        });
+      const extensionPaths = options.extensionPaths ?? [];
+      const skillPaths = options.skillPaths ?? [];
+      const toolCommands = options.toolCommands ?? [];
       const piHome = `${sessionRoot(id)}/.pi-agent`;
-      const configPath = `${codexHome}/config.toml`;
-      const agentsPath = `${codexHome}/AGENTS.md`;
       const piSettingsPath = `${piHome}/settings.json`;
       const piAgentsPath = `${piHome}/AGENTS.md`;
       const gitConfigPath = `${piHome}/gitconfig`;
       const shellPath = terminalShellPath(id);
       const promptPath = `${piHome}/initial-prompt`;
-      yield* runtime.mkdir(codexHome, { recursive: true });
       yield* runtime.mkdir(piHome, { recursive: true });
-      yield* runtime.writeFile(configPath, codexConfig(id));
-      yield* runtime.writeFile(agentsPath, sandboxAgentsInstructions);
-      yield* runtime.writeFile(piSettingsPath, piSettings(extraPackagePaths));
+      yield* runtime.writeFile(piSettingsPath, piSettings(options.pi, extensionPaths, skillPaths));
       yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
       yield* runtime.writeFile(gitConfigPath, gitConfig());
       yield* runtime.writeFile(shellPath, terminalShell(id, options?.environment));
       if (options?.initialPrompt !== undefined)
         yield* runtime.writeFile(promptPath, options.initialPrompt);
       yield* runtime.execChecked(
-        `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, extraSkills, options?.bundleRoot)}`,
+        `chmod 700 ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, skillPaths)}`,
       );
+      for (const command of toolCommands)
+        yield* runtime.execChecked(
+          `ln -sfn ${shellQuote(command.path)} ${shellQuote(`/usr/local/bin/${command.name}`)}`,
+        );
       const env = agentEnv(id, options?.environment);
       yield* runtime.setEnvVars(env);
       const root = sessionRoot(id);
@@ -403,7 +213,11 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           (environment === undefined || isSessionEnvironmentSnapshot(environment))
         )
           return;
-        yield* seed(id, { environment });
+        const piHome = `${sessionRoot(id)}/.pi-agent`;
+        const shellPath = terminalShellPath(id);
+        yield* runtime.mkdir(piHome, { recursive: true });
+        yield* runtime.writeFile(shellPath, terminalShell(id, environment));
+        yield* runtime.execChecked(`chmod 700 ${shellQuote(piHome)} ${shellQuote(shellPath)}`);
       }),
       ensurePiSession: Effect.fnUntraced(function* (id, transportToken, environment) {
         const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
@@ -415,7 +229,6 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           });
           return;
         }
-        yield* writePiSettings(id);
         const tokenPath = piSessionTokenPath(id);
         yield* runtime.writeFile(tokenPath, transportToken);
         yield* runtime.execChecked(`chmod 600 ${shellQuote(tokenPath)}`);
@@ -503,7 +316,6 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
             .map((name) => [name, undefined]),
         );
         yield* runtime.setEnvVars({ ...agentEnv(id, next), ...removed });
-        yield* writePiSettings(id);
         const tokenPath = piSessionTokenPath(id);
         yield* runtime.writeFile(tokenPath, token);
         yield* runtime.execChecked(`chmod 600 ${shellQuote(tokenPath)}`);
@@ -545,7 +357,6 @@ export function agentEnv(
         environmentNameIsMaterializable(name),
       ),
     ),
-    CODEX_HOME: `${sessionRoot(id)}/.codex`,
     PI_CODING_AGENT_DIR: `${sessionRoot(id)}/.pi-agent`,
     SCOTTY_SESSION_ID: id,
     GIT_CONFIG_GLOBAL: `${sessionRoot(id)}/.pi-agent/gitconfig`,

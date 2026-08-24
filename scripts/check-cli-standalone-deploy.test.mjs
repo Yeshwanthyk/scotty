@@ -35,8 +35,8 @@ const failure = (overrides = {}) => ({
 });
 
 const writeDiagnostic = (home, value = diagnostic()) => {
-  const path = join(home, ".scotty", "diagnostics", "uninstall-apply.json");
-  mkdirSync(join(home, ".scotty", "diagnostics"), { recursive: true });
+  const path = join(home, ".local", "state", "scotty", "diagnostics", "uninstall-apply.json");
+  mkdirSync(join(home, ".local", "state", "scotty", "diagnostics"), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 };
 
@@ -69,7 +69,9 @@ describe("standalone deployment clean-room proof", () => {
         assert.equal(options.env.ALCHEMY_PROFILE, undefined);
         assert.equal(options.env.GH_TOKEN, undefined);
         assert.match(options.env.DOCKER_HOST, /scotty-clean-room/u);
-        assert.ok(existsSync(join(options.env.HOME, ".scotty.json")));
+        assert.ok(
+          existsSync(join(options.env.HOME, ".local", "state", "scotty", "installation.json")),
+        );
         writeDiagnostic(options.env.HOME);
         return failure();
       },

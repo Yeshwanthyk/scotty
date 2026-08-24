@@ -1,14 +1,12 @@
-import { Context, Data, Effect, Layer, Option, Schema } from "effect";
-import {
-  SANDBOX_MAX_FILE_BYTES,
-  SandboxArchiveInvalid,
-  validateSandboxArchive,
-} from "./sandbox-archive";
+import { Context, Data, Effect, Layer, Option, Result, Schema } from "effect";
+import type { PiSettings, SandboxToolCommand } from "../../protocol/sandbox-config";
+import { sha256BytesHex } from "./digest";
+import { validateSandboxArchive } from "./sandbox-archive";
 import { SandboxBundleStore, type SandboxBundleFailure } from "./sandbox-bundle-store";
 import {
-  SandboxBundleManifestSchema,
-  SandboxDigestSchema,
-  type SandboxBundleManifest,
+  DeployedSnapshotSchema,
+  DigestSchema,
+  type DeployedPlugin,
 } from "./sandbox-config-contracts";
 import { SandboxRuntime, shellQuote, type SandboxRuntimeFailure } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
@@ -31,48 +29,35 @@ export class SandboxBundleMaterializationFailure extends Data.TaggedError(
 }> {}
 
 export interface MaterializedSandboxBundle {
-  readonly digest: string | null;
-  readonly extraSkills: ReadonlyArray<{ readonly name: string }>;
-  readonly extraPackages: ReadonlyArray<{ readonly name: string }>;
-  readonly bundleRoot: string | undefined;
+  readonly revision: number;
+  readonly digest: string;
+  readonly pi: PiSettings;
+  readonly extensionPaths: ReadonlyArray<string>;
+  readonly skillPaths: ReadonlyArray<{ readonly name: string; readonly path: string }>;
+  readonly toolCommands: ReadonlyArray<SandboxToolCommand & { readonly path: string }>;
+  readonly bundleRoot: string;
 }
 
 interface MaterializeInput {
   readonly sessionId: string;
-  readonly digest: string | null;
+  readonly revision: number;
+  readonly digest: string;
 }
 
-const emptyMaterialized = (digest: null): MaterializedSandboxBundle => ({
-  digest,
-  extraSkills: [],
-  extraPackages: [],
-  bundleRoot: undefined,
+const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeployedSnapshotSchema), {
+  onExcessProperty: "error",
 });
-
-const materializedFromManifest = (
-  sessionId: string,
-  digest: string,
-  manifest: SandboxBundleManifest,
-): MaterializedSandboxBundle => ({
-  digest,
-  extraSkills: manifest.skills.map((skill) => ({ name: skill.name })),
-  extraPackages: manifest.piPackages.map((pkg) => ({ name: pkg.name })),
-  bundleRoot: sandboxBundleRoot(sessionId, digest),
-});
-
-const decodeMaterializedManifest = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(SandboxBundleManifestSchema),
-  { onExcessProperty: "error" },
-);
 
 const VerifiedMarkerSchema = Schema.Struct({
-  digest: SandboxDigestSchema,
-  manifestVersion: Schema.Literal(SANDBOX_BUNDLE_MANIFEST_VERSION),
+  snapshotDigest: DigestSchema,
+  snapshotRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  pluginBundleDigest: DigestSchema,
 });
-
 const decodeVerifiedMarker = Schema.decodeUnknownOption(
   Schema.fromJsonString(VerifiedMarkerSchema),
-  { onExcessProperty: "error" },
+  {
+    onExcessProperty: "error",
+  },
 );
 
 interface SandboxBundleMaterializerShape {
@@ -93,68 +78,47 @@ export const sandboxBundleStagingRoot = (sessionId: string, nonce: string): stri
   `${sessionRoot(sessionId)}/.scotty/sandbox/.staging-${nonce}`;
 
 const verifiedMarkerPath = (root: string): string => `${root}/.verified`;
-
-const verifiedMarkerText = (digest: string): string =>
-  `${JSON.stringify({ digest, manifestVersion: SANDBOX_BUNDLE_MANIFEST_VERSION })}\n`;
-
 const stagingNonce = (): string => crypto.randomUUID().replaceAll("-", "").slice(0, 8);
 
-const materializationMessage = (reason: SandboxBundleMaterializationFailureReason): string => {
-  if (reason === "missing") return "Sandbox bundle is missing";
-  if (reason === "digest_mismatch") return "Sandbox bundle archive digest does not match";
-  if (reason === "too_large") return "Sandbox bundle exceeds the size limit";
-  if (reason === "runtime") return "Sandbox bundle materialization runtime failed";
-  if (reason === "upstream") return "Sandbox bundle storage failed";
-  return "Sandbox bundle archive is invalid";
-};
-
-const archiveFailureReason = (
-  error: SandboxArchiveInvalid,
-): SandboxBundleMaterializationFailureReason => {
-  // oxlint-disable scotty/no-unknown-error-message -- SandboxArchiveInvalid owns the archive validation message used to classify materialization failures
-  const message = error.message;
-  // oxlint-enable scotty/no-unknown-error-message
-  if (message.includes("digest does not match")) return "digest_mismatch";
-  if (message.includes("size limit")) return "too_large";
-  return "invalid_archive";
-};
-
-const mapArchiveFailure = (error: SandboxArchiveInvalid): SandboxBundleMaterializationFailure => {
-  const reason = archiveFailureReason(error);
-  return new SandboxBundleMaterializationFailure({
+const materializationFailure = (
+  reason: SandboxBundleMaterializationFailureReason,
+): SandboxBundleMaterializationFailure =>
+  new SandboxBundleMaterializationFailure({
     reason,
-    message: materializationMessage(reason),
+    message:
+      reason === "missing"
+        ? "Pinned Sandbox snapshot input is missing"
+        : reason === "digest_mismatch"
+          ? "Pinned Sandbox snapshot input digest does not match"
+          : reason === "too_large"
+            ? "Pinned Sandbox snapshot input exceeds the size limit"
+            : reason === "runtime"
+              ? "Sandbox snapshot materialization runtime failed"
+              : reason === "upstream"
+                ? "Sandbox snapshot storage failed"
+                : "Sandbox snapshot input is invalid",
   });
-};
 
-const mapStoreFailure = (error: SandboxBundleFailure): SandboxBundleMaterializationFailure => {
-  const reason: SandboxBundleMaterializationFailureReason =
+const mapStoreFailure = (error: SandboxBundleFailure): SandboxBundleMaterializationFailure =>
+  materializationFailure(
     error.reason === "missing"
       ? "missing"
       : error.reason === "metadata_mismatch"
         ? "digest_mismatch"
         : error.reason === "too_large"
           ? "too_large"
-          : "upstream";
-  return new SandboxBundleMaterializationFailure({
-    reason,
-    message: materializationMessage(reason),
-  });
-};
+          : "upstream",
+  );
 
 const mapRuntimeFailure = (_error: SandboxRuntimeFailure): SandboxBundleMaterializationFailure =>
-  new SandboxBundleMaterializationFailure({
-    reason: "runtime",
-    message: materializationMessage("runtime"),
-  });
+  materializationFailure("runtime");
 
 const readVerifiedMarker = Effect.fnUntraced(function* (
   runtime: SandboxRuntime["Service"],
   root: string,
 ) {
-  const markerPath = verifiedMarkerPath(root);
   const bytes = yield* runtime
-    .readFile(markerPath, 4_096)
+    .readFile(verifiedMarkerPath(root), 4_096)
     .pipe(Effect.catchTag("SandboxRuntimeFailure", () => Effect.succeed(undefined)));
   if (bytes === undefined) return undefined;
   return decodeVerifiedMarker(new TextDecoder().decode(bytes)).pipe(Option.getOrUndefined);
@@ -181,55 +145,131 @@ const writeArchiveMembers = Effect.fnUntraced(function* (
   }
 });
 
-const promoteStagingTree = Effect.fnUntraced(function* (
-  runtime: SandboxRuntime["Service"],
-  stagingRoot: string,
-  finalRoot: string,
-) {
-  yield* runtime.execChecked(`chmod -R a-w ${shellQuote(stagingRoot)}`);
-  yield* runtime.execChecked(
-    `rm -rf ${shellQuote(finalRoot)} && mv ${shellQuote(stagingRoot)} ${shellQuote(finalRoot)}`,
-  );
-});
+const pluginById = (
+  plugins: ReadonlyArray<DeployedPlugin>,
+  id: string,
+  type: DeployedPlugin["type"],
+): DeployedPlugin | undefined => plugins.find((plugin) => plugin.id === id && plugin.type === type);
 
-const materializeDigest = Effect.fnUntraced(function* (
-  runtime: SandboxRuntime["Service"],
-  store: SandboxBundleStore["Service"],
+const materializedFromSnapshot = (
   sessionId: string,
   digest: string,
-) {
-  const finalRoot = sandboxBundleRoot(sessionId, digest);
-  const existing = yield* readVerifiedMarker(runtime, finalRoot);
-  if (existing?.digest === digest) {
-    const manifestBytes = yield* runtime.readFile(
-      `${finalRoot}/manifest.json`,
-      SANDBOX_MAX_FILE_BYTES,
+  snapshot: typeof DeployedSnapshotSchema.Type,
+): Result.Result<MaterializedSandboxBundle, SandboxBundleMaterializationFailure> => {
+  const root = sandboxBundleRoot(sessionId, digest);
+  const extensionPaths: string[] = [
+    "/opt/scotty/pi-packages/sources/scotty-browser-test/index.ts",
+    "/opt/scotty/pi-packages/sources/scotty-hatch/index.ts",
+  ];
+  const skillPaths: Array<{ readonly name: string; readonly path: string }> = [];
+  const toolCommands: Array<SandboxToolCommand & { readonly path: string }> = [];
+  for (const id of snapshot.sandboxSetup.piExtensions) {
+    const plugin = pluginById(snapshot.plugins, id, "pi-extension");
+    if (plugin?.type !== "pi-extension")
+      return Result.fail(materializationFailure("invalid_archive"));
+    const base =
+      plugin.source.kind === "builtin"
+        ? "/opt/scotty/pi-packages/sources/pi-subagents"
+        : `${root}/plugins/${plugin.id}`;
+    extensionPaths.push(
+      ...plugin.manifest.entrypoints.map((entrypoint) => `${base}/${entrypoint}`),
     );
-    const manifest = yield* decodeMaterializedManifest(
-      new TextDecoder().decode(manifestBytes),
-    ).pipe(
-      Effect.mapError(
-        () =>
-          new SandboxBundleMaterializationFailure({
-            reason: "invalid_archive",
-            message: materializationMessage("invalid_archive"),
-          }),
-      ),
-    );
-    return materializedFromManifest(sessionId, digest, manifest);
   }
+  for (const id of snapshot.sandboxSetup.skills) {
+    const plugin = pluginById(snapshot.plugins, id, "skill");
+    if (plugin?.type !== "skill") return Result.fail(materializationFailure("invalid_archive"));
+    skillPaths.push({
+      name: plugin.manifest.name,
+      path:
+        plugin.source.kind === "builtin"
+          ? "/opt/scotty/pi-packages/sources/pi-subagents/skills/subagents"
+          : `${root}/plugins/${plugin.id}`,
+    });
+  }
+  for (const id of snapshot.sandboxSetup.sandboxTools) {
+    const plugin = pluginById(snapshot.plugins, id, "sandbox-tool");
+    if (plugin?.type !== "sandbox-tool")
+      return Result.fail(materializationFailure("invalid_archive"));
+    if (plugin.source.kind === "builtin") continue;
+    toolCommands.push(
+      ...plugin.manifest.commands.map((command) => ({
+        ...command,
+        path: `${root}/plugins/${plugin.id}/${command.path}`,
+      })),
+    );
+  }
+  return Result.succeed({
+    revision: snapshot.revision,
+    digest,
+    pi: snapshot.pi,
+    extensionPaths,
+    skillPaths,
+    toolCommands,
+    bundleRoot: root,
+  });
+};
 
-  const bundle = yield* store.getBundle(digest).pipe(Effect.mapError(mapStoreFailure));
-  const validated = yield* validateSandboxArchive(bundle.gzipBytes, digest).pipe(
-    Effect.mapError(mapArchiveFailure),
+const materializeSnapshot = Effect.fnUntraced(function* (
+  runtime: SandboxRuntime["Service"],
+  store: SandboxBundleStore["Service"],
+  input: MaterializeInput,
+) {
+  const storedSnapshot = yield* store
+    .getSnapshot(input.digest)
+    .pipe(Effect.mapError(mapStoreFailure));
+  const computed = yield* Effect.tryPromise({
+    try: () =>
+      sha256BytesHex(new TextEncoder().encode(storedSnapshot.snapshotJson)).then(
+        (hex) => `sha256:${hex}`,
+      ),
+    catch: () => materializationFailure("digest_mismatch"),
+  });
+  if (computed !== input.digest) return yield* materializationFailure("digest_mismatch");
+  const snapshot = yield* decodeSnapshot(storedSnapshot.snapshotJson).pipe(
+    Effect.mapError(() => materializationFailure("invalid_archive")),
   );
+  if (
+    snapshot.revision !== input.revision ||
+    snapshot.pluginBundleDigest !== storedSnapshot.pluginBundleDigest
+  )
+    return yield* materializationFailure("digest_mismatch");
+  const finalRoot = sandboxBundleRoot(input.sessionId, input.digest);
+  const existing = yield* readVerifiedMarker(runtime, finalRoot);
+  if (
+    existing?.snapshotDigest === input.digest &&
+    existing.snapshotRevision === input.revision &&
+    existing.pluginBundleDigest === snapshot.pluginBundleDigest
+  )
+    return yield* Effect.fromResult(
+      materializedFromSnapshot(input.sessionId, input.digest, snapshot),
+    );
+  if (existing !== undefined) return yield* materializationFailure("digest_mismatch");
 
-  const stagingRoot = sandboxBundleStagingRoot(sessionId, stagingNonce());
+  const bundle = yield* store
+    .getPluginBundle(snapshot.pluginBundleDigest)
+    .pipe(Effect.mapError(mapStoreFailure));
+  const validated = yield* validateSandboxArchive(
+    bundle.gzipBytes,
+    snapshot.pluginBundleDigest,
+  ).pipe(Effect.mapError(() => materializationFailure("invalid_archive")));
+  const stagingRoot = sandboxBundleStagingRoot(input.sessionId, stagingNonce());
   yield* runtime.mkdir(stagingRoot, { recursive: true });
   yield* writeArchiveMembers(runtime, stagingRoot, validated.members);
-  yield* runtime.writeFile(verifiedMarkerPath(stagingRoot), verifiedMarkerText(validated.digest));
-  yield* promoteStagingTree(runtime, stagingRoot, finalRoot);
-  return materializedFromManifest(sessionId, validated.digest, validated.manifest);
+  yield* runtime.writeFile(
+    verifiedMarkerPath(stagingRoot),
+    `${JSON.stringify({
+      snapshotDigest: input.digest,
+      snapshotRevision: input.revision,
+      pluginBundleDigest: snapshot.pluginBundleDigest,
+    })}\n`,
+  );
+  yield* runtime.execChecked(`chmod -R a-w ${shellQuote(stagingRoot)}`);
+  yield* runtime.execChecked(
+    `test ! -e ${shellQuote(finalRoot)} && mv ${shellQuote(stagingRoot)} ${shellQuote(finalRoot)}`,
+  );
+  return yield* Effect.fromResult(
+    materializedFromSnapshot(input.sessionId, input.digest, snapshot),
+  );
 });
 
 export const sandboxBundleMaterializerLayer = Layer.effect(
@@ -238,12 +278,10 @@ export const sandboxBundleMaterializerLayer = Layer.effect(
     const runtime = yield* SandboxRuntime;
     const store = yield* SandboxBundleStore;
     return SandboxBundleMaterializer.of({
-      materialize: Effect.fnUntraced(function* (input: MaterializeInput) {
-        if (input.digest === null) return emptyMaterialized(null);
-        return yield* materializeDigest(runtime, store, input.sessionId, input.digest).pipe(
+      materialize: (input) =>
+        materializeSnapshot(runtime, store, input).pipe(
           Effect.catchTag("SandboxRuntimeFailure", mapRuntimeFailure),
-        );
-      }),
+        ),
     });
   }),
 );

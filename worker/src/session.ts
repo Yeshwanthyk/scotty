@@ -2078,13 +2078,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const materialized = yield* materializer
       .materialize({
         sessionId: record.id,
-        digest: record.sandboxBundle?.digest ?? null,
+        revision: record.sandboxBundle.revision,
+        digest: record.sandboxBundle.digest,
       })
       .pipe(Effect.mapError(mapCreateUncertain("materialize")));
     const seedOptions = {
       ...(options?.initialPrompt === undefined ? {} : { initialPrompt: options.initialPrompt }),
-      extraSkills: materialized.extraSkills,
-      extraPackages: materialized.extraPackages,
+      pi: materialized.pi,
+      extensionPaths: materialized.extensionPaths,
+      skillPaths: materialized.skillPaths,
+      toolCommands: materialized.toolCommands,
       bundleRoot: materialized.bundleRoot,
       environment: record.environment,
     };
@@ -2302,7 +2305,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const now = yield* Clock.currentTimeMillis;
     const nowIso = new Date(now).toISOString();
     const nonce = crypto.randomUUID();
-    const initial: SessionRecord = {
+    const initial = {
       version: 1,
       id,
       title: input.title,
@@ -2334,7 +2337,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       hardCapDurationSeconds: input.hardCapSeconds,
       ownedBackupIds: [],
       piSessionTransportToken: createPiSessionTransportToken(),
-    };
+    } satisfies Omit<SessionRecord, "sandboxBundle">;
 
     const inspected = yield* Effect.result(store.inspectInitial(initial, idempotency));
     if (Result.isFailure(inspected)) return yield* inspected.failure;
@@ -2362,11 +2365,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         { httpStatus: 404, exitCode: 3 },
       );
 
-    const verifiedInitial: SessionRecord = {
+    const verifiedInitial = {
       ...initial,
       repoExistsAtCreate: verified.exists,
       defaultBranch: verified.exists ? verified.defaultBranch : "main",
-    };
+    } satisfies Omit<SessionRecord, "sandboxBundle">;
 
     const sandboxConfigStatus = yield* Effect.tryPromise({
       try: () => this.env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME).status(),
@@ -2374,10 +2377,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
     });
     if (!sandboxConfigStatus.ok)
       return yield* this.upstreamError("Session setup failed", sandboxConfigStatus.error, id);
+    if (sandboxConfigStatus.value.activeSnapshot === null)
+      return yield* this.upstreamError("Session setup failed", "No active Sandbox snapshot", id);
     const initialWithBundle: SessionRecord = {
       ...verifiedInitial,
       sandboxBundle: {
-        digest: sandboxConfigStatus.value.activeDigest,
+        revision: sandboxConfigStatus.value.activeSnapshot.revision,
+        digest: sandboxConfigStatus.value.activeSnapshot.snapshotDigest,
         manifestVersion: 1,
       },
     };
