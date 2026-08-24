@@ -3,7 +3,15 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, FileSystem, Result } from "effect";
 import { execute } from "../src/commands";
 import { CliError, EXIT, VERSION } from "../src/core";
-import { cliLayer, type CliDependencies } from "../src/dependencies";
+import { cliLayer, type CliDependencies, type CredentialStoreShape } from "../src/dependencies";
+
+const TEST_ORIGIN = "https://worker.example";
+const TEST_CLIENT_CREDENTIAL = `scotty_client.0123456789ab.${"c".repeat(32)}`;
+const testCredentialStore: CredentialStoreShape = {
+  load: (name) => Effect.succeed(name === "client" ? TEST_CLIENT_CREDENTIAL : undefined),
+  save: () => Effect.void,
+  remove: () => Effect.void,
+};
 
 const failure = <A>(result: Result.Result<A, CliError>): CliError => {
   assert.ok(Result.isFailure(result));
@@ -32,6 +40,10 @@ const run = (
           stdoutIsTTY: false,
           stdout: (text) => stdout.push(text),
           stderr: (text) => stderr.push(text),
+          credentialStore: testCredentialStore,
+          fileSystem: {
+            readPrivateText: () => Effect.succeed(`${JSON.stringify({ host: TEST_ORIGIN })}\n`),
+          },
           ...overrides,
         }),
       ),
@@ -64,6 +76,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "env");
         assert.include(rootHelp, "sandbox");
         assert.include(rootHelp, "runner");
+        assert.include(rootHelp, "client");
         assert.include(rootHelp, "tui");
         assert.include(rootHelp, "--version, -V");
         assert.notInclude(rootHelp, "--wizard");
@@ -139,41 +152,37 @@ describe("Effect command tree", () => {
         assert.strictEqual(yield* tui.effect, EXIT.OK);
         const tuiHelp = tui.stdout.join("");
         assert.include(tuiHelp, "scotty tui");
-        assert.include(tuiHelp, "--config");
-        assert.include(tuiHelp, "pair");
+        assert.notInclude(tuiHelp, "--config");
+        assert.notInclude(tuiHelp, "pair");
         assert.notInclude(tuiHelp, "__scotty_trailing__");
         assert.strictEqual(tui.stderr.join(""), "");
 
-        const pair = run(["tui", "pair", "--help"]);
+        const pair = run(["client", "pair", "--help"]);
         assert.strictEqual(yield* pair.effect, EXIT.OK);
         const pairHelp = pair.stdout.join("");
-        assert.include(pairHelp, "scotty tui pair [flags] <origin>");
+        assert.include(pairHelp, "scotty client pair [flags] <origin>");
         assert.include(pairHelp, "--label");
-        assert.include(pairHelp, "--config");
         assert.notInclude(pairHelp, "__scotty_trailing__");
         assert.strictEqual(pair.stderr.join(""), "");
 
         const sandbox = run(["sandbox", "--help"]);
         assert.strictEqual(yield* sandbox.effect, EXIT.OK);
         assert.include(sandbox.stdout.join(""), "scotty sandbox <subcommand> [flags]");
-        assert.include(sandbox.stdout.join(""), "add");
-        assert.include(sandbox.stdout.join(""), "remove");
-        assert.include(sandbox.stdout.join(""), "list");
         assert.include(sandbox.stdout.join(""), "sync");
         assert.strictEqual(sandbox.stderr.join(""), "");
       }),
   );
 
-  it.effect("validates tui pair grammar before starting an interactive flow", () =>
+  it.effect("validates client pair grammar before starting an interactive flow", () =>
     Effect.gen(function* () {
-      const missingOrigin = run(["tui", "pair"]);
+      const missingOrigin = run(["client", "pair"]);
       const missingOriginError = failure(yield* Effect.result(missingOrigin.effect));
       assert.strictEqual(missingOriginError.code, "bad_usage");
       assert.include(missingOriginError.message, "origin");
       assert.strictEqual(missingOrigin.stdout.join(""), "");
       assert.strictEqual(missingOrigin.stderr.join(""), "");
 
-      const trailing = run(["tui", "pair", "https://scotty.example", "unexpected"]);
+      const trailing = run(["client", "pair", "https://scotty.example", "unexpected"]);
       const trailingError = failure(yield* Effect.result(trailing.effect));
       assert.strictEqual(trailingError.code, "bad_usage");
       assert.strictEqual(trailingError.message, "Unexpected argument: unexpected");
@@ -226,17 +235,20 @@ describe("Effect command tree", () => {
       assert.deepStrictEqual(
         requests.map((request) => ({
           authorization: request.headers.get("authorization"),
+          cookie: request.headers.get("cookie"),
           method: request.method,
           pathname: new URL(request.url).pathname,
         })),
         [
           {
-            authorization: "Bearer root-secret",
+            authorization: null,
+            cookie: `__Host-scotty=${TEST_CLIENT_CREDENTIAL}`,
             method: "GET",
             pathname: "/api/runners",
           },
           {
-            authorization: "Bearer root-secret",
+            authorization: null,
+            cookie: `__Host-scotty=${TEST_CLIENT_CREDENTIAL}`,
             method: "DELETE",
             pathname: "/api/runners/garage",
           },
@@ -296,19 +308,32 @@ describe("Effect command tree", () => {
           method: request.method,
           pathname: new URL(request.url).pathname,
           authorization: request.headers.get("authorization"),
+          cookie: request.headers.get("cookie"),
         })),
         [
-          { method: "POST", pathname: "/api/repos", authorization: "Bearer root-secret" },
-          { method: "GET", pathname: "/api/repos", authorization: "Bearer root-secret" },
           {
-            method: "DELETE",
-            pathname: "/api/repos/owner/project",
-            authorization: "Bearer root-secret",
+            method: "POST",
+            pathname: "/api/repos",
+            authorization: null,
+            cookie: `__Host-scotty=${TEST_CLIENT_CREDENTIAL}`,
+          },
+          {
+            method: "GET",
+            pathname: "/api/repos",
+            authorization: null,
+            cookie: `__Host-scotty=${TEST_CLIENT_CREDENTIAL}`,
           },
           {
             method: "DELETE",
             pathname: "/api/repos/owner/project",
-            authorization: "Bearer root-secret",
+            authorization: null,
+            cookie: `__Host-scotty=${TEST_CLIENT_CREDENTIAL}`,
+          },
+          {
+            method: "DELETE",
+            pathname: "/api/repos/owner/project",
+            authorization: null,
+            cookie: `__Host-scotty=${TEST_CLIENT_CREDENTIAL}`,
           },
         ],
       );

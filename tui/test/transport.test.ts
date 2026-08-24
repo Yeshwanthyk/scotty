@@ -18,6 +18,35 @@ const requestUrl = (input: string | URL | Request): URL =>
   new URL(input instanceof Request ? input.url : input.toString());
 
 describe("HttpConsoleTransport", () => {
+  it("renews the in-memory credential and delegates persistence", async () => {
+    const renewed = `scotty_client.abcdef012345.${"y".repeat(32)}`;
+    const requests: Request[] = [];
+    let persisted: string | undefined;
+    const transport = new HttpConsoleTransport(
+      { version: 1, origin: "https://scotty.example", credential: CREDENTIAL },
+      {
+        fetch: async (input, init) => {
+          requests.push(new Request(input, init));
+          return Response.json([], {
+            headers: { "set-cookie": `__Host-scotty=${renewed}; Secure; HttpOnly` },
+          });
+        },
+        onCredential: async (credential) => {
+          persisted = credential;
+        },
+      },
+    );
+
+    await transport.listFleet();
+    await transport.listFleet();
+
+    expect(persisted).toBe(renewed);
+    expect(requests.map((request) => request.headers.get("cookie"))).toEqual([
+      `__Host-scotty=${CREDENTIAL}`,
+      `__Host-scotty=${renewed}`,
+    ]);
+  });
+
   it("uses the exact origin, standard-client cookie, and only console/v1 for live reads", async () => {
     const requests: Array<{ readonly url: URL; readonly init: RequestInit | undefined }> = [];
     const fetch: FetchImplementation = async (input, init) => {

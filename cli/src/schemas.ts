@@ -35,7 +35,7 @@ export const ConfigSchema = Schema.Struct({
   evidenceEnabled: Schema.optionalKey(Schema.Literal(true)),
   adoptionManifestPath: Schema.optionalKey(Schema.String),
   host: Schema.optionalKey(Schema.String),
-  token: Schema.optionalKey(Schema.String),
+  rootVerifier: Schema.optionalKey(Schema.String),
 });
 export type Config = typeof ConfigSchema.Type;
 
@@ -63,7 +63,7 @@ export const InitJournalSchema = Schema.Struct({
   previewZoneId: Schema.optionalKey(Schema.NonEmptyString),
   evidenceEnabled: Schema.optionalKey(Schema.Literal(true)),
   planFingerprint: Schema.NonEmptyString,
-  token: Schema.NonEmptyString,
+  rootVerifier: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
 });
 export type InitJournal = typeof InitJournalSchema.Type;
 
@@ -113,7 +113,7 @@ export const RawConfigSchema = Schema.Struct({
   evidenceEnabled: Schema.optionalKey(Schema.Unknown),
   adoptionManifestPath: Schema.optionalKey(Schema.Unknown),
   host: Schema.optionalKey(Schema.Unknown),
-  token: Schema.optionalKey(Schema.Unknown),
+  rootVerifier: Schema.optionalKey(Schema.Unknown),
 });
 export const UpResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -278,6 +278,31 @@ export const VaporizeResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   status: Schema.Literal("gone"),
 });
+export const ClientCredentialSchema = Schema.String.check(
+  Schema.isPattern(/^scotty_client\.[0-9a-f]{12}\.[A-Za-z0-9_-]{32,128}$/u),
+);
+export const AuthClientViewSchema = Schema.Struct({
+  id: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u)),
+  label: Schema.NonEmptyString,
+  scopes: Schema.Array(
+    Schema.Literals(["sessions:read", "sessions:write", "access:read", "access:write"]),
+  ),
+  role: Schema.Literals(["owner", "standard"]),
+  createdAt: Schema.NonEmptyString,
+  expiresAt: Schema.NonEmptyString,
+  lastSeenAt: Schema.NonEmptyString,
+  userAgent: Schema.optionalKey(Schema.String),
+  current: Schema.optionalKey(Schema.Boolean),
+});
+export const AuthMeResponseSchema = Schema.Struct({
+  kind: Schema.Literal("client"),
+  scopes: Schema.Array(
+    Schema.Literals(["sessions:read", "sessions:write", "access:read", "access:write"]),
+  ),
+  client: AuthClientViewSchema,
+});
+export const AuthLogoutResponseSchema = Schema.Struct({ ok: Schema.Literal(true) });
+
 export const AttachOutputSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   url: Schema.NonEmptyString,
@@ -336,6 +361,13 @@ export const RepositoryRemovalResponseSchema = RepositoryRegistryRemovalResponse
 
 export type SessionResponse = typeof SessionResponseSchema.Type;
 
+export const decodeClientCredential = Schema.decodeUnknownOption(ClientCredentialSchema);
+export const decodeAuthMeResponse = Schema.decodeUnknownOption(AuthMeResponseSchema, {
+  onExcessProperty: "error",
+});
+export const decodeAuthLogoutResponse = Schema.decodeUnknownOption(AuthLogoutResponseSchema, {
+  onExcessProperty: "error",
+});
 export const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 export const decodeRawConfig = Schema.decodeUnknownOption(RawConfigSchema);
 export const decodePendingUp = Schema.decodeUnknownOption(PendingUpSchema);

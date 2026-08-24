@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -44,7 +45,15 @@ test("local live E2E writes isolated Worker inputs", () => {
     openaiApiKey: "openai-key",
     opencodeApiKey: "opencode-key",
   });
-  assert.match(value, /^SCOTTY_TOKEN="root-token"$/mu);
+  assert.match(
+    value,
+    new RegExp(
+      `^SCOTTY_ROOT_VERIFIER_BOOTSTRAP="${createHash("sha256").update("root-token").digest("hex")}"$`,
+      "mu",
+    ),
+  );
+  assert.doesNotMatch(value, /^SCOTTY_TOKEN=/mu);
+  assert.doesNotMatch(value, /root-token/u);
   assert.match(value, /^GH_TOKEN="github-token"$/mu);
   assert.match(value, /^OPENAI_API_KEY="openai-key"$/mu);
   assert.match(value, /^OPENCODE_API_KEY="opencode-key"$/mu);

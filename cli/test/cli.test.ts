@@ -14,7 +14,7 @@ import {
   type CliDependencies,
 } from "../scotty";
 import { BeamUpRequestSchema } from "../src/schemas";
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 const temporaryDirectories: string[] = [];
 
@@ -169,6 +169,11 @@ function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
   return async (input, init) => {
     const request = new Request(input, init);
     const url = new URL(request.url);
+    if (url.pathname === "/api/auth/recovery-grants" && request.method === "POST")
+      return Response.json({
+        url: `${url.origin}/recover#token=scotty_recovery.aaaaaaaaaaaa.${"r".repeat(43)}`,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1_000).toISOString(),
+      });
     if (url.pathname === "/api/sandbox/configuration")
       return Response.json({
         schemaVersion: 1,
@@ -1079,8 +1084,9 @@ describe("configuration and transport", () => {
     expect(h.error().error.code).toBe("invalid_config");
   });
 
-  test("init resumes an apply-started journal with the same token", async () => {
+  test("init resumes from a secret-free journal with the same local root", async () => {
     const home = await temporaryDirectory();
+    const identities = new Map<string, string>();
     const requests: Array<Parameters<NonNullable<CliDependencies["createInstallation"]>>[0]> = [];
     let plans = 0;
     const result = {
@@ -1099,6 +1105,11 @@ describe("configuration and transport", () => {
     const h = harness({
       home,
       fetch: acceptingSandboxSyncFetch(),
+      credentialStore: {
+        load: (name) => Effect.succeed(identities.get(name)),
+        save: (name, value) => Effect.sync(() => void identities.set(name, value)),
+        remove: (name) => Effect.sync(() => void identities.delete(name)),
+      },
       planCreateInstallation: async () => {
         plans += 1;
         return {
@@ -1128,6 +1139,9 @@ describe("configuration and transport", () => {
     const journalPath = join(home, ".local", "state", "scotty", "operations", "init-home.json");
     const journal = JSON.parse(await readFile(journalPath, "utf8"));
     expect(journal.phase).toBe("apply_started");
+    expect(journal.rootVerifier).toMatch(/^[0-9a-f]{64}$/u);
+    expect(JSON.stringify(journal)).not.toContain(identities.get("root") ?? "missing-root");
+    expect(journal).not.toHaveProperty("token");
     expect((await stat(journalPath)).mode & 0o777).toBe(0o600);
 
     expect(await main(initArgs(["init", "--name", "home", "--profile", "personal"]), h.deps)).toBe(
@@ -1135,12 +1149,19 @@ describe("configuration and transport", () => {
     );
     expect(requests).toHaveLength(2);
     expect(requests[1]).toMatchObject({ mode: "resume", expectedPlanFingerprint: "resume-plan" });
-    expect(requests[1]?.token).toBe(requests[0]?.token);
+    expect(requests[1]?.rootVerifierBootstrap).toBe(requests[0]?.rootVerifierBootstrap);
+    expect(requests[0]).not.toHaveProperty("token");
+    expect(
+      createHash("sha256")
+        .update(identities.get("root") ?? "")
+        .digest("hex"),
+    ).toBe(requests[0]?.rootVerifierBootstrap);
     await expect(stat(journalPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  test("recover inspects, confirms, rotates only the token, and stores a private mapping", async () => {
+  test("recover deploys only a verifier and stores the raw root only in LocalIdentity", async () => {
     const home = await temporaryDirectory();
+    const identities = new Map<string, string>();
     const inspected: Array<Parameters<NonNullable<CliDependencies["inspectInstallation"]>>[0]> = [];
     const recovered: Array<Parameters<NonNullable<CliDependencies["recoverInstallation"]>>[0]> = [];
     const result = {
@@ -1158,6 +1179,12 @@ describe("configuration and transport", () => {
     } as const;
     const h = harness({
       home,
+      fetch: acceptingSandboxSyncFetch(),
+      credentialStore: {
+        load: (name) => Effect.succeed(identities.get(name)),
+        save: (name, value) => Effect.sync(() => void identities.set(name, value)),
+        remove: (name) => Effect.sync(() => void identities.delete(name)),
+      },
       inspectInstallation: async (input) => {
         inspected.push(input);
         return result;
@@ -1192,12 +1219,16 @@ describe("configuration and transport", () => {
       expectedKvTitle: "legacy-sessions",
       expectedBackupBucketName: "legacy-backups",
     });
-    expect(recovered[0]?.token).toMatch(/^[0-9a-f]{64}$/u);
+    expect(recovered[0]?.rootVerifierBootstrap).toMatch(/^[0-9a-f]{64}$/u);
+    expect(recovered[0]).not.toHaveProperty("token");
     const config = JSON.parse(await readFile(installationPath(home), "utf8"));
     expect(config.adoptionManifestPath).toBe("/private/adoption.json");
     expect(config).not.toHaveProperty("token");
-    expect((await readFile(rootCredential(home), "utf8")).trim()).toBe(recovered[0]?.token);
-    expect(h.stdout.join("")).not.toContain(recovered[0]?.token ?? "impossible");
+    const recoveredRoot = identities.get("root") ?? "";
+    expect(createHash("sha256").update(recoveredRoot).digest("hex")).toBe(
+      recovered[0]?.rootVerifierBootstrap,
+    );
+    expect(h.stdout.join("")).not.toContain(recoveredRoot);
   });
 
   test("deploy updates code without passing or changing the root token", async () => {

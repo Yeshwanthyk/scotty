@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -23,7 +23,7 @@ export function repositoryFromRemote(remote) {
 
 export function formatLocalDevVars({ rootToken, githubToken, openaiApiKey, opencodeApiKey }) {
   return [
-    `SCOTTY_TOKEN=${JSON.stringify(rootToken)}`,
+    `SCOTTY_ROOT_VERIFIER_BOOTSTRAP=${JSON.stringify(createHash("sha256").update(rootToken).digest("hex"))}`,
     `GH_TOKEN=${JSON.stringify(githubToken)}`,
     `OPENAI_API_KEY=${JSON.stringify(openaiApiKey)}`,
     `OPENCODE_API_KEY=${JSON.stringify(opencodeApiKey)}`,
@@ -418,6 +418,9 @@ async function run() {
   const persistPath = path.join(temporaryRoot, "wrangler-state");
   const cliHome = path.join(temporaryRoot, "home");
   mkdirSync(cliHome, { mode: 0o700 });
+  const credentialDirectory = path.join(cliHome, ".local", "state", "scotty", "credentials");
+  mkdirSync(credentialDirectory, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(credentialDirectory, "root"), `${inputs.rootToken}\n`, { mode: 0o600 });
   writeFileSync(envFile, formatLocalDevVars(inputs), { mode: 0o600 });
   chmodSync(envFile, 0o600);
 
@@ -464,7 +467,6 @@ async function run() {
     const cliEnv = {
       HOME: cliHome,
       SCOTTY_HOST: host,
-      SCOTTY_TOKEN: inputs.rootToken,
     };
     const up = await runCli(
       [

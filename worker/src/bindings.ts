@@ -15,7 +15,7 @@ export interface Bindings {
   ARTIFACT_BUCKET: R2Bucket;
   SANDBOX_BUNDLE_BUCKET: R2Bucket;
   ASSETS: Fetcher;
-  SCOTTY_TOKEN: string;
+  SCOTTY_ROOT_VERIFIER_BOOTSTRAP: string;
   SCOTTY_LOCAL_E2E?: string;
   SCOTTY_LOCAL_BACKUP?: string;
   R2_ACCESS_KEY_ID?: string;

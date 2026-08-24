@@ -19,7 +19,7 @@ const AUTH_OBJECT_NAME = "account";
 
 export interface AuthBindings {
   AUTH: ScottyAuthRegistryNamespace;
-  SCOTTY_TOKEN: string;
+  SCOTTY_ROOT_VERIFIER_BOOTSTRAP: string;
 }
 
 export interface RootAuthPrincipal {
@@ -47,35 +47,43 @@ export async function authenticateRequest(
   request: Request,
   env: AuthBindings,
 ): Promise<AuthPrincipal | undefined> {
+  const cookieCredential = requestClientCredential(request);
   const authorization = request.headers.get("authorization");
-  if (
-    env.SCOTTY_TOKEN &&
-    authorization?.startsWith("Bearer ") &&
-    (await constantTimeStringEqual(authorization.slice(7), env.SCOTTY_TOKEN))
-  )
-    return { kind: "root", source: "bearer", scopes: [...ADMIN_AUTH_SCOPES] };
-
-  const credential = requestClientCredential(request);
+  const ticketCredential = authorization?.startsWith("Bearer ")
+    ? authorization.slice(7)
+    : undefined;
+  const credential = cookieCredential ?? ticketCredential;
   if (!credential) return undefined;
-  if (env.SCOTTY_TOKEN && (await constantTimeStringEqual(credential, env.SCOTTY_TOKEN)))
-    return undefined;
   const result = await authRegistry(env).authenticate(credential);
   if (!result.ok) return undefined;
   return {
     kind: "client",
-    source: "cookie",
+    source: cookieCredential === undefined ? "ticket" : "cookie",
     credential,
     client: result.value.client,
     scopes: result.value.client.scopes,
-    ...(result.value.renewed ? { renewed: true } : {}),
+    ...(cookieCredential !== undefined && result.value.renewed ? { renewed: true } : {}),
   };
+}
+
+export async function authenticateRootRequest(
+  request: Request,
+  env: AuthBindings,
+): Promise<RootAuthPrincipal | undefined> {
+  const authorization = request.headers.get("authorization");
+  if (!authorization?.startsWith("Bearer ")) return undefined;
+  const result = await authRegistry(env).authenticateRoot(authorization.slice(7));
+  return result.ok ? { kind: "root", source: "bearer", scopes: [...ADMIN_AUTH_SCOPES] } : undefined;
 }
 
 export async function requireAuthRequest(
   request: Request,
   env: AuthBindings,
 ): Promise<AuthPrincipal> {
-  const principal = await authenticateRequest(request, env);
+  return requireAuthenticatedPrincipal(await authenticateRequest(request, env));
+}
+
+export function requireAuthenticatedPrincipal(principal: AuthPrincipal | undefined): AuthPrincipal {
   if (principal) return principal;
   throw authenticationRequired();
 }

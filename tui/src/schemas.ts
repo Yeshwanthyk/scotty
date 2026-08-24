@@ -412,9 +412,6 @@ const StreamingStateSchema = Schema.Struct({
   isActive: Schema.optionalKey(Schema.Boolean),
 });
 
-const decodeConfigJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(TuiConfigSchema), {
-  onExcessProperty: "error",
-});
 const decodeFleetOption = Schema.decodeUnknownOption(FleetResponseSchema, {
   onExcessProperty: "error",
 });
@@ -459,8 +456,6 @@ const decodeEventTypeOption = Schema.decodeUnknownOption(EventTypeSchema);
 const decodeExtensionUiEventOption = Schema.decodeUnknownOption(ExtensionUiEventSchema);
 const decodeStreamingStateOption = Schema.decodeUnknownOption(StreamingStateSchema);
 
-export const decodeConfigJson = (value: unknown): TuiConfig | undefined =>
-  Option.getOrUndefined(decodeConfigJsonOption(value));
 export const decodeFleet = (value: unknown): ReadonlyArray<FleetSession> | undefined =>
   Option.getOrUndefined(decodeFleetOption(value));
 export const decodeSelected = (value: unknown): SelectedSession | undefined =>

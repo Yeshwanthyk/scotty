@@ -10,6 +10,9 @@ const failure = <A>(result: Result.Result<A, CliError>): CliError => {
   return result.failure;
 };
 
+const ORIGIN = "https://worker.example";
+const CLIENT_CREDENTIAL = `scotty_client.0123456789ab.${"a".repeat(32)}`;
+
 const invoke = (args: ReadonlyArray<string>, overrides: Partial<CliDependencies>) => {
   const stdout: Array<string> = [];
   const stderr: Array<string> = [];
@@ -18,7 +21,7 @@ const invoke = (args: ReadonlyArray<string>, overrides: Partial<CliDependencies>
       Effect.provide(NodeServices.layer),
       Effect.provide(
         cliLayer({
-          env: { SCOTTY_TOKEN: "root-secret" },
+          env: {},
           home: "/unused",
           cwd: "/unused",
           stdinIsTTY: false,
@@ -33,6 +36,15 @@ const invoke = (args: ReadonlyArray<string>, overrides: Partial<CliDependencies>
               createdAt: "2026-07-29T16:00:00.000Z",
               updatedAt: "2026-07-29T16:00:00.000Z",
             }),
+          credentialStore: {
+            load: (name) => Effect.succeed(name === "client" ? CLIENT_CREDENTIAL : undefined),
+            save: () => Effect.void,
+            remove: () => Effect.void,
+          },
+          fileSystem: {
+            readPrivateText: () =>
+              Effect.succeed(`${JSON.stringify({ version: 1, host: ORIGIN })}\n`),
+          },
           ...overrides,
         }),
       ),
@@ -50,7 +62,7 @@ const setupArguments = (
   "runner",
   "setup",
   "--host",
-  "https://worker.example",
+  ORIGIN,
   "--name",
   "example-runner",
   "--root",
@@ -79,6 +91,7 @@ describe("runner setup", () => {
       const commands: Array<ReadonlyArray<string>> = [];
       const registrations: Array<{
         readonly authorization: string | null;
+        readonly cookie: string | null;
         readonly body: string;
       }> = [];
       const run = (command: string[]) => {
@@ -96,6 +109,7 @@ describe("runner setup", () => {
           const request = new Request(input, init);
           registrations.push({
             authorization: request.headers.get("authorization"),
+            cookie: request.headers.get("cookie"),
             body: await request.text(),
           });
           return Response.json({
@@ -139,7 +153,8 @@ describe("runner setup", () => {
       assert.notInclude(commands.flat().join("\n"), "runner-secret");
       assert.deepStrictEqual(registrations, [
         {
-          authorization: "Bearer root-secret",
+          authorization: null,
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
           body: '{"name":"example-runner","replace":false}',
         },
       ]);
@@ -184,6 +199,7 @@ describe("runner setup", () => {
           const request = new Request(input, init);
           registrations.push({
             authorization: request.headers.get("authorization"),
+            cookie: request.headers.get("cookie"),
             body: await request.text(),
           });
           return Response.json({
@@ -206,7 +222,8 @@ describe("runner setup", () => {
         "scotty-runner.service",
       ]);
       assert.deepStrictEqual(registrations.at(-1), {
-        authorization: "Bearer root-secret",
+        authorization: null,
+        cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
         body: '{"name":"example-runner","replace":true}',
       });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

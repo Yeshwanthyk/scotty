@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { TestClock } from "effect/testing";
@@ -17,6 +18,8 @@ import {
 const NOW = Date.parse("2026-07-22T12:00:00.000Z");
 const FIVE_MINUTES = 5 * 60 * 1_000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1_000;
+const ROOT_CREDENTIAL = "root-credential-for-auth-registry-tests";
+const ROOT_VERIFIER = createHash("sha256").update(ROOT_CREDENTIAL).digest("hex");
 
 const secret = (character: string): string => character.repeat(43);
 
@@ -84,7 +87,8 @@ const recoverOwner = (
     storage,
     Effect.gen(function* () {
       const registry = yield* AuthRegistry;
-      const grant = yield* registry.issueRecoveryGrant({
+      yield* registry.initializeRoot(ROOT_CREDENTIAL, ROOT_VERIFIER);
+      const grant = yield* registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
         credential: { id: "aaaaaaaaaaaa", secret: secret("r") },
         ttlMillis: FIVE_MINUTES,
       });
@@ -124,6 +128,161 @@ const failure = <A>(result: Result.Result<A, AuthRegistryFailure>): AuthRegistry
 };
 
 describe("AuthRegistry ownership authority", () => {
+  it.effect(
+    "initializes the root verifier once and rejects the wrong root without persisting plaintext",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        const storage = new MemoryAuthAuthorityStorage();
+
+        const wrong = yield* withRegistry(
+          storage,
+          Effect.flatMap(AuthRegistry, (registry) =>
+            registry.initializeRoot("wrong-root-credential", ROOT_VERIFIER),
+          ).pipe(Effect.result),
+        );
+        assert.deepInclude(failure(wrong), { reason: "forbidden" });
+        assert.isUndefined(storage.snapshot());
+
+        const initialized = yield* withRegistry(
+          storage,
+          Effect.flatMap(AuthRegistry, (registry) =>
+            registry.initializeRoot(ROOT_CREDENTIAL, ROOT_VERIFIER),
+          ),
+        );
+        assert.deepStrictEqual(initialized, { generation: 1 });
+
+        const replay = yield* withRegistry(
+          storage,
+          Effect.flatMap(AuthRegistry, (registry) =>
+            registry.initializeRoot(ROOT_CREDENTIAL, "0".repeat(64)),
+          ),
+        );
+        assert.deepStrictEqual(replay, { generation: 1 });
+
+        const rejected = yield* withRegistry(
+          storage,
+          Effect.flatMap(AuthRegistry, (registry) =>
+            registry.authenticateRoot("different-root-credential"),
+          ).pipe(Effect.result),
+        );
+        assert.deepInclude(failure(rejected), { reason: "forbidden" });
+
+        const persisted = JSON.stringify(storage.snapshot());
+        assert.notInclude(persisted, ROOT_CREDENTIAL);
+        assert.notInclude(persisted, "different-bootstrap-credential");
+        assert.match(persisted, /"credentialDigest":"[0-9a-f]{64}"/u);
+      }),
+  );
+
+  it.effect("reconciles a replacement bootstrap verifier without persisting either root", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const storage = new MemoryAuthAuthorityStorage();
+      const replacement = "replacement-root-credential-for-bootstrap";
+      const replacementVerifier = createHash("sha256").update(replacement).digest("hex");
+      yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.initializeRoot(ROOT_CREDENTIAL, ROOT_VERIFIER),
+        ),
+      );
+      const reconciled = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.initializeRoot(replacement, replacementVerifier),
+        ),
+      );
+      assert.deepStrictEqual(reconciled, { generation: 2 });
+      const persisted = JSON.stringify(storage.snapshot());
+      assert.notInclude(persisted, ROOT_CREDENTIAL);
+      assert.notInclude(persisted, replacement);
+      assert.include(persisted, replacementVerifier);
+    }),
+  );
+
+  it.effect("rotates and fences the root generation against issuance races and stale grants", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const storage = new MemoryAuthAuthorityStorage();
+      const replacementRoot = "replacement-root-credential-for-tests";
+      const staleRecovery = yield* withRegistry(
+        storage,
+        Effect.gen(function* () {
+          const registry = yield* AuthRegistry;
+          yield* registry.initializeRoot(ROOT_CREDENTIAL, ROOT_VERIFIER);
+          return yield* registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
+            credential: { id: "aaaaaaaaaaaa", secret: secret("r") },
+            ttlMillis: FIVE_MINUTES,
+          });
+        }),
+      );
+
+      const rotated = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.rotateRoot(ROOT_CREDENTIAL, replacementRoot),
+        ),
+      );
+      assert.deepStrictEqual(rotated, { generation: 2 });
+
+      const staleRoot = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
+            credential: { id: "bbbbbbbbbbbb", secret: secret("s") },
+            ttlMillis: FIVE_MINUTES,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(staleRoot), { reason: "forbidden" });
+      const staleGrant = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.consumeRecoveryGrant(
+            staleRecovery.credential,
+            clientCandidate("111111111111", secret("a")),
+          ),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(staleGrant), { reason: "recovery_invalid" });
+
+      const raceStorage = new MemoryAuthAuthorityStorage();
+      yield* withRegistry(
+        raceStorage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.initializeRoot(ROOT_CREDENTIAL, ROOT_VERIFIER),
+        ),
+      );
+      const race = yield* Effect.all(
+        [
+          withRegistry(
+            raceStorage,
+            Effect.flatMap(AuthRegistry, (registry) =>
+              registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
+                credential: { id: "cccccccccccc", secret: secret("t") },
+                ttlMillis: FIVE_MINUTES,
+              }),
+            ).pipe(Effect.result),
+          ),
+          withRegistry(
+            raceStorage,
+            Effect.flatMap(AuthRegistry, (registry) =>
+              registry.rotateRoot(ROOT_CREDENTIAL, replacementRoot),
+            ).pipe(Effect.result),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+      assert.ok(Result.isSuccess(race[1]));
+      const authority = raceStorage.snapshot() as AuthAuthority;
+      assert.strictEqual(authority.root.generation, 2);
+      assert.notProperty(authority, "recoveryGrant");
+      assert.notInclude(JSON.stringify(authority), ROOT_CREDENTIAL);
+      assert.notInclude(JSON.stringify(authority), replacementRoot);
+    }),
+  );
+
   it.effect("creates the first owner only through recovery and stores standard scopes", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
@@ -166,7 +325,7 @@ describe("AuthRegistry ownership authority", () => {
       const result = yield* withRegistry(
         storage,
         Effect.flatMap(AuthRegistry, (registry) =>
-          registry.issueRecoveryGrant({
+          registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
             credential: { id: "aaaaaaaaaaaa", secret: secret("r") },
             ttlMillis: FIVE_MINUTES,
           }),
@@ -376,7 +535,7 @@ describe("AuthRegistry ownership authority", () => {
             credential: { id: "444444444444", secret: secret("d") },
             ttlMillis: FIVE_MINUTES,
           });
-          yield* registry.issueRecoveryGrant({
+          yield* registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
             credential: { id: "555555555555", secret: secret("e") },
             ttlMillis: FIVE_MINUTES,
           });
@@ -535,7 +694,18 @@ describe("AuthRegistry ownership authority", () => {
             credential: { id: "333333333333", secret: secret("c") },
             ttlMillis: FIVE_MINUTES,
           });
-          return yield* registry.issueRecoveryGrant({
+          yield* registry.startOwnerTransfer(owner.credential, {
+            credential: { id: "444444444444", secret: secret("d") },
+            targetClientId: standard.client.id,
+            ttlMillis: FIVE_MINUTES,
+          });
+          yield* registry.issueHatchHandoff(standard.credential, {
+            credential: { id: "777777777777", secret: secret("h") },
+            sessionId: "a0b1c2d3e4f5",
+            hatchId: "hatch-recovery-test",
+            ttlMillis: 60_000,
+          });
+          return yield* registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
             credential: { id: "555555555555", secret: secret("e") },
             ttlMillis: FIVE_MINUTES,
           });
@@ -562,6 +732,7 @@ describe("AuthRegistry ownership authority", () => {
       assert.lengthOf(authority.pairings, 0);
       assert.notProperty(authority, "ownerTransfer");
       assert.notProperty(authority, "recoveryGrant");
+      assert.lengthOf(authority.hatchHandoffs ?? [], 0);
       assert.isTrue(
         authority.clients
           .filter((client) => client.id !== replacement.client.id)
@@ -577,6 +748,16 @@ describe("AuthRegistry ownership authority", () => {
         );
         assert.deepInclude(failure(oldAuth), { reason: "credential_invalid" });
       }
+      const replay = yield* withRegistry(
+        storage,
+        Effect.flatMap(AuthRegistry, (registry) =>
+          registry.consumeRecoveryGrant(
+            recovery.credential,
+            clientCandidate("888888888888", secret("i"), "Replay browser"),
+          ),
+        ).pipe(Effect.result),
+      );
+      assert.deepInclude(failure(replay), { reason: "recovery_invalid" });
     }),
   );
 
@@ -617,7 +798,7 @@ describe("AuthRegistry ownership authority", () => {
       const recovery = yield* withRegistry(
         storage,
         Effect.flatMap(AuthRegistry, (registry) =>
-          registry.issueRecoveryGrant({
+          registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
             credential: { id: "444444444444", secret: secret("e") },
             ttlMillis: FIVE_MINUTES,
           }),
@@ -654,6 +835,7 @@ describe("AuthRegistry ownership authority", () => {
       });
       const storage = new MemoryAuthAuthorityStorage({
         version: 2,
+        root: { credentialDigest: ROOT_VERIFIER, generation: 1 },
         ownership: {
           state: "claimed",
           ownerClientId: "000000000000",
@@ -666,7 +848,8 @@ describe("AuthRegistry ownership authority", () => {
         storage,
         Effect.gen(function* () {
           const registry = yield* AuthRegistry;
-          const recovery = yield* registry.issueRecoveryGrant({
+          yield* registry.initializeRoot(ROOT_CREDENTIAL, ROOT_VERIFIER);
+          const recovery = yield* registry.issueRecoveryGrant(ROOT_CREDENTIAL, {
             credential: { id: "eeeeeeeeeeee", secret: secret("e") },
             ttlMillis: FIVE_MINUTES,
           });

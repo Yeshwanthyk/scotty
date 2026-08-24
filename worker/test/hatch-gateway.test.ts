@@ -48,6 +48,8 @@ const future = (): string => {
 const authStub = {
   acceptOwnerTransfer: vi.fn(),
   authenticate: vi.fn(),
+  authenticateRoot: vi.fn(),
+  initializeRoot: vi.fn(),
   cancelOwnerTransfer: vi.fn(),
   consumeHatchHandoff: consumeHandoff,
   consumePairing: vi.fn(),
@@ -59,6 +61,7 @@ const authStub = {
   listClients: vi.fn(),
   logoutClient: vi.fn(),
   revokeClient: vi.fn(),
+  rotateRoot: vi.fn(),
   startOwnerTransfer: vi.fn(),
 } as ScottyAuthRegistryStub;
 const env = {

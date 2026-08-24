@@ -171,7 +171,7 @@ function bindings(namespace: Bindings["SANDBOX"]): Bindings {
     SANDBOX_BUNDLE_BUCKET: undefined as never,
     SANDBOX_CONFIG: undefined as never,
     ASSETS: undefined as never,
-    SCOTTY_TOKEN: "unused",
+    SCOTTY_ROOT_VERIFIER_BOOTSTRAP: "unused",
   };
 }
 

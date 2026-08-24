@@ -1,10 +1,10 @@
-import { isAbsolute, resolve } from "node:path";
 import { Clock, Effect, Option, Result } from "effect";
 import { decodeInstallationPreviewConfiguration } from "../../infra/installation";
 import { CliError, EXIT, PENDING_UP_TTL_MS, type GlobalOptions } from "./core";
 import {
   decodeJsonValue,
   decodePendingUp,
+  decodeClientCredential,
   decodeRawConfig,
   decodeString,
   decodeTrue,
@@ -14,8 +14,9 @@ import {
 } from "./schemas";
 import { CliRuntime, FileSystem } from "./services";
 import { requestJson } from "./transport";
-import { conflictSessionId, normalizeHost, stableUp, usage } from "./pure";
-import { operationStatePath, rootCredentialPath, installationStatePath } from "./local-paths";
+import { loadClientIdentity, loadRootIdentity, type LocalIdentityError } from "./local-identity";
+import { conflictSessionId, stableUp, usage } from "./pure";
+import { installationStatePath, operationStatePath } from "./local-paths";
 
 export { cliLayer, defaultDependencies, type CliDependencies } from "./services";
 
@@ -66,7 +67,7 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
       EXIT.USAGE,
     );
   const host = Option.getOrUndefined(decodeString(raw.value.host));
-  const token = Option.getOrUndefined(decodeString(raw.value.token));
+  const rootVerifier = Option.getOrUndefined(decodeString(raw.value.rootVerifier));
   const installationName = Option.getOrUndefined(decodeString(raw.value.installationName));
   const profile = Option.getOrUndefined(decodeString(raw.value.profile));
   const stackName = Option.getOrUndefined(decodeString(raw.value.stackName));
@@ -123,38 +124,8 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
     ...(evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
     ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
     ...(host === undefined ? {} : { host }),
-    ...(token === undefined ? {} : { token }),
+    ...(rootVerifier === undefined ? {} : { rootVerifier }),
   } satisfies Config;
-});
-
-export const readRootCredential = Effect.fnUntraced(function* (
-  home: string,
-  env: Readonly<Record<string, string | undefined>>,
-) {
-  const fileSystem = yield* FileSystem;
-  const path = rootCredentialPath(home, env);
-  const token = yield* fileSystem
-    .readPrivateText(path)
-    .pipe(
-      Effect.mapError(
-        () =>
-          new CliError(
-            "config_permissions",
-            "Scotty root credential must be a private regular file",
-            `Run scotty recover or use a non-symlinked mode-0600 file at ${path}.`,
-            EXIT.USAGE,
-          ),
-      ),
-    );
-  const normalized = token.trim();
-  if (normalized.length === 0)
-    return yield* new CliError(
-      "invalid_config",
-      "Scotty root credential is empty",
-      `Run scotty recover to replace ${path}.`,
-      EXIT.USAGE,
-    );
-  return normalized;
 });
 
 export const secureWrite = Effect.fnUntraced(function* (path: string, data: string) {
@@ -251,7 +222,7 @@ const finalizePendingUp = Effect.fnUntraced(function* (
 });
 
 export const sessionAbsent = Effect.fnUntraced(function* (
-  auth: { readonly host: string; readonly token: string },
+  auth: { readonly host: string; readonly credential: string },
   sessionId: string,
 ) {
   const result = yield* Effect.result(
@@ -265,7 +236,7 @@ export const sessionAbsent = Effect.fnUntraced(function* (
 });
 
 export const beamUpSession = Effect.fnUntraced(function* (
-  auth: { readonly host: string; readonly token: string },
+  auth: { readonly host: string; readonly credential: string },
   body: BeamUpRequest,
 ) {
   const create = (pending: { readonly key: string; readonly path: string }) =>
@@ -308,58 +279,93 @@ export const beamUpSession = Effect.fnUntraced(function* (
   return retried.success;
 });
 
-export const credentials = Effect.fnUntraced(function* (options: GlobalOptions) {
+const localIdentityFailure = (kind: "client" | "root", error: LocalIdentityError): CliError =>
+  new CliError(
+    "local_identity_invalid",
+    `Scotty ${kind} identity could not be read safely`,
+    kind === "client"
+      ? "Run scotty client pair ORIGIN to replace the local client identity."
+      : "Run scotty recover to replace the local root identity.",
+    error.reason === "empty" || error.reason.includes("permission") ? EXIT.USAGE : EXIT.GENERIC,
+  );
+
+const normalizeExactOrigin = (value: string): Result.Result<string, CliError> => {
+  if (!URL.canParse(value)) return Result.fail(usage("Scotty origin must be an absolute URL"));
+  const url = new URL(value);
+  const localHttp =
+    url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+  if (url.protocol !== "https:" && !localHttp)
+    return Result.fail(usage("Scotty origin must use HTTPS (or localhost HTTP)"));
+  if (url.username || url.password || url.pathname !== "/" || url.search || url.hash)
+    return Result.fail(
+      usage("Scotty origin must not contain credentials, a path, query, or fragment"),
+    );
+  return Result.succeed(url.origin);
+};
+
+export const installationOrigin = Effect.fnUntraced(function* (
+  options: GlobalOptions,
+  explicitOrigin?: string,
+) {
+  if (options.tokenFile)
+    return yield* usage(
+      "Client-authenticated commands do not accept --token-file",
+      "Use scotty client pair ORIGIN to configure this client.",
+    );
   const runtime = yield* CliRuntime;
-  const fileSystem = yield* FileSystem;
-  let hostValue = options.host ?? runtime.env.SCOTTY_HOST;
-  let token = runtime.env.SCOTTY_TOKEN;
-  if (options.tokenFile) {
-    const tokenPath = isAbsolute(options.tokenFile)
-      ? options.tokenFile
-      : resolve(runtime.cwd, options.tokenFile);
-    token = yield* fileSystem.readPrivateText(tokenPath).pipe(
-      Effect.mapError(
-        () =>
-          new CliError(
-            "token_file_invalid",
-            "Scotty token file must be a readable private regular file",
-            `Use a non-symlinked mode-0600 file at ${tokenPath}.`,
-            EXIT.USAGE,
-          ),
-      ),
-      Effect.map((value) =>
-        value.endsWith("\r\n")
-          ? value.slice(0, -2)
-          : value.endsWith("\n")
-            ? value.slice(0, -1)
-            : value,
-      ),
+  const config = yield* readConfig(installationStatePath(runtime.home, runtime.env));
+  if (config.host === undefined)
+    return yield* usage(
+      "Scotty installation origin is not configured",
+      "Run scotty init or scotty recover before pairing this client.",
     );
-    if (!token)
+  const configured = yield* Effect.fromResult(normalizeExactOrigin(config.host));
+  for (const candidate of [options.host, explicitOrigin]) {
+    if (candidate === undefined) continue;
+    const normalized = yield* Effect.fromResult(normalizeExactOrigin(candidate));
+    if (normalized !== configured)
       return yield* usage(
-        "Scotty token file is empty",
-        "Write the root token to the private file and retry.",
+        "Scotty origin must exactly match the installation pointer",
+        `Use ${configured}.`,
       );
   }
-  if (!hostValue || !token) {
-    const config = yield* readConfig(installationStatePath(runtime.home, runtime.env));
-    hostValue ??= config.host;
-    if (token === undefined)
-      token = yield* readRootCredential(runtime.home, runtime.env).pipe(
-        Effect.catch(() => Effect.succeed(undefined)),
-      );
-  }
-  if (!hostValue)
+  return configured;
+});
+
+export const credentials = Effect.fnUntraced(function* (options: GlobalOptions) {
+  const host = yield* installationOrigin(options);
+  const stored = yield* loadClientIdentity().pipe(
+    Effect.mapError((error) => localIdentityFailure("client", error)),
+  );
+  if (stored === undefined)
     return yield* usage(
-      "Scotty host is not configured",
-      "Run scotty init or pass --host / SCOTTY_HOST.",
+      "Scotty client identity is not configured",
+      `Run scotty client pair ${host}.`,
     );
-  if (!token)
+  const decoded = decodeClientCredential(stored);
+  if (Option.isNone(decoded))
+    return yield* new CliError(
+      "local_identity_invalid",
+      "Scotty client identity is invalid",
+      `Run scotty client pair ${host} to replace it.`,
+      EXIT.USAGE,
+    );
+  // `token` remains a redaction-only compatibility alias for archive.ts; transport prefers the
+  // client credential and never emits this value as bearer authorization.
+  return { host, credential: decoded.value, token: decoded.value };
+});
+
+export const rootCredentials = Effect.fnUntraced(function* (options: GlobalOptions) {
+  const host = yield* installationOrigin(options);
+  const token = yield* loadRootIdentity().pipe(
+    Effect.mapError((error) => localIdentityFailure("root", error)),
+  );
+  if (token === undefined)
     return yield* usage(
-      "Scotty token is not configured",
-      "Run scotty init or pass --token-file / SCOTTY_TOKEN.",
+      "Scotty root identity is not configured",
+      "Run scotty recover to restore the installation root identity.",
     );
-  return { host: yield* Effect.fromResult(normalizeHost(hostValue)), token };
+  return { host, token };
 });
 
 export const appendOnce = Effect.fnUntraced(function* (

@@ -1,7 +1,7 @@
-import { chmod, lstat, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, rename, rm, stat, unlink } from "node:fs/promises";
 import { constants, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { dirname } from "node:path";
+import { dirname, relative } from "node:path";
 import { Context, Data, Effect, Layer, Option } from "effect";
 import lockfile from "proper-lockfile";
 import { decodePreviewCleanupOwnershipError } from "../../infra/preview-ownership.ts";
@@ -24,6 +24,8 @@ export interface CliDependencies {
     command: string[],
     options?: ProcessRunOptions,
   ) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  readonly credentialStore?: CredentialStoreShape;
+  readonly fileSystem?: Partial<FileSystemShape>;
   createInstallation: (request: InstallationCreateRequest) => Promise<InstallationResult>;
   planCreateInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
   planInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
@@ -46,7 +48,7 @@ export interface InstallationDeployRequest {
 }
 
 export interface InstallationCreateRequest extends InstallationDeployRequest {
-  readonly token: string;
+  readonly rootVerifierBootstrap: string;
   readonly expectedAccountId: string;
   readonly expectedPlanFingerprint: string;
   readonly mode: "fresh" | "resume";
@@ -67,7 +69,7 @@ export interface InstallationInspectRequest {
 }
 
 export interface InstallationRecoverRequest extends InstallationInspectRequest {
-  readonly token: string;
+  readonly rootVerifierBootstrap: string;
   readonly expectedAccountId: string;
   readonly expectedWorkerName: string;
   readonly expectedRunnerWorkerName: string;
@@ -179,9 +181,10 @@ export class HttpTransport extends Context.Service<HttpTransport, HttpTransportS
 export interface ProcessRunOptions {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly input?: string;
 }
 
-interface ProcessRunnerShape {
+export interface ProcessRunnerShape {
   readonly run: (
     command: ReadonlyArray<string>,
     options?: ProcessRunOptions,
@@ -190,6 +193,35 @@ interface ProcessRunnerShape {
 
 export class ProcessRunner extends Context.Service<ProcessRunner, ProcessRunnerShape>()(
   "scotty/cli/ProcessRunner",
+) {}
+
+export type CredentialStoreName = "root" | "client";
+export type CredentialStoreOperation = "load" | "save" | "remove";
+
+export class CredentialStoreUnavailable extends Data.TaggedError("CredentialStoreUnavailable")<{
+  readonly operation: CredentialStoreOperation;
+}> {}
+
+export class CredentialStoreFailure extends Data.TaggedError("CredentialStoreFailure")<{
+  readonly operation: CredentialStoreOperation;
+  readonly reason: "corrupt" | "permission" | "failed";
+}> {}
+
+export type CredentialStoreError = CredentialStoreUnavailable | CredentialStoreFailure;
+
+export interface CredentialStoreShape {
+  readonly load: (
+    name: CredentialStoreName,
+  ) => Effect.Effect<string | undefined, CredentialStoreError>;
+  readonly save: (
+    name: CredentialStoreName,
+    value: string,
+  ) => Effect.Effect<void, CredentialStoreError>;
+  readonly remove: (name: CredentialStoreName) => Effect.Effect<void, CredentialStoreError>;
+}
+
+export class CredentialStore extends Context.Service<CredentialStore, CredentialStoreShape>()(
+  "scotty/cli/CredentialStore",
 ) {}
 
 interface BrowserLauncherShape {
@@ -259,10 +291,21 @@ export class CliUpgrader extends Context.Service<CliUpgrader, CliUpgraderShape>(
 
 export class PrivateFileError extends Data.TaggedError("PrivateFileError")<{
   readonly path: string;
-  readonly reason: "missing" | "not_file" | "permissions" | "symlink" | "read_failed";
+  readonly reason:
+    | "missing"
+    | "not_file"
+    | "permissions"
+    | "wrong_owner"
+    | "symlink"
+    | "unsafe_parent"
+    | "read_failed"
+    | "write_failed"
+    | "atomic_replace_failed"
+    | "file_fsync_failed"
+    | "parent_fsync_failed";
 }> {}
 
-interface FileSystemShape {
+export interface FileSystemShape {
   readonly withLock: <A, E, R>(
     path: string,
     effect: Effect.Effect<A, E, R>,
@@ -270,6 +313,10 @@ interface FileSystemShape {
   readonly stat: (path: string) => Effect.Effect<Stats, CliError>;
   readonly readText: (path: string) => Effect.Effect<string, NodeJS.ErrnoException>;
   readonly readPrivateText: (path: string) => Effect.Effect<string, PrivateFileError>;
+  readonly readPrivateCredential: (
+    path: string,
+    privateRoot: string,
+  ) => Effect.Effect<string, PrivateFileError>;
   readonly readLockedText: (path: string) => Effect.Effect<string, CliError>;
   readonly remove: (path: string) => Effect.Effect<void, NodeJS.ErrnoException>;
   readonly writeExclusive: (
@@ -278,6 +325,15 @@ interface FileSystemShape {
   ) => Effect.Effect<void, NodeJS.ErrnoException>;
   readonly writeText: (path: string, data: string) => Effect.Effect<void, CliError>;
   readonly writeSecure: (path: string, data: string) => Effect.Effect<void, CliError>;
+  readonly writePrivateCredential: (
+    path: string,
+    privateRoot: string,
+    data: string,
+  ) => Effect.Effect<void, PrivateFileError>;
+  readonly removePrivateCredential: (
+    path: string,
+    privateRoot: string,
+  ) => Effect.Effect<void, PrivateFileError>;
   readonly appendOnce: (
     path: string,
     marker: string,
@@ -347,6 +403,252 @@ const validatePrivateMetadata = (
   return Effect.void;
 };
 
+const errorCode = (cause: unknown): string | undefined =>
+  typeof cause === "object" && cause !== null && "code" in cause && typeof cause.code === "string"
+    ? cause.code
+    : undefined;
+
+const privateCredentialFailure = (
+  path: string,
+  cause: unknown,
+  fallback: PrivateFileError["reason"],
+): PrivateFileError => {
+  const code = errorCode(cause);
+  if (code === "ENOENT") return privateFileFailure(path, "missing");
+  if (code === "ELOOP") return privateFileFailure(path, "symlink");
+  return privateFileFailure(path, fallback);
+};
+
+const validatePrivateDirectory = (
+  path: string,
+  metadata: Stats,
+): Effect.Effect<void, PrivateFileError> => {
+  if (metadata.isSymbolicLink()) return Effect.fail(privateFileFailure(path, "symlink"));
+  if (!metadata.isDirectory()) return Effect.fail(privateFileFailure(path, "unsafe_parent"));
+  if (
+    process.platform !== "win32" &&
+    typeof process.geteuid === "function" &&
+    metadata.uid !== process.geteuid()
+  )
+    return Effect.fail(privateFileFailure(path, "wrong_owner"));
+  if (process.platform !== "win32" && (metadata.mode & 0o7777) !== 0o700)
+    return Effect.fail(privateFileFailure(path, "permissions"));
+  return Effect.void;
+};
+
+const validatePrivateCredentialMetadata = (
+  path: string,
+  metadata: Stats,
+): Effect.Effect<void, PrivateFileError> => {
+  if (metadata.isSymbolicLink()) return Effect.fail(privateFileFailure(path, "symlink"));
+  if (!metadata.isFile()) return Effect.fail(privateFileFailure(path, "not_file"));
+  if (
+    process.platform !== "win32" &&
+    typeof process.geteuid === "function" &&
+    metadata.uid !== process.geteuid()
+  )
+    return Effect.fail(privateFileFailure(path, "wrong_owner"));
+  if (process.platform !== "win32" && (metadata.mode & 0o7777) !== 0o600)
+    return Effect.fail(privateFileFailure(path, "permissions"));
+  return Effect.void;
+};
+
+const inspectPrivateDirectory = Effect.fnUntraced(function* (path: string) {
+  const metadata = yield* Effect.tryPromise({
+    try: () => lstat(path),
+    catch: (cause) => cause,
+  }).pipe(
+    Effect.catch((cause) =>
+      errorCode(cause) === "ENOENT"
+        ? Effect.succeed(undefined)
+        : Effect.fail(privateCredentialFailure(path, cause, "unsafe_parent")),
+    ),
+  );
+  if (metadata === undefined) return undefined;
+  yield* validatePrivateDirectory(path, metadata);
+  return metadata;
+});
+
+const privateCredentialParent = (path: string, privateRoot: string): string => {
+  const parent = dirname(path);
+  const relativeParent = relative(privateRoot, parent);
+  if (
+    relativeParent.length === 0 ||
+    relativeParent === ".." ||
+    relativeParent.startsWith("../") ||
+    relativeParent.startsWith("..\\")
+  )
+    return "";
+  return parent;
+};
+
+const inspectPrivateCredentialParent = Effect.fnUntraced(function* (
+  path: string,
+  privateRoot: string,
+) {
+  const parent = privateCredentialParent(path, privateRoot);
+  if (parent.length === 0) return yield* Effect.fail(privateFileFailure(path, "unsafe_parent"));
+  const rootMetadata = yield* inspectPrivateDirectory(privateRoot);
+  if (rootMetadata === undefined) return undefined;
+  const parentMetadata = yield* inspectPrivateDirectory(parent);
+  if (parentMetadata === undefined) return undefined;
+  return parent;
+});
+
+const ensurePrivateDirectory = Effect.fnUntraced(function* (path: string) {
+  const metadata = yield* inspectPrivateDirectory(path);
+  if (metadata !== undefined) return;
+  yield* Effect.tryPromise({
+    try: () => mkdir(path, { recursive: true, mode: 0o700 }),
+    catch: (cause) => privateCredentialFailure(path, cause, "write_failed"),
+  });
+  const created = yield* inspectPrivateDirectory(path);
+  if (created === undefined) return yield* Effect.fail(privateFileFailure(path, "missing"));
+});
+
+const ensurePrivateCredentialParent = Effect.fnUntraced(function* (
+  path: string,
+  privateRoot: string,
+) {
+  const parent = privateCredentialParent(path, privateRoot);
+  if (parent.length === 0) return yield* Effect.fail(privateFileFailure(path, "unsafe_parent"));
+  yield* ensurePrivateDirectory(privateRoot);
+  yield* ensurePrivateDirectory(parent);
+});
+
+const syncPrivateDirectory = Effect.fnUntraced(function* (directory: string) {
+  if (process.platform === "win32") return;
+  const flags = constants.O_RDONLY | constants.O_DIRECTORY;
+  yield* Effect.acquireUseRelease(
+    Effect.tryPromise({
+      try: () => open(directory, flags),
+      catch: (cause) => privateCredentialFailure(directory, cause, "parent_fsync_failed"),
+    }),
+    (file) =>
+      Effect.tryPromise({
+        try: () => file.sync(),
+        catch: () => privateFileFailure(directory, "parent_fsync_failed"),
+      }),
+    (file) => Effect.promise(() => file.close()),
+  );
+});
+
+const readPrivateCredential = Effect.fnUntraced(function* (path: string, privateRoot: string) {
+  const parent = yield* inspectPrivateCredentialParent(path, privateRoot);
+  if (parent === undefined) return yield* Effect.fail(privateFileFailure(path, "missing"));
+  const pathMetadata = yield* Effect.tryPromise({
+    try: () => lstat(path),
+    catch: (cause) => privateCredentialFailure(path, cause, "read_failed"),
+  });
+  yield* validatePrivateCredentialMetadata(path, pathMetadata);
+  const flags =
+    process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
+  return yield* Effect.acquireUseRelease(
+    Effect.tryPromise({
+      try: () => open(path, flags),
+      catch: (cause) => privateCredentialFailure(path, cause, "read_failed"),
+    }),
+    (file) =>
+      Effect.gen(function* () {
+        const openedMetadata = yield* Effect.tryPromise({
+          try: () => file.stat(),
+          catch: (cause) => privateCredentialFailure(path, cause, "read_failed"),
+        });
+        yield* validatePrivateCredentialMetadata(path, openedMetadata);
+        if (pathMetadata.dev !== openedMetadata.dev || pathMetadata.ino !== openedMetadata.ino)
+          return yield* Effect.fail(privateFileFailure(path, "symlink"));
+        return yield* Effect.tryPromise({
+          try: () => file.readFile("utf8"),
+          catch: (cause) => privateCredentialFailure(path, cause, "read_failed"),
+        });
+      }),
+    (file) => Effect.promise(() => file.close()),
+  );
+});
+
+const writePrivateCredential = Effect.fnUntraced(function* (
+  path: string,
+  privateRoot: string,
+  data: string,
+) {
+  yield* ensurePrivateCredentialParent(path, privateRoot);
+  const existing = yield* Effect.tryPromise({
+    try: () => lstat(path),
+    catch: (cause) => cause,
+  }).pipe(
+    Effect.catch((cause) =>
+      errorCode(cause) === "ENOENT"
+        ? Effect.succeed(undefined)
+        : Effect.fail(privateCredentialFailure(path, cause, "write_failed")),
+    ),
+  );
+  if (existing !== undefined) yield* validatePrivateCredentialMetadata(path, existing);
+
+  const temporary = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  const cleanup = Effect.tryPromise({
+    try: () => rm(temporary, { force: true }),
+    catch: () => undefined,
+  }).pipe(Effect.catch(() => Effect.void));
+  yield* Effect.gen(function* () {
+    const flags =
+      process.platform === "win32"
+        ? "wx"
+        : constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+    yield* Effect.acquireUseRelease(
+      Effect.tryPromise({
+        try: () => open(temporary, flags, 0o600),
+        catch: (cause) => privateCredentialFailure(path, cause, "write_failed"),
+      }),
+      (file) =>
+        Effect.tryPromise({
+          try: () => file.writeFile(data, "utf8"),
+          catch: (cause) => privateCredentialFailure(path, cause, "write_failed"),
+        }).pipe(
+          Effect.andThen(
+            Effect.tryPromise({
+              try: () => chmod(temporary, 0o600),
+              catch: (cause) => privateCredentialFailure(path, cause, "write_failed"),
+            }),
+          ),
+          Effect.andThen(
+            Effect.tryPromise({
+              try: () => file.sync(),
+              catch: () => privateFileFailure(path, "file_fsync_failed"),
+            }),
+          ),
+        ),
+      (file) => Effect.promise(() => file.close()),
+    );
+    yield* Effect.tryPromise({
+      try: () => rename(temporary, path),
+      catch: () => privateFileFailure(path, "atomic_replace_failed"),
+    });
+  }).pipe(Effect.ensuring(cleanup));
+  yield* syncPrivateDirectory(dirname(path));
+});
+
+const removePrivateCredential = Effect.fnUntraced(function* (path: string, privateRoot: string) {
+  const parent = yield* inspectPrivateCredentialParent(path, privateRoot);
+  if (parent === undefined) return;
+  const metadata = yield* Effect.tryPromise({
+    try: () => lstat(path),
+    catch: (cause) => cause,
+  }).pipe(
+    Effect.catch((cause) =>
+      errorCode(cause) === "ENOENT"
+        ? Effect.succeed(undefined)
+        : Effect.fail(privateCredentialFailure(path, cause, "write_failed")),
+    ),
+  );
+  if (metadata === undefined) return;
+  yield* validatePrivateCredentialMetadata(path, metadata);
+  yield* Effect.tryPromise({
+    try: () => unlink(path),
+    catch: (cause) => privateCredentialFailure(path, cause, "write_failed"),
+  });
+  yield* syncPrivateDirectory(parent);
+});
+
 const readPrivateText = Effect.fnUntraced(function* (path: string) {
   const pathMetadata = yield* Effect.tryPromise({
     try: () => lstat(path),
@@ -407,6 +709,141 @@ const appendOnce = Effect.fnUntraced(function* (path: string, marker: string, co
   return true;
 });
 
+const credentialStoreFailure = (
+  operation: CredentialStoreOperation,
+  result: { readonly stderr: string },
+): CredentialStoreFailure =>
+  new CredentialStoreFailure({
+    operation,
+    reason: /permission|denied|access|not allowed|unauthorized|forbidden/iu.test(result.stderr)
+      ? "permission"
+      : "failed",
+  });
+
+const credentialStoreUnavailableResult = (
+  platform: NodeJS.Platform,
+  result: { readonly stderr: string },
+): boolean =>
+  platform === "linux" &&
+  /secret service|dbus|autolaunch|cannot connect|connection refused|command not found|executable file not found|unavailable/iu.test(
+    result.stderr,
+  );
+const credentialStoreMissing = (
+  platform: NodeJS.Platform,
+  result: { readonly exitCode: number; readonly stderr: string },
+): boolean =>
+  (platform === "darwin" && result.exitCode === 44) ||
+  /could not be found|no secret|not found|no such item/iu.test(result.stderr);
+
+const credentialStoreResult = (
+  operation: CredentialStoreOperation,
+  platform: NodeJS.Platform,
+  result: { readonly exitCode: number; readonly stderr: string },
+  missingIsSuccess: boolean,
+): Effect.Effect<void, CredentialStoreError> => {
+  if (result.exitCode === 0) return Effect.void;
+  if (credentialStoreUnavailableResult(platform, result))
+    return Effect.fail(new CredentialStoreUnavailable({ operation }));
+  if (missingIsSuccess && credentialStoreMissing(platform, result)) return Effect.void;
+  return Effect.fail(credentialStoreFailure(operation, result));
+};
+
+export const makeProcessCredentialStore = (
+  processRunner: ProcessRunnerShape,
+  platform: NodeJS.Platform = process.platform,
+): CredentialStoreShape => {
+  const unavailable = (operation: CredentialStoreOperation) =>
+    new CredentialStoreUnavailable({ operation });
+  const run = (
+    operation: CredentialStoreOperation,
+    command: ReadonlyArray<string>,
+    options?: ProcessRunOptions,
+  ) => processRunner.run(command, options).pipe(Effect.mapError(() => unavailable(operation)));
+
+  if (platform === "darwin")
+    return {
+      load: (name) =>
+        Effect.gen(function* () {
+          const result = yield* run("load", [
+            "security",
+            "find-generic-password",
+            "-s",
+            "scotty",
+            "-a",
+            name,
+            "-w",
+          ]);
+          if (result.exitCode !== 0) {
+            if (credentialStoreUnavailableResult(platform, result))
+              return yield* Effect.fail(unavailable("load"));
+            if (credentialStoreMissing(platform, result)) return undefined;
+            return yield* Effect.fail(credentialStoreFailure("load", result));
+          }
+          const value = result.stdout.trim();
+          if (value.length === 0)
+            return yield* new CredentialStoreFailure({ operation: "load", reason: "corrupt" });
+          return value;
+        }),
+      save: (name, value) =>
+        run("save", ["security", "add-generic-password", "-s", "scotty", "-a", name, "-U", "-w"], {
+          input: `${value}\n`,
+        }).pipe(Effect.flatMap((result) => credentialStoreResult("save", platform, result, false))),
+      remove: (name) =>
+        run("remove", ["security", "delete-generic-password", "-s", "scotty", "-a", name]).pipe(
+          Effect.flatMap((result) => credentialStoreResult("remove", platform, result, true)),
+        ),
+    };
+
+  if (platform === "linux")
+    return {
+      load: (name) =>
+        Effect.gen(function* () {
+          const result = yield* run("load", [
+            "secret-tool",
+            "lookup",
+            "service",
+            "scotty",
+            "identity",
+            name,
+          ]);
+          if (result.exitCode !== 0) {
+            if (credentialStoreUnavailableResult(platform, result))
+              return yield* Effect.fail(unavailable("load"));
+            if (credentialStoreMissing(platform, result)) return undefined;
+            return yield* Effect.fail(credentialStoreFailure("load", result));
+          }
+          const value = result.stdout.trim();
+          if (value.length === 0)
+            return yield* new CredentialStoreFailure({ operation: "load", reason: "corrupt" });
+          return value;
+        }),
+      save: (name, value) =>
+        run(
+          "save",
+          [
+            "secret-tool",
+            "store",
+            "--label=Scotty local identity",
+            "service",
+            "scotty",
+            "identity",
+            name,
+          ],
+          { input: `${value}\n` },
+        ).pipe(Effect.flatMap((result) => credentialStoreResult("save", platform, result, false))),
+      remove: (name) =>
+        run("remove", ["secret-tool", "clear", "service", "scotty", "identity", name]).pipe(
+          Effect.flatMap((result) => credentialStoreResult("remove", platform, result, true)),
+        ),
+    };
+
+  return {
+    load: () => Effect.fail(unavailable("load")),
+    save: () => Effect.fail(unavailable("save")),
+    remove: () => Effect.fail(unavailable("remove")),
+  };
+};
+
 export const defaultDependencies = (): CliDependencies => ({
   // oxlint-disable-next-line scotty/no-raw-fetch -- boundary: CliDependencies captures native fetch for the interruptible CLI host adapter
   fetch: globalThis.fetch,
@@ -442,6 +879,7 @@ export const defaultDependencies = (): CliDependencies => ({
   },
   run: async (command, options) => {
     const child = Bun.spawn(command, {
+      stdin: options?.input === undefined ? "ignore" : new TextEncoder().encode(options.input),
       stdout: "pipe",
       stderr: "pipe",
       cwd: options?.cwd ?? process.cwd(),
@@ -494,6 +932,7 @@ export const cliLayer = (
   | CliRuntime
   | HttpTransport
   | ProcessRunner
+  | CredentialStore
   | BrowserLauncher
   | FileSystem
   | InstallationCreator
@@ -503,6 +942,14 @@ export const cliLayer = (
   | CliUpgrader
 > => {
   const dependencies = { ...defaultDependencies(), ...overrides };
+  const processRunner: ProcessRunnerShape = {
+    run: (command, options) =>
+      Effect.tryPromise({
+        try: () => dependencies.run([...command], options),
+        catch: unexpected,
+      }),
+  };
+  const credentialStore = dependencies.credentialStore ?? makeProcessCredentialStore(processRunner);
   const failInstallation = installationCommandFailure(dependencies.home, dependencies.env);
   return Layer.mergeAll(
     Layer.succeed(CliRuntime)({
@@ -524,13 +971,8 @@ export const cliLayer = (
           catch: networkFailure,
         }),
     }),
-    Layer.succeed(ProcessRunner)({
-      run: (command, options) =>
-        Effect.tryPromise({
-          try: () => dependencies.run([...command], options),
-          catch: unexpected,
-        }),
-    }),
+    Layer.succeed(ProcessRunner)(processRunner),
+    Layer.succeed(CredentialStore)(credentialStore),
     Layer.succeed(BrowserLauncher)({
       open: (url) =>
         Effect.tryPromise({
@@ -695,6 +1137,7 @@ export const cliLayer = (
       stat: (path) => hostPromise(() => stat(path)),
       readText: (path) => Effect.tryPromise({ try: () => readFile(path, "utf8"), catch: errno }),
       readPrivateText,
+      readPrivateCredential,
       readLockedText: (path) =>
         Effect.acquireUseRelease(
           hostPromise(() =>
@@ -732,7 +1175,10 @@ export const cliLayer = (
           catch: unexpected,
         }),
       writeSecure,
+      writePrivateCredential,
+      removePrivateCredential,
       appendOnce,
+      ...dependencies.fileSystem,
     }),
   );
 };

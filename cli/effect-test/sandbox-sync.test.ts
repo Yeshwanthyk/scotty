@@ -25,7 +25,8 @@ const config: ScottyConfig = {
   sandboxSetup: { piExtensions: [], skills: [], sandboxTools: [] },
 };
 
-const target = { host: "https://worker.example", token: "root-token" } as const;
+const CLIENT_CREDENTIAL = `scotty_client.0123456789ab.${"a".repeat(32)}`;
+const target = { host: "https://worker.example", credential: CLIENT_CREDENTIAL } as const;
 
 interface PreparedSnapshotBody {
   readonly pluginBundleDigest: string;
@@ -58,11 +59,15 @@ describe("sandbox snapshot sync", () => {
     Effect.gen(function* () {
       const active = yield* buildSandboxBundle(config, 2);
       let putCalls = 0;
+      let cookie: string | null = null;
+      let authorization: string | null = null;
       const layer = Layer.succeed(HttpTransport)({
         fetch: (input, init) =>
           Effect.sync(() => {
             const request = new Request(input, init);
             if (request.method === "PUT") putCalls += 1;
+            cookie = request.headers.get("cookie");
+            authorization = request.headers.get("authorization");
             return Response.json(status(2, active.snapshotDigest, active.configDigest));
           }),
       });
@@ -74,6 +79,8 @@ describe("sandbox snapshot sync", () => {
       assert.strictEqual(synchronized.remote.status, "synchronized");
       assert.strictEqual(synchronized.remote.activeSnapshotDigest, active.snapshotDigest);
       assert.strictEqual(putCalls, 0);
+      assert.strictEqual(cookie, `__Host-scotty=${CLIENT_CREDENTIAL}`);
+      assert.strictEqual(authorization, null);
     }),
   );
 

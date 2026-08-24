@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Predicate } from "effect";
 import {
   CliError,
   DEFAULT_REQUEST_TIMEOUT_MS,
@@ -52,8 +52,13 @@ export const readLimited = Effect.fnUntraced(function* (response: Response) {
 });
 
 export type ApiRequestTarget =
-  | { readonly host: string; readonly token: string }
-  | { readonly host: "https://scotty.internal"; readonly token?: never };
+  | { readonly host: string; readonly token: string; readonly credential?: never }
+  | { readonly host: string; readonly credential: string; readonly token?: string }
+  | {
+      readonly host: "https://scotty.internal";
+      readonly token?: never;
+      readonly credential?: never;
+    };
 
 export const apiRequest = Effect.fnUntraced(function* (
   target: ApiRequestTarget,
@@ -67,16 +72,37 @@ export const apiRequest = Effect.fnUntraced(function* (
       ? DEFAULT_REQUEST_TIMEOUT_MS
       : MUTATION_REQUEST_TIMEOUT_MS;
   const headers = new Headers(init.headers);
-  if (target.token !== undefined) headers.set("authorization", `Bearer ${target.token}`);
+  if (target.credential === undefined && target.token !== undefined)
+    headers.set("authorization", `Bearer ${target.token}`);
+  if (target.credential !== undefined) headers.set("cookie", `__Host-scotty=${target.credential}`);
   headers.set("accept", "application/json, application/x-tar, application/octet-stream");
   if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (method !== "GET" && target.credential !== undefined) {
+    headers.set("origin", target.host);
+    headers.set("sec-fetch-site", "same-origin");
+  }
   if (method !== "GET" && !headers.has("idempotency-key"))
     headers.set("idempotency-key", crypto.randomUUID());
   const responseOption = yield* transport
-    .fetch(`${target.host}${path}`, { ...init, headers })
+    .fetch(`${target.host}${path}`, {
+      ...init,
+      redirect: target.credential === undefined ? init.redirect : "error",
+      cache: target.credential === undefined ? init.cache : "no-store",
+      headers,
+    })
     .pipe(Effect.timeoutOption(timeout));
   if (Option.isNone(responseOption)) return yield* timeoutError();
   const response = responseOption.value;
+  if (target.credential !== undefined && response.url) {
+    const responseUrl = new URL(response.url);
+    if (responseUrl.origin !== target.host)
+      return yield* new CliError(
+        "cross_origin_response",
+        "Refused a cross-origin Scotty response",
+        "Verify the installation origin and retry.",
+        EXIT.GENERIC,
+      );
+  }
   const bytes = yield* readLimited(response);
   if (!response.ok) {
     const json = decodeJsonValue(new TextDecoder().decode(bytes));
@@ -96,10 +122,11 @@ export const apiRequest = Effect.fnUntraced(function* (
       (Option.isSome(fields)
         ? Option.getOrUndefined(decodeString(fields.value.hint))
         : undefined) ?? "Check the session state and Worker logs.";
+    const secrets = [target.token, target.credential].filter(Predicate.isNotUndefined);
     return yield* new CliError(
-      redact(code, target.token === undefined ? [] : [target.token]),
-      redact(message, target.token === undefined ? [] : [target.token]),
-      redact(hint, target.token === undefined ? [] : [target.token]),
+      redact(code, secrets),
+      redact(message, secrets),
+      redact(hint, secrets),
       statusExit(response.status, code),
     );
   }
