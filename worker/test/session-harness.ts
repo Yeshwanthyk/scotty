@@ -522,7 +522,7 @@ class HarnessStorage {
             (mutation) =>
               mutation.kind === "put" &&
               mutation.key === RECORD_KEY &&
-              (mutation.value as SessionRecord).status === "booting" &&
+              (mutation.value as SessionRecord).status === "provisioning" &&
               (mutation.value as SessionRecord).operation?.kind === "create",
           )
         ) {

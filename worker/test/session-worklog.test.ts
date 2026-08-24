@@ -476,7 +476,7 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
   it("reports typed passive-console authority conflicts without invoking the relay", async () => {
     const records = [
       {
-        record: makeSessionRecord({ status: "sleeping" }),
+        record: makeSessionRecord({ status: "stopped" }),
         reason: "session_not_warm",
       },
       {

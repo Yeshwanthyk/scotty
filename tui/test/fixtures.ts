@@ -6,6 +6,7 @@ export const SESSION_B = "b0c1d2e3f4a5";
 
 export const session = (id: string, overrides: Partial<FleetSession> = {}): SelectedSession => ({
   version: 1,
+  revision: 1,
   id,
   title: `Session ${id}`,
   status: "warm",

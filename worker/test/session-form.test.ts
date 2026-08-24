@@ -67,7 +67,7 @@ describe("session form", () => {
     const third = {
       id: "three",
       repo: "owner/agent",
-      status: "sleeping",
+      status: "stopped",
       createdAt: "2025-12-01T00:00:00.000Z",
     };
     const unknown = {
@@ -87,9 +87,9 @@ describe("session form", () => {
   it("puts warm projects first while preserving project creation order", () => {
     const oldestProject = [
       {
-        id: "old-sleeping",
+        id: "old-stopped",
         repo: "owner/oldest",
-        status: "sleeping",
+        status: "stopped",
         createdAt: "2026-01-01T00:00:00.000Z",
       },
       {
@@ -105,24 +105,24 @@ describe("session form", () => {
       status: "warm",
       createdAt: "2026-02-01T00:00:00.000Z",
     };
-    const olderFailedProject = {
-      id: "old-failed",
-      repo: "owner/failed",
-      status: "failed",
+    const olderStoppedProject = {
+      id: "old-stopped",
+      repo: "owner/stopped",
+      status: "stopped",
       createdAt: "2025-01-01T00:00:00.000Z",
     };
 
     assert.deepStrictEqual(
       groupSessionsByRepository([
         newerWarmProject,
-        olderFailedProject,
+        olderStoppedProject,
         oldestProject[1],
         oldestProject[0],
       ]),
       [
         { repo: "owner/oldest", sessions: oldestProject },
         { repo: "owner/newer", sessions: [newerWarmProject] },
-        { repo: "owner/failed", sessions: [olderFailedProject] },
+        { repo: "owner/stopped", sessions: [olderStoppedProject] },
       ],
     );
   });

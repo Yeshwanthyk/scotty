@@ -359,9 +359,10 @@ const evidenceVideoBucket = (jobId: string, sha256: string): R2Bucket => {
 
 const projection = {
   version: 1,
+  revision: 1,
   id: "a0b1c2d3e4f5",
   title: "Test session",
-  status: "failed",
+  status: "stopped",
   provider: "cloudflare",
   repo: "owner/repo",
   defaultBranch: "main",
@@ -372,7 +373,24 @@ const projection = {
   updatedAt: "2026-01-01T00:01:00.000Z",
   hardCapAt: "2026-01-01T04:00:00.000Z",
   projectedAt: "2026-01-01T00:01:00.000Z",
-  failure: { code: "backup_failed", message: "Backup failed", recoverable: true },
+  operationResult: {
+    kind: "snapshot",
+    stage: "checkpoint",
+    progress: "completed",
+    lastProvenEffect: "runtime_stopped",
+    retainedState: "checkpoint",
+    ambiguity: "none",
+    safeRetry: "none",
+    humanAction: "resume",
+    outcome: {
+      status: "failed",
+      failure: { code: "runtime_stopped", message: "Runtime stopped" },
+    },
+    stoppedReason: "runtime_exit",
+    recoveryAction: "resume",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:01:00.000Z",
+  },
   secret: "must-not-survive",
 };
 
@@ -869,9 +887,10 @@ describe("real Hono boundary", () => {
 
     const assignedProjection = {
       version: 1,
+      revision: 1,
       id: "b0b1c2d3e4f5",
       title: "Runner recovery",
-      status: "failed",
+      status: "provisioning",
       provider: "runner",
       runner: "test-runner",
       repo: "owner/repo",
@@ -882,10 +901,22 @@ describe("real Hono boundary", () => {
       updatedAt: "2026-07-27T12:00:00.000Z",
       hardCapAt: "2026-07-27T16:00:00.000Z",
       projectedAt: "2026-07-27T12:00:00.000Z",
-      failure: {
-        code: "resume_failed",
-        message: "Session restore failed",
-        recoverable: true,
+      operationResult: {
+        kind: "resume",
+        stage: "restore",
+        progress: "completed",
+        lastProvenEffect: "session_created",
+        retainedState: "session",
+        ambiguity: "none",
+        safeRetry: "retry_operation",
+        humanAction: "retry",
+        outcome: {
+          status: "failed",
+          failure: { code: "resume_failed", message: "Session restore failed" },
+        },
+        recoveryAction: "retry",
+        startedAt: "2026-07-27T11:59:00.000Z",
+        updatedAt: "2026-07-27T12:00:00.000Z",
       },
     };
     const sessions = {
@@ -1130,6 +1161,7 @@ describe("real Hono boundary", () => {
 
     const assignedProjection = {
       version: 1,
+      revision: 1,
       id: "b0b1c2d3e4f5",
       title: "Runner recovery",
       status: "warm",
@@ -1282,8 +1314,8 @@ describe("real Hono boundary", () => {
     });
     expect(harness.events).toEqual(
       expect.arrayContaining([
-        "record:booting",
-        "projection:booting",
+        "record:provisioning",
+        "projection:provisioning",
         "schedule:enforceHardCap",
         "host:exec:workspace",
         "host:writeFile",
@@ -1728,7 +1760,7 @@ describe("real Hono boundary", () => {
         method: "POST",
         path: "/api/sessions/a0b1c2d3e4f5/sleep",
         mock: sandbox.sleepScottySession,
-        output: { id: "a0b1c2d3e4f5", status: "sleeping", backupId: "backup-1" },
+        output: { id: "a0b1c2d3e4f5", status: "stopped", backupId: "backup-1" },
       },
     ] as const;
     for (const entry of cases) {
@@ -2093,7 +2125,7 @@ describe("real Hono boundary", () => {
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
-          status: "sleeping",
+          status: "stopped",
           branch: `scotty/${SESSION_ID}`,
           backup: { current: makeResumeBackup() },
           ownedBackupIds: ["backup-1"],
@@ -2201,12 +2233,17 @@ describe("real Hono boundary", () => {
       id: projection.id,
       backupId: projection.backupId,
       codexThreadId: projection.codexThreadId,
-      failure: projection.failure,
+      operationResult: projection.operationResult,
     });
     expect(body[0]).not.toHaveProperty("secret");
   });
 
   it("serves authenticated creation stats joined to current session statuses", async () => {
+    const {
+      backupId: _backupId,
+      operationResult: _operationResult,
+      ...warmProjection
+    } = projection;
     const values = new Map<string, unknown>([
       [
         "stats:workspace-created:a0b1c2d3e4f5",
@@ -2226,8 +2263,8 @@ describe("real Hono boundary", () => {
           createdAt: "2026-07-29T10:00:00.000Z",
         },
       ],
-      ["session:a0b1c2d3e4f5", { ...projection, id: "a0b1c2d3e4f5", status: "warm" }],
-      ["session:b0b1c2d3e4f5", { ...projection, id: "b0b1c2d3e4f5", status: "sleeping" }],
+      ["session:a0b1c2d3e4f5", { ...warmProjection, id: "a0b1c2d3e4f5", status: "warm" }],
+      ["session:b0b1c2d3e4f5", { ...projection, id: "b0b1c2d3e4f5", status: "stopped" }],
     ]);
     const sessions = {
       ...emptySessionsNamespace(),
@@ -2255,13 +2292,13 @@ describe("real Hono boundary", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       trackingSince: "2026-07-28T10:00:00.000Z",
-      overall: { workspacesCreated: 2, projects: 1, warmNow: 1, sleepingNow: 1 },
+      overall: { workspacesCreated: 2, projects: 1, warmNow: 1, stoppedNow: 1 },
       projects: [
         {
           repository: "owner/project",
           workspacesCreated: 2,
           warmNow: 1,
-          sleepingNow: 1,
+          stoppedNow: 1,
           lastCreated: "2026-07-29T10:00:00.000Z",
         },
       ],
@@ -3454,7 +3491,7 @@ describe("real Hono boundary", () => {
   it("returns non-warm Cloudflare session pages to Home for explicit resume", async () => {
     sandbox.getScottySession.mockResolvedValueOnce({
       id: "a0b1c2d3e4f5",
-      status: "sleeping",
+      status: "stopped",
       provider: "cloudflare",
       repo: "owner/repo",
       branch: "scotty/a0b1c2d3e4f5",
@@ -3530,10 +3567,10 @@ describe("real Hono boundary", () => {
     expect(response.status).toBe(401);
   });
 
-  it("rejects Cloudflare terminal access when the session is sleeping", async () => {
+  it("rejects Cloudflare terminal access when the session is stopped", async () => {
     sandbox.getScottySession.mockResolvedValueOnce({
       id: "a0b1c2d3e4f5",
-      status: "sleeping",
+      status: "stopped",
       provider: "cloudflare",
       repo: "owner/repo",
       branch: "scotty/a0b1c2d3e4f5",
@@ -3553,7 +3590,7 @@ describe("real Hono boundary", () => {
     await expect(response.json()).resolves.toEqual({
       error: {
         code: "wrong_state",
-        message: "Cannot access a session in sleeping state",
+        message: "Cannot access a session in stopped state",
         hint: "Resume the session from Home before opening the worklog",
       },
     });

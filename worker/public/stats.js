@@ -14,7 +14,7 @@ const elements = {
     workspacesCreated: document.querySelector('[data-stat="workspaces-created"]'),
     projects: document.querySelector('[data-stat="projects"]'),
     warmNow: document.querySelector('[data-stat="warm-now"]'),
-    sleepingNow: document.querySelector('[data-stat="sleeping-now"]'),
+    stoppedNow: document.querySelector('[data-stat="stopped-now"]'),
   },
 };
 
@@ -49,7 +49,7 @@ function setMetricValues(overall) {
   elements.values.workspacesCreated.textContent = String(overall.workspacesCreated);
   elements.values.projects.textContent = String(overall.projects);
   elements.values.warmNow.textContent = String(overall.warmNow);
-  elements.values.sleepingNow.textContent = String(overall.sleepingNow);
+  elements.values.stoppedNow.textContent = String(overall.stoppedNow);
   for (const value of Object.values(elements.values)) value.classList.remove("is-loading");
   elements.metrics.setAttribute("aria-busy", "false");
 }
@@ -63,7 +63,7 @@ function projectRow(project) {
   const fields = [
     ["Workspaces created", project.workspacesCreated],
     ["Warm now", project.warmNow],
-    ["Sleeping now", project.sleepingNow],
+    ["Stopped now", project.stoppedNow],
     ["Last created", displayDate(project.lastCreated) ?? "Unknown"],
   ];
   for (const [label, value] of fields) {

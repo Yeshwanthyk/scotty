@@ -57,7 +57,7 @@ class FakeWorkspaceCapabilities implements SandboxRuntimeCapabilities {
 const prepareWith = (
   capabilities: SandboxRuntimeCapabilities,
   session: SessionRecord = makeSessionRecord({
-    status: "booting",
+    status: "provisioning",
     operation: { kind: "create", nonce: "nonce", startedAt: "2026-07-22T00:00:00.000Z" },
   }),
   verified?: VerifiedRepository,

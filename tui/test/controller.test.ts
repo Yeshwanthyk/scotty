@@ -18,7 +18,7 @@ class FakeConsoleTransport implements ConsoleTransport {
   remoteLifecycleMutations = 0;
   commandMode: "accepted" | "rejected" | "stale" | "ambiguous" = "accepted";
   snapshotRevision = 7;
-  selectedStatus: "warm" | "sleeping" | "failed" = "warm";
+  selectedStatus: "warm" | "stopped" = "warm";
   streamMode: "wait" | "eof_once" | "eof" = "wait";
   streamCalls = 0;
   pendingUi: PiConsoleSnapshotV1["pendingUi"] = [];
@@ -198,17 +198,17 @@ describe("FleetConsoleController", () => {
     controller.stop();
   });
 
-  it("inspects a sleeping sandbox without attaching its console or changing lifecycle", async () => {
+  it("inspects a stopped sandbox without attaching its console or changing lifecycle", async () => {
     const transport = new FakeConsoleTransport();
-    transport.selectedStatus = "sleeping";
-    transport.fleet = [session(SESSION_A, { status: "sleeping", backupId: "backup-1" })];
+    transport.selectedStatus = "stopped";
+    transport.fleet = [session(SESSION_A, { status: "stopped", backupId: "backup-1" })];
     const controller = new FleetConsoleController(transport);
 
     await controller.loadFleet();
     await controller.inspectSession(SESSION_A);
 
     expect(controller.state.selectedSessionId).toBe(SESSION_A);
-    expect(controller.state.cache(SESSION_A).metadata?.status).toBe("sleeping");
+    expect(controller.state.cache(SESSION_A).metadata?.status).toBe("stopped");
     expect(controller.state.cache(SESSION_A).live).toBeUndefined();
     expect(transport.reads).toEqual(["GET /api/sessions", `GET /api/sessions/${SESSION_A}`]);
     expect(transport.commands).toEqual([]);
@@ -503,7 +503,7 @@ describe("FleetConsoleController", () => {
 
   it("guards unavailable picker rows and closes a current-session choice without reconnecting", async () => {
     const { controller, transport } = await open();
-    transport.fleet = [session(SESSION_A), session(SESSION_B, { status: "sleeping" })];
+    transport.fleet = [session(SESSION_A), session(SESSION_B, { status: "stopped" })];
     await controller.openSessionsPicker();
     const readsBefore = [...transport.reads];
 

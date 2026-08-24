@@ -9,7 +9,11 @@ import {
   EnvironmentMutationResponseSchema,
   EnvironmentViewSchema,
 } from "../../worker/src/environment-contracts";
-import { SessionEnvironmentStatusSchema } from "../../worker/src/contracts";
+import {
+  SessionEnvironmentStatusSchema,
+  SessionOperationResultSchema,
+  SessionStatusSchema,
+} from "../../worker/src/contracts";
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
@@ -117,7 +121,7 @@ export const UpResponseSchema = Schema.Struct({
   url: Schema.NonEmptyString,
   branch: Schema.NonEmptyString,
   provider: ProviderSchema,
-  status: Schema.NonEmptyString,
+  status: SessionStatusSchema,
 });
 const BeamUpRequestFields = {
   title: Schema.NonEmptyString,
@@ -141,7 +145,7 @@ export const BeamUpOutputSchema = Schema.Struct({
   url: Schema.NonEmptyString,
   branch: Schema.NonEmptyString,
   provider: ProviderSchema,
-  status: Schema.NonEmptyString,
+  status: SessionStatusSchema,
 });
 export type BeamUpOutput = typeof BeamUpOutputSchema.Type;
 export const RecoveryGrantResponseSchema = Schema.Struct({
@@ -153,21 +157,17 @@ export const OperationResponseSchema = Schema.Struct({
   url: Schema.optionalKey(Schema.Unknown),
   branch: Schema.optionalKey(Schema.Unknown),
   backupId: Schema.optionalKey(Schema.Unknown),
-  status: Schema.NonEmptyString,
-});
-export const RawSessionFailureSchema = Schema.Struct({
-  code: Schema.optionalKey(Schema.Unknown),
-  message: Schema.optionalKey(Schema.Unknown),
-  recoverable: Schema.optionalKey(Schema.Unknown),
+  status: SessionStatusSchema,
 });
 const SessionSandboxBundleSchema = Schema.Struct({
   digest: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
   manifestVersion: Schema.Literal(1),
 });
 export const SessionResponseSchema = Schema.Struct({
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   id: Schema.NonEmptyString,
   title: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
+  status: SessionStatusSchema,
   provider: ProviderSchema,
   repo: Schema.NonEmptyString,
   defaultBranch: Schema.NonEmptyString,
@@ -181,19 +181,15 @@ export const SessionResponseSchema = Schema.Struct({
   codexThreadId: Schema.optionalKey(Schema.Unknown),
   agentState: Schema.optionalKey(Schema.Unknown),
   lastAgentEventAt: Schema.optionalKey(Schema.Unknown),
-  failure: Schema.optionalKey(Schema.Unknown),
+  operationResult: Schema.optionalKey(SessionOperationResultSchema),
   sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
 });
 export const SessionsResponseSchema = Schema.Array(SessionResponseSchema);
-const StableSessionFailureSchema = Schema.Struct({
-  code: Schema.NonEmptyString,
-  message: Schema.NonEmptyString,
-  recoverable: Schema.Boolean,
-});
 export const StableSessionSchema = Schema.Struct({
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   id: Schema.NonEmptyString,
   title: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
+  status: SessionStatusSchema,
   provider: ProviderSchema,
   repo: Schema.NonEmptyString,
   defaultBranch: Schema.NonEmptyString,
@@ -207,7 +203,7 @@ export const StableSessionSchema = Schema.Struct({
   codexThreadId: Schema.optionalKey(Schema.NonEmptyString),
   agentState: Schema.optionalKey(Schema.NonEmptyString),
   lastAgentEventAt: Schema.optionalKey(Schema.NonEmptyString),
-  failure: Schema.optionalKey(StableSessionFailureSchema),
+  operationResult: Schema.optionalKey(SessionOperationResultSchema),
   sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
 });
 export type StableSession = typeof StableSessionSchema.Type;
@@ -289,7 +285,7 @@ export const AttachOutputSchema = Schema.Struct({
 export type AttachOutput = typeof AttachOutputSchema.Type;
 export const SessionOperationOutputSchema = Schema.Struct({
   id: Schema.NonEmptyString,
-  status: Schema.NonEmptyString,
+  status: SessionStatusSchema,
   url: Schema.optionalKey(Schema.NonEmptyString),
   branch: Schema.optionalKey(Schema.NonEmptyString),
   backupId: Schema.optionalKey(Schema.NonEmptyString),
@@ -363,7 +359,6 @@ export const decodeInitJournalJson = (input: unknown): Option.Option<InitJournal
 export const decodeUpResponse = Schema.decodeUnknownOption(UpResponseSchema);
 export const decodeRecoveryGrantResponse = Schema.decodeUnknownOption(RecoveryGrantResponseSchema);
 export const decodeOperationResponse = Schema.decodeUnknownOption(OperationResponseSchema);
-export const decodeRawSessionFailure = Schema.decodeUnknownOption(RawSessionFailureSchema);
 export const decodeSessionsResponse = Schema.decodeUnknownOption(SessionsResponseSchema);
 export const decodeInspectResponse = Schema.decodeUnknownOption(InspectResponseSchema, {
   onExcessProperty: "ignore",

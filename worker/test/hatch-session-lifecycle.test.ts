@@ -403,6 +403,10 @@ describe("authoritative Hatch session lifecycle", () => {
       assert.strictEqual(pending?.desiredStatus, "closed");
       assert.strictEqual(pending?.exposure, "unexpose_pending");
       assert.lengthOf(pending?.permits ?? [], 0);
+      assert.deepStrictEqual(harness.readRecord()?.operationResult?.outcome, {
+        status: "failed",
+        failure: { code: "hatch_failed", message: "Hatch operation failed" },
+      });
       const retry = harness.schedules.findLast(
         (schedule) => schedule.callback === "retryHatchCleanup",
       );
@@ -563,7 +567,7 @@ describe("authoritative Hatch session lifecycle", () => {
       assert.ok(before);
 
       const slept = yield* Effect.promise(() => harness.sandbox.sleepScottySession());
-      assert.strictEqual(slept.status, "sleeping");
+      assert.strictEqual(slept.status, "stopped");
       const sleeping = hatchState(harness)?.primary;
       assert.ok(sleeping);
       assert.strictEqual(sleeping.desiredStatus, "open");
@@ -571,7 +575,7 @@ describe("authoritative Hatch session lifecycle", () => {
       assert.strictEqual(sleeping.exposure, "closed");
       assert.strictEqual(sleeping.runtimeEpoch, undefined);
       const stopped = harness.events.indexOf("host:stop");
-      const sleepingCommit = harness.events.lastIndexOf("record:sleeping");
+      const sleepingCommit = harness.events.lastIndexOf("record:stopped");
       assert.ok(stopped >= 0);
       assert.ok(sleepingCommit > stopped);
 
@@ -617,7 +621,14 @@ describe("authoritative Hatch session lifecycle", () => {
         ),
       );
       assert.isTrue(rejected);
-      assert.strictEqual(harness.readRecord()?.status, "failed");
+      assert.strictEqual(harness.readRecord()?.status, "stopped");
+      assert.deepInclude(harness.readRecord()?.operationResult, {
+        kind: "resume",
+        outcome: {
+          status: "failed",
+          failure: { code: "resume_failed", message: "Session restore failed" },
+        },
+      });
       const failed = hatchState(harness)?.primary;
       assert.ok(failed);
       assert.strictEqual(failed.desiredStatus, "open");

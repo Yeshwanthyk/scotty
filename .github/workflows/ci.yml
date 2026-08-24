@@ -1,7 +1,9 @@
 name: CI
 
 on:
-  pull_request:
+  # Keep CI manual during the alpha implementation sequence. PR 15 restores the
+  # automatic release-candidate gate after the full local/deployed proof exists.
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -145,6 +145,8 @@ import {
   type DownManifest,
   type OperationKind,
   type SessionCreateSetupStage,
+  type SessionControlAuthority,
+  type SessionOperationFailureCode,
   type SessionEnvironmentStatus,
   type SessionRecord,
   type SessionStatus,
@@ -159,7 +161,6 @@ import {
   makeSessionControlGate,
   SessionStore,
   sessionStoreLayer,
-  type SessionControlAuthority,
   type SessionControlGate,
   type SessionRecordStorage,
 } from "./session-store";
@@ -979,8 +980,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
           } satisfies HatchCleanupRetryV1),
         );
     }
+    if (Result.isFailure(result)) {
+      yield* this.failOperationProgram(
+        operation.nonce,
+        "hatch_failed",
+        "Hatch operation failed",
+        true,
+      );
+      return yield* this.hatchControlError(result.failure);
+    }
     yield* this.releaseOperationIfHeldProgram(operation.nonce);
-    if (Result.isFailure(result)) return yield* this.hatchControlError(result.failure);
     return result.success;
   });
 
@@ -1050,10 +1059,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
           ),
         )
       : Result.succeed(undefined);
-    yield* this.releaseOperationIfHeldProgram(operation.nonce);
-    if (Result.isFailure(scheduled))
+    if (Result.isFailure(scheduled)) {
+      yield* this.failOperationProgram(
+        operation.nonce,
+        "hatch_failed",
+        "Hatch cleanup retry scheduling failed",
+        true,
+      );
       return yield* this.upstreamError("Hatch cleanup retry scheduling failed", scheduled.failure);
-    if (Result.isFailure(closed)) return yield* this.hatchControlError(closed.failure);
+    }
+    if (Result.isFailure(closed)) {
+      yield* this.failOperationProgram(
+        operation.nonce,
+        "hatch_failed",
+        "Hatch operation failed",
+        true,
+      );
+      return yield* this.hatchControlError(closed.failure);
+    }
+    yield* this.releaseOperationIfHeldProgram(operation.nonce);
     return yield* Effect.flatMap(HatchStore, (store) => store.publicStatus);
   });
 
@@ -1906,7 +1930,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* wrongState(
         record.status,
         "access",
-        record.status === "sleeping"
+        record.status === "stopped"
           ? "Resume the session from Home before opening the worklog"
           : undefined,
       );
@@ -1923,41 +1947,62 @@ export class Sandbox extends BaseSandbox<Bindings> {
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
-    yield* projectSessionBestEffort(record);
+    const store = yield* SessionStore;
+    yield* store.readControlAuthority.pipe(
+      Effect.flatMap((authority) =>
+        authority.record.id === record.id ? projectSessionBestEffort(authority) : Effect.void,
+      ),
+      Effect.ignore,
+    );
+  });
+
+  private readonly sessionViewProgram = Effect.fnUntraced(function* (this: Sandbox) {
+    const store = yield* SessionStore;
+    const authority = yield* store.readControlAuthority;
+    const now = yield* Clock.currentTimeMillis;
+    return toSessionView(toProjection(authority.record, authority.revision, new Date(now)), now);
   });
 
   private readonly updateForOperationProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
     nonce: string,
     update: (record: SessionRecord) => SessionRecord,
   ) {
     const store = yield* SessionStore;
     const next = yield* store.updateForOperation(nonce, update);
-    yield* projectSessionBestEffort(next);
+    yield* this.projectProgram(next);
     return next;
   });
 
-  private readonly releaseOperationProgram = Effect.fnUntraced(function* (nonce: string) {
+  private readonly releaseOperationProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+  ) {
     const store = yield* SessionStore;
     const next = yield* store.releaseOperation(nonce);
-    yield* projectSessionBestEffort(next);
+    yield* this.projectProgram(next);
     return next;
   });
 
-  private readonly releaseOperationIfHeldProgram = Effect.fnUntraced(function* (nonce: string) {
+  private readonly releaseOperationIfHeldProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+  ) {
     const store = yield* SessionStore;
     const next = yield* store.releaseOperationIfHeld(nonce);
-    if (next) yield* projectSessionBestEffort(next);
+    if (next) yield* this.projectProgram(next);
   });
 
   private readonly failOperationProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
     nonce: string,
-    code: string,
+    code: SessionOperationFailureCode,
     message: string,
     recoverable: boolean,
   ) {
     const store = yield* SessionStore;
     const next = yield* store.failOperation(nonce, code, message, recoverable);
-    yield* projectSessionBestEffort(next);
+    yield* this.projectProgram(next);
     return next;
   });
 
@@ -1965,6 +2010,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     kind: OperationKind,
     allowed: SessionStatus[],
     replaceOperationOlderThanMs?: number,
+    stoppedReason?: NonNullable<SessionRecord["operation"]>["stoppedReason"],
   ) {
     const store = yield* SessionStore;
     return yield* store.acquireOperation(
@@ -1972,6 +2018,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       allowed,
       crypto.randomUUID(),
       replaceOperationOlderThanMs,
+      stoppedReason,
     );
   });
 
@@ -1981,7 +2028,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     const record = yield* this.readRecordProgram();
     return (
-      (record?.status === "warm" || record?.status === "booting") &&
+      (record?.status === "warm" || record?.status === "provisioning") &&
       record.operation?.nonce === nonce &&
       Boolean(record.operation.stopRequestedAt)
     );
@@ -2082,7 +2129,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       codexThreadId: `pi-${record.id}`,
       agentState: "working",
       lastAgentEventAt: readyAt,
-      failure: undefined,
       updatedAt: readyAt,
     })).pipe(Effect.mapError(mapCreateUncertain("warm_commit")));
   });
@@ -2108,11 +2154,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* Effect.result(
         this.updateForOperationProgram(nonce, (record) => ({
           ...record,
-          failure: {
-            code: "create_ambiguous",
-            message,
-            recoverable: true,
-            ...(stage === undefined ? {} : { stage }),
+          operationResult: {
+            kind: "create",
+            stage: stage === "runtime_phase" ? "runtime" : "setup",
+            progress: "running",
+            lastProvenEffect: "session_created",
+            retainedState: "operation_lease",
+            ambiguity: "provider_effect_unknown",
+            safeRetry: "reconcile_first",
+            humanAction: "retry",
+            outcome: {
+              status: "failed",
+              failure: { code: "create_ambiguous", message },
+            },
+            recoveryAction: "reconcile",
+            startedAt: record.operation?.startedAt ?? record.updatedAt,
+            updatedAt: record.updatedAt,
           },
         })),
       );
@@ -2140,8 +2197,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
   ) {
     if (Result.isFailure(reconciled))
       return yield* this.failCreateSetupProgram(id, nonce, reconciled.failure);
-    const completedAt = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(reconciled.success, new Date(completedAt)), completedAt);
+    return yield* this.sessionViewProgram();
   });
 
   private readonly replayCreateProgram = Effect.fnUntraced(function* (
@@ -2149,7 +2205,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     record: SessionRecord,
     prompt: string,
   ) {
-    if (record.status === "booting" && record.operation?.kind === "create") {
+    if (record.status === "provisioning" && record.operation?.kind === "create") {
       const operation = record.operation;
       if (record.execution.provider === "runner")
         return yield* wrongState(
@@ -2187,8 +2243,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         exitCode: 1,
       });
     }
-    const replayNow = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(record, new Date(replayNow)), replayNow);
+    return yield* this.sessionViewProgram();
   });
 
   private readonly dispatchRunnerProgram = Effect.fnUntraced(function* (
@@ -2251,8 +2306,22 @@ export class Sandbox extends BaseSandbox<Bindings> {
       version: 1,
       id,
       title: input.title,
-      status: "booting",
+      status: "provisioning",
       operation: { kind: "create", nonce, startedAt: nowIso, createPhase: "setup" },
+      operationResult: {
+        kind: "create",
+        stage: "setup",
+        progress: "running",
+        lastProvenEffect: "none",
+        retainedState: "operation_lease",
+        ambiguity: "none",
+        safeRetry: "none",
+        humanAction: "none",
+        outcome: { status: "pending" },
+        recoveryAction: "none",
+        startedAt: nowIso,
+        updatedAt: nowIso,
+      },
       execution: { provider: "cloudflare" },
       provider: "cloudflare",
       repo: input.repo,
@@ -2323,12 +2392,23 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const recordToCommit: SessionRecord = Result.isFailure(hardCapSchedule)
       ? {
           ...initialWithBundle,
-          status: "failed",
           operation: null,
-          failure: {
-            code: "create_failed",
-            message: "Session setup failed",
-            recoverable: false,
+          operationResult: {
+            kind: "create",
+            stage: "setup",
+            progress: "completed",
+            lastProvenEffect: "session_created",
+            retainedState: "session",
+            ambiguity: "none",
+            safeRetry: "none",
+            humanAction: "inspect",
+            outcome: {
+              status: "failed",
+              failure: { code: "create_failed", message: "Session setup failed" },
+            },
+            recoveryAction: "vaporize",
+            startedAt: nowIso,
+            updatedAt: nowIso,
           },
         }
       : initialWithBundle;
@@ -2360,14 +2440,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     if (Result.isFailure(setup))
       return yield* this.failCreateSetupProgram(verifiedInitial.id, nonce, setup.failure);
-    const completedAt = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(setup.success, new Date(completedAt)), completedAt);
+    return yield* this.sessionViewProgram();
   });
 
   private readonly getScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const record = yield* this.requireRecordProgram();
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(record, new Date(now)), now);
+    yield* this.requireRecordProgram();
+    return yield* this.sessionViewProgram();
   });
 
   private readonly resolveEnvironmentMaterializationProgram = Effect.fnUntraced(function* (
@@ -2526,7 +2604,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* this.updateForOperationProgram(payload.nonce, (current) => ({
       ...current,
       environment: next,
-      failure: undefined,
       updatedAt,
     }));
     const committed = yield* this.releaseOperationProgram(payload.nonce);
@@ -2604,8 +2681,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const store = yield* SessionStore;
     const record = yield* store.rename(title);
     yield* this.projectProgram(record);
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(record, new Date(now)), now);
+    return yield* this.sessionViewProgram();
   });
 
   private readonly resumeRunnerSessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -2617,7 +2693,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
   });
 
-  private readonly stopRunnerIntoSleepingProgram = Effect.fnUntraced(function* (
+  private readonly stopRunnerIntoStoppedProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     record: SessionRecord,
     nonce: string,
@@ -2630,7 +2706,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         exitCode: 1,
       });
     const runtimeId = record.execution.runtimeId;
-    const stopped = yield* Effect.result(
+    const stopAttempt = yield* Effect.result(
       this.dispatchRunnerProgram(record, {
         _tag: "StopRuntime",
         version: RUNNER_PROTOCOL_VERSION,
@@ -2638,7 +2714,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         sessionId: record.id,
       }),
     );
-    const stopDispatch = Result.isSuccess(stopped) ? stopped.success : undefined;
+    const stopDispatch = Result.isSuccess(stopAttempt) ? stopAttempt.success : undefined;
     const stopResponse = stopDispatch?.ok ? stopDispatch.response : undefined;
     let phase =
       Predicate.isTagged("RunnerSuccess")(stopResponse) &&
@@ -2684,22 +2760,34 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }
         return yield* this.upstreamError(
           "Session stop failed",
-          Result.isFailure(stopped) ? stopped.failure : stopDispatch,
+          Result.isFailure(stopAttempt) ? stopAttempt.failure : stopDispatch,
           record.id,
         );
       }
     }
 
+    if (record.backup?.current === undefined) {
+      const failed = yield* this.failOperationProgram(
+        nonce,
+        "checkpoint_required",
+        "Runner runtime stopped without a complete checkpoint",
+        false,
+      );
+      const store = yield* SessionStore;
+      const reconciled = yield* store.recordFailedRuntimeDestroyed(failed.id);
+      if (Option.isSome(reconciled)) yield* this.projectProgram(reconciled.value);
+      return yield* wrongState(record.status, "stop", "A complete checkpoint is required");
+    }
+
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    const sleeping = yield* this.updateForOperationProgram(nonce, (current) => ({
+    const stopped = yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
-      status: "sleeping",
+      status: "stopped",
       operation: null,
-      failure: undefined,
       updatedAt,
     }));
     yield* Effect.sync(() => this.deleteSchedules("enforceHardCap"));
-    return sleeping;
+    return stopped;
   });
 
   private readonly resumeScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -2709,7 +2797,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const backups = yield* BackupStore;
     const store = yield* SessionStore;
     const containerAuth = yield* ContainerAuth;
-    const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
+    const operation = yield* this.acquireOperationProgram("resume", ["stopped"]);
     let record = yield* this.requireRecordProgram();
     const backup = record.backup?.current;
     if (!backup) {
@@ -2721,8 +2809,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const bootingAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     record = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
       ...current,
-      status: "booting",
-      failure: undefined,
+      status: "provisioning",
       updatedAt: bootingAt,
     }));
 
@@ -2771,7 +2858,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           operation: null,
           agentState: "waiting",
           lastAgentEventAt: readyAt,
-          failure: undefined,
           hardCapAt,
           updatedAt: readyAt,
         }));
@@ -2788,8 +2874,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* this.destroyFailedRuntimeProgram(record.id);
       return yield* this.upstreamError("Session restore failed", restored.failure);
     }
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(restored.success, new Date(now)), now);
+    return yield* this.sessionViewProgram();
   });
 
   private readonly armVaporizeRetryProgram = Effect.fnUntraced(function* (
@@ -2814,7 +2899,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (current.operation?.kind !== "vaporize" || current.operation.nonce !== payload.nonce)
       return yield* conflict("Session vaporize lease changed");
 
-    yield* projectSessionBestEffort(current);
+    yield* this.projectProgram(current);
     yield* Effect.sync(() => this.cancelVaporizeConflictingSchedules());
     const hatchCleanup = yield* Effect.result(
       this.cleanupHatchProgram(payload.nonce, "gone", true, "operation"),
@@ -2870,7 +2955,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       codexThreadId: undefined,
       agentState: undefined,
       lastAgentEventAt: undefined,
-      failure: undefined,
       updatedAt,
     }));
     yield* removeSessionProjection(gone.id);
@@ -2902,7 +2986,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         ? existing.operation
         : yield* this.acquireOperationProgram(
             "vaporize",
-            ["booting", "warm", "sleeping", "failed"],
+            ["provisioning", "warm", "stopped"],
             ABANDONED_OPERATION_MS,
           );
     const payload = { id: existing.id, nonce: operation.nonce } satisfies VaporizeRetryPayload;
@@ -2983,9 +3067,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return { path: archivePath, filename: `scotty-${record.id}.tar`, manifest };
       }),
     );
-    yield* this.releaseOperationProgram(operation.nonce);
-    if (Result.isFailure(prepared))
+    if (Result.isFailure(prepared)) {
+      yield* this.failOperationProgram(
+        operation.nonce,
+        "down_failed",
+        "Beam-down archive failed",
+        true,
+      );
       return yield* this.upstreamError("Beam-down archive failed", prepared.failure);
+    }
+    yield* this.releaseOperationProgram(operation.nonce);
     return prepared.success;
   });
 
@@ -3007,9 +3098,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
     sessionId: string,
     hatchAuthority: "failed_runtime" | "hard_cap" = "failed_runtime",
   ) {
+    const recordDestroyed = Effect.gen({ self: this }, function* () {
+      const store = yield* SessionStore;
+      const reconciled = yield* store.recordFailedRuntimeDestroyed(sessionId);
+      if (Option.isSome(reconciled)) yield* this.projectProgram(reconciled.value);
+    });
     const record = yield* this.readRecordProgram();
     if (record?.execution.provider === "runner") {
       yield* this.removeRunnerRuntimeProgram(record, `failed-cleanup-${sessionId}`);
+      yield* recordDestroyed;
       return;
     }
     const hatchCleanupNonce = `hardcap-${randomToken(8)}`;
@@ -3032,7 +3129,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
         Effect.sleep(DESTROY_DEADLINE_MS).pipe(Effect.as(false)),
       ),
     );
-    if (Result.isSuccess(destroyed) && destroyed.success) return;
+    if (Result.isSuccess(destroyed) && destroyed.success) {
+      yield* recordDestroyed;
+      return;
+    }
     yield* hostEffect("schedule", () =>
       this.schedule(DESTROY_RETRY_SECONDS, "retryHardCapDestroy", sessionId),
     );
@@ -3083,14 +3183,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     payload: HardCapPayload,
   ) {
     const record = yield* this.readRecordProgram();
-    if (!record || record.status === "gone" || record.status === "sleeping") return;
+    if (!record || record.status === "gone" || record.status === "stopped") return;
     if (payload.hardCapAt !== record.hardCapAt) return;
     if (
       record.execution.provider === "runner" &&
       (record.operation?.kind === "snapshot" || record.operation?.kind === "resume")
     ) {
       const stopped = yield* Effect.result(
-        this.stopRunnerIntoSleepingProgram(
+        this.stopRunnerIntoStoppedProgram(
           record,
           record.operation.nonce,
           `hard-cap-${record.operation.nonce}`,
@@ -3155,11 +3255,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
     if (record.execution.provider === "runner") {
       const acquired = yield* Effect.result(
-        this.acquireOperationProgram("snapshot", ["warm", "booting"]),
+        this.acquireOperationProgram("snapshot", ["warm", "provisioning"], undefined, "hard_cap"),
       );
       if (Result.isFailure(acquired)) return;
       const stopped = yield* Effect.result(
-        this.stopRunnerIntoSleepingProgram(
+        this.stopRunnerIntoStoppedProgram(
           record,
           acquired.success.nonce,
           `hard-cap-${acquired.success.nonce}`,
@@ -3177,7 +3277,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
 
     const operationResult = yield* Effect.result(
-      this.acquireOperationProgram("snapshot", ["warm", "booting"]),
+      this.acquireOperationProgram("snapshot", ["warm", "provisioning"], undefined, "hard_cap"),
     );
     if (Result.isFailure(operationResult)) {
       const current = yield* this.readRecordProgram();
@@ -3203,7 +3303,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly onActivityExpiredProgram = Effect.fnUntraced(function* (this: Sandbox) {
     const record = yield* this.readRecordProgram();
     if (!record || record.status !== "warm" || record.operation) return;
-    const acquired = yield* Effect.result(this.acquireOperationProgram("snapshot", ["warm"]));
+    const acquired = yield* Effect.result(
+      this.acquireOperationProgram("snapshot", ["warm"], undefined, "inactivity"),
+    );
     if (Result.isFailure(acquired)) {
       yield* Effect.sync(() =>
         console.error("Managed idle checkpoint failed", {
@@ -3216,12 +3318,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const operation = acquired.success;
     if (record.execution.provider === "runner") {
       const stopped = yield* Effect.result(
-        this.stopRunnerIntoSleepingProgram(
-          record,
-          operation.nonce,
-          `idle-${operation.nonce}`,
-          true,
-        ),
+        this.stopRunnerIntoStoppedProgram(record, operation.nonce, `idle-${operation.nonce}`, true),
       );
       if (Result.isFailure(stopped))
         yield* Effect.sync(() =>
@@ -3250,7 +3347,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
     const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
     if (!Predicate.isTagged(stopped.failure, "ManagedStopArmedError") && !pending)
-      yield* this.releaseOperationIfHeldProgram(operation.nonce);
+      yield* this.failOperationProgram(
+        operation.nonce,
+        "snapshot_failed",
+        "Managed idle checkpoint failed",
+        true,
+      );
     yield* Effect.sync(() =>
       console.error("Managed idle checkpoint failed", {
         sessionId: record.id,
@@ -3327,7 +3429,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (
       !record ||
       record.id !== sessionId ||
-      record.status !== "failed" ||
+      record.operationResult?.outcome.status !== "failed" ||
       record.operation?.kind === "vaporize"
     )
       return;
@@ -4702,7 +4804,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const beforeStart = await this.#run(this.readRecordProgram());
       const managedRestore =
         beforeStart !== undefined &&
-        (beforeStart.status === "sleeping" ||
+        (beforeStart.status === "stopped" ||
           beforeStart.operation?.kind === "snapshot" ||
           beforeStart.operation?.kind === "resume");
       const target = managedRestore ? "sleeping" : "failed";
@@ -4854,7 +4956,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
           backup: { current: backup, previous: current.backup?.current },
           ownedBackupIds: [...new Set([...current.ownedBackupIds, backup.id])],
           backupExpiresAt,
-          failure: undefined,
           updatedAt,
         }));
         if (priorPrevious) yield* backups.delete(priorPrevious.id).pipe(Effect.ignore);
@@ -4925,14 +5026,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     if (Result.isFailure(beforeStop)) {
       const current = yield* this.requireRecordProgram();
-      if (current.status === "sleeping") return current;
+      if (current.status === "stopped") return current;
       return yield* new ManagedStopArmedError({ cause: beforeStop.failure });
     }
 
     const observeStopped = Effect.gen({ self: this }, function* () {
       const stopped = yield* this.requireRecordProgram();
-      if (stopped.status === "sleeping") return stopped;
-      if (stopped.status === "failed") return yield* wrongState(stopped.status, "stop");
+      if (stopped.status === "stopped") return stopped;
       const stoppedAgain = yield* hostEffect("stop", () => this.stop()).pipe(
         Effect.mapError((cause) => new ManagedStopArmedError({ cause })),
       );
@@ -4965,11 +5065,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const result = yield* Effect.result(this.checkpointProgram(operation.nonce, true));
     if (Result.isFailure(result)) {
       if (!Predicate.isTagged(result.failure, "CheckpointRuntimeUnavailable"))
-        yield* this.releaseOperationProgram(operation.nonce);
+        yield* this.failOperationProgram(
+          operation.nonce,
+          "snapshot_failed",
+          "Snapshot failed",
+          true,
+        );
       return yield* this.upstreamError("Snapshot failed", result.failure);
     }
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(result.success, new Date(now)), now);
+    return yield* this.sessionViewProgram();
   });
 
   private readonly sleepScottySessionProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -4978,17 +5082,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
       const operation =
         authoritative.operation?.kind === "snapshot"
           ? authoritative.operation
-          : yield* this.acquireOperationProgram("snapshot", ["warm"]);
-      const sleeping = yield* this.stopRunnerIntoSleepingProgram(
+          : yield* this.acquireOperationProgram("snapshot", ["warm"], undefined, "snapshot");
+      yield* this.stopRunnerIntoStoppedProgram(
         authoritative,
         operation.nonce,
         `sleep-${operation.nonce}`,
         false,
       );
-      const now = yield* Clock.currentTimeMillis;
-      return toSessionView(toProjection(sleeping, new Date(now)), now);
+      return yield* this.sessionViewProgram();
     }
-    const operation = yield* this.acquireOperationProgram("snapshot", ["warm"]);
+    const operation = yield* this.acquireOperationProgram(
+      "snapshot",
+      ["warm"],
+      undefined,
+      "snapshot",
+    );
     const result = yield* Effect.result(
       Effect.gen({ self: this }, function* () {
         yield* this.checkpointProgram(operation.nonce, false, false);
@@ -5000,11 +5108,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
         return yield* this.upstreamError("Session stop failed", result.failure);
       const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
       if (!Predicate.isTagged(result.failure, "ManagedStopArmedError") && !pending)
-        yield* this.releaseOperationIfHeldProgram(operation.nonce);
+        yield* this.failOperationProgram(
+          operation.nonce,
+          "snapshot_failed",
+          "Session stop failed",
+          true,
+        );
       return yield* this.upstreamError("Session stop failed", result.failure);
     }
-    const now = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(result.success, new Date(now)), now);
+    return yield* this.sessionViewProgram();
   });
 
   private async scheduleHardCap(hardCapAt: string): Promise<void> {

@@ -32,7 +32,7 @@ const color = {
 const lifecycle = (session: FleetSession): string => {
   const value = redactRemoteLine(session.status);
   if (session.status === "warm") return color.success(value);
-  if (session.status === "failed") return color.error(value);
+  if (session.operationResult?.outcome.status === "failed") return color.error(value);
   return color.warning(value);
 };
 

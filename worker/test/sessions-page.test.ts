@@ -4,7 +4,6 @@ import {
   normalizeSessionListItem,
   sessionPrimaryTiming,
   sessionsRenderSignature,
-  sleepingProjectFocusKey,
 } from "../public/session-list.js";
 import sessionListSource from "../public/session-list.js?raw";
 import sessionsHtml from "../public/sessions.html?raw";
@@ -12,8 +11,23 @@ import sessionsScript from "../public/sessions.js?raw";
 
 describe("sessions page", () => {
   it("normalizes the current session projection shape at the fetch boundary", () => {
+    const operationResult = {
+      kind: "create",
+      stage: "setup",
+      progress: "completed",
+      lastProvenEffect: "session_created",
+      retainedState: "session",
+      ambiguity: "none",
+      safeRetry: "none",
+      humanAction: "inspect",
+      outcome: { status: "failed", failure: { code: "create_failed", message: "hidden" } },
+      recoveryAction: "vaporize",
+      startedAt: "2026-08-04T14:00:00.000Z",
+      updatedAt: "2026-08-04T14:00:01.000Z",
+    } as const;
     const session = normalizeSessionListItem({
       version: 1,
+      revision: 7,
       id: "session-1",
       title: "Accessibility",
       status: "warm",
@@ -23,9 +37,10 @@ describe("sessions page", () => {
       createdAt: "2026-08-04T14:00:00.000Z",
       hardCapAt: "2026-08-04T18:00:00.000Z",
       capRemainingSeconds: 5_430,
-      failure: { code: "internal", message: "hidden", recoverable: true },
+      operationResult,
     });
     assert.deepStrictEqual(session, {
+      revision: 7,
       id: "session-1",
       title: "Accessibility",
       status: "warm",
@@ -35,11 +50,19 @@ describe("sessions page", () => {
       createdAt: "2026-08-04T14:00:00.000Z",
       hardCapAt: "2026-08-04T18:00:00.000Z",
       capRemainingSeconds: 5_430,
-      failure: { code: "internal", message: "hidden", recoverable: true },
+      operationResult,
     });
     assert.deepStrictEqual(
-      normalizeSessionListItem({ id: "legacy-session", status: "paused", provider: "future" }),
-      { id: "legacy-session", status: "paused", provider: "future" },
+      normalizeSessionListItem({
+        revision: 8,
+        id: "stopped-session",
+        status: "stopped",
+        provider: "future",
+      }),
+      { revision: 8, id: "stopped-session", status: "stopped", provider: "future" },
+    );
+    assert.isUndefined(
+      normalizeSessionListItem({ revision: 8, id: "legacy-session", status: "paused" }),
     );
     assert.isUndefined(normalizeSessionListItem({ status: "warm" }));
   });
@@ -78,6 +101,7 @@ describe("sessions page", () => {
 
   it("summarizes the next relevant session event", () => {
     const session = {
+      revision: 1,
       id: "session-1",
       title: "Session one",
       branch: "scotty/session-1",
@@ -90,7 +114,7 @@ describe("sessions page", () => {
       backupId: "backup-1",
     };
     assert.strictEqual(sessionPrimaryTiming(session, "warm"), "Auto-stop in 1h 30m");
-    assert.strictEqual(sessionPrimaryTiming(session, "sleeping"), "Backup ready");
+    assert.strictEqual(sessionPrimaryTiming(session, "stopped"), "Backup ready");
     assert.strictEqual(sessionPrimaryTiming(session, "stopping"), "Stopping now");
     assert.strictEqual(sessionPrimaryTiming(session, "deleting", "delete"), "Retrying cleanup");
   });
@@ -101,24 +125,10 @@ describe("sessions page", () => {
     assert.isFalse(focusKeyNeedsStableDraft(undefined));
   });
 
-  it("derives a safe stable focus key from repository identity", () => {
-    const focusKey = sleepingProjectFocusKey('ExampleUser/scotty"]');
-
-    assert.strictEqual(focusKey, "sleeping-project:exampleuser%2Fscotty%22%5D");
-    assert.strictEqual(sleepingProjectFocusKey('exampleuser/SCOTTY"]'), focusKey);
-  });
-
-  it("binds sleeping-project summaries to visible-control focus restoration", () => {
-    assert.include(
-      sessionListSource,
-      "sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo)",
-    );
-    assert.include(sessionListSource, "focusRenderedControl(content, focusKey)");
-  });
-
   it("keeps passive session renders stable within a minute", () => {
     const now = Date.parse("2026-08-04T14:30:05.000Z");
     const session = {
+      revision: 1,
       id: "session-1",
       repo: "openai/scotty",
       title: "Accessibility",
@@ -136,7 +146,7 @@ describe("sessions page", () => {
       signature,
     );
     assert.notStrictEqual(
-      sessionsRenderSignature([{ ...session, status: "sleeping" }], true, now + 5_000),
+      sessionsRenderSignature([{ ...session, status: "stopped" }], true, now + 5_000),
       signature,
     );
     assert.notStrictEqual(sessionsRenderSignature([session], true, now + 60_000), signature);

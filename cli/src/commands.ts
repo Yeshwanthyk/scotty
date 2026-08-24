@@ -2139,7 +2139,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
     },
     ({ id }) => sessionOperation("resume", id, false),
-  ).pipe(Command.withDescription("Restore a sleeping session"));
+  ).pipe(Command.withDescription("Restore a stopped session"));
 
   const down = Command.make(
     "down",

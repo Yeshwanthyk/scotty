@@ -50,7 +50,7 @@ class FakeDesktopTransport implements DesktopManagementTransport {
       url: "https://scotty.example/s/created-session",
       branch: "scotty/created-session",
       provider: "cloudflare" as const,
-      status: "booting" as const,
+      status: "provisioning" as const,
     };
   };
 

@@ -60,7 +60,6 @@ let lastSubmission;
 let pollTimer;
 const busy = new Map();
 const confirmations = new Set();
-const expandedSleepingProjects = new Set();
 const expandedSessionDetails = new Set();
 const rowErrors = new Map();
 const suppressedRepositories = new Set();
@@ -261,7 +260,6 @@ function render(options = {}) {
     fetching,
     busy,
     confirmations,
-    expandedSleepingProjects,
     expandedSessionDetails,
     rowErrors,
     renamingId,
@@ -461,7 +459,7 @@ async function perform(id, action) {
       throw new Error(await errorMessage(response, `Could not ${action} this session.`));
     }
     const result = await response.json();
-    const expectedStatus = action === "delete" ? "gone" : action === "sleep" ? "sleeping" : "warm";
+    const expectedStatus = action === "delete" ? "gone" : action === "sleep" ? "stopped" : "warm";
     if (result?.id !== id || result?.status !== expectedStatus)
       throw new Error("Scotty returned an unexpected response.");
     succeeded = true;
@@ -597,17 +595,6 @@ content.addEventListener("keydown", (event) => {
     `[data-action="rename"][data-id="${CSS.escape(event.target.form?.dataset.id || "")}"]`,
   );
 });
-
-content.addEventListener(
-  "toggle",
-  (event) => {
-    const sleeping = event.target.closest(".sleeping-group");
-    if (!sleeping?.dataset.repo) return;
-    if (sleeping.open) expandedSleepingProjects.add(sleeping.dataset.repo);
-    else expandedSleepingProjects.delete(sleeping.dataset.repo);
-  },
-  true,
-);
 
 function schedulePoll() {
   clearInterval(pollTimer);

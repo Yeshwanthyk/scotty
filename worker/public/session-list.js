@@ -3,28 +3,134 @@ import { groupSessionsByRepository, sessionDisplayStatus, sessionTitle } from ".
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+const SESSION_STATUSES = new Set(["provisioning", "warm", "stopped", "gone"]);
+const OPERATION_KINDS = new Set([
+  "create",
+  "snapshot",
+  "resume",
+  "refresh",
+  "evidence",
+  "hatch",
+  "down",
+  "vaporize",
+]);
+const OPERATION_STAGES = new Set([
+  "acquired",
+  "setup",
+  "runtime",
+  "checkpoint",
+  "stop",
+  "restore",
+  "refresh",
+  "evidence",
+  "hatch",
+  "publish",
+  "cleanup",
+  "reconcile",
+  "commit",
+]);
+const OPERATION_PROGRESS = new Set(["pending", "running", "completed"]);
+const LAST_PROVEN_EFFECTS = new Set([
+  "none",
+  "session_created",
+  "runtime_ready",
+  "checkpoint_committed",
+  "runtime_stopped",
+  "resources_absent",
+]);
+const RETAINED_STATES = new Set([
+  "session",
+  "runtime",
+  "checkpoint",
+  "operation_lease",
+  "cleanup_authority",
+]);
+const AMBIGUITIES = new Set(["none", "provider_effect_unknown"]);
+const SAFE_RETRIES = new Set(["none", "retry_operation", "reconcile_first"]);
+const HUMAN_ACTIONS = new Set(["none", "retry", "inspect", "resume", "vaporize"]);
+const RECOVERY_ACTIONS = new Set(["none", "resume", "retry", "reconcile", "vaporize"]);
+const STOPPED_REASONS = new Set(["snapshot", "inactivity", "hard_cap", "runtime_exit"]);
+const FAILURE_CODES = new Set([
+  "checkpoint_required",
+  "checkpoint_runtime_unavailable",
+  "create_ambiguous",
+  "create_failed",
+  "down_failed",
+  "environment_refresh_failed",
+  "hatch_failed",
+  "hard_cap_checkpoint_failed",
+  "resume_failed",
+  "runner_runtime_absent",
+  "runtime_stopped",
+  "snapshot_failed",
+]);
+
+function normalizeOperationResult(value) {
+  if (
+    !isObject(value) ||
+    !OPERATION_KINDS.has(value.kind) ||
+    !OPERATION_STAGES.has(value.stage) ||
+    !OPERATION_PROGRESS.has(value.progress) ||
+    !LAST_PROVEN_EFFECTS.has(value.lastProvenEffect) ||
+    !RETAINED_STATES.has(value.retainedState) ||
+    !AMBIGUITIES.has(value.ambiguity) ||
+    !SAFE_RETRIES.has(value.safeRetry) ||
+    !HUMAN_ACTIONS.has(value.humanAction) ||
+    !RECOVERY_ACTIONS.has(value.recoveryAction) ||
+    typeof value.startedAt !== "string" ||
+    typeof value.updatedAt !== "string" ||
+    (value.stoppedReason !== undefined && !STOPPED_REASONS.has(value.stoppedReason)) ||
+    !isObject(value.outcome) ||
+    !["pending", "succeeded", "failed"].includes(value.outcome.status)
+  )
+    return undefined;
+  const failure = value.outcome.failure;
+  if (
+    value.outcome.status === "failed" &&
+    (!isObject(failure) || !FAILURE_CODES.has(failure.code) || typeof failure.message !== "string")
+  )
+    return undefined;
+  return {
+    kind: value.kind,
+    stage: value.stage,
+    progress: value.progress,
+    lastProvenEffect: value.lastProvenEffect,
+    retainedState: value.retainedState,
+    ambiguity: value.ambiguity,
+    safeRetry: value.safeRetry,
+    humanAction: value.humanAction,
+    outcome:
+      value.outcome.status === "failed"
+        ? { status: "failed", failure: { code: failure.code, message: failure.message } }
+        : { status: value.outcome.status },
+    ...(value.stoppedReason === undefined ? {} : { stoppedReason: value.stoppedReason }),
+    recoveryAction: value.recoveryAction,
+    startedAt: value.startedAt,
+    updatedAt: value.updatedAt,
+  };
+}
 
 export function normalizeSessionListItem(value) {
-  if (!isObject(value) || typeof value.id !== "string") return undefined;
+  if (
+    !isObject(value) ||
+    typeof value.id !== "string" ||
+    !Number.isInteger(value.revision) ||
+    value.revision < 0 ||
+    !SESSION_STATUSES.has(value.status)
+  )
+    return undefined;
 
-  const failure = isObject(value.failure)
-    ? {
-        ...(typeof value.failure.code === "string" ? { code: value.failure.code } : {}),
-        ...(typeof value.failure.message === "string" ? { message: value.failure.message } : {}),
-        ...(typeof value.failure.recoverable === "boolean"
-          ? { recoverable: value.failure.recoverable }
-          : {}),
-        ...(typeof value.failure.stage === "string" ? { stage: value.failure.stage } : {}),
-      }
-    : undefined;
+  const operationResult = normalizeOperationResult(value.operationResult);
+  if (value.operationResult != null && operationResult === undefined) return undefined;
 
   return {
+    revision: value.revision,
     id: value.id,
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.branch === "string" ? { branch: value.branch } : {}),
     ...(typeof value.provider === "string" ? { provider: value.provider } : {}),
     ...(typeof value.runner === "string" ? { runner: value.runner } : {}),
-    ...(typeof value.status === "string" ? { status: value.status } : {}),
+    status: value.status,
     ...(typeof value.deleting === "boolean" ? { deleting: value.deleting } : {}),
     ...(typeof value.backupId === "string" ? { backupId: value.backupId } : {}),
     ...(Number.isFinite(value.capRemainingSeconds)
@@ -33,8 +139,14 @@ export function normalizeSessionListItem(value) {
     ...(typeof value.hardCapAt === "string" ? { hardCapAt: value.hardCapAt } : {}),
     ...(typeof value.createdAt === "string" ? { createdAt: value.createdAt } : {}),
     ...(typeof value.repo === "string" ? { repo: value.repo } : {}),
-    ...(failure === undefined || Object.keys(failure).length === 0 ? {} : { failure }),
+    ...(operationResult === undefined ? {} : { operationResult }),
   };
+}
+
+function operationFailure(session) {
+  return session?.operationResult?.outcome?.status === "failed"
+    ? session.operationResult.outcome.failure
+    : undefined;
 }
 
 export function formatSessionDuration(value) {
@@ -51,9 +163,8 @@ export function sessionPrimaryTiming(session, status, pendingAction) {
     return pendingAction === "delete" ? "Retrying cleanup" : "Cleanup retries automatically";
   }
   if (status === "stopping") return "Stopping now";
-  if (status === "boot-failed") return "Needs attention";
-  if (status === "sleeping") return session?.backupId ? "Backup ready" : "Backup unavailable";
-  if (status === "failed") return session?.backupId ? "Backup ready" : "Needs attention";
+  if (operationFailure(session)) return "Needs attention";
+  if (status === "stopped") return session?.backupId ? "Backup ready" : "Backup unavailable";
   return session?.capRemainingSeconds > 0
     ? `Auto-stop in ${formatSessionDuration(session.capRemainingSeconds)}`
     : "Session limit reached";
@@ -61,10 +172,6 @@ export function sessionPrimaryTiming(session, status, pendingAction) {
 
 export function focusKeyNeedsStableDraft(value) {
   return typeof value === "string" && value.startsWith("rename:");
-}
-
-export function sleepingProjectFocusKey(repository) {
-  return `sleeping-project:${encodeURIComponent(repository.toLocaleLowerCase("en-US"))}`;
 }
 
 export function sessionsRenderSignature(sessions, loaded, now = Date.now()) {
@@ -89,8 +196,7 @@ export function sessionsRenderSignature(sessions, loaded, now = Date.now()) {
           : null,
         session.hardCapAt,
         session.createdAt,
-        typeof session.failure?.message === "string" ? session.failure.message : null,
-        typeof session.failure?.stage === "string" ? session.failure.stage : null,
+        operationFailure(session)?.message ?? null,
       ]),
     ]),
   ]);
@@ -107,25 +213,19 @@ function addText(parent, className, text, tag = "div") {
 function statusLabel(status) {
   if (status === "stopping") return "Stopping…";
   if (status === "deleting") return "Deleting…";
-  if (status === "boot-failed") return "Boot failed";
   return status;
 }
 
 function sessionRowStatus(session, pendingAction) {
-  const status = sessionDisplayStatus(session.status, pendingAction, session.deleting);
-  if (status === "booting" && typeof session.failure?.message === "string") return "boot-failed";
-  return status;
+  return sessionDisplayStatus(session.status, pendingAction, session.deleting);
 }
 
-function sessionStatusClass(status) {
-  return status === "boot-failed" ? "failed" : status;
+function sessionStatusClass(status, session) {
+  return operationFailure(session) ? "failed" : status;
 }
 
-function sessionShowsFailure(status, session) {
-  return (
-    typeof session.failure?.message === "string" &&
-    (status === "failed" || status === "boot-failed")
-  );
+function sessionShowsFailure(_status, session) {
+  return typeof operationFailure(session)?.message === "string";
 }
 
 function placementLabel(session, status) {
@@ -197,7 +297,7 @@ function appendTiming(parent, state, session, status, created, className = "sess
   addText(
     capTiming,
     "",
-    status === "deleting" ? "Cleanup" : status === "sleeping" ? "Backup" : "Auto-stop",
+    status === "deleting" ? "Cleanup" : status === "stopped" ? "Backup" : "Auto-stop",
     "dt",
   );
   const capValue = addText(
@@ -207,7 +307,7 @@ function appendTiming(parent, state, session, status, created, className = "sess
       ? state.busy.get(session.id) === "delete"
         ? "Retrying now"
         : "Retries automatically"
-      : status === "sleeping"
+      : status === "stopped"
         ? session.backupId
           ? "Ready"
           : "Unavailable"
@@ -216,7 +316,7 @@ function appendTiming(parent, state, session, status, created, className = "sess
           : "Limit reached",
     "dd",
   );
-  if (status !== "sleeping" && status !== "deleting" && typeof session.hardCapAt === "string") {
+  if (status !== "stopped" && status !== "deleting" && typeof session.hardCapAt === "string") {
     capValue.title = new Date(session.hardCapAt).toLocaleString();
   }
   timing.append(createdTiming, capTiming);
@@ -248,10 +348,7 @@ function appendLifecycleActions(parent, state, session, status, options = {}) {
         );
     } else if (status === "warm") {
       actions.append(actionButton(state, "Stop", "sleep", session.id, { focusPrefix }));
-    } else if (
-      options.includePrimary !== false &&
-      (status === "sleeping" || (status === "failed" && session.backupId))
-    ) {
+    } else if (options.includePrimary !== false && status === "stopped") {
       actions.append(
         actionButton(state, "Resume & open", "resume", session.id, {
           primary: true,
@@ -328,7 +425,12 @@ function appendMobileDisclosure(item, state, session, status, created) {
   }
   detail.append(metadata);
   if (sessionShowsFailure(status, session)) {
-    addText(detail, "session-failure mobile-session-failure", session.failure.message, "p");
+    addText(
+      detail,
+      "session-failure mobile-session-failure",
+      operationFailure(session).message,
+      "p",
+    );
   }
   appendLifecycleActions(detail, state, session, status, {
     className: "mobile-actions",
@@ -344,7 +446,7 @@ function renderSessionRow(state, session, now) {
   const item = document.createElement("li");
   const pendingAction = state.busy.get(session.id);
   const status = sessionRowStatus(session, pendingAction);
-  const statusClass = sessionStatusClass(status);
+  const statusClass = sessionStatusClass(status, session);
   item.className = `session status-${statusClass}${
     state.renamingId === session.id ? " is-renaming" : ""
   }${state.expandedSessionDetails.has(session.id) ? " is-expanded" : ""}`;
@@ -406,7 +508,12 @@ function renderSessionRow(state, session, now) {
   identity.append(glance);
   appendIdentityMetadata(identity, session);
   if (sessionShowsFailure(status, session)) {
-    addText(identity, "session-failure desktop-session-failure", session.failure.message, "p");
+    addText(
+      identity,
+      "session-failure desktop-session-failure",
+      operationFailure(session).message,
+      "p",
+    );
   }
   item.append(identity);
 
@@ -429,7 +536,7 @@ function renderSessionRow(state, session, now) {
     !state.confirmations.has(session.id)
   ) {
     addText(mobilePrimary, "session-open-affordance", "Open ›", "span");
-  } else if (status === "sleeping" || (status === "failed" && session.backupId)) {
+  } else if (status === "stopped") {
     const resume = actionButton(state, "Resume", "resume", session.id, {
       primary: true,
       focusPrefix: "mobile-primary-",
@@ -459,7 +566,7 @@ function projectSummary(projectSessions, state) {
   const parts = [
     `${projectSessions.length} ${projectSessions.length === 1 ? "sandbox" : "sandboxes"}`,
   ];
-  for (const status of ["warm", "sleeping", "stopping", "deleting", "failed"]) {
+  for (const status of ["provisioning", "warm", "stopped", "stopping", "deleting"]) {
     const count = counts.get(status);
     if (count) parts.push(`${count} ${status}`);
   }
@@ -546,29 +653,7 @@ export function renderSessionsView(state) {
     header.prepend(heading);
     project.append(header);
 
-    const activeSessions = group.sessions.filter((session) => session.status !== "sleeping");
-    const sleepingSessions = group.sessions.filter((session) => session.status === "sleeping");
-    if (activeSessions.length > 0) {
-      renderSessionList(project, state, activeSessions, `${group.repo} active sandboxes`, now);
-    }
-    if (sleepingSessions.length > 0) {
-      const sleeping = document.createElement("details");
-      sleeping.className = "sleeping-group";
-      sleeping.dataset.repo = group.repo;
-      sleeping.open = state.expandedSleepingProjects.has(group.repo);
-      const sleepingSummary = document.createElement("summary");
-      sleepingSummary.dataset.focusKey = sleepingProjectFocusKey(group.repo);
-      sleepingSummary.append(
-        document.createTextNode(
-          `${sleepingSessions.length} sleeping ${
-            sleepingSessions.length === 1 ? "sandbox" : "sandboxes"
-          }`,
-        ),
-      );
-      sleeping.append(sleepingSummary);
-      renderSessionList(sleeping, state, sleepingSessions, `${group.repo} sleeping sandboxes`, now);
-      project.append(sleeping);
-    }
+    renderSessionList(project, state, group.sessions, `${group.repo} sandboxes`, now);
     projects.append(project);
   }
   content.append(projects);

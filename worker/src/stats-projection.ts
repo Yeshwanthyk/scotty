@@ -113,12 +113,12 @@ export function aggregateStats(
       repository: string;
       workspacesCreated: number;
       warmNow: number;
-      sleepingNow: number;
+      stoppedNow: number;
       lastCreated: string;
     }
   >();
   let warmNow = 0;
-  let sleepingNow = 0;
+  let stoppedNow = 0;
 
   for (const marker of orderedMarkers) {
     const identity = marker.repository.toLocaleLowerCase("en-US");
@@ -127,7 +127,7 @@ export function aggregateStats(
       repository: marker.repository,
       workspacesCreated: 0,
       warmNow: 0,
-      sleepingNow: 0,
+      stoppedNow: 0,
       lastCreated: marker.createdAt,
     };
     project.workspacesCreated += 1;
@@ -138,9 +138,9 @@ export function aggregateStats(
     if (status === "warm") {
       project.warmNow += 1;
       warmNow += 1;
-    } else if (status === "sleeping") {
-      project.sleepingNow += 1;
-      sleepingNow += 1;
+    } else if (status === "stopped") {
+      project.stoppedNow += 1;
+      stoppedNow += 1;
     }
     projectsByIdentity.set(identity, project);
   }
@@ -156,7 +156,7 @@ export function aggregateStats(
       workspacesCreated: orderedMarkers.length,
       projects: projects.length,
       warmNow,
-      sleepingNow,
+      stoppedNow,
     },
     projects,
   };

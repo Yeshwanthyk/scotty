@@ -14,7 +14,7 @@ import {
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
-import { makeSessionRecord } from "./support";
+import { makeFailedOperationResult, makeSessionRecord } from "./support";
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
   operation.then(
@@ -130,6 +130,10 @@ describe("Sandbox beam-down orchestration", () => {
 
       assertUpstream(error);
       assertLeaseReleased(harness.readRecord());
+      assert.deepStrictEqual(harness.readRecord()?.operationResult?.outcome, {
+        status: "failed",
+        failure: { code: "down_failed", message: "Beam-down archive failed" },
+      });
       assert.ok(harness.events.includes("projection:warm"));
     });
   }
@@ -144,11 +148,9 @@ describe("Sandbox vaporize orchestration", () => {
       backup: { current: makeResumeBackup() },
       backupExpiresAt: "2026-08-24T00:00:00.000Z",
       ownedBackupIds: ["backup-1", "backup-1", "backup-2"],
-      failure: {
-        code: "prior",
-        message: "prior failure",
-        recoverable: true,
-      },
+      ...(overrides.operation === undefined && overrides.operationResult === undefined
+        ? { operationResult: makeFailedOperationResult("resume_failed", "prior failure", true) }
+        : {}),
       ...overrides,
     });
 
@@ -200,7 +202,7 @@ describe("Sandbox vaporize orchestration", () => {
     assert.deepStrictEqual(gone?.ownedBackupIds, []);
     assert.strictEqual(gone?.backupExpiresAt, undefined);
     assert.strictEqual(gone?.codexThreadId, undefined);
-    assert.strictEqual(gone?.failure, undefined);
+    assert.strictEqual(gone?.operationResult?.outcome.status, "succeeded");
 
     const destroyIndex = harness.events.indexOf("host:destroy");
     const backupIndex = harness.events.indexOf("r2:list:backups/backup-1/");
@@ -273,7 +275,7 @@ describe("Sandbox vaporize orchestration", () => {
       backup: undefined,
       backupExpiresAt: undefined,
       ownedBackupIds: [],
-      failure: undefined,
+      operationResult: null,
     });
     const harness = await createVaporizeHarness({
       initialEntries: {
@@ -314,7 +316,7 @@ describe("Sandbox vaporize orchestration", () => {
       backup: undefined,
       backupExpiresAt: undefined,
       ownedBackupIds: [],
-      failure: undefined,
+      operationResult: null,
     });
     const harness = await createVaporizeHarness({
       initialEntries: {
@@ -401,7 +403,7 @@ describe("Sandbox vaporize orchestration", () => {
       backup: undefined,
       backupExpiresAt: undefined,
       ownedBackupIds: [],
-      failure: undefined,
+      operationResult: null,
     });
     const harness = await createVaporizeHarness({
       failureStage: "projectionDelete",
@@ -477,7 +479,7 @@ describe("Sandbox vaporize orchestration", () => {
   it("retries safely after an interrupted owned-state deletion", async () => {
     const harness = await createVaporizeHarness({
       initialEntries: authorityEntries(vaporizeRecord({ ownedBackupIds: [], backup: undefined })),
-      transactionFailureCountdown: 1,
+      transactionFailureCountdown: 2,
     });
 
     const error = await rejection(harness.sandbox.vaporizeScottySession());

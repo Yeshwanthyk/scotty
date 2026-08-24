@@ -1827,6 +1827,7 @@ describe("configuration and transport", () => {
 
   test("ls exposes only the stable public projection", async () => {
     const session = {
+      revision: 7,
       id: "s1",
       title: "Fix build",
       status: "warm",
@@ -1850,6 +1851,7 @@ describe("configuration and transport", () => {
     expect(await main(["ls", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
     expect(h.json()).toEqual([
       {
+        revision: 7,
         id: "s1",
         title: "Fix build",
         status: "warm",
@@ -1870,8 +1872,9 @@ describe("configuration and transport", () => {
     expect(h.stdout.join("")).not.toContain("must-not-leak");
   });
 
-  test("ls omits invalid optionals and applies failure defaults field by field", async () => {
+  test("ls rejects legacy Session lifecycle states", async () => {
     const session = {
+      revision: 7,
       id: "s1",
       title: "Fix build",
       status: "failed",
@@ -1883,32 +1886,14 @@ describe("configuration and transport", () => {
       updatedAt: "2026-07-20T12:01:00Z",
       hardCapAt: "2026-07-20T16:00:00Z",
       ageSeconds: 60,
-      capRemainingSeconds: 14340,
+      capRemainingSeconds: 14_340,
       projectedAt: null,
-      codexThreadId: 42,
-      failure: { code: 9, message: null, recoverable: "yes", secret: "must-not-leak" },
       secret: "must-not-leak",
     };
     const h = harness({ fetch: async () => Response.json([session]) });
 
-    expect(await main(["ls", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
-    expect(h.json()).toEqual([
-      {
-        id: "s1",
-        title: "Fix build",
-        status: "failed",
-        provider: "cloudflare",
-        repo: "owner/project",
-        defaultBranch: "dev",
-        branch: "scotty/s1",
-        createdAt: "2026-07-20T12:00:00Z",
-        updatedAt: "2026-07-20T12:01:00Z",
-        hardCapAt: "2026-07-20T16:00:00Z",
-        ageSeconds: 60,
-        capRemainingSeconds: 14340,
-        failure: { code: "unknown", message: "Session failed", recoverable: false },
-      },
-    ]);
+    expect(await main(["ls", "--host", "https://worker.example"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error().error.code).toBe("invalid_response");
     expect(h.stdout.join("")).not.toContain("must-not-leak");
   });
 });

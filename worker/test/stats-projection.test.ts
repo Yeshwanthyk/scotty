@@ -18,8 +18,9 @@ const marker = (
   provider: "cloudflare" | "runner" = "cloudflare",
 ) => ({ sessionId, repository, provider, createdAt });
 
-const session = (id: string, status: "warm" | "sleeping" | "failed", repo: string) => ({
+const session = (id: string, status: "provisioning" | "warm" | "stopped", repo: string) => ({
   version: 1 as const,
+  revision: 1,
   id,
   title: "Test session",
   status,
@@ -54,7 +55,7 @@ describe("StatsProjection", () => {
   );
 
   it.effect(
-    "aggregates retained creation history with only current warm and sleeping statuses",
+    "aggregates retained creation history with only current warm and stopped statuses",
     () =>
       Effect.gen(function* () {
         const storage = new InMemoryFaultInjectableFake();
@@ -69,11 +70,11 @@ describe("StatsProjection", () => {
         storage.values.set("session:a0b1c2d3e4f5", session("a0b1c2d3e4f5", "warm", "moved/repo"));
         storage.values.set(
           "session:b0b1c2d3e4f5",
-          session("b0b1c2d3e4f5", "sleeping", "Example/scotty"),
+          session("b0b1c2d3e4f5", "stopped", "Example/scotty"),
         );
         storage.values.set(
           "session:c0b1c2d3e4f5",
-          session("c0b1c2d3e4f5", "failed", "owner/other"),
+          session("c0b1c2d3e4f5", "provisioning", "owner/other"),
         );
         storage.values.set(
           "session:unmarked-session",
@@ -88,21 +89,21 @@ describe("StatsProjection", () => {
             workspacesCreated: 4,
             projects: 2,
             warmNow: 1,
-            sleepingNow: 1,
+            stoppedNow: 1,
           },
           projects: [
             {
               repository: "owner/other",
               workspacesCreated: 2,
               warmNow: 0,
-              sleepingNow: 0,
+              stoppedNow: 0,
               lastCreated: "2026-07-29T12:00:00.000Z",
             },
             {
               repository: "Example/scotty",
               workspacesCreated: 2,
               warmNow: 1,
-              sleepingNow: 1,
+              stoppedNow: 1,
               lastCreated: "2026-07-29T11:00:00.000Z",
             },
           ],
@@ -142,14 +143,14 @@ describe("StatsProjection", () => {
             workspacesCreated: 1,
             projects: 1,
             warmNow: 0,
-            sleepingNow: 0,
+            stoppedNow: 0,
           },
           projects: [
             {
               repository: retained.repository,
               workspacesCreated: 1,
               warmNow: 0,
-              sleepingNow: 0,
+              stoppedNow: 0,
               lastCreated: retained.createdAt,
             },
           ],

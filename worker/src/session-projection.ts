@@ -5,7 +5,7 @@ import {
   SESSION_KV_PREFIX,
   toProjection,
   toSessionView,
-  type SessionRecord,
+  type SessionControlAuthority,
   type SessionView,
 } from "./contracts";
 import { listProjectionValues } from "./projection-list";
@@ -29,7 +29,9 @@ export interface SessionProjectionStorage {
 }
 
 interface SessionProjectionShape {
-  readonly project: (record: SessionRecord) => Effect.Effect<void, SessionProjectionFailure>;
+  readonly project: (
+    authority: SessionControlAuthority,
+  ) => Effect.Effect<void, SessionProjectionFailure>;
   readonly remove: (id: string) => Effect.Effect<void, SessionProjectionFailure>;
   readonly list: Effect.Effect<ReadonlyArray<SessionView>, SessionProjectionFailure>;
 }
@@ -55,10 +57,12 @@ export const sessionProjectionLayer = (
   Layer.succeed(SessionProjection)(makeSessionProjection(storage));
 
 export const projectSessionBestEffort = (
-  record: SessionRecord,
+  authority: SessionControlAuthority,
 ): Effect.Effect<void, never, SessionProjection> =>
   Effect.flatMap(SessionProjection, (projection) =>
-    record.status === "gone" ? projection.remove(record.id) : projection.project(record),
+    authority.record.status === "gone"
+      ? projection.remove(authority.record.id)
+      : projection.project(authority),
   ).pipe(Effect.ignore);
 
 export const removeSessionProjection = (
@@ -83,14 +87,20 @@ const makeSessionProjection = (storage: SessionProjectionStorage): SessionProjec
     });
 
   return SessionProjection.of({
-    project: Effect.fnUntraced(function* (record) {
+    project: Effect.fnUntraced(function* (authority) {
       const now = new Date(yield* Clock.currentTimeMillis);
+      const key = `${SESSION_KV_PREFIX}${authority.record.id}`;
+      const existing = yield* Effect.tryPromise({
+        try: () => storage.get(key),
+        catch: () => failure("get"),
+      });
+      const decodedExisting = decodeProjection(key, existing);
+      if (decodedExisting !== undefined && decodedExisting.revision > authority.revision) return;
+      // Cloudflare KV has no compare-and-swap. The revision makes stale projections detectable;
+      // authoritative reads and repair must overwrite any stale value observed after a race.
       yield* Effect.tryPromise({
         try: () =>
-          storage.put(
-            `${SESSION_KV_PREFIX}${record.id}`,
-            JSON.stringify(toProjection(record, now)),
-          ),
+          storage.put(key, JSON.stringify(toProjection(authority.record, authority.revision, now))),
         catch: () => failure("put"),
       });
     }),

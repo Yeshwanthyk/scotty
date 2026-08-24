@@ -11,7 +11,7 @@ import {
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
-import { makeSessionRecord } from "./support";
+import { makeSessionRecord, sessionOperationFailure } from "./support";
 
 const PLACEHOLDER = ENVIRONMENT_INJECTED_PLACEHOLDER;
 const previous = {
@@ -285,7 +285,7 @@ describe("Sandbox environment refresh", () => {
       {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
-          status: "sleeping",
+          status: "stopped",
           environment: previous,
         }),
       },
@@ -400,9 +400,9 @@ describe("Sandbox environment refresh", () => {
     await harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt });
 
     const failed = harness.readRecord();
-    assert.strictEqual(failed?.status, "failed");
+    assert.strictEqual(failed?.status, "provisioning");
     assert.strictEqual(failed?.operation, null);
-    assert.strictEqual(failed?.failure?.code, "hard_cap_checkpoint_failed");
+    assert.strictEqual(sessionOperationFailure(failed)?.code, "hard_cap_checkpoint_failed");
     assert.include(harness.events, "host:destroy");
 
     await harness.sandbox.retryEnvironmentRefresh({ sessionId: SESSION_ID, nonce });
@@ -422,10 +422,10 @@ describe("Sandbox environment refresh", () => {
 
     assert.ok(error instanceof ScottyError);
     const failed = harness.readRecord();
-    assert.strictEqual(failed?.status, "failed");
+    assert.strictEqual(failed?.status, "provisioning");
     assert.strictEqual(failed?.operation, null);
-    assert.strictEqual(failed?.failure?.code, "environment_refresh_failed");
-    assert.isFalse(failed?.failure?.recoverable);
+    assert.strictEqual(sessionOperationFailure(failed)?.code, "environment_refresh_failed");
+    assert.strictEqual(failed?.operationResult?.safeRetry, "none");
     assert.include(harness.events, "host:destroy");
   });
 
@@ -449,8 +449,8 @@ describe("Sandbox environment refresh", () => {
     await rejection(harness.sandbox.refreshScottyEnvironment());
 
     const failed = harness.readRecord();
-    assert.strictEqual(failed?.status, "failed");
-    assert.isTrue(failed?.failure?.recoverable);
+    assert.strictEqual(failed?.status, "stopped");
+    assert.strictEqual(failed?.operationResult?.safeRetry, "none");
     assert.strictEqual(failed?.backup?.current.id, backup.id);
     assert.include(harness.events, "host:destroy");
 
@@ -497,10 +497,10 @@ describe("Sandbox environment refresh", () => {
     await harness.sandbox.retryEnvironmentRefresh({ sessionId: SESSION_ID, nonce });
 
     const failed = harness.readRecord();
-    assert.strictEqual(failed?.status, "failed");
+    assert.strictEqual(failed?.status, "provisioning");
     assert.strictEqual(failed?.operation, null);
-    assert.strictEqual(failed?.failure?.code, "environment_refresh_failed");
-    assert.isFalse(failed?.failure?.recoverable);
+    assert.strictEqual(sessionOperationFailure(failed)?.code, "environment_refresh_failed");
+    assert.strictEqual(failed?.operationResult?.safeRetry, "none");
     assert.deepStrictEqual(harness.schedules, []);
     assert.include(harness.events, "host:destroy");
   });

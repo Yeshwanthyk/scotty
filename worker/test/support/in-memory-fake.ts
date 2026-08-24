@@ -1,6 +1,7 @@
 import type { BackupOptions, ExecResult, RestoreBackupResult } from "@cloudflare/sandbox";
+import { Result } from "effect";
 import type { BackupCapabilities, BackupObjectPage } from "../../src/backup-store";
-import type { DirectoryBackup } from "../../src/contracts";
+import { decodeSessionRecordResult, ScottyError, type DirectoryBackup } from "../../src/contracts";
 import type { RepoProjectionStorage } from "../../src/repo-projection";
 import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox-runtime";
 import type { SessionProjectionStorage } from "../../src/session-projection";
@@ -125,24 +126,51 @@ export class InMemoryFaultInjectableFake<Operation extends string = string> {
 
 export const sessionRecordStorageFake = (
   memory = new InMemoryFaultInjectableFake(),
-): SessionRecordStorage => ({
-  get: () => memory.invoke("get", [], () => memory.snapshot()),
-  deleteCreateIdempotency: () =>
-    memory.invoke("deleteCreateIdempotency", [], () => {
-      memory.values.delete("scotty:create-idempotency");
-    }),
-  put: (record) =>
-    memory.invoke("put", [record], () => {
-      memory.value = structuredClone(record);
-    }),
-  transaction: <A>(operation: (transaction: SessionRecordTransaction) => Promise<A>) =>
-    memory.transaction((transaction) =>
-      operation({
-        get: transaction.get,
-        put: (record) => transaction.put(record),
+): SessionRecordStorage => {
+  let revision = 0;
+  return {
+    get: () => memory.invoke("get", [], () => memory.snapshot()),
+    readControlAuthority: async () => {
+      const value = memory.snapshot();
+      if (value === undefined) return Result.succeed(undefined);
+      const decoded = decodeSessionRecordResult(value);
+      return Result.isFailure(decoded)
+        ? Result.fail(
+            new ScottyError("internal", "Authoritative session record is invalid", {
+              httpStatus: 500,
+              exitCode: 1,
+            }),
+          )
+        : Result.succeed({ record: decoded.success, revision });
+    },
+    deleteCreateIdempotency: () =>
+      memory.invoke("deleteCreateIdempotency", [], () => {
+        memory.values.delete("scotty:create-idempotency");
       }),
-    ),
-});
+    put: (record) =>
+      memory.invoke("put", [record], () => {
+        memory.value = structuredClone(record);
+        revision += 1;
+      }),
+    transaction: <A>(operation: (transaction: SessionRecordTransaction) => Promise<A>) => {
+      let wrote = false;
+      return memory
+        .transaction((transaction) =>
+          operation({
+            get: transaction.get,
+            put: (record) => {
+              wrote = true;
+              return transaction.put(record);
+            },
+          }),
+        )
+        .then((result) => {
+          if (wrote) revision += 1;
+          return result;
+        });
+    },
+  };
+};
 
 const projectionGet = (memory: InMemoryFaultInjectableFake, key: string): Promise<unknown | null> =>
   memory.invoke("get", [key], () => memory.values.get(key) ?? null);

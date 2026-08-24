@@ -1,7 +1,7 @@
 export interface StatsCounts {
   readonly workspacesCreated: number;
   readonly warmNow: number;
-  readonly sleepingNow: number;
+  readonly stoppedNow: number;
 }
 
 export interface StatsProject extends StatsCounts {

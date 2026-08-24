@@ -436,7 +436,7 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
-  it.effect("preserves the pre-evidence lifecycle exactly when the gate is disabled", () =>
+  it.effect("keeps evidence storage untouched when the gate is disabled", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const clock = yield* Clock.Clock;
@@ -468,12 +468,13 @@ describe("evidence session lifecycle", () => {
 
       assert.deepStrictEqual(harness.read(sessionHarnessKeys.evidence), malformedEvidence);
       assert.deepStrictEqual(harness.read(sessionHarnessKeys.runtimeEpoch), malformedRuntimeEpoch);
-      assert.deepInclude(harness.readRecord(), {
+      const stopped = harness.readRecord();
+      assert.strictEqual(stopped?.status, "provisioning");
+      assert.deepStrictEqual(stopped?.operationResult?.outcome, {
         status: "failed",
         failure: {
           code: "runtime_stopped",
           message: "Sandbox runtime stopped before a managed checkpoint",
-          recoverable: false,
         },
       });
       assert.notInclude(harness.events, `storage:delete:${sessionHarnessKeys.runtimeEpoch}`);

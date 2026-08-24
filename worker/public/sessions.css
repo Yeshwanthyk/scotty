@@ -1128,12 +1128,12 @@ textarea.control {
   background: var(--beam);
 }
 
-.status-sleeping .status-line {
+.status-stopped .status-line {
   background: oklch(79% 0.12 78 / 0.09);
   color: var(--warm);
 }
 
-.status-sleeping .signal {
+.status-stopped .signal {
   background: var(--warm);
 }
 
@@ -1236,48 +1236,6 @@ textarea.control {
 .actions .button {
   min-height: 44px;
   padding-inline: var(--space-md);
-}
-
-.sleeping-group {
-  margin-top: var(--space-sm);
-}
-
-.sleeping-group summary {
-  display: flex;
-  min-height: 42px;
-  align-items: center;
-  gap: var(--space-sm);
-  padding: 0 var(--space-md);
-  border-radius: var(--space-sm);
-  color: var(--quiet);
-  font-size: 0.75rem;
-  font-weight: 650;
-  cursor: pointer;
-  list-style: none;
-}
-
-.sleeping-group summary::-webkit-details-marker {
-  display: none;
-}
-
-.sleeping-group summary::before {
-  content: "›";
-  color: var(--warm);
-  font-size: 1rem;
-  transition: rotate 140ms var(--ease-out);
-}
-
-.sleeping-group[open] summary::before {
-  rotate: 90deg;
-}
-
-.sleeping-group summary:hover {
-  background: oklch(93% 0.012 220 / 0.035);
-  color: var(--muted);
-}
-
-.sleeping-group .session-list {
-  margin-top: var(--space-sm);
 }
 
 .row-error,
@@ -1600,12 +1558,12 @@ textarea.control {
     background: var(--accent);
   }
 
-  body.sessions-page .mobile-status-sleeping,
+  body.sessions-page .mobile-status-stopped,
   body.sessions-page .mobile-status-stopping {
     color: #dab77e;
   }
 
-  body.sessions-page .mobile-status-sleeping::before,
+  body.sessions-page .mobile-status-stopped::before,
   body.sessions-page .mobile-status-stopping::before {
     background: var(--warm);
   }
