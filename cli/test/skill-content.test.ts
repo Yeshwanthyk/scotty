@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { Result } from "effect";
 import { EMBEDDED_SKILL } from "../scotty";
-import { parseSkillFrontmatterName } from "../src/sandbox-sources";
+import { parseSkillFrontmatterName } from "../src/sandbox-prepare";
 
 const skillPath = new URL("../skills/scotty/SKILL.md", import.meta.url);
 const readSkill = (): Promise<string> => readFile(skillPath, "utf8");
@@ -31,9 +31,6 @@ const commandFamilies = [
   "scotty snapshot",
   "scotty resume",
   "scotty skills show",
-  "scotty sandbox add",
-  "scotty sandbox remove",
-  "scotty sandbox list",
   "scotty sandbox sync",
   "scotty owner recover",
   "scotty tools list",

@@ -2,13 +2,14 @@ import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import { CliError, EXIT } from "./core";
+import { scottyStateRoot } from "./local-paths";
 import {
   FAILURE_OUTPUT_TAIL_CHARACTERS,
   redactProductionDeploymentOutput,
 } from "./deployment-redaction.ts";
 
 export const INSTALLATION_DIAGNOSTIC_VERSION = 1;
-export const INSTALLATION_DIAGNOSTIC_DIRECTORY = ".scotty/diagnostics";
+export const INSTALLATION_DIAGNOSTIC_DIRECTORY = "diagnostics";
 
 const HostErrorShape = Schema.Struct({
   name: Schema.optionalKey(Schema.String),
@@ -107,7 +108,13 @@ export const installationDiagnosticPath = (
   home: string,
   operation: InstallationDiagnosticOperation,
   phase: InstallationDiagnosticPhase,
-): string => join(home, INSTALLATION_DIAGNOSTIC_DIRECTORY, `${operation}-${phase}.json`);
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): string =>
+  join(
+    scottyStateRoot(home, environment),
+    INSTALLATION_DIAGNOSTIC_DIRECTORY,
+    `${operation}-${phase}.json`,
+  );
 
 export const renderInstallationFailureDiagnostic = (input: {
   readonly recordedAt: string;
@@ -142,7 +149,12 @@ export const persistInstallationFailureDiagnostic = async (input: {
   readonly cause: unknown;
   readonly environment?: Record<string, string | undefined>;
 }): Promise<string> => {
-  const path = installationDiagnosticPath(input.home, input.operation, input.phase);
+  const path = installationDiagnosticPath(
+    input.home,
+    input.operation,
+    input.phase,
+    input.environment,
+  );
   const body = renderInstallationFailureDiagnostic(input);
   await mkdir(dirname(path), { recursive: true });
   await rm(path, { force: true });

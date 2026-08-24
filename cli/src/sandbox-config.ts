@@ -1,84 +1,117 @@
-import { join } from "node:path";
 import { Effect, Option, Result, Schema } from "effect";
 import { CliError, EXIT } from "./core";
+import { scottyConfigPath, type LocalPathEnvironment } from "./local-paths";
 import {
   SANDBOX_CONFIG_SCHEMA_VERSION,
-  SandboxConfigSchema,
-  type SandboxConfig,
+  ScottyConfigSchema,
+  type PiSettings,
   type SandboxStatusOutput,
+  type ScottyConfig,
 } from "./sandbox-config-contracts";
 import { FileSystem } from "./services";
 
-export const SANDBOX_CONFIG_FILE_NAME = "sandbox.json";
+export const SANDBOX_CONFIG_FILE_NAME = "config.json";
 
 export * from "./sandbox-config-contracts";
 
 const decodeSandboxConfigJson = Schema.decodeUnknownResult(
-  Schema.fromJsonString(SandboxConfigSchema),
-  { onExcessProperty: "error" },
+  Schema.fromJsonString(ScottyConfigSchema),
+  {
+    onExcessProperty: "error",
+  },
 );
-const encodeSandboxConfig = Schema.encodeSync(SandboxConfigSchema);
+const encodeSandboxConfig = Schema.encodeSync(ScottyConfigSchema);
 
-export const BUILTIN_SKILL_NAMES = [] as const;
+export const sandboxConfigPath = (home: string, env: LocalPathEnvironment = process.env): string =>
+  scottyConfigPath(home, env);
 
-export const BUILTIN_PI_PACKAGE_NAMES = [
-  "pi-subagents",
-  "@ogulcancelik/pi-codex-compaction",
-  "scotty-browser-test",
-  "scotty-hatch",
-] as const;
-
-export const emptySandboxConfig = (): SandboxConfig => ({
+export const standardSandboxConfig = (input: {
+  readonly installationName: string;
+  readonly cloudflareAccountId: string;
+  readonly pi: Pick<PiSettings, "defaultProvider" | "defaultModel" | "defaultThinkingLevel">;
+}): ScottyConfig => ({
   schemaVersion: SANDBOX_CONFIG_SCHEMA_VERSION,
-  skills: [],
-  piPackages: [],
+  installation: {
+    name: input.installationName,
+    cloudflareAccountId: input.cloudflareAccountId,
+  },
+  pi: {
+    ...input.pi,
+    steeringMode: "one-at-a-time",
+    followUpMode: "one-at-a-time",
+    theme: "dark",
+    hideThinkingBlock: false,
+    quietStartup: true,
+    compaction: { enabled: true, reserveTokens: 40_960, keepRecentTokens: 20_000 },
+    enableInstallTelemetry: false,
+    enableAnalytics: false,
+  },
+  plugins: [
+    {
+      id: "cloudflare",
+      type: "compute-provider",
+      enabled: true,
+      source: { kind: "builtin", name: "cloudflare" },
+    },
+    {
+      id: "standard",
+      type: "sandbox-tool",
+      enabled: true,
+      source: { kind: "builtin", name: "standard" },
+    },
+    {
+      id: "pi-subagents-extension",
+      type: "pi-extension",
+      enabled: true,
+      source: { kind: "builtin", name: "pi-subagents-extension" },
+    },
+    {
+      id: "pi-subagents-skill",
+      type: "skill",
+      enabled: true,
+      source: { kind: "builtin", name: "pi-subagents-skill" },
+    },
+  ],
+  sandboxSetup: {
+    piExtensions: ["pi-subagents-extension"],
+    skills: ["pi-subagents-skill"],
+    sandboxTools: ["standard"],
+  },
 });
 
-export const sandboxConfigPath = (home: string): string =>
-  join(home, ".scotty", SANDBOX_CONFIG_FILE_NAME);
-
-export const sandboxConfigInvalid = (path: string): CliError =>
+export const sandboxConfigInvalid = (path: string, detail?: string): CliError =>
   new CliError(
     "sandbox_config_invalid",
-    "Sandbox configuration is invalid",
+    detail === undefined
+      ? "Sandbox configuration is invalid"
+      : `Sandbox configuration is invalid: ${detail}`,
     `Fix ${path} without removing valid entries, then retry.`,
     EXIT.USAGE,
   );
 
-export const sandboxNameConflict = (name: string, hint: string): CliError =>
-  new CliError("sandbox_name_conflict", `Sandbox name ${name} is already used`, hint, EXIT.USAGE);
+export const encodeSandboxConfigJson = (config: ScottyConfig): string =>
+  `${JSON.stringify(encodeSandboxConfig(config), null, 2)}\n`;
 
-export const sortSandboxConfig = (config: SandboxConfig): SandboxConfig => ({
-  schemaVersion: SANDBOX_CONFIG_SCHEMA_VERSION,
-  skills: [...config.skills].sort((left, right) => left.name.localeCompare(right.name)),
-  piPackages: [...config.piPackages].sort((left, right) => left.name.localeCompare(right.name)),
-});
-
-export const encodeSandboxConfigJson = (config: SandboxConfig): string =>
-  `${JSON.stringify(encodeSandboxConfig(sortSandboxConfig(config)), null, 2)}\n`;
-
-export const decodeSandboxConfigText = (text: string): Result.Result<SandboxConfig, void> => {
+export const decodeSandboxConfigText = (text: string): Result.Result<ScottyConfig, void> => {
   const decoded = decodeSandboxConfigJson(text);
-  if (Result.isFailure(decoded)) return Result.fail(undefined);
-  return Result.succeed(sortSandboxConfig(decoded.success));
+  return Result.isFailure(decoded) ? Result.fail(undefined) : Result.succeed(decoded.success);
 };
 
-export const localSandboxStatus = (config: SandboxConfig): SandboxStatusOutput => ({
+export const localSandboxStatus = (config: ScottyConfig): SandboxStatusOutput => ({
   schemaVersion: SANDBOX_CONFIG_SCHEMA_VERSION,
-  skills: config.skills,
-  piPackages: config.piPackages,
-  remote: { status: "not_queried", activeDigest: null },
+  installation: config.installation,
+  pi: config.pi,
+  plugins: config.plugins,
+  sandboxSetup: config.sandboxSetup,
+  remote: { status: "not_queried", activeSnapshotDigest: null },
 });
 
-const writeSandboxConfig = Effect.fnUntraced(function* (path: string, config: SandboxConfig) {
+const writeSandboxConfig = Effect.fnUntraced(function* (path: string, config: ScottyConfig) {
   const fileSystem = yield* FileSystem;
   yield* fileSystem.writeSecure(path, encodeSandboxConfigJson(config));
 });
 
-export const loadSandboxConfig = Effect.fnUntraced(function* (
-  path: string,
-  createIfMissing: boolean,
-) {
+export const loadSandboxConfig = Effect.fnUntraced(function* (path: string) {
   const fileSystem = yield* FileSystem;
   const text = yield* fileSystem.readPrivateText(path).pipe(
     Effect.map(Option.some),
@@ -107,24 +140,19 @@ export const loadSandboxConfig = Effect.fnUntraced(function* (
       );
     }),
   );
-  if (Option.isNone(text)) {
-    if (!createIfMissing)
-      return yield* new CliError(
-        "sandbox_config_invalid",
-        "Sandbox configuration is missing",
-        `Run scotty init or scotty sandbox list to create ${path}.`,
-        EXIT.USAGE,
-      );
-    const empty = emptySandboxConfig();
-    yield* writeSandboxConfig(path, empty);
-    return empty;
-  }
+  if (Option.isNone(text))
+    return yield* new CliError(
+      "sandbox_config_invalid",
+      "Sandbox configuration is missing",
+      `Run scotty init to create ${path}.`,
+      EXIT.USAGE,
+    );
   const decoded = decodeSandboxConfigText(text.value);
   if (Result.isFailure(decoded)) return yield* sandboxConfigInvalid(path);
   return decoded.success;
 });
 
-export const saveSandboxConfig = Effect.fnUntraced(function* (path: string, config: SandboxConfig) {
+export const saveSandboxConfig = Effect.fnUntraced(function* (path: string, config: ScottyConfig) {
   yield* writeSandboxConfig(path, config);
-  return sortSandboxConfig(config);
+  return config;
 });

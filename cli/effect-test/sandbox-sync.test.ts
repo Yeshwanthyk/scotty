@@ -1,117 +1,178 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
-import { createDeterministicTarGz } from "../src/sandbox-archive.ts";
-import { CliError, EXIT } from "../src/core.ts";
-import type { BuiltSandboxBundle } from "../src/sandbox-prepare.ts";
+import type { ScottyConfig } from "../../protocol/sandbox-config";
+import { CliError } from "../src/core.ts";
+import { buildSandboxBundle } from "../src/sandbox-prepare.ts";
 import { synchronizeSandboxBundle } from "../src/sandbox-sync.ts";
 import { HttpTransport } from "../src/services.ts";
 
-const failure = (result: CliError | unknown): CliError => {
-  assert.instanceOf(result, CliError);
-  return result;
-};
-
-const sampleBuilt = (): BuiltSandboxBundle => {
-  const built = createDeterministicTarGz([
+const config: ScottyConfig = {
+  schemaVersion: 1,
+  installation: { name: "home", cloudflareAccountId: "account-1" },
+  pi: {
+    defaultProvider: "openai",
+    defaultModel: "gpt-5.6-sol",
+    defaultThinkingLevel: "medium",
+  },
+  plugins: [
     {
-      path: "manifest.json",
-      type: "file",
-      modeClass: "regular",
-      bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
+      id: "cloudflare",
+      type: "compute-provider",
+      enabled: true,
+      source: { kind: "builtin", name: "cloudflare" },
     },
-  ]);
-  return {
-    digest: built.digest,
-    bytes: built.archive.byteLength,
-    fileCount: 1,
-    manifest: { schemaVersion: 1, skills: [], piPackages: [] },
-    archive: built.archive,
-  };
+  ],
+  sandboxSetup: { piExtensions: [], skills: [], sandboxTools: [] },
 };
 
 const target = { host: "https://worker.example", token: "root-token" } as const;
 
-describe("sandbox sync transport", () => {
-  it.effect("skips upload when remote digest already matches", () =>
+interface PreparedSnapshotBody {
+  readonly pluginBundleDigest: string;
+}
+
+interface ActivationBody {
+  readonly snapshotDigest: string;
+  readonly configDigest: string;
+}
+
+const status = (revision: number, snapshotDigest: string | null, configDigest?: string) => ({
+  schemaVersion: 1,
+  installationName: revision === 0 ? null : "home",
+  cloudflareAccountId: revision === 0 ? null : "account-1",
+  revision,
+  activeSnapshot:
+    snapshotDigest === null
+      ? null
+      : {
+          revision,
+          snapshotDigest,
+          configDigest: configDigest ?? `sha256:${"b".repeat(64)}`,
+          syncId: `sync-${revision}`,
+          activatedAt: "2026-08-24T00:00:00.000Z",
+        },
+});
+
+describe("sandbox snapshot sync", () => {
+  it.effect("does not upload when the active immutable snapshot already matches", () =>
     Effect.gen(function* () {
-      const built = sampleBuilt();
+      const active = yield* buildSandboxBundle(config, 2);
       let putCalls = 0;
       const layer = Layer.succeed(HttpTransport)({
         fetch: (input, init) =>
           Effect.sync(() => {
             const request = new Request(input, init);
-            const url = new URL(request.url);
-            if (url.pathname === "/api/sandbox/configuration")
-              return Response.json({
-                schemaVersion: 1,
-                revision: 2,
-                activeDigest: built.digest,
-              });
-            if (url.pathname.startsWith("/api/sandbox/bundles/")) putCalls++;
-            return Response.json(
-              { error: { code: "not_found", message: "missing" } },
-              { status: 404 },
-            );
+            if (request.method === "PUT") putCalls += 1;
+            return Response.json(status(2, active.snapshotDigest, active.configDigest));
           }),
       });
-      const remote = yield* synchronizeSandboxBundle({ target, built }).pipe(Effect.provide(layer));
-      assert.strictEqual(remote.status, "synchronized");
-      assert.strictEqual(remote.activeDigest, built.digest);
+      const synchronized = yield* synchronizeSandboxBundle({
+        target,
+        config,
+        approveActivation: () => Effect.void,
+      }).pipe(Effect.provide(layer));
+      assert.strictEqual(synchronized.remote.status, "synchronized");
+      assert.strictEqual(synchronized.remote.activeSnapshotDigest, active.snapshotDigest);
       assert.strictEqual(putCalls, 0);
     }),
   );
 
-  it.effect("maps activation conflicts to sandbox_bundle_activation_conflict", () =>
+  it.effect("prepares both immutable inputs before activation", () =>
     Effect.gen(function* () {
-      const built = sampleBuilt();
+      const calls: string[] = [];
+      let preparedSnapshotDigest = "";
+      let preparedPluginDigest = "";
+      const layer = Layer.succeed(HttpTransport)({
+        fetch: (input, init) =>
+          Effect.promise(async () => {
+            const request = new Request(input, init);
+            const url = new URL(request.url);
+            calls.push(`${request.method} ${url.pathname}`);
+            if (request.method === "GET") return Response.json(status(0, null));
+            if (url.pathname.includes("/plugin-bundles/")) {
+              preparedPluginDigest = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
+              return Response.json({ ok: true });
+            }
+            if (url.pathname.includes("/snapshots/")) {
+              preparedSnapshotDigest = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
+              const body = JSON.parse(await request.text()) as PreparedSnapshotBody;
+              return Response.json({
+                snapshotDigest: preparedSnapshotDigest,
+                pluginBundleDigest: body.pluginBundleDigest,
+              });
+            }
+            const body = JSON.parse(await request.text()) as ActivationBody;
+            return Response.json(status(1, body.snapshotDigest, body.configDigest));
+          }),
+      });
+      const synchronized = yield* synchronizeSandboxBundle({
+        target,
+        config,
+        approveActivation: (plan) =>
+          Effect.sync(() => {
+            calls.push("APPROVE");
+            assert.strictEqual(plan.currentRevision, 0);
+            assert.strictEqual(plan.nextRevision, 1);
+            assert.strictEqual(plan.plugins[0]?.source, "builtin:cloudflare");
+          }),
+      }).pipe(Effect.provide(layer));
+      assert.strictEqual(preparedPluginDigest, synchronized.built.pluginBundleDigest);
+      assert.strictEqual(preparedSnapshotDigest, synchronized.built.snapshotDigest);
+      assert.deepStrictEqual(
+        calls.map((call) => call.split(" ")[0]),
+        ["GET", "APPROVE", "PUT", "PUT", "POST"],
+      );
+    }),
+  );
+
+  it.effect("does not upload or activate when approval is refused", () =>
+    Effect.gen(function* () {
+      let mutationCalls = 0;
+      const layer = Layer.succeed(HttpTransport)({
+        fetch: (input, init) =>
+          Effect.sync(() => {
+            const request = new Request(input, init);
+            if (request.method !== "GET") mutationCalls += 1;
+            return Response.json(status(0, null));
+          }),
+      });
+      const refused = new CliError("cancelled", "cancelled", "unchanged", 2);
+      const failure = yield* synchronizeSandboxBundle({
+        target,
+        config,
+        approveActivation: () => Effect.fail(refused),
+      }).pipe(Effect.provide(layer), Effect.flip);
+      assert.strictEqual(failure, refused);
+      assert.strictEqual(mutationCalls, 0);
+    }),
+  );
+
+  it.effect("does not attempt activation when snapshot preparation fails", () =>
+    Effect.gen(function* () {
+      let activationCalls = 0;
+      const oldDigest = `sha256:${"c".repeat(64)}`;
       const layer = Layer.succeed(HttpTransport)({
         fetch: (input, init) =>
           Effect.sync(() => {
             const request = new Request(input, init);
             const url = new URL(request.url);
-            if (url.pathname === "/api/sandbox/configuration")
-              return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+            if (request.method === "GET") return Response.json(status(4, oldDigest));
+            if (url.pathname.includes("/plugin-bundles/")) return Response.json({ ok: true });
+            if (url.pathname.endsWith("/activate")) activationCalls += 1;
             return Response.json(
-              {
-                error: {
-                  code: "conflict",
-                  message: "Sandbox configuration revision conflict",
-                  hint: "Retry scotty sandbox sync.",
-                },
-              },
-              { status: 409 },
+              { error: { code: "upstream", message: "snapshot write failed", hint: "retry" } },
+              { status: 502 },
             );
           }),
       });
-      const result = yield* synchronizeSandboxBundle({ target, built }).pipe(
-        Effect.provide(layer),
-        Effect.flip,
-      );
-      assert.strictEqual(failure(result).code, "sandbox_bundle_activation_conflict");
-    }),
-  );
-
-  it.effect("maps fetch failures to sandbox_bundle_unavailable", () =>
-    Effect.gen(function* () {
-      const built = sampleBuilt();
-      const layer = Layer.succeed(HttpTransport)({
-        fetch: () =>
-          Effect.tryPromise({
-            try: () => Promise.reject(new TypeError("network down")),
-            catch: () =>
-              new CliError(
-                "network_error",
-                "Could not reach the Scotty Worker",
-                "Check --host and your network, then retry.",
-                EXIT.GENERIC,
-              ),
-          }),
-      });
-      const result = yield* synchronizeSandboxBundle({ target, built }).pipe(
-        Effect.provide(layer),
-        Effect.flip,
-      );
-      assert.strictEqual(failure(result).code, "sandbox_bundle_unavailable");
+      const error = yield* synchronizeSandboxBundle({
+        target,
+        config,
+        approveActivation: () => Effect.void,
+      }).pipe(Effect.provide(layer), Effect.flip);
+      assert.ok(error instanceof CliError);
+      assert.strictEqual(error.code, "sandbox_bundle_upload_failed");
+      assert.strictEqual(activationCalls, 0);
     }),
   );
 });

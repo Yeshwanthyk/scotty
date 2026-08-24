@@ -1,4 +1,5 @@
 import type { SessionOperationFailureCode, SessionRecord } from "../../src/contracts";
+import { TEST_SANDBOX_SNAPSHOT } from "./sandbox-snapshot";
 
 const stoppedOperationResult = (): NonNullable<SessionRecord["operationResult"]> => ({
   kind: "snapshot",
@@ -69,6 +70,11 @@ export const makeSessionRecord = (overrides: Partial<SessionRecord> = {}): Sessi
     updatedAt: "2026-01-01T00:00:01.000Z",
     hardCapAt: "2026-01-01T04:00:00.000Z",
     hardCapDurationSeconds: 14_400,
+    sandboxBundle: {
+      revision: TEST_SANDBOX_SNAPSHOT.revision,
+      digest: TEST_SANDBOX_SNAPSHOT.digest,
+      manifestVersion: 1,
+    },
     ownedBackupIds: [],
     piSessionTransportToken: "a".repeat(64),
     ...overrides,

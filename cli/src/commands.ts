@@ -1,5 +1,5 @@
-import { isAbsolute, join } from "node:path";
-import { Clock, Console, Effect, FileSystem, Option, Predicate, Ref, Result } from "effect";
+import { isAbsolute } from "node:path";
+import { Clock, Console, Effect, FileSystem, Option, Predicate, Ref, Result, Schema } from "effect";
 import {
   Argument,
   CliConfig,
@@ -11,7 +11,13 @@ import {
 } from "effect/unstable/cli";
 import { handleDown } from "./archive";
 import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
-import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
+import {
+  beamUpSession,
+  credentials,
+  readConfig,
+  readRootCredential,
+  secureWrite,
+} from "./dependencies";
 import {
   decodeInitJournalJson,
   decodeEnvironmentMutation,
@@ -54,28 +60,24 @@ import {
   usage,
 } from "./pure";
 import { encodeSandboxSyncJson, formatSandboxSync, sandboxSyncOutput } from "./sandbox-bundle";
+import { sandboxConfigPath, saveSandboxConfig, standardSandboxConfig } from "./sandbox-config";
 import {
-  formatSandboxStatus,
-  loadSandboxConfig,
-  localSandboxStatus,
-  sandboxConfigPath,
-  saveSandboxConfig,
-} from "./sandbox-config";
-import { synchronizeLocalSandbox, type SandboxSyncTarget } from "./sandbox-sync";
+  formatSandboxActivationPlan,
+  synchronizeLocalSandbox,
+  type SandboxActivationPlan,
+  type SandboxSyncTarget,
+} from "./sandbox-sync";
 import {
-  addPiPackageSource,
-  addSkillSource,
-  classifySandboxSource,
-  mutateSandboxConfig,
-  readSkillDirectoryName,
-  removeSandboxSource,
-} from "./sandbox-sources";
+  installationStatePath,
+  operationStatePath,
+  rootCredentialPath,
+  stateLockPath,
+} from "./local-paths";
 import {
   BrowserLauncher,
   CliRuntime,
   CliUpgrader,
   FileSystem as CliFileSystem,
-  GitResolver,
   InstallationCreator,
   InstallationDeployer,
   InstallationRecovery,
@@ -96,6 +98,7 @@ import { TuiError, safeErrorMessage } from "../../tui/src/errors.ts";
 import { pairTuiClient, runTuiConsole } from "../../tui/src/main.ts";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 import { ENVIRONMENT_NAME_PATTERN } from "../../worker/src/environment-contracts.ts";
+import { PiThinkingLevelSchema } from "../../protocol/sandbox-config.ts";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const SANDBOX_PEER_HOST = "https://scotty.internal";
@@ -113,6 +116,7 @@ const RUNNER_CHILD_ENV_KEYS = [
   "TZ",
   "USER",
 ] as const;
+const decodePiThinkingLevel = Schema.decodeUnknownResult(PiThinkingLevelSchema);
 const formatConsoleArguments = (args: ReadonlyArray<unknown>): string =>
   args.map((value) => String(value)).join(" ");
 
@@ -168,9 +172,16 @@ const tuiFailure = (error: unknown): CliError => {
 
 const synchronizeInstallationSandbox = Effect.fnUntraced(function* (
   home: string,
+  env: Readonly<Record<string, string | undefined>>,
   target: SandboxSyncTarget,
+  approveActivation: (plan: SandboxActivationPlan) => Effect.Effect<void, CliError>,
 ) {
-  return yield* synchronizeLocalSandbox({ home, target }).pipe(
+  return yield* synchronizeLocalSandbox({
+    home,
+    env: { ...env },
+    target,
+    approveActivation,
+  }).pipe(
     Effect.mapError((failure) =>
       failure.hint.includes("sandbox sync")
         ? failure
@@ -183,6 +194,39 @@ const synchronizeInstallationSandbox = Effect.fnUntraced(function* (
     ),
   );
 });
+
+const sandboxActivationApproval = (
+  runtime: {
+    readonly stdinIsTTY: boolean;
+    readonly stdoutIsTTY: boolean;
+    readonly stdout: (text: string) => void;
+    readonly prompt: (question: string) => string | null;
+  },
+  yes: boolean,
+  jsonOutput = false,
+) =>
+  Effect.fnUntraced(function* (plan: SandboxActivationPlan) {
+    if (yes) return;
+    if (jsonOutput)
+      return yield* usage(
+        "sandbox sync requires --yes before activation in non-interactive use",
+        "Review the Plugin source and snapshot change plan, then retry with --yes.",
+      );
+    if (!runtime.stdinIsTTY || !runtime.stdoutIsTTY)
+      return yield* usage(
+        "sandbox sync requires --yes before activation in non-interactive use",
+        "Review the Plugin source and snapshot change plan, then retry with --yes.",
+      );
+    runtime.stdout(formatSandboxActivationPlan(plan));
+    const answer = runtime.prompt(`Activate Sandbox revision ${plan.nextRevision}? [y/N]: `);
+    if (answer?.trim().toLowerCase() !== "y")
+      return yield* new CliError(
+        "cancelled",
+        "Sandbox synchronization cancelled",
+        "No immutable inputs were uploaded and the active snapshot was unchanged.",
+        EXIT.USAGE,
+      );
+  });
 
 const runnerChildEnvironment = (
   environment: Readonly<Record<string, string | undefined>>,
@@ -351,11 +395,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const rootToken = (): string =>
     `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
 
-  const managedConfig = (
-    deployed: InstallationResult,
-    token: string,
-    adoptionManifestPath?: string,
-  ) => ({
+  const managedConfig = (deployed: InstallationResult, adoptionManifestPath?: string) => ({
     version:
       deployed.evidenceEnabled === true
         ? (3 as const)
@@ -378,7 +418,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ...(deployed.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
     ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
     host: deployed.host,
-    token,
   });
 
   const init = Command.make(
@@ -403,9 +442,36 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       enableEvidence: Flag.boolean("enable-evidence").pipe(
         Flag.withDescription("Explicitly enable the preview-backed evidence deployment gate"),
       ),
+      piProvider: Flag.string("pi-provider").pipe(
+        Flag.optional,
+        Flag.withDescription("Pi provider ID for new Sessions"),
+      ),
+      piModel: Flag.string("pi-model").pipe(
+        Flag.optional,
+        Flag.withDescription("Pi model ID for new Sessions"),
+      ),
+      piThinking: Flag.choice("pi-thinking", [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+      ] as const).pipe(Flag.optional, Flag.withDescription("Pi thinking level for new Sessions")),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed installation")),
     },
-    ({ enableEvidence, name, previewBase, previewZoneId, profile, yes }) =>
+    ({
+      enableEvidence,
+      name,
+      piModel,
+      piProvider,
+      piThinking,
+      previewBase,
+      previewZoneId,
+      profile,
+      yes,
+    }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
@@ -415,10 +481,37 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (enableEvidence && preview === undefined)
           return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
         const evidenceEnabled = enableEvidence ? (true as const) : undefined;
+        const defaultProvider =
+          Option.getOrUndefined(piProvider)?.trim() ||
+          (runtime.stdinIsTTY ? runtime.prompt("Pi provider ID: ")?.trim() : undefined);
+        const defaultModel =
+          Option.getOrUndefined(piModel)?.trim() ||
+          (runtime.stdinIsTTY ? runtime.prompt("Pi model ID: ")?.trim() : undefined);
+        const defaultThinkingLevel =
+          Option.getOrUndefined(piThinking) ??
+          (runtime.stdinIsTTY
+            ? runtime.prompt("Pi thinking level (off|minimal|low|medium|high|xhigh|max): ")?.trim()
+            : undefined);
+        const decodedThinkingLevel = decodePiThinkingLevel(defaultThinkingLevel);
+        if (
+          defaultProvider === undefined ||
+          defaultProvider.length === 0 ||
+          defaultModel === undefined ||
+          defaultModel.length === 0 ||
+          Result.isFailure(decodedThinkingLevel)
+        )
+          return yield* usage(
+            "init requires explicit Pi provider, model, and thinking settings",
+            "Pass --pi-provider, --pi-model, and --pi-thinking, or answer the interactive prompts.",
+          );
         yield* ensureDocker();
         const fileSystem = yield* CliFileSystem;
-        const journalPath = join(runtime.home, ".scotty", `init-${installationName}.json`);
-        const lockPath = join(runtime.home, ".scotty", "locks", `init-${installationName}`);
+        const journalPath = operationStatePath(
+          runtime.home,
+          runtime.env,
+          `init-${installationName}.json`,
+        );
+        const lockPath = stateLockPath(runtime.home, runtime.env, `init-${installationName}`);
         yield* fileSystem.withLock(
           lockPath,
           Effect.gen(function* () {
@@ -592,10 +685,25 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               mode: Option.isSome(existingJournal) ? "resume" : "fresh",
             });
             const host = yield* Effect.fromResult(normalizeHost(deployed.host));
-            const configPath = join(runtime.home, ".scotty.json");
+            const configPath = sandboxConfigPath(runtime.home, runtime.env);
+            const statePath = installationStatePath(runtime.home, runtime.env);
+            const credentialPath = rootCredentialPath(runtime.home, runtime.env);
             yield* secureWrite(
+              statePath,
+              `${JSON.stringify(managedConfig({ ...deployed, host }), null, 2)}\n`,
+            );
+            yield* secureWrite(credentialPath, `${token}\n`);
+            yield* saveSandboxConfig(
               configPath,
-              `${JSON.stringify(managedConfig({ ...deployed, host }, token), null, 2)}\n`,
+              standardSandboxConfig({
+                installationName,
+                cloudflareAccountId: deployed.accountId,
+                pi: {
+                  defaultProvider,
+                  defaultModel,
+                  defaultThinkingLevel: decodedThinkingLevel.success,
+                },
+              }),
             );
             yield* fileSystem
               .remove(journalPath)
@@ -622,7 +730,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               host,
               rootTokenRotated: true,
             };
-            yield* synchronizeInstallationSandbox(runtime.home, { host, token });
+            yield* synchronizeInstallationSandbox(
+              runtime.home,
+              runtime.env,
+              { host, token },
+              () => Effect.void,
+            );
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
@@ -727,8 +840,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             );
         }
 
-        const configPath = join(runtime.home, ".scotty.json");
-        const journalPath = join(runtime.home, ".scotty", `recover-${installationName}.json`);
+        const configPath = sandboxConfigPath(runtime.home, runtime.env);
+        const statePath = installationStatePath(runtime.home, runtime.env);
+        const credentialPath = rootCredentialPath(runtime.home, runtime.env);
+        const journalPath = operationStatePath(
+          runtime.home,
+          runtime.env,
+          `recover-${installationName}.json`,
+        );
         const fileSystem = yield* CliFileSystem;
         yield* fileSystem.withLock(
           journalPath,
@@ -751,7 +870,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               journalMatchesTarget && existingJournal.token ? existingJournal.token : rootToken();
             yield* secureWrite(
               journalPath,
-              `${JSON.stringify(managedConfig(inspected, token, adoptionManifestPath), null, 2)}\n`,
+              `${JSON.stringify({ ...managedConfig(inspected, adoptionManifestPath), token }, null, 2)}\n`,
             );
             const recovered = yield* recovery.recover({
               ...deploymentTarget,
@@ -771,13 +890,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             });
             const host = yield* Effect.fromResult(normalizeHost(recovered.host));
             yield* secureWrite(
-              configPath,
+              statePath,
               `${JSON.stringify(
-                managedConfig({ ...recovered, host }, token, adoptionManifestPath),
+                managedConfig({ ...recovered, host }, adoptionManifestPath),
                 null,
                 2,
               )}\n`,
             );
+            yield* secureWrite(credentialPath, `${token}\n`);
             yield* fileSystem
               .remove(journalPath)
               .pipe(
@@ -828,8 +948,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("uninstall does not accept --host or --token-file");
-        const configPath = join(runtime.home, ".scotty.json");
-        const config = yield* readConfig(configPath);
+        const configPath = sandboxConfigPath(runtime.home, runtime.env);
+        const statePath = installationStatePath(runtime.home, runtime.env);
+        const credentialPath = rootCredentialPath(runtime.home, runtime.env);
+        const config = yield* readConfig(statePath);
         if (!config.installationName || !config.profile)
           return yield* usage(
             "No managed Scotty installation is configured",
@@ -901,22 +1023,23 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             : { adoptionManifestPath: config.adoptionManifestPath }),
         });
         const fileSystem = yield* CliFileSystem;
-        yield* fileSystem
-          .remove(configPath)
-          .pipe(
-            Effect.catch((error) =>
-              error.code === "ENOENT"
-                ? Effect.void
-                : Effect.fail(
-                    new CliError(
-                      "config_cleanup_failed",
-                      "Cloudflare resources were removed but the local config remains",
-                      `Remove ${configPath} manually.`,
-                      EXIT.GENERIC,
+        for (const path of [configPath, statePath, credentialPath])
+          yield* fileSystem
+            .remove(path)
+            .pipe(
+              Effect.catch((error) =>
+                error.code === "ENOENT"
+                  ? Effect.void
+                  : Effect.fail(
+                      new CliError(
+                        "config_cleanup_failed",
+                        "Cloudflare resources were removed but local Scotty state remains",
+                        `Remove ${path} manually.`,
+                        EXIT.GENERIC,
+                      ),
                     ),
-                  ),
-            ),
-          );
+              ),
+            );
         const output = { ...result, configRemoved: true };
         if (autoJson) outputJson(runtime.stdout, output);
         else {
@@ -956,17 +1079,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("deploy does not accept --host or --token-file");
-        const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+        const statePath = installationStatePath(runtime.home, runtime.env);
+        const config = yield* readConfig(statePath);
         if (!config.installationName || !config.profile || !config.accountId)
           return yield* usage(
             "No managed Scotty installation is configured",
             "Run scotty init or scotty recover first.",
           );
-        if (!config.token)
-          return yield* usage(
-            "Managed installation credentials are missing",
-            "Run scotty recover --name NAME first.",
-          );
+        const token = yield* readRootCredential(runtime.home, runtime.env);
         yield* ensureDocker();
         const deployer = yield* InstallationDeployer;
         const request = {
@@ -988,6 +1108,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             "Select the saved Alchemy profile or recover the installation before deploying.",
             EXIT.GENERIC,
           );
+        if (autoJson && !yes && plan.changes.length > 0)
+          return yield* usage(
+            "deploy requires --yes when the plan contains changes",
+            "Review the deployment plan, then retry with --yes.",
+          );
         if (plan.changes.length === 0) {
           const result = {
             installationName: config.installationName,
@@ -1000,15 +1125,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Scotty host is not configured",
               "Run scotty init or pass --host / SCOTTY_HOST.",
             );
-          if (config.token === undefined)
-            return yield* usage(
-              "Scotty token is not configured",
-              "Run scotty init or pass --token-file / SCOTTY_TOKEN.",
-            );
-          yield* synchronizeInstallationSandbox(runtime.home, {
-            host: yield* Effect.fromResult(normalizeHost(config.host)),
-            token: config.token,
-          });
+          yield* synchronizeInstallationSandbox(
+            runtime.home,
+            runtime.env,
+            {
+              host: yield* Effect.fromResult(normalizeHost(config.host)),
+              token,
+            },
+            sandboxActivationApproval(runtime, yes, autoJson),
+          );
           if (autoJson) outputJson(runtime.stdout, result);
           else runtime.stdout(`${config.installationName} is already up to date.\n`);
           return;
@@ -1039,9 +1164,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         });
         const host = yield* Effect.fromResult(normalizeHost(deployed.host));
         yield* secureWrite(
-          join(runtime.home, ".scotty.json"),
+          statePath,
           `${JSON.stringify(
-            managedConfig({ ...deployed, host }, config.token, config.adoptionManifestPath),
+            managedConfig({ ...deployed, host }, config.adoptionManifestPath),
             null,
             2,
           )}\n`,
@@ -1055,7 +1180,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           changes: plan.changes,
           rootTokenRotated: false,
         };
-        yield* synchronizeInstallationSandbox(runtime.home, { host, token: config.token });
+        yield* synchronizeInstallationSandbox(
+          runtime.home,
+          runtime.env,
+          { host, token },
+          sandboxActivationApproval(runtime, yes, autoJson),
+        );
         if (autoJson) outputJson(runtime.stdout, result);
         else
           runtime.stdout(
@@ -1496,7 +1626,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const doctor = Command.make("doctor", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
-      const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+      const config = yield* readConfig(installationStatePath(runtime.home, runtime.env));
       const auth = yield* credentials(options);
       const value = yield* requestJson(auth, "/api/sessions");
       if (Option.isNone(decodeSessionsResponse(value)))
@@ -1582,19 +1712,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([skillsShow]),
   );
 
-  const emitSandboxStatus = (
-    autoJson: boolean,
-    runtime: { readonly stdout: (text: string) => void },
-    status: ReturnType<typeof localSandboxStatus>,
-    prefix?: string,
-  ): void => {
-    if (autoJson) outputJson(runtime.stdout, status);
-    else {
-      if (prefix !== undefined) runtime.stdout(`${prefix}\n`);
-      runtime.stdout(formatSandboxStatus(status));
-    }
-  };
-
   const emitSandboxSync = (
     autoJson: boolean,
     runtime: { readonly stdout: (text: string) => void },
@@ -1604,119 +1721,32 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     else runtime.stdout(formatSandboxSync(output));
   };
 
-  const sandboxAdd = Command.make(
-    "add",
+  const sandboxSync = Command.make(
+    "sync",
     {
-      source: Argument.string("source").pipe(
-        Argument.withDescription("Local Skill directory or Git repository URL"),
-      ),
-      ref: Flag.string("ref").pipe(
-        Flag.optional,
-        Flag.withDescription("Git tag or commit for a Pi package repository"),
-      ),
+      yes: Flag.boolean("yes").pipe(Flag.withDescription("Approve snapshot activation")),
     },
-    ({ ref, source }) =>
+    ({ yes }) =>
       Effect.gen(function* () {
-        const { autoJson, runtime } = yield* commandContext();
-        const requestedRef = Option.getOrUndefined(ref);
-        const classified = yield* classifySandboxSource(source, runtime.cwd, requestedRef);
-        const path = sandboxConfigPath(runtime.home);
-        if (classified.kind === "skill") {
-          const name = yield* readSkillDirectoryName(classified.path);
-          const saved = yield* mutateSandboxConfig(path, (config) =>
-            addSkillSource(config, { name, path: classified.path }),
-          );
-          emitSandboxStatus(
-            autoJson,
-            runtime,
-            localSandboxStatus(saved),
-            `Added skill ${name} to the local sandbox configuration.`,
-          );
-          return;
-        }
-        if (requestedRef === undefined) return yield* usage("Git package sources require --ref");
-        const git = yield* GitResolver;
-        const resolved = yield* git.resolvePackage(classified.repository, requestedRef);
-        const saved = yield* mutateSandboxConfig(path, (config) =>
-          addPiPackageSource(config, {
-            name: resolved.name,
-            repository: classified.repository,
-            commit: resolved.commit,
-            requestedRef,
-          }),
+        const { autoJson, options, runtime } = yield* commandContext();
+        const target = yield* credentials(options);
+        const synced = yield* synchronizeInstallationSandbox(
+          runtime.home,
+          runtime.env,
+          target,
+          sandboxActivationApproval(runtime, yes, autoJson),
         );
-        emitSandboxStatus(
+        emitSandboxSync(
           autoJson,
           runtime,
-          localSandboxStatus(saved),
-          `Added Pi package ${resolved.name} to the local sandbox configuration.`,
+          sandboxSyncOutput(synced.config, synced.built, synced.remote),
         );
       }),
-  ).pipe(Command.withDescription("Add a Skill directory or Git-backed Pi package"));
-
-  const sandboxRemove = Command.make(
-    "remove",
-    {
-      name: Argument.string("name").pipe(
-        Argument.withDescription("Configured Skill or Pi package name"),
-      ),
-    },
-    ({ name }) =>
-      Effect.gen(function* () {
-        const { autoJson, runtime } = yield* commandContext();
-        const path = sandboxConfigPath(runtime.home);
-        const fileSystem = yield* CliFileSystem;
-        const removed = yield* fileSystem.withLock(
-          path,
-          Effect.gen(function* () {
-            const current = yield* loadSandboxConfig(path, true);
-            const next = yield* Effect.fromResult(removeSandboxSource(current, name));
-            const saved = yield* saveSandboxConfig(path, next.config);
-            return { kind: next.kind, saved };
-          }),
-        );
-        const label = removed.kind === "skill" ? "skill" : "Pi package";
-        emitSandboxStatus(
-          autoJson,
-          runtime,
-          localSandboxStatus(removed.saved),
-          `Removed ${label} ${name} from the local sandbox configuration.`,
-        );
-      }),
-  ).pipe(Command.withDescription("Remove a configured Skill or Pi package"));
-
-  const sandboxList = Command.make("list", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, runtime } = yield* commandContext();
-      const path = sandboxConfigPath(runtime.home);
-      const fileSystem = yield* CliFileSystem;
-      const config = yield* fileSystem.withLock(path, loadSandboxConfig(path, true));
-      emitSandboxStatus(autoJson, runtime, localSandboxStatus(config));
-    }),
-  ).pipe(Command.withDescription("List local sandbox sources and remote status"));
-
-  const sandboxSync = Command.make("sync", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, options, runtime } = yield* commandContext();
-      const target = yield* credentials(options);
-      const synced = yield* synchronizeInstallationSandbox(runtime.home, target);
-      emitSandboxSync(
-        autoJson,
-        runtime,
-        sandboxSyncOutput(
-          synced.config,
-          synced.built.digest,
-          synced.built.bytes,
-          synced.built.fileCount,
-          synced.remote,
-        ),
-      );
-    }),
   ).pipe(Command.withDescription("Prepare the local sandbox bundle and synchronize it"));
 
   const sandbox = Command.make("sandbox").pipe(
-    Command.withDescription("Manage installation sandbox Skills and Pi packages"),
-    Command.withSubcommands([sandboxAdd, sandboxRemove, sandboxList, sandboxSync]),
+    Command.withDescription("Synchronize installation Plugins and Sandbox setup"),
+    Command.withSubcommands([sandboxSync]),
   );
 
   const toolsList = Command.make("list", {}, () =>

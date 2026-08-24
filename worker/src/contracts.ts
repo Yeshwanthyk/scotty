@@ -301,7 +301,8 @@ export const DirectoryBackupSchema = Schema.Struct({
 export type DirectoryBackup = typeof DirectoryBackupSchema.Type;
 
 export const SessionSandboxBundleSchema = Schema.Struct({
-  digest: Schema.NullOr(SandboxDigestSchema),
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  digest: SandboxDigestSchema,
   manifestVersion: Schema.Literal(1),
 });
 export type SessionSandboxBundle = typeof SessionSandboxBundleSchema.Type;
@@ -344,7 +345,7 @@ export const SessionRecordSchema = Schema.Struct({
   codexThreadId: Schema.optional(Schema.String),
   agentState: Schema.optional(AgentActivityStateSchema),
   lastAgentEventAt: Schema.optional(Schema.String),
-  sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
+  sandboxBundle: SessionSandboxBundleSchema,
   environment: Schema.optionalKey(PersistedSessionEnvironmentSnapshotSchema),
   piSessionTransportToken: PiSessionTransportTokenSchema,
 }).pipe(
@@ -435,7 +436,7 @@ export const SessionProjectionSchema = Schema.Struct({
   hardCapAt: Schema.String,
   projectedAt: Schema.String,
   operationResult: Schema.optionalKey(SessionOperationResultSchema),
-  sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
+  sandboxBundle: SessionSandboxBundleSchema,
 });
 export type SessionProjection = typeof SessionProjectionSchema.Type;
 

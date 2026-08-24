@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { ScottyError, type SessionRecord } from "../src/contracts";
-import { sandboxBundleTarGzKey } from "../src/sandbox-bundle-store";
+import { sandboxPluginBundleTarGzKey, sandboxSnapshotKey } from "../src/sandbox-bundle-store";
 import { decodeSandboxFileStream } from "../src/session";
 import {
   createSessionHarness,
@@ -13,6 +13,9 @@ import {
   makeResumeBackup,
   SESSION_ID,
   sessionHarnessKeys,
+  TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST,
+  TEST_SANDBOX_SNAPSHOT,
+  testSandboxConfigStatus,
 } from "./session-harness";
 import { makeFailedOperationResult, makeSessionRecord } from "./support";
 
@@ -218,22 +221,25 @@ describe("Sandbox vaporize orchestration", () => {
   });
 
   it("deletes session-owned backups without touching shared sandbox bundle objects", async () => {
-    const digest = "a".repeat(64);
-    const bundleKey = sandboxBundleTarGzKey(digest);
+    const { digest, revision } = TEST_SANDBOX_SNAPSHOT;
+    const bundleKeys = [
+      sandboxPluginBundleTarGzKey(TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST),
+      sandboxSnapshotKey(digest),
+    ];
     const harness = await createVaporizeHarness({
       initialEntries: authorityEntries(
         vaporizeRecord({
-          sandboxBundle: { digest, manifestVersion: 1 },
+          sandboxBundle: { revision, digest, manifestVersion: 1 },
         }),
       ),
       initialProjections: {
         [`session:${SESSION_ID}`]: { id: SESSION_ID, status: "warm" },
       },
       r2Objects: backupObjects,
-      sandboxConfigStatus: { schemaVersion: 1, revision: 1, activeDigest: digest },
+      sandboxConfigStatus: testSandboxConfigStatus(revision),
     });
 
-    assert.deepStrictEqual(harness.sandboxBundleKeys(), [bundleKey]);
+    assert.deepStrictEqual(harness.sandboxBundleKeys(), bundleKeys);
 
     const result = await harness.sandbox.vaporizeScottySession();
 
@@ -246,7 +252,7 @@ describe("Sandbox vaporize orchestration", () => {
     assert.ok(harness.r2DeletedKeys.flat().every((key) => !key.includes("sandbox-bundles/")));
     assert.ok(harness.events.every((event) => !event.includes("sandbox-bundles/")));
     assert.deepStrictEqual(harness.sandboxBundleDeletedKeys, []);
-    assert.deepStrictEqual(harness.sandboxBundleKeys(), [bundleKey]);
+    assert.deepStrictEqual(harness.sandboxBundleKeys(), bundleKeys);
   });
 
   it("finishes durable cleanup when the Cloudflare runtime is already absent", async () => {

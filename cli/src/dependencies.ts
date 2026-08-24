@@ -1,4 +1,4 @@
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { Clock, Effect, Option, Result } from "effect";
 import { decodeInstallationPreviewConfiguration } from "../../infra/installation";
 import { CliError, EXIT, PENDING_UP_TTL_MS, type GlobalOptions } from "./core";
@@ -15,6 +15,7 @@ import {
 import { CliRuntime, FileSystem } from "./services";
 import { requestJson } from "./transport";
 import { conflictSessionId, normalizeHost, stableUp, usage } from "./pure";
+import { operationStatePath, rootCredentialPath, installationStatePath } from "./local-paths";
 
 export { cliLayer, defaultDependencies, type CliDependencies } from "./services";
 
@@ -126,6 +127,36 @@ export const readConfig = Effect.fnUntraced(function* (path: string) {
   } satisfies Config;
 });
 
+export const readRootCredential = Effect.fnUntraced(function* (
+  home: string,
+  env: Readonly<Record<string, string | undefined>>,
+) {
+  const fileSystem = yield* FileSystem;
+  const path = rootCredentialPath(home, env);
+  const token = yield* fileSystem
+    .readPrivateText(path)
+    .pipe(
+      Effect.mapError(
+        () =>
+          new CliError(
+            "config_permissions",
+            "Scotty root credential must be a private regular file",
+            `Run scotty recover or use a non-symlinked mode-0600 file at ${path}.`,
+            EXIT.USAGE,
+          ),
+      ),
+    );
+  const normalized = token.trim();
+  if (normalized.length === 0)
+    return yield* new CliError(
+      "invalid_config",
+      "Scotty root credential is empty",
+      `Run scotty recover to replace ${path}.`,
+      EXIT.USAGE,
+    );
+  return normalized;
+});
+
 export const secureWrite = Effect.fnUntraced(function* (path: string, data: string) {
   const fileSystem = yield* FileSystem;
   return yield* fileSystem.writeSecure(path, data);
@@ -161,7 +192,7 @@ export const pendingUpRequest = Effect.fnUntraced(function* (host: string, body:
   const runtime = yield* CliRuntime;
   const fileSystem = yield* FileSystem;
   const fingerprint = yield* sha256Hex(JSON.stringify([host, body]));
-  const path = join(runtime.home, ".scotty", "pending-up", `${fingerprint}.json`);
+  const path = operationStatePath(runtime.home, runtime.env, `pending-up/${fingerprint}.json`);
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const nowMillis = yield* Clock.currentTimeMillis;
@@ -311,9 +342,12 @@ export const credentials = Effect.fnUntraced(function* (options: GlobalOptions) 
       );
   }
   if (!hostValue || !token) {
-    const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+    const config = yield* readConfig(installationStatePath(runtime.home, runtime.env));
     hostValue ??= config.host;
-    token ??= config.token;
+    if (token === undefined)
+      token = yield* readRootCredential(runtime.home, runtime.env).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
   }
   if (!hostValue)
     return yield* usage(

@@ -186,13 +186,11 @@ export function stableSession(record: SessionResponse): StableSession {
   const codexThreadId = optionalString(record.codexThreadId);
   const agentState = optionalString(record.agentState);
   const lastAgentEventAt = optionalString(record.lastAgentEventAt);
-  const sandboxBundle =
-    record.sandboxBundle === undefined
-      ? undefined
-      : {
-          digest: record.sandboxBundle.digest,
-          manifestVersion: record.sandboxBundle.manifestVersion,
-        };
+  const sandboxBundle = {
+    revision: record.sandboxBundle.revision,
+    digest: record.sandboxBundle.digest,
+    manifestVersion: record.sandboxBundle.manifestVersion,
+  };
   return {
     revision: record.revision,
     id: record.id,
@@ -212,7 +210,7 @@ export function stableSession(record: SessionResponse): StableSession {
     ...(agentState ? { agentState } : {}),
     ...(lastAgentEventAt ? { lastAgentEventAt } : {}),
     ...(record.operationResult === undefined ? {} : { operationResult: record.operationResult }),
-    ...(sandboxBundle ? { sandboxBundle } : {}),
+    sandboxBundle,
   };
 }
 

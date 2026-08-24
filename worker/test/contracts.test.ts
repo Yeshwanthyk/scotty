@@ -156,6 +156,11 @@ describe("request contracts", () => {
       hardCapDurationSeconds: 14_400,
       ownedBackupIds: [],
       piSessionTransportToken: "a".repeat(64),
+      sandboxBundle: {
+        revision: 1,
+        digest: `sha256:${"c".repeat(64)}`,
+        manifestVersion: 1,
+      },
     };
     const projection = toProjection(record, 7, new Date("2026-01-01T00:00:02.000Z"));
     assert.ok(!("operation" in projection));
@@ -198,6 +203,11 @@ describe("request contracts", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
       hardCapAt: "2026-01-01T00:00:03.998Z",
       projectedAt: "2026-01-01T00:00:00.000Z",
+      sandboxBundle: {
+        revision: 1,
+        digest: `sha256:${"c".repeat(64)}`,
+        manifestVersion: 1 as const,
+      },
     };
     assert.deepInclude(toSessionView(projection, Date.parse("2026-01-01T00:00:01.999Z")), {
       ageSeconds: 1,
@@ -225,6 +235,11 @@ const persistedRecord = {
   hardCapDurationSeconds: 14_400,
   ownedBackupIds: ["backup-1"],
   piSessionTransportToken: "a".repeat(64),
+  sandboxBundle: {
+    revision: 1,
+    digest: `sha256:${"c".repeat(64)}`,
+    manifestVersion: 1,
+  },
   backup: {
     current: { id: "backup-1", dir: "/workspace/a0b1c2d3e4f5", localBucket: true },
   },
@@ -432,10 +447,13 @@ describe("persisted session schemas", () => {
     }),
   );
 
-  it.effect("decodes legacy records without sandbox bundle pins", () =>
+  it.effect("rejects legacy records without snapshot pins", () =>
     Effect.gen(function* () {
-      const decoded = yield* decodeSessionRecord(persistedRecord);
-      assert.notProperty(decoded, "sandboxBundle");
+      const legacy = Object.fromEntries(
+        Object.entries(persistedRecord).filter(([key]) => key !== "sandboxBundle"),
+      );
+      const decoded = yield* Effect.result(decodeSessionRecord(legacy));
+      assert.ok(Result.isFailure(decoded));
     }),
   );
 
@@ -444,7 +462,7 @@ describe("persisted session schemas", () => {
       const decoded = yield* Effect.result(
         decodeSessionRecord({
           ...persistedRecord,
-          sandboxBundle: { digest: "not-a-digest", manifestVersion: 1 },
+          sandboxBundle: { revision: 1, digest: "not-a-digest", manifestVersion: 1 },
         }),
       );
       assert.ok(Result.isFailure(decoded));
@@ -452,7 +470,7 @@ describe("persisted session schemas", () => {
   );
 
   it("derives sandbox bundle pins in projections without exposing bundle contents", () => {
-    const digest = "c".repeat(64);
+    const digest = `sha256:${"c".repeat(64)}`;
     const record: SessionRecord = {
       version: 1,
       id: "a0b1c2d3e4f5",
@@ -472,10 +490,10 @@ describe("persisted session schemas", () => {
       hardCapDurationSeconds: 14_400,
       ownedBackupIds: [],
       piSessionTransportToken: "a".repeat(64),
-      sandboxBundle: { digest, manifestVersion: 1 },
+      sandboxBundle: { revision: 3, digest, manifestVersion: 1 },
     };
     const projection = toProjection(record, 2, new Date("2026-01-01T00:00:02.000Z"));
-    assert.deepStrictEqual(projection.sandboxBundle, { digest, manifestVersion: 1 });
+    assert.deepStrictEqual(projection.sandboxBundle, { revision: 3, digest, manifestVersion: 1 });
     assert.ok(!("skills" in projection));
     assert.ok(!("piPackages" in projection));
   });
@@ -495,6 +513,7 @@ describe("persisted session schemas", () => {
       updatedAt: persistedRecord.updatedAt,
       hardCapAt: persistedRecord.hardCapAt,
       projectedAt: persistedRecord.updatedAt,
+      sandboxBundle: persistedRecord.sandboxBundle,
       secret: "strip me",
     };
     const decoded = decodeSessionProjection(projection);

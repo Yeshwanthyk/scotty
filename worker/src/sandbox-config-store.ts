@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Result, Schema } from "effect";
+import { Clock, Context, Data, Effect, Layer, Result, Schema } from "effect";
 import {
   SandboxActivateInputSchema,
   SandboxConfigAuthoritySchema,
@@ -69,8 +69,10 @@ const decodeActivateInput = Schema.decodeUnknownResult(SandboxActivateInputSchem
 
 const emptyAuthority = (): SandboxConfigAuthority => ({
   version: 1,
+  installationName: null,
+  cloudflareAccountId: null,
   revision: 0,
-  activeDigest: null,
+  activeSnapshot: null,
   lastSync: null,
 });
 
@@ -88,7 +90,9 @@ const makeSandboxConfigStore = (
   const revisionConflict = (): SandboxConfigFailure =>
     failure("conflict", "Sandbox configuration revision conflict");
   const idempotencyConflict = (): SandboxConfigFailure =>
-    failure("conflict", "Idempotency key was reused with different sandbox bundle input");
+    failure("conflict", "Idempotency key was reused with different snapshot activation input");
+  const installationConflict = (): SandboxConfigFailure =>
+    failure("conflict", "Sandbox configuration Installation name or account binding is immutable");
 
   const parseAuthority = (
     value: unknown | undefined,
@@ -102,9 +106,19 @@ const makeSandboxConfigStore = (
 
   const toStatus = (authority: SandboxConfigAuthority): SandboxConfigStatus => ({
     schemaVersion: authority.version,
+    installationName: authority.installationName,
+    cloudflareAccountId: authority.cloudflareAccountId,
     revision: authority.revision,
-    activeDigest: authority.activeDigest,
+    activeSnapshot: authority.activeSnapshot,
   });
+
+  const sameInput = (left: SandboxActivateInput, right: SandboxActivateInput): boolean =>
+    left.installationName === right.installationName &&
+    left.cloudflareAccountId === right.cloudflareAccountId &&
+    left.snapshotDigest === right.snapshotDigest &&
+    left.configDigest === right.configDigest &&
+    left.expectedRevision === right.expectedRevision &&
+    left.idempotencyKey === right.idempotencyKey;
 
   const transact = <A>(
     operation: (
@@ -140,33 +154,55 @@ const makeSandboxConfigStore = (
         const decoded = Result.mapError(decodeActivateInput(inputValue), invalidInput);
         if (Result.isFailure(decoded)) return yield* Effect.fail(decoded.failure);
         const input = decoded.success;
+        const activatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         return yield* transact(async (authority) => {
           const replay = authority.lastSync;
           if (replay !== null && replay.idempotencyKey === input.idempotencyKey) {
-            if (
-              replay.digest === input.digest &&
-              replay.expectedRevision === input.expectedRevision
-            )
+            if (sameInput(replay.input, input))
               return Result.succeed({ value: replay.status, authority });
             return Result.fail(idempotencyConflict());
           }
-          if (authority.activeDigest === input.digest)
-            return Result.succeed({ value: toStatus(authority), authority });
-          if (input.expectedRevision !== null && input.expectedRevision !== authority.revision)
-            return Result.fail(revisionConflict());
+          if (
+            (authority.installationName !== null &&
+              authority.installationName !== input.installationName) ||
+            (authority.cloudflareAccountId !== null &&
+              authority.cloudflareAccountId !== input.cloudflareAccountId)
+          )
+            return Result.fail(installationConflict());
+          if (input.expectedRevision !== authority.revision) return Result.fail(revisionConflict());
+          if (
+            authority.activeSnapshot?.snapshotDigest === input.snapshotDigest &&
+            authority.activeSnapshot.configDigest === input.configDigest
+          ) {
+            const status = toStatus(authority);
+            const replayable: SandboxConfigAuthority = {
+              ...authority,
+              lastSync: { idempotencyKey: input.idempotencyKey, input, status },
+            };
+            return Result.succeed({ value: status, authority: replayable });
+          }
           const status: SandboxConfigStatus = {
             schemaVersion: 1,
+            installationName: authority.installationName ?? input.installationName,
+            cloudflareAccountId: authority.cloudflareAccountId ?? input.cloudflareAccountId,
             revision: authority.revision + 1,
-            activeDigest: input.digest,
+            activeSnapshot: {
+              revision: authority.revision + 1,
+              snapshotDigest: input.snapshotDigest,
+              configDigest: input.configDigest,
+              syncId: input.idempotencyKey,
+              activatedAt,
+            },
           };
           const next: SandboxConfigAuthority = {
             version: 1,
+            installationName: status.installationName,
+            cloudflareAccountId: status.cloudflareAccountId,
             revision: status.revision,
-            activeDigest: status.activeDigest,
+            activeSnapshot: status.activeSnapshot,
             lastSync: {
               idempotencyKey: input.idempotencyKey,
-              digest: input.digest,
-              expectedRevision: input.expectedRevision,
+              input,
               status,
             },
           };

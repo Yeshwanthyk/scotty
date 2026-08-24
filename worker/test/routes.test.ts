@@ -82,7 +82,6 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   getSandbox: vi.fn(() => sandboxTarget.current),
 }));
 
-import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
@@ -102,8 +101,17 @@ import {
   type SessionHarness,
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
+import {
+  TEST_SANDBOX_PLUGIN_BUNDLE,
+  TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST,
+  TEST_SANDBOX_SNAPSHOT,
+  testSandboxConfigStatus,
+} from "./support/sandbox-snapshot";
 
 const TOKEN = "worker-test-token-1234567890";
+interface TestSandboxSnapshotBody {
+  readonly configDigest: string;
+}
 const CLIENT_CREDENTIAL = "scotty_client.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const REGISTERED_CLIENT = {
   id: "111111111111",
@@ -135,6 +143,7 @@ function sandboxBundleBucket(): R2Bucket {
       readonly size: number;
       readonly contentType: string;
       readonly customMetadata: Record<string, string>;
+      readonly bytes: Uint8Array;
     }
   >();
   // lint-allow-double-cast: boundary: focused-test-r2-adapter
@@ -159,6 +168,7 @@ function sandboxBundleBucket(): R2Bucket {
             ? (options.httpMetadata.get("content-type") ?? "")
             : (options?.httpMetadata?.contentType ?? ""),
         customMetadata: { ...options?.customMetadata },
+        bytes: Uint8Array.from(value),
       });
       return {
         key: String(key),
@@ -196,7 +206,35 @@ function sandboxBundleBucket(): R2Bucket {
         writeHttpMetadata: () => undefined,
       } as R2Object;
     },
-    get: async () => null,
+    get: async (key: string) => {
+      const stored = objects.get(String(key));
+      if (stored === undefined) return null;
+      return {
+        key: String(key),
+        version: "1",
+        size: stored.size,
+        etag: "etag",
+        httpEtag: '"etag"',
+        checksums: { toJSON: () => ({}) },
+        uploaded: new Date("2026-08-06T12:00:00.000Z"),
+        httpMetadata: { contentType: stored.contentType },
+        customMetadata: stored.customMetadata,
+        storageClass: "Standard",
+        writeHttpMetadata: () => undefined,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(stored.bytes);
+            controller.close();
+          },
+        }),
+        bodyUsed: false,
+        arrayBuffer: () => Promise.resolve(stored.bytes.slice().buffer),
+        bytes: () => Promise.resolve(Uint8Array.from(stored.bytes)),
+        text: () => Promise.resolve(new TextDecoder().decode(stored.bytes)),
+        json: <T>() => Promise.resolve(JSON.parse(new TextDecoder().decode(stored.bytes)) as T),
+        blob: () => Promise.resolve(new Blob([stored.bytes], { type: stored.contentType })),
+      } as R2ObjectBody;
+    },
     delete: async () => undefined,
     list: async () => ({ objects: [], truncated: false, delimitedPrefixes: [] }),
   } as unknown as R2Bucket;
@@ -373,6 +411,11 @@ const projection = {
   updatedAt: "2026-01-01T00:01:00.000Z",
   hardCapAt: "2026-01-01T04:00:00.000Z",
   projectedAt: "2026-01-01T00:01:00.000Z",
+  sandboxBundle: {
+    revision: 1,
+    digest: TEST_SANDBOX_SNAPSHOT.digest,
+    manifestVersion: 1,
+  },
   operationResult: {
     kind: "snapshot",
     stage: "checkpoint",
@@ -557,11 +600,17 @@ describe("real Hono boundary", () => {
     );
     sandboxConfig.status.mockResolvedValue({
       ok: true,
-      value: { schemaVersion: 1, revision: 0, activeDigest: null },
+      value: {
+        schemaVersion: 1,
+        installationName: null,
+        cloudflareAccountId: null,
+        revision: 0,
+        activeSnapshot: null,
+      },
     });
     sandboxConfig.activate.mockResolvedValue({
       ok: true,
-      value: { schemaVersion: 1, revision: 1, activeDigest: "a".repeat(64) },
+      value: testSandboxConfigStatus(1),
     });
     sandboxConfig.listRepos.mockResolvedValue({ ok: true, value: [] });
     sandboxConfig.addRepo.mockImplementation(async (input) => ({
@@ -577,10 +626,6 @@ describe("real Hono boundary", () => {
     sandboxConfig.listEnvironment.mockResolvedValue({
       ok: true,
       value: { revision: 0, variables: [] },
-    });
-    sandboxConfig.status.mockResolvedValue({
-      ok: true,
-      value: { schemaVersion: 1, revision: 0, activeDigest: null },
     });
     sandboxConfig.materializeEnvironment.mockResolvedValue({
       ok: true,
@@ -901,6 +946,11 @@ describe("real Hono boundary", () => {
       updatedAt: "2026-07-27T12:00:00.000Z",
       hardCapAt: "2026-07-27T16:00:00.000Z",
       projectedAt: "2026-07-27T12:00:00.000Z",
+      sandboxBundle: {
+        revision: 1,
+        digest: TEST_SANDBOX_SNAPSHOT.digest,
+        manifestVersion: 1,
+      },
       operationResult: {
         kind: "resume",
         stage: "restore",
@@ -1020,113 +1070,135 @@ describe("real Hono boundary", () => {
     expect(ownerBrowser.status).toBe(401);
   });
 
-  it("reads and uploads sandbox bundles only with the CLI root credential", async () => {
+  it("prepares immutable sandbox inputs before one root-authenticated activation", async () => {
+    const bindings = env();
     const configuration = await app.request(
       "/api/sandbox/configuration",
       { headers: { authorization: `Bearer ${TOKEN}` } },
-      env(),
+      bindings,
     );
     expect(configuration.status).toBe(200);
     await expect(configuration.json()).resolves.toEqual({
       schemaVersion: 1,
+      installationName: null,
+      cloudflareAccountId: null,
       revision: 0,
-      activeDigest: null,
+      activeSnapshot: null,
     });
     expect(sandboxConfig.status).toHaveBeenCalled();
 
-    const built = createDeterministicTarGz([
-      {
-        path: "manifest.json",
-        type: "file",
-        modeClass: "regular",
-        bytes: new TextEncoder().encode('{"schemaVersion":1,"skills":[],"piPackages":[]}\n'),
-      },
-    ]);
-    const uploaded = await app.request(
-      `/api/sandbox/bundles/${built.digest}`,
+    const uploadedPluginBundle = await app.request(
+      `/api/sandbox/plugin-bundles/${TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST}`,
       {
         method: "PUT",
         headers: {
           authorization: `Bearer ${TOKEN}`,
           "content-type": "application/gzip",
-          "idempotency-key": "sandbox-sync-key-001",
-          "if-match": "0",
         },
-        body: built.archive,
+        body: TEST_SANDBOX_PLUGIN_BUNDLE,
       },
-      env(),
+      bindings,
     );
-    expect(uploaded.status).toBe(200);
-    await expect(uploaded.json()).resolves.toEqual({
-      schemaVersion: 1,
-      revision: 1,
-      activeDigest: "a".repeat(64),
+    expect(uploadedPluginBundle.status).toBe(200);
+    await expect(uploadedPluginBundle.json()).resolves.toEqual({
+      pluginBundleDigest: TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST,
     });
-    expect(sandboxConfig.activate).toHaveBeenCalledWith({
-      digest: built.digest,
-      idempotencyKey: "sandbox-sync-key-001",
-      expectedRevision: 0,
+    expect(sandboxConfig.activate).not.toHaveBeenCalled();
+
+    const uploadedSnapshot = await app.request(
+      `/api/sandbox/snapshots/${TEST_SANDBOX_SNAPSHOT.digest}`,
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: TEST_SANDBOX_SNAPSHOT.snapshotJson,
+      },
+      bindings,
+    );
+    expect(uploadedSnapshot.status).toBe(200);
+    await expect(uploadedSnapshot.json()).resolves.toEqual({
+      snapshotDigest: TEST_SANDBOX_SNAPSHOT.digest,
+      pluginBundleDigest: TEST_SANDBOX_PLUGIN_BUNDLE_DIGEST,
     });
+    expect(sandboxConfig.activate).not.toHaveBeenCalled();
 
     const invalidDigest = await app.request(
-      "/api/sandbox/bundles/not-a-digest",
+      "/api/sandbox/plugin-bundles/not-a-digest",
       {
         method: "PUT",
         headers: {
           authorization: `Bearer ${TOKEN}`,
           "content-type": "application/gzip",
-          "idempotency-key": "sandbox-sync-key-002",
         },
-        body: built.archive,
+        body: TEST_SANDBOX_PLUGIN_BUNDLE,
       },
-      env(),
+      bindings,
     );
     expect(invalidDigest.status).toBe(400);
+
+    const snapshot = JSON.parse(TEST_SANDBOX_SNAPSHOT.snapshotJson) as TestSandboxSnapshotBody;
+    const activationBody = {
+      installationName: "home",
+      cloudflareAccountId: "account-1",
+      snapshotDigest: TEST_SANDBOX_SNAPSHOT.digest,
+      configDigest: snapshot.configDigest,
+      expectedRevision: 0,
+      idempotencyKey: `snapshot:${TEST_SANDBOX_SNAPSHOT.digest}`,
+    };
+    const activated = await app.request(
+      "/api/sandbox/configuration/activate",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(activationBody),
+      },
+      bindings,
+    );
+    expect(activated.status).toBe(200);
+    await expect(activated.json()).resolves.toEqual(testSandboxConfigStatus(1));
+    expect(sandboxConfig.activate).toHaveBeenCalledWith(activationBody);
 
     sandboxConfig.activate.mockResolvedValueOnce({
       ok: false,
       error: { reason: "conflict", message: "Sandbox configuration revision conflict" },
     });
     const stale = await app.request(
-      `/api/sandbox/bundles/${built.digest}`,
+      "/api/sandbox/configuration/activate",
       {
-        method: "PUT",
+        method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
-          "content-type": "application/gzip",
-          "idempotency-key": "sandbox-sync-key-003",
-          "if-match": "0",
+          "content-type": "application/json",
         },
-        body: built.archive,
+        body: JSON.stringify({ ...activationBody, idempotencyKey: "sandbox-sync-key-003" }),
       },
-      env(),
+      bindings,
     );
     expect(stale.status).toBe(409);
 
     sandboxConfig.activate.mockResolvedValueOnce({
       ok: true,
-      value: { schemaVersion: 1, revision: 1, activeDigest: built.digest },
+      value: testSandboxConfigStatus(1),
     });
     const replay = await app.request(
-      `/api/sandbox/bundles/${built.digest}`,
+      "/api/sandbox/configuration/activate",
       {
-        method: "PUT",
+        method: "POST",
         headers: {
           authorization: `Bearer ${TOKEN}`,
-          "content-type": "application/gzip",
-          "idempotency-key": "sandbox-sync-key-001",
-          "if-match": "0",
+          "content-type": "application/json",
         },
-        body: built.archive,
+        body: JSON.stringify(activationBody),
       },
-      env(),
+      bindings,
     );
     expect(replay.status).toBe(200);
-    await expect(replay.json()).resolves.toEqual({
-      schemaVersion: 1,
-      revision: 1,
-      activeDigest: built.digest,
-    });
+    await expect(replay.json()).resolves.toEqual(testSandboxConfigStatus(1));
 
     const ownerBrowser = await app.request(
       "/api/sandbox/configuration",
@@ -1137,7 +1209,7 @@ describe("real Hono boundary", () => {
           "sec-fetch-site": "same-origin",
         },
       },
-      env(),
+      bindings,
     );
     expect(ownerBrowser.status).toBe(401);
   });
@@ -1174,6 +1246,11 @@ describe("real Hono boundary", () => {
       updatedAt: "2026-07-27T12:00:00.000Z",
       hardCapAt: "2026-07-27T16:00:00.000Z",
       projectedAt: "2026-07-27T12:00:00.000Z",
+      sandboxBundle: {
+        revision: 1,
+        digest: TEST_SANDBOX_SNAPSHOT.digest,
+        manifestVersion: 1,
+      },
     };
     const sessions = {
       list: async () => ({

@@ -34,7 +34,7 @@ import {
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
-import { sha256Hex } from "./digest";
+import { sha256BytesHex, sha256Hex } from "./digest";
 import {
   authRegistry,
   browserLabel,
@@ -91,9 +91,11 @@ import { validateSandboxArchive } from "./sandbox-archive";
 import {
   SandboxBundleStore,
   SANDBOX_BUNDLE_MAX_GZIP_BYTES,
+  SANDBOX_SNAPSHOT_MAX_BYTES,
   sandboxBundleStoreLayer,
   r2SandboxBundleCapabilities,
 } from "./sandbox-bundle-store";
+import { DeployedSnapshotSchema, SandboxActivateInputSchema } from "./sandbox-config-contracts";
 import {
   ScottySandboxConfig,
   SANDBOX_CONFIG_OBJECT_NAME,
@@ -123,7 +125,14 @@ const PUBLIC_AUTH_MUTATIONS = new Set([
 ]);
 const ASSIGNED_RUNNER_SESSION_STATUSES = new Set(["provisioning", "warm", "stopped"]);
 const RUNNER_REGISTRY_OBJECT_NAME = "account";
-const SANDBOX_BUNDLE_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+const SANDBOX_BUNDLE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const decodeDeployedSnapshotJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(DeployedSnapshotSchema),
+  { onExcessProperty: "error" },
+);
+const decodeSandboxActivateInput = Schema.decodeUnknownResult(SandboxActivateInputSchema, {
+  onExcessProperty: "error",
+});
 const RUNNER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 const RunnerRegistrationInputSchema = Schema.Struct({
   name: Schema.String,
@@ -545,39 +554,22 @@ app.get("/api/sandbox/configuration", async (c) => {
   return c.json(unwrapSandboxConfigRpc(await sandboxConfig(c.env).status()));
 });
 
-app.put("/api/sandbox/bundles/:digest", async (c) => {
+app.put("/api/sandbox/plugin-bundles/:digest", async (c) => {
   requireRootPrincipal(c.get("auth"));
   const digest = c.req.param("digest");
   if (!SANDBOX_BUNDLE_DIGEST_PATTERN.test(digest))
-    throw badRequest("Sandbox bundle digest is invalid");
+    throw badRequest("Plugin bundle digest is invalid");
   const contentType = c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/gzip" && contentType !== "application/x-gzip")
-    throw badRequest("Sandbox bundle content type must be application/gzip");
-  const idempotencyKeyHeader = c.req.header("idempotency-key");
-  if (idempotencyKeyHeader === undefined) throw badRequest("Idempotency-Key header is required");
-  const idempotencyKey = parseIdempotencyKey(idempotencyKeyHeader);
-  const ifMatchHeader = c.req.header("if-match");
-  let expectedRevision: number | null = null;
-  if (ifMatchHeader !== undefined) {
-    const parsed = Number(ifMatchHeader);
-    if (!Number.isInteger(parsed) || parsed < 0)
-      throw badRequest("If-Match revision must be a non-negative integer");
-    expectedRevision = parsed;
-  }
+    throw badRequest("Plugin bundle content type must be application/gzip");
   const gzipBytes = await readBoundedBytes(c.req.raw, SANDBOX_BUNDLE_MAX_GZIP_BYTES);
-  if (gzipBytes === undefined) throw badRequest("Sandbox bundle body exceeds the size limit");
+  if (gzipBytes === undefined) throw badRequest("Plugin bundle body exceeds the size limit");
   const validated = await Effect.runPromise(
     validateSandboxArchive(gzipBytes, digest).pipe(Effect.result),
   );
   if (Result.isFailure(validated)) throw badRequest(validated.failure.message);
   await Effect.runPromise(
-    Effect.flatMap(SandboxBundleStore, (store) =>
-      store.putBundle({
-        digest,
-        gzipBytes,
-        manifestJson: validated.success.manifestJson,
-      }),
-    ).pipe(
+    Effect.flatMap(SandboxBundleStore, (store) => store.putPluginBundle(digest, gzipBytes)).pipe(
       Effect.provide(
         sandboxBundleStoreLayer(r2SandboxBundleCapabilities(c.env.SANDBOX_BUNDLE_BUCKET)),
       ),
@@ -586,19 +578,101 @@ app.put("/api/sandbox/bundles/:digest", async (c) => {
           new ScottyError(
             error.reason === "metadata_mismatch" ? "internal" : "upstream",
             error.reason === "metadata_mismatch"
-              ? "Sandbox bundle storage metadata mismatch"
-              : "Sandbox bundle storage failed",
+              ? "Plugin bundle storage metadata mismatch"
+              : "Plugin bundle storage failed",
             { httpStatus: error.reason === "metadata_mismatch" ? 500 : 502, exitCode: 1 },
           ),
         ),
       ),
     ),
   );
-  return c.json(
-    unwrapSandboxConfigRpc(
-      await sandboxConfig(c.env).activate({ digest, idempotencyKey, expectedRevision }),
+  return c.json({ pluginBundleDigest: digest });
+});
+
+app.put("/api/sandbox/snapshots/:digest", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  const digest = c.req.param("digest");
+  if (!SANDBOX_BUNDLE_DIGEST_PATTERN.test(digest))
+    throw badRequest("Sandbox snapshot digest is invalid");
+  requireJsonContentType(c.req.raw);
+  const snapshotJson = await readBoundedUtf8Body(c.req.raw, SANDBOX_SNAPSHOT_MAX_BYTES);
+  if (snapshotJson === undefined) throw badRequest("Sandbox snapshot body exceeds the size limit");
+  const decoded = decodeDeployedSnapshotJson(snapshotJson);
+  if (Result.isFailure(decoded)) throw badRequest("Sandbox snapshot body is invalid");
+  const computedDigest = `sha256:${await sha256BytesHex(new TextEncoder().encode(snapshotJson))}`;
+  if (computedDigest !== digest)
+    throw badRequest("Sandbox snapshot digest does not match its body");
+  const snapshot = decoded.success;
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* SandboxBundleStore;
+      yield* store.getPluginBundle(snapshot.pluginBundleDigest);
+      yield* store.putSnapshot({
+        snapshotDigest: digest,
+        snapshotJson,
+        pluginBundleDigest: snapshot.pluginBundleDigest,
+      });
+    }).pipe(
+      Effect.provide(
+        sandboxBundleStoreLayer(r2SandboxBundleCapabilities(c.env.SANDBOX_BUNDLE_BUCKET)),
+      ),
+      Effect.catchTag("SandboxBundleFailure", (error) =>
+        Effect.fail(
+          new ScottyError(
+            error.reason === "metadata_mismatch" ? "internal" : "upstream",
+            error.reason === "missing"
+              ? "Referenced Plugin bundle is missing"
+              : "Sandbox snapshot storage failed",
+            { httpStatus: error.reason === "missing" ? 409 : 502, exitCode: 1 },
+          ),
+        ),
+      ),
     ),
   );
+  return c.json({ snapshotDigest: digest, pluginBundleDigest: snapshot.pluginBundleDigest });
+});
+
+app.post("/api/sandbox/configuration/activate", async (c) => {
+  requireRootPrincipal(c.get("auth"));
+  requireJsonContentType(c.req.raw);
+  const body: unknown = await c.req.json().catch(() => {
+    throw badRequest("Request body must be valid JSON");
+  });
+  const decoded = decodeSandboxActivateInput(body);
+  if (Result.isFailure(decoded)) throw badRequest("Snapshot activation input is invalid");
+  const input = decoded.success;
+  parseIdempotencyKey(input.idempotencyKey);
+  const prepared = await Effect.runPromise(
+    Effect.flatMap(SandboxBundleStore, (store) => store.getSnapshot(input.snapshotDigest)).pipe(
+      Effect.provide(
+        sandboxBundleStoreLayer(r2SandboxBundleCapabilities(c.env.SANDBOX_BUNDLE_BUCKET)),
+      ),
+      Effect.catchTag("SandboxBundleFailure", (error) =>
+        Effect.fail(
+          new ScottyError(
+            error.reason === "missing" ? "conflict" : "upstream",
+            error.reason === "missing"
+              ? "Prepared snapshot is missing"
+              : "Prepared snapshot could not be verified",
+            { httpStatus: error.reason === "missing" ? 409 : 502, exitCode: 1 },
+          ),
+        ),
+      ),
+    ),
+  );
+  const snapshot = decodeDeployedSnapshotJson(prepared.snapshotJson);
+  if (
+    Result.isFailure(snapshot) ||
+    snapshot.success.installationName !== input.installationName ||
+    snapshot.success.revision !== input.expectedRevision + 1 ||
+    snapshot.success.configDigest !== input.configDigest ||
+    snapshot.success.pluginBundleDigest !== prepared.pluginBundleDigest
+  )
+    throw new ScottyError("conflict", "Prepared snapshot does not match activation input", {
+      httpStatus: 409,
+      exitCode: 5,
+    });
+  return c.json(unwrapSandboxConfigRpc(await sandboxConfig(c.env).activate(input)));
 });
 
 app.post("/api/runners/:name/:action", async (c) => {
