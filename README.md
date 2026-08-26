@@ -83,8 +83,6 @@ it has the native Pi RPC worklog transport.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
 - `spikes/` — executable probes for the upstream Sandbox contracts.
-- [`PORTABLE_EXECUTION_PLAN.md`](PORTABLE_EXECUTION_PLAN.md) — active Cloudflare, runner,
-  Example runner, Box, connection-control, and multi-provider delivery plan.
 
 ## Security model
 
@@ -429,8 +427,6 @@ Run `scotty owner recover` once on the intended primary browser after a fresh de
 moving to a replacement laptop. Keep `SCOTTY_TOKEN` in a password manager or another protected
 recovery location. `scotty attach <id>` opens the Pi worklog at the clean session URL and requires
 an already paired browser. Sleeping sessions must be resumed from Home before the worklog opens.
-See
-[`docs/owner-transfer-cutover.md`](docs/owner-transfer-cutover.md) before production migration.
 
 ## E2E
 

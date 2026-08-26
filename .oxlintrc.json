@@ -16,7 +16,7 @@
     "reportUnusedDisableDirectives": "error"
   },
   "rules": {
-    "complexity": ["error", { "max": 75 }],
+    "complexity": ["error", { "max": 20 }],
     "typescript/no-explicit-any": "error",
     "no-debugger": "error",
     "scotty/no-conditional-tests": "error",
