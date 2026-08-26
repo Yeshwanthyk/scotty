@@ -55,6 +55,9 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "deploy");
         assert.include(rootHelp, "upgrade");
         assert.include(rootHelp, "uninstall");
+        assert.include(rootHelp, "config");
+        assert.include(rootHelp, "sync");
+        assert.include(rootHelp, "skill");
         assert.include(rootHelp, "beam");
         assert.include(rootHelp, "inspect");
         assert.include(rootHelp, "steer");
@@ -67,6 +70,22 @@ describe("Effect command tree", () => {
         assert.notInclude(rootHelp, "--wizard");
         assert.notInclude(rootHelp, "--completions");
         assert.notInclude(rootHelp, "--log-level");
+        const config = run(["config", "--help"]);
+        assert.strictEqual(yield* config.effect, EXIT.OK);
+        assert.include(config.stdout.join(""), "scotty config <subcommand> [flags]");
+        assert.include(config.stdout.join(""), "check");
+        assert.strictEqual(config.stderr.join(""), "");
+
+        const configCheck = run(["config", "check", "--help"]);
+        assert.strictEqual(yield* configCheck.effect, EXIT.OK);
+        assert.include(configCheck.stdout.join(""), "scotty config check [flags]");
+        assert.strictEqual(configCheck.stderr.join(""), "");
+
+        const skill = run(["skill", "--help"]);
+        assert.strictEqual(yield* skill.effect, EXIT.OK);
+        assert.include(skill.stdout.join(""), "show");
+        assert.strictEqual(skill.stderr.join(""), "");
+
         assert.strictEqual(root.stderr.join(""), "");
 
         const beam = run(["beam", "--help"]);

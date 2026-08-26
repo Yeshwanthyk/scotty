@@ -340,6 +340,39 @@ describe("Sandbox lifecycle machine", () => {
       }),
   );
 
+  it.effect(
+    "restores the current backup before a hard-cap checkpoint when the workspace is missing",
+    () =>
+      Effect.gen(function* () {
+        const record = makeSessionRecord({
+          backup: { current: makeResumeBackup() },
+          ownedBackupIds: ["backup-1"],
+        });
+        const harness = yield* createTestHarness({
+          initialEntries: {
+            [sessionHarnessKeys.record]: record,
+            [sessionHarnessKeys.credential]: makeStoredCredential(),
+          },
+          stopCallsOnStop: true,
+          workspaceExists: false,
+        });
+
+        yield* Effect.promise(() =>
+          harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt }),
+        );
+
+        const sleeping = harness.readRecord();
+        assert.strictEqual(sleeping?.status, "sleeping");
+        assert.strictEqual(sleeping?.operation, null);
+        assert.ok(harness.events.includes("host:restoreBackup"));
+        assert.ok(
+          harness.events.indexOf("host:restoreBackup") <
+            harness.events.indexOf("host:createBackup"),
+        );
+        assert.ok(harness.events.includes("host:stop"));
+      }),
+  );
+
   it.effect("onActivityExpired checkpoints an idle warm session and stops into sleeping", () =>
     Effect.gen(function* () {
       const record = makeSessionRecord();

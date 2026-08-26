@@ -8,12 +8,13 @@ import { SandboxBundleStore, type SandboxBundleFailure } from "./sandbox-bundle-
 import {
   SandboxBundleManifestSchema,
   SandboxDigestSchema,
+  type SandboxBundleItemKind,
   type SandboxBundleManifest,
 } from "./sandbox-config-contracts";
 import { SandboxRuntime, shellQuote, type SandboxRuntimeFailure } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
 
-export const SANDBOX_BUNDLE_MANIFEST_VERSION = 1;
+export const SANDBOX_BUNDLE_MANIFEST_VERSION = 2;
 
 export type SandboxBundleMaterializationFailureReason =
   | "missing"
@@ -32,8 +33,10 @@ export class SandboxBundleMaterializationFailure extends Data.TaggedError(
 
 export interface MaterializedSandboxBundle {
   readonly digest: string | null;
-  readonly extraSkills: ReadonlyArray<{ readonly name: string }>;
-  readonly extraPackages: ReadonlyArray<{ readonly name: string }>;
+  readonly items: ReadonlyArray<{
+    readonly kind: SandboxBundleItemKind;
+    readonly name: string;
+  }>;
   readonly bundleRoot: string | undefined;
 }
 
@@ -44,8 +47,7 @@ interface MaterializeInput {
 
 const emptyMaterialized = (digest: null): MaterializedSandboxBundle => ({
   digest,
-  extraSkills: [],
-  extraPackages: [],
+  items: [],
   bundleRoot: undefined,
 });
 
@@ -55,8 +57,13 @@ const materializedFromManifest = (
   manifest: SandboxBundleManifest,
 ): MaterializedSandboxBundle => ({
   digest,
-  extraSkills: manifest.skills.map((skill) => ({ name: skill.name })),
-  extraPackages: manifest.piPackages.map((pkg) => ({ name: pkg.name })),
+  items:
+    manifest.schemaVersion === 1
+      ? [
+          ...manifest.skills.map((item) => ({ kind: "skill" as const, name: item.name })),
+          ...manifest.piPackages.map((item) => ({ kind: "package" as const, name: item.name })),
+        ]
+      : manifest.items.map(({ kind, name }) => ({ kind, name })),
   bundleRoot: sandboxBundleRoot(sessionId, digest),
 });
 
@@ -67,7 +74,7 @@ const decodeMaterializedManifest = Schema.decodeUnknownEffect(
 
 const VerifiedMarkerSchema = Schema.Struct({
   digest: SandboxDigestSchema,
-  manifestVersion: Schema.Literal(SANDBOX_BUNDLE_MANIFEST_VERSION),
+  manifestVersion: Schema.Literals([1, SANDBOX_BUNDLE_MANIFEST_VERSION]),
 });
 
 const decodeVerifiedMarker = Schema.decodeUnknownOption(
@@ -160,25 +167,17 @@ const readVerifiedMarker = Effect.fnUntraced(function* (
   return decodeVerifiedMarker(new TextDecoder().decode(bytes)).pipe(Option.getOrUndefined);
 });
 
-const writeArchiveMembers = Effect.fnUntraced(function* (
+const extractValidatedArchive = Effect.fnUntraced(function* (
   runtime: SandboxRuntime["Service"],
   stagingRoot: string,
-  members: ReadonlyArray<{
-    readonly path: string;
-    readonly type: "file" | "directory";
-    readonly bytes: Uint8Array;
-  }>,
+  archive: Uint8Array,
 ) {
-  for (const member of members) {
-    const target = `${stagingRoot}/${member.path}`;
-    if (member.type === "directory") {
-      yield* runtime.mkdir(target, { recursive: true });
-      continue;
-    }
-    const parent = target.slice(0, target.lastIndexOf("/"));
-    if (parent.length > stagingRoot.length) yield* runtime.mkdir(parent, { recursive: true });
-    yield* runtime.writeFile(target, member.bytes);
-  }
+  const archivePath = `${stagingRoot}.tar.gz`;
+  yield* runtime.mkdir(stagingRoot, { recursive: true });
+  yield* runtime.writeFile(archivePath, archive);
+  yield* runtime.execChecked(
+    `tar -xzf ${shellQuote(archivePath)} -C ${shellQuote(stagingRoot)} && rm -f ${shellQuote(archivePath)}`,
+  );
 });
 
 const promoteStagingTree = Effect.fnUntraced(function* (
@@ -225,8 +224,7 @@ const materializeDigest = Effect.fnUntraced(function* (
   );
 
   const stagingRoot = sandboxBundleStagingRoot(sessionId, stagingNonce());
-  yield* runtime.mkdir(stagingRoot, { recursive: true });
-  yield* writeArchiveMembers(runtime, stagingRoot, validated.members);
+  yield* extractValidatedArchive(runtime, stagingRoot, bundle.gzipBytes);
   yield* runtime.writeFile(verifiedMarkerPath(stagingRoot), verifiedMarkerText(validated.digest));
   yield* promoteStagingTree(runtime, stagingRoot, finalRoot);
   return materializedFromManifest(sessionId, validated.digest, validated.manifest);

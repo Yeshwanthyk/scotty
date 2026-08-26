@@ -46,7 +46,7 @@ const listAllFiles = async (root) => {
   return files;
 };
 
-test("prepared context projects Pi installs without regenerating npm locks", async () => {
+test("prepared context does not run package preparation hooks", async () => {
   const root = await mkdtemp(join(tmpdir(), "scotty-container-context-no-npm-"));
   try {
     await writeTree(root, {
@@ -59,9 +59,7 @@ test("prepared context projects Pi installs without regenerating npm locks", asy
         calls.push({ context, options });
       },
     });
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].context, join(root, CONTAINER_CONTEXT_PATH));
-    assert.equal(calls[0].options, undefined);
+    assert.equal(calls.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -109,15 +107,24 @@ test("the Container context contains only static runtime assets and CLI graph in
         code: "ENOENT",
       },
     );
+    assert.ok(CONTAINER_STATIC_INPUTS.includes("skills/scotty/SKILL.md"));
+    assert.equal(CONTAINER_STATIC_INPUTS.includes("skills"), false);
+    assert.equal(
+      await readFile(join(root, CONTAINER_CONTEXT_PATH, "skills/scotty/SKILL.md"), "utf8"),
+      "skills/scotty/SKILL.md\n",
+    );
     for (const input of [
       "tui/package.json",
       "scripts/apply-dependency-patches.mjs",
-      "scripts/project-container-pi-install.mjs",
       "patches/alchemy+2.0.0-beta.72.patch",
       "patches/earendil-works+pi-coding-agent+0.84.0.patch",
     ]) {
       assert.equal(await readFile(join(root, CONTAINER_CONTEXT_PATH, input), "utf8"), `${input}\n`);
     }
+    assert.equal(
+      CONTAINER_STATIC_INPUTS.includes("scripts/project-container-pi-install.mjs"),
+      false,
+    );
     assert.equal(
       await readFile(join(root, CONTAINER_CONTEXT_PATH, workerCliInput), "utf8"),
       `${workerCliInput}\n`,

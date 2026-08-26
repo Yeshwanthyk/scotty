@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schedule } from "effect";
 import { SESSION_ROOT, type SessionRecord } from "./contracts";
 import type { VerifiedRepository } from "./repo-verifier";
 import { SandboxRuntime, type SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
@@ -47,10 +47,12 @@ export const workspaceLayer: Layer.Layer<Workspace, never, SandboxRuntime> = Lay
 
         const defaultBranch = repository.defaultBranch;
         const basic = btoa(`x-access-token:${githubSentinel}`);
-        yield* runtime.execChecked(
-          `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch ${shellQuote(defaultBranch)} --single-branch ${shellQuote(url)} ${shellQuote(root)}`,
-          { env, timeout: 180_000 },
-        );
+        yield* runtime
+          .execChecked(
+            `rm -rf ${shellQuote(root)} && git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch ${shellQuote(defaultBranch)} --single-branch ${shellQuote(url)} ${shellQuote(root)}`,
+            { env, timeout: 180_000 },
+          )
+          .pipe(Effect.retry({ times: 2, schedule: Schedule.spaced("1 second") }));
         yield* runtime.execChecked(
           `git -C ${shellQuote(root)} checkout -b ${shellQuote(record.branch)}`,
         );

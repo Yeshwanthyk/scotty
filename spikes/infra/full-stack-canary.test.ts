@@ -40,10 +40,13 @@ describe("full-stack canary safety", () => {
   it("derives every physical resource name from the isolated stage", () => {
     const names = fullStackCanaryNames(stage);
     for (const name of Object.values(names)) {
-      assert.match(name, /^scotty-e2e-a{24}-(?:worker|container|sessions|backups)$/u);
+      assert.match(
+        name,
+        /^scotty-e2e-a{24}-(?:worker|container|sessions|backups|sandbox-bundles)$/u,
+      );
       assert.ok(name.length <= 63);
     }
-    assert.strictEqual(new Set(Object.values(names)).size, 4);
+    assert.strictEqual(new Set(Object.values(names)).size, 5);
   });
 
   it("namespaces the asset digest so initial creation cannot skip the manifest upload", () => {

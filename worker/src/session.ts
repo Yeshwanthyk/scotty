@@ -2021,8 +2021,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       .pipe(Effect.mapError(mapCreateUncertain("materialize")));
     const seedOptions = {
       ...(options?.initialPrompt === undefined ? {} : { initialPrompt: options.initialPrompt }),
-      extraSkills: materialized.extraSkills,
-      extraPackages: materialized.extraPackages,
+      items: materialized.items,
       bundleRoot: materialized.bundleRoot,
     };
     yield* containerAuth
@@ -2853,6 +2852,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
   });
 
+  private readonly restoreHardCapWorkspaceIfMissingProgram = Effect.fnUntraced(function* (
+    record: SessionRecord,
+  ) {
+    const runtime = yield* SandboxRuntime;
+    const root = sessionRoot(record.id);
+    const workspace = yield* Effect.result(runtime.execChecked(`test -d ${shellQuote(root)}`));
+    if (Result.isSuccess(workspace)) return;
+    const backup = record.backup?.current;
+    if (backup === undefined) return yield* workspace.failure;
+    const backups = yield* BackupStore;
+    yield* backups.restore(backup);
+  });
+
   private readonly enforceHardCapProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     payload: HardCapPayload,
@@ -2963,6 +2975,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const operation = operationResult.success;
     const stopped = yield* Effect.result(
       Effect.gen({ self: this }, function* () {
+        yield* this.restoreHardCapWorkspaceIfMissingProgram(record);
         yield* this.checkpointProgram(operation.nonce, false, false);
         yield* this.stopAfterCheckpointProgram(operation.nonce);
       }),

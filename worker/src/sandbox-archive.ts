@@ -1,14 +1,19 @@
 import { Data, Effect, Result, Schema } from "effect";
+import {
+  sandboxBundleItemDigestMaterial,
+  sandboxBundleItemFilePath,
+  sandboxBundleItemRoot,
+} from "../../protocol/sandbox-bundle";
 import { sha256BytesHex } from "./digest";
 import {
   SandboxBundleManifestSchema,
   type SandboxBundleManifest,
 } from "./sandbox-config-contracts";
 
-export const SANDBOX_MAX_FILE_BYTES = 1_048_576;
+export const SANDBOX_MAX_FILE_BYTES = 8_388_608;
 export const SANDBOX_MAX_BUNDLE_FILES = 8_192;
 export const SANDBOX_MAX_PATH_BYTES = 240;
-export const SANDBOX_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
+export const SANDBOX_MAX_UNCOMPRESSED_BYTES = 96 * 1024 * 1024;
 
 export class SandboxArchiveInvalid extends Data.TaggedError("SandboxArchiveInvalid")<{
   readonly message: string;
@@ -17,6 +22,7 @@ export class SandboxArchiveInvalid extends Data.TaggedError("SandboxArchiveInval
 export interface ParsedTarMember {
   readonly path: string;
   readonly type: "file" | "directory";
+  readonly modeClass: "regular" | "executable";
   readonly bytes: Uint8Array;
 }
 
@@ -68,8 +74,11 @@ export const parseSandboxTar = (
     const size = Number.parseInt(sizeText || "0", 8);
     const checksumText = field(header, 148, 8).trim();
     const expectedChecksum = Number.parseInt(checksumText || "0", 8);
+    const mode = Number.parseInt(field(header, 100, 8).trim() || "0", 8);
     if (!Number.isFinite(expectedChecksum) || expectedChecksum !== headerChecksum(header))
       return Result.fail(sandboxArchiveInvalid("Sandbox archive checksum is invalid"));
+    if (!Number.isFinite(mode) || mode < 0 || mode > 0o7777)
+      return Result.fail(sandboxArchiveInvalid("Sandbox archive contains an unsupported mode"));
     if (!Number.isFinite(size) || size < 0)
       return Result.fail(sandboxArchiveInvalid("Sandbox archive is malformed"));
     if (size > SANDBOX_MAX_FILE_BYTES)
@@ -101,6 +110,7 @@ export const parseSandboxTar = (
     members.push({
       path,
       type: isDirectory ? "directory" : "file",
+      modeClass: !isDirectory && (mode & 0o111) !== 0 ? "executable" : "regular",
       bytes: isDirectory ? new Uint8Array() : bytes.slice(offset + BLOCK, offset + BLOCK + size),
     });
     offset += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
@@ -158,13 +168,111 @@ const decodeBundleManifestText = Schema.decodeUnknownResult(
   { onExcessProperty: "error" },
 );
 
-const filesFromMembers = (members: ReadonlyArray<ParsedTarMember>): Map<string, Uint8Array> => {
-  const files = new Map<string, Uint8Array>();
-  for (const member of members) {
-    if (member.type === "file") files.set(member.path, member.bytes);
-  }
-  return files;
+const filesFromMembers = (members: ReadonlyArray<ParsedTarMember>): Map<string, ParsedTarMember> =>
+  new Map(members.map((member) => [member.path, member]));
+
+type ExpectedSandboxFile = {
+  readonly size: number;
+  readonly digest: string;
+  readonly modeClass?: "regular" | "executable";
 };
+
+const parentDirectories = (path: string): ReadonlyArray<string> => {
+  const parts = path.split("/");
+  const directories: string[] = [];
+  for (let index = 1; index < parts.length; index += 1)
+    directories.push(parts.slice(0, index).join("/"));
+  return directories;
+};
+
+const validateV2Manifest = Effect.fnUntraced(function* (
+  manifest: Extract<SandboxBundleManifest, { readonly schemaVersion: 2 }>,
+  members: ReadonlyMap<string, ParsedTarMember>,
+) {
+  const expected = new Map<string, ExpectedSandboxFile>();
+  const directories = new Set<string>();
+  const seenItems = new Set<string>();
+  const addParents = (path: string): void => {
+    for (const parent of parentDirectories(path)) directories.add(parent);
+  };
+  for (const item of manifest.items) {
+    const itemKey = `${item.kind}\0${item.name}`;
+    if (seenItems.has(itemKey))
+      return yield* Effect.fail(
+        sandboxArchiveInvalid("Sandbox archive manifest contains duplicate bundle items"),
+      );
+    seenItems.add(itemKey);
+    if ((item.kind === "skill" || item.kind === "package") && item.shape !== "directory")
+      return yield* Effect.fail(
+        sandboxArchiveInvalid("Sandbox archive item shape does not match its kind"),
+      );
+    const itemRoot = `${sandboxBundleItemRoot(item.kind)}/${item.name}`;
+    const itemMember = members.get(itemRoot);
+    if (item.shape === "file") {
+      if (item.files.length !== 1 || item.files[0]?.path !== item.name)
+        return yield* Effect.fail(
+          sandboxArchiveInvalid("Sandbox archive manifest file item does not match its name"),
+        );
+      if (itemMember?.type !== "file")
+        return yield* Effect.fail(
+          sandboxArchiveInvalid("Sandbox archive file item is not materialized at its name"),
+        );
+    } else {
+      directories.add(itemRoot);
+      addParents(itemRoot);
+      if (
+        (item.files.length === 0 && itemMember?.type !== "directory") ||
+        (item.files.length > 0 && itemMember !== undefined && itemMember.type !== "directory")
+      )
+        return yield* Effect.fail(
+          sandboxArchiveInvalid("Sandbox archive directory item is not materialized at its name"),
+        );
+    }
+    const itemDigest = yield* Effect.tryPromise({
+      try: () =>
+        sha256BytesHex(new TextEncoder().encode(sandboxBundleItemDigestMaterial(item.files))),
+      catch: () => sandboxArchiveInvalid("Sandbox archive item digest computation failed"),
+    });
+    if (itemDigest !== item.digest)
+      return yield* Effect.fail(
+        sandboxArchiveInvalid("Sandbox archive item digest does not match its manifest files"),
+      );
+    for (const file of item.files) {
+      if (!isSafeBundlePath(file.path))
+        return yield* Effect.fail(
+          sandboxArchiveInvalid("Sandbox archive manifest contains an unsafe file path"),
+        );
+      const archivePath = sandboxBundleItemFilePath(item, file.path);
+      if (expected.has(archivePath))
+        return yield* Effect.fail(
+          sandboxArchiveInvalid("Sandbox archive manifest contains duplicate file paths"),
+        );
+      expected.set(archivePath, {
+        size: file.size,
+        digest: file.digest,
+        modeClass: file.modeClass,
+      });
+      addParents(archivePath);
+    }
+  }
+  for (const [path, member] of members) {
+    if (path === "manifest.json") continue;
+    if (member.type === "directory" && !directories.has(path))
+      return yield* Effect.fail(
+        sandboxArchiveInvalid("Sandbox archive contains an unlisted directory"),
+      );
+    if (member.type === "file") {
+      const parts = path.split("/");
+      for (let index = 1; index < parts.length; index += 1) {
+        if (members.get(parts.slice(0, index).join("/"))?.type === "file")
+          return yield* Effect.fail(
+            sandboxArchiveInvalid("Sandbox archive file shape is incoherent"),
+          );
+      }
+    }
+  }
+  return { files: expected };
+});
 
 export interface ValidatedSandboxArchive {
   readonly digest: string;
@@ -190,38 +298,47 @@ export const validateSandboxArchive = (
     const parsed = parseSandboxTar(tar);
     if (Result.isFailure(parsed)) return yield* Effect.fail(parsed.failure);
     const files = filesFromMembers(parsed.success);
-    const manifestBytes = files.get("manifest.json");
-    if (manifestBytes === undefined)
+    const manifestMember = files.get("manifest.json");
+    if (manifestMember === undefined || manifestMember.type !== "file")
       return yield* Effect.fail(sandboxArchiveInvalid("Sandbox archive is missing manifest.json"));
-    const manifestText = decoder.decode(manifestBytes);
+    const manifestText = decoder.decode(manifestMember.bytes);
     const decoded = decodeBundleManifestText(manifestText);
     if (Result.isFailure(decoded))
       return yield* Effect.fail(sandboxArchiveInvalid("Sandbox archive manifest is invalid"));
     const manifest = decoded.success;
-    const expected = new Map<string, { readonly size: number; readonly digest: string }>();
-    for (const skill of manifest.skills) {
-      for (const file of skill.files)
-        expected.set(`skills/${skill.name}/${file.path}`, { size: file.size, digest: file.digest });
+    let expected = new Map<string, ExpectedSandboxFile>();
+    if (manifest.schemaVersion === 1) {
+      for (const skill of manifest.skills)
+        for (const file of skill.files)
+          expected.set(`skills/${skill.name}/${file.path}`, {
+            size: file.size,
+            digest: file.digest,
+          });
+      for (const item of manifest.piPackages)
+        for (const file of item.files)
+          expected.set(`pi-packages/${item.name}/${file.path}`, {
+            size: file.size,
+            digest: file.digest,
+          });
+    } else {
+      expected = (yield* validateV2Manifest(manifest, files)).files;
     }
-    for (const item of manifest.piPackages) {
-      for (const file of item.files)
-        expected.set(`pi-packages/${item.name}/${file.path}`, {
-          size: file.size,
-          digest: file.digest,
-        });
-    }
-    for (const [path, content] of files) {
-      if (path === "manifest.json") continue;
+    for (const [path, member] of files) {
+      if (path === "manifest.json" || member.type !== "file") continue;
       const record = expected.get(path);
       if (record === undefined)
         return yield* Effect.fail(
           sandboxArchiveInvalid("Sandbox archive contains a file missing from the manifest"),
         );
       const contentDigest = yield* Effect.tryPromise({
-        try: () => sha256BytesHex(content),
+        try: () => sha256BytesHex(member.bytes),
         catch: () => sandboxArchiveInvalid("Sandbox archive file digest computation failed"),
       });
-      if (content.byteLength !== record.size || contentDigest !== record.digest)
+      if (
+        member.bytes.byteLength !== record.size ||
+        contentDigest !== record.digest ||
+        (record.modeClass !== undefined && member.modeClass !== record.modeClass)
+      )
         return yield* Effect.fail(
           sandboxArchiveInvalid("Sandbox archive file digest does not match the manifest"),
         );

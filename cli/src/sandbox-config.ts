@@ -21,12 +21,7 @@ const encodeSandboxConfig = Schema.encodeSync(SandboxConfigSchema);
 
 export const BUILTIN_SKILL_NAMES = [] as const;
 
-export const BUILTIN_PI_PACKAGE_NAMES = [
-  "pi-subagents",
-  "@ogulcancelik/pi-codex-compaction",
-  "scotty-browser-test",
-  "scotty-hatch",
-] as const;
+export const BUILTIN_PI_PACKAGE_NAMES = ["scotty-browser-test", "scotty-hatch"] as const;
 
 export const emptySandboxConfig = (): SandboxConfig => ({
   schemaVersion: SANDBOX_CONFIG_SCHEMA_VERSION,

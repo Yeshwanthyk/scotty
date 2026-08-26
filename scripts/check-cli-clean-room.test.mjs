@@ -118,6 +118,7 @@ describe("clean-room CLI image gate", () => {
     assert.doesNotMatch(dockerfile, /bun-version/u);
     assert.match(dockerfile, /npm ci --omit=dev --ignore-scripts --no-audit --no-fund/u);
     assert.match(dockerfile, /RUN node scripts\/apply-dependency-patches\.mjs$/mu);
+    assert.match(dockerfile, /COPY skills\/scotty\/SKILL\.md skills\/scotty\/SKILL\.md/u);
     assert.doesNotMatch(dockerfile, /apply-dependency-patches\.mjs --check/u);
   });
 });

@@ -3,7 +3,6 @@ import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
-import { projectContainerPiInstall } from "../../scripts/project-container-pi-install.mjs";
 import {
   CONTAINER_CONTEXT_BUDGET,
   CONTAINER_CONTEXT_PATH,
@@ -213,17 +212,12 @@ export async function inspectContainerImageBudget(
 
 export async function prepareContainerContext(
   root = process.cwd(),
-  {
-    discoverCliInputs = discoverContainerCliInputs,
-    inputs,
-    projectPiInstall = projectContainerPiInstall,
-  } = {},
+  { discoverCliInputs = discoverContainerCliInputs, inputs } = {},
 ) {
   const contextInputs =
     inputs === undefined ? projectContainerContextInputs(await discoverCliInputs(root)) : inputs;
   const context = join(root, CONTAINER_CONTEXT_PATH);
   await rm(context, { recursive: true, force: true });
   await materializeProjectInputs(root, context, contextInputs);
-  await projectPiInstall(context);
   await assertContainerContextBudget(context);
 }

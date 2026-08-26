@@ -8,7 +8,6 @@
     "**/node_modules/**",
     "vendor/**",
     "work/**",
-    "worker/container/pi-packages/sources/pi-subagents/**",
     "worker/container/pi-packages/sources/scotty-browser-test/**",
     "worker/public/vendor/**"
   ],
@@ -17,6 +16,7 @@
     "reportUnusedDisableDirectives": "error"
   },
   "rules": {
+    "complexity": ["error", { "max": 75 }],
     "typescript/no-explicit-any": "error",
     "no-debugger": "error",
     "scotty/no-conditional-tests": "error",

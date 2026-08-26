@@ -297,6 +297,7 @@ export interface HarnessOptions {
   readonly seedPinnedSandboxBundle?: boolean;
   readonly stopCallsOnStop?: boolean;
   readonly transactionFailureCountdown?: number;
+  readonly workspaceExists?: boolean;
 }
 
 export interface RecordedSchedule {
@@ -1066,6 +1067,13 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
                   ? "downTar"
                   : "exec";
         events.push(`host:exec:${stage === "downRollout" ? "exec" : stage}`);
+        if (options.workspaceExists === false && command === `test -d '/workspace/${SESSION_ID}'`)
+          return {
+            ...successfulExec(command),
+            success: false,
+            exitCode: 1,
+            stderr: "workspace missing",
+          };
         if (failures.has("workspacePrepare") && stage === "workspace")
           throw injectedHarnessFailure("injected workspace failure");
         if (failures.has("checkpointSync") && command === "sync")

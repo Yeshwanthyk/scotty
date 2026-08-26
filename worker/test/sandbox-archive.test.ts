@@ -6,8 +6,14 @@ import {
   gzipDeterministic,
   type TarMember,
 } from "../../cli/src/sandbox-archive";
-import { validateSandboxArchive, SANDBOX_MAX_UNCOMPRESSED_BYTES } from "../src/sandbox-archive";
+import {
+  parseSandboxTar,
+  SANDBOX_MAX_FILE_BYTES,
+  SANDBOX_MAX_UNCOMPRESSED_BYTES,
+  validateSandboxArchive,
+} from "../src/sandbox-archive";
 import { sha256BytesHex } from "../src/digest";
+import { itemContentDigest, sha256Bytes } from "../../cli/src/sandbox-bundle";
 
 const encoder = new TextEncoder();
 
@@ -22,6 +28,35 @@ const fileMember = (
   bytes: encoder.encode(content),
 });
 
+const directoryMember = (path: string): TarMember => ({
+  path,
+  type: "directory",
+  modeClass: "regular",
+  bytes: new Uint8Array(),
+});
+
+const v2FileItem = (filePath = "hello") => {
+  const bytes = encoder.encode("hello\n");
+  const file = {
+    path: filePath,
+    size: bytes.byteLength,
+    modeClass: "regular" as const,
+    digest: sha256Bytes(bytes),
+  };
+  return {
+    kind: "tool" as const,
+    name: "hello",
+    shape: "file" as const,
+    digest: itemContentDigest([file]),
+    files: [file],
+  };
+};
+
+const v2Archive = (items: ReadonlyArray<unknown>, members: ReadonlyArray<TarMember>) =>
+  createDeterministicTarGz([
+    fileMember("manifest.json", `${JSON.stringify({ schemaVersion: 2, items })}\n`),
+    ...members,
+  ]);
 const recomputeChecksum = (header: Uint8Array): void => {
   for (let index = 148; index < 156; index++) header[index] = 32;
   let sum = 0;
@@ -41,6 +76,34 @@ const patchHeader = (tar: Uint8Array, patch: (header: Uint8Array) => void): Uint
 };
 
 describe("worker sandbox archive validation", () => {
+  it("accepts the shared prepared-package file limit and rejects larger files", () => {
+    const atLimit = parseSandboxTar(
+      encodeUstarArchive([
+        fileMember("manifest.json", "{}"),
+        {
+          path: "pi-packages/example/large.bin",
+          type: "file",
+          modeClass: "regular",
+          bytes: new Uint8Array(SANDBOX_MAX_FILE_BYTES),
+        },
+      ]),
+    );
+    assert.ok(Result.isSuccess(atLimit));
+
+    const overLimit = parseSandboxTar(
+      encodeUstarArchive([
+        fileMember("manifest.json", "{}"),
+        {
+          path: "pi-packages/example/large.bin",
+          type: "file",
+          modeClass: "regular",
+          bytes: new Uint8Array(SANDBOX_MAX_FILE_BYTES + 1),
+        },
+      ]),
+    );
+    assert.ok(Result.isFailure(overLimit));
+  });
+
   it.effect("accepts a deterministic round-trip archive", () =>
     Effect.gen(function* () {
       const built = createDeterministicTarGz([
@@ -48,6 +111,57 @@ describe("worker sandbox archive validation", () => {
       ]);
       const validated = yield* validateSandboxArchive(built.archive, built.digest);
       assert.strictEqual(validated.digest, built.digest);
+    }),
+  );
+
+  it.effect("validates v2 item identity, paths, digests, and shapes", () =>
+    Effect.gen(function* () {
+      const item = v2FileItem();
+      const valid = v2Archive([item], [fileMember("tools/hello", "hello\n")]);
+      const validated = yield* validateSandboxArchive(valid.archive, valid.digest);
+      assert.strictEqual(validated.manifest.schemaVersion, 2);
+
+      const duplicateItem = v2Archive([item, item], [fileMember("tools/hello", "hello\n")]);
+      const duplicateResult = yield* Effect.result(
+        validateSandboxArchive(duplicateItem.archive, duplicateItem.digest),
+      );
+      assert.ok(Result.isFailure(duplicateResult));
+      assert.match(duplicateResult.failure.message, /duplicate bundle/u);
+
+      const record = item.files[0]!;
+      const duplicatePathItem = {
+        ...item,
+        shape: "directory" as const,
+        files: [record, record],
+        digest: itemContentDigest([record, record]),
+      };
+      const duplicatePath = v2Archive(
+        [duplicatePathItem],
+        [directoryMember("tools/hello"), fileMember("tools/hello/hello", "hello\n")],
+      );
+      const duplicatePathResult = yield* Effect.result(
+        validateSandboxArchive(duplicatePath.archive, duplicatePath.digest),
+      );
+      assert.ok(Result.isFailure(duplicatePathResult));
+      assert.match(duplicatePathResult.failure.message, /duplicate file/u);
+
+      const wrongDigest = v2Archive(
+        [{ ...item, digest: "0".repeat(64) }],
+        [fileMember("tools/hello", "hello\n")],
+      );
+      const wrongDigestResult = yield* Effect.result(
+        validateSandboxArchive(wrongDigest.archive, wrongDigest.digest),
+      );
+      assert.ok(Result.isFailure(wrongDigestResult));
+      assert.match(wrongDigestResult.failure.message, /item digest/u);
+
+      const wrongShape = v2FileItem("other");
+      const incoherent = v2Archive([wrongShape], [fileMember("tools/other", "hello\n")]);
+      const incoherentResult = yield* Effect.result(
+        validateSandboxArchive(incoherent.archive, incoherent.digest),
+      );
+      assert.ok(Result.isFailure(incoherentResult));
+      assert.match(incoherentResult.failure.message, /does not match/u);
     }),
   );
 

@@ -65,13 +65,10 @@ function withIndexFixture(run) {
 }
 
 test("Pi packages are externally vendored or first-party, pinned, locked, and image-local", () => {
-  assert.deepEqual(REQUIRED_PI_PACKAGE_NAMES, [
+  assert.deepEqual(REQUIRED_PI_PACKAGE_NAMES, ["scotty-browser-test", "scotty-hatch"]);
+  assert.deepEqual(FORBIDDEN_PI_PACKAGE_NAMES, [
     "pi-subagents",
     "@ogulcancelik/pi-codex-compaction",
-    "scotty-browser-test",
-    "scotty-hatch",
-  ]);
-  assert.deepEqual(FORBIDDEN_PI_PACKAGE_NAMES, [
     "pi-workflows",
     "pi-background-terminals",
     "pi-askuser",
@@ -79,9 +76,9 @@ test("Pi packages are externally vendored or first-party, pinned, locked, and im
     "pi-amp-ui",
   ]);
   assert.deepEqual(verifyPiPackagePins(), {
-    vendoredPackages: 1,
+    vendoredPackages: 0,
     firstPartyPackages: 2,
-    npmPackages: 1,
+    npmPackages: 0,
   });
 });
 
@@ -90,16 +87,19 @@ test("Pi package pins require exactly the supported package set", () => {
     const manifest = readManifest(fixture);
     manifest.firstParty.pop();
     writeManifest(fixture, manifest);
-    assert.throws(() => verifyPiPackagePins(fixture), /packages must be exactly pi-subagents/u);
+    assert.throws(
+      () => verifyPiPackagePins(fixture),
+      /packages must be exactly scotty-browser-test/u,
+    );
   });
 });
 
 test("Pi package pins reject removed package names", () => {
   withIndexFixture((fixture) => {
     const manifest = readManifest(fixture);
-    manifest.npm[0].name = FORBIDDEN_PI_PACKAGE_NAMES[0];
+    manifest.firstParty[0].name = FORBIDDEN_PI_PACKAGE_NAMES[0];
     writeManifest(fixture, manifest);
-    assert.throws(() => verifyPiPackagePins(fixture), /pi-workflows/u);
+    assert.throws(() => verifyPiPackagePins(fixture), /pi-subagents/u);
   });
 });
 
@@ -138,26 +138,7 @@ test("first-party entries reject forged external commit provenance", () => {
   });
 });
 
-test("externally vendored commits are full IDs and match locally available source", () => {
-  withIndexFixture((fixture) => {
-    const manifest = readManifest(fixture);
-    manifest.vendored[0].commit = "main";
-    writeManifest(fixture, manifest);
-    assert.throws(
-      () => verifyPiPackagePins(fixture),
-      /vendored\[0\]\.commit must be a full lowercase Git commit ID/u,
-    );
-
-    manifest.vendored[0].commit = git(fixture, "rev-parse", "HEAD");
-    writeManifest(fixture, manifest);
-    assert.throws(
-      () => verifyPiPackagePins(fixture),
-      /vendored\[0\]\.commit does not (?:contain|match) /u,
-    );
-  });
-});
-
-test("source digests use staged blobs despite vendored and first-party worktree drift", () => {
+test("source digests use staged blobs despite first-party worktree drift", () => {
   withIndexFixture((fixture) => {
     for (const sourcePath of [
       "worker/container/pi-packages/sources/scotty-browser-test/README.md",

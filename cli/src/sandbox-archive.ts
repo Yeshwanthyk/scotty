@@ -1,4 +1,5 @@
 import { gunzipSync, gzipSync } from "node:zlib";
+import { sandboxBundleItemFilePath, sandboxBundleItemRoot } from "../../protocol/sandbox-bundle";
 import { Result } from "effect";
 import {
   SANDBOX_MAX_FILE_BYTES,
@@ -6,6 +7,7 @@ import {
   compareUtf8,
   decodeBundleManifestText,
   isSafeBundlePath,
+  itemContentDigest,
   sandboxArchiveInvalid,
   sha256Bytes,
   type SandboxBundleManifest,
@@ -130,6 +132,7 @@ const field = (header: Uint8Array, start: number, length: number): string => {
 export interface ParsedTarMember {
   readonly path: string;
   readonly type: "file" | "directory";
+  readonly modeClass: SandboxFileModeClass;
   readonly bytes: Uint8Array;
 }
 
@@ -153,6 +156,14 @@ export const parseSandboxTar = (
       return Result.fail(
         sandboxArchiveInvalid(
           "Sandbox archive checksum is invalid",
+          "Rebuild the sandbox bundle, then retry.",
+        ),
+      );
+    const mode = Number.parseInt(field(header, 100, 8).trim() || "0", 8);
+    if (!Number.isFinite(mode) || mode < 0 || mode > 0o7777)
+      return Result.fail(
+        sandboxArchiveInvalid(
+          "Sandbox archive contains an unsupported mode",
           "Rebuild the sandbox bundle, then retry.",
         ),
       );
@@ -208,6 +219,7 @@ export const parseSandboxTar = (
     members.push({
       path,
       type: isDirectory ? "directory" : "file",
+      modeClass: !isDirectory && (mode & 0o111) !== 0 ? "executable" : "regular",
       bytes: isDirectory ? new Uint8Array() : bytes.slice(offset + BLOCK, offset + BLOCK + size),
     });
     offset += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
@@ -231,12 +243,115 @@ export const gunzipSandboxArchive = (
   }
 };
 
-const filesFromMembers = (members: ReadonlyArray<ParsedTarMember>): Map<string, Uint8Array> => {
-  const files = new Map<string, Uint8Array>();
-  for (const member of members) {
-    if (member.type === "file") files.set(member.path, member.bytes);
+const filesFromMembers = (members: ReadonlyArray<ParsedTarMember>): Map<string, ParsedTarMember> =>
+  new Map(members.map((member) => [member.path, member]));
+
+type ExpectedSandboxFile = {
+  readonly size: number;
+  readonly digest: string;
+  readonly modeClass?: SandboxFileModeClass;
+};
+
+const parentDirectories = (path: string): ReadonlyArray<string> => {
+  const parts = path.split("/");
+  const directories: string[] = [];
+  for (let index = 1; index < parts.length; index += 1)
+    directories.push(parts.slice(0, index).join("/"));
+  return directories;
+};
+
+const invalidV2Archive = (message: string) =>
+  Result.fail(
+    sandboxArchiveInvalid(message, "Rebuild the sandbox bundle, then retry."),
+  ) as Result.Result<never, ReturnType<typeof sandboxArchiveInvalid>>;
+
+const expectedFiles = (
+  manifest: SandboxBundleManifest,
+  members: ReadonlyMap<string, ParsedTarMember>,
+): Result.Result<Map<string, ExpectedSandboxFile>, ReturnType<typeof sandboxArchiveInvalid>> => {
+  if (manifest.schemaVersion === 2)
+    return expectedV2Files(manifest, members).pipe(Result.map(({ files }) => files));
+  const expected = new Map<string, ExpectedSandboxFile>();
+  for (const skill of manifest.skills)
+    for (const file of skill.files)
+      expected.set(`skills/${skill.name}/${file.path}`, {
+        size: file.size,
+        digest: file.digest,
+      });
+  for (const item of manifest.piPackages)
+    for (const file of item.files)
+      expected.set(`pi-packages/${item.name}/${file.path}`, {
+        size: file.size,
+        digest: file.digest,
+      });
+  return Result.succeed(expected);
+};
+
+const expectedV2Files = (
+  manifest: Extract<SandboxBundleManifest, { readonly schemaVersion: 2 }>,
+  members: ReadonlyMap<string, ParsedTarMember>,
+): Result.Result<
+  { readonly files: Map<string, ExpectedSandboxFile>; readonly directories: ReadonlySet<string> },
+  ReturnType<typeof sandboxArchiveInvalid>
+> => {
+  const expected = new Map<string, ExpectedSandboxFile>();
+  const directories = new Set<string>();
+  const seenItems = new Set<string>();
+  const addParents = (path: string): void => {
+    for (const parent of parentDirectories(path)) directories.add(parent);
+  };
+  for (const item of manifest.items) {
+    const itemKey = `${item.kind}\0${item.name}`;
+    if (seenItems.has(itemKey))
+      return invalidV2Archive("Sandbox archive manifest contains duplicate bundle items");
+    seenItems.add(itemKey);
+    if ((item.kind === "skill" || item.kind === "package") && item.shape !== "directory")
+      return invalidV2Archive("Sandbox archive item shape does not match its kind");
+    const itemRoot = `${sandboxBundleItemRoot(item.kind)}/${item.name}`;
+    const itemMember = members.get(itemRoot);
+    if (item.shape === "file") {
+      if (item.files.length !== 1 || item.files[0]?.path !== item.name)
+        return invalidV2Archive("Sandbox archive manifest file item does not match its name");
+      if (itemMember?.type !== "file")
+        return invalidV2Archive("Sandbox archive file item is not materialized at its name");
+    } else {
+      directories.add(itemRoot);
+      addParents(itemRoot);
+      if (
+        (item.files.length === 0 && itemMember?.type !== "directory") ||
+        (item.files.length > 0 && itemMember !== undefined && itemMember.type !== "directory")
+      )
+        return invalidV2Archive("Sandbox archive directory item is not materialized at its name");
+    }
+    if (itemContentDigest(item.files) !== item.digest)
+      return invalidV2Archive("Sandbox archive item digest does not match its manifest files");
+    for (const file of item.files) {
+      if (!isSafeBundlePath(file.path))
+        return invalidV2Archive("Sandbox archive manifest contains an unsafe file path");
+      const archivePath = sandboxBundleItemFilePath(item, file.path);
+      if (expected.has(archivePath))
+        return invalidV2Archive("Sandbox archive manifest contains duplicate file paths");
+      expected.set(archivePath, {
+        size: file.size,
+        digest: file.digest,
+        modeClass: file.modeClass,
+      });
+      addParents(archivePath);
+    }
   }
-  return files;
+  for (const [path, member] of members) {
+    if (path === "manifest.json") continue;
+    if (member.type === "directory" && !directories.has(path))
+      return invalidV2Archive("Sandbox archive contains an unlisted directory");
+    if (member.type === "file") {
+      const parts = path.split("/");
+      for (let index = 1; index < parts.length; index += 1) {
+        if (members.get(parts.slice(0, index).join("/"))?.type === "file")
+          return invalidV2Archive("Sandbox archive file shape is incoherent");
+      }
+    }
+  }
+  return Result.succeed({ files: expected, directories });
 };
 
 export const validateSandboxArchive = (
@@ -251,15 +366,15 @@ export const validateSandboxArchive = (
   const parsed = parseSandboxTar(tar.success);
   if (Result.isFailure(parsed)) return Result.fail(parsed.failure);
   const files = filesFromMembers(parsed.success);
-  const manifestBytes = files.get("manifest.json");
-  if (manifestBytes === undefined)
+  const manifestMember = files.get("manifest.json");
+  if (manifestMember === undefined || manifestMember.type !== "file")
     return Result.fail(
       sandboxArchiveInvalid(
         "Sandbox archive is missing manifest.json",
         "Rebuild the sandbox bundle, then retry.",
       ),
     );
-  const decoded = decodeBundleManifestText(decoder.decode(manifestBytes));
+  const decoded = decodeBundleManifestText(decoder.decode(manifestMember.bytes));
   if (Result.isFailure(decoded))
     return Result.fail(
       sandboxArchiveInvalid(
@@ -268,20 +383,11 @@ export const validateSandboxArchive = (
       ),
     );
   const manifest = decoded.success;
-  const expected = new Map<string, { readonly size: number; readonly digest: string }>();
-  for (const skill of manifest.skills) {
-    for (const file of skill.files)
-      expected.set(`skills/${skill.name}/${file.path}`, { size: file.size, digest: file.digest });
-  }
-  for (const item of manifest.piPackages) {
-    for (const file of item.files)
-      expected.set(`pi-packages/${item.name}/${file.path}`, {
-        size: file.size,
-        digest: file.digest,
-      });
-  }
-  for (const [path, content] of files) {
-    if (path === "manifest.json") continue;
+  const expectedResult = expectedFiles(manifest, files);
+  if (Result.isFailure(expectedResult)) return Result.fail(expectedResult.failure);
+  const expected = expectedResult.success;
+  for (const [path, member] of files) {
+    if (path === "manifest.json" || member.type !== "file") continue;
     const record = expected.get(path);
     if (record === undefined)
       return Result.fail(
@@ -290,7 +396,11 @@ export const validateSandboxArchive = (
           "Rebuild the sandbox bundle, then retry.",
         ),
       );
-    if (content.byteLength !== record.size || sha256Bytes(content) !== record.digest)
+    if (
+      member.bytes.byteLength !== record.size ||
+      sha256Bytes(member.bytes) !== record.digest ||
+      (record.modeClass !== undefined && member.modeClass !== record.modeClass)
+    )
       return Result.fail(
         sandboxArchiveInvalid(
           "Sandbox archive file digest does not match the manifest",

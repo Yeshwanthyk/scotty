@@ -1,7 +1,5 @@
 {
   "packages": [
-    "/opt/scotty/pi-packages/sources/pi-subagents",
-    "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
     "/opt/scotty/pi-packages/sources/scotty-browser-test",
     "/opt/scotty/pi-packages/sources/scotty-hatch"
   ]

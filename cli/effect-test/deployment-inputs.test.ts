@@ -27,10 +27,6 @@ const piProjectionScript = readFileSync(
   new URL("../../scripts/project-container-pi-install.mjs", import.meta.url),
   "utf8",
 );
-const containerImageCheck = readFileSync(
-  new URL("../../scripts/check-container-image.mjs", import.meta.url),
-  "utf8",
-);
 
 const normalizePath = (path: string): string => path.replaceAll("\\", "/");
 
@@ -153,7 +149,6 @@ describe("standalone deployment archive", () => {
       "scripts/container-control-plane.mjs",
       "scripts/deploy-production.mjs",
       "scripts/is-direct-run.mjs",
-      "scripts/project-container-pi-install.mjs",
       "patches/alchemy+2.0.0-beta.72.patch",
       "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
       "patches/earendil-works+pi-coding-agent+0.84.0.patch",
@@ -205,24 +200,12 @@ describe("standalone deployment archive", () => {
       npmCiIndex,
     );
     expect(dockerfile).toContain("COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs");
-    expect(dockerfile).toContain(
-      "COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs",
-    );
-    expect(
-      dockerfile.indexOf(
-        "COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs",
-      ),
-    ).toBeLessThan(npmCiIndex);
     expect(dockerfile.indexOf("RUN bun build")).toBeGreaterThan(
       dockerfile.indexOf("RUN node scripts/apply-dependency-patches.mjs"),
     );
     expect(dockerfile).toContain("COPY scripts/is-direct-run.mjs /tmp/is-direct-run.mjs");
-    expect(dockerfile).toContain(
-      "rm -f /tmp/is-direct-run.mjs /tmp/project-container-pi-install.mjs",
-    );
-    expect(dockerfile).toContain(
-      "COPY scripts/project-container-pi-install.mjs /tmp/project-container-pi-install.mjs",
-    );
+    expect(dockerfile).toContain("rm -f /tmp/is-direct-run.mjs");
+    expect(dockerfile).not.toContain("project-container-pi-install.mjs");
   });
 
   it("catalogs and COPYs every maintainer script reachable from the bundled source graph", () => {
@@ -232,7 +215,6 @@ describe("standalone deployment archive", () => {
         "scripts/container-control-plane.mjs",
         "scripts/deploy-production.mjs",
         "scripts/is-direct-run.mjs",
-        "scripts/project-container-pi-install.mjs",
       ]),
     );
 
@@ -252,14 +234,12 @@ describe("standalone deployment archive", () => {
       .find((block) => block.includes("playwright-core/cli.js") && block.includes("npm ci"));
     expect(installRun).toBeDefined();
     expect(installRun).toContain("chmod -R a-w /opt/scotty/pi-packages");
-    expect(installRun).toContain("node /tmp/project-container-pi-install.mjs");
-    expect(installRun).toContain("--assert-image");
+    expect(installRun).not.toContain("project-container-pi-install.mjs");
     expect(installRun).not.toContain("claudeBackend|codexBackend|claude-agent-sdk");
     expect(piProjectionScript).toContain("export const assertPiSubagentsSource");
     expect(piProjectionScript).not.toContain("assertPiTasksSource");
     expect(piProjectionScript).not.toContain("PI_TASKS_SOURCE");
-    expect(dockerfile.match(/--assert-image/gu)).toHaveLength(1);
-    expect(containerImageCheck).not.toContain("--assert-image");
+    expect(dockerfile).not.toContain("--assert-image");
     expect(installRun).toContain("/usr/local/bin/scotty-pi-session");
     expect(installRun).not.toMatch(/^\s+\/usr\/local\/bin\/scotty\s*\\?$/mu);
 
@@ -285,6 +265,7 @@ describe("standalone deployment archive", () => {
     expect(dockerfile).not.toContain("@openai/codex");
     expect(dockerfile).toContain("GO_VERSION=1.26.1");
     expect(dockerfile).toContain("PATH=/usr/local/go/bin:${PATH}");
-    expect(dockerfile).toContain("pi-codex-compaction");
+    expect(dockerfile).toContain("@ogulcancelik/pi-codex-compaction");
+    expect(dockerfile).toContain("test ! -e");
   });
 });

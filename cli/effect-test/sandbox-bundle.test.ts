@@ -22,6 +22,7 @@ import {
   type TarMember,
 } from "../src/sandbox-archive.ts";
 import { emptySandboxConfig } from "../src/sandbox-config.ts";
+import { itemContentDigest, sha256Bytes } from "../src/sandbox-bundle.ts";
 import { buildSandboxBundle } from "../src/sandbox-prepare.ts";
 import { walkSandboxTree, type SandboxWalkOptions } from "../src/sandbox-walk.ts";
 import { ProcessRunner } from "../src/services.ts";
@@ -73,6 +74,36 @@ const fileMember = (
   bytes: encoder.encode(content),
 });
 
+const directoryMember = (path: string): TarMember => ({
+  path,
+  type: "directory",
+  modeClass: "regular",
+  bytes: new Uint8Array(),
+});
+
+const v2FileItem = (filePath = "hello") => {
+  const bytes = encoder.encode("hello\n");
+  const file = {
+    path: filePath,
+    size: bytes.byteLength,
+    modeClass: "regular" as const,
+    digest: sha256Bytes(bytes),
+  };
+  return {
+    kind: "tool" as const,
+    name: "hello",
+    shape: "file" as const,
+    digest: itemContentDigest([file]),
+    files: [file],
+  };
+};
+
+const v2Archive = (items: ReadonlyArray<unknown>, members: ReadonlyArray<TarMember>) =>
+  createDeterministicTarGz([
+    fileMember("manifest.json", `${JSON.stringify({ schemaVersion: 2, items })}\n`),
+    ...members,
+  ]);
+
 const recomputeChecksum = (header: Uint8Array): void => {
   for (let index = 148; index < 156; index++) header[index] = 32;
   let sum = 0;
@@ -98,6 +129,41 @@ describe("sandbox archive validation", () => {
     ]);
     const validated = succeeded(validateSandboxArchive(built.archive));
     assert.strictEqual(validated.digest, built.digest);
+  });
+
+  it("validates v2 item identity, paths, digests, and shapes", () => {
+    const item = v2FileItem();
+    const valid = v2Archive([item], [fileMember("tools/hello", "hello\n")]);
+    assert.strictEqual(succeeded(validateSandboxArchive(valid.archive)).manifest.schemaVersion, 2);
+
+    const duplicateItem = v2Archive([item, item], [fileMember("tools/hello", "hello\n")]);
+    assert.include(
+      failed(validateSandboxArchive(duplicateItem.archive)).message,
+      "duplicate bundle",
+    );
+
+    const record = item.files[0]!;
+    const duplicatePathItem = {
+      ...item,
+      shape: "directory" as const,
+      files: [record, record],
+      digest: itemContentDigest([record, record]),
+    };
+    const duplicatePath = v2Archive(
+      [duplicatePathItem],
+      [directoryMember("tools/hello"), fileMember("tools/hello/hello", "hello\n")],
+    );
+    assert.include(failed(validateSandboxArchive(duplicatePath.archive)).message, "duplicate file");
+
+    const wrongDigest = v2Archive(
+      [{ ...item, digest: "0".repeat(64) }],
+      [fileMember("tools/hello", "hello\n")],
+    );
+    assert.include(failed(validateSandboxArchive(wrongDigest.archive)).message, "item digest");
+
+    const wrongShape = v2FileItem("other");
+    const incoherent = v2Archive([wrongShape], [fileMember("tools/other", "hello\n")]);
+    assert.include(failed(validateSandboxArchive(incoherent.archive)).message, "does not match");
   });
 
   it("rejects path escape, absolute paths, duplicates, and type changes", () => {

@@ -21,6 +21,7 @@ import { Sandbox } from "../../worker/src/session";
 import { shellQuote } from "../../worker/src/sandbox-runtime";
 import { ScottyAuthRegistry } from "../../worker/src/auth-object";
 import { ScottyRunnerRegistry } from "../../worker/src/runner-registry-object";
+import { ScottySandboxConfig } from "../../worker/src/sandbox-config-object";
 
 const RECORD_KEY = "scotty:session";
 const CREDENTIAL_KEY = "scotty:credential";
@@ -241,7 +242,7 @@ export class ScottySandbox extends Sandbox {
 ScottySandbox.outboundByHost = makeOutboundByHost(fetch);
 ScottySandbox.outbound = denyOutbound;
 
-export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry };
+export { ContainerProxy, ScottyAuthRegistry, ScottyRunnerRegistry, ScottySandboxConfig };
 
 const canaryAuthorized = (request: Request, env: CanaryBindings): boolean =>
   CANARY_STAGE_PATTERN.test(env.SCOTTY_E2E_CANARY_STAGE) &&

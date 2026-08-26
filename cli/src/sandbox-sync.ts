@@ -115,3 +115,11 @@ export const synchronizeLocalSandbox = Effect.fnUntraced(function* (input: {
   const remote = yield* synchronizeSandboxBundle({ target: input.target, built });
   return { config, built, remote };
 });
+
+export const synchronizeScottyToml = Effect.fnUntraced(function* (input: {
+  readonly built: BuiltSandboxBundle;
+  readonly target: SandboxSyncTarget;
+}) {
+  const remote = yield* synchronizeSandboxBundle({ target: input.target, built: input.built });
+  return { built: input.built, remote };
+});

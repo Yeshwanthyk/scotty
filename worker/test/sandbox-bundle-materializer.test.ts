@@ -4,7 +4,9 @@ import { Effect, Layer, Result, Data } from "effect";
 import {
   createDeterministicTarGz,
   encodeUstarArchive,
+  gunzipSandboxArchive,
   gzipDeterministic,
+  parseSandboxTar,
   type TarMember,
 } from "../../cli/src/sandbox-archive";
 import { itemContentDigest, sha256Bytes } from "../../cli/src/sandbox-bundle";
@@ -41,6 +43,18 @@ const fileMember = (
   modeClass,
   bytes: encoder.encode(content),
 });
+
+const resultSuccess = <A, E>(result: Result.Result<A, E>): A => {
+  assert.ok(Result.isSuccess(result));
+  return result.success;
+};
+
+const required = <A>(value: A | undefined): A => {
+  assert.ok(value !== undefined);
+  return value;
+};
+
+const assertSame = <A>(left: A, right: A): void => assert.strictEqual(left, right);
 
 const successResult = (command: string): ExecResult => ({
   success: true,
@@ -85,7 +99,7 @@ class MaterializerFilesystemFake {
     return {
       exec: async (command) => {
         this.execCommands.push(command);
-        this.applyExec(command);
+        await this.applyExec(command);
         return successResult(command);
       },
       mkdir: async () => undefined,
@@ -110,7 +124,21 @@ class MaterializerFilesystemFake {
     };
   }
 
-  private applyExec(command: string): void {
+  private async applyExec(command: string): Promise<void> {
+    const extract = /^tar -xzf (.+) -C (.+) && rm -f (.+)$/u.exec(command);
+    if (extract !== null) {
+      const archivePath = unquoteShellArg(extract[1]);
+      const stagingRoot = unquoteShellArg(extract[2]);
+      assertSame(archivePath, unquoteShellArg(extract[3]));
+      const archive = required(this.files.get(archivePath));
+      const tar = resultSuccess(gunzipSandboxArchive(archive));
+      const members = resultSuccess(parseSandboxTar(tar));
+      for (const member of members) {
+        if (member.type === "file") this.files.set(`${stagingRoot}/${member.path}`, member.bytes);
+      }
+      this.files.delete(archivePath);
+      return;
+    }
     const promote = /^rm -rf (.+) && mv (.+) (.+)$/u.exec(command);
     if (promote === null) return;
     const finalRoot = unquoteShellArg(promote[1]);
@@ -200,6 +228,7 @@ const emptyBundle = () =>
   ]);
 
 const skillBundle = (content = "# Release Notes\n") => {
+  // v1 fixture retained to prove legacy archive compatibility.
   const skillBytes = encoder.encode(content);
   const fileRecord = {
     path: "SKILL.md",
@@ -227,6 +256,63 @@ const skillBundle = (content = "# Release Notes\n") => {
       modeClass: "regular",
       bytes: skillBytes,
     },
+  ]);
+};
+
+const itemBundle = () => {
+  const contents = [
+    {
+      kind: "skill" as const,
+      name: "release-notes",
+      shape: "directory" as const,
+      path: "SKILL.md",
+      content: "# Release Notes\n",
+    },
+    {
+      kind: "tool" as const,
+      name: "hello",
+      shape: "file" as const,
+      path: "hello",
+      content: "#!/bin/sh\necho hello\n",
+    },
+    {
+      kind: "extension" as const,
+      name: "review",
+      shape: "directory" as const,
+      path: "index.ts",
+      content: "export default () => {}\n",
+    },
+    {
+      kind: "package" as const,
+      name: "@scope/ready-package",
+      shape: "directory" as const,
+      path: "package.json",
+      content: '{"name":"@scope/ready-package","pi":{"extensions":["index.ts"]}}\n',
+    },
+  ];
+  const items = contents.map((item) => {
+    const bytes = encoder.encode(item.content);
+    const file = {
+      path: item.path,
+      size: bytes.byteLength,
+      modeClass: item.kind === "tool" ? ("executable" as const) : ("regular" as const),
+      digest: sha256Bytes(bytes),
+    };
+    return {
+      kind: item.kind,
+      name: item.name,
+      shape: item.shape,
+      digest: itemContentDigest([file]),
+      files: [file],
+    };
+  });
+  const manifest = { schemaVersion: 2 as const, items };
+  return createDeterministicTarGz([
+    fileMember("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`),
+    fileMember("skills/release-notes/SKILL.md", contents[0]!.content),
+    fileMember("tools/hello", contents[1]!.content, "executable"),
+    fileMember("extensions/review/index.ts", contents[2]!.content),
+    fileMember("pi-packages/@scope/ready-package/package.json", contents[3]!.content),
   ]);
 };
 
@@ -292,6 +378,34 @@ describe("SandboxBundleMaterializer", () => {
     }),
   );
 
+  it.effect("materializes the v2 item list and preserves each item shape", () =>
+    Effect.gen(function* () {
+      const filesystem = new MaterializerFilesystemFake();
+      const bundle = makeMemoryBundleCapabilities();
+      const built = itemBundle();
+      seedBundle(bundle.objects, built);
+
+      const materialized = yield* materialize(filesystem, bundle, {
+        sessionId: SESSION_ID,
+        digest: built.digest,
+      });
+
+      const root = sandboxBundleRoot(SESSION_ID, built.digest);
+      assert.ok(filesystem.files.has(`${root}/skills/release-notes/SKILL.md`));
+      assert.ok(filesystem.files.has(`${root}/tools/hello`));
+      assert.ok(filesystem.execCommands.some((command) => command.startsWith("tar -xzf ")));
+      assert.strictEqual(filesystem.writeFileCalls, 2);
+      assert.ok(filesystem.files.has(`${root}/extensions/review/index.ts`));
+      assert.ok(filesystem.files.has(`${root}/pi-packages/@scope/ready-package/package.json`));
+      assert.deepStrictEqual(materialized.items, [
+        { kind: "skill", name: "release-notes" },
+        { kind: "tool", name: "hello" },
+        { kind: "extension", name: "review" },
+        { kind: "package", name: "@scope/ready-package" },
+      ]);
+    }),
+  );
+
   it.effect("skips rewrite when .verified already matches and still returns extras", () =>
     Effect.gen(function* () {
       const filesystem = new MaterializerFilesystemFake();
@@ -308,7 +422,7 @@ describe("SandboxBundleMaterializer", () => {
       });
 
       assert.strictEqual(filesystem.writeFileCalls, firstWrites);
-      assert.deepStrictEqual(skipped.extraSkills, [{ name: "release-notes" }]);
+      assert.deepStrictEqual(skipped.items, [{ kind: "skill", name: "release-notes" }]);
       assert.strictEqual(skipped.bundleRoot, sandboxBundleRoot(SESSION_ID, built.digest));
     }),
   );
@@ -396,8 +510,7 @@ describe("SandboxBundleMaterializer", () => {
 
       assert.deepStrictEqual(materialized, {
         digest: null,
-        extraSkills: [],
-        extraPackages: [],
+        items: [],
         bundleRoot: undefined,
       });
       assert.strictEqual(bundle.getCalls(), 0);
