@@ -1,6 +1,6 @@
 import { constants, type Stats } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { Effect } from "effect";
 import {
   compareUtf8,
@@ -30,6 +30,7 @@ export interface SandboxWalkOptions extends SandboxWalkLimits {
   readonly includeNodeModules: boolean;
   readonly skipNodeModulesBin: boolean;
   readonly executableScripts: boolean;
+  readonly rejectPath?: (path: string) => boolean;
 }
 
 const openFlags =
@@ -155,6 +156,7 @@ export const walkSandboxTree = Effect.fnUntraced(function* (
         "Sandbox source path escaped its configured root",
         `Rejected ${relative || "."}.`,
       );
+    if (relative.length > 0 && skipRelativePath(relative, options)) continue;
     const metadata = yield* Effect.tryPromise({
       try: () => lstat(absolute),
       catch: () =>
@@ -180,7 +182,11 @@ export const walkSandboxTree = Effect.fnUntraced(function* (
           "Sandbox source contains an unsafe relative path",
           `Rejected ${relative}.`,
         );
-      if (skipRelativePath(relative, options)) continue;
+      if (options.rejectPath?.(relative) === true)
+        return yield* sandboxSourceInvalid(
+          "Bundle sources must not contain credential files",
+          `Rejected ${relative}.`,
+        );
       if (seenInodes.has(inodeKey(metadata)))
         return yield* sandboxSourceInvalid(
           "Sandbox sources must not contain hard links",
@@ -228,4 +234,35 @@ export const walkSandboxTree = Effect.fnUntraced(function* (
     files.push(file);
   }
   return files;
+});
+
+export const walkSandboxItem = Effect.fnUntraced(function* (
+  path: string,
+  options: SandboxWalkOptions,
+) {
+  if (options.rejectPath?.(basename(path)) === true)
+    return yield* sandboxSourceInvalid(
+      "Bundle sources must not contain credential files",
+      `Rejected ${basename(path)}.`,
+    );
+  const metadata = yield* Effect.tryPromise({
+    try: () => lstat(path),
+    catch: () => sandboxSourceInvalid("Could not read a bundle item", `Checked ${path}.`),
+  });
+  if (metadata.isSymbolicLink())
+    return yield* sandboxSourceInvalid("Bundle items must not be symlinks", `Rejected ${path}.`);
+  if (metadata.isDirectory())
+    return { shape: "directory" as const, files: yield* walkSandboxTree(path, options) };
+  if (!metadata.isFile())
+    return yield* sandboxSourceInvalid(
+      "Bundle items must be ordinary files or directories",
+      `Rejected ${path}.`,
+    );
+  const name = basename(path);
+  if (!isSafeBundlePath(name))
+    return yield* sandboxSourceInvalid("Bundle item name is unsafe", `Rejected ${name}.`);
+  return {
+    shape: "file" as const,
+    files: [yield* readRegularFile(path, name, metadata, options)],
+  };
 });

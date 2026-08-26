@@ -21,6 +21,7 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("package-lock.json", "archive", "containerStatic"),
   entry("cli/scotty.ts", "archive", "cliSource"),
   entry("cli/src", "archive", "cliSource"),
+  entry("skills/scotty/SKILL.md", "archive", "containerStatic"),
   entry("infra", "archive", "cliSource"),
   entry("protocol", "archive", "cliSource"),
   entry("tui/package.json", "archive", "containerStatic"),
@@ -35,7 +36,6 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("scripts/container-control-plane.mjs", "archive", "containerStatic"),
   entry("scripts/deploy-production.mjs", "archive", "containerStatic"),
   entry("scripts/is-direct-run.mjs", "archive", "containerStatic"),
-  entry("scripts/project-container-pi-install.mjs", "archive", "containerStatic"),
   entry("patches/alchemy+2.0.0-beta.72.patch", "archive", "containerStatic"),
   entry(
     "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",

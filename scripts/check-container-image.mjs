@@ -12,13 +12,10 @@ export const CONTAINER_IMAGE = "scotty-container:ci";
 export const CONTAINER_IMAGE_PLATFORM = CLEAN_ROOM_CLI_PLATFORM;
 export const CONTAINER_IMAGE_CACHE_SCOPE = "scotty-container-image";
 export const CONTAINER_IMAGE_ABSENT_COMMANDS = Object.freeze(["codex"]);
-export const CONTAINER_IMAGE_PI_PACKAGES = Object.freeze([
+export const CONTAINER_IMAGE_PI_PACKAGES = Object.freeze(["scotty-browser-test", "scotty-hatch"]);
+export const CONTAINER_IMAGE_ABSENT_PI_PACKAGES = Object.freeze([
   "pi-subagents",
   "@ogulcancelik/pi-codex-compaction",
-  "scotty-browser-test",
-  "scotty-hatch",
-]);
-export const CONTAINER_IMAGE_ABSENT_PI_PACKAGES = Object.freeze([
   "pi-tasks",
   "pi-workflows",
   "pi-background-terminals",
@@ -96,6 +93,9 @@ export const containerImagePiPackagesSmokeArgs = (plan) =>
       ...CONTAINER_IMAGE_ABSENT_PI_PACKAGES.map(absentPiPackageListAssertion),
       ...CONTAINER_IMAGE_ABSENT_PI_PACKAGES.map(
         (name) => `test ! -e ${JSON.stringify(`/opt/scotty/pi-packages/sources/${name}`)}`,
+      ),
+      ...CONTAINER_IMAGE_ABSENT_PI_PACKAGES.map(
+        (name) => `test ! -e ${JSON.stringify(`/opt/scotty/pi-packages/npm/node_modules/${name}`)}`,
       ),
       ...CONTAINER_IMAGE_PI_PACKAGES.map(
         (name) => `grep -F ${JSON.stringify(name)} /tmp/scotty-pi-packages.list >/dev/null`,

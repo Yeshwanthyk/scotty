@@ -12,13 +12,10 @@ const npmLockPath = "worker/container/pi-packages/npm/package-lock.json";
 const containerAuthPath = "worker/src/container-auth.ts";
 const gitMaxBuffer = 64 * 1_024 * 1_024;
 
-export const REQUIRED_PI_PACKAGE_NAMES = Object.freeze([
+export const REQUIRED_PI_PACKAGE_NAMES = Object.freeze(["scotty-browser-test", "scotty-hatch"]);
+export const FORBIDDEN_PI_PACKAGE_NAMES = Object.freeze([
   "pi-subagents",
   "@ogulcancelik/pi-codex-compaction",
-  "scotty-browser-test",
-  "scotty-hatch",
-]);
-export const FORBIDDEN_PI_PACKAGE_NAMES = Object.freeze([
   "pi-workflows",
   "pi-background-terminals",
   "pi-askuser",
@@ -257,7 +254,7 @@ export function verifyPiPackagePins(root = scriptRoot) {
     configured.push(verifySourcePackage(root, entry, `firstParty[${index}]`, "firstParty"));
   }
 
-  const npmLock = readJson(root, npmLockPath);
+  const npmLock = manifest.npm.length === 0 ? undefined : readJson(root, npmLockPath);
   for (const [index, value] of manifest.npm.entries()) {
     const label = `npm[${index}]`;
     const entry = requireKeys(value, label, ["name", "order", "version", "integrity", "imagePath"]);
@@ -266,7 +263,7 @@ export function verifyPiPackagePins(root = scriptRoot) {
     const version = requireString(entry.version, `${label}.version`);
     const integrity = requireString(entry.integrity, `${label}.integrity`);
     const imagePath = requireString(entry.imagePath, `${label}.imagePath`);
-    const locked = npmLock.packages?.[`node_modules/${name}`];
+    const locked = npmLock?.packages?.[`node_modules/${name}`];
     if (locked?.version !== version) fail(`${name} lock version must be ${version}`);
     if (locked?.integrity !== integrity) fail(`${name} lock integrity does not match the manifest`);
     configured.push({ name, order, imagePath });

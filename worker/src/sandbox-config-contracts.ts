@@ -33,11 +33,62 @@ export const SandboxPiPackageManifestSchema = Schema.Struct({
   digest: SandboxDigestSchema,
   files: Schema.Array(SandboxFileRecordSchema),
 });
-export const SandboxBundleManifestSchema = Schema.Struct({
+export const SandboxBundleItemKindSchema = Schema.Literals([
+  "skill",
+  "package",
+  "tool",
+  "extension",
+]);
+export const SandboxBundleItemShapeSchema = Schema.Literals(["file", "directory"]);
+export const SandboxBundleItemNameSchema = Schema.String.check(
+  Schema.makeFilter(
+    (name) =>
+      name.length > 0 &&
+      name !== "." &&
+      name !== ".." &&
+      !name.includes("/") &&
+      !name.includes("\\") &&
+      !name.includes("\0"),
+    { expected: "a safe bundle item name" },
+  ),
+);
+const SandboxBundleItemContentSchema = {
+  shape: SandboxBundleItemShapeSchema,
+  digest: SandboxDigestSchema,
+  files: Schema.Array(SandboxFileRecordSchema),
+} as const;
+export const SandboxBundleItemManifestSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("skill"),
+    name: SkillNameSchema,
+    ...SandboxBundleItemContentSchema,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("package"),
+    name: PiPackageNameSchema,
+    ...SandboxBundleItemContentSchema,
+  }),
+  Schema.Struct({
+    kind: Schema.Literals(["tool", "extension"]),
+    name: SandboxBundleItemNameSchema,
+    ...SandboxBundleItemContentSchema,
+  }),
+]);
+export const SandboxBundleManifestV1Schema = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   skills: Schema.Array(SandboxSkillManifestSchema),
   piPackages: Schema.Array(SandboxPiPackageManifestSchema),
 });
+export const SandboxBundleManifestV2Schema = Schema.Struct({
+  schemaVersion: Schema.Literal(2),
+  items: Schema.Array(SandboxBundleItemManifestSchema),
+});
+export const SandboxBundleManifestSchema = Schema.Union([
+  SandboxBundleManifestV1Schema,
+  SandboxBundleManifestV2Schema,
+]);
+export type SandboxBundleItemKind = typeof SandboxBundleItemKindSchema.Type;
+export type SandboxBundleItemManifest = typeof SandboxBundleItemManifestSchema.Type;
 export type SandboxBundleManifest = typeof SandboxBundleManifestSchema.Type;
 
 export const SandboxConfigStatusSchema = Schema.Struct({

@@ -12,7 +12,6 @@ COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
 COPY scripts/container-control-plane.mjs scripts/container-control-plane.mjs
 COPY scripts/deploy-production.mjs scripts/deploy-production.mjs
 COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs
-COPY scripts/project-container-pi-install.mjs scripts/project-container-pi-install.mjs
 COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch
 COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch
 COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch
@@ -20,6 +19,7 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 RUN node scripts/apply-dependency-patches.mjs
 COPY cli/scotty.ts cli/scotty.ts
 COPY cli/src cli/src
+COPY skills/scotty/SKILL.md skills/scotty/SKILL.md
 COPY infra infra
 COPY protocol protocol
 COPY tui/src tui/src
@@ -143,17 +143,8 @@ COPY worker/container/scotty-jsonl.mjs /usr/local/bin/scotty-jsonl.mjs
 COPY worker/container/scotty-pi-protocol.mjs /usr/local/bin/scotty-pi-protocol.mjs
 COPY protocol/pi-console-shared.mjs /usr/protocol/pi-console-shared.mjs
 COPY scripts/is-direct-run.mjs /tmp/is-direct-run.mjs
-COPY scripts/project-container-pi-install.mjs /tmp/project-container-pi-install.mjs
 RUN set -eu; \
-  node /tmp/project-container-pi-install.mjs --pi-packages /opt/scotty/pi-packages \
-  && npm ci \
-      --prefix /opt/scotty/pi-packages/npm \
-      --omit=dev \
-      --ignore-scripts \
-      --no-audit \
-      --no-fund \
-      --legacy-peer-deps \
-  && for package_dir in /opt/scotty/pi-packages/sources/*; do \
+  for package_dir in /opt/scotty/pi-packages/sources/*; do \
     test -f "${package_dir}/package.json"; \
     test -f "${package_dir}/package-lock.json"; \
     npm ci \
@@ -164,8 +155,7 @@ RUN set -eu; \
         --no-fund \
         --legacy-peer-deps; \
   done \
-  && node /tmp/project-container-pi-install.mjs --assert-image --pi-packages /opt/scotty/pi-packages \
-  && rm -f /tmp/is-direct-run.mjs /tmp/project-container-pi-install.mjs \
+  && rm -f /tmp/is-direct-run.mjs \
   && test "$(node --input-type=module -e "import('/opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/package.json', { with: { type: 'json' } }).then(({ default: packageJson }) => process.stdout.write(packageJson.version))")" = "${PLAYWRIGHT_VERSION}" \
   && node \
     /opt/scotty/pi-packages/sources/scotty-browser-test/node_modules/playwright-core/cli.js \
@@ -202,6 +192,8 @@ RUN set -eu; \
   fi \
   && test ! -e /opt/scotty/pi-packages/sources/pi-tasks \
   && for package_name in \
+    pi-subagents \
+    @ogulcancelik/pi-codex-compaction \
     pi-workflows \
     pi-background-terminals \
     pi-askuser \
@@ -212,10 +204,9 @@ RUN set -eu; \
         exit 1; \
       fi; \
       test ! -e "/opt/scotty/pi-packages/sources/${package_name}"; \
+      test ! -e "/opt/scotty/pi-packages/npm/node_modules/${package_name}"; \
     done \
   && for package_name in \
-    pi-subagents \
-    @ogulcancelik/pi-codex-compaction \
     scotty-browser-test \
     scotty-hatch; do \
       grep -F -- "${package_name}" /tmp/scotty-pi-packages.list >/dev/null || exit 1; \

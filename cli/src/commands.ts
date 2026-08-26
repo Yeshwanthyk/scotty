@@ -11,6 +11,7 @@ import {
 } from "effect/unstable/cli";
 import { handleDown } from "./archive";
 import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
+import { loadEmbeddedScottySkill } from "./embedded-scotty-skill";
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
   decodeInitJournalJson,
@@ -61,7 +62,14 @@ import {
   sandboxConfigPath,
   saveSandboxConfig,
 } from "./sandbox-config";
+import {
+  formatScottyConfigCheck,
+  loadScottyTomlConfig,
+  scottyConfigCheckOutput,
+} from "./scotty-config";
 import { synchronizeLocalSandbox, type SandboxSyncTarget } from "./sandbox-sync";
+import { buildScottyTomlBundle, bundleItemSummaries } from "./scotty-bundle";
+import { synchronizeScottyToml } from "./sandbox-sync";
 import {
   addPiPackageSource,
   addSkillSource,
@@ -1299,6 +1307,61 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withDescription("Prompt or steer a warm session or sandbox peer without waking it"),
   );
 
+  const configCheck = Command.make("check", {}, () =>
+    Effect.gen(function* () {
+      const { autoJson, options, runtime } = yield* commandContext();
+      if (options.host !== undefined || options.tokenFile !== undefined)
+        return yield* usage(
+          "config check does not accept --host or --token-file",
+          "This command only reads the local TOML configuration.",
+        );
+      const loaded = yield* loadScottyTomlConfig({ home: runtime.home, cwd: runtime.cwd });
+      const result = scottyConfigCheckOutput(loaded);
+      if (autoJson) outputJson(runtime.stdout, result);
+      else runtime.stdout(formatScottyConfigCheck(loaded));
+    }),
+  ).pipe(Command.withDescription("Validate the local TOML configuration without network access"));
+
+  const config = Command.make("config").pipe(
+    Command.withDescription("Inspect local Scotty configuration"),
+    Command.withSubcommands([configCheck]),
+  );
+
+  const sync = Command.make("sync", {}, () =>
+    Effect.gen(function* () {
+      const { autoJson, options, runtime } = yield* commandContext();
+      const loaded = yield* loadScottyTomlConfig({ home: runtime.home, cwd: runtime.cwd });
+      const built = yield* buildScottyTomlBundle(loaded);
+      const target = yield* credentials(options);
+      const synced = yield* synchronizeScottyToml({ built, target });
+      const result = {
+        digest: synced.built.digest,
+        items: bundleItemSummaries(synced.built.manifest),
+      };
+      if (autoJson) outputJson(runtime.stdout, result);
+      else runtime.stdout(`Synchronized bundle ${result.digest} (${result.items.length} items).\n`);
+    }),
+  ).pipe(Command.withDescription("Build and synchronize the configured TOML bundle"));
+
+  const skillShow = Command.make("show", {}, () =>
+    Effect.gen(function* () {
+      const { autoJson, options, runtime } = yield* commandContext();
+      if (options.host !== undefined || options.tokenFile !== undefined)
+        return yield* usage(
+          "skill show does not accept --host or --token-file",
+          "This command prints the embedded Scotty skill.",
+        );
+      const scottySkillContent = yield* loadEmbeddedScottySkill();
+      if (autoJson) outputJson(runtime.stdout, { name: "scotty", content: scottySkillContent });
+      else runtime.stdout(scottySkillContent);
+    }),
+  ).pipe(Command.withDescription("Print the embedded Scotty agent skill"));
+
+  const skill = Command.make("skill").pipe(
+    Command.withDescription("Inspect Scotty's embedded agent skill"),
+    Command.withSubcommands([skillShow]),
+  );
+
   const doctor = Command.make("doctor", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
@@ -2203,6 +2266,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       upgrade,
       uninstall,
       repo,
+      config,
+      sync,
+      skill,
       beam,
       list,
       inspect,

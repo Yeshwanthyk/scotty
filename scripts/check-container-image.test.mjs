@@ -48,13 +48,10 @@ describe("final container image gate", () => {
     assert.equal(plan.image, CONTAINER_IMAGE);
     assert.equal(plan.target, undefined);
     assert.equal(plan.cache, undefined);
-    assert.deepEqual(CONTAINER_IMAGE_PI_PACKAGES, [
+    assert.deepEqual(CONTAINER_IMAGE_PI_PACKAGES, ["scotty-browser-test", "scotty-hatch"]);
+    assert.deepEqual(CONTAINER_IMAGE_ABSENT_PI_PACKAGES, [
       "pi-subagents",
       "@ogulcancelik/pi-codex-compaction",
-      "scotty-browser-test",
-      "scotty-hatch",
-    ]);
-    assert.deepEqual(CONTAINER_IMAGE_ABSENT_PI_PACKAGES, [
       "pi-tasks",
       "pi-workflows",
       "pi-background-terminals",
@@ -101,10 +98,7 @@ describe("final container image gate", () => {
       );
     }
     const dockerfile = read("worker/container/Dockerfile");
-    assert.match(
-      dockerfile,
-      /node \/tmp\/project-container-pi-install\.mjs --assert-image --pi-packages \/opt\/scotty\/pi-packages/u,
-    );
+    assert.doesNotMatch(dockerfile, /project-container-pi-install/u);
     assert.match(dockerfile, /RUN mkdir -p \/workspace \/opt\/scotty\/skills/u);
     assert.doesNotMatch(dockerfile, /COPY worker\/container\/skills\/(?:bundled|licenses)/u);
     assert.match(
@@ -119,6 +113,11 @@ describe("final container image gate", () => {
         ),
       );
       assert.ok(dockerfile.includes(name));
+      assert.ok(
+        piPackagesSmokeCommand.includes(
+          `test ! -e ${JSON.stringify(`/opt/scotty/pi-packages/npm/node_modules/${name}`)}`,
+        ),
+      );
     }
     for (const name of CONTAINER_IMAGE_PI_PACKAGES) assert.ok(dockerfile.includes(name));
     assert.doesNotMatch(dockerfile, /locks\/pi-web-access\/package-lock\.json/u);

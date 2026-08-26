@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import type { ExecResult } from "@cloudflare/sandbox";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Fiber, Layer, Result } from "effect";
+import { TestClock } from "effect/testing";
 import type { SessionRecord } from "../src/contracts";
 import {
   SandboxRuntimeFailure,
@@ -94,7 +95,7 @@ describe("Workspace", () => {
       });
       assert.deepStrictEqual(capabilities.calls.slice(1, 3), [
         {
-          command: `git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch 'trunk' --single-branch 'https://github.com/${repo}.git' '${ROOT}'`,
+          command: `rm -rf '${ROOT}' && git -c http.extraHeader=${shellQuote(`Authorization: Basic ${basic}`)} clone --branch 'trunk' --single-branch 'https://github.com/${repo}.git' '${ROOT}'`,
           options: { env: ENV, timeout: 180_000 },
         },
         {
@@ -151,13 +152,21 @@ describe("Workspace", () => {
       capabilities.results.push(
         execResult("reset"),
         execResult("clone", { success: false, stderr: "clone failed" }),
+        execResult("clone", { success: false, stderr: "clone failed" }),
+        execResult("clone", { success: false, stderr: "clone failed" }),
       );
 
-      const result = yield* Effect.result(
+      const fiber = yield* Effect.result(
         prepareWith(capabilities, makeSessionRecord({ repo: "acme/widgets" })),
-      );
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("2 seconds");
+      const result = yield* Fiber.join(fiber);
 
       assert.ok(Result.isFailure(result));
+      assert.strictEqual(
+        capabilities.calls.filter(({ command }) => command.includes(" clone ")).length,
+        3,
+      );
       assert.deepStrictEqual(
         result.failure,
         new SandboxRuntimeFailure({
@@ -165,6 +174,29 @@ describe("Workspace", () => {
           message: "clone failed",
         }),
       );
+    }),
+  );
+
+  it.effect("retries a transient clone failure from a clean destination", () =>
+    Effect.gen(function* () {
+      const capabilities = new FakeWorkspaceCapabilities();
+      capabilities.results.push(
+        execResult("reset"),
+        execResult("clone", { success: false, stderr: "temporary upstream failure" }),
+        execResult("clone"),
+      );
+
+      const fiber = yield* prepareWith(
+        capabilities,
+        makeSessionRecord({ repo: "acme/widgets" }),
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+      const prepared = yield* Fiber.join(fiber);
+
+      assert.strictEqual(prepared.repoExists, true);
+      const cloneCommands = capabilities.calls.filter(({ command }) => command.includes(" clone "));
+      assert.strictEqual(cloneCommands.length, 2);
+      assert.ok(cloneCommands.every(({ command }) => command.startsWith(`rm -rf '${ROOT}' && `)));
     }),
   );
 

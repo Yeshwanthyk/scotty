@@ -1,15 +1,12 @@
-import { execFile as execFileCallback, execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { execFile as execFileCallback } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { isDirectRun } from "./is-direct-run.mjs";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
 
-export const PI_SUBAGENTS_SOURCE = "sources/pi-subagents";
-export const INDEXED_PI_PACKAGES_RELATIVE = "worker/container/pi-packages";
 export const PI_ONLY_BACKEND_NAMES = 'export const BACKEND_NAMES = ["pi"] as const;';
 export const UPSTREAM_BACKEND_NAMES =
   'export const BACKEND_NAMES = ["pi", "claude", "codex"] as const;';
@@ -32,11 +29,11 @@ export const PI_ONLY_SPAWN_SNIPPET =
 export const UPSTREAM_SPAWN_GUIDELINE =
   "Pick the subagent harness deliberately: pi unless you have a reason to prefer Claude Code or Codex (e.g. the user asked for one, or the task suits that harness).";
 export const PI_ONLY_SPAWN_GUIDELINE =
-  "Scotty's image-local pi-subagents install is Pi-only; always spawn with harness pi.";
+  "Scotty's prepared pi-subagents package is Pi-only; always spawn with harness pi.";
 export const UPSTREAM_HARNESS_DESCRIPTION =
   'Harness to run the subagent on: "pi" (in-process pi session; inherits this environment), "claude" (Claude Code), or "codex" (Codex CLI). Choose deliberately per task.';
 export const PI_ONLY_HARNESS_DESCRIPTION =
-  'Harness to run the subagent on. Scotty ships Pi only; use "pi" (in-process pi session; inherits this environment).';
+  'Harness to run the subagent on. This prepared package supports "pi" only (in-process pi session; inherits this environment).';
 export const UPSTREAM_MODEL_DESCRIPTION =
   'Model hint, interpreted by the chosen harness (pi: "provider/model-id" or model id; claude: model alias like "sonnet"/"opus"; codex: model slug). Omit for the harness default (pi inherits the current model).';
 export const PI_ONLY_MODEL_DESCRIPTION =
@@ -49,7 +46,7 @@ export const PI_ONLY_REASONING_DESCRIPTION =
 export const UPSTREAM_SKILL_PI_DEFAULT =
   "**Best default:** Use when the user does not request another harness. It inherits the parent model and thinking level when `model` or `reasoning_effort` is omitted.";
 export const PI_ONLY_SKILL_PI_DEFAULT =
-  "**Best default:** Scotty's image is Pi-only. Always spawn with harness `pi`. It inherits the parent model and thinking level when `model` or `reasoning_effort` is omitted.";
+  "**Best default:** This prepared package is Pi-only. Always spawn with harness `pi`. It inherits the parent model and thinking level when `model` or `reasoning_effort` is omitted.";
 export const UPSTREAM_SKILL_UNAVAILABLE_HARNESSES = `## Claude Code Harness
 
 **Harness:** \`claude\`
@@ -88,7 +85,7 @@ export const PI_ONLY_SKILL_SPAWN =
 export const UPSTREAM_SUBAGENTS_README =
   "It provides headless Pi, Claude Code, and Codex subagents with asynchronous result delivery, wait/check/cancel tools, an interactive `/subagents` transcript/takeover UI, and persistent read-only BTW side conversations.";
 export const PI_ONLY_SUBAGENTS_README =
-  "It provides headless Pi subagents with asynchronous result delivery, wait/check/cancel tools, an interactive `/subagents` transcript/takeover UI, and persistent read-only BTW side conversations. Scotty's image is Pi-only.";
+  "It provides headless Pi subagents with asynchronous result delivery, wait/check/cancel tools, an interactive `/subagents` transcript/takeover UI, and persistent read-only BTW side conversations. This prepared package is Pi-only.";
 
 export const PI_SUBAGENTS_RUNTIME_REWRITES = Object.freeze([
   Object.freeze({
@@ -346,7 +343,7 @@ export const assertPiSubagentsSkill = (skill) => {
     throw new Error("pi-subagents SKILL.md still advertises unavailable harnesses");
   }
   if (
-    !skill.includes("Scotty's image is Pi-only") ||
+    !skill.includes("This prepared package is Pi-only") ||
     !skill.includes("Always spawn with harness")
   ) {
     throw new Error("pi-subagents SKILL.md is not Pi-only");
@@ -357,7 +354,7 @@ export const assertPiSubagentsReadme = (readme) => {
   if (/Claude Code|Codex CLI|Codex subagents/u.test(readme)) {
     throw new Error("pi-subagents README still advertises unavailable harnesses");
   }
-  if (!readme.includes("Scotty's image is Pi-only")) {
+  if (!readme.includes("This prepared package is Pi-only")) {
     throw new Error("pi-subagents README is not Pi-only");
   }
 };
@@ -402,27 +399,6 @@ export async function assertProjectedPiSubagents(packageRoot) {
   }
 }
 
-export function isIndexedVendorPiPackagesRoot(piPackagesRoot) {
-  try {
-    const repo = execFileSync("git", ["-C", piPackagesRoot, "rev-parse", "--show-toplevel"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (repo.length === 0) return false;
-    return realpathSync(piPackagesRoot) === realpathSync(join(repo, INDEXED_PI_PACKAGES_RELATIVE));
-  } catch {
-    return false;
-  }
-}
-
-export function assertWritablePiPackagesRoot(piPackagesRoot) {
-  if (isIndexedVendorPiPackagesRoot(piPackagesRoot)) {
-    throw new Error(
-      `Refusing to project indexed vendor Pi packages at ${piPackagesRoot}. Pass --pi-packages with a copy.`,
-    );
-  }
-}
-
 export async function projectPiSubagentsInstall(packageRoot, options = {}) {
   const packageJsonPath = join(packageRoot, "package.json");
   if (!existsSync(packageJsonPath)) return { projected: false };
@@ -457,51 +433,33 @@ export async function projectPiSubagentsInstall(packageRoot, options = {}) {
   return { projected: true };
 }
 
-export async function assertProjectedPiImage(piPackagesRoot) {
-  await assertProjectedPiSubagents(join(piPackagesRoot, PI_SUBAGENTS_SOURCE));
-}
-
-export function resolvePiPackagesRoot(root = process.cwd(), options = {}) {
-  if (typeof options.piPackagesRoot === "string") return options.piPackagesRoot;
-  return join(root, INDEXED_PI_PACKAGES_RELATIVE);
-}
-
-export async function projectContainerPiInstall(root = process.cwd(), options = {}) {
-  const piPackagesRoot = resolvePiPackagesRoot(root, options);
-  assertWritablePiPackagesRoot(piPackagesRoot);
-  const subagents = await projectPiSubagentsInstall(
-    join(piPackagesRoot, PI_SUBAGENTS_SOURCE),
-    options,
-  );
-  return { piPackagesRoot, subagents };
-}
-
 export const parseProjectContainerPiInstallArgs = (argv) => {
   const options = {};
   for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === "--pi-packages") {
-      options.piPackagesRoot = argv[index + 1];
+    if (argv[index] === "--package") {
+      options.packageRoot = argv[index + 1];
       index += 1;
     } else if (argv[index] === "--regenerate-lock") {
       options.regenerateLock = true;
-    } else if (argv[index] === "--assert-image") {
-      options.assertImage = true;
+    } else if (argv[index] === "--check") {
+      options.check = true;
     }
   }
   return options;
 };
 
 if (isDirectRun(import.meta.url, process.argv[1])) {
-  const root = dirname(fileURLToPath(new URL(".", import.meta.url)));
   const parsed = parseProjectContainerPiInstallArgs(process.argv.slice(2));
-  const piPackagesRoot = resolvePiPackagesRoot(root, parsed);
-  if (parsed.assertImage) {
-    await assertProjectedPiImage(piPackagesRoot);
-    process.stdout.write(`Asserted projected Pi image under ${piPackagesRoot}.\n`);
+  if (typeof parsed.packageRoot !== "string") {
+    throw new Error("Pass --package with the local pi-subagents package directory.");
+  }
+  if (parsed.check) {
+    await assertProjectedPiSubagents(parsed.packageRoot);
+    process.stdout.write(`Checked prepared pi-subagents package at ${parsed.packageRoot}.\n`);
   } else {
-    const result = await projectContainerPiInstall(root, parsed);
+    const result = await projectPiSubagentsInstall(parsed.packageRoot, parsed);
     process.stdout.write(
-      `Projected Pi package installs under ${result.piPackagesRoot} (subagents=${result.subagents.projected}).\n`,
+      `Prepared pi-subagents package at ${parsed.packageRoot} (projected=${result.projected}).\n`,
     );
   }
 }

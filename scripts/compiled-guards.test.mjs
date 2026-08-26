@@ -85,11 +85,11 @@ describe("bundled script guards", () => {
       const projectRoot = await mkdtemp(join(tmpdir(), "scotty-pi-projection-probe-"));
       try {
         const project = probe(runtime, "project-container-pi-install.mjs", [
-          "--pi-packages",
+          "--package",
           projectRoot,
         ]);
         assert.equal(project.status, 0, project.stderr);
-        assert.match(project.stdout, /Projected Pi package installs under .*subagents=false/u);
+        assert.match(project.stdout, /Prepared pi-subagents package at .*projected=false/u);
 
         const controlPlane = probe(runtime, "container-control-plane.mjs", []);
         assert.equal(controlPlane.status, 1);

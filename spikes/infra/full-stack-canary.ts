@@ -20,6 +20,7 @@ export interface FullStackCanaryNames {
   readonly container: string;
   readonly sessions: string;
   readonly backups: string;
+  readonly sandboxBundles: string;
 }
 
 export const fullStackCanaryAssetHash = (digest: string): string => `scotty-assets-v1:${digest}`;
@@ -69,6 +70,7 @@ export function fullStackCanaryNames(stage: string): FullStackCanaryNames {
     container: `${prefix}-container`,
     sessions: `${prefix}-sessions`,
     backups: `${prefix}-backups`,
+    sandboxBundles: `${prefix}-sandbox-bundles`,
   };
 }
 
@@ -109,6 +111,9 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
       },
     ],
   }).pipe(removalPolicy);
+  const sandboxBundles = yield* Cloudflare.R2.Bucket("SandboxBundleBucket", {
+    name: names.sandboxBundles,
+  }).pipe(removalPolicy);
   const durableObject = Cloudflare.DurableObject("Sandbox", {
     className: "ScottySandbox",
   });
@@ -117,6 +122,9 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   });
   const runnerRegistryDurableObject = Cloudflare.DurableObject("RunnerRegistry", {
     className: "ScottyRunnerRegistry",
+  });
+  const sandboxConfigDurableObject = Cloudflare.DurableObject("SandboxConfig", {
+    className: "ScottySandboxConfig",
   });
   const worker = yield* Cloudflare.Worker("CanaryWorker", {
     name: names.worker,
@@ -135,6 +143,8 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
       AUTH: authDurableObject,
       RUNNER_REGISTRY: runnerRegistryDurableObject,
       SANDBOX: durableObject,
+      SANDBOX_CONFIG: sandboxConfigDurableObject,
+      SANDBOX_BUNDLE_BUCKET: sandboxBundles,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,
       SANDBOX_TRANSPORT: "rpc",
@@ -165,5 +175,6 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
     workerUrl: worker.url,
     containerName: container.applicationName,
     backupBucketName: backups.bucketName,
+    sandboxBundleBucketName: sandboxBundles.bucketName,
   };
 });

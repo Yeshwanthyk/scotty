@@ -3,14 +3,11 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
 import {
   PI_ONLY_BACKEND_NAMES,
   PI_ONLY_RUNTIME_BACKENDS,
   PI_SUBAGENTS_OMITTED_PACKAGES,
   PI_SUBAGENTS_PROMPT_REWRITES,
-  PI_SUBAGENTS_README_REWRITES,
-  PI_SUBAGENTS_SKILL_REWRITES,
   UPSTREAM_BACKEND_NAMES,
   UPSTREAM_RUNTIME_BACKENDS,
   UPSTREAM_RUNTIME_IMPORTS,
@@ -19,18 +16,15 @@ import {
   UPSTREAM_SKILL_UNAVAILABLE_HARNESSES,
   UPSTREAM_SUBAGENTS_README,
   canonicalizeNpmLock,
-  isIndexedVendorPiPackagesRoot,
   isPiSubagentsProjected,
   parseProjectContainerPiInstallArgs,
   parentLockPackagePath,
   pruneNpmLockPackages,
-  projectContainerPiInstall,
   projectPiSubagentsInstall,
   replaceExact,
   resolveLockDependency,
 } from "./project-container-pi-install.mjs";
 
-const root = dirname(fileURLToPath(new URL(".", import.meta.url)));
 const writeJson = async (path, value) => {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
@@ -152,19 +146,19 @@ describe("container Pi install projection", () => {
       );
       assert.match(
         await readFile(join(packageRoot, "extensions/subagents/src/prompt.ts"), "utf8"),
-        /Scotty's image-local pi-subagents install is Pi-only|It runs on pi/u,
+        /Scotty's prepared pi-subagents package is Pi-only|It runs on pi/u,
       );
       assert.doesNotMatch(
         await readFile(join(packageRoot, "extensions/subagents/src/prompt.ts"), "utf8"),
         /Codex CLI|Claude Code/u,
       );
       const skill = await readFile(join(packageRoot, "skills/subagents/SKILL.md"), "utf8");
-      assert.match(skill, /Scotty's image is Pi-only/u);
+      assert.match(skill, /This prepared package is Pi-only/u);
       assert.match(skill, /Always spawn with harness/u);
       assert.doesNotMatch(skill, /## Claude Code Harness|## Codex Harness|Requires the Codex CLI/u);
       assert.match(
         await readFile(join(packageRoot, "README.md"), "utf8"),
-        /Scotty's image is Pi-only/u,
+        /This prepared package is Pi-only/u,
       );
       assert.doesNotMatch(
         await readFile(join(packageRoot, "README.md"), "utf8"),
@@ -179,72 +173,6 @@ describe("container Pi install projection", () => {
             "mutated runtime",
           ),
         /expected upstream or already-projected form/u,
-      );
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
-  it("projects the checked-in vendor sources without mutating the Git tree", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "scotty-pi-install-real-"));
-    try {
-      const { cp } = await import("node:fs/promises");
-      const piPackages = join(directory, "worker/container/pi-packages");
-      await mkdir(piPackages, { recursive: true });
-      await cp(
-        join(root, "worker/container/pi-packages/sources/pi-subagents"),
-        join(piPackages, "sources/pi-subagents"),
-        { recursive: true, filter: (source) => !source.includes("node_modules") },
-      );
-
-      const originalSubagents = await readFile(
-        join(root, "worker/container/pi-packages/sources/pi-subagents/package.json"),
-        "utf8",
-      );
-      await projectContainerPiInstall(directory);
-      await projectContainerPiInstall(directory);
-
-      const projectedSubagents = JSON.parse(
-        await readFile(join(piPackages, "sources/pi-subagents/package.json"), "utf8"),
-      );
-      assert.equal(isPiSubagentsProjected(projectedSubagents), true);
-      const projectedRuntime = await readFile(
-        join(piPackages, "sources/pi-subagents/extensions/subagents/src/runtime.ts"),
-        "utf8",
-      );
-      assert.match(projectedRuntime, /piBackend/u);
-      assert.doesNotMatch(projectedRuntime, /claudeBackend|codexBackend/u);
-      assert.match(
-        await readFile(
-          join(piPackages, "sources/pi-subagents/extensions/subagents/src/domain.ts"),
-          "utf8",
-        ),
-        /BACKEND_NAMES = \["pi"\]/u,
-      );
-      const projectedSkill = await readFile(
-        join(piPackages, "sources/pi-subagents/skills/subagents/SKILL.md"),
-        "utf8",
-      );
-      assert.match(projectedSkill, /Scotty's image is Pi-only/u);
-      assert.doesNotMatch(
-        projectedSkill,
-        /## Claude Code Harness|## Codex Harness|Requires the Codex CLI/u,
-      );
-      assert.match(
-        await readFile(join(piPackages, "sources/pi-subagents/README.md"), "utf8"),
-        /Scotty's image is Pi-only/u,
-      );
-      assert.equal(
-        await readFile(
-          join(root, "worker/container/pi-packages/sources/pi-subagents/package.json"),
-          "utf8",
-        ),
-        originalSubagents,
-      );
-      assert.match(originalSubagents, /@anthropic-ai\/claude-agent-sdk/u);
-      assert.match(
-        await readFile(join(root, "worker/container/pi-packages/npm/package.json"), "utf8"),
-        /@ogulcancelik\/pi-codex-compaction/u,
       );
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -293,11 +221,18 @@ describe("container Pi install projection", () => {
     assert.deepEqual(canonicalizeNpmLock(lock).packages, first.packages);
   });
 
-  it("keeps npm lock regeneration opt-in for maintainer or Docker copies", async () => {
+  it("keeps npm lock regeneration opt-in for a local package", async () => {
     assert.deepEqual(parseProjectContainerPiInstallArgs([]), {});
     assert.deepEqual(parseProjectContainerPiInstallArgs(["--regenerate-lock"]), {
       regenerateLock: true,
     });
+    assert.deepEqual(
+      parseProjectContainerPiInstallArgs(["--package", "/tmp/pi-subagents", "--check"]),
+      {
+        packageRoot: "/tmp/pi-subagents",
+        check: true,
+      },
+    );
     const source = await readFile(
       new URL("./project-container-pi-install.mjs", import.meta.url),
       "utf8",
@@ -308,28 +243,7 @@ describe("container Pi install projection", () => {
       new URL("../cli/src/deployment-packaging.mjs", import.meta.url),
       "utf8",
     );
-    assert.doesNotMatch(packaging, /regenerateLock:\s*true/u);
-    assert.match(packaging, /await projectPiInstall\(context\);/u);
-  });
-
-  it("anchors SKILL.md and README rewrites to the checked-in vendor sources", async () => {
-    const skill = await readFile(
-      join(root, "worker/container/pi-packages/sources/pi-subagents/skills/subagents/SKILL.md"),
-      "utf8",
-    );
-    const readme = await readFile(
-      join(root, "worker/container/pi-packages/sources/pi-subagents/README.md"),
-      "utf8",
-    );
-    for (const { search, label } of PI_SUBAGENTS_SKILL_REWRITES) {
-      assert.ok(skill.includes(search), label);
-    }
-    for (const { search, label } of PI_SUBAGENTS_README_REWRITES) {
-      assert.ok(readme.includes(search), label);
-    }
-    assert.match(skill, /## Claude Code Harness/u);
-    assert.match(skill, /## Codex Harness/u);
-    assert.match(readme, /Claude Code, and Codex subagents/u);
+    assert.doesNotMatch(packaging, /projectContainerPiInstall|projectPiInstall/u);
   });
 
   it("does not call npm when projecting locks by default", async () => {
@@ -407,13 +321,5 @@ describe("container Pi install projection", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  });
-
-  it("refuses to project the Git-indexed vendor tree", async () => {
-    assert.equal(isIndexedVendorPiPackagesRoot(join(root, "worker/container/pi-packages")), true);
-    await assert.rejects(
-      projectContainerPiInstall(root),
-      /Refusing to project indexed vendor Pi packages/u,
-    );
   });
 });

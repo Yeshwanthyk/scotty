@@ -298,8 +298,6 @@ const failed = <A>(result: Result.Result<A, SandboxRuntimeFailure>): SandboxRunt
 describe("container auth values", () => {
   it("uses only immutable image-local Pi packages at sandbox startup", () => {
     assert.deepStrictEqual(PI_PACKAGES, [
-      "/opt/scotty/pi-packages/sources/pi-subagents",
-      "/opt/scotty/pi-packages/npm/node_modules/@ogulcancelik/pi-codex-compaction",
       "/opt/scotty/pi-packages/sources/scotty-browser-test",
       "/opt/scotty/pi-packages/sources/scotty-hatch",
     ]);
@@ -415,7 +413,7 @@ describe("ContainerAuth", () => {
         theme: "dark",
         packages: [...PI_PACKAGES],
       });
-      assert.include(PI_PACKAGES, "/opt/scotty/pi-packages/sources/pi-subagents");
+      assert.notInclude(PI_PACKAGES, "/opt/scotty/pi-packages/sources/pi-subagents");
       assert.ok(writes[5]?.content.includes("password=$GITHUB_SENTINEL"));
       assert.ok(writes[6]?.content.includes(`export SCOTTY_SESSION_ID='${ID}'`));
       assert.ok(
@@ -475,14 +473,20 @@ describe("ContainerAuth", () => {
     }),
   );
 
-  it.effect("seeds merged skills and additive Pi packages from installation extras", () =>
+  it.effect("seeds bundle skills, packages, tools, and extensions from one item list", () =>
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
       yield* seedWith(capabilities, credential, {
         bundleRoot,
-        extraSkills: [{ name: "custom-skill" }, { name: "another-skill" }],
-        extraPackages: [{ name: "custom-package" }, { name: "@scope/custom-package" }],
+        items: [
+          { kind: "skill", name: "custom-skill" },
+          { kind: "skill", name: "another-skill" },
+          { kind: "package", name: "custom-package" },
+          { kind: "package", name: "@scope/custom-package" },
+          { kind: "tool", name: "custom-tool" },
+          { kind: "extension", name: "custom-extension.ts" },
+        ],
       });
       const writes = capabilities.calls.filter(
         (call): call is Extract<ContainerCall, { operation: "writeFile" }> =>
@@ -494,6 +498,7 @@ describe("ContainerAuth", () => {
           `${bundleRoot}/pi-packages/custom-package`,
           `${bundleRoot}/pi-packages/@scope/custom-package`,
         ],
+        extensions: [`${bundleRoot}/extensions/custom-extension.ts`],
       });
       const skillsExec = chmodExecCommand(capabilities.calls);
       assert.include(
@@ -504,16 +509,24 @@ describe("ContainerAuth", () => {
         skillsExec,
         `ln -sfn '${bundleRoot}/skills/another-skill' '/workspace/${ID}/.scotty/merged-skills/another-skill'`,
       );
+      const environment = capabilities.calls.find(
+        (call): call is Extract<ContainerCall, { operation: "setEnvVars" }> =>
+          call.operation === "setEnvVars",
+      );
+      assert.include(environment?.envVars.PATH ?? "", `${bundleRoot}/tools/custom-tool`);
     }),
   );
 
-  it.effect("fails when installation skill names are configured more than once", () =>
+  it.effect("fails when a bundle item is configured more than once", () =>
     Effect.gen(function* () {
       const capabilities = new CapturingSandboxCapabilities();
       const result = yield* Effect.result(
         seedWith(capabilities, credential, {
           bundleRoot: `/workspace/${ID}/.scotty/sandbox/deadbeef`,
-          extraSkills: [{ name: "duplicate" }, { name: "duplicate" }],
+          items: [
+            { kind: "skill", name: "duplicate" },
+            { kind: "skill", name: "duplicate" },
+          ],
         }),
       );
       const error = failed(result);
@@ -521,7 +534,7 @@ describe("ContainerAuth", () => {
         error,
         new SandboxRuntimeFailure({
           reason: "nonzero_exit",
-          message: "Sandbox configured skill names must be unique",
+          message: "Sandbox configured bundle items must be unique",
         }),
       );
       assert.deepStrictEqual(capabilities.calls, []);
@@ -534,8 +547,8 @@ describe("ContainerAuth", () => {
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
       const options = {
         bundleRoot,
-        extraSkills: [{ name: "custom-skill" }],
-      };
+        items: [{ kind: "skill", name: "custom-skill" }],
+      } as const;
       yield* seedWith(capabilities, credential, options);
       yield* seedWith(capabilities, credential, options);
       const skillsExec = chmodExecCommand(capabilities.calls);
@@ -560,7 +573,7 @@ describe("ContainerAuth", () => {
         yield* Effect.result(
           seedWith(capabilities, credential, {
             bundleRoot,
-            extraSkills: [{ name: "impeccable" }],
+            items: [{ kind: "skill", name: "impeccable" }],
           }),
         ),
       );
@@ -575,9 +588,11 @@ describe("ContainerAuth", () => {
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
       const options = {
         bundleRoot,
-        extraSkills: [{ name: "custom-skill" }],
-        extraPackages: [{ name: "@scope/custom-package" }],
-      };
+        items: [
+          { kind: "skill", name: "custom-skill" },
+          { kind: "package", name: "@scope/custom-package" },
+        ],
+      } as const;
       yield* seedWith(capabilities, credential, options);
       yield* preflightWith(capabilities, credential, options);
     }),
@@ -589,7 +604,7 @@ describe("ContainerAuth", () => {
       const bundleRoot = `/workspace/${ID}/.scotty/sandbox/deadbeef`;
       yield* seedWith(capabilities, credential, {
         bundleRoot,
-        extraPackages: [{ name: "custom-package" }],
+        items: [{ kind: "package", name: "custom-package" }],
       });
       yield* piSessionWith(capabilities, "ensure");
       const settingsWrites = capabilities.calls.filter(
@@ -622,7 +637,7 @@ describe("ContainerAuth", () => {
         yield* Effect.result(
           preflightWith(capabilities, credential, {
             bundleRoot,
-            extraPackages: [{ name: "../outside" }],
+            items: [{ kind: "package", name: "../outside" }],
           }),
         ),
       );
@@ -630,7 +645,7 @@ describe("ContainerAuth", () => {
         error,
         new SandboxRuntimeFailure({
           reason: "nonzero_exit",
-          message: "Sandbox extra package path is outside the bundle root",
+          message: "Sandbox bundle item path is outside the bundle root",
         }),
       );
       assert.ok(

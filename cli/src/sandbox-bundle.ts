@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sandboxBundleItemDigestMaterial } from "../../protocol/sandbox-bundle";
 import { Schema } from "effect";
 import { CliError, EXIT } from "./core";
 import {
@@ -12,12 +13,12 @@ import {
   type SandboxConfig,
 } from "./sandbox-config-contracts";
 
-export const SANDBOX_BUNDLE_SCHEMA_VERSION = 1 as const;
+export const SANDBOX_BUNDLE_SCHEMA_VERSION = 2 as const;
 
-export const SANDBOX_MAX_FILE_BYTES = 1_048_576;
+export const SANDBOX_MAX_FILE_BYTES = 8_388_608;
 export const SANDBOX_MAX_SKILL_BYTES = 4_194_304;
 export const SANDBOX_MAX_SKILL_FILES = 128;
-export const SANDBOX_MAX_PACKAGE_BYTES = 33_554_432;
+export const SANDBOX_MAX_PACKAGE_BYTES = 67_108_864;
 export const SANDBOX_MAX_PACKAGE_FILES = 4_096;
 export const SANDBOX_MAX_BUNDLE_FILES = 8_192;
 export const SANDBOX_MAX_PATH_BYTES = 240;
@@ -36,6 +37,43 @@ export const SANDBOX_EXCLUDED_BASENAMES = new Set([
 ]);
 
 export const SANDBOX_EXCLUDED_SUFFIXES = [".pyc", ".swp", ".swo"];
+
+const SANDBOX_SENSITIVE_EXACT_BASENAMES = new Set([
+  ".aws",
+  ".dockerconfigjson",
+  ".envrc",
+  ".git-credentials",
+  ".netrc",
+  ".npmrc",
+  ".pypirc",
+  ".ssh",
+  "access_token",
+  "auth",
+  "auth.json",
+  "credentials",
+  "credentials.json",
+  "refresh_token",
+  "token",
+  "token.json",
+  "tokens.json",
+]);
+
+export const isSensitiveBundlePath = (path: string): boolean => {
+  const basename = path.slice(path.lastIndexOf("/") + 1);
+  return (
+    SANDBOX_SENSITIVE_EXACT_BASENAMES.has(basename) ||
+    basename === ".env" ||
+    basename.startsWith(".env.") ||
+    basename.endsWith(".env") ||
+    /^(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|.+\.(?:key|pem|p12|pfx))$/u.test(basename) ||
+    basename === "history" ||
+    basename.endsWith("_history") ||
+    basename.endsWith(".history") ||
+    basename === "log" ||
+    basename === "logs" ||
+    basename.endsWith(".log")
+  );
+};
 
 export const SandboxFileModeClassSchema = Schema.Literals(["regular", "executable"]);
 export const SandboxFileRecordSchema = Schema.Struct({
@@ -59,11 +97,53 @@ export const SandboxPiPackageManifestSchema = Schema.Struct({
   digest: SandboxDigestSchema,
   files: Schema.Array(SandboxFileRecordSchema),
 });
-export const SandboxBundleManifestSchema = Schema.Struct({
-  schemaVersion: Schema.Literal(SANDBOX_BUNDLE_SCHEMA_VERSION),
+export const SandboxBundleItemKindSchema = Schema.Literals([
+  "skill",
+  "package",
+  "tool",
+  "extension",
+]);
+export const SandboxBundleItemShapeSchema = Schema.Literals(["file", "directory"]);
+export const SandboxBundleItemNameSchema = Schema.String.check(
+  Schema.makeFilter((name) => isSafeBundlePath(name) && !name.includes("/"), {
+    expected: "a safe bundle item name",
+  }),
+);
+const SandboxBundleItemContentSchema = {
+  shape: SandboxBundleItemShapeSchema,
+  digest: SandboxDigestSchema,
+  files: Schema.Array(SandboxFileRecordSchema),
+} as const;
+export const SandboxBundleItemManifestSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("skill"),
+    name: SkillNameSchema,
+    ...SandboxBundleItemContentSchema,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("package"),
+    name: PiPackageNameSchema,
+    ...SandboxBundleItemContentSchema,
+  }),
+  Schema.Struct({
+    kind: Schema.Literals(["tool", "extension"]),
+    name: SandboxBundleItemNameSchema,
+    ...SandboxBundleItemContentSchema,
+  }),
+]);
+export const SandboxBundleManifestV1Schema = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
   skills: Schema.Array(SandboxSkillManifestSchema),
   piPackages: Schema.Array(SandboxPiPackageManifestSchema),
 });
+export const SandboxBundleManifestV2Schema = Schema.Struct({
+  schemaVersion: Schema.Literal(SANDBOX_BUNDLE_SCHEMA_VERSION),
+  items: Schema.Array(SandboxBundleItemManifestSchema),
+});
+export const SandboxBundleManifestSchema = Schema.Union([
+  SandboxBundleManifestV1Schema,
+  SandboxBundleManifestV2Schema,
+]);
 export const SandboxSyncOutputSchema = Schema.Struct({
   schemaVersion: Schema.Literal(SANDBOX_CONFIG_SCHEMA_VERSION),
   digest: SandboxDigestSchema,
@@ -88,6 +168,8 @@ export type SandboxFileModeClass = typeof SandboxFileModeClassSchema.Type;
 export type SandboxFileRecord = typeof SandboxFileRecordSchema.Type;
 export type SandboxSkillManifest = typeof SandboxSkillManifestSchema.Type;
 export type SandboxPiPackageManifest = typeof SandboxPiPackageManifestSchema.Type;
+export type SandboxBundleItemKind = typeof SandboxBundleItemKindSchema.Type;
+export type SandboxBundleItemManifest = typeof SandboxBundleItemManifestSchema.Type;
 export type SandboxBundleManifest = typeof SandboxBundleManifestSchema.Type;
 export type SandboxSyncOutput = typeof SandboxSyncOutputSchema.Type;
 
@@ -129,20 +211,8 @@ export const isSafeBundlePath = (path: string): boolean => {
   return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
 };
 
-export const itemContentDigest = (files: ReadonlyArray<SandboxFileRecord>): string => {
-  const hash = createHash("sha256");
-  for (const file of [...files].sort((left, right) => compareUtf8(left.path, right.path))) {
-    hash.update(file.path);
-    hash.update("\0");
-    hash.update(String(file.size));
-    hash.update("\0");
-    hash.update(file.modeClass);
-    hash.update("\0");
-    hash.update(file.digest);
-    hash.update("\n");
-  }
-  return hash.digest("hex");
-};
+export const itemContentDigest = (files: ReadonlyArray<SandboxFileRecord>): string =>
+  createHash("sha256").update(sandboxBundleItemDigestMaterial(files)).digest("hex");
 
 export const encodeBundleManifestJson = (manifest: SandboxBundleManifest): string =>
   `${JSON.stringify(encodeSandboxBundleManifest(manifest), null, 2)}\n`;
