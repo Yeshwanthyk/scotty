@@ -218,17 +218,17 @@ Pi provider/OAuth request
 
 Run formatting before lint so diagnostics refer to final positions.
 
-| Proof | Command | Required result |
-|---|---|---|
-| Format touched files | `npx oxfmt --disable-nested-config --write worker/src/auth-registry.ts worker/src/container-session-egress.ts worker/src/egress.ts` | Only intended formatting changes |
-| Lint-skill policy | `npm run lint:skills` | Pass |
-| Focused contracts | `npx vitest run worker/test/auth-registry.test.ts worker/test/container-session-egress.test.ts worker/test/egress.test.ts` | All pass; drafting baseline was 47 tests |
-| Worker types | `npm run typecheck:worker` | Pass |
-| Dead-code/export check | `npm run knip:check` | Pass |
-| Changed-file Oxlint | `npx oxlint --disable-nested-config worker/src/auth-registry.ts worker/src/container-session-egress.ts worker/src/egress.ts` | Zero diagnostics in all three files |
-| Real local boundary | repeat the exact lab and local-live commands under **Starting proof** | Same shapes, statuses, isolation, and cleanup as before |
-| Full repository gate | `npm run check` | Pass; includes format check, full lint, Knip, all typechecks, full test suites, and secret scan |
-| Final recount | repeat the JSON Oxlint recount as `/tmp/q2-oxlint-after.json` | Three scoped findings removed; no new diagnostics |
+| Proof                  | Command                                                                                                                             | Required result                                                                                 |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Format touched files   | `npx oxfmt --disable-nested-config --write worker/src/auth-registry.ts worker/src/container-session-egress.ts worker/src/egress.ts` | Only intended formatting changes                                                                |
+| Lint-skill policy      | `npm run lint:skills`                                                                                                               | Pass                                                                                            |
+| Focused contracts      | `npx vitest run worker/test/auth-registry.test.ts worker/test/container-session-egress.test.ts worker/test/egress.test.ts`          | All pass; drafting baseline was 47 tests                                                        |
+| Worker types           | `npm run typecheck:worker`                                                                                                          | Pass                                                                                            |
+| Dead-code/export check | `npm run knip:check`                                                                                                                | Pass                                                                                            |
+| Changed-file Oxlint    | `npx oxlint --disable-nested-config worker/src/auth-registry.ts worker/src/container-session-egress.ts worker/src/egress.ts`        | Zero diagnostics in all three files                                                             |
+| Real local boundary    | repeat the exact lab and local-live commands under **Starting proof**                                                               | Same shapes, statuses, isolation, and cleanup as before                                         |
+| Full repository gate   | `npm run check`                                                                                                                     | Pass; includes format check, full lint, Knip, all typechecks, full test suites, and secret scan |
+| Final recount          | repeat the JSON Oxlint recount as `/tmp/q2-oxlint-after.json`                                                                       | Three scoped findings removed; no new diagnostics                                               |
 
 Do not run a deployment, deployed canary, push, tag, or release. This ticket does not authorize them.
 
