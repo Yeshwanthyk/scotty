@@ -2895,6 +2895,58 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* backups.restore(backup);
   });
 
+  private readonly enforceHardCapWithoutOperationProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+  ) {
+    if (record.execution.provider === "runner") {
+      const acquired = yield* Effect.result(
+        this.acquireOperationProgram("snapshot", ["warm", "booting"]),
+      );
+      if (Result.isFailure(acquired)) return;
+      const stopped = yield* Effect.result(
+        this.stopRunnerIntoSleepingProgram(
+          record,
+          acquired.success.nonce,
+          `hard-cap-${acquired.success.nonce}`,
+          true,
+        ),
+      );
+      if (Result.isFailure(stopped))
+        yield* Effect.sync(() =>
+          console.error("Runner hard-cap stop failed", {
+            sessionId: record.id,
+            error: errorName(stopped.failure),
+          }),
+        );
+      return;
+    }
+
+    const operationResult = yield* Effect.result(
+      this.acquireOperationProgram("snapshot", ["warm", "booting"]),
+    );
+    if (Result.isFailure(operationResult)) {
+      const current = yield* this.readRecordProgram();
+      if (current)
+        yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
+      return;
+    }
+    const operation = operationResult.success;
+    const stopped = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        yield* this.restoreHardCapWorkspaceIfMissingProgram(record);
+        yield* this.checkpointProgram(operation.nonce, false, false);
+        yield* this.stopAfterCheckpointProgram(operation.nonce);
+      }),
+    );
+    if (Result.isSuccess(stopped)) return;
+    const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
+    if (Predicate.isTagged(stopped.failure, "ManagedStopArmedError") || pending) return;
+    const current = yield* this.readRecordProgram();
+    if (current)
+      yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
+  });
+
   private readonly enforceHardCapProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     payload: HardCapPayload,
@@ -2970,52 +3022,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }
     }
 
-    if (record.execution.provider === "runner") {
-      const acquired = yield* Effect.result(
-        this.acquireOperationProgram("snapshot", ["warm", "booting"]),
-      );
-      if (Result.isFailure(acquired)) return;
-      const stopped = yield* Effect.result(
-        this.stopRunnerIntoSleepingProgram(
-          record,
-          acquired.success.nonce,
-          `hard-cap-${acquired.success.nonce}`,
-          true,
-        ),
-      );
-      if (Result.isFailure(stopped))
-        yield* Effect.sync(() =>
-          console.error("Runner hard-cap stop failed", {
-            sessionId: record.id,
-            error: errorName(stopped.failure),
-          }),
-        );
-      return;
-    }
-
-    const operationResult = yield* Effect.result(
-      this.acquireOperationProgram("snapshot", ["warm", "booting"]),
-    );
-    if (Result.isFailure(operationResult)) {
-      const current = yield* this.readRecordProgram();
-      if (current)
-        yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
-      return;
-    }
-    const operation = operationResult.success;
-    const stopped = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        yield* this.restoreHardCapWorkspaceIfMissingProgram(record);
-        yield* this.checkpointProgram(operation.nonce, false, false);
-        yield* this.stopAfterCheckpointProgram(operation.nonce);
-      }),
-    );
-    if (Result.isSuccess(stopped)) return;
-    const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
-    if (Predicate.isTagged(stopped.failure, "ManagedStopArmedError") || pending) return;
-    const current = yield* this.readRecordProgram();
-    if (current)
-      yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
+    yield* this.enforceHardCapWithoutOperationProgram(record);
   });
 
   private readonly onActivityExpiredProgram = Effect.fnUntraced(function* (this: Sandbox) {
