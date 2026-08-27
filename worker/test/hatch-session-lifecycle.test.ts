@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Clock, Effect, Predicate } from "effect";
+import { vi } from "vitest";
+import { Clock, Effect, Predicate, Result } from "effect";
 import { TestClock } from "effect/testing";
 import { sha256Hex } from "../src/digest";
 import {
@@ -10,8 +11,11 @@ import {
   HATCH_PRIVATE_REQUEST_HEADER,
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
+  HATCH_MAX_PERMIT_BYTES,
+  HATCH_RESERVED_RESPONSE_BYTES,
+  decodeHatchStateResult,
   type HatchStateV1,
-} from "../src/hatch-contracts";
+} from "../src/hatch/contracts";
 import {
   createSessionHarness,
   makeStoredCredential,
@@ -55,6 +59,97 @@ const createHarness = Effect.fnUntraced(function* (stopCallsOnStop = false) {
 const hatchState = (
   harness: Awaited<ReturnType<typeof createSessionHarness>>,
 ): HatchStateV1 | undefined => harness.read<HatchStateV1>(sessionHarnessKeys.hatch);
+
+const persistedHatchState = () => ({
+  version: 1 as const,
+  primary: {
+    hatchId: "hatch-primary",
+    sessionId: SESSION_ID,
+    generation: 2,
+    service,
+    desiredStatus: "open" as const,
+    observedStatus: "running" as const,
+    runtimeEpoch: "epoch-current",
+    exposure: "active" as const,
+    routeNonce: "h0123456789abcd",
+    permits: [
+      {
+        permitId: "permit-primary",
+        browserClientId: "111111111111",
+        cookieDigest: "a".repeat(64),
+        createdAt: "2026-08-08T12:00:00.000Z",
+        expiresAt: "2026-08-08T13:00:00.000Z",
+        ingressBytes: 0,
+        responseBytes: 0,
+      },
+    ],
+    requests: [
+      {
+        requestId: "1".repeat(32),
+        permitId: "permit-primary",
+        generation: 2,
+        runtimeEpoch: "epoch-current",
+        reservedIngressBytes: 100,
+        ingressBytes: 100,
+        reservedResponseBytes: HATCH_RESERVED_RESPONSE_BYTES,
+        status: "admitted" as const,
+        admittedAt: "2026-08-08T12:00:00.000Z",
+        expiresAt: "2026-08-08T12:00:30.000Z",
+      },
+    ],
+    createdAt: "2026-08-08T12:00:00.000Z",
+    updatedAt: "2026-08-08T12:00:00.000Z",
+    lastHealthyAt: "2026-08-08T12:00:00.000Z",
+  },
+});
+
+const assertInvalidPersistedHatch = (state: unknown): void => {
+  assert.isTrue(Result.isFailure(decodeHatchStateResult(state)));
+};
+
+describe("persisted Hatch schema invariants", () => {
+  it("rejects request ingress greater than its reservation", () => {
+    const state = persistedHatchState();
+    state.primary.requests[0].ingressBytes = state.primary.requests[0].reservedIngressBytes + 1;
+    assertInvalidPersistedHatch(state);
+  });
+
+  it("rejects a request generation that differs from its Hatch", () => {
+    const generationMismatch = persistedHatchState();
+    generationMismatch.primary.requests[0].generation = 1;
+    assertInvalidPersistedHatch(generationMismatch);
+  });
+
+  it("rejects a request runtime epoch that differs from its Hatch", () => {
+    const runtimeEpochMismatch = persistedHatchState();
+    runtimeEpochMismatch.primary.requests[0].runtimeEpoch = "epoch-stale";
+    assertInvalidPersistedHatch(runtimeEpochMismatch);
+  });
+
+  it("rejects a request expiry beyond its permit expiry", () => {
+    const state = persistedHatchState();
+    state.primary.requests[0].expiresAt = "2026-08-08T13:00:01.000Z";
+    assertInvalidPersistedHatch(state);
+  });
+
+  it("rejects aggregate outstanding reservations beyond the permit budget", () => {
+    const state = persistedHatchState();
+    state.primary.requests = Array.from({ length: 6 }, (_, index) => ({
+      ...state.primary.requests[0],
+      requestId: `${String(index + 1).padStart(2, "0")}${"a".repeat(30)}`,
+      reservedIngressBytes: HATCH_MAX_INGRESS_BYTES,
+      ingressBytes: HATCH_MAX_INGRESS_BYTES,
+    }));
+    assert.isAbove(
+      state.primary.requests.reduce(
+        (total, request) => total + request.reservedIngressBytes + request.reservedResponseBytes,
+        0,
+      ),
+      HATCH_MAX_PERMIT_BYTES,
+    );
+    assertInvalidPersistedHatch(state);
+  });
+});
 
 class HarnessWebSocket extends EventTarget {
   peer: HarnessWebSocket | undefined;
@@ -423,6 +518,40 @@ describe("authoritative Hatch session lifecycle", () => {
     }),
   );
 
+  it.effect("does not let re-ensure overwrite pending unexpose cleanup", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ version: 1, service }));
+      harness.injectFailure("previewUnexpose");
+
+      const closed = yield* Effect.promise(() =>
+        harness.sandbox.closeScottyHatch().then(
+          () => false,
+          () => true,
+        ),
+      );
+      assert.isTrue(closed);
+      const pending = hatchState(harness)?.primary;
+      assert.ok(pending);
+      assert.strictEqual(pending.exposure, "unexpose_pending");
+      assert.strictEqual(pending.desiredStatus, "closed");
+      assert.strictEqual(pending.cleanup?.target, "stopped");
+
+      const reensured = yield* Effect.promise(() =>
+        harness.sandbox.ensureScottyHatch({ version: 1, service }).then(
+          () => false,
+          () => true,
+        ),
+      );
+      assert.isTrue(reensured);
+      const stillPending = hatchState(harness)?.primary;
+      assert.ok(stillPending);
+      assert.strictEqual(stillPending.generation, pending.generation);
+      assert.strictEqual(stillPending.exposure, "unexpose_pending");
+      assert.strictEqual(stillPending.cleanup?.operationNonce, pending.cleanup?.operationNonce);
+    }),
+  );
+
   it.effect("rejects a stale exposure completion after the runtime epoch changes", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
@@ -456,6 +585,56 @@ describe("authoritative Hatch session lifecycle", () => {
         yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute()),
         undefined,
       );
+    }),
+  );
+
+  it.effect("does not let a stale health failure clean a newer Hatch generation", () =>
+    Effect.gen(function* () {
+      let releaseHealth: () => void = () => undefined;
+      const healthGate = new Promise<void>((resolve) => {
+        releaseHealth = resolve;
+      });
+      yield* TestClock.setTime(NOW);
+      const clock = yield* Clock.Clock;
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          previewBase: "preview.example.test",
+          piSessionRunning: true,
+          rawPiContainerRunning: true,
+          hatchHealthGate: healthGate,
+          initialEntries: {
+            [sessionHarnessKeys.record]: makeSessionRecord({
+              id: SESSION_ID,
+              hardCapAt: "2026-08-08T13:00:00.000Z",
+            }),
+            [sessionHarnessKeys.credential]: makeStoredCredential(),
+            [sessionHarnessKeys.hatch]: persistedHatchState(),
+            [sessionHarnessKeys.runtimeEpoch]: "epoch-current",
+          },
+        }),
+      );
+      const staleStatus = harness.sandbox.getScottyHatchStatus();
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.include(harness.events, "host:hatch:health:4173:/health")),
+      );
+      const before = hatchState(harness)?.primary;
+      assert.ok(before);
+
+      const snapshot = yield* Effect.promise(() => harness.sandbox.snapshotScottySession());
+      assert.strictEqual(snapshot.status, "warm");
+      const newer = hatchState(harness)?.primary;
+      assert.ok(newer);
+      assert.ok(newer.generation > before.generation);
+      assert.strictEqual(newer.exposure, "active");
+
+      harness.injectFailure("hatchHealth");
+      releaseHealth();
+      const stale = yield* Effect.promise(() => staleStatus);
+      assert.strictEqual(stale.status, "configured");
+      assert.deepInclude(stale, { exposure: "active" });
+      assert.strictEqual(hatchState(harness)?.primary?.generation, newer.generation);
+      assert.strictEqual(hatchState(harness)?.primary?.exposure, "active");
     }),
   );
 

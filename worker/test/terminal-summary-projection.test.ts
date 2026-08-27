@@ -5,7 +5,7 @@ import {
   browserHatchStatus,
   hatchActions,
 } from "../public/terminal-hatch-reference.js";
-import type { PublicHatchStatusV1 } from "../src/hatch-contracts";
+import type { PublicHatchStatusV1 } from "../src/hatch/contracts";
 import { applyEvent, projectionFromSnapshot } from "../public/terminal-projection.js";
 import {
   assistantEvidenceReferences,

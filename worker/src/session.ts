@@ -44,7 +44,7 @@ import {
   hatchStoreLayer,
   type HatchCleanupAuthority,
   type HatchWebSocketAuthorization,
-} from "./hatch-store";
+} from "./hatch/store";
 import {
   EVIDENCE_JOB_TIMEOUT_MILLIS,
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
@@ -99,6 +99,7 @@ import {
   decodeHatchWebSocketId,
   hatchOrigin,
   publicHatchStatusProjection,
+  sameHatchAuthorization,
   type HatchCleanupRetryV1,
   type HatchCleanupTarget,
   type HatchHostRouteV1,
@@ -109,7 +110,7 @@ import {
   type HatchWebSocketPermitV1,
   type IssuedHatchPermitV1,
   type PublicHatchStatusV1,
-} from "./hatch-contracts";
+} from "./hatch/contracts";
 import { sha256Hex } from "./digest";
 import {
   EvidenceWorkflowControl,
@@ -564,6 +565,8 @@ interface PendingHatchWebSocket {
   readonly authorization: HatchWebSocketAuthorization;
   readonly expiresAtMillis: number;
 }
+
+type HatchWebSocketForwardingRoute = HatchHostRouteV1 & { readonly socketId: string };
 
 interface TrackedHatchWebSocket {
   readonly authorization: HatchWebSocketAuthorization;
@@ -3415,7 +3418,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (Result.isSuccess(health) && health.success >= 200 && health.success <= 399) return true;
     const operationNonce = `health-${randomToken(8)}`;
     const cleaned = yield* Effect.result(
-      this.cleanupHatchProgram(operationNonce, "unhealthy", false, "health_check"),
+      this.cleanupHatchProgram(operationNonce, "unhealthy", false, {
+        kind: "health_check",
+        hatchId: authorization.hatchId,
+        generation: authorization.generation,
+        runtimeEpoch: authorization.runtimeEpoch,
+      }),
     );
     if (Result.isFailure(cleaned))
       yield* hostEffect("schedule", () =>
@@ -3955,7 +3963,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly hatchWebSocketForwardingRoute = (
     request: Request,
-  ): (HatchHostRouteV1 & { readonly socketId: string }) | undefined => {
+  ): HatchWebSocketForwardingRoute | undefined => {
     const socketId = request.headers.get(HATCH_PRIVATE_WEBSOCKET_HEADER);
     const portValue = request.headers.get(SANDBOX_PREVIEW_PORT_HEADER);
     const sessionId = request.headers.get(SANDBOX_PREVIEW_SANDBOX_ID_HEADER);
@@ -3972,6 +3980,45 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return undefined;
     const decoded = decodeHatchHostRoute({ sessionId, port: Number(portValue), routeNonce });
     return Option.isSome(decoded) ? { ...decoded.value, socketId } : undefined;
+  };
+
+  private readonly isHatchWebSocketForwardRequest = (
+    request: Request,
+    route: HatchWebSocketForwardingRoute | undefined,
+  ): route is HatchWebSocketForwardingRoute =>
+    route !== undefined &&
+    request.method === "GET" &&
+    request.headers.get("upgrade")?.toLowerCase() === "websocket" &&
+    request.headers
+      .get("connection")
+      ?.split(",")
+      .some((token) => token.trim().toLowerCase() === "upgrade") === true;
+
+  private readonly takeHatchWebSocketAdmission = (
+    route: HatchWebSocketForwardingRoute,
+    nowMillis: number,
+  ): PendingHatchWebSocket | undefined => {
+    const pending = this.hatchWebSocketAdmissions.get(route.socketId);
+    this.hatchWebSocketAdmissions.delete(route.socketId);
+    if (
+      pending === undefined ||
+      pending.expiresAtMillis <= nowMillis ||
+      pending.authorization.sessionId !== route.sessionId ||
+      pending.authorization.port !== route.port ||
+      pending.authorization.routeNonce !== route.routeNonce
+    )
+      return undefined;
+    return pending;
+  };
+
+  private readonly sameHatchWebSocketAuthorization = (
+    current: HatchRouteAuthorizationV1 | undefined,
+    expected: HatchWebSocketAuthorization,
+  ): boolean => current !== undefined && sameHatchAuthorization(current, expected);
+
+  private readonly cleanupStaleHatchWebSocket = async (response: Response): Promise<void> => {
+    response.webSocket?.close(1008, "Stale Hatch WebSocket upgrade");
+    await response.body?.cancel();
   };
 
   private bridgeHatchWebSocket(
@@ -4189,40 +4236,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private async fetchHatchWebSocket(request: Request): Promise<Response> {
     const route = this.hatchWebSocketForwardingRoute(request);
-    if (
-      route === undefined ||
-      request.method !== "GET" ||
-      request.headers.get("upgrade")?.toLowerCase() !== "websocket" ||
-      request.headers
-        .get("connection")
-        ?.split(",")
-        .some((token) => token.trim().toLowerCase() === "upgrade") !== true
-    )
+    if (!this.isHatchWebSocketForwardRequest(request, route))
       return deniedEvidencePreviewResponse();
-    const pending = this.hatchWebSocketAdmissions.get(route.socketId);
-    this.hatchWebSocketAdmissions.delete(route.socketId);
     // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native WebSocket upgrade admission has a fixed host deadline
     const nowMillis = Date.now();
-    if (
-      pending === undefined ||
-      pending.expiresAtMillis <= nowMillis ||
-      pending.authorization.sessionId !== route.sessionId ||
-      pending.authorization.port !== route.port ||
-      pending.authorization.routeNonce !== route.routeNonce
-    )
-      return deniedEvidencePreviewResponse();
+    const pending = this.takeHatchWebSocketAdmission(route, nowMillis);
+    if (pending === undefined) return deniedEvidencePreviewResponse();
     const routeValue = {
       sessionId: route.sessionId,
       port: route.port,
       routeNonce: route.routeNonce,
     } satisfies HatchHostRouteV1;
     const current = await this.getScottyHatchRoute(routeValue);
-    if (
-      current === undefined ||
-      current.hatchId !== pending.authorization.hatchId ||
-      current.generation !== pending.authorization.generation ||
-      current.runtimeEpoch !== pending.authorization.runtimeEpoch
-    )
+    if (!this.sameHatchWebSocketAuthorization(current, pending.authorization))
       return deniedEvidencePreviewResponse();
     const headers = new Headers(request.headers);
     headers.delete(HATCH_PRIVATE_WEBSOCKET_HEADER);
@@ -4232,14 +4258,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     if (response === undefined) return deniedEvidencePreviewResponse();
     const after = await this.getScottyHatchRoute(routeValue);
-    if (
-      after === undefined ||
-      after.hatchId !== pending.authorization.hatchId ||
-      after.generation !== pending.authorization.generation ||
-      after.runtimeEpoch !== pending.authorization.runtimeEpoch
-    ) {
-      response.webSocket?.close(1008, "Stale Hatch WebSocket upgrade");
-      await response.body?.cancel();
+    if (!this.sameHatchWebSocketAuthorization(after, pending.authorization)) {
+      await this.cleanupStaleHatchWebSocket(response);
       return deniedEvidencePreviewResponse();
     }
     const bridged = this.bridgeHatchWebSocket(

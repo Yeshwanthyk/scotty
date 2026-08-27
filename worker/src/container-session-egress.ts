@@ -28,7 +28,7 @@ import {
   HatchRestoreDescriptorV1Schema,
   PublicHatchStatusV1Schema,
   type EnsureHatchInputV1,
-} from "./hatch-contracts";
+} from "./hatch/contracts";
 import { scottyErrorResponse } from "./passive-session";
 
 // Deployed-canary gate: cloudflare/sandbox:0.12.3 must prove that its TLS trust store

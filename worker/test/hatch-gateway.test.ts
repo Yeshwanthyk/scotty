@@ -33,8 +33,8 @@ import {
   HATCH_PRIVATE_REQUEST_HEADER,
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
-} from "../src/hatch-contracts";
-import { handleHatchRequest, hatchPreviewFormAction, parseHatchHost } from "../src/hatch-gateway";
+} from "../src/hatch/contracts";
+import { handleHatchRequest, hatchPreviewFormAction, parseHatchHost } from "../src/hatch/gateway";
 
 const BASE = "preview.example.test";
 const SESSION_ID = "a0b1c2d3e4f5";
