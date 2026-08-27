@@ -10,6 +10,7 @@ import {
   itemContentDigest,
   sandboxArchiveInvalid,
   sha256Bytes,
+  type SandboxBundleItemManifest,
   type SandboxBundleManifest,
   type SandboxFileModeClass,
 } from "./sandbox-bundle";
@@ -136,6 +137,49 @@ export interface ParsedTarMember {
   readonly bytes: Uint8Array;
 }
 
+type ArchiveResult<A> = Result.Result<A, ReturnType<typeof sandboxArchiveInvalid>>;
+
+type DecodedTarHeader = {
+  readonly path: string;
+  readonly size: number;
+  readonly mode: number;
+  readonly type: number;
+};
+
+const invalidArchive = (message: string): ArchiveResult<never> =>
+  Result.fail(sandboxArchiveInvalid(message, "Rebuild the sandbox bundle, then retry."));
+
+const decodeTarMemberHeader = (
+  bytes: Uint8Array,
+  offset: number,
+): ArchiveResult<DecodedTarHeader> => {
+  const header = bytes.subarray(offset, offset + BLOCK);
+  const name = field(header, 0, 100);
+  const prefix = field(header, 345, 155);
+  const path = prefix.length === 0 ? name : `${prefix}/${name}`;
+  const sizeText = field(header, 124, 12).trim();
+  const size = Number.parseInt(sizeText || "0", 8);
+  const checksumText = field(header, 148, 8).trim();
+  const expectedChecksum = Number.parseInt(checksumText || "0", 8);
+  if (!Number.isFinite(expectedChecksum) || expectedChecksum !== headerChecksum(header))
+    return invalidArchive("Sandbox archive checksum is invalid");
+  const mode = Number.parseInt(field(header, 100, 8).trim() || "0", 8);
+  if (!Number.isFinite(mode) || mode < 0 || mode > 0o7777)
+    return invalidArchive("Sandbox archive contains an unsupported mode");
+  if (!Number.isFinite(size) || size < 0) return invalidArchive("Sandbox archive is malformed");
+  if (size > SANDBOX_MAX_FILE_BYTES)
+    return invalidArchive("Sandbox archive file exceeds the per-file size limit");
+  if (offset + BLOCK + size > bytes.length) return invalidArchive("Sandbox archive is truncated");
+  if (!isSafeBundlePath(path) || path.length > SANDBOX_MAX_PATH_BYTES)
+    return invalidArchive("Sandbox archive contains an unsafe path");
+  return Result.succeed({
+    path,
+    size,
+    mode,
+    type: header[156],
+  });
+};
+
 export const parseSandboxTar = (
   bytes: Uint8Array,
 ): Result.Result<ReadonlyArray<ParsedTarMember>, ReturnType<typeof sandboxArchiveInvalid>> => {
@@ -143,78 +187,19 @@ export const parseSandboxTar = (
   const seen = new Set<string>();
   let offset = 0;
   while (offset + BLOCK <= bytes.length) {
-    const header = bytes.subarray(offset, offset + BLOCK);
-    if (header.every((byte) => byte === 0)) break;
-    const name = field(header, 0, 100);
-    const prefix = field(header, 345, 155);
-    const path = prefix.length === 0 ? name : `${prefix}/${name}`;
-    const sizeText = field(header, 124, 12).trim();
-    const size = Number.parseInt(sizeText || "0", 8);
-    const checksumText = field(header, 148, 8).trim();
-    const expectedChecksum = Number.parseInt(checksumText || "0", 8);
-    if (!Number.isFinite(expectedChecksum) || expectedChecksum !== headerChecksum(header))
-      return Result.fail(
-        sandboxArchiveInvalid(
-          "Sandbox archive checksum is invalid",
-          "Rebuild the sandbox bundle, then retry.",
-        ),
-      );
-    const mode = Number.parseInt(field(header, 100, 8).trim() || "0", 8);
-    if (!Number.isFinite(mode) || mode < 0 || mode > 0o7777)
-      return Result.fail(
-        sandboxArchiveInvalid(
-          "Sandbox archive contains an unsupported mode",
-          "Rebuild the sandbox bundle, then retry.",
-        ),
-      );
-    if (!Number.isFinite(size) || size < 0)
-      return Result.fail(
-        sandboxArchiveInvalid(
-          "Sandbox archive is malformed",
-          "Rebuild the sandbox bundle, then retry.",
-        ),
-      );
-    if (size > SANDBOX_MAX_FILE_BYTES)
-      return Result.fail(
-        sandboxArchiveInvalid(
-          "Sandbox archive file exceeds the per-file size limit",
-          "Rebuild the sandbox bundle, then retry.",
-        ),
-      );
-    if (offset + BLOCK + size > bytes.length)
-      return Result.fail(
-        sandboxArchiveInvalid(
-          "Sandbox archive is truncated",
-          "Rebuild the sandbox bundle, then retry.",
-        ),
-      );
-    if (!isSafeBundlePath(path) || path.length > SANDBOX_MAX_PATH_BYTES)
-      return Result.fail(
-        sandboxArchiveInvalid(
-          "Sandbox archive contains an unsafe path",
-          "Rebuild the sandbox bundle, then retry.",
-        ),
-      );
-    if (seen.has(path))
-      return Result.fail(
-        sandboxArchiveInvalid(
-          "Sandbox archive contains duplicate members",
-          "Rebuild the sandbox bundle, then retry.",
-        ),
-      );
+    const block = bytes.subarray(offset, offset + BLOCK);
+    if (block.every((byte) => byte === 0)) break;
+    const header = decodeTarMemberHeader(bytes, offset);
+    if (Result.isFailure(header)) return Result.fail(header.failure);
+    const { path, size, mode, type } = header.success;
+    if (seen.has(path)) return invalidArchive("Sandbox archive contains duplicate members");
     seen.add(path);
-    const type = header[156];
     if (
       type === HARDLINK_TYPE ||
       type === SYMLINK_TYPE ||
       (type !== 0 && type !== FILE_TYPE && type !== DIRECTORY_TYPE)
     )
-      return Result.fail(
-        sandboxArchiveInvalid(
-          "Sandbox archive contains an unsupported member type",
-          "Rebuild the sandbox bundle, then retry.",
-        ),
-      );
+      return invalidArchive("Sandbox archive contains an unsupported member type");
     const isDirectory = type === DIRECTORY_TYPE;
     members.push({
       path,
@@ -260,11 +245,6 @@ const parentDirectories = (path: string): ReadonlyArray<string> => {
   return directories;
 };
 
-const invalidV2Archive = (message: string) =>
-  Result.fail(
-    sandboxArchiveInvalid(message, "Rebuild the sandbox bundle, then retry."),
-  ) as Result.Result<never, ReturnType<typeof sandboxArchiveInvalid>>;
-
 const expectedFiles = (
   manifest: SandboxBundleManifest,
   members: ReadonlyMap<string, ParsedTarMember>,
@@ -287,6 +267,68 @@ const expectedFiles = (
   return Result.succeed(expected);
 };
 
+const collectExpectedV2Item = (
+  item: SandboxBundleItemManifest,
+  members: ReadonlyMap<string, ParsedTarMember>,
+  expected: Map<string, ExpectedSandboxFile>,
+  directories: Set<string>,
+  seenItems: Set<string>,
+): ArchiveResult<undefined> => {
+  const itemKey = `${item.kind}\0${item.name}`;
+  if (seenItems.has(itemKey))
+    return invalidArchive("Sandbox archive manifest contains duplicate bundle items");
+  seenItems.add(itemKey);
+  if (["skill", "package"].includes(item.kind) && item.shape !== "directory")
+    return invalidArchive("Sandbox archive item shape does not match its kind");
+  const itemRoot = `${sandboxBundleItemRoot(item.kind)}/${item.name}`;
+  const itemMember = members.get(itemRoot);
+  if (item.shape === "file") {
+    if (item.files.length !== 1 || item.files[0]?.path !== item.name)
+      return invalidArchive("Sandbox archive manifest file item does not match its name");
+    if (itemMember?.type !== "file")
+      return invalidArchive("Sandbox archive file item is not materialized at its name");
+  } else {
+    directories.add(itemRoot);
+    for (const parent of parentDirectories(itemRoot)) directories.add(parent);
+    if (itemMember?.type === "file" || (item.files.length === 0 && itemMember === undefined))
+      return invalidArchive("Sandbox archive directory item is not materialized at its name");
+  }
+  if (itemContentDigest(item.files) !== item.digest)
+    return invalidArchive("Sandbox archive item digest does not match its manifest files");
+  for (const file of item.files) {
+    if (!isSafeBundlePath(file.path))
+      return invalidArchive("Sandbox archive manifest contains an unsafe file path");
+    const archivePath = sandboxBundleItemFilePath(item, file.path);
+    if (expected.has(archivePath))
+      return invalidArchive("Sandbox archive manifest contains duplicate file paths");
+    expected.set(archivePath, {
+      size: file.size,
+      digest: file.digest,
+      modeClass: file.modeClass,
+    });
+    for (const parent of parentDirectories(archivePath)) directories.add(parent);
+  }
+  return Result.succeed(undefined);
+};
+
+const validateV2Member = (
+  path: string,
+  member: ParsedTarMember,
+  directories: ReadonlySet<string>,
+  members: ReadonlyMap<string, ParsedTarMember>,
+): ArchiveResult<undefined> => {
+  if (path === "manifest.json") return Result.succeed(undefined);
+  if (member.type === "directory" && !directories.has(path))
+    return invalidArchive("Sandbox archive contains an unlisted directory");
+  if (member.type === "file") {
+    const parts = path.split("/");
+    for (let index = 1; index < parts.length; index += 1)
+      if (members.get(parts.slice(0, index).join("/"))?.type === "file")
+        return invalidArchive("Sandbox archive file shape is incoherent");
+  }
+  return Result.succeed(undefined);
+};
+
 const expectedV2Files = (
   manifest: Extract<SandboxBundleManifest, { readonly schemaVersion: 2 }>,
   members: ReadonlyMap<string, ParsedTarMember>,
@@ -297,59 +339,13 @@ const expectedV2Files = (
   const expected = new Map<string, ExpectedSandboxFile>();
   const directories = new Set<string>();
   const seenItems = new Set<string>();
-  const addParents = (path: string): void => {
-    for (const parent of parentDirectories(path)) directories.add(parent);
-  };
   for (const item of manifest.items) {
-    const itemKey = `${item.kind}\0${item.name}`;
-    if (seenItems.has(itemKey))
-      return invalidV2Archive("Sandbox archive manifest contains duplicate bundle items");
-    seenItems.add(itemKey);
-    if ((item.kind === "skill" || item.kind === "package") && item.shape !== "directory")
-      return invalidV2Archive("Sandbox archive item shape does not match its kind");
-    const itemRoot = `${sandboxBundleItemRoot(item.kind)}/${item.name}`;
-    const itemMember = members.get(itemRoot);
-    if (item.shape === "file") {
-      if (item.files.length !== 1 || item.files[0]?.path !== item.name)
-        return invalidV2Archive("Sandbox archive manifest file item does not match its name");
-      if (itemMember?.type !== "file")
-        return invalidV2Archive("Sandbox archive file item is not materialized at its name");
-    } else {
-      directories.add(itemRoot);
-      addParents(itemRoot);
-      if (
-        (item.files.length === 0 && itemMember?.type !== "directory") ||
-        (item.files.length > 0 && itemMember !== undefined && itemMember.type !== "directory")
-      )
-        return invalidV2Archive("Sandbox archive directory item is not materialized at its name");
-    }
-    if (itemContentDigest(item.files) !== item.digest)
-      return invalidV2Archive("Sandbox archive item digest does not match its manifest files");
-    for (const file of item.files) {
-      if (!isSafeBundlePath(file.path))
-        return invalidV2Archive("Sandbox archive manifest contains an unsafe file path");
-      const archivePath = sandboxBundleItemFilePath(item, file.path);
-      if (expected.has(archivePath))
-        return invalidV2Archive("Sandbox archive manifest contains duplicate file paths");
-      expected.set(archivePath, {
-        size: file.size,
-        digest: file.digest,
-        modeClass: file.modeClass,
-      });
-      addParents(archivePath);
-    }
+    const result = collectExpectedV2Item(item, members, expected, directories, seenItems);
+    if (Result.isFailure(result)) return Result.fail(result.failure);
   }
   for (const [path, member] of members) {
-    if (path === "manifest.json") continue;
-    if (member.type === "directory" && !directories.has(path))
-      return invalidV2Archive("Sandbox archive contains an unlisted directory");
-    if (member.type === "file") {
-      const parts = path.split("/");
-      for (let index = 1; index < parts.length; index += 1) {
-        if (members.get(parts.slice(0, index).join("/"))?.type === "file")
-          return invalidV2Archive("Sandbox archive file shape is incoherent");
-      }
-    }
+    const result = validateV2Member(path, member, directories, members);
+    if (Result.isFailure(result)) return Result.fail(result.failure);
   }
   return Result.succeed({ files: expected, directories });
 };

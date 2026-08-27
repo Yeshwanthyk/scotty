@@ -68,6 +68,31 @@ const modeClassFor = (
   return "regular";
 };
 
+const enqueueSandboxDirectory = Effect.fnUntraced(function* (
+  absolute: string,
+  relative: string,
+  root: string,
+  queue: string[],
+) {
+  const entries = yield* Effect.tryPromise({
+    try: () => readdir(absolute, { withFileTypes: true }),
+    catch: () =>
+      sandboxSourceInvalid(
+        "Could not list a sandbox source directory",
+        `Checked ${relative || root}.`,
+      ),
+  });
+  const names = entries.map((entry) => entry.name).sort(compareUtf8);
+  for (const name of names) {
+    if (name.includes("\0"))
+      return yield* sandboxSourceInvalid(
+        "Sandbox source contains an unsafe relative path",
+        `Rejected ${name}.`,
+      );
+    queue.push(relative.length === 0 ? name : `${relative}/${name}`);
+  }
+});
+
 const readRegularFile = Effect.fnUntraced(function* (
   absolute: string,
   relative: string,
@@ -195,23 +220,7 @@ export const walkSandboxTree = Effect.fnUntraced(function* (
       seenInodes.add(inodeKey(metadata));
     }
     if (metadata.isDirectory()) {
-      const entries = yield* Effect.tryPromise({
-        try: () => readdir(absolute, { withFileTypes: true }),
-        catch: () =>
-          sandboxSourceInvalid(
-            "Could not list a sandbox source directory",
-            `Checked ${relative || root}.`,
-          ),
-      });
-      const names = entries.map((entry) => entry.name).sort(compareUtf8);
-      for (const name of names) {
-        if (name.includes("\0"))
-          return yield* sandboxSourceInvalid(
-            "Sandbox source contains an unsafe relative path",
-            `Rejected ${name}.`,
-          );
-        queue.push(relative.length === 0 ? name : `${relative}/${name}`);
-      }
+      yield* enqueueSandboxDirectory(absolute, relative, root, queue);
       continue;
     }
     if (!metadata.isFile())
