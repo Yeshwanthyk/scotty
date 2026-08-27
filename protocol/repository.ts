@@ -85,8 +85,6 @@ export const RepositoryRegistryUpsertInputSchema = Schema.Struct({
 });
 export type RepositoryRegistryUpsertInput = typeof RepositoryRegistryUpsertInputSchema.Type;
 
-export const RepositoryRegistryRemoveInputSchema = RepositoryIdentitySchema;
-
 /** Legacy projection-removal acknowledgement retained for the browser composer. */
 export const RepositoryRegistryRemovalResponseSchema = Schema.Struct({
   repo: RepositoryIdentitySchema,
@@ -106,9 +104,8 @@ export const decodeRepositoryRegistryUpsertInput = Schema.decodeUnknownOption(
   RepositoryRegistryUpsertInputSchema,
   { onExcessProperty: "error" },
 );
-export const decodeRepositoryRegistryRemoveInput = Schema.decodeUnknownOption(
-  RepositoryRegistryRemoveInputSchema,
-);
+export const decodeRepositoryRegistryRemoveInput =
+  Schema.decodeUnknownOption(RepositoryIdentitySchema);
 
 /** Decodes the small HTTP request accepted by POST /api/repos. */
 export const RepositoryRegistryRequestSchema = Schema.Struct({

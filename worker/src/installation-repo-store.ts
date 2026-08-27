@@ -3,7 +3,7 @@ import {
   compareRepositoryRegistryEntries,
   repositoryIdentityKey,
   RepositoryRegistryAuthoritySchema,
-  RepositoryRegistryRemoveInputSchema,
+  RepositoryIdentitySchema,
   RepositoryRegistryUpsertInputSchema,
   type RepositoryRegistryAuthority,
   type RepositoryRegistryEntry,
@@ -73,7 +73,7 @@ const decodeAuthority = Schema.decodeUnknownResult(RepositoryRegistryAuthoritySc
 const decodeUpsertInput = Schema.decodeUnknownResult(RepositoryRegistryUpsertInputSchema, {
   onExcessProperty: "error",
 });
-const decodeRemoveInput = Schema.decodeUnknownResult(RepositoryRegistryRemoveInputSchema, {
+const decodeRemoveInput = Schema.decodeUnknownResult(RepositoryIdentitySchema, {
   onExcessProperty: "error",
 });
 

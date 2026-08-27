@@ -18,7 +18,7 @@
         "desktop/fixtures/*.mjs"
       ],
       "project": ["cli/**/*.ts", "infra/**/*.ts", "protocol/**/*.ts"],
-      "ignoreDependencies": ["cloudflare"]
+      "ignoreDependencies": ["cloudflare", "@alchemy.run/cloudflare-runtime"]
     },
     "worker": {
       "entry": ["test/**/*.test.ts"],

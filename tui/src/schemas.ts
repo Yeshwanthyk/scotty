@@ -72,7 +72,7 @@ export const FleetSessionSchema = Schema.Struct({
 export type FleetSession = typeof FleetSessionSchema.Type;
 
 export const FleetResponseSchema = Schema.Array(FleetSessionSchema).check(Schema.isMaxLength(500));
-export const SelectedSessionSchema = FleetSessionSchema;
+const SelectedSessionSchema = FleetSessionSchema;
 export type SelectedSession = typeof SelectedSessionSchema.Type;
 
 export const CreateSessionResultSchema = Schema.Struct({
@@ -121,7 +121,7 @@ export type JsonObject = typeof JsonObjectSchema.Type;
 const decodeJsonObjectOption = Schema.decodeUnknownOption(JsonObjectSchema);
 export const decodeJsonObject = (value: unknown): JsonObject | undefined =>
   Option.getOrUndefined(decodeJsonObjectOption(value));
-export const RemoteToolArgumentsSchema = JsonObjectSchema;
+const RemoteToolArgumentsSchema = JsonObjectSchema;
 export type RemoteToolArguments = typeof RemoteToolArgumentsSchema.Type;
 
 const RemoteTextContentSchema = Schema.Struct({

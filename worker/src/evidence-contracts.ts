@@ -515,8 +515,6 @@ export const decodeEvidenceStateResult = Schema.decodeUnknownResult(EvidenceStat
   onExcessProperty: "error",
 });
 
-export const decodeStoredEvidenceStateResult = decodeEvidenceStateResult;
-
 export const BrowserEvidenceResultV2Schema = Schema.Struct({
   version: Schema.Literal(2),
   jobId: IdentifierSchema,
