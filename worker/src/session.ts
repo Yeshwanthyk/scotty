@@ -32,7 +32,12 @@ import {
 } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { BackupStore, backupStoreLayer } from "./backup-store";
-import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
+import {
+  ArtifactStore,
+  artifactStoreLayer,
+  r2ArtifactStoreCapabilities,
+  type PreparedEvidenceFrame,
+} from "./artifact-store";
 import {
   ContainerEvidenceRecorder,
   containerEvidenceRecorderLayer,
@@ -62,6 +67,7 @@ import {
   publicEvidenceSummaryProjection,
   type BrowserEvidenceJobV2,
   type BrowserEvidenceResultV2,
+  type CompleteEvidenceStepPublicationV2,
   type EvidenceActiveJobV2,
   type EvidenceArtifactV2,
   type EvidenceJobSummaryV2,
@@ -508,6 +514,29 @@ const evidenceControlFailureCode = (error: unknown) => {
     return "artifact_over_budget" as const;
   return "interrupted" as const;
 };
+
+const evidenceStepPublication = (input: CompleteEvidenceStepPublicationV2) => ({
+  index: input.index,
+  startedAt: input.startedAt,
+  completedAt: input.completedAt,
+  offsetMillis: input.offsetMillis,
+  assertions: input.assertions,
+});
+
+interface EvidenceStepFrameOutcome {
+  readonly artifact?: EvidenceArtifactV2;
+  readonly failure?: EvidenceArtifactError;
+}
+
+const evidenceStepFrameSucceeded = (artifact?: EvidenceArtifactV2): EvidenceStepFrameOutcome =>
+  artifact === undefined ? {} : { artifact };
+
+const evidenceStepFrameFailed = (failure: EvidenceArtifactError): EvidenceStepFrameOutcome => ({
+  failure,
+});
+
+const evidenceArtifactRetentionFailure = (cause: unknown): EvidenceArtifactError =>
+  new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause });
 
 const reportEvidenceControlFailure = (operation: string, error: unknown): void => {
   const artifactError = decodeEvidenceArtifactError(error);
@@ -1581,6 +1610,77 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
   });
 
+  private readonly writeEvidenceStepFrameProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    prepared: PreparedEvidenceFrame,
+  ) {
+    const artifactStore = yield* ArtifactStore;
+    yield* this.armEvidenceRetentionProgram().pipe(
+      Effect.mapError(evidenceArtifactRetentionFailure),
+    );
+    const artifact = yield* artifactStore.writeFrame(prepared);
+    yield* this.armEvidenceRetentionProgram(artifact).pipe(
+      Effect.mapError(evidenceArtifactRetentionFailure),
+    );
+    return artifact;
+  });
+
+  private readonly discardEvidenceStepFrameProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    artifact: EvidenceArtifactV2,
+    jobId: string,
+    message: string,
+  ) {
+    const evidence = yield* EvidenceStore;
+    const pending = yield* evidence.requestVerifiedDelete(artifact, "abandoned");
+    if (pending !== undefined) {
+      const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
+      if (Result.isFailure(deleted))
+        yield* Effect.sync(() =>
+          console.error(message, {
+            jobId,
+            frameId: pending.frameId,
+            error: errorName(deleted.failure),
+          }),
+        );
+    }
+    yield* this.armEvidenceRetentionFailClosedProgram();
+  });
+
+  private readonly prepareEvidenceStepFrameProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+    sessionId: string,
+    jobId: string,
+    input: CompleteEvidenceStepPublicationV2,
+  ) {
+    const frame = input.frame;
+    if (frame === undefined) return evidenceStepFrameSucceeded();
+    const artifactStore = yield* ArtifactStore;
+    const preparedResult = yield* Effect.result(
+      artifactStore.prepareFrame({
+        sessionId,
+        jobId,
+        frameId: frame.frameId,
+        bytes: frame.bytes,
+        capturedAt: frame.capturedAt,
+        offsetMillis: frame.offsetMillis,
+      }),
+    );
+    if (Result.isFailure(preparedResult)) return evidenceStepFrameFailed(preparedResult.failure);
+    const prepared = preparedResult.success;
+    const evidence = yield* EvidenceStore;
+    yield* evidence.prepareArtifactUpload(nonce, input.index, prepared.artifact);
+    const published = yield* Effect.result(this.writeEvidenceStepFrameProgram(prepared));
+    if (Result.isSuccess(published)) return evidenceStepFrameSucceeded(published.success);
+    yield* this.discardEvidenceStepFrameProgram(
+      prepared.artifact,
+      jobId,
+      "Unpublished evidence frame deletion remains authoritative and pending",
+    );
+    return evidenceStepFrameFailed(published.failure);
+  });
+
   private readonly completeScottyEvidenceStepProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     nonce: string,
@@ -1599,83 +1699,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const record = yield* this.requireRecordProgram();
     if (record.operation?.kind !== "evidence" || record.operation.nonce !== nonce)
       return yield* new EvidenceStateError({ reason: "lease_changed" });
-    const frame = input.frame;
+
     const failedAssertion = input.assertions.some((assertion) => !assertion.passed);
-    const artifactStore = yield* ArtifactStore;
-    const frameInput =
-      frame === undefined
-        ? undefined
-        : {
-            sessionId: record.id,
-            jobId: active.jobId,
-            frameId: frame.frameId,
-            bytes: frame.bytes,
-            capturedAt: frame.capturedAt,
-            offsetMillis: frame.offsetMillis,
-          };
-    const preparedResult =
-      frameInput === undefined
-        ? Result.succeed(undefined)
-        : yield* Effect.result(artifactStore.prepareFrame(frameInput));
-    if (Result.isFailure(preparedResult) && !failedAssertion) return yield* preparedResult.failure;
-    const prepared = Result.isSuccess(preparedResult) ? preparedResult.success : undefined;
-    let artifact: EvidenceArtifactV2 | undefined;
-    let artifactFailure: EvidenceArtifactError | undefined = Result.isFailure(preparedResult)
-      ? preparedResult.failure
-      : undefined;
-    if (prepared !== undefined) {
-      yield* evidence.prepareArtifactUpload(nonce, input.index, prepared.artifact);
-      const pendingRetention = yield* Effect.result(
-        this.armEvidenceRetentionProgram().pipe(
-          Effect.mapError(
-            (cause) =>
-              new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
-          ),
-        ),
-      );
-      if (Result.isFailure(pendingRetention)) {
-        artifactFailure = pendingRetention.failure;
-      } else {
-        const written = yield* Effect.result(artifactStore.writeFrame(prepared));
-        if (Result.isFailure(written)) {
-          artifactFailure = written.failure;
-        } else {
-          const availableRetention = yield* Effect.result(
-            this.armEvidenceRetentionProgram(written.success).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
-              ),
-            ),
-          );
-          if (Result.isFailure(availableRetention)) artifactFailure = availableRetention.failure;
-          else artifact = written.success;
-        }
-      }
-    }
-    if (artifactFailure !== undefined && prepared !== undefined) {
-      const pending = yield* evidence.requestVerifiedDelete(prepared.artifact, "abandoned");
-      if (pending !== undefined) {
-        const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
-        if (Result.isFailure(deleted))
-          yield* Effect.sync(() =>
-            console.error("Unpublished evidence frame deletion remains authoritative and pending", {
-              jobId: active.jobId,
-              frameId: pending.frameId,
-              error: errorName(deleted.failure),
-            }),
-          );
-      }
-      yield* this.armEvidenceRetentionFailClosedProgram();
-    }
-    if (artifactFailure !== undefined && !failedAssertion) return yield* artifactFailure;
-    const publication = {
-      index: input.index,
-      startedAt: input.startedAt,
-      completedAt: input.completedAt,
-      offsetMillis: input.offsetMillis,
-      assertions: input.assertions,
-    };
+    const frame = yield* this.prepareEvidenceStepFrameProgram(
+      nonce,
+      record.id,
+      active.jobId,
+      input,
+    );
+    if (frame.failure !== undefined && !failedAssertion) return yield* frame.failure;
+
+    const artifact = frame.artifact;
+    const publication = evidenceStepPublication(input);
     const completed = yield* Effect.result(
       evidence.completeStep(nonce, {
         ...publication,
@@ -1683,22 +1718,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }),
     );
     if (Result.isSuccess(completed)) return completed.success;
-    if (artifact !== undefined) {
-      const pending = yield* evidence.requestVerifiedDelete(artifact, "abandoned");
-      if (pending !== undefined) {
-        const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
-        if (Result.isFailure(deleted))
-          yield* Effect.sync(() =>
-            console.error("Failed evidence frame deletion remains authoritative and pending", {
-              jobId: active.jobId,
-              frameId: artifact.frameId,
-              error: errorName(deleted.failure),
-            }),
-          );
-      }
-      yield* this.armEvidenceRetentionFailClosedProgram();
-      if (failedAssertion) return yield* evidence.completeStep(nonce, publication);
-    }
+    if (artifact === undefined) return yield* completed.failure;
+
+    yield* this.discardEvidenceStepFrameProgram(
+      artifact,
+      active.jobId,
+      "Failed evidence frame deletion remains authoritative and pending",
+    );
+    if (failedAssertion) return yield* evidence.completeStep(nonce, publication);
     return yield* completed.failure;
   });
 
