@@ -11,3 +11,4 @@
 /worker/prebuilt/
 /.scotty-adoption.json
 /vendor/
+.scotty-lab/

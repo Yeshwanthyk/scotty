@@ -32,7 +32,12 @@ import {
 } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { BackupStore, backupStoreLayer } from "./backup-store";
-import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
+import {
+  ArtifactStore,
+  artifactStoreLayer,
+  r2ArtifactStoreCapabilities,
+  type PreparedEvidenceFrame,
+} from "./artifact-store";
 import {
   ContainerEvidenceRecorder,
   containerEvidenceRecorderLayer,
@@ -44,7 +49,7 @@ import {
   hatchStoreLayer,
   type HatchCleanupAuthority,
   type HatchWebSocketAuthorization,
-} from "./hatch-store";
+} from "./hatch/store";
 import {
   EVIDENCE_JOB_TIMEOUT_MILLIS,
   EVIDENCE_PREVIEW_PRIVATE_CLAIMED_HEADER,
@@ -62,6 +67,7 @@ import {
   publicEvidenceSummaryProjection,
   type BrowserEvidenceJobV2,
   type BrowserEvidenceResultV2,
+  type CompleteEvidenceStepPublicationV2,
   type EvidenceActiveJobV2,
   type EvidenceArtifactV2,
   type EvidenceJobSummaryV2,
@@ -99,6 +105,7 @@ import {
   decodeHatchWebSocketId,
   hatchOrigin,
   publicHatchStatusProjection,
+  sameHatchAuthorization,
   type HatchCleanupRetryV1,
   type HatchCleanupTarget,
   type HatchHostRouteV1,
@@ -109,7 +116,7 @@ import {
   type HatchWebSocketPermitV1,
   type IssuedHatchPermitV1,
   type PublicHatchStatusV1,
-} from "./hatch-contracts";
+} from "./hatch/contracts";
 import { sha256Hex } from "./digest";
 import {
   EvidenceWorkflowControl,
@@ -508,6 +515,29 @@ const evidenceControlFailureCode = (error: unknown) => {
   return "interrupted" as const;
 };
 
+const evidenceStepPublication = (input: CompleteEvidenceStepPublicationV2) => ({
+  index: input.index,
+  startedAt: input.startedAt,
+  completedAt: input.completedAt,
+  offsetMillis: input.offsetMillis,
+  assertions: input.assertions,
+});
+
+interface EvidenceStepFrameOutcome {
+  readonly artifact?: EvidenceArtifactV2;
+  readonly failure?: EvidenceArtifactError;
+}
+
+const evidenceStepFrameSucceeded = (artifact?: EvidenceArtifactV2): EvidenceStepFrameOutcome =>
+  artifact === undefined ? {} : { artifact };
+
+const evidenceStepFrameFailed = (failure: EvidenceArtifactError): EvidenceStepFrameOutcome => ({
+  failure,
+});
+
+const evidenceArtifactRetentionFailure = (cause: unknown): EvidenceArtifactError =>
+  new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause });
+
 const reportEvidenceControlFailure = (operation: string, error: unknown): void => {
   const artifactError = decodeEvidenceArtifactError(error);
   console.error("Evidence control failed", {
@@ -564,6 +594,8 @@ interface PendingHatchWebSocket {
   readonly authorization: HatchWebSocketAuthorization;
   readonly expiresAtMillis: number;
 }
+
+type HatchWebSocketForwardingRoute = HatchHostRouteV1 & { readonly socketId: string };
 
 interface TrackedHatchWebSocket {
   readonly authorization: HatchWebSocketAuthorization;
@@ -1578,6 +1610,77 @@ export class Sandbox extends BaseSandbox<Bindings> {
       );
   });
 
+  private readonly writeEvidenceStepFrameProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    prepared: PreparedEvidenceFrame,
+  ) {
+    const artifactStore = yield* ArtifactStore;
+    yield* this.armEvidenceRetentionProgram().pipe(
+      Effect.mapError(evidenceArtifactRetentionFailure),
+    );
+    const artifact = yield* artifactStore.writeFrame(prepared);
+    yield* this.armEvidenceRetentionProgram(artifact).pipe(
+      Effect.mapError(evidenceArtifactRetentionFailure),
+    );
+    return artifact;
+  });
+
+  private readonly discardEvidenceStepFrameProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    artifact: EvidenceArtifactV2,
+    jobId: string,
+    message: string,
+  ) {
+    const evidence = yield* EvidenceStore;
+    const pending = yield* evidence.requestVerifiedDelete(artifact, "abandoned");
+    if (pending !== undefined) {
+      const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
+      if (Result.isFailure(deleted))
+        yield* Effect.sync(() =>
+          console.error(message, {
+            jobId,
+            frameId: pending.frameId,
+            error: errorName(deleted.failure),
+          }),
+        );
+    }
+    yield* this.armEvidenceRetentionFailClosedProgram();
+  });
+
+  private readonly prepareEvidenceStepFrameProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    nonce: string,
+    sessionId: string,
+    jobId: string,
+    input: CompleteEvidenceStepPublicationV2,
+  ) {
+    const frame = input.frame;
+    if (frame === undefined) return evidenceStepFrameSucceeded();
+    const artifactStore = yield* ArtifactStore;
+    const preparedResult = yield* Effect.result(
+      artifactStore.prepareFrame({
+        sessionId,
+        jobId,
+        frameId: frame.frameId,
+        bytes: frame.bytes,
+        capturedAt: frame.capturedAt,
+        offsetMillis: frame.offsetMillis,
+      }),
+    );
+    if (Result.isFailure(preparedResult)) return evidenceStepFrameFailed(preparedResult.failure);
+    const prepared = preparedResult.success;
+    const evidence = yield* EvidenceStore;
+    yield* evidence.prepareArtifactUpload(nonce, input.index, prepared.artifact);
+    const published = yield* Effect.result(this.writeEvidenceStepFrameProgram(prepared));
+    if (Result.isSuccess(published)) return evidenceStepFrameSucceeded(published.success);
+    yield* this.discardEvidenceStepFrameProgram(
+      prepared.artifact,
+      jobId,
+      "Unpublished evidence frame deletion remains authoritative and pending",
+    );
+    return evidenceStepFrameFailed(published.failure);
+  });
+
   private readonly completeScottyEvidenceStepProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     nonce: string,
@@ -1596,83 +1699,18 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const record = yield* this.requireRecordProgram();
     if (record.operation?.kind !== "evidence" || record.operation.nonce !== nonce)
       return yield* new EvidenceStateError({ reason: "lease_changed" });
-    const frame = input.frame;
+
     const failedAssertion = input.assertions.some((assertion) => !assertion.passed);
-    const artifactStore = yield* ArtifactStore;
-    const frameInput =
-      frame === undefined
-        ? undefined
-        : {
-            sessionId: record.id,
-            jobId: active.jobId,
-            frameId: frame.frameId,
-            bytes: frame.bytes,
-            capturedAt: frame.capturedAt,
-            offsetMillis: frame.offsetMillis,
-          };
-    const preparedResult =
-      frameInput === undefined
-        ? Result.succeed(undefined)
-        : yield* Effect.result(artifactStore.prepareFrame(frameInput));
-    if (Result.isFailure(preparedResult) && !failedAssertion) return yield* preparedResult.failure;
-    const prepared = Result.isSuccess(preparedResult) ? preparedResult.success : undefined;
-    let artifact: EvidenceArtifactV2 | undefined;
-    let artifactFailure: EvidenceArtifactError | undefined = Result.isFailure(preparedResult)
-      ? preparedResult.failure
-      : undefined;
-    if (prepared !== undefined) {
-      yield* evidence.prepareArtifactUpload(nonce, input.index, prepared.artifact);
-      const pendingRetention = yield* Effect.result(
-        this.armEvidenceRetentionProgram().pipe(
-          Effect.mapError(
-            (cause) =>
-              new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
-          ),
-        ),
-      );
-      if (Result.isFailure(pendingRetention)) {
-        artifactFailure = pendingRetention.failure;
-      } else {
-        const written = yield* Effect.result(artifactStore.writeFrame(prepared));
-        if (Result.isFailure(written)) {
-          artifactFailure = written.failure;
-        } else {
-          const availableRetention = yield* Effect.result(
-            this.armEvidenceRetentionProgram(written.success).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new EvidenceArtifactError({ operation: "put", reason: "put_unknown", cause }),
-              ),
-            ),
-          );
-          if (Result.isFailure(availableRetention)) artifactFailure = availableRetention.failure;
-          else artifact = written.success;
-        }
-      }
-    }
-    if (artifactFailure !== undefined && prepared !== undefined) {
-      const pending = yield* evidence.requestVerifiedDelete(prepared.artifact, "abandoned");
-      if (pending !== undefined) {
-        const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
-        if (Result.isFailure(deleted))
-          yield* Effect.sync(() =>
-            console.error("Unpublished evidence frame deletion remains authoritative and pending", {
-              jobId: active.jobId,
-              frameId: pending.frameId,
-              error: errorName(deleted.failure),
-            }),
-          );
-      }
-      yield* this.armEvidenceRetentionFailClosedProgram();
-    }
-    if (artifactFailure !== undefined && !failedAssertion) return yield* artifactFailure;
-    const publication = {
-      index: input.index,
-      startedAt: input.startedAt,
-      completedAt: input.completedAt,
-      offsetMillis: input.offsetMillis,
-      assertions: input.assertions,
-    };
+    const frame = yield* this.prepareEvidenceStepFrameProgram(
+      nonce,
+      record.id,
+      active.jobId,
+      input,
+    );
+    if (frame.failure !== undefined && !failedAssertion) return yield* frame.failure;
+
+    const artifact = frame.artifact;
+    const publication = evidenceStepPublication(input);
     const completed = yield* Effect.result(
       evidence.completeStep(nonce, {
         ...publication,
@@ -1680,22 +1718,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }),
     );
     if (Result.isSuccess(completed)) return completed.success;
-    if (artifact !== undefined) {
-      const pending = yield* evidence.requestVerifiedDelete(artifact, "abandoned");
-      if (pending !== undefined) {
-        const deleted = yield* Effect.result(this.deleteEvidenceArtifactsProgram([pending]));
-        if (Result.isFailure(deleted))
-          yield* Effect.sync(() =>
-            console.error("Failed evidence frame deletion remains authoritative and pending", {
-              jobId: active.jobId,
-              frameId: artifact.frameId,
-              error: errorName(deleted.failure),
-            }),
-          );
-      }
-      yield* this.armEvidenceRetentionFailClosedProgram();
-      if (failedAssertion) return yield* evidence.completeStep(nonce, publication);
-    }
+    if (artifact === undefined) return yield* completed.failure;
+
+    yield* this.discardEvidenceStepFrameProgram(
+      artifact,
+      active.jobId,
+      "Failed evidence frame deletion remains authoritative and pending",
+    );
+    if (failedAssertion) return yield* evidence.completeStep(nonce, publication);
     return yield* completed.failure;
   });
 
@@ -2865,6 +2895,58 @@ export class Sandbox extends BaseSandbox<Bindings> {
     yield* backups.restore(backup);
   });
 
+  private readonly enforceHardCapWithoutOperationProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+  ) {
+    if (record.execution.provider === "runner") {
+      const acquired = yield* Effect.result(
+        this.acquireOperationProgram("snapshot", ["warm", "booting"]),
+      );
+      if (Result.isFailure(acquired)) return;
+      const stopped = yield* Effect.result(
+        this.stopRunnerIntoSleepingProgram(
+          record,
+          acquired.success.nonce,
+          `hard-cap-${acquired.success.nonce}`,
+          true,
+        ),
+      );
+      if (Result.isFailure(stopped))
+        yield* Effect.sync(() =>
+          console.error("Runner hard-cap stop failed", {
+            sessionId: record.id,
+            error: errorName(stopped.failure),
+          }),
+        );
+      return;
+    }
+
+    const operationResult = yield* Effect.result(
+      this.acquireOperationProgram("snapshot", ["warm", "booting"]),
+    );
+    if (Result.isFailure(operationResult)) {
+      const current = yield* this.readRecordProgram();
+      if (current)
+        yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
+      return;
+    }
+    const operation = operationResult.success;
+    const stopped = yield* Effect.result(
+      Effect.gen({ self: this }, function* () {
+        yield* this.restoreHardCapWorkspaceIfMissingProgram(record);
+        yield* this.checkpointProgram(operation.nonce, false, false);
+        yield* this.stopAfterCheckpointProgram(operation.nonce);
+      }),
+    );
+    if (Result.isSuccess(stopped)) return;
+    const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
+    if (Predicate.isTagged(stopped.failure, "ManagedStopArmedError") || pending) return;
+    const current = yield* this.readRecordProgram();
+    if (current)
+      yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
+  });
+
   private readonly enforceHardCapProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     payload: HardCapPayload,
@@ -2940,52 +3022,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }
     }
 
-    if (record.execution.provider === "runner") {
-      const acquired = yield* Effect.result(
-        this.acquireOperationProgram("snapshot", ["warm", "booting"]),
-      );
-      if (Result.isFailure(acquired)) return;
-      const stopped = yield* Effect.result(
-        this.stopRunnerIntoSleepingProgram(
-          record,
-          acquired.success.nonce,
-          `hard-cap-${acquired.success.nonce}`,
-          true,
-        ),
-      );
-      if (Result.isFailure(stopped))
-        yield* Effect.sync(() =>
-          console.error("Runner hard-cap stop failed", {
-            sessionId: record.id,
-            error: errorName(stopped.failure),
-          }),
-        );
-      return;
-    }
-
-    const operationResult = yield* Effect.result(
-      this.acquireOperationProgram("snapshot", ["warm", "booting"]),
-    );
-    if (Result.isFailure(operationResult)) {
-      const current = yield* this.readRecordProgram();
-      if (current)
-        yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
-      return;
-    }
-    const operation = operationResult.success;
-    const stopped = yield* Effect.result(
-      Effect.gen({ self: this }, function* () {
-        yield* this.restoreHardCapWorkspaceIfMissingProgram(record);
-        yield* this.checkpointProgram(operation.nonce, false, false);
-        yield* this.stopAfterCheckpointProgram(operation.nonce);
-      }),
-    );
-    if (Result.isSuccess(stopped)) return;
-    const pending = yield* this.isManagedStopPendingProgram(operation.nonce);
-    if (Predicate.isTagged(stopped.failure, "ManagedStopArmedError") || pending) return;
-    const current = yield* this.readRecordProgram();
-    if (current)
-      yield* this.markHardCapFailureProgram(current, "Hard-cap checkpoint or shutdown failed");
+    yield* this.enforceHardCapWithoutOperationProgram(record);
   });
 
   private readonly onActivityExpiredProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -3415,7 +3452,12 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (Result.isSuccess(health) && health.success >= 200 && health.success <= 399) return true;
     const operationNonce = `health-${randomToken(8)}`;
     const cleaned = yield* Effect.result(
-      this.cleanupHatchProgram(operationNonce, "unhealthy", false, "health_check"),
+      this.cleanupHatchProgram(operationNonce, "unhealthy", false, {
+        kind: "health_check",
+        hatchId: authorization.hatchId,
+        generation: authorization.generation,
+        runtimeEpoch: authorization.runtimeEpoch,
+      }),
     );
     if (Result.isFailure(cleaned))
       yield* hostEffect("schedule", () =>
@@ -3955,7 +3997,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private readonly hatchWebSocketForwardingRoute = (
     request: Request,
-  ): (HatchHostRouteV1 & { readonly socketId: string }) | undefined => {
+  ): HatchWebSocketForwardingRoute | undefined => {
     const socketId = request.headers.get(HATCH_PRIVATE_WEBSOCKET_HEADER);
     const portValue = request.headers.get(SANDBOX_PREVIEW_PORT_HEADER);
     const sessionId = request.headers.get(SANDBOX_PREVIEW_SANDBOX_ID_HEADER);
@@ -3972,6 +4014,45 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return undefined;
     const decoded = decodeHatchHostRoute({ sessionId, port: Number(portValue), routeNonce });
     return Option.isSome(decoded) ? { ...decoded.value, socketId } : undefined;
+  };
+
+  private readonly isHatchWebSocketForwardRequest = (
+    request: Request,
+    route: HatchWebSocketForwardingRoute | undefined,
+  ): route is HatchWebSocketForwardingRoute =>
+    route !== undefined &&
+    request.method === "GET" &&
+    request.headers.get("upgrade")?.toLowerCase() === "websocket" &&
+    request.headers
+      .get("connection")
+      ?.split(",")
+      .some((token) => token.trim().toLowerCase() === "upgrade") === true;
+
+  private readonly takeHatchWebSocketAdmission = (
+    route: HatchWebSocketForwardingRoute,
+    nowMillis: number,
+  ): PendingHatchWebSocket | undefined => {
+    const pending = this.hatchWebSocketAdmissions.get(route.socketId);
+    this.hatchWebSocketAdmissions.delete(route.socketId);
+    if (
+      pending === undefined ||
+      pending.expiresAtMillis <= nowMillis ||
+      pending.authorization.sessionId !== route.sessionId ||
+      pending.authorization.port !== route.port ||
+      pending.authorization.routeNonce !== route.routeNonce
+    )
+      return undefined;
+    return pending;
+  };
+
+  private readonly sameHatchWebSocketAuthorization = (
+    current: HatchRouteAuthorizationV1 | undefined,
+    expected: HatchWebSocketAuthorization,
+  ): boolean => current !== undefined && sameHatchAuthorization(current, expected);
+
+  private readonly cleanupStaleHatchWebSocket = async (response: Response): Promise<void> => {
+    response.webSocket?.close(1008, "Stale Hatch WebSocket upgrade");
+    await response.body?.cancel();
   };
 
   private bridgeHatchWebSocket(
@@ -4189,40 +4270,19 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   private async fetchHatchWebSocket(request: Request): Promise<Response> {
     const route = this.hatchWebSocketForwardingRoute(request);
-    if (
-      route === undefined ||
-      request.method !== "GET" ||
-      request.headers.get("upgrade")?.toLowerCase() !== "websocket" ||
-      request.headers
-        .get("connection")
-        ?.split(",")
-        .some((token) => token.trim().toLowerCase() === "upgrade") !== true
-    )
+    if (!this.isHatchWebSocketForwardRequest(request, route))
       return deniedEvidencePreviewResponse();
-    const pending = this.hatchWebSocketAdmissions.get(route.socketId);
-    this.hatchWebSocketAdmissions.delete(route.socketId);
     // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: native WebSocket upgrade admission has a fixed host deadline
     const nowMillis = Date.now();
-    if (
-      pending === undefined ||
-      pending.expiresAtMillis <= nowMillis ||
-      pending.authorization.sessionId !== route.sessionId ||
-      pending.authorization.port !== route.port ||
-      pending.authorization.routeNonce !== route.routeNonce
-    )
-      return deniedEvidencePreviewResponse();
+    const pending = this.takeHatchWebSocketAdmission(route, nowMillis);
+    if (pending === undefined) return deniedEvidencePreviewResponse();
     const routeValue = {
       sessionId: route.sessionId,
       port: route.port,
       routeNonce: route.routeNonce,
     } satisfies HatchHostRouteV1;
     const current = await this.getScottyHatchRoute(routeValue);
-    if (
-      current === undefined ||
-      current.hatchId !== pending.authorization.hatchId ||
-      current.generation !== pending.authorization.generation ||
-      current.runtimeEpoch !== pending.authorization.runtimeEpoch
-    )
+    if (!this.sameHatchWebSocketAuthorization(current, pending.authorization))
       return deniedEvidencePreviewResponse();
     const headers = new Headers(request.headers);
     headers.delete(HATCH_PRIVATE_WEBSOCKET_HEADER);
@@ -4232,14 +4292,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     );
     if (response === undefined) return deniedEvidencePreviewResponse();
     const after = await this.getScottyHatchRoute(routeValue);
-    if (
-      after === undefined ||
-      after.hatchId !== pending.authorization.hatchId ||
-      after.generation !== pending.authorization.generation ||
-      after.runtimeEpoch !== pending.authorization.runtimeEpoch
-    ) {
-      response.webSocket?.close(1008, "Stale Hatch WebSocket upgrade");
-      await response.body?.cancel();
+    if (!this.sameHatchWebSocketAuthorization(after, pending.authorization)) {
+      await this.cleanupStaleHatchWebSocket(response);
       return deniedEvidencePreviewResponse();
     }
     const bridged = this.bridgeHatchWebSocket(

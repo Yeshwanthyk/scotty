@@ -1,0 +1,33 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "alchemy.run.ts",
+        "cli/scotty.ts",
+        "scripts/*.mjs",
+        "e2e/scripts/**/*.mjs",
+        "e2e/tests/*.test.mjs",
+        "protocol/*.ts",
+        "spikes/**/*.test.ts",
+        "spikes/infra/*.run.ts",
+        "spikes/infra/*-exec.ts",
+        "spikes/infra/*-sync.ts",
+        "spikes/infra/full-stack-canary-worker.ts",
+        "spikes/infra/sandbox-sdk-canary-worker.ts",
+        "desktop/fixtures/*.mjs"
+      ],
+      "project": ["cli/**/*.ts", "infra/**/*.ts", "protocol/**/*.ts"],
+      "ignoreDependencies": ["cloudflare", "@alchemy.run/cloudflare-runtime"]
+    },
+    "worker": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "tui": {
+      "entry": ["src/main.ts", "src/desktop-sidecar-main.ts", "test/**/*.test.ts"],
+      "project": ["src/**/*.ts"]
+    }
+  },
+  "ignore": ["worker/public/**", "worker/container/**"]
+}

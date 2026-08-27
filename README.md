@@ -81,10 +81,9 @@ it has the native Pi RPC worklog transport.
   compile into Scotty artifacts and are not a separately installed product.
 - `desktop/` — macOS GPUI viewport for switching among existing warm Scotty sessions.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
-- `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
+- `e2e/` — direct static contract checks, the local-live harness and helper tests, deployed route
+  checks, and an explicitly gated deployed canary.
 - `spikes/` — executable probes for the upstream Sandbox contracts.
-- [`PORTABLE_EXECUTION_PLAN.md`](PORTABLE_EXECUTION_PLAN.md) — active Cloudflare, runner,
-  Example runner, Box, connection-control, and multi-provider delivery plan.
 
 ## Security model
 
@@ -164,7 +163,7 @@ npx vitest worker/test/sandbox-runtime.test.ts
 # Effect CLI, Bun CLI, Node E2E, or operations
 npx vitest run cli/effect-test/command-tree.test.ts
 bun test cli/test/cli.test.ts
-node --test e2e/tests/local-live-script.test.mjs
+npm run test:e2e:local-live:helpers
 node --test scripts/sessions-shell.test.mjs
 
 # Format touched files and finish with the complete repository gate
@@ -175,6 +174,30 @@ npm run check
 Replace these paths with the files under change. `npm run check` verifies pinned Effect and Pi
 packages, formatting, lint, every typecheck and test suite, and the repository secret scan. The
 default suites do not use Cloudflare, Pi provider, or GitHub credentials.
+
+### Minimal local lab
+
+Use the repository-local lab when you need to run the real CLI against the production Worker in
+Wrangler local mode with Docker-backed Sandbox support:
+
+```sh
+npm run lab -- start
+npm run lab -- exec RUN_ID -- doctor --json
+npm run lab -- stop RUN_ID
+```
+
+`start` requires Docker, authenticated `gh`, Bun, and mode-0600 `~/.pi/agent/auth.json`. It uses
+isolated temporary Wrangler state and CLI `HOME`, passes a run-specific Wrangler worker name, and
+prints a JSON run ID and host after `/health` passes. Commands forwarded through `exec` use the
+actual CLI and can exercise real local Sandbox lifecycles; `doctor` alone does not create one.
+`stop` removes only Sandbox containers named for that worker. The private `.scotty-lab/run.json`
+manifest contains no credentials; ephemeral
+mode-0600 files under the system temporary directory hold the generated root token, Wrangler
+inputs, and redacted startup log until `stop`. `exec` forwards arguments directly to
+`cli/scotty.ts` without a shell and preserves its stdio and exit status.
+
+Every future complexity slice must follow the before/after representative-flow gate in
+[`docs/scotty-lab.md`](docs/scotty-lab.md) and halt immediately on unexplained divergence.
 
 When a change crosses the real Worker/Sandbox/Pi boundary, also run the local-live loop. It uses
 temporary Wrangler state and Docker containers and does not touch deployed Scotty resources:
@@ -429,20 +452,30 @@ Run `scotty owner recover` once on the intended primary browser after a fresh de
 moving to a replacement laptop. Keep `SCOTTY_TOKEN` in a password manager or another protected
 recovery location. `scotty attach <id>` opens the Pi worklog at the clean session URL and requires
 an already paired browser. Sleeping sessions must be resumed from Home before the worklog opens.
-See
-[`docs/owner-transfer-cutover.md`](docs/owner-transfer-cutover.md) before production migration.
 
 ## E2E
 
-After an evidence-runtime change, production proof requires two consecutive jobs against one fresh
-sandbox: a non-video baseline followed by the same flow with real WebM enabled. Both jobs must pass,
-the local browser and recorder processes must close definitively, Hatch must remain running, and the
-Showcase must open. A single successful job does not prove recorder cleanup or reuse.
+The repository does not ship a fake or default offline E2E suite. The direct static contract and
+local-live helper tests are included in `npm run test:all`:
 
 ```sh
-node e2e/scripts/run.mjs
+npm run test:e2e:static
+npm run test:e2e:local-live:helpers
 ```
 
-The destructive deployed canary uses the stage-isolated
-`spikes/infra/full-stack-canary.run.ts` stack and requires every stage-scoped gate documented in
-`e2e/README.md`. Its production Worker host check fails closed.
+The real local Worker, Sandbox, and Pi loop is explicit and requires Docker, `gh auth`, and Pi
+credentials; see `e2e/README.md`:
+
+```sh
+npm run test:e2e:local-live -- --no-open --no-hold
+```
+
+The non-mutating deployed route check and destructive deployed canary are also explicit:
+
+```sh
+npm run test:e2e:deployed-routes
+npm run test:e2e:deployed
+```
+
+The canary uses the stage-isolated `spikes/infra/full-stack-canary.run.ts` stack and requires every
+stage-scoped gate documented in `e2e/README.md`. Its production Worker host check fails closed.

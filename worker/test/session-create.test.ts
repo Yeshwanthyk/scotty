@@ -39,19 +39,10 @@ const assertUpstreamFailure = async (operation: Promise<unknown>): Promise<void>
   assert.strictEqual(error.code, "upstream");
 };
 
-const hostWriteFileEventIndex = (
-  events: ReadonlyArray<string>,
-  writtenFileIndex: number,
-): number => {
-  let writeEvents = 0;
-  for (let index = 0; index < events.length; index += 1) {
-    if (events[index] === "host:writeFile") {
-      if (writeEvents === writtenFileIndex) return index;
-      writeEvents += 1;
-    }
-  }
-  assert.fail("missing host:writeFile event");
-};
+const workspaceResetCommands = (commands: ReadonlyArray<string>): ReadonlyArray<string> =>
+  commands.filter((command) =>
+    command.startsWith(`rm -rf '/workspace/${SESSION_ID}' && mkdir -p '/workspace'`),
+  );
 
 describe("Sandbox create orchestration", () => {
   it("verifies the repository before any session authority or runtime mutation", async () => {
@@ -406,10 +397,7 @@ describe("Sandbox create orchestration", () => {
     ]);
 
     assert.deepStrictEqual(first, second);
-    assert.strictEqual(
-      harness.commands.filter((command) => command.startsWith("rm -rf ")).length,
-      1,
-    );
+    assert.lengthOf(workspaceResetCommands(harness.commands), 1);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
@@ -511,10 +499,7 @@ describe("Sandbox create orchestration", () => {
       harness.schedules.map((schedule) => schedule.callback),
       ["enforceHardCap"],
     );
-    assert.strictEqual(
-      harness.commands.filter((command) => command.startsWith("rm -rf ")).length,
-      1,
-    );
+    assert.lengthOf(workspaceResetCommands(harness.commands), 1);
     assert.ok(!harness.events.includes("host:destroy"));
   });
 
@@ -792,16 +777,23 @@ describe("Sandbox create orchestration", () => {
     assert.strictEqual(created.status, "warm");
     const mkdirIndex = harness.events.indexOf("host:mkdir");
     assert.ok(mkdirIndex >= 0);
-    const manifestIndex = harness.writtenFiles.findIndex(
-      (file) => file.path.includes("/.scotty/sandbox/") && file.path.endsWith("/manifest.json"),
+    const archiveIndex = harness.writtenFiles.findIndex(
+      (file) => file.path.includes("/.scotty/sandbox/.staging-") && file.path.endsWith(".tar.gz"),
     );
     const verifiedIndex = harness.writtenFiles.findIndex(
-      (file) => file.path.includes("/.scotty/sandbox/") && file.path.endsWith("/.verified"),
+      (file) =>
+        file.path.includes("/.scotty/sandbox/.staging-") && file.path.endsWith("/.verified"),
     );
-    assert.ok(manifestIndex >= 0);
+    assert.ok(archiveIndex >= 0);
     assert.ok(verifiedIndex >= 0);
-    assert.ok(hostWriteFileEventIndex(harness.events, manifestIndex) > mkdirIndex);
-    assert.ok(hostWriteFileEventIndex(harness.events, verifiedIndex) > mkdirIndex);
+    const extractionIndex = harness.commands.findIndex((command) =>
+      command.startsWith("tar -xzf "),
+    );
+    const promotionIndex = harness.commands.findIndex(
+      (command) => command.startsWith("rm -rf ") && command.includes(" && mv "),
+    );
+    assert.ok(extractionIndex >= 0);
+    assert.ok(promotionIndex > extractionIndex);
     assert.ok(harness.events.some((event) => event.startsWith("host:pi:start:")));
     assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
       digest,

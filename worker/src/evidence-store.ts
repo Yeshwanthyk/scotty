@@ -21,7 +21,7 @@ import {
   EvidenceStateError,
   artifactExpiry,
   decodeEvidenceObjectKey,
-  decodeStoredEvidenceStateResult,
+  decodeEvidenceStateResult,
   emptyEvidencePreviewAccounting,
   emptyEvidenceState,
   evidenceArtifactObjectKey,
@@ -210,7 +210,7 @@ const decodeState = (
   value === undefined
     ? Result.succeed(emptyEvidenceState())
     : Result.mapError(
-        decodeStoredEvidenceStateResult(value),
+        decodeEvidenceStateResult(value),
         () => new EvidenceStateError({ reason: "invalid" }),
       );
 
@@ -340,6 +340,227 @@ const revokePermitAccounting = (
     (current, permit) => settlePermitAccounting(current, permit.requestId, 0, 0, true),
     accounting,
   );
+type EvidencePreviewRouteInput = Pick<
+  AdmitEvidencePreviewInput,
+  "sessionId" | "port" | "routeNonce" | "runtimeEpoch" | "runtimeRunning"
+>;
+
+const sessionOwnsEvidencePreview = (session: SessionRecord, active: EvidenceActiveJobV2): boolean =>
+  session.status === "warm" &&
+  session.execution.provider === "cloudflare" &&
+  session.operation?.kind === "evidence" &&
+  session.operation.nonce === active.operationNonce;
+
+const evidencePreviewRouteMatches = (
+  session: SessionRecord,
+  active: EvidenceActiveJobV2,
+  storedRuntimeEpoch: unknown,
+  input: EvidencePreviewRouteInput,
+): boolean =>
+  session.id === input.sessionId &&
+  active.port === input.port &&
+  active.routeNonce === input.routeNonce &&
+  active.runtimeEpoch === input.runtimeEpoch &&
+  storedRuntimeEpoch === input.runtimeEpoch &&
+  active.exposure === "active" &&
+  input.runtimeRunning;
+
+const evidencePreviewWindowIsOpen = (
+  session: SessionRecord,
+  active: EvidenceActiveJobV2,
+  nowMillis: number,
+): boolean => {
+  const deadlineMillis = Date.parse(active.deadlineAt);
+  const hardCapMillis = Date.parse(session.hardCapAt);
+  return (
+    Number.isFinite(deadlineMillis) &&
+    Number.isFinite(hardCapMillis) &&
+    nowMillis < deadlineMillis &&
+    nowMillis < hardCapMillis &&
+    deadlineMillis <= hardCapMillis
+  );
+};
+
+const evidencePreviewAdmissionFits = (
+  accounting: EvidencePreviewAccountingV2,
+  input: AdmitEvidencePreviewInput,
+): boolean => {
+  const reservedBytes = accounting.permits.reduce(
+    (total, permit) => total + reservedPermitBytes(permit),
+    0,
+  );
+  const admittedBytes = input.ingressBytes + EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES;
+  return (
+    accounting.permits.length < EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS &&
+    !accounting.permits.some((permit) => permit.requestId === input.requestId) &&
+    accounting.consumedBytes + reservedBytes + admittedBytes <= EVIDENCE_PREVIEW_AGGREGATE_BYTES &&
+    accounting.consumedRequestMillis +
+      (accounting.permits.length + 1) * EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS <=
+      EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS
+  );
+};
+
+const evidencePreviewAdmissionIsAuthorized = (
+  session: SessionRecord,
+  active: EvidenceActiveJobV2,
+  storedRuntimeEpoch: unknown,
+  accounting: EvidencePreviewAccountingV2,
+  input: AdmitEvidencePreviewInput,
+  digestMatches: boolean,
+  nowMillis: number,
+): boolean =>
+  digestMatches &&
+  sessionOwnsEvidencePreview(session, active) &&
+  evidencePreviewRouteMatches(session, active, storedRuntimeEpoch, input) &&
+  evidencePreviewWindowIsOpen(session, active, nowMillis) &&
+  evidencePreviewAdmissionFits(accounting, input);
+
+const evidencePreviewClaimIsAuthorized = (
+  session: SessionRecord,
+  active: EvidenceActiveJobV2,
+  storedRuntimeEpoch: unknown,
+  permit: EvidencePreviewAccountingV2["permits"][number] | undefined,
+  input: ClaimEvidencePreviewInput,
+  nowMillis: number,
+): permit is EvidencePreviewAccountingV2["permits"][number] =>
+  permit?.state === "admitted" &&
+  permit.cookieDigest === active.previewCookieDigest &&
+  nowMillis < Date.parse(permit.expiresAt) &&
+  sessionOwnsEvidencePreview(session, active) &&
+  evidencePreviewRouteMatches(session, active, storedRuntimeEpoch, input) &&
+  evidencePreviewWindowIsOpen(session, active, nowMillis);
+
+const claimPreviewAccounting = (
+  accounting: EvidencePreviewAccountingV2,
+  requestId: string,
+  permit: EvidencePreviewAccountingV2["permits"][number] | undefined,
+  authorized: boolean,
+  nowMillis: number,
+): EvidencePreviewAccountingV2 => {
+  if (authorized)
+    return {
+      ...accounting,
+      permits: accounting.permits.map((candidate) =>
+        candidate.requestId === requestId ? { ...candidate, state: "claimed" as const } : candidate,
+      ),
+    };
+  return permit === undefined
+    ? accounting
+    : settlePermitAccounting(accounting, requestId, nowMillis, 0, true);
+};
+
+type EvidenceStepPlan = EvidenceActiveJobV2["stepPlan"][number];
+
+interface CompletedEvidenceStepTransition {
+  readonly active: EvidenceActiveJobV2;
+  readonly state: EvidenceStateV2;
+}
+
+const plannedEvidenceStep = (
+  current: EvidenceActiveJobV2,
+  input: CompleteEvidenceStepInput,
+): Result.Result<EvidenceStepPlan, EvidenceStateError> => {
+  if (input.index !== current.steps.length || input.index >= current.stepPlan.length)
+    return Result.fail(new EvidenceStateError({ reason: "step_out_of_order" }));
+  const plan = current.stepPlan[input.index];
+  if (
+    plan === undefined ||
+    input.assertions.length !== plan.assertions.length ||
+    input.assertions.some((assertion, index) => assertion.kind !== plan.assertions[index])
+  )
+    return Result.fail(new EvidenceStateError({ reason: "invalid" }));
+  return Result.succeed(plan);
+};
+
+const evidenceStepArtifactIsValid = (
+  artifact: EvidenceArtifactV2 | undefined,
+  input: CompleteEvidenceStepInput,
+  current: EvidenceActiveJobV2,
+  state: EvidenceStateV2,
+  session: SessionRecord,
+): boolean => {
+  if (artifact === undefined) return true;
+  const intent = state.artifacts.find((candidate) => candidate.objectKey === artifact.objectKey);
+  return (
+    artifact.sessionId === session.id &&
+    artifact.jobId === current.jobId &&
+    artifact.status === "available" &&
+    artifact.offsetMillis === input.offsetMillis &&
+    artifactIsCanonical(artifact) &&
+    intent?.status === "delete_pending" &&
+    artifactManifestMatches(intent, artifact) &&
+    state.pendingDeletes.some(
+      (pending) => pending.objectKey === artifact.objectKey && pending.reason === "abandoned",
+    )
+  );
+};
+
+const evidenceStepResult = (
+  plan: EvidenceStepPlan,
+  input: CompleteEvidenceStepInput,
+): EvidenceStepResult => {
+  const artifact = input.artifact;
+  return {
+    index: input.index,
+    name: plan.name,
+    action: plan.action,
+    status: input.assertions.every((assertion) => assertion.passed) ? "passed" : "failed",
+    assertions: input.assertions,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt,
+    offsetMillis: input.offsetMillis,
+    ...(artifact === undefined
+      ? {}
+      : {
+          frame: {
+            frameId: artifact.frameId,
+            sha256: artifact.sha256,
+            bytes: artifact.bytes,
+            capturedAt: artifact.capturedAt,
+            offsetMillis: artifact.offsetMillis,
+          },
+        }),
+  };
+};
+
+const completeEvidenceStepTransition = (
+  current: EvidenceActiveJobV2,
+  state: EvidenceStateV2,
+  session: SessionRecord,
+  input: CompleteEvidenceStepInput,
+): Result.Result<CompletedEvidenceStepTransition, EvidenceStateError> => {
+  const planned = plannedEvidenceStep(current, input);
+  if (Result.isFailure(planned)) return Result.fail(planned.failure);
+  if (!evidenceStepArtifactIsValid(input.artifact, input, current, state, session))
+    return Result.fail(new EvidenceStateError({ reason: "invalid" }));
+  const step = evidenceStepResult(planned.success, input);
+  const artifact = input.artifact;
+  const next: EvidenceActiveJobV2 = {
+    ...current,
+    status: "running",
+    startedAt: current.startedAt ?? input.startedAt,
+    completedSteps: current.completedSteps + 1,
+    steps: [...current.steps, step],
+    frameCount: current.frameCount + (artifact === undefined ? 0 : 1),
+  };
+  return Result.succeed({
+    active: next,
+    state: {
+      ...state,
+      activeJob: next,
+      artifacts:
+        artifact === undefined
+          ? state.artifacts
+          : state.artifacts.map((candidate) =>
+              candidate.objectKey === artifact.objectKey ? artifact : candidate,
+            ),
+      pendingDeletes:
+        artifact === undefined
+          ? state.pendingDeletes
+          : state.pendingDeletes.filter((pending) => pending.objectKey !== artifact.objectKey),
+    },
+  });
+};
 
 export const evidenceStoreLayer = (storage: SessionRecordStorage): Layer.Layer<EvidenceStore> =>
   Layer.succeed(EvidenceStore)(makeEvidenceStore(storage));
@@ -742,42 +963,19 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         const active = state.success.activeJob;
         if (active === undefined) return Result.succeed(undefined);
         const accounting = reconcileExpiredPermits(active.previewAccounting, nowMillis);
-        const deadlineMillis = Date.parse(active.deadlineAt);
-        const hardCapMillis = Date.parse(session.success.hardCapAt);
         const digestMatches =
           active.previewCookieDigest === null
             ? false
             : await constantTimeStringEqual(active.previewCookieDigest, input.cookieDigest);
-        const reservedBytes = accounting.permits.reduce(
-          (total, permit) => total + reservedPermitBytes(permit),
-          0,
+        const authorized = evidencePreviewAdmissionIsAuthorized(
+          session.success,
+          active,
+          storedRuntimeEpoch,
+          accounting,
+          input,
+          digestMatches,
+          nowMillis,
         );
-        const admittedBytes = input.ingressBytes + EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES;
-        const authorized =
-          session.success.id === input.sessionId &&
-          session.success.status === "warm" &&
-          session.success.execution.provider === "cloudflare" &&
-          session.success.operation?.kind === "evidence" &&
-          session.success.operation.nonce === active.operationNonce &&
-          active.port === input.port &&
-          active.routeNonce === input.routeNonce &&
-          active.runtimeEpoch === input.runtimeEpoch &&
-          storedRuntimeEpoch === input.runtimeEpoch &&
-          active.exposure === "active" &&
-          digestMatches &&
-          input.runtimeRunning &&
-          Number.isFinite(deadlineMillis) &&
-          Number.isFinite(hardCapMillis) &&
-          nowMillis < deadlineMillis &&
-          nowMillis < hardCapMillis &&
-          deadlineMillis <= hardCapMillis &&
-          accounting.permits.length < EVIDENCE_PREVIEW_MAX_CONCURRENT_REQUESTS &&
-          !accounting.permits.some((permit) => permit.requestId === input.requestId) &&
-          accounting.consumedBytes + reservedBytes + admittedBytes <=
-            EVIDENCE_PREVIEW_AGGREGATE_BYTES &&
-          accounting.consumedRequestMillis +
-            (accounting.permits.length + 1) * EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS <=
-            EVIDENCE_PREVIEW_AGGREGATE_REQUEST_MILLIS;
         if (!authorized) {
           if (accounting !== active.previewAccounting) {
             const reconciled = { ...active, previewAccounting: accounting };
@@ -787,8 +985,8 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         }
         const expiresAtMillis = Math.min(
           nowMillis + EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
-          deadlineMillis,
-          hardCapMillis,
+          Date.parse(active.deadlineAt),
+          Date.parse(session.success.hardCapAt),
         );
         const expiresAt = new Date(expiresAtMillis).toISOString();
         const next: EvidenceActiveJobV2 = {
@@ -857,40 +1055,21 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
         const permit = accounting.permits.find(
           (candidate) => candidate.requestId === input.requestId,
         );
-        const deadlineMillis = Date.parse(active.deadlineAt);
-        const hardCapMillis = Date.parse(session.success.hardCapAt);
-        const authorized =
-          permit?.state === "admitted" &&
-          permit.cookieDigest === active.previewCookieDigest &&
-          session.success.id === input.sessionId &&
-          session.success.status === "warm" &&
-          session.success.execution.provider === "cloudflare" &&
-          session.success.operation?.kind === "evidence" &&
-          session.success.operation.nonce === active.operationNonce &&
-          active.port === input.port &&
-          active.routeNonce === input.routeNonce &&
-          active.runtimeEpoch === input.runtimeEpoch &&
-          storedRuntimeEpoch === input.runtimeEpoch &&
-          active.exposure === "active" &&
-          input.runtimeRunning &&
-          Number.isFinite(deadlineMillis) &&
-          Number.isFinite(hardCapMillis) &&
-          nowMillis < Date.parse(permit.expiresAt) &&
-          nowMillis < deadlineMillis &&
-          nowMillis < hardCapMillis &&
-          deadlineMillis <= hardCapMillis;
-        const nextAccounting = authorized
-          ? {
-              ...accounting,
-              permits: accounting.permits.map((candidate) =>
-                candidate.requestId === input.requestId
-                  ? { ...candidate, state: "claimed" as const }
-                  : candidate,
-              ),
-            }
-          : permit === undefined
-            ? accounting
-            : settlePermitAccounting(accounting, input.requestId, nowMillis, 0, true);
+        const authorized = evidencePreviewClaimIsAuthorized(
+          session.success,
+          active,
+          storedRuntimeEpoch,
+          permit,
+          input,
+          nowMillis,
+        );
+        const nextAccounting = claimPreviewAccounting(
+          accounting,
+          input.requestId,
+          permit,
+          authorized,
+          nowMillis,
+        );
         if (nextAccounting !== active.previewAccounting) {
           const next = { ...active, previewAccounting: nextAccounting };
           await transaction.putEvidence({ ...state.success, activeJob: next });
@@ -1078,86 +1257,9 @@ const makeEvidenceStore = (storage: SessionRecordStorage): EvidenceStoreShape =>
       });
     }),
     completeStep: Effect.fnUntraced(function* (nonce, input) {
-      const active = yield* updateActive(nonce, (current, state, session) => {
-        if (input.index !== current.steps.length || input.index >= current.stepPlan.length)
-          return Result.fail(new EvidenceStateError({ reason: "step_out_of_order" }));
-        const plan = current.stepPlan[input.index];
-        if (
-          plan === undefined ||
-          input.assertions.length !== plan.assertions.length ||
-          input.assertions.some((assertion, index) => assertion.kind !== plan.assertions[index])
-        )
-          return Result.fail(new EvidenceStateError({ reason: "invalid" }));
-        const artifact = input.artifact;
-        const intent =
-          artifact === undefined
-            ? undefined
-            : state.artifacts.find((candidate) => candidate.objectKey === artifact.objectKey);
-        if (
-          artifact !== undefined &&
-          (artifact.sessionId !== session.id ||
-            artifact.jobId !== current.jobId ||
-            artifact.status !== "available" ||
-            artifact.offsetMillis !== input.offsetMillis ||
-            !artifactIsCanonical(artifact) ||
-            intent?.status !== "delete_pending" ||
-            !artifactManifestMatches(intent, artifact) ||
-            !state.pendingDeletes.some(
-              (pending) =>
-                pending.objectKey === artifact.objectKey && pending.reason === "abandoned",
-            ))
-        )
-          return Result.fail(new EvidenceStateError({ reason: "invalid" }));
-        const passed = input.assertions.every((assertion) => assertion.passed);
-        const step: EvidenceStepResult = {
-          index: input.index,
-          name: plan.name,
-          action: plan.action,
-          status: passed ? "passed" : "failed",
-          assertions: input.assertions,
-          startedAt: input.startedAt,
-          completedAt: input.completedAt,
-          offsetMillis: input.offsetMillis,
-          ...(artifact === undefined
-            ? {}
-            : {
-                frame: {
-                  frameId: artifact.frameId,
-                  sha256: artifact.sha256,
-                  bytes: artifact.bytes,
-                  capturedAt: artifact.capturedAt,
-                  offsetMillis: artifact.offsetMillis,
-                },
-              }),
-        };
-        const next: EvidenceActiveJobV2 = {
-          ...current,
-          status: "running",
-          startedAt: current.startedAt ?? input.startedAt,
-          completedSteps: current.completedSteps + 1,
-          steps: [...current.steps, step],
-          frameCount: current.frameCount + (artifact === undefined ? 0 : 1),
-        };
-        return Result.succeed({
-          active: next,
-          state: {
-            ...state,
-            activeJob: next,
-            artifacts:
-              artifact === undefined
-                ? state.artifacts
-                : state.artifacts.map((candidate) =>
-                    candidate.objectKey === artifact.objectKey ? artifact : candidate,
-                  ),
-            pendingDeletes:
-              artifact === undefined
-                ? state.pendingDeletes
-                : state.pendingDeletes.filter(
-                    (pending) => pending.objectKey !== artifact.objectKey,
-                  ),
-          },
-        });
-      });
+      const active = yield* updateActive(nonce, (current, state, session) =>
+        completeEvidenceStepTransition(current, state, session, input),
+      );
       const completed = active.steps.at(-1);
       if (completed === undefined)
         return yield* new EvidenceStateError({ reason: "step_out_of_order" });

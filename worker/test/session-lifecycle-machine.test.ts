@@ -373,6 +373,35 @@ describe("Sandbox lifecycle machine", () => {
       }),
   );
 
+  it.effect("marks a hard-cap checkpoint failure before destroying compute", () =>
+    Effect.gen(function* () {
+      const record = makeSessionRecord();
+      const harness = yield* createTestHarness({
+        initialEntries: {
+          [sessionHarnessKeys.record]: record,
+          [sessionHarnessKeys.credential]: makeStoredCredential(),
+        },
+        piSessionRunning: true,
+      });
+      harness.injectFailure("checkpointSync");
+
+      yield* Effect.promise(() => harness.sandbox.enforceHardCap({ hardCapAt: record.hardCapAt }));
+
+      const failed = harness.readRecord();
+      assert.strictEqual(failed?.status, "failed");
+      assert.strictEqual(failed?.operation, null);
+      assert.deepStrictEqual(failed?.failure, {
+        code: "hard_cap_checkpoint_failed",
+        message: "Hard-cap checkpoint or shutdown failed",
+        recoverable: false,
+      });
+      assert.isBelow(
+        harness.events.indexOf("projection:failed"),
+        harness.events.indexOf("host:destroy"),
+      );
+    }),
+  );
+
   it.effect("onActivityExpired checkpoints an idle warm session and stops into sleeping", () =>
     Effect.gen(function* () {
       const record = makeSessionRecord();

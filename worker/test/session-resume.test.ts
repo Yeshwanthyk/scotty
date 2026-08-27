@@ -153,14 +153,23 @@ describe("Sandbox resume orchestration", () => {
     assert.ok(mkdirIndex > restoreIndex);
     assert.ok(
       harness.writtenFiles.some(
-        (file) => file.path.includes("/.scotty/sandbox/") && file.path.endsWith("/manifest.json"),
+        (file) => file.path.includes("/.scotty/sandbox/.staging-") && file.path.endsWith(".tar.gz"),
       ),
     );
     assert.ok(
       harness.writtenFiles.some(
-        (file) => file.path.includes("/.scotty/sandbox/") && file.path.endsWith("/.verified"),
+        (file) =>
+          file.path.includes("/.scotty/sandbox/.staging-") && file.path.endsWith("/.verified"),
       ),
     );
+    const extractionIndex = harness.commands.findIndex((command) =>
+      command.startsWith("tar -xzf "),
+    );
+    const promotionIndex = harness.commands.findIndex(
+      (command) => command.startsWith("rm -rf ") && command.includes(" && mv "),
+    );
+    assert.ok(extractionIndex >= 0);
+    assert.ok(promotionIndex > extractionIndex);
     assert.ok(harness.events.some((event) => event.startsWith("host:pi:start:")));
     assert.deepStrictEqual(harness.readRecord()?.sandboxBundle, {
       digest,

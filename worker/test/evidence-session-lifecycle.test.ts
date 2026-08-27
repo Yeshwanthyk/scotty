@@ -569,6 +569,55 @@ describe("evidence session lifecycle", () => {
     }),
   );
 
+  it.effect("publishes only one artifact when the same step index races", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.startRuntime());
+      const accepted = yield* Effect.promise(() => harness.sandbox.acceptScottyEvidenceJob(job));
+      const publication = (frameId: string) => ({
+        index: 0,
+        startedAt: "2026-08-06T12:00:00.100Z",
+        completedAt: "2026-08-06T12:00:01.000Z",
+        offsetMillis: 1_000,
+        assertions: [{ kind: "urlPath" as const, passed: true, expected: "/", actual: "/" }],
+        frame: {
+          frameId,
+          bytes: PNG,
+          capturedAt: "2026-08-06T12:00:01.000Z",
+          offsetMillis: 1_000,
+        },
+      });
+
+      const settled = yield* Effect.promise(() =>
+        Promise.allSettled([
+          harness.sandbox.completeScottyEvidenceStep(
+            accepted.operationNonce,
+            publication("frame-race-a"),
+          ),
+          harness.sandbox.completeScottyEvidenceStep(
+            accepted.operationNonce,
+            publication("frame-race-b"),
+          ),
+        ]),
+      );
+
+      assert.lengthOf(
+        settled.filter((result) => result.status === "fulfilled"),
+        1,
+      );
+      assert.lengthOf(
+        settled.filter((result) => result.status === "rejected"),
+        1,
+      );
+      const state = harness.read<EvidenceStateV2>(sessionHarnessKeys.evidence);
+      assert.lengthOf(state?.activeJob?.steps ?? [], 1);
+      assert.lengthOf(state?.artifacts ?? [], 1);
+      assert.strictEqual(state?.artifacts[0]?.status, "available");
+      assert.deepStrictEqual(state?.pendingDeletes, []);
+      assert.lengthOf(harness.artifactKeys(), 1);
+    }),
+  );
+
   it.effect("chains the upload guard into seven-day retention before deleting from R2", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness();

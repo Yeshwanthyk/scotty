@@ -18,8 +18,8 @@ import { readBoundedBytes, readBoundedUtf8Body } from "./bounded-http";
 import { ArtifactStore, artifactStoreLayer, r2ArtifactStoreCapabilities } from "./artifact-store";
 import { decodeEvidenceIdentifier, evidenceShowcaseProjection } from "./evidence-contracts";
 import { handleEvidencePreviewRequest } from "./evidence-preview";
-import { handleHatchRequest, hatchPreviewFormAction } from "./hatch-gateway";
-import { hatchOrigin } from "./hatch-contracts";
+import { hatchOrigin } from "./hatch/contracts";
+import { handleHatchRequest, hatchPreviewFormAction } from "./hatch/gateway";
 import { ContainerProxy } from "./container-session-egress";
 import {
   badRequest,

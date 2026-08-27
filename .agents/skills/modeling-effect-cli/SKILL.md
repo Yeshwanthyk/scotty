@@ -107,4 +107,5 @@ the public runner, and do not let Effect CLI write directly around Scotty's inje
 - Keep Bun boundary tests for injected services, stable JSON, redaction, exit codes, browser
   behavior, idempotency, and `tools doctor`.
 - Run `npm run fmt`, `npm run lint:skills`, `npm run lint`, `npm run typecheck`,
-  `npm run test:cli`, `npm run test:e2e:offline`, `node e2e/scripts/scan.mjs`, and compile the CLI.
+  `npm run test:cli`, `npm run test:e2e:static`, `npm run test:e2e:local-live:helpers`,
+  `node e2e/scripts/scan.mjs`, and compile the CLI.

@@ -24,112 +24,6 @@ export const MAIN_WORKER_EXPORTS = Object.freeze([
 
 export const RUNNER_WORKER_EXPORTS = Object.freeze(["ScottyRunner"] as const);
 
-const ALLOWED_IMPORT_PREFIXES = Object.freeze(["cloudflare:", "node:"] as const);
-
-const NODE_BUILTIN_MODULE_SPECIFIERS = Object.freeze(
-  new Set([
-    "assert",
-    "assert/strict",
-    "async_hooks",
-    "buffer",
-    "child_process",
-    "cluster",
-    "console",
-    "constants",
-    "crypto",
-    "dgram",
-    "diagnostics_channel",
-    "dns",
-    "dns/promises",
-    "domain",
-    "events",
-    "fs",
-    "fs/promises",
-    "http",
-    "http2",
-    "https",
-    "inspector",
-    "module",
-    "net",
-    "os",
-    "path",
-    "path/posix",
-    "path/win32",
-    "perf_hooks",
-    "process",
-    "punycode",
-    "querystring",
-    "readline",
-    "readline/promises",
-    "repl",
-    "sqlite",
-    "stream",
-    "stream/consumers",
-    "stream/promises",
-    "stream/web",
-    "string_decoder",
-    "sys",
-    "timers",
-    "timers/promises",
-    "tls",
-    "tty",
-    "url",
-    "trace_events",
-    "util",
-    "util/types",
-    "v8",
-    "vm",
-    "wasi",
-    "worker_threads",
-    "zlib",
-  ]),
-);
-
-const isAbsoluteModuleSpecifier = (specifier: string): boolean =>
-  specifier.startsWith("/") || /^[A-Za-z]:[\\/]/u.test(specifier);
-
-const codeIndexes = (source: string): Uint8Array => {
-  const indexes = new Uint8Array(source.length);
-  let quote: "'" | '"' | "`" | undefined;
-  let lineComment = false;
-  let blockComment = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    const next = source[index + 1];
-    if (lineComment) {
-      if (character === "\n") lineComment = false;
-      continue;
-    }
-    if (blockComment) {
-      if (character === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (quote !== undefined) {
-      if (character === "\\") index += 1;
-      else if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === "/" && next === "/") {
-      lineComment = true;
-      index += 1;
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
-      continue;
-    }
-    indexes[index] = 1;
-    if (character === "'" || character === '"' || character === "`") quote = character;
-  }
-  return indexes;
-};
-
-const MODULE_SPECIFIER_PATTERN =
-  /\b(?:from\s*|import\s*(?:\(\s*)?|require\s*\(\s*)(['"])([^'"]+)\1/gu;
 const EXPORT_CLASS_PATTERN = /export\s+class\s+(\w+)/gu;
 const EXPORT_NAMED_PATTERN = /export\s*\{([^}]+)\}/gu;
 
@@ -225,24 +119,6 @@ export const missingWorkerBundleExports = (
   const exported = new Set(sources.flatMap((source) => collectExportClassNames(source)));
   return requiredExports.filter((name) => !exported.has(name));
 };
-
-export const collectBarePackageImports = (source: string): readonly string[] => {
-  const imports = new Set<string>();
-  const indexes = codeIndexes(source);
-  for (const match of source.matchAll(MODULE_SPECIFIER_PATTERN)) {
-    if (match.index === undefined || indexes[match.index] !== 1) continue;
-    const specifier = match[2];
-    if (specifier === undefined) continue;
-    if (ALLOWED_IMPORT_PREFIXES.some((prefix) => specifier.startsWith(prefix))) continue;
-    if (NODE_BUILTIN_MODULE_SPECIFIERS.has(specifier)) continue;
-    if (specifier.startsWith(".") || isAbsoluteModuleSpecifier(specifier)) continue;
-    imports.add(specifier);
-  }
-  return [...imports];
-};
-
-export const barePackageImports = (sources: readonly string[]): readonly string[] =>
-  sources.flatMap((source) => collectBarePackageImports(source));
 
 export const missingRunnerStackPlaceholders = (source: string): readonly string[] => {
   const missing: string[] = [];

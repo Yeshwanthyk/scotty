@@ -8,7 +8,6 @@ import { WorkerBundle } from "../node_modules/alchemy/lib/Cloudflare/Workers/Sou
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import {
-  barePackageImports,
   MAIN_WORKER_EXPORTS,
   missingRunnerStackPlaceholders,
   missingWorkerBundleExports,
@@ -22,6 +21,7 @@ import {
   PREBUILT_WORKER_ROOT,
   RUNNER_WORKER_EXPORTS,
 } from "../cli/src/prebuilt-worker-bundles.ts";
+import { barePackageImports } from "./prebuilt-worker-imports.mjs";
 
 const assertNoBarePackageImports = (label, sources) => {
   const bareImports = barePackageImports(sources);

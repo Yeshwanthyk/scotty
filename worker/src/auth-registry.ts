@@ -1045,22 +1045,47 @@ function validAuthority(authority: AuthAuthority): boolean {
     uniqueIds(hatchHandoffs) &&
     authority.clients.every(validClientRecord) &&
     authority.pairings.every(validPairingRecord) &&
-    hatchHandoffs.every(
-      (handoff) =>
-        validHatchHandoffRecord(handoff) &&
-        authority.clients.some((client) => client.id === handoff.browserClientId),
-    ) &&
-    (transfer === undefined ||
-      (validOwnerTransferRecord(transfer) &&
-        authority.ownership.state === "claimed" &&
-        transfer.sourceOwnerClientId === authority.ownership.ownerClientId &&
-        transfer.ownerEpoch === authority.ownership.epoch &&
-        transfer.targetClientId !== transfer.sourceOwnerClientId &&
-        authority.clients.some(
-          (client) => client.id === transfer.targetClientId && client.revokedAt === undefined,
-        ))) &&
-    (recovery === undefined ||
-      (validRecoveryGrantRecord(recovery) && recovery.ownerEpoch === authority.ownership.epoch))
+    validHatchHandoffAuthority(authority, hatchHandoffs) &&
+    validOwnerTransferAuthority(authority, transfer) &&
+    validRecoveryGrantAuthority(authority, recovery)
+  );
+}
+
+function validHatchHandoffAuthority(
+  authority: AuthAuthority,
+  handoffs: ReadonlyArray<HatchHandoffRecord>,
+): boolean {
+  return handoffs.every(
+    (handoff) =>
+      validHatchHandoffRecord(handoff) &&
+      authority.clients.some((client) => client.id === handoff.browserClientId),
+  );
+}
+
+function validOwnerTransferAuthority(
+  authority: AuthAuthority,
+  transfer: OwnerTransferRecord | undefined,
+): boolean {
+  return (
+    transfer === undefined ||
+    (validOwnerTransferRecord(transfer) &&
+      authority.ownership.state === "claimed" &&
+      transfer.sourceOwnerClientId === authority.ownership.ownerClientId &&
+      transfer.ownerEpoch === authority.ownership.epoch &&
+      transfer.targetClientId !== transfer.sourceOwnerClientId &&
+      authority.clients.some(
+        (client) => client.id === transfer.targetClientId && client.revokedAt === undefined,
+      ))
+  );
+}
+
+function validRecoveryGrantAuthority(
+  authority: AuthAuthority,
+  recovery: RecoveryGrantRecord | undefined,
+): boolean {
+  return (
+    recovery === undefined ||
+    (validRecoveryGrantRecord(recovery) && recovery.ownerEpoch === authority.ownership.epoch)
   );
 }
 

@@ -198,53 +198,96 @@ const HatchRecordV1BaseSchema = Schema.Struct({
   updatedAt: IsoTimestampSchema,
   lastHealthyAt: Schema.optionalKey(IsoTimestampSchema),
 });
+type HatchRecordV1Base = typeof HatchRecordV1BaseSchema.Type;
+
+const hasUniqueValues = (values: ReadonlyArray<string>): boolean =>
+  new Set(values).size === values.length;
+
+const isPermitConsistent = (permit: HatchBrowserPermitV1): boolean =>
+  permit.ingressBytes <= HATCH_MAX_PERMIT_BYTES &&
+  permit.responseBytes <= HATCH_MAX_PERMIT_BYTES &&
+  permit.ingressBytes + permit.responseBytes <= HATCH_MAX_PERMIT_BYTES &&
+  Date.parse(permit.createdAt) < Date.parse(permit.expiresAt);
+
+const requestReservationBytes = (request: HatchHttpRequestV1): number =>
+  request.reservedIngressBytes + request.reservedResponseBytes;
+
+const isRequestConsistent = (
+  record: HatchRecordV1Base,
+  request: HatchHttpRequestV1,
+  permitById: ReadonlyMap<string, HatchBrowserPermitV1>,
+): boolean => {
+  const permit = permitById.get(request.permitId);
+  return (
+    permit !== undefined &&
+    request.generation === record.generation &&
+    request.runtimeEpoch === record.runtimeEpoch &&
+    request.reservedIngressBytes <= HATCH_MAX_INGRESS_BYTES &&
+    request.reservedResponseBytes === HATCH_RESERVED_RESPONSE_BYTES &&
+    (request.ingressBytes === undefined || request.ingressBytes <= request.reservedIngressBytes) &&
+    Date.parse(request.admittedAt) < Date.parse(request.expiresAt) &&
+    Date.parse(request.expiresAt) <= Date.parse(permit.expiresAt)
+  );
+};
+
+const permitsHaveRoomForRequests = (
+  permits: ReadonlyArray<HatchBrowserPermitV1>,
+  requests: ReadonlyArray<HatchHttpRequestV1>,
+): boolean =>
+  permits.every((permit) => {
+    const outstanding = requests
+      .filter((request) => request.permitId === permit.permitId)
+      .reduce((total, request) => total + requestReservationBytes(request), 0);
+    return permit.ingressBytes + permit.responseBytes + outstanding <= HATCH_MAX_PERMIT_BYTES;
+  });
+
+const isActiveHatch = (record: HatchRecordV1Base): boolean =>
+  record.desiredStatus === "open" &&
+  record.observedStatus === "running" &&
+  record.runtimeEpoch !== undefined &&
+  record.exposure === "active" &&
+  record.cleanup === undefined &&
+  record.transitionNonce === undefined;
+
+const hasValidRecordTimestamps = (record: HatchRecordV1Base): boolean =>
+  Date.parse(record.createdAt) <= Date.parse(record.updatedAt) &&
+  (record.lastHealthyAt === undefined ||
+    Date.parse(record.createdAt) <= Date.parse(record.lastHealthyAt));
+
+const hasValidCleanupState = (record: HatchRecordV1Base): boolean =>
+  record.cleanup === undefined ||
+  (record.cleanup.generation === record.generation &&
+    record.cleanup.operationNonce === record.transitionNonce) ||
+  (record.cleanup.target === "gone" &&
+    record.exposure === "closed" &&
+    record.transitionNonce === undefined);
+
+const hasValidLifecycleState = (record: HatchRecordV1Base): boolean =>
+  (record.exposure !== "active" || isActiveHatch(record)) &&
+  ((record.permits.length === 0 && record.requests.length === 0) || isActiveHatch(record)) &&
+  (record.exposure !== "closed" || record.runtimeEpoch === undefined);
+
+const isConsistentHatchRecord = (record: HatchRecordV1Base): boolean => {
+  const permitIds = record.permits.map((permit) => permit.permitId);
+  const requestIds = record.requests.map((request) => request.requestId);
+  const permitById = new Map(record.permits.map((permit) => [permit.permitId, permit]));
+  return (
+    hasUniqueValues(permitIds) &&
+    hasUniqueValues(requestIds) &&
+    hasUniqueValues(record.permits.map((permit) => permit.browserClientId)) &&
+    record.permits.every(isPermitConsistent) &&
+    record.requests.every((request) => isRequestConsistent(record, request, permitById)) &&
+    permitsHaveRoomForRequests(record.permits, record.requests) &&
+    hasValidRecordTimestamps(record) &&
+    hasValidLifecycleState(record) &&
+    hasValidCleanupState(record)
+  );
+};
+
 export const HatchRecordV1Schema = HatchRecordV1BaseSchema.check(
-  Schema.makeFilter(
-    (record) => {
-      const permitIds = new Set(record.permits.map((permit) => permit.permitId));
-      const requestIds = new Set(record.requests.map((request) => request.requestId));
-      const active =
-        record.desiredStatus === "open" &&
-        record.observedStatus === "running" &&
-        record.runtimeEpoch !== undefined &&
-        record.exposure === "active" &&
-        record.cleanup === undefined &&
-        record.transitionNonce === undefined;
-      return (
-        permitIds.size === record.permits.length &&
-        requestIds.size === record.requests.length &&
-        new Set(record.permits.map((permit) => permit.browserClientId)).size ===
-          record.permits.length &&
-        record.permits.every(
-          (permit) =>
-            permit.ingressBytes <= HATCH_MAX_PERMIT_BYTES &&
-            permit.responseBytes <= HATCH_MAX_PERMIT_BYTES &&
-            permit.ingressBytes + permit.responseBytes <= HATCH_MAX_PERMIT_BYTES &&
-            Date.parse(permit.createdAt) < Date.parse(permit.expiresAt),
-        ) &&
-        record.requests.every(
-          (request) =>
-            permitIds.has(request.permitId) &&
-            request.reservedIngressBytes <= HATCH_MAX_INGRESS_BYTES &&
-            request.reservedResponseBytes === HATCH_RESERVED_RESPONSE_BYTES &&
-            Date.parse(request.admittedAt) < Date.parse(request.expiresAt),
-        ) &&
-        Date.parse(record.createdAt) <= Date.parse(record.updatedAt) &&
-        (record.lastHealthyAt === undefined ||
-          Date.parse(record.createdAt) <= Date.parse(record.lastHealthyAt)) &&
-        (record.exposure !== "active" || active) &&
-        ((record.permits.length === 0 && record.requests.length === 0) || active) &&
-        (record.exposure !== "closed" || record.runtimeEpoch === undefined) &&
-        (record.cleanup === undefined ||
-          (record.cleanup.generation === record.generation &&
-            record.cleanup.operationNonce === record.transitionNonce) ||
-          (record.cleanup.target === "gone" &&
-            record.exposure === "closed" &&
-            record.transitionNonce === undefined))
-      );
-    },
-    { expected: "an internally consistent authoritative Hatch record" },
-  ),
+  Schema.makeFilter(isConsistentHatchRecord, {
+    expected: "an internally consistent authoritative Hatch record",
+  }),
 );
 export type HatchRecordV1 = typeof HatchRecordV1Schema.Type;
 
@@ -315,6 +358,14 @@ export const HatchRouteAuthorizationV1Schema = Schema.Struct({
   runtimeEpoch: IdentifierSchema,
 });
 export type HatchRouteAuthorizationV1 = typeof HatchRouteAuthorizationV1Schema.Type;
+
+export const sameHatchAuthorization = (
+  left: Pick<HatchRouteAuthorizationV1, "hatchId" | "generation" | "runtimeEpoch">,
+  right: Pick<HatchRouteAuthorizationV1, "hatchId" | "generation" | "runtimeEpoch">,
+): boolean =>
+  left.hatchId === right.hatchId &&
+  left.generation === right.generation &&
+  left.runtimeEpoch === right.runtimeEpoch;
 
 export const HatchRequestAdmissionV1Schema = Schema.Struct({
   sessionId: SessionIdSchema,

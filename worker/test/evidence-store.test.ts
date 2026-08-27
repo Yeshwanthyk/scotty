@@ -417,6 +417,76 @@ describe("EvidenceStore", () => {
     }),
   );
 
+  it.effect("consumes a claimed permit when the same forwarding claim is replayed", () =>
+    Effect.gen(function* () {
+      const authority = makeAuthorityStorage();
+      const artifacts = makeArtifactCapabilities();
+      const testLayers = layers(authority.storage, artifacts.capabilities);
+      yield* TestClock.setTime(NOW);
+      yield* accept(testLayers);
+      yield* publishPreview(testLayers);
+      const store = yield* Effect.provide(EvidenceStore, testLayers);
+      const requestId = "9".repeat(32);
+      assert.ok(
+        (yield* store
+          .admitPreview({ ...previewAdmission(requestId), ingressBytes: 100 })
+          .pipe(Effect.provide(testLayers))) !== undefined,
+      );
+      assert.ok(
+        (yield* store
+          .claimPreview(previewAdmission(requestId))
+          .pipe(Effect.provide(testLayers))) !== undefined,
+      );
+
+      assert.strictEqual(
+        yield* store.claimPreview(previewAdmission(requestId)).pipe(Effect.provide(testLayers)),
+        undefined,
+      );
+      assert.deepStrictEqual(authority.readEvidence()?.activeJob?.previewAccounting, {
+        consumedBytes: 100 + EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+        consumedRequestMillis: EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+        permits: [],
+      });
+      yield* store.settlePreview(requestId, 1_024).pipe(Effect.provide(testLayers));
+      assert.deepStrictEqual(authority.readEvidence()?.activeJob?.previewAccounting, {
+        consumedBytes: 100 + EVIDENCE_PREVIEW_RESERVED_RESPONSE_BYTES,
+        consumedRequestMillis: EVIDENCE_PREVIEW_REQUEST_DURATION_MILLIS,
+        permits: [],
+      });
+    }),
+  );
+
+  it.effect("rejects a replayed step after committing it exactly once", () =>
+    Effect.gen(function* () {
+      const authority = makeAuthorityStorage();
+      const artifacts = makeArtifactCapabilities();
+      const testLayers = layers(authority.storage, artifacts.capabilities);
+      yield* TestClock.setTime(NOW);
+      yield* accept(testLayers);
+      const store = yield* Effect.provide(EvidenceStore, testLayers);
+      const publication = {
+        index: 0,
+        startedAt: "2026-08-06T12:00:00.100Z",
+        completedAt: "2026-08-06T12:00:01.000Z",
+        offsetMillis: 1_000,
+        assertions: [
+          { kind: "textExact" as const, passed: true, expected: "Ready", actual: "Ready" },
+        ],
+      } as const;
+      const completed = yield* store
+        .completeStep("evidence-nonce", publication)
+        .pipe(Effect.provide(testLayers));
+      assert.strictEqual(completed.index, 0);
+
+      const replayed = yield* Effect.result(
+        store.completeStep("evidence-nonce", publication).pipe(Effect.provide(testLayers)),
+      );
+      assert.deepInclude(failure(replayed), { reason: "step_out_of_order" });
+      assert.lengthOf(authority.readEvidence()?.activeJob?.steps ?? [], 1);
+      assert.strictEqual(authority.readEvidence()?.activeJob?.completedSteps, 1);
+    }),
+  );
+
   it.effect("admits, claims, and idempotently settles persisted preview accounting", () =>
     Effect.gen(function* () {
       const authority = makeAuthorityStorage();

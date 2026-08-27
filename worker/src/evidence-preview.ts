@@ -165,30 +165,26 @@ type EvidencePreviewBodyRead =
   | { readonly kind: "canceled" | "invalid"; readonly ingressBytes: number }
   | { readonly kind: "expired" };
 
-const prepareEvidencePreviewRequest = (
+const validEvidencePreviewIngress = (
   request: Request,
-): PreparedEvidencePreviewRequest | undefined => {
+  declaredIngressBytes: number | undefined,
+): boolean => {
   const method = request.method.toUpperCase();
-  if (
-    method === "CONNECT" ||
-    method === "TRACE" ||
-    hasWebSocketOrUpgradeFraming(request.headers) ||
-    textEncoder.encode(request.url).byteLength > EVIDENCE_PREVIEW_MAX_URL_BYTES ||
-    !headersWithinBounds(request.headers)
-  )
-    return undefined;
-  const contentLengthHeader = request.headers.get("content-length");
-  const declaredIngressBytes = declaredBodyLength(request.headers);
-  if (
-    request.headers.has("transfer-encoding") ||
-    (contentLengthHeader !== null && declaredIngressBytes === undefined) ||
-    (declaredIngressBytes ?? 0) > EVIDENCE_PREVIEW_MAX_BODY_BYTES
-  )
-    return undefined;
-  const parsedCookie = parsePreviewCookie(request.headers.get("cookie"));
-  if (parsedCookie === undefined) return undefined;
+  return (
+    method !== "CONNECT" &&
+    method !== "TRACE" &&
+    !hasWebSocketOrUpgradeFraming(request.headers) &&
+    textEncoder.encode(request.url).byteLength <= EVIDENCE_PREVIEW_MAX_URL_BYTES &&
+    headersWithinBounds(request.headers) &&
+    !request.headers.has("transfer-encoding") &&
+    (!request.headers.has("content-length") || declaredIngressBytes !== undefined) &&
+    (declaredIngressBytes ?? 0) <= EVIDENCE_PREVIEW_MAX_BODY_BYTES
+  );
+};
+
+const evidencePreviewHeaders = (source: Headers, forwardedCookie: string | undefined): Headers => {
   const headers = new Headers();
-  for (const [name, value] of request.headers) {
+  for (const [name, value] of source) {
     const normalized = name.toLowerCase();
     if (
       normalized === "cookie" ||
@@ -201,13 +197,22 @@ const prepareEvidencePreviewRequest = (
       continue;
     headers.append(name, value);
   }
-  if (parsedCookie.forwardedCookie !== undefined)
-    headers.set("cookie", parsedCookie.forwardedCookie);
+  if (forwardedCookie !== undefined) headers.set("cookie", forwardedCookie);
+  return headers;
+};
+
+const prepareEvidencePreviewRequest = (
+  request: Request,
+): PreparedEvidencePreviewRequest | undefined => {
+  const declaredIngressBytes = declaredBodyLength(request.headers);
+  if (!validEvidencePreviewIngress(request, declaredIngressBytes)) return undefined;
+  const parsedCookie = parsePreviewCookie(request.headers.get("cookie"));
+  if (parsedCookie === undefined) return undefined;
   return {
     cookieSecret: parsedCookie.secret,
     declaredIngressBytes,
     reservedIngressBytes: declaredIngressBytes ?? EVIDENCE_PREVIEW_MAX_BODY_BYTES,
-    headers,
+    headers: evidencePreviewHeaders(request.headers, parsedCookie.forwardedCookie),
   };
 };
 

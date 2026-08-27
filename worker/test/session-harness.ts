@@ -271,6 +271,7 @@ export interface HarnessOptions {
   readonly piSessionRunning?: boolean;
   readonly previewBase?: string;
   readonly previewExposeGate?: Promise<void>;
+  readonly hatchHealthGate?: Promise<void>;
   readonly previewRequestForwarder?: SandboxEffectOptions["previewRequestForwarder"];
   readonly hatchRequestForwarder?: SandboxEffectOptions["hatchRequestForwarder"];
   readonly repoVerifier?: SandboxEffectOptions["repoVerifier"];
@@ -610,6 +611,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   }
   let piSessionRunning = options.piSessionRunning ?? false;
   let rawPiContainerRunning = false;
+  let hatchHealthGate = options.hatchHealthGate;
   const failures = new Set<HarnessFailureStage>();
   if (options.failureStage !== undefined) failures.add(options.failureStage);
   let sandboxConfigStatusCalls = 0;
@@ -1239,6 +1241,9 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         const pathname = new URL(request.url).pathname;
         if (port !== 43_117) {
           events.push(`host:hatch:health:${port}:${pathname}`);
+          const healthGate = hatchHealthGate;
+          hatchHealthGate = undefined;
+          await healthGate;
           return failures.has("hatchHealth")
             ? new Response("unhealthy", { status: 503 })
             : new Response("healthy");

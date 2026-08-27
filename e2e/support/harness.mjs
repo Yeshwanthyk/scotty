@@ -1,14 +1,9 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-
-export function makeTempDir(prefix = "scotty-e2e-") {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
 
 export function resolveCli() {
   const configured = process.env.SCOTTY_E2E_CLI;
@@ -76,14 +71,6 @@ export async function runCli(args, options = {}) {
   };
 }
 
-export function cliEnvironment(service, home) {
-  return {
-    HOME: home,
-    SCOTTY_HOST: service.url,
-    SCOTTY_TOKEN: service.token,
-  };
-}
-
 export function parseJson(text) {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -103,36 +90,6 @@ export async function git(args, cwd) {
   const result = await runProcess("git", args, { cwd });
   if (result.code !== 0) throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   return result.stdout.trim();
-}
-
-export async function makeGitFixture(root, branch) {
-  const remote = path.join(root, "remote.git");
-  const source = path.join(root, "source");
-  const local = path.join(root, "local");
-  fs.mkdirSync(source, { recursive: true });
-  fs.mkdirSync(local, { recursive: true });
-  await git(["init", "--bare", remote], root);
-  await git(["init", "-b", "dev"], source);
-  await git(["config", "user.name", "Scotty E2E"], source);
-  await git(["config", "user.email", "scotty-e2e@example.invalid"], source);
-  fs.writeFileSync(path.join(source, "fixture.txt"), "beam-down fixture\n");
-  await git(["add", "fixture.txt"], source);
-  await git(["commit", "-m", "fixture"], source);
-  await git(["remote", "add", "origin", remote], source);
-  await git(["push", "origin", `HEAD:refs/heads/${branch}`], source);
-  const sha = await git(["rev-parse", "HEAD"], source);
-  await git(["init", "-b", "dev"], local);
-  await git(["remote", "add", "origin", remote], local);
-  return { remote, source, local, sha };
-}
-
-export function assertNoLeaks(value, forbidden) {
-  const serialized = typeof value === "string" ? value : JSON.stringify(value);
-  const leaks = forbidden.filter((secret) => secret && serialized.includes(secret));
-  if (leaks.length)
-    throw new Error(
-      `secret leak detected (${leaks.map((secret) => `${secret.slice(0, 6)}…`).join(", ")})`,
-    );
 }
 
 export async function poll(fn, predicate, { timeoutMs = 30_000, intervalMs = 500 } = {}) {

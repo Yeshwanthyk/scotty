@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "types": ["node", "bun"]
+  },
+  "include": ["scotty-lab.ts", "scotty-lab.d.mts", "scotty-lab.test.ts"]
+}
