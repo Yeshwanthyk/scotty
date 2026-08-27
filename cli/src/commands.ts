@@ -101,8 +101,6 @@ import {
   makeInstallationTopology,
   parseInstallationName,
 } from "../../infra/installation.ts";
-import { TuiError, safeErrorMessage } from "../../tui/src/errors.ts";
-import { pairTuiClient, runTuiConsole } from "../../tui/src/main.ts";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console.ts";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -160,19 +158,6 @@ const flushCapturedOutput = (
 
 const validateSessionId = (id: string): Effect.Effect<string, CliError> =>
   SESSION_ID_PATTERN.test(id) ? Effect.succeed(id) : Effect.fail(usage("Invalid session ID"));
-
-const tuiFailure = (error: unknown): CliError => {
-  const message = safeErrorMessage(error);
-  // oxlint-disable-next-line scotty/no-instanceof-tagged-error -- boundary: translate the TUI Promise adapter's declared host error
-  const tuiError = error instanceof TuiError ? error : undefined;
-  if (tuiError?.code === "input_invalid") return usage(message);
-  return new CliError(
-    tuiError?.code ?? "tui_failed",
-    message,
-    "Check the paired-client configuration and retry.",
-    EXIT.GENERIC,
-  );
-};
 
 const synchronizeInstallationSandbox = Effect.fnUntraced(function* (
   home: string,
@@ -2209,55 +2194,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([beamUp, down, vaporize]),
   );
 
-  const tuiPair = Command.make(
-    "pair",
-    {
-      origin: Argument.string("origin").pipe(
-        Argument.withDescription("Exact Scotty Worker origin"),
-      ),
-      label: Flag.string("label").pipe(
-        Flag.withDefault("scotty tui"),
-        Flag.withDescription("Label for this standard client"),
-      ),
-      config: Flag.path("config").pipe(
-        Flag.optional,
-        Flag.withDescription("Paired-client configuration path"),
-      ),
-    },
-    ({ config, label, origin }) =>
-      Effect.gen(function* () {
-        yield* Effect.tryPromise({
-          try: () =>
-            pairTuiClient({
-              origin,
-              label,
-              ...(Option.isSome(config) ? { configPath: config.value } : {}),
-            }),
-          catch: tuiFailure,
-        });
-      }),
-  ).pipe(Command.withDescription("Pair this terminal as a standard Scotty client"));
-
-  const tui = Command.make(
-    "tui",
-    {
-      config: Flag.path("config").pipe(
-        Flag.optional,
-        Flag.withDescription("Paired-client configuration path"),
-      ),
-    },
-    ({ config }) =>
-      Effect.gen(function* () {
-        yield* Effect.tryPromise({
-          try: () => runTuiConsole(Option.getOrUndefined(config)),
-          catch: tuiFailure,
-        });
-      }),
-  ).pipe(
-    Command.withDescription("Open the interactive Scotty fleet console"),
-    Command.withSubcommands([tuiPair]),
-  );
-
   return scotty.pipe(
     Command.withSubcommands([
       init,
@@ -2282,7 +2218,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       sandbox,
       tools,
       runner,
-      tui,
     ]),
   );
 };

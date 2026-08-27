@@ -101,16 +101,32 @@ describe("standalone deployment archive", () => {
     expect(CONTAINER_STATIC_INPUTS).not.toContain("worker/public");
     expect(CONTAINER_RUNTIME_ASSETS).toEqual(["worker/container"]);
     expect(CONTAINER_STATIC_INPUTS).toContain("worker/container");
-    expect(DEPLOYMENT_INPUTS).toContain("tui/src");
-    expect(CONTAINER_INPUTS).toContain("tui/src");
-    expect(CLI_SOURCE_TREES).toContain("tui/src");
+    expect(DEPLOYMENT_INPUTS).not.toContain("tui/package.json");
+    expect(DEPLOYMENT_INPUTS).not.toContain("tui/src");
+    expect(CONTAINER_INPUTS).not.toContain("tui/package.json");
+    expect(CONTAINER_INPUTS).not.toContain("tui/src");
+    expect(CLI_SOURCE_TREES).not.toContain("tui/src");
     expect(CONTAINER_STATIC_INPUTS).not.toContain("tui/src");
+    expect(DEPLOYMENT_INPUTS).not.toContain("patches/earendil-works+pi-coding-agent+0.84.0.patch");
+    expect(CONTAINER_INPUTS).not.toContain("patches/earendil-works+pi-coding-agent+0.84.0.patch");
+    expect(CONTAINER_STATIC_INPUTS).not.toContain(
+      "patches/earendil-works+pi-coding-agent+0.84.0.patch",
+    );
+    expect(CONTAINER_STATIC_INPUTS).toContain("worker/container");
+    expect(
+      isCoveredByProjectInputs(
+        "worker/container/pi-packages/sources/scotty-hatch/package-lock.json",
+        CONTAINER_STATIC_INPUTS,
+      ),
+    ).toBe(true);
   });
 
   it("covers every project COPY source across Dockerfile stages", () => {
     const sources = listDockerfileProjectCopySources(dockerfile);
     expect(sources.length).toBeGreaterThan(0);
-    expect(sources).toContain("tui/src");
+    expect(sources).not.toContain("tui/package.json");
+    expect(sources).not.toContain("tui/src");
+    expect(sources).not.toContain("patches/earendil-works+pi-coding-agent+0.84.0.patch");
     expect(sources).toContain("worker/container/toolsets/standard.json");
     expect(sources).toContain("protocol/pi-console-shared.mjs");
     expect(sources).toContain("worker/container/pi-packages");
@@ -125,9 +141,10 @@ describe("standalone deployment archive", () => {
     expect(staticSources).toContain("package.json");
     expect(staticSources).toContain("worker/container/toolsets/standard.json");
     expect(staticSources).toContain("worker/container/pi-packages");
+    expect(staticSources).not.toContain("tui/package.json");
     expect(staticSources).not.toContain("tui/src");
     expect(staticSources).not.toContain("protocol/pi-console-shared.mjs");
-    expect(metafileSources).toContain("tui/src");
+    expect(metafileSources).not.toContain("tui/src");
     expect(metafileSources).toContain("cli/src");
     expect(metafileSources).toContain("protocol/pi-console-shared.mjs");
     expect(metafileSources).not.toContain("package.json");
@@ -144,14 +161,12 @@ describe("standalone deployment archive", () => {
 
   it("packages maintainer scripts, package metadata, and patches for the compiled CLI", () => {
     const files = [
-      "tui/package.json",
       "scripts/apply-dependency-patches.mjs",
       "scripts/container-control-plane.mjs",
       "scripts/deploy-production.mjs",
       "scripts/is-direct-run.mjs",
       "patches/alchemy+2.0.0-beta.72.patch",
       "patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
-      "patches/earendil-works+pi-coding-agent+0.84.0.patch",
     ] as const;
     for (const file of files) {
       expect(DEPLOYMENT_INPUTS).toContain(file);
@@ -162,7 +177,8 @@ describe("standalone deployment archive", () => {
       "RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund",
     );
     expect(npmCiIndex).toBeGreaterThan(-1);
-    expect(dockerfile).toContain("COPY tui/package.json tui/package.json");
+    expect(dockerfile).not.toContain("COPY tui/package.json tui/package.json");
+    expect(dockerfile).not.toContain("COPY tui/src tui/src");
     expect(dockerfile).toContain(
       "COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs",
     );
@@ -172,10 +188,6 @@ describe("standalone deployment archive", () => {
     expect(dockerfile).toContain(
       "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
     );
-    expect(dockerfile).toContain(
-      "COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch",
-    );
-    expect(dockerfile.indexOf("COPY tui/package.json tui/package.json")).toBeLessThan(npmCiIndex);
     expect(
       dockerfile.indexOf(
         "COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs",
@@ -189,11 +201,6 @@ describe("standalone deployment archive", () => {
     expect(
       dockerfile.indexOf(
         "COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch",
-      ),
-    ).toBeLessThan(npmCiIndex);
-    expect(
-      dockerfile.indexOf(
-        "COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch",
       ),
     ).toBeLessThan(npmCiIndex);
     expect(dockerfile.indexOf("RUN node scripts/apply-dependency-patches.mjs")).toBeGreaterThan(

@@ -6,7 +6,6 @@ FROM docker.io/cloudflare/sandbox:0.12.3@sha256:23f67e16131b780865a5fa5aa3c86074
 WORKDIR /build
 COPY package.json package-lock.json ./
 COPY worker/package.json worker/package.json
-COPY tui/package.json tui/package.json
 COPY scripts/apply-dependency-patches.mjs scripts/apply-dependency-patches.mjs
 COPY scripts/cloudflare-topology-data.mjs scripts/cloudflare-topology-data.mjs
 COPY scripts/container-control-plane.mjs scripts/container-control-plane.mjs
@@ -14,7 +13,6 @@ COPY scripts/deploy-production.mjs scripts/deploy-production.mjs
 COPY scripts/is-direct-run.mjs scripts/is-direct-run.mjs
 COPY patches/alchemy+2.0.0-beta.72.patch patches/alchemy+2.0.0-beta.72.patch
 COPY patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch patches/@alchemy.run+cloudflare-runtime+2.0.0-beta.72.patch
-COPY patches/earendil-works+pi-coding-agent+0.84.0.patch patches/earendil-works+pi-coding-agent+0.84.0.patch
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 RUN node scripts/apply-dependency-patches.mjs
 COPY cli/scotty.ts cli/scotty.ts
@@ -22,7 +20,6 @@ COPY cli/src cli/src
 COPY skills/scotty/SKILL.md skills/scotty/SKILL.md
 COPY infra infra
 COPY protocol protocol
-COPY tui/src tui/src
 COPY worker/src worker/src
 COPY worker/container/toolsets/standard.json worker/container/toolsets/standard.json
 RUN bun build cli/scotty.ts --compile --outfile /out/scotty \

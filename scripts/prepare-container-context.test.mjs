@@ -89,6 +89,8 @@ test("the Container context contains only static runtime assets and CLI graph in
     const sourceRoot = join(root, "worker/container/pi-packages/sources/example");
     await mkdir(join(sourceRoot, "node_modules/dependency/.git"), { recursive: true });
     await writeFile(join(sourceRoot, "index.js"), "export {};\n");
+    await writeFile(join(sourceRoot, "package.json"), '{"name":"example"}\n');
+    await writeFile(join(sourceRoot, "package-lock.json"), '{"lockfileVersion":3}\n');
     await writeFile(join(sourceRoot, "node_modules/dependency/index.js"), `${SENTINEL}\n`);
 
     await prepareContainerContext(root, {
@@ -101,6 +103,14 @@ test("the Container context contains only static runtime assets and CLI graph in
       "worker/container/pi-packages/sources/example",
     );
     assert.equal(await readFile(join(contextSource, "index.js"), "utf8"), "export {};\n");
+    assert.equal(
+      await readFile(join(contextSource, "package.json"), "utf8"),
+      '{"name":"example"}\n',
+    );
+    assert.equal(
+      await readFile(join(contextSource, "package-lock.json"), "utf8"),
+      '{"lockfileVersion":3}\n',
+    );
     await assert.rejects(
       readFile(join(contextSource, "node_modules/dependency/index.js"), "utf8"),
       {
@@ -114,13 +124,26 @@ test("the Container context contains only static runtime assets and CLI graph in
       "skills/scotty/SKILL.md\n",
     );
     for (const input of [
-      "tui/package.json",
       "scripts/apply-dependency-patches.mjs",
       "patches/alchemy+2.0.0-beta.72.patch",
-      "patches/earendil-works+pi-coding-agent+0.84.0.patch",
     ]) {
       assert.equal(await readFile(join(root, CONTAINER_CONTEXT_PATH, input), "utf8"), `${input}\n`);
     }
+    for (const input of [
+      "tui/package.json",
+      "tui/src",
+      "patches/earendil-works+pi-coding-agent+0.84.0.patch",
+    ]) {
+      assert.equal(CONTAINER_STATIC_INPUTS.includes(input), false);
+    }
+    await assert.rejects(readdir(join(root, CONTAINER_CONTEXT_PATH, "tui")), { code: "ENOENT" });
+    await assert.rejects(
+      readFile(
+        join(root, CONTAINER_CONTEXT_PATH, "patches/earendil-works+pi-coding-agent+0.84.0.patch"),
+        "utf8",
+      ),
+      { code: "ENOENT" },
+    );
     assert.equal(
       CONTAINER_STATIC_INPUTS.includes("scripts/project-container-pi-install.mjs"),
       false,

@@ -34,7 +34,7 @@ describe("compiled CLI smoke", () => {
       },
       {
         command: executable,
-        args: ["tui", "--help"],
+        args: ["tools", "list", "--json"],
         options: { cwd: "/tmp/scotty-cli-compiled-random" },
       },
     ]);

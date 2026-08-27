@@ -48,7 +48,6 @@
         "scripts/scotty-lab.ts",
         "infra/**/*.ts",
         "protocol/**/*.ts",
-        "tui/src/desktop-protocol.ts",
         "worker/src/artifact-store.ts",
         "worker/src/evidence-store.ts",
         "worker/src/evidence-workflow.ts",

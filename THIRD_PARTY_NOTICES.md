@@ -4,9 +4,6 @@ Scotty includes pinned source snapshots for its container image. Package provena
 locations are recorded in
 [`worker/container/pi-packages/THIRD_PARTY_NOTICES.md`](worker/container/pi-packages/THIRD_PARTY_NOTICES.md). Bundled skill provenance and license copies
 are recorded in [`worker/container/skills/THIRD_PARTY_NOTICES.md`](worker/container/skills/THIRD_PARTY_NOTICES.md).
-Desktop source and asset notices are recorded in
-[`desktop/THIRD_PARTY_NOTICES.md`](desktop/THIRD_PARTY_NOTICES.md). A public desktop binary remains
-blocked until its full Cargo dependency notices are generated and included.
 
 ## UsefulSoftwareCo/executor
 

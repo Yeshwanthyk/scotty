@@ -14,18 +14,13 @@
         "spikes/infra/*-exec.ts",
         "spikes/infra/*-sync.ts",
         "spikes/infra/full-stack-canary-worker.ts",
-        "spikes/infra/sandbox-sdk-canary-worker.ts",
-        "desktop/fixtures/*.mjs"
+        "spikes/infra/sandbox-sdk-canary-worker.ts"
       ],
       "project": ["cli/**/*.ts", "infra/**/*.ts", "protocol/**/*.ts"],
       "ignoreDependencies": ["cloudflare", "@alchemy.run/cloudflare-runtime"]
     },
     "worker": {
       "entry": ["test/**/*.test.ts"],
-      "project": ["src/**/*.ts"]
-    },
-    "tui": {
-      "entry": ["src/main.ts", "src/desktop-sidecar-main.ts", "test/**/*.test.ts"],
       "project": ["src/**/*.ts"]
     }
   },
