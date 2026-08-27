@@ -191,6 +191,15 @@ const rejectsAmbientAuthority = (headers: Headers): boolean => {
 const mediaType = (value: string | null): string =>
   value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
 
+const validContainerSessionUrl = (url: URL): boolean =>
+  url.protocol === "https:" &&
+  url.hostname === SCOTTY_INTERNAL_HOST &&
+  url.port === "" &&
+  url.username === "" &&
+  url.password === "" &&
+  url.search === "" &&
+  url.hash === "";
+
 async function sanitizeResponse(
   response: Response,
   action: ContainerSessionRequest["action"],
@@ -483,16 +492,7 @@ export async function handleContainerSessionEgress(
   context: EgressContext,
 ): Promise<Response> {
   const url = new URL(request.url);
-  if (
-    url.protocol !== "https:" ||
-    url.hostname !== SCOTTY_INTERNAL_HOST ||
-    url.port !== "" ||
-    url.username !== "" ||
-    url.password !== "" ||
-    url.search !== "" ||
-    url.hash !== ""
-  )
-    return rejectedRequest("Invalid container session route");
+  if (!validContainerSessionUrl(url)) return rejectedRequest("Invalid container session route");
   if (rejectsAmbientAuthority(request.headers))
     return scottyErrorResponse(
       new ScottyError("auth", "Container session request must not include ambient authority", {

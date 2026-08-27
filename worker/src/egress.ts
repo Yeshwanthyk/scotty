@@ -240,9 +240,9 @@ export const proxyChatGptProgram = Effect.fnUntraced(function* (request: Request
   return yield* forward(request, new URL(request.url), headers);
 });
 
-export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Request) {
+const decodeOAuthRefreshIntent = Effect.fnUntraced(function* (request: Request) {
   const url = new URL(request.url);
-  if (request.method !== "POST" || url.pathname !== "/oauth/token") return forbidden();
+  if (request.method !== "POST" || url.pathname !== "/oauth/token") return null;
   const requestText = yield* Effect.tryPromise({
     try: () => request.text(),
     catch: () => new EgressFailure({ reason: "transport", message: "OAuth request failed" }),
@@ -253,7 +253,13 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
     ? Object.fromEntries(new URLSearchParams(requestText))
     : Option.getOrUndefined(decodeJsonValue(requestText));
   const body = requestValue === undefined ? null : parseOAuthRefreshRequest(requestValue);
-  if (!body) return forbidden();
+  return body === null ? null : { body, formEncoded, url };
+});
+
+export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Request) {
+  const intent = yield* decodeOAuthRefreshIntent(request);
+  if (intent === null) return forbidden();
+  const { body, formEncoded, url } = intent;
   const vault = yield* EgressVault;
   const refresh = yield* vault.begin(body.refresh_token);
   const credential = refresh?.credential;
