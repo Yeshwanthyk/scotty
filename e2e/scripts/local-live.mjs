@@ -1,24 +1,25 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { createServer } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { runCli } from "../support/harness.mjs";
+import {
+  assertPortAvailable,
+  dockerContainers,
+  formatLocalDevVars,
+  removeLocalHarnessContainers,
+  requireLocalInputs,
+  ROOT,
+  startWrangler,
+  stopProcessGroup,
+  waitForWorker,
+} from "../support/local-worker.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+export { formatLocalDevVars, localHarnessContainerIds } from "../support/local-worker.mjs";
+
 const DEFAULT_PORT = 8791;
-const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -28,17 +29,6 @@ export function repositoryFromRemote(remote) {
     .match(/^(?:https:\/\/github\.com\/|git@github\.com:)([^/]+\/[^/]+?)(?:\.git)?$/u);
   if (!match?.[1]) throw new Error(`Origin is not a GitHub repository: ${remote}`);
   return match[1];
-}
-
-export function formatLocalDevVars({ rootToken, githubToken, piAuthJson }) {
-  return [
-    `SCOTTY_TOKEN=${JSON.stringify(rootToken)}`,
-    `GH_TOKEN=${JSON.stringify(githubToken)}`,
-    `PI_AUTH_JSON=${JSON.stringify(JSON.parse(piAuthJson))}`,
-    'SANDBOX_TRANSPORT="http"',
-    'SCOTTY_LOCAL_E2E="1"',
-    "",
-  ].join("\n");
 }
 
 export function messageText(value) {
@@ -112,175 +102,6 @@ function parseArguments(argv) {
     throw new Error("--repo must be OWNER/NAME");
   if (!options.hold) options.open = false;
   return options;
-}
-
-function requireExecutable(command, arguments_) {
-  try {
-    execFileSync(command, arguments_, { stdio: "ignore" });
-  } catch {
-    throw new Error(`Local live E2E requires a working ${command} command`);
-  }
-}
-
-function localInputs() {
-  const piAuthPath = path.join(homedir(), ".pi/agent/auth.json");
-  if (!existsSync(piAuthPath))
-    throw new Error(`Pi auth is missing at ${piAuthPath}; sign in with Pi first`);
-  const mode = statSync(piAuthPath).mode & 0o777;
-  if (mode !== 0o600)
-    throw new Error(`Pi auth must be mode 0600, received ${mode.toString(8).padStart(3, "0")}`);
-  const piAuthJson = readFileSync(piAuthPath, "utf8");
-  const parsed = JSON.parse(piAuthJson);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error("Pi auth must contain a provider object");
-
-  requireExecutable("docker", ["info"]);
-  requireExecutable("gh", ["auth", "status"]);
-  requireExecutable("bun", ["--version"]);
-
-  const githubToken = execFileSync("gh", ["auth", "token"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-  if (githubToken.length < 20) throw new Error("GitHub returned an invalid auth token");
-  return {
-    githubToken,
-    piAuthJson,
-    rootToken: randomBytes(32).toString("hex"),
-  };
-}
-
-async function assertPortAvailable(port) {
-  await new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => server.close(resolve));
-  });
-}
-
-function redact(text, secrets) {
-  return secrets.reduce(
-    (result, secret) => (secret ? result.replaceAll(secret, "[redacted]") : result),
-    text,
-  );
-}
-
-function dockerContainers() {
-  const output = execFileSync(
-    "docker",
-    ["ps", "-a", "--format", "{{.ID}}\t{{.Image}}\t{{.Names}}"],
-    { encoding: "utf8" },
-  );
-  return output
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [id = "", image = "", name = ""] = line.split("\t");
-      return { id, image, name };
-    });
-}
-
-export function localHarnessContainerIds(containers, baselineIds) {
-  return containers
-    .filter(
-      ({ id, image, name }) =>
-        !baselineIds.has(id) &&
-        name.startsWith("workerd-scotty-worker-ScottySandbox-") &&
-        (image.startsWith("cloudflare-dev/scottysandbox:") ||
-          image.startsWith("cloudflare/proxy-everything:")),
-    )
-    .map(({ id }) => id);
-}
-
-function removeLocalHarnessContainers(baselineIds) {
-  const ids = localHarnessContainerIds(dockerContainers(), baselineIds);
-  if (ids.length === 0) return;
-  try {
-    execFileSync("docker", ["rm", "--force", ...ids], { stdio: "ignore" });
-  } catch {}
-}
-
-function startWrangler({ envFile, persistPath, port, secrets }) {
-  const wrangler = path.join(ROOT, "node_modules/.bin/wrangler");
-  if (!existsSync(wrangler)) throw new Error("Run npm install before local live E2E");
-  const log = [];
-  const child = spawn(
-    wrangler,
-    [
-      "dev",
-      "--config",
-      "worker/wrangler.jsonc",
-      "--local",
-      "--ip",
-      "127.0.0.1",
-      "--port",
-      String(port),
-      "--inspector-port",
-      String(port + 1),
-      "--persist-to",
-      persistPath,
-      "--env-file",
-      envFile,
-      "--log-level",
-      "info",
-    ],
-    {
-      cwd: ROOT,
-      detached: true,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  const remember = (chunk) => {
-    log.push(redact(chunk.toString(), secrets));
-    if (log.length > 200) log.shift();
-  };
-  child.stdout.on("data", remember);
-  child.stderr.on("data", remember);
-  return { child, log };
-}
-
-async function stopProcessGroup(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch {
-    return;
-  }
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(5_000).then(() => {
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {}
-    }),
-  ]);
-}
-
-async function waitForWorker(host, wrangler) {
-  const deadline = Date.now() + DEFAULT_TIMEOUT_MS;
-  let lastFailure = "Worker has not responded";
-  while (Date.now() < deadline) {
-    if (wrangler.child.exitCode !== null) {
-      throw new Error(
-        `Wrangler exited with ${wrangler.child.exitCode}\n${wrangler.log.slice(-40).join("")}`,
-      );
-    }
-    try {
-      const response = await fetch(`${host}/health`);
-      if (response.ok) return;
-      lastFailure = `GET /health returned ${response.status}`;
-    } catch (error) {
-      lastFailure = error instanceof Error ? error.message : String(error);
-    }
-    await delay(1_000);
-  }
-  throw new Error(
-    `Wrangler did not become ready in ${DEFAULT_TIMEOUT_MS / 60_000} minutes: ${lastFailure}\n${wrangler.log
-      .slice(-40)
-      .join("")}`,
-  );
 }
 
 async function requireJson(response, label, expectedStatuses = [200]) {
@@ -413,7 +234,7 @@ async function run() {
   const options = parseArguments(process.argv.slice(2));
   await assertPortAvailable(options.port);
   await assertPortAvailable(options.port + 1);
-  const inputs = localInputs();
+  const inputs = requireLocalInputs();
   const baselineContainerIds = new Set(dockerContainers().map(({ id }) => id));
   const temporaryRoot = mkdtempSync(path.join(tmpdir(), "scotty-local-live-"));
   const envFile = path.join(temporaryRoot, ".dev.vars");
@@ -446,7 +267,9 @@ async function run() {
     if (cleaned) return;
     cleaned = true;
     await stopProcessGroup(wrangler.child);
-    removeLocalHarnessContainers(baselineContainerIds);
+    try {
+      removeLocalHarnessContainers(baselineContainerIds);
+    } catch {}
     rmSync(temporaryRoot, { recursive: true, force: true });
   };
   const onSignal = () => {

@@ -45,6 +45,7 @@
       "files": [
         "cli/scotty.ts",
         "cli/src/**/*.ts",
+        "scripts/scotty-lab.ts",
         "infra/**/*.ts",
         "protocol/**/*.ts",
         "tui/src/desktop-protocol.ts",

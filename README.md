@@ -175,6 +175,30 @@ Replace these paths with the files under change. `npm run check` verifies pinned
 packages, formatting, lint, every typecheck and test suite, and the repository secret scan. The
 default suites do not use Cloudflare, Pi provider, or GitHub credentials.
 
+### Minimal local lab
+
+Use the repository-local lab when you need to run the real CLI against the production Worker in
+Wrangler local mode with Docker-backed Sandbox support:
+
+```sh
+npm run lab -- start
+npm run lab -- exec RUN_ID -- doctor --json
+npm run lab -- stop RUN_ID
+```
+
+`start` requires Docker, authenticated `gh`, Bun, and mode-0600 `~/.pi/agent/auth.json`. It uses
+isolated temporary Wrangler state and CLI `HOME`, passes a run-specific Wrangler worker name, and
+prints a JSON run ID and host after `/health` passes. Commands forwarded through `exec` use the
+actual CLI and can exercise real local Sandbox lifecycles; `doctor` alone does not create one.
+`stop` removes only Sandbox containers named for that worker. The private `.scotty-lab/run.json`
+manifest contains no credentials; ephemeral
+mode-0600 files under the system temporary directory hold the generated root token, Wrangler
+inputs, and redacted startup log until `stop`. `exec` forwards arguments directly to
+`cli/scotty.ts` without a shell and preserves its stdio and exit status.
+
+Every future complexity slice must follow the before/after representative-flow gate in
+[`docs/scotty-lab.md`](docs/scotty-lab.md) and halt immediately on unexplained divergence.
+
 When a change crosses the real Worker/Sandbox/Pi boundary, also run the local-live loop. It uses
 temporary Wrangler state and Docker containers and does not touch deployed Scotty resources:
 

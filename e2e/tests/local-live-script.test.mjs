@@ -8,6 +8,7 @@ import {
   repositoryFromRemote,
   snapshotSummary,
 } from "../scripts/local-live.mjs";
+import { localHarnessContainerIdsForWorker, waitForWorker } from "../support/local-worker.mjs";
 
 test("local-live helper derives GitHub repositories from HTTPS and SSH remotes", () => {
   assert.equal(
@@ -34,6 +35,55 @@ test("local-live helper only cleans up new Scotty Wrangler containers", () => {
     { id: "other", image: "postgres:latest", name: "database" },
   ];
   assert.deepEqual(localHarnessContainerIds(containers, new Set(["old"])), ["sandbox", "proxy"]);
+});
+test("scotty-lab cleanup matches only the exact Wrangler worker name", () => {
+  const workerName = "scotty-lab-12345678";
+  const containers = [
+    {
+      id: "owned",
+      image: "cloudflare-dev/scottysandbox:two",
+      name: `workerd-${workerName}-ScottySandbox-hash`,
+    },
+    {
+      id: "owned-proxy",
+      image: "cloudflare/proxy-everything:three",
+      name: `workerd-${workerName}-ScottySandbox-hash-proxy`,
+    },
+    {
+      id: "other-worker",
+      image: "cloudflare-dev/scottysandbox:four",
+      name: "workerd-scotty-lab-87654321-ScottySandbox-hash",
+    },
+    { id: "other", image: "postgres:latest", name: `workerd-${workerName}-ScottySandbox-db` },
+  ];
+  assert.deepEqual(localHarnessContainerIdsForWorker(containers, workerName), [
+    "owned",
+    "owned-proxy",
+  ]);
+});
+
+test("local worker readiness bounds a stalled health probe", async () => {
+  const wrangler = {
+    child: { exitCode: null, signalCode: null },
+    flushLog: () => undefined,
+    log: [],
+  };
+  const stalledFetch = (_url, { signal }) =>
+    new Promise((_resolve, reject) =>
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+    );
+  const keepAlive = setTimeout(() => undefined, 1_000);
+  try {
+    await assert.rejects(
+      waitForWorker("http://127.0.0.1:1", wrangler, {
+        timeoutMs: 25,
+        fetchImpl: stalledFetch,
+      }),
+      /did not become ready/u,
+    );
+  } finally {
+    clearTimeout(keepAlive);
+  }
 });
 
 test("local-live helper writes isolated Worker inputs", () => {
