@@ -940,6 +940,25 @@ describe("real Hono boundary", () => {
       expectedRevision: 0,
     });
 
+    const malformedGzip = await app.request(
+      `/api/sandbox/bundles/${built.digest}`,
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/gzip",
+          "idempotency-key": "sandbox-sync-key-malformed-gzip",
+          "if-match": "1",
+        },
+        body: new Uint8Array([0x6e, 0x6f, 0x74, 0x2d, 0x67, 0x7a, 0x69, 0x70]),
+      },
+      env(),
+    );
+    expect(malformedGzip.status).toBe(400);
+    await expect(malformedGzip.json()).resolves.toEqual({
+      error: { code: "bad_request", message: "Sandbox archive is not valid gzip" },
+    });
+
     const invalidDigest = await app.request(
       "/api/sandbox/bundles/not-a-digest",
       {
