@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  barePackageImports,
-  collectBarePackageImports,
   collectExportClassNames,
   isPrebuiltWorkerDeploymentRoot,
   MAIN_WORKER_EXPORTS,
@@ -26,6 +24,10 @@ import {
 } from "../src/prebuilt-worker-bundles.ts";
 import { DEPLOYMENT_INPUTS } from "../src/deployment-packaging.ts";
 import { bundleDeploymentWorkers } from "../../scripts/bundle-deployment-workers.mjs";
+import {
+  barePackageImports,
+  collectBarePackageImports,
+} from "../../scripts/prebuilt-worker-imports.mjs";
 import { listPackagedFiles, materializeProjectInputs } from "../src/deployment-packaging.mjs";
 
 describe("prebuilt worker bundle helpers", () => {
@@ -131,6 +133,8 @@ describe("prebuilt worker bundle helpers", () => {
         const required = require("pkg-require");
         const text = 'import "not-an-import"';
         const template = \`from "also-not-an-import"\`;
+        const parserMessage = \`'import' and 'export' may only appear at the top level\`;
+        const parserPattern = /import' and '/u;
         // require("commented-package")
         /* import("block-comment-package") */
         import y from "cloudflare:workers";
