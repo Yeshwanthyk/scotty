@@ -246,6 +246,85 @@ const hasTransportCapability = (request) => {
   );
 };
 
+const projectSnapshotModels = (modelsResponse) => {
+  const models =
+    modelsResponse?.success === false
+      ? []
+      : (modelsResponse?.data?.models ?? modelsResponse?.models ?? []);
+  return (Array.isArray(models) ? models : []).slice(0, 100).map((model) => ({
+    provider: sanitizeRemoteString(String(model?.provider ?? "unknown")) || "unknown",
+    id: sanitizeRemoteString(String(model?.id ?? "unknown")) || "unknown",
+    ...(typeof model?.name === "string" ? { name: sanitizeRemoteString(model.name) } : {}),
+  }));
+};
+const projectSnapshotThinkingLevels = (thinkingLevelsResponse) =>
+  thinkingLevelsResponse?.success === false
+    ? []
+    : (thinkingLevelsResponse?.data?.levels ?? thinkingLevelsResponse?.levels ?? [])
+        .filter(
+          (level) =>
+            typeof level === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u.test(level),
+        )
+        .slice(0, 20);
+const projectSnapshotCommands = (commandsResponse) =>
+  filterRemoteCommands(
+    commandsResponse?.success === false
+      ? []
+      : (commandsResponse?.data?.commands ?? commandsResponse?.commands ?? []),
+  );
+const projectSnapshotCapabilities = (modelsResponse, thinkingLevelsResponse, commandsResponse) => ({
+  models: projectSnapshotModels(modelsResponse),
+  thinkingLevels: projectSnapshotThinkingLevels(thinkingLevelsResponse),
+  commands: projectSnapshotCommands(commandsResponse),
+});
+
+const projectSnapshotResponse = ({
+  snapshotEpoch,
+  baseSequence,
+  endSequence,
+  stateResponse,
+  messagesResponse,
+  overlapEvents,
+  projection,
+  pendingUi,
+  modelsResponse,
+  thinkingLevelsResponse,
+  commandsResponse,
+}) => {
+  const rawMessages = messagesResponse.data?.messages ?? messagesResponse.messages ?? [];
+  const messages = Array.isArray(rawMessages) ? rawMessages.slice(-PI_CONSOLE_MAX_MESSAGES) : [];
+  const sanitizedState = sanitizeRemoteValue(
+    stateResponse.data ?? stateResponse.state ?? stateResponse,
+  );
+  const sanitizedMessages = sanitizeRemoteValue(messages);
+  return {
+    version: PI_CONSOLE_PROTOCOL_VERSION,
+    epoch: snapshotEpoch,
+    baseSequence,
+    sequence: endSequence,
+    state: sanitizedState.value,
+    messages: sanitizedMessages.value,
+    overlapEvents,
+    activeTools: projection.activeTools,
+    queue: projection.queue,
+    pendingUi,
+    pendingUiAuthority: {
+      status: "partial",
+      reason: "pi_0_83_signal_cancellation_unobservable",
+    },
+    extensionSurface: projection.extensionSurface,
+    capabilities: projectSnapshotCapabilities(
+      modelsResponse,
+      thinkingLevelsResponse,
+      commandsResponse,
+    ),
+    truncated: {
+      messages: Array.isArray(rawMessages) && rawMessages.length > PI_CONSOLE_MAX_MESSAGES,
+      values: sanitizedState.truncated || sanitizedMessages.truncated,
+    },
+  };
+};
+
 const snapshotAttempt = async () => {
   const baseSequence = sequence;
   const [
@@ -266,59 +345,19 @@ const snapshotAttempt = async () => {
   const endSequence = sequence;
   const overlapEvents = completeSnapshotOverlap(events, baseSequence, endSequence);
   if (!overlapEvents) return undefined;
-  const rawMessages = messagesResponse.data?.messages ?? messagesResponse.messages ?? [];
-  const messages = Array.isArray(rawMessages) ? rawMessages.slice(-PI_CONSOLE_MAX_MESSAGES) : [];
-  const sanitizedState = sanitizeRemoteValue(
-    stateResponse.data ?? stateResponse.state ?? stateResponse,
-  );
-  const sanitizedMessages = sanitizeRemoteValue(messages);
-  const models =
-    modelsResponse?.success === false
-      ? []
-      : (modelsResponse?.data?.models ?? modelsResponse?.models ?? []);
-  const projection = projectionReducer.snapshot();
-  return {
-    version: PI_CONSOLE_PROTOCOL_VERSION,
-    epoch,
+  return projectSnapshotResponse({
+    snapshotEpoch: epoch,
     baseSequence,
-    sequence: endSequence,
-    state: sanitizedState.value,
-    messages: sanitizedMessages.value,
+    endSequence,
+    stateResponse,
+    messagesResponse,
     overlapEvents,
-    activeTools: projection.activeTools,
-    queue: projection.queue,
+    projection: projectionReducer.snapshot(),
     pendingUi: pendingUi.values(),
-    pendingUiAuthority: {
-      status: "partial",
-      reason: "pi_0_83_signal_cancellation_unobservable",
-    },
-    extensionSurface: projection.extensionSurface,
-    capabilities: {
-      models: (Array.isArray(models) ? models : []).slice(0, 100).map((model) => ({
-        provider: sanitizeRemoteString(String(model?.provider ?? "unknown")) || "unknown",
-        id: sanitizeRemoteString(String(model?.id ?? "unknown")) || "unknown",
-        ...(typeof model?.name === "string" ? { name: sanitizeRemoteString(model.name) } : {}),
-      })),
-      thinkingLevels:
-        thinkingLevelsResponse?.success === false
-          ? []
-          : (thinkingLevelsResponse?.data?.levels ?? thinkingLevelsResponse?.levels ?? [])
-              .filter(
-                (level) =>
-                  typeof level === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u.test(level),
-              )
-              .slice(0, 20),
-      commands: filterRemoteCommands(
-        commandsResponse?.success === false
-          ? []
-          : (commandsResponse?.data?.commands ?? commandsResponse?.commands ?? []),
-      ),
-    },
-    truncated: {
-      messages: Array.isArray(rawMessages) && rawMessages.length > PI_CONSOLE_MAX_MESSAGES,
-      values: sanitizedState.truncated || sanitizedMessages.truncated,
-    },
-  };
+    modelsResponse,
+    thinkingLevelsResponse,
+    commandsResponse,
+  });
 };
 
 const snapshot = async () => {
@@ -437,76 +476,83 @@ const handleCommand = async (body) => {
   }
 };
 
+const handleHealth = (_request, response) =>
+  jsonResponse(
+    response,
+    ready ? 200 : 503,
+    ready
+      ? { status: "ready", epoch }
+      : { status: "starting", stderr: stderrTail ? "available" : "empty" },
+  );
+
+const handleSnapshot = async (_request, response) => {
+  if (!ready) return jsonResponse(response, 503, { error: "pi_not_ready" });
+  return jsonResponse(response, 200, await snapshot());
+};
+
+const handleEvents = (request, response, url) => {
+  if (!ready) return jsonResponse(response, 503, { error: "pi_not_ready" });
+  response.writeHead(200, {
+    "cache-control": "no-cache, no-store",
+    connection: "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-accel-buffering": "no",
+  });
+  const requestedEpoch = url.searchParams.get("epoch");
+  const since = Number.parseInt(url.searchParams.get("since") ?? "0", 10);
+  if (requestedEpoch && requestedEpoch !== epoch)
+    writeSse(response, {
+      epoch,
+      sequence,
+      event: { type: "scotty_epoch_changed" },
+    });
+  else {
+    if (Number.isFinite(since) && since > 0 && events.length > 0 && events[0].sequence > since + 1)
+      writeSse(response, {
+        epoch,
+        sequence,
+        event: { type: "scotty_replay_gap" },
+      });
+    for (const envelope of events)
+      if (envelope.sequence > (Number.isFinite(since) ? since : 0)) writeSse(response, envelope);
+  }
+  subscribers.add(response);
+  const heartbeat = shouldEmitSseHeartbeat(request.headers)
+    ? setInterval(() => response.write(": keepalive\n\n"), 15_000)
+    : undefined;
+  request.on("close", () => {
+    if (heartbeat !== undefined) clearInterval(heartbeat);
+    subscribers.delete(response);
+  });
+};
+
+const handleCommandRoute = async (request, response) => {
+  if (!ready) return jsonResponse(response, 503, { error: "pi_not_ready" });
+  const result = await handleCommand(await readJsonBody(request));
+  return jsonResponse(response, result.status, result.body);
+};
+
+const handleQuiesceRoute = async (_request, response) => {
+  if (!ready) return jsonResponse(response, 503, { error: "pi_not_ready" });
+  await quiesce();
+  return jsonResponse(response, 200, { status: "quiesced" });
+};
+
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
   try {
-    if (request.method === "GET" && url.pathname === "/health") {
-      return jsonResponse(
-        response,
-        ready ? 200 : 503,
-        ready
-          ? { status: "ready", epoch }
-          : { status: "starting", stderr: stderrTail ? "available" : "empty" },
-      );
-    }
+    if (request.method === "GET" && url.pathname === "/health")
+      return handleHealth(request, response);
     if (!hasTransportCapability(request))
       return jsonResponse(response, 401, { error: "unauthorized" });
-    if (request.method === "GET" && url.pathname === "/snapshot") {
-      if (!ready) return jsonResponse(response, 503, { error: "pi_not_ready" });
-      return jsonResponse(response, 200, await snapshot());
-    }
-    if (request.method === "GET" && url.pathname === "/events") {
-      if (!ready) return jsonResponse(response, 503, { error: "pi_not_ready" });
-      response.writeHead(200, {
-        "cache-control": "no-cache, no-store",
-        connection: "keep-alive",
-        "content-type": "text/event-stream; charset=utf-8",
-        "x-accel-buffering": "no",
-      });
-      const requestedEpoch = url.searchParams.get("epoch");
-      const since = Number.parseInt(url.searchParams.get("since") ?? "0", 10);
-      if (requestedEpoch && requestedEpoch !== epoch)
-        writeSse(response, {
-          epoch,
-          sequence,
-          event: { type: "scotty_epoch_changed" },
-        });
-      else {
-        if (
-          Number.isFinite(since) &&
-          since > 0 &&
-          events.length > 0 &&
-          events[0].sequence > since + 1
-        )
-          writeSse(response, {
-            epoch,
-            sequence,
-            event: { type: "scotty_replay_gap" },
-          });
-        for (const envelope of events)
-          if (envelope.sequence > (Number.isFinite(since) ? since : 0))
-            writeSse(response, envelope);
-      }
-      subscribers.add(response);
-      const heartbeat = shouldEmitSseHeartbeat(request.headers)
-        ? setInterval(() => response.write(": keepalive\n\n"), 15_000)
-        : undefined;
-      request.on("close", () => {
-        if (heartbeat !== undefined) clearInterval(heartbeat);
-        subscribers.delete(response);
-      });
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/command") {
-      if (!ready) return jsonResponse(response, 503, { error: "pi_not_ready" });
-      const result = await handleCommand(await readJsonBody(request));
-      return jsonResponse(response, result.status, result.body);
-    }
-    if (request.method === "POST" && url.pathname === "/quiesce") {
-      if (!ready) return jsonResponse(response, 503, { error: "pi_not_ready" });
-      await quiesce();
-      return jsonResponse(response, 200, { status: "quiesced" });
-    }
+    if (request.method === "GET" && url.pathname === "/snapshot")
+      return await handleSnapshot(request, response);
+    if (request.method === "GET" && url.pathname === "/events")
+      return handleEvents(request, response, url);
+    if (request.method === "POST" && url.pathname === "/command")
+      return await handleCommandRoute(request, response);
+    if (request.method === "POST" && url.pathname === "/quiesce")
+      return await handleQuiesceRoute(request, response);
     return jsonResponse(response, 404, { error: "not_found" });
   } catch (error) {
     const message = error instanceof Error ? error.message : "request_failed";

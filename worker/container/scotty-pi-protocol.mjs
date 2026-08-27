@@ -212,32 +212,28 @@ const browserId = (value) => {
 };
 const browserOptionalText = (value, max) =>
   value === undefined ? undefined : browserText(value, max);
-const browserValidTranscript = (value) => {
+const browserValidTextTranscript = (value) => {
+  if (!browserOnlyKeys(value, ["kind", "text"])) return undefined;
+  const text = browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength);
+  return text === undefined ? undefined : { kind: value.kind, text };
+};
+const browserValidThinkingTranscript = (value) => {
   if (
-    !browserOnlyKeys(value, ["kind", "text", "redacted", "name", "args", "output", "isError"]) ||
-    typeof value.kind !== "string"
+    !browserOnlyKeys(value, ["kind", "text", "redacted"]) ||
+    (value.redacted !== undefined && typeof value.redacted !== "boolean")
   )
     return undefined;
-  if (value.kind === "user" || value.kind === "assistant")
-    return browserOnlyKeys(value, ["kind", "text"]) &&
-      browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength) !== undefined
-      ? {
-          kind: value.kind,
-          text: browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength),
-        }
-      : undefined;
-  if (value.kind === "thinking")
-    return browserOnlyKeys(value, ["kind", "text", "redacted"]) &&
-      (value.redacted === undefined || typeof value.redacted === "boolean") &&
-      browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength) !== undefined
-      ? {
-          kind: "thinking",
-          text: browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength),
-          ...(value.redacted === undefined ? {} : { redacted: value.redacted }),
-        }
-      : undefined;
+  const text = browserText(value.text, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptTextLength);
+  return text === undefined
+    ? undefined
+    : {
+        kind: "thinking",
+        text,
+        ...(value.redacted === undefined ? {} : { redacted: value.redacted }),
+      };
+};
+const browserValidToolTranscript = (value) => {
   if (
-    value.kind !== "tool" ||
     !browserOnlyKeys(value, ["kind", "name", "args", "output", "isError"]) ||
     (value.isError !== undefined && typeof value.isError !== "boolean")
   )
@@ -259,6 +255,17 @@ const browserValidTranscript = (value) => {
         ...(output === undefined ? {} : { output }),
         ...(value.isError === undefined ? {} : { isError: value.isError }),
       };
+};
+const browserValidTranscript = (value) => {
+  if (
+    !browserOnlyKeys(value, ["kind", "text", "redacted", "name", "args", "output", "isError"]) ||
+    typeof value.kind !== "string"
+  )
+    return undefined;
+  if (value.kind === "user" || value.kind === "assistant") return browserValidTextTranscript(value);
+  if (value.kind === "thinking") return browserValidThinkingTranscript(value);
+  if (value.kind !== "tool") return undefined;
+  return browserValidToolTranscript(value);
 };
 const browserValidTool = (value) => {
   if (!browserOnlyKeys(value, browserToolKeys)) return undefined;
@@ -308,14 +315,25 @@ const browserValidUsage = (value) => {
         ...(contextWindow === undefined ? {} : { contextWindow }),
       };
 };
-const browserValidChild = (value) => {
-  if (
-    !browserOnlyKeys(value, browserChildKeys) ||
-    browserId(value?.id) !== value?.id ||
-    !["pi", "claude", "codex"].includes(value?.backend) ||
-    value?.status !== "running"
-  )
-    return undefined;
+const browserValidBoundedList = (value, max, normalize) =>
+  Array.isArray(value) && value.length <= max ? value.map(normalize) : undefined;
+const browserChildCollectionsAreValid = (fields) =>
+  fields.transcript?.every(Boolean) === true &&
+  fields.tools?.every(Boolean) === true &&
+  fields.queued?.every(Boolean) === true;
+const browserChildFieldsAreValid = (value, fields, efforts) =>
+  (fields.model !== undefined || value.model === undefined) &&
+  fields.title !== undefined &&
+  fields.prompt !== undefined &&
+  fields.output !== undefined &&
+  (fields.failure !== undefined || value.failure === undefined) &&
+  fields.startedAt !== undefined &&
+  fields.lastActivityAt !== undefined &&
+  (fields.settledAt !== undefined || value.settledAt === undefined) &&
+  browserChildCollectionsAreValid(fields) &&
+  (fields.usage !== undefined || value.usage === undefined) &&
+  (value.reasoningEffort === undefined || efforts.includes(value.reasoningEffort));
+const browserChildFields = (value) => {
   const model = browserOptionalText(value.model, PI_SUBAGENTS_ACTIVITY_LIMITS.maxModelLength);
   const title = browserText(value.title, PI_SUBAGENTS_ACTIVITY_LIMITS.maxTitleLength);
   const prompt = browserText(value.prompt, PI_SUBAGENTS_ACTIVITY_LIMITS.maxPromptLength);
@@ -324,55 +342,66 @@ const browserValidChild = (value) => {
   const startedAt = browserNumber(value.startedAt);
   const lastActivityAt = browserNumber(value.lastActivityAt);
   const settledAt = value.settledAt === undefined ? undefined : browserNumber(value.settledAt);
-  const transcript =
-    Array.isArray(value.transcript) &&
-    value.transcript.length <= PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptItems
-      ? value.transcript.map(browserValidTranscript)
-      : undefined;
-  const tools =
-    Array.isArray(value.tools) && value.tools.length <= PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolCount
-      ? value.tools.map(browserValidTool)
-      : undefined;
-  const queued =
-    Array.isArray(value.queued) &&
-    value.queued.length <= PI_SUBAGENTS_ACTIVITY_LIMITS.maxQueuedItems
-      ? value.queued.map(browserValidQueued)
-      : undefined;
+  const transcript = browserValidBoundedList(
+    value.transcript,
+    PI_SUBAGENTS_ACTIVITY_LIMITS.maxTranscriptItems,
+    browserValidTranscript,
+  );
+  const tools = browserValidBoundedList(
+    value.tools,
+    PI_SUBAGENTS_ACTIVITY_LIMITS.maxToolCount,
+    browserValidTool,
+  );
+  const queued = browserValidBoundedList(
+    value.queued,
+    PI_SUBAGENTS_ACTIVITY_LIMITS.maxQueuedItems,
+    browserValidQueued,
+  );
   const usage = value.usage === undefined ? undefined : browserValidUsage(value.usage);
   const efforts = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-  if (
-    (model === undefined && value.model !== undefined) ||
-    title === undefined ||
-    prompt === undefined ||
-    output === undefined ||
-    (failure === undefined && value.failure !== undefined) ||
-    startedAt === undefined ||
-    lastActivityAt === undefined ||
-    (settledAt === undefined && value.settledAt !== undefined) ||
-    !transcript?.every(Boolean) ||
-    !tools?.every(Boolean) ||
-    !queued?.every(Boolean) ||
-    (usage === undefined && value.usage !== undefined) ||
-    (value.reasoningEffort !== undefined && !efforts.includes(value.reasoningEffort))
-  )
-    return undefined;
-  return {
-    id: value.id,
-    backend: value.backend,
-    ...(model === undefined ? {} : { model }),
-    ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
+  const fields = {
+    model,
     title,
-    status: "running",
     prompt,
     output,
-    ...(failure === undefined ? {} : { failure }),
+    failure,
+    startedAt,
+    lastActivityAt,
+    settledAt,
     transcript,
     tools,
     queued,
-    startedAt,
-    lastActivityAt,
-    ...(settledAt === undefined ? {} : { settledAt }),
-    ...(value.usage === undefined ? {} : { usage }),
+    usage,
+  };
+  return browserChildFieldsAreValid(value, fields, efforts) ? fields : undefined;
+};
+const browserValidChild = (value) => {
+  if (
+    !browserOnlyKeys(value, browserChildKeys) ||
+    browserId(value?.id) !== value?.id ||
+    !["pi", "claude", "codex"].includes(value?.backend) ||
+    value?.status !== "running"
+  )
+    return undefined;
+  const fields = browserChildFields(value);
+  if (fields === undefined) return undefined;
+  return {
+    id: value.id,
+    backend: value.backend,
+    ...(fields.model === undefined ? {} : { model: fields.model }),
+    ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
+    title: fields.title,
+    status: "running",
+    prompt: fields.prompt,
+    output: fields.output,
+    ...(fields.failure === undefined ? {} : { failure: fields.failure }),
+    transcript: fields.transcript,
+    tools: fields.tools,
+    queued: fields.queued,
+    startedAt: fields.startedAt,
+    lastActivityAt: fields.lastActivityAt,
+    ...(fields.settledAt === undefined ? {} : { settledAt: fields.settledAt }),
+    ...(value.usage === undefined ? {} : { usage: fields.usage }),
   };
 };
 const browserValidTerminal = (value) => {
@@ -400,7 +429,7 @@ const browserValidTerminal = (value) => {
         settledAt,
       };
 };
-export const canonicalizePiSubagentsActivity = (value) => {
+const parsePiSubagentsActivity = (value) => {
   let parsed = value;
   if (Array.isArray(parsed)) {
     if (parsed.length !== 1 || typeof parsed[0] !== "string") return undefined;
@@ -415,6 +444,10 @@ export const canonicalizePiSubagentsActivity = (value) => {
       return undefined;
     }
   }
+  return parsed;
+};
+export const canonicalizePiSubagentsActivity = (value) => {
+  const parsed = parsePiSubagentsActivity(value);
   if (
     !browserOnlyKeys(parsed, browserTopLevelKeys) ||
     parsed.version !== PI_SUBAGENTS_ACTIVITY_PROTOCOL_VERSION ||
@@ -460,157 +493,166 @@ const optionalTimeout = (message) => {
   return Number.isFinite(message.timeout) ? { timeout: message.timeout } : undefined;
 };
 
+const normalizeExtensionUiSelect = (message, id) => {
+  const timeout = optionalTimeout(message);
+  if (
+    timeout === undefined ||
+    !isBoundedString(message.title) ||
+    !Array.isArray(message.options) ||
+    message.options.length > PI_CONSOLE_MAX_SELECT_OPTIONS ||
+    !message.options.every(isBoundedString)
+  )
+    return undefined;
+  return {
+    type: message.type,
+    id,
+    method: message.method,
+    title: sanitizeRemoteString(message.title),
+    options: message.options.map(sanitizeRemoteString),
+    ...timeout,
+  };
+};
+const normalizeExtensionUiConfirm = (message, id) => {
+  const timeout = optionalTimeout(message);
+  if (timeout === undefined || !isBoundedString(message.title) || !isBoundedString(message.message))
+    return undefined;
+  return {
+    type: message.type,
+    id,
+    method: message.method,
+    title: sanitizeRemoteString(message.title),
+    message: sanitizeRemoteString(message.message),
+    ...timeout,
+  };
+};
+const normalizeExtensionUiInput = (message, id) => {
+  const timeout = optionalTimeout(message);
+  if (
+    timeout === undefined ||
+    !isBoundedString(message.title) ||
+    (message.placeholder !== undefined && !isBoundedString(message.placeholder))
+  )
+    return undefined;
+  return {
+    type: message.type,
+    id,
+    method: message.method,
+    title: sanitizeRemoteString(message.title),
+    ...(message.placeholder === undefined
+      ? {}
+      : { placeholder: sanitizeRemoteString(message.placeholder) }),
+    ...timeout,
+  };
+};
+const normalizeExtensionUiEditor = (message, id) => {
+  if (
+    !isBoundedString(message.title) ||
+    (message.prefill !== undefined && !isBoundedString(message.prefill))
+  )
+    return undefined;
+  return {
+    type: message.type,
+    id,
+    method: message.method,
+    title: sanitizeRemoteString(message.title),
+    ...(message.prefill === undefined ? {} : { prefill: sanitizeRemoteString(message.prefill) }),
+  };
+};
+const normalizeExtensionUiNotify = (message, id) => {
+  if (
+    !isBoundedString(message.message) ||
+    (message.notifyType !== undefined &&
+      message.notifyType !== "info" &&
+      message.notifyType !== "warning" &&
+      message.notifyType !== "error")
+  )
+    return undefined;
+  return {
+    type: message.type,
+    id,
+    method: message.method,
+    message: sanitizeRemoteString(message.message),
+    ...(message.notifyType === undefined ? {} : { notifyType: message.notifyType }),
+  };
+};
+const normalizeExtensionUiStatus = (message, id) => {
+  if (
+    !isIdentifier(message.statusKey) ||
+    (message.statusText !== undefined &&
+      message.statusText !== null &&
+      !isBoundedString(message.statusText))
+  )
+    return undefined;
+  return {
+    type: message.type,
+    id,
+    method: message.method,
+    statusKey: sanitizeRemoteString(message.statusKey),
+    statusText:
+      typeof message.statusText === "string" ? sanitizeRemoteString(message.statusText) : null,
+  };
+};
+const normalizeExtensionUiWidget = (message, id) => {
+  if (
+    (message.widgetKey !== PI_SUBAGENTS_ACTIVITY_WIDGET_KEY && !isIdentifier(message.widgetKey)) ||
+    (message.widgetLines !== undefined &&
+      message.widgetLines !== null &&
+      (!Array.isArray(message.widgetLines) ||
+        message.widgetLines.length > PI_CONSOLE_MAX_WIDGET_LINES ||
+        !message.widgetLines.every(isBoundedString))) ||
+    (message.widgetPlacement !== undefined &&
+      message.widgetPlacement !== "aboveEditor" &&
+      message.widgetPlacement !== "belowEditor")
+  )
+    return undefined;
+  const normalizedWidget = {
+    type: message.type,
+    id,
+    method: message.method,
+    widgetKey: sanitizeRemoteString(message.widgetKey),
+    widgetLines: Array.isArray(message.widgetLines)
+      ? message.widgetLines.map(sanitizeRemoteString)
+      : null,
+    ...(message.widgetPlacement === undefined ? {} : { widgetPlacement: message.widgetPlacement }),
+  };
+  return normalizePiSubagentsActivityWidget(normalizedWidget);
+};
+const normalizeExtensionUiTitle = (message, id) => {
+  if (!isBoundedString(message.title)) return undefined;
+  return {
+    type: message.type,
+    id,
+    method: message.method,
+    title: sanitizeRemoteString(message.title),
+  };
+};
+const normalizeExtensionUiEditorText = (message, id) => {
+  if (!isBoundedString(message.text)) return undefined;
+  return {
+    type: message.type,
+    id,
+    method: message.method,
+    text: sanitizeRemoteString(message.text),
+  };
+};
+const normalizeExtensionUiMethod = (message, id) => {
+  if (message.method === "select") return normalizeExtensionUiSelect(message, id);
+  if (message.method === "confirm") return normalizeExtensionUiConfirm(message, id);
+  if (message.method === "input") return normalizeExtensionUiInput(message, id);
+  if (message.method === "editor") return normalizeExtensionUiEditor(message, id);
+  if (message.method === "notify") return normalizeExtensionUiNotify(message, id);
+  if (message.method === "setStatus") return normalizeExtensionUiStatus(message, id);
+  if (message.method === "setWidget") return normalizeExtensionUiWidget(message, id);
+  if (message.method === "setTitle") return normalizeExtensionUiTitle(message, id);
+  if (message.method === "set_editor_text") return normalizeExtensionUiEditorText(message, id);
+  return undefined;
+};
 export const normalizeExtensionUiEvent = (message) => {
   if (!message || typeof message !== "object" || message.type !== "extension_ui_request")
     return message;
   if (!isIdentifier(message.id)) return undefined;
   const id = sanitizeRemoteString(message.id);
-  if (message.method === "select") {
-    const timeout = optionalTimeout(message);
-    if (
-      timeout === undefined ||
-      !isBoundedString(message.title) ||
-      !Array.isArray(message.options) ||
-      message.options.length > PI_CONSOLE_MAX_SELECT_OPTIONS ||
-      !message.options.every(isBoundedString)
-    )
-      return undefined;
-    return {
-      type: message.type,
-      id,
-      method: message.method,
-      title: sanitizeRemoteString(message.title),
-      options: message.options.map(sanitizeRemoteString),
-      ...timeout,
-    };
-  }
-  if (message.method === "confirm") {
-    const timeout = optionalTimeout(message);
-    if (
-      timeout === undefined ||
-      !isBoundedString(message.title) ||
-      !isBoundedString(message.message)
-    )
-      return undefined;
-    return {
-      type: message.type,
-      id,
-      method: message.method,
-      title: sanitizeRemoteString(message.title),
-      message: sanitizeRemoteString(message.message),
-      ...timeout,
-    };
-  }
-  if (message.method === "input") {
-    const timeout = optionalTimeout(message);
-    if (
-      timeout === undefined ||
-      !isBoundedString(message.title) ||
-      (message.placeholder !== undefined && !isBoundedString(message.placeholder))
-    )
-      return undefined;
-    return {
-      type: message.type,
-      id,
-      method: message.method,
-      title: sanitizeRemoteString(message.title),
-      ...(message.placeholder === undefined
-        ? {}
-        : { placeholder: sanitizeRemoteString(message.placeholder) }),
-      ...timeout,
-    };
-  }
-  if (message.method === "editor") {
-    if (
-      !isBoundedString(message.title) ||
-      (message.prefill !== undefined && !isBoundedString(message.prefill))
-    )
-      return undefined;
-    return {
-      type: message.type,
-      id,
-      method: message.method,
-      title: sanitizeRemoteString(message.title),
-      ...(message.prefill === undefined ? {} : { prefill: sanitizeRemoteString(message.prefill) }),
-    };
-  }
-  if (message.method === "notify") {
-    if (
-      !isBoundedString(message.message) ||
-      (message.notifyType !== undefined &&
-        message.notifyType !== "info" &&
-        message.notifyType !== "warning" &&
-        message.notifyType !== "error")
-    )
-      return undefined;
-    return {
-      type: message.type,
-      id,
-      method: message.method,
-      message: sanitizeRemoteString(message.message),
-      ...(message.notifyType === undefined ? {} : { notifyType: message.notifyType }),
-    };
-  }
-  if (message.method === "setStatus") {
-    if (
-      !isIdentifier(message.statusKey) ||
-      (message.statusText !== undefined &&
-        message.statusText !== null &&
-        !isBoundedString(message.statusText))
-    )
-      return undefined;
-    return {
-      type: message.type,
-      id,
-      method: message.method,
-      statusKey: sanitizeRemoteString(message.statusKey),
-      statusText:
-        typeof message.statusText === "string" ? sanitizeRemoteString(message.statusText) : null,
-    };
-  }
-  if (message.method === "setWidget") {
-    if (
-      (message.widgetKey !== PI_SUBAGENTS_ACTIVITY_WIDGET_KEY &&
-        !isIdentifier(message.widgetKey)) ||
-      (message.widgetLines !== undefined &&
-        message.widgetLines !== null &&
-        (!Array.isArray(message.widgetLines) ||
-          message.widgetLines.length > PI_CONSOLE_MAX_WIDGET_LINES ||
-          !message.widgetLines.every(isBoundedString))) ||
-      (message.widgetPlacement !== undefined &&
-        message.widgetPlacement !== "aboveEditor" &&
-        message.widgetPlacement !== "belowEditor")
-    )
-      return undefined;
-    const normalizedWidget = {
-      type: message.type,
-      id,
-      method: message.method,
-      widgetKey: sanitizeRemoteString(message.widgetKey),
-      widgetLines: Array.isArray(message.widgetLines)
-        ? message.widgetLines.map(sanitizeRemoteString)
-        : null,
-      ...(message.widgetPlacement === undefined
-        ? {}
-        : { widgetPlacement: message.widgetPlacement }),
-    };
-    return normalizePiSubagentsActivityWidget(normalizedWidget);
-  }
-  if (message.method === "setTitle" && isBoundedString(message.title))
-    return {
-      type: message.type,
-      id,
-      method: message.method,
-      title: sanitizeRemoteString(message.title),
-    };
-  if (message.method === "set_editor_text" && isBoundedString(message.text))
-    return {
-      type: message.type,
-      id,
-      method: message.method,
-      text: sanitizeRemoteString(message.text),
-    };
-  return undefined;
+  return normalizeExtensionUiMethod(message, id);
 };
 
 export const shouldEmitSseHeartbeat = (headers) =>
@@ -734,35 +776,80 @@ export const createProjectionReducer = () => {
   let title;
   let queue = { steer: [], followUp: [] };
 
+  const reduceToolExecution = (event) => {
+    const id = boundedId(firstString(event.toolCallId, event.tool_call_id, event.id), "tool");
+    const previous = activeTools.get(id) ?? {};
+    const argumentsValue = sanitizeRemoteValue(event.args ?? event.arguments).value;
+    const partialResult = sanitizeRemoteValue(event.partialResult ?? event.output).value;
+    boundedMapSet(
+      activeTools,
+      id,
+      {
+        ...previous,
+        id,
+        name: sanitizeRemoteString(firstString(event.toolName, event.name) ?? "tool"),
+        status: "running",
+        ...(argumentsValue === null ? {} : { arguments: argumentsValue }),
+        ...(partialResult === null ? {} : { partialResult }),
+      },
+      PI_CONSOLE_MAX_ACTIVE_TOOLS,
+    );
+  };
+  const reduceToolExecutionEnd = (event) => {
+    const id = boundedId(firstString(event.toolCallId, event.tool_call_id, event.id), "tool");
+    activeTools.delete(id);
+  };
+  const reduceQueueUpdate = (event) => ({
+    steer: queueItems(event.steering ?? event.steer, "steer"),
+    followUp: queueItems(event.followUp ?? event.follow_up, "follow-up"),
+  });
+  const reduceStatusUpdate = (event) => {
+    const key = boundedId(event.statusKey, "status");
+    if (typeof event.statusText === "string")
+      boundedMapSet(statuses, key, sanitizeRemoteString(event.statusText), PI_CONSOLE_MAX_STATUSES);
+    else statuses.delete(key);
+  };
+  const reduceWidgetUpdate = (event) => {
+    const key = boundedId(event.widgetKey, "widget");
+    if (Array.isArray(event.widgetLines))
+      boundedMapSet(
+        widgets,
+        key,
+        {
+          key,
+          lines: event.widgetLines
+            .filter((line) => typeof line === "string")
+            .slice(0, PI_CONSOLE_MAX_WIDGET_LINES)
+            .map(sanitizeRemoteString),
+          ...(event.widgetPlacement === "aboveEditor" || event.widgetPlacement === "belowEditor"
+            ? { placement: event.widgetPlacement }
+            : {}),
+        },
+        PI_CONSOLE_MAX_WIDGETS,
+      );
+    else widgets.delete(key);
+  };
+  const reduceExtensionUiRequest = (event) => {
+    if (event.method === "setStatus") return reduceStatusUpdate(event);
+    if (event.method === "setWidget") return reduceWidgetUpdate(event);
+    if (event.method === "setTitle")
+      title = sanitizeRemoteString(typeof event.title === "string" ? event.title : "");
+  };
   const reduce = (event) => {
     if (!event || typeof event !== "object") return;
     if (event.type === "tool_execution_start" || event.type === "tool_execution_update") {
-      const id = boundedId(firstString(event.toolCallId, event.tool_call_id, event.id), "tool");
-      const previous = activeTools.get(id) ?? {};
-      const argumentsValue = sanitizeRemoteValue(event.args ?? event.arguments).value;
-      const partialResult = sanitizeRemoteValue(event.partialResult ?? event.output).value;
-      boundedMapSet(
-        activeTools,
-        id,
-        {
-          ...previous,
-          id,
-          name: sanitizeRemoteString(firstString(event.toolName, event.name) ?? "tool"),
-          status: "running",
-          ...(argumentsValue === null ? {} : { arguments: argumentsValue }),
-          ...(partialResult === null ? {} : { partialResult }),
-        },
-        PI_CONSOLE_MAX_ACTIVE_TOOLS,
-      );
-    } else if (event.type === "tool_execution_end") {
-      const id = boundedId(firstString(event.toolCallId, event.tool_call_id, event.id), "tool");
-      activeTools.delete(id);
-    } else if (event.type === "queue_update") {
-      queue = {
-        steer: queueItems(event.steering ?? event.steer, "steer"),
-        followUp: queueItems(event.followUp ?? event.follow_up, "follow-up"),
-      };
-    } else if (
+      reduceToolExecution(event);
+      return;
+    }
+    if (event.type === "tool_execution_end") {
+      reduceToolExecutionEnd(event);
+      return;
+    }
+    if (event.type === "queue_update") {
+      queue = reduceQueueUpdate(event);
+      return;
+    }
+    if (
       event.type === "agent_settled" ||
       event.type === "agent_end" ||
       event.type === "turn_end" ||
@@ -773,40 +860,9 @@ export const createProjectionReducer = () => {
     ) {
       activeTools.clear();
       queue = { steer: [], followUp: [] };
-    } else if (event.type === "extension_ui_request") {
-      if (event.method === "setStatus") {
-        const key = boundedId(event.statusKey, "status");
-        if (typeof event.statusText === "string")
-          boundedMapSet(
-            statuses,
-            key,
-            sanitizeRemoteString(event.statusText),
-            PI_CONSOLE_MAX_STATUSES,
-          );
-        else statuses.delete(key);
-      } else if (event.method === "setWidget") {
-        const key = boundedId(event.widgetKey, "widget");
-        if (Array.isArray(event.widgetLines))
-          boundedMapSet(
-            widgets,
-            key,
-            {
-              key,
-              lines: event.widgetLines
-                .filter((line) => typeof line === "string")
-                .slice(0, PI_CONSOLE_MAX_WIDGET_LINES)
-                .map(sanitizeRemoteString),
-              ...(event.widgetPlacement === "aboveEditor" || event.widgetPlacement === "belowEditor"
-                ? { placement: event.widgetPlacement }
-                : {}),
-            },
-            PI_CONSOLE_MAX_WIDGETS,
-          );
-        else widgets.delete(key);
-      } else if (event.method === "setTitle") {
-        title = sanitizeRemoteString(typeof event.title === "string" ? event.title : "");
-      }
+      return;
     }
+    if (event.type === "extension_ui_request") reduceExtensionUiRequest(event);
   };
 
   return {
@@ -844,6 +900,71 @@ export const completeSnapshotOverlap = (events, baseSequence, endSequence) => {
 
 const validCommandId = (value) => typeof value === "string" && uuidPattern.test(value);
 
+const invalidCommandResult = () => ({ ok: false, error: "invalid_command" });
+const validatePromptIntent = (command) => {
+  if (
+    !isBoundedString(command.message) ||
+    !validImages(command.images) ||
+    (command.streamingBehavior !== undefined &&
+      command.streamingBehavior !== "steer" &&
+      command.streamingBehavior !== "followUp")
+  )
+    return invalidCommandResult();
+  if (command.message.trimStart().startsWith("/"))
+    return { ok: false, error: "slash_prompt_requires_intent" };
+  return undefined;
+};
+const validateMessageIntent = (command) =>
+  !isBoundedString(command.message) || !validImages(command.images)
+    ? invalidCommandResult()
+    : undefined;
+const validateExtensionUiResponseIntent = (command) => {
+  if (
+    !isIdentifier(command.id) ||
+    !(
+      isBoundedString(command.value) ||
+      typeof command.confirmed === "boolean" ||
+      command.cancelled === true
+    )
+  )
+    return invalidCommandResult();
+  return undefined;
+};
+const validateSetModelIntent = (command) => {
+  if (
+    !isBoundedString(command.provider) ||
+    !command.provider ||
+    !isBoundedString(command.modelId) ||
+    !command.modelId
+  )
+    return invalidCommandResult();
+  return undefined;
+};
+const validateThinkingLevelIntent = (command) =>
+  isIdentifier(command.level) ? undefined : invalidCommandResult();
+const validateSlashCommandIntent = (command) => {
+  if (
+    !remoteSlashCommands.has(command.name) ||
+    (command.name === "subagents" &&
+      command.arguments !== undefined &&
+      !validBrowserSteerArguments(command.arguments)) ||
+    (command.name === "workflows" &&
+      command.arguments !== undefined &&
+      (typeof command.arguments !== "string" || !workflowRunIdPattern.test(command.arguments)))
+  )
+    return invalidCommandResult();
+  return undefined;
+};
+const validateIntentByType = (command) => {
+  if (command.type === "prompt") return validatePromptIntent(command);
+  if (command.type === "steer" || command.type === "follow_up")
+    return validateMessageIntent(command);
+  if (command.type === "extension_ui_response") return validateExtensionUiResponseIntent(command);
+  if (command.type === "set_model") return validateSetModelIntent(command);
+  if (command.type === "set_thinking_level") return validateThinkingLevelIntent(command);
+  if (command.type === "slash_command") return validateSlashCommandIntent(command);
+  return undefined;
+};
 const validIntent = (command) => {
   if (!commandTypes.has(command.type))
     return {
@@ -851,54 +972,9 @@ const validIntent = (command) => {
       error: command.type === "fold" ? "local_intent_only" : "invalid_command",
     };
   if (!imageCommandTypes.has(command.type) && command.images !== undefined)
-    return { ok: false, error: "invalid_command" };
-  if (command.type === "prompt") {
-    if (
-      !isBoundedString(command.message) ||
-      !validImages(command.images) ||
-      (command.streamingBehavior !== undefined &&
-        command.streamingBehavior !== "steer" &&
-        command.streamingBehavior !== "followUp")
-    )
-      return { ok: false, error: "invalid_command" };
-    if (command.message.trimStart().startsWith("/"))
-      return { ok: false, error: "slash_prompt_requires_intent" };
-  } else if (command.type === "steer" || command.type === "follow_up") {
-    if (!isBoundedString(command.message) || !validImages(command.images))
-      return { ok: false, error: "invalid_command" };
-  } else if (command.type === "extension_ui_response") {
-    if (
-      !isIdentifier(command.id) ||
-      !(
-        isBoundedString(command.value) ||
-        typeof command.confirmed === "boolean" ||
-        command.cancelled === true
-      )
-    )
-      return { ok: false, error: "invalid_command" };
-  } else if (command.type === "set_model") {
-    if (
-      !isBoundedString(command.provider) ||
-      !command.provider ||
-      !isBoundedString(command.modelId) ||
-      !command.modelId
-    )
-      return { ok: false, error: "invalid_command" };
-  } else if (command.type === "set_thinking_level") {
-    if (!isIdentifier(command.level)) return { ok: false, error: "invalid_command" };
-  } else if (command.type === "slash_command") {
-    if (
-      !remoteSlashCommands.has(command.name) ||
-      (command.name === "subagents" &&
-        command.arguments !== undefined &&
-        !validBrowserSteerArguments(command.arguments)) ||
-      (command.name === "workflows" &&
-        command.arguments !== undefined &&
-        (typeof command.arguments !== "string" || !workflowRunIdPattern.test(command.arguments)))
-    )
-      return { ok: false, error: "invalid_command" };
-  }
-  return { ok: true };
+    return invalidCommandResult();
+  const validation = validateIntentByType(command);
+  return validation ?? { ok: true };
 };
 
 export const normalizeCommand = (body, currentEpoch) => {
