@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  assistantIncludes,
   formatLocalDevVars,
   localHarnessContainerIds,
   messageText,
@@ -10,7 +9,7 @@ import {
   snapshotSummary,
 } from "../scripts/local-live.mjs";
 
-test("local live E2E derives GitHub repositories from HTTPS and SSH remotes", () => {
+test("local-live helper derives GitHub repositories from HTTPS and SSH remotes", () => {
   assert.equal(
     repositoryFromRemote("https://github.com/Yeshwanthyk/scotty.git\n"),
     "Yeshwanthyk/scotty",
@@ -19,7 +18,7 @@ test("local live E2E derives GitHub repositories from HTTPS and SSH remotes", ()
   assert.throws(() => repositoryFromRemote("https://example.com/owner/repo.git"));
 });
 
-test("local live E2E only cleans up new Scotty Wrangler containers", () => {
+test("local-live helper only cleans up new Scotty Wrangler containers", () => {
   const containers = [
     { id: "old", image: "cloudflare-dev/scottysandbox:one", name: "workerd-scotty-worker-x" },
     {
@@ -37,7 +36,7 @@ test("local live E2E only cleans up new Scotty Wrangler containers", () => {
   assert.deepEqual(localHarnessContainerIds(containers, new Set(["old"])), ["sandbox", "proxy"]);
 });
 
-test("local live E2E writes isolated Worker inputs", () => {
+test("local-live helper writes isolated Worker inputs", () => {
   const value = formatLocalDevVars({
     rootToken: "root-token",
     githubToken: "github-token",
@@ -50,7 +49,7 @@ test("local live E2E writes isolated Worker inputs", () => {
   assert.match(value, /^SCOTTY_LOCAL_E2E="1"$/mu);
 });
 
-test("local live E2E recognizes an assistant marker in Pi message content", () => {
+test("local-live helper recognizes an assistant marker in Pi message content", () => {
   const snapshot = {
     messages: [
       { role: "user", content: "RESEED_AUTH_READY_1234" },
@@ -61,8 +60,6 @@ test("local live E2E recognizes an assistant marker in Pi message content", () =
     ],
   };
   assert.equal(messageText(snapshot.messages[1].content), "RESEED_AUTH_READY_1234");
-  assert.equal(assistantIncludes(snapshot, "RESEED_AUTH_READY_1234"), true);
-  assert.equal(assistantIncludes(snapshot, "FRESH_AUTH_READY_1234"), false);
   assert.deepEqual(promptAttempt(snapshot, "RESEED_AUTH_READY_1234"), { status: "success" });
   assert.deepEqual(snapshotSummary(snapshot), {
     available: true,
@@ -74,7 +71,7 @@ test("local live E2E recognizes an assistant marker in Pi message content", () =
   });
 });
 
-test("local live E2E distinguishes provider auth rejection from an upstream block", () => {
+test("local-live helper distinguishes provider auth rejection from an upstream block", () => {
   const withError = (errorMessage) => ({
     messages: [
       { role: "user", content: "FRESH_AUTH_READY_1234" },

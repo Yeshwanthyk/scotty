@@ -1,31 +1,22 @@
-# Scotty E2E harness
+# Scotty E2E checks
 
-The default suite uses a real Scotty CLI process and an in-memory fake Worker/session service. It
-needs Node 22+, Bun, Git, and no Cloudflare or GitHub credentials. The fake models authoritative
-sessions, KV projections, backups, runtimes, the Pi worklog, a credential vault, hard-cap behavior,
-egress policy, V1 auth migration, owner recovery and transfer, and per-browser cookies.
+The repository does not ship a fake Worker or a default offline E2E suite. The checked-in E2E
+surface is the direct static contract test, the real local-live Worker/Sandbox/Pi loop, the
+non-mutating deployed route check, and the explicitly gated deployed canary. The local-live helper
+tests cover the pure helpers used by that runtime loop.
 
-## Run locally
+## Run the direct checks
 
 From the repository root:
 
 ```sh
-node e2e/scripts/run.mjs
+npm run test:e2e:static
+npm run test:e2e:local-live:helpers
 node e2e/scripts/scan.mjs
 ```
 
-The CLI defaults to `cli/scotty.ts`. To test a compiled artifact:
-
-```sh
-SCOTTY_E2E_CLI="$PWD/dist/scotty" node e2e/scripts/run.mjs
-```
-
-The default suite covers `up`, `ls`, `snapshot`, hard-cap sleep, `resume`, `down`, and idempotent
-`vaporize`; V1 multi-admin migration to unclaimed standard clients; destructive owner recovery;
-pairing; target-bound transfer; stale-cookie rejection; a second recovery reset; strict auth-page
-scripts; tracked-repo creation and retention; exit codes; backup restoration; authenticated Pi
-path/auth/streaming; root-query/root-cookie rejection; sentinel and credential scans; denied egress;
-tar traversal rejection; rollout mode 0600; and resource cleanup.
+The direct static contract and local-live helper tests are included in `npm run test:all`. They
+do not start a Worker, Sandbox, or Pi process and do not require Cloudflare or GitHub credentials.
 
 ## Run the real local Worker, Sandbox, and Pi
 
@@ -103,7 +94,7 @@ SCOTTY_E2E_LOCAL_REPO='/absolute/path/to/disposable-repo' \
 SCOTTY_E2E_CAP='5m' \
 SCOTTY_E2E_CAP_TIMEOUT_MS='600000' \
 SCOTTY_E2E_CONFIRM_DESTRUCTIVE="destroy:$stage:disposable" \
-node e2e/scripts/run.mjs --deployed
+npm run test:e2e:deployed
 ```
 
 The test performs the real lifecycle sequence
@@ -135,6 +126,9 @@ The cleanup hook retries `vaporize` and deletes the test-created remote branch i
 fails after session creation. Always destroy the disposable Alchemy stage, even after a failed
 test.
 
+Run the non-mutating route check with `npm run test:e2e:deployed-routes` after setting
+`SCOTTY_E2E_HOST`, `SCOTTY_E2E_TOKEN`, and a non-mutating `SCOTTY_E2E_CLIENT_CREDENTIAL`.
+
 `deployed-routes.test.mjs` is deliberately non-mutating. It requires
 `SCOTTY_E2E_CLIENT_CREDENTIAL` for an already registered disposable or canary browser and proves
 that the root bearer, root cookie, and `?t=` cannot open browser pages. It never pairs, transfers,
@@ -142,8 +136,6 @@ recovers, logs out, or revokes that client.
 
 ## Red-capable failure signals
 
-Each assertion is placed at a contract boundary. A CLI failure prints the exact command stderr;
-lifecycle tests inspect the first divergent fake resource; security tests identify the leaking
-surface; Pi-worklog tests identify auth, RPC, or asset failures; and teardown names the
-orphan class. Keep the fake deterministic—product behavior belongs in `cli/**` and `worker/**`, not
-in this harness.
+Each retained check is placed at a contract boundary. Static contract failures identify the
+violated source invariant; local-live failures include auth, RPC, or asset diagnostics; deployed
+route failures identify the rejected boundary; and canary teardown names the orphan class.

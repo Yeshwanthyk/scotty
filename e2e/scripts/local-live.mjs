@@ -48,15 +48,6 @@ export function messageText(value) {
   return messageText(value.text ?? value.content ?? value.message ?? "");
 }
 
-export function assistantIncludes(snapshot, marker) {
-  return (
-    Array.isArray(snapshot?.messages) &&
-    snapshot.messages.some(
-      (message) => message?.role === "assistant" && messageText(message.content).includes(marker),
-    )
-  );
-}
-
 const AUTH_FAILURE =
   /\b(?:401|unauthori[sz]ed|authentication failed|invalid[_ -](?:api[_ -])?(?:key|token)|not logged in)\b/iu;
 

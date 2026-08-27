@@ -81,7 +81,8 @@ it has the native Pi RPC worklog transport.
   compile into Scotty artifacts and are not a separately installed product.
 - `desktop/` — macOS GPUI viewport for switching among existing warm Scotty sessions.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
-- `e2e/` — credential-free fake-service E2E suite plus an explicitly gated deployed canary.
+- `e2e/` — direct static contract checks, the local-live harness and helper tests, deployed route
+  checks, and an explicitly gated deployed canary.
 - `spikes/` — executable probes for the upstream Sandbox contracts.
 
 ## Security model
@@ -162,7 +163,7 @@ npx vitest worker/test/sandbox-runtime.test.ts
 # Effect CLI, Bun CLI, Node E2E, or operations
 npx vitest run cli/effect-test/command-tree.test.ts
 bun test cli/test/cli.test.ts
-node --test e2e/tests/local-live-script.test.mjs
+npm run test:e2e:local-live:helpers
 node --test scripts/sessions-shell.test.mjs
 
 # Format touched files and finish with the complete repository gate
@@ -430,15 +431,27 @@ an already paired browser. Sleeping sessions must be resumed from Home before th
 
 ## E2E
 
-After an evidence-runtime change, production proof requires two consecutive jobs against one fresh
-sandbox: a non-video baseline followed by the same flow with real WebM enabled. Both jobs must pass,
-the local browser and recorder processes must close definitively, Hatch must remain running, and the
-Showcase must open. A single successful job does not prove recorder cleanup or reuse.
+The repository does not ship a fake or default offline E2E suite. The direct static contract and
+local-live helper tests are included in `npm run test:all`:
 
 ```sh
-node e2e/scripts/run.mjs
+npm run test:e2e:static
+npm run test:e2e:local-live:helpers
 ```
 
-The destructive deployed canary uses the stage-isolated
-`spikes/infra/full-stack-canary.run.ts` stack and requires every stage-scoped gate documented in
-`e2e/README.md`. Its production Worker host check fails closed.
+The real local Worker, Sandbox, and Pi loop is explicit and requires Docker, `gh auth`, and Pi
+credentials; see `e2e/README.md`:
+
+```sh
+npm run test:e2e:local-live -- --no-open --no-hold
+```
+
+The non-mutating deployed route check and destructive deployed canary are also explicit:
+
+```sh
+npm run test:e2e:deployed-routes
+npm run test:e2e:deployed
+```
+
+The canary uses the stage-isolated `spikes/infra/full-stack-canary.run.ts` stack and requires every
+stage-scoped gate documented in `e2e/README.md`. Its production Worker host check fails closed.
