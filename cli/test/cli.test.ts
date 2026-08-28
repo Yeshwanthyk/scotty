@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PreviewCleanupOwnershipError } from "../../infra/preview-ownership";
 import { AuthError } from "alchemy/Auth";
-import { EXIT, main, STANDARD_TOOLSET, VERSION, type CliDependencies } from "../scotty";
+import { EXIT, main, VERSION, type CliDependencies } from "../scotty";
 import { BeamUpRequestSchema } from "../src/schemas";
 import { scottyTomlConfigPath } from "../src/scotty-config";
 import { Schema } from "effect";
@@ -2904,6 +2904,18 @@ describe("commands and schemas", () => {
     }
   });
 
+  test("removed tools commands fail as bad_usage unknown commands", async () => {
+    for (const args of [["tools"], ["tools", "list"], ["tools", "doctor"]] as const) {
+      const h = harness();
+      expect(await main(args, h.deps)).toBe(EXIT.USAGE);
+      expect(h.error().error).toMatchObject({
+        code: "bad_usage",
+        message: "Unknown command: tools",
+      });
+      expect(h.stdout.join("")).toBe("");
+    }
+  });
+
   test("beam is a leaf, rejects old nested commands, and requires title, repository, and provider", async () => {
     const removed = harness();
     expect(
@@ -3323,93 +3335,5 @@ describe("commands and schemas", () => {
       expect(h.stderr.join("")).not.toContain(credential);
       expect(h.stderr.join("")).not.toContain("protected-root-token");
     }
-  });
-});
-
-describe("standard tools", () => {
-  test("tools list returns the checked-in standard manifest without credentials", async () => {
-    let fetched = false;
-    const h = harness({
-      fetch: async () => {
-        fetched = true;
-        return Response.json({});
-      },
-    });
-
-    expect(await main(["tools", "list", "--json"], h.deps)).toBe(EXIT.OK);
-    expect(h.json()).toEqual(STANDARD_TOOLSET);
-    const toolNames = h.json().tools.map((tool: { name: string }) => tool.name);
-    expect(toolNames).not.toContain("tree");
-    expect(toolNames).not.toContain("duckdb");
-    expect(toolNames).not.toContain("agent-browser");
-    expect(toolNames).not.toContain("Chromium");
-    expect(toolNames).toContain("Go");
-    expect(toolNames).not.toContain("Codex");
-    expect(toolNames).toContain("build-essential");
-    expect(toolNames).toContain("pkg-config");
-    expect(toolNames).toContain("scotty-browser-test");
-    expect(toolNames).toContain("scotty-hatch");
-    expect(fetched).toBe(false);
-  });
-
-  test("tools doctor probes sequentially and reports pinned version mismatches", async () => {
-    const probes: string[][] = [];
-    const h = harness({
-      run: async (command) => {
-        probes.push(command);
-        const tool = STANDARD_TOOLSET.tools.find(
-          (candidate) => candidate.probe.join("\0") === command.join("\0"),
-        );
-        return {
-          exitCode: 0,
-          stdout:
-            tool?.name === "qsv"
-              ? "qsv 0.0.0\n"
-              : `${tool?.name ?? command[0]} ${tool?.expectedVersion ?? "image"}\n`,
-          stderr: "",
-        };
-      },
-    });
-
-    expect(await main(["tools", "doctor", "--json"], h.deps)).toBe(EXIT.GENERIC);
-    expect(probes).toEqual(STANDARD_TOOLSET.tools.map((tool) => [...tool.probe]));
-    expect(h.json().ok).toBe(false);
-    expect(h.json().tools.find((tool: { name: string }) => tool.name === "qsv")).toEqual({
-      name: "qsv",
-      status: "version-mismatch",
-      version: "qsv 0.0.0",
-      expectedVersion: "21.1.0",
-    });
-  });
-
-  test("tools doctor reports missing commands and succeeds when every probe passes", async () => {
-    const missing = harness({
-      run: async () => Promise.reject(new Error("ENOENT")),
-    });
-    expect(await main(["tools", "doctor", "--json"], missing.deps)).toBe(EXIT.GENERIC);
-    expect(
-      missing.json().tools.every((tool: { status: string }) => tool.status === "missing"),
-    ).toBe(true);
-
-    const healthy = harness({
-      run: async (command) => {
-        const tool = STANDARD_TOOLSET.tools.find(
-          (candidate) => candidate.probe.join("\0") === command.join("\0"),
-        );
-        return {
-          exitCode: 0,
-          stdout: `${tool?.name ?? command[0]} ${tool?.expectedVersion ?? "image"}\n`,
-          stderr: "",
-        };
-      },
-    });
-    expect(await main(["tools", "doctor", "--json"], healthy.deps)).toBe(EXIT.OK);
-    expect(healthy.json().ok).toBe(true);
-    expect(healthy.json().tools).toContainEqual({
-      name: "scotty-hatch",
-      status: "ok",
-      version: "scotty-hatch image",
-      expectedVersion: null,
-    });
   });
 });

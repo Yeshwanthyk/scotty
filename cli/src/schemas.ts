@@ -5,7 +5,6 @@ import {
   RepositoryRegistryEntrySchema,
   RepositoryRegistryRemovalResponseSchema,
 } from "../../protocol/repository";
-import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
@@ -58,35 +57,6 @@ export const InitJournalSchema = Schema.Struct({
   token: Schema.NonEmptyString,
 });
 export type InitJournal = typeof InitJournalSchema.Type;
-
-export const ToolCategorySchema = Schema.Union([
-  Schema.Literal("search-data"),
-  Schema.Literal("python"),
-  Schema.Literal("go"),
-  Schema.Literal("git-process"),
-  Schema.Literal("javascript"),
-  Schema.Literal("browser"),
-  Schema.Literal("build"),
-  Schema.Literal("scotty"),
-]);
-export const StandardToolSchema = Schema.Struct({
-  name: Schema.NonEmptyString,
-  category: ToolCategorySchema,
-  commands: Schema.Array(Schema.NonEmptyString),
-  source: Schema.NonEmptyString,
-  versionPolicy: Schema.Union([Schema.Literal("pinned"), Schema.Literal("image")]),
-  expectedVersion: Schema.optionalKey(Schema.NonEmptyString),
-  probe: Schema.NonEmptyArray(Schema.NonEmptyString),
-});
-export const StandardToolsetSchema = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
-  name: Schema.Literal("standard"),
-  tools: Schema.NonEmptyArray(StandardToolSchema),
-});
-export type StandardToolset = typeof StandardToolsetSchema.Type;
-
-export const STANDARD_TOOLSET: StandardToolset =
-  Schema.decodeUnknownSync(StandardToolsetSchema)(rawStandardToolset);
 
 export const RawConfigSchema = Schema.Struct({
   version: Schema.optionalKey(Schema.Unknown),

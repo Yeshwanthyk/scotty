@@ -27,7 +27,6 @@ import {
   decodeSessionsResponse,
   decodeSteerResponse,
   decodeVaporizeResponse,
-  STANDARD_TOOLSET,
   type AttachOutput,
   type BeamUpRequest,
   type SessionOperationOutput,
@@ -47,7 +46,6 @@ import {
   normalizeHost,
   optionalString,
   outputJson,
-  probeOutput,
   sanitizeUrl,
   stableRecoveryGrant,
   stableSession,
@@ -1603,74 +1601,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([authStatus, authSync, authReseed]),
   );
 
-  const toolsList = Command.make("list", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, runtime } = yield* commandContext();
-      if (autoJson) outputJson(runtime.stdout, STANDARD_TOOLSET);
-      else {
-        runtime.stdout(`standard toolset (${STANDARD_TOOLSET.tools.length} tools)\n`);
-        for (const tool of STANDARD_TOOLSET.tools) {
-          const version = tool.expectedVersion ?? tool.versionPolicy;
-          runtime.stdout(
-            `${tool.category.padEnd(12)} ${tool.name.padEnd(20)} ${version.padEnd(12)} ${tool.commands.join(",") || "managed"}\n`,
-          );
-        }
-      }
-    }),
-  ).pipe(Command.withDescription("Print the standard sandbox tool manifest"));
-
-  const toolsDoctor = Command.make("doctor", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, runtime } = yield* commandContext();
-      const processRunner = yield* ProcessRunner;
-      const tools = [];
-      for (const tool of STANDARD_TOOLSET.tools) {
-        const result = yield* processRunner
-          .run([...tool.probe])
-          .pipe(
-            Effect.catch(() =>
-              Effect.succeed({ exitCode: 127, stdout: "", stderr: "command not found" }),
-            ),
-          );
-        const output = probeOutput(result.stdout, result.stderr);
-        const versionMatches =
-          tool.expectedVersion === undefined || output.includes(tool.expectedVersion);
-        const status =
-          result.exitCode === 127
-            ? "missing"
-            : result.exitCode !== 0
-              ? "failed"
-              : versionMatches
-                ? "ok"
-                : "version-mismatch";
-        tools.push({
-          name: tool.name,
-          status,
-          version: output || null,
-          expectedVersion: tool.expectedVersion ?? null,
-        });
-      }
-      const report = {
-        toolset: STANDARD_TOOLSET.name,
-        ok: tools.every((tool) => tool.status === "ok"),
-        tools,
-      };
-      if (autoJson) outputJson(runtime.stdout, report);
-      else {
-        for (const tool of tools)
-          runtime.stdout(
-            `${tool.status.padEnd(16)} ${tool.name.padEnd(20)} ${tool.version ?? "no output"}${tool.expectedVersion ? ` (expected ${tool.expectedVersion})` : ""}\n`,
-          );
-      }
-      if (!report.ok) yield* setExitCode(EXIT.GENERIC);
-    }),
-  ).pipe(Command.withDescription("Verify the standard sandbox tools"));
-
-  const tools = Command.make("tools").pipe(
-    Command.withDescription("Inspect the standard sandbox tools"),
-    Command.withSubcommands([toolsList, toolsDoctor]),
-  );
-
   const runnerServe = Command.make(
     "serve",
     {
@@ -2056,7 +1986,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       snapshot,
       resume,
       vaporize,
-      tools,
       runner,
     ]),
   );

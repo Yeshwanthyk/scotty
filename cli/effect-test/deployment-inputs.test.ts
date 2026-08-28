@@ -128,6 +128,21 @@ describe("standalone deployment archive", () => {
     expect(sources).not.toContain("tui/src");
     expect(sources).not.toContain("patches/earendil-works+pi-coding-agent+0.84.0.patch");
     expect(sources).toContain("worker/container/toolsets/standard.json");
+    expect(
+      sources.filter((source) => source === "worker/container/toolsets/standard.json"),
+    ).toEqual(["worker/container/toolsets/standard.json"]);
+    const packageImageStart = dockerfile.indexOf("AS scotty-package-image");
+    const finalImageStart = dockerfile.lastIndexOf("FROM scotty-package-image");
+    const finalManifestCopy =
+      "COPY worker/container/toolsets/standard.json /opt/scotty/toolsets/standard.json";
+    const finalManifestCopyIndex = dockerfile.indexOf(finalManifestCopy);
+    expect(packageImageStart).toBeGreaterThan(-1);
+    expect(finalImageStart).toBeGreaterThan(packageImageStart);
+    expect(finalManifestCopyIndex).toBeGreaterThan(packageImageStart);
+    expect(finalManifestCopyIndex).toBeLessThan(finalImageStart);
+    expect(dockerfile.slice(0, packageImageStart)).not.toContain(
+      "COPY worker/container/toolsets/standard.json",
+    );
     expect(sources).toContain("protocol/pi-console-shared.mjs");
     expect(sources).toContain("worker/container/pi-packages");
     expect(sources).toContain("package.json");
@@ -254,9 +269,14 @@ describe("standalone deployment archive", () => {
       .split(/\n(?=FROM )/u)
       .at(-1)
       ?.split(/\n(?=RUN )/u)
-      .find((block) => block.includes("scotty tools list --json"));
+      .find(
+        (block) =>
+          block.includes('test "$(stat -c \'%a\' /usr/local/bin/scotty)" = "755"') &&
+          block.includes('test "$(pi --version)" = "${PI_VERSION}"'),
+      );
     expect(finalRun).toBeDefined();
     expect(finalRun).not.toContain("chmod -R");
+    expect(finalRun).toContain("scotty --version");
     expect(finalRun).toContain("! -type l -perm /222");
     expect(finalRun).toContain("python go gofmt git");
     expect(finalRun).toContain("if command -v codex");

@@ -66,6 +66,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
         assert.notInclude(rootHelp, "\n  sandbox");
+        assert.notInclude(rootHelp, "\n  tools");
         assert.include(rootHelp, "runner");
         assert.notInclude(rootHelp, "tui");
         assert.include(rootHelp, "--version, -V");
@@ -142,11 +143,14 @@ describe("Effect command tree", () => {
           ["sandbox", "remove"],
           ["sandbox", "list"],
           ["sandbox", "sync"],
+          ["tools"],
+          ["tools", "list"],
+          ["tools", "doctor"],
         ] as const) {
           const invocation = run(args);
           const error = failure(yield* Effect.result(invocation.effect));
           assert.strictEqual(error.code, "bad_usage");
-          assert.strictEqual(error.message, "Unknown command: sandbox");
+          assert.strictEqual(error.message, `Unknown command: ${args[0]}`);
           assert.strictEqual(invocation.stdout.join(""), "");
           assert.strictEqual(invocation.stderr.join(""), "");
         }

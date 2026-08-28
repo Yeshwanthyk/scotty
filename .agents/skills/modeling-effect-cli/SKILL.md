@@ -37,8 +37,9 @@ Before changing a non-trivial CLI pattern:
 
 - Declare one root `scotty` command and compose every public command with
   `Command.withSubcommands`.
-- Represent `beam` as a leaf command, and `owner recover` and `tools list|doctor` as real nested
-  commands. Do not inspect or shift action strings in handlers.
+- Represent `beam` as a leaf command and `owner recover` as a real nested command. Keep tool
+  provisioning in TOML `[sync].tools` and the bundle path; the public command tree has no `tools`
+  command. Do not inspect or shift action strings in handlers.
 - Use `Argument` for positional input and `Flag` for named input. Use `Flag.choice` when the public
   vocabulary is closed, such as the currently supported provider.
 - Use root `Command.withSharedFlags` for `host`, `token`, and `json` so they remain available across
@@ -82,8 +83,6 @@ once at `main`:
 - Parse and domain failures remain one redacted Scotty error envelope on stderr with the intended
   exit code.
 - Parser help must not contaminate machine-readable stdout on failure.
-- Non-error statuses such as an unhealthy `tools doctor` report may return a non-zero code without
-  inventing an error envelope.
 
 Use a small scoped output buffer or equivalent host adapter. Do not import CLI internals to bypass
 the public runner, and do not let Effect CLI write directly around Scotty's injected writers.
@@ -103,7 +102,7 @@ the public runner, and do not let Effect CLI write directly around Scotty's inje
 - Add focused `@effect/vitest` tests for the command tree, nested help, required input, closed
   choices, shared-flag placement, unknown subcommands, and the built-in allowlist.
 - Keep Bun boundary tests for injected services, stable JSON, redaction, exit codes, browser
-  behavior, idempotency, and `tools doctor`.
+  behavior, and idempotency.
 - Run `npm run fmt`, `npm run lint:skills`, `npm run lint`, `npm run typecheck`,
   `npm run test:cli`, `npm run test:e2e:static`, `npm run test:e2e:local-live:helpers`,
   `node e2e/scripts/scan.mjs`, and compile the CLI.

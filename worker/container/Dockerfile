@@ -21,7 +21,6 @@ COPY skills/scotty/SKILL.md skills/scotty/SKILL.md
 COPY infra infra
 COPY protocol protocol
 COPY worker/src worker/src
-COPY worker/container/toolsets/standard.json worker/container/toolsets/standard.json
 RUN bun build cli/scotty.ts --compile --outfile /out/scotty \
   && chmod 0755 /out/scotty \
   && test "$(stat -c '%a' /out/scotty)" = "755" \
@@ -214,7 +213,7 @@ RUN set -eu; \
   && test "$(stat -c '%a' /usr/local/bin/scotty)" = "755" \
   && test -z "$(find /opt/scotty/pi-packages /opt/scotty/playwright-browsers /opt/scotty/skills ! -type l -perm /222 -print -quit)" \
   && test "$(pi --version)" = "${PI_VERSION}" \
-  && scotty tools list --json >/dev/null \
+  && scotty --version \
   && for command_name in \
     rg fd ast-grep jq yq qsv uv uvx python go gofmt git gh shellcheck ffmpeg Xvfb \
     node npm bun corepack cc pkg-config pi scotty-pi-session scotty-pi-shell scotty-runner-bootstrap; do \

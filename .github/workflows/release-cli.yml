@@ -71,7 +71,7 @@ jobs:
           test "$(find dist/release -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
       - name: Smoke native compiled release artifact
         if: matrix.platform == 'linux' && matrix.architecture == 'x64'
-        run: dist/release/scotty-linux-x64 tools list --json
+        run: dist/release/scotty-linux-x64 --version
       - name: Prove native release deployment packaging in a clean room
         if: matrix.platform == 'linux' && matrix.architecture == 'x64'
         run: node scripts/check-cli-standalone-deploy.mjs dist/release/scotty-linux-x64

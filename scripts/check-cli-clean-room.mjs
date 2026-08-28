@@ -9,7 +9,7 @@ import {
 export const CLEAN_ROOM_CLI_IMAGE = "scotty-cli-build:clean-room";
 export const CLEAN_ROOM_CLI_PLATFORM = "linux/amd64";
 export const CLEAN_ROOM_CLI_TARGET = "scotty-cli-build";
-export const CLEAN_ROOM_CLI_VERIFY = Object.freeze(["tools", "list", "--json"]);
+export const CLEAN_ROOM_CLI_VERIFY = Object.freeze(["--version"]);
 export const CLEAN_ROOM_CACHE_SCOPE = "scotty-cli-build";
 
 export const cleanRoomCliPlan = (root = process.cwd(), environment = process.env) => {

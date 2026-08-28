@@ -72,7 +72,7 @@ EOF
 
 cat >"${codex_home}/AGENTS.md" <<'EOF'
 - Read and follow the repository AGENTS.md first; repository instructions override this file.
-- Run `scotty tools list --json` to inspect the standard sandbox tools.
+- Inspect the standard sandbox tool inventory with `jq . /opt/scotty/toolsets/standard.json`.
 - Prefer `rg`, `fd`, and `ast-grep` for search. Use `jq`, `yq`, and `qsv` for structured data.
 - Use `uv` and `uvx` for Python. Use the repository's declared JavaScript package manager; use Corepack only when it declares Yarn or pnpm.
 - If a required tool is absent or a dependency download is blocked by Scotty policy (including HTTP 520), stop after one bounded retry. Run the focused checks that are available and report the exact unavailable gate. If publication was requested, continue to commit, push, and open the PR so CI can run the locked full gate.

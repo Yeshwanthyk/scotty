@@ -274,14 +274,6 @@ export function durationSeconds(value: string): Result.Result<number, CliError> 
   return Result.succeed(seconds);
 }
 
-export function probeOutput(stdout: string, stderr: string): string {
-  const combined = [stdout, stderr]
-    .map((text) => text.trim())
-    .filter(Boolean)
-    .join("\n");
-  return combined.split("\n")[0]?.slice(0, 512) ?? "";
-}
-
 type HumanResultInput =
   | { readonly command: "beam"; readonly value: BeamUpOutput }
   | { readonly command: "attach"; readonly value: AttachOutput }
