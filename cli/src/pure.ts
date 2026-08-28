@@ -1,4 +1,3 @@
-import { basename } from "node:path";
 import { Option, Result } from "effect";
 import { CliError, EXIT, type ExitCode, type Writer } from "./core";
 import {
@@ -9,7 +8,6 @@ import {
   decodeUpResponse,
   type AttachOutput,
   type BeamUpOutput,
-  type DownOutput,
   type InspectResponse,
   type SessionResponse,
   type SessionOperationOutput,
@@ -276,13 +274,6 @@ export function durationSeconds(value: string): Result.Result<number, CliError> 
   return Result.succeed(seconds);
 }
 
-export function rolloutThreadId(path: string): string | null {
-  const match = basename(path).match(
-    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
-  );
-  return match?.[1] ?? null;
-}
-
 export function probeOutput(stdout: string, stderr: string): string {
   const combined = [stdout, stderr]
     .map((text) => text.trim())
@@ -292,24 +283,19 @@ export function probeOutput(stdout: string, stderr: string): string {
 }
 
 type HumanResultInput =
-  | { readonly command: "beam up"; readonly value: BeamUpOutput }
+  | { readonly command: "beam"; readonly value: BeamUpOutput }
   | { readonly command: "attach"; readonly value: AttachOutput }
   | { readonly command: "snapshot" | "resume"; readonly value: SessionOperationOutput }
-  | { readonly command: "vaporize"; readonly value: VaporizeOutput }
-  | { readonly command: "down"; readonly value: DownOutput };
+  | { readonly command: "vaporize"; readonly value: VaporizeOutput };
 
 const formatHumanResult = (input: HumanResultInput): string => {
   const { command, value } = input;
-  if (command === "beam up")
+  if (command === "beam")
     return `${String(value.id)}  ${String(value.status)}  ${String(value.branch)}\n${String(value.url)}\n`;
   if (command === "attach") return `Opened ${String(value.url)}\n`;
   if (command === "snapshot") return `Snapshot ${String(value.id)}: ${String(value.status)}\n`;
   if (command === "resume")
     return `Session ${String(value.id)}: ${String(value.status)}${value.url ? `\n${String(value.url)}` : ""}\n`;
-  if (command === "down")
-    return value.resumeCmd
-      ? `${String(value.resumeCmd)}\n`
-      : `Fetched ${String(value.branch)} at ${String(value.sha)}; no usable rollout was included.\n`;
   return `Vaporized ${String(value.id)}\n`;
 };
 

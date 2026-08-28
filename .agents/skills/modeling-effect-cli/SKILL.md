@@ -37,8 +37,8 @@ Before changing a non-trivial CLI pattern:
 
 - Declare one root `scotty` command and compose every public command with
   `Command.withSubcommands`.
-- Represent `beam up`, `owner recover`, and `tools list|doctor` as real nested commands. Do not
-  inspect or shift action strings in handlers.
+- Represent `beam` as a leaf command, and `owner recover` and `tools list|doctor` as real nested
+  commands. Do not inspect or shift action strings in handlers.
 - Use `Argument` for positional input and `Flag` for named input. Use `Flag.choice` when the public
   vocabulary is closed, such as the currently supported provider.
 - Use root `Command.withSharedFlags` for `host`, `token`, and `json` so they remain available across
@@ -56,8 +56,8 @@ Before changing a non-trivial CLI pattern:
   side effects. Keep this guard until a pinned-source test proves the parser rejects leftovers.
 
 ```ts
-const up = Command.make(
-  "up",
+const beam = Command.make(
+  "beam",
   {
     prompt: Argument.string("prompt"),
     repo: Flag.string("repo"),
@@ -67,8 +67,6 @@ const up = Command.make(
   },
   handleBeamUp,
 );
-
-const beam = Command.make("beam").pipe(Command.withSubcommands([up]));
 ```
 
 Normal branching inside a handler is fine. Do not replace domain decisions such as optional cap

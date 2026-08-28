@@ -264,15 +264,6 @@ export const ErrorFieldsSchema = Schema.Struct({
   message: Schema.optionalKey(Schema.Unknown),
   hint: Schema.optionalKey(Schema.Unknown),
 });
-export const DownMetadataSchema = Schema.Struct({
-  branch: Schema.NonEmptyString,
-  sha: Schema.NonEmptyString,
-  codexThreadId: Schema.optionalKey(Schema.Unknown),
-  rolloutFile: Schema.optionalKey(Schema.Unknown),
-  rolloutPath: Schema.optionalKey(Schema.Unknown),
-  rolloutBase64: Schema.optionalKey(Schema.Unknown),
-  rolloutName: Schema.optionalKey(Schema.Unknown),
-});
 export const VaporizeResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   status: Schema.Literal("gone"),
@@ -296,13 +287,6 @@ export const VaporizeOutputSchema = Schema.Struct({
   status: Schema.Literal("gone"),
 });
 export type VaporizeOutput = typeof VaporizeOutputSchema.Type;
-export const DownOutputSchema = Schema.Struct({
-  branch: Schema.NonEmptyString,
-  sha: Schema.NonEmptyString,
-  rolloutPath: Schema.NullOr(Schema.String),
-  resumeCmd: Schema.NullOr(Schema.String),
-});
-export type DownOutput = typeof DownOutputSchema.Type;
 export const PiProviderMetadataSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   type: Schema.Literals(["api_key", "oauth"]),
@@ -383,7 +367,6 @@ export const decodeSteerResponse = Schema.decodeUnknownOption(SteerResponseSchem
 });
 export const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchema);
 export const decodeErrorFields = Schema.decodeUnknownOption(ErrorFieldsSchema);
-export const decodeDownMetadata = Schema.decodeUnknownOption(DownMetadataSchema);
 export const decodeVaporizeResponse = Schema.decodeUnknownOption(VaporizeResponseSchema);
 export const decodePiAuthStatusResponse = Schema.decodeUnknownOption(PiAuthStatusResponseSchema);
 export const decodePiAuthReseedResponse = Schema.decodeUnknownOption(PiAuthReseedResponseSchema);

@@ -9,7 +9,6 @@ import {
   Flag,
   GlobalFlag,
 } from "effect/unstable/cli";
-import { handleDown } from "./archive";
 import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
 import { loadEmbeddedScottySkill } from "./embedded-scotty-skill";
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
@@ -1071,8 +1070,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Deploy Scotty code without changing credentials"));
 
-  const beamUp = Command.make(
-    "up",
+  const beam = Command.make(
+    "beam",
     {
       prompt: Argument.string("prompt").pipe(Argument.withDescription("Initial agent prompt")),
       title: Flag.string("title").pipe(Flag.withDescription("Short task or outcome title")),
@@ -1117,14 +1116,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             yield* Effect.fromResult(browserUrl(decoded.sessionUrl, auth.host, result.id)),
           );
         if (autoJson) outputJson(runtime.stdout, result);
-        else runtime.stdout(humanResult({ command: "beam up", value: result }));
+        else runtime.stdout(humanResult({ command: "beam", value: result }));
       }),
   ).pipe(
     Command.withDescription("Start an agent session"),
     Command.withExamples([
       {
         command:
-          'scotty beam up "fix the failing tests" --title "Repair test suite" --repo owner/project --provider cloudflare',
+          'scotty beam "fix the failing tests" --title "Repair test suite" --repo owner/project --provider cloudflare',
         description: "Start a Cloudflare session",
       },
     ]),
@@ -1213,7 +1212,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([repoAdd, repoList, repoRemove]),
   );
 
-  const list = Command.make("ls", {}, () =>
+  const list = Command.make("list", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
       const auth = yield* credentials(options);
@@ -2165,21 +2164,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ({ id }) => sessionOperation("resume", id, false),
   ).pipe(Command.withDescription("Restore a sleeping session"));
 
-  const down = Command.make(
-    "down",
-    {
-      id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
-    },
-    ({ id }) =>
-      Effect.gen(function* () {
-        const { autoJson, options, runtime } = yield* commandContext();
-        const sessionId = yield* validateSessionId(id);
-        const result = yield* handleDown(sessionId, options);
-        if (autoJson) outputJson(runtime.stdout, result);
-        else runtime.stdout(humanResult({ command: "down", value: result }));
-      }),
-  ).pipe(Command.withDescription("Fetch the branch and install the local rollout"));
-
   const vaporize = Command.make(
     "vaporize",
     {
@@ -2188,11 +2172,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     },
     ({ id, yes }) => sessionOperation("vaporize", id, yes),
   ).pipe(Command.withDescription("Permanently delete a session"));
-
-  const beam = Command.make("beam").pipe(
-    Command.withDescription("Manage agent session lifecycle"),
-    Command.withSubcommands([beamUp, down, vaporize]),
-  );
 
   return scotty.pipe(
     Command.withSubcommands([
@@ -2215,6 +2194,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       owner,
       snapshot,
       resume,
+      vaporize,
       sandbox,
       tools,
       runner,

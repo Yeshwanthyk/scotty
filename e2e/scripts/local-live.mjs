@@ -299,7 +299,6 @@ async function run() {
     const up = await runCli(
       [
         "beam",
-        "up",
         `Reply with exactly ${freshMarker} and do nothing else.`,
         "--title",
         "Local auth E2E",

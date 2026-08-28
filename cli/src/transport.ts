@@ -62,10 +62,7 @@ export const apiRequest = Effect.fnUntraced(function* (
 ) {
   const transport = yield* HttpTransport;
   const method = init.method || "GET";
-  const timeout =
-    method === "GET" && !path.endsWith("/down")
-      ? DEFAULT_REQUEST_TIMEOUT_MS
-      : MUTATION_REQUEST_TIMEOUT_MS;
+  const timeout = method === "GET" ? DEFAULT_REQUEST_TIMEOUT_MS : MUTATION_REQUEST_TIMEOUT_MS;
   const headers = new Headers(init.headers);
   if (target.token !== undefined) headers.set("authorization", `Bearer ${target.token}`);
   headers.set("accept", "application/json, application/x-tar, application/octet-stream");

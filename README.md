@@ -1,8 +1,8 @@
 # Scotty
 
 Scotty runs Pi in a persistent Cloudflare Sandbox workspace, presents its live worklog at an
-authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, beam down, or
-permanently destroy the session.
+authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, archive a rollout,
+or permanently destroy the session.
 
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 
@@ -227,7 +227,7 @@ For a clean first run:
 3. Run `scotty doctor --json`.
 4. Run `scotty owner recover` on the browser that will own the installation.
 5. If another browser needs access, open `/devices` in the owner browser and create a one-use pairing link.
-6. Use `scotty beam up` to start a session and open its authenticated worklog in your browser.
+6. Use `scotty beam` to start a session and open its authenticated worklog in your browser.
 
 `auth sync` uses the account, Worker name, and origin saved by `init`. It fails before reading local
 Pi credentials if Cloudflare does not match that saved installation.
@@ -333,7 +333,7 @@ update applies, the rollout settles, and the final audit runs.
 
 The current Cloudflare gate is forward-only: the full local suite and Colima-backed image build must
 pass with the pinned Pi version, then the guarded deployment and deployed canary must prove
-`beam up → Pi worklog → snapshot → resume → vaporize`.
+`beam → Pi worklog → snapshot → resume → vaporize`.
 
 ## CLI
 
@@ -365,9 +365,8 @@ npm run build:cli
 ./dist/scotty deploy
 ./dist/scotty doctor --json
 ./dist/scotty owner recover
-./dist/scotty beam up "fix the failing tests" --title "Fix tests" --repo owner/project --provider cloudflare --json
-./dist/scotty beam down SESSION_ID --json
-./dist/scotty beam vaporize SESSION_ID --yes --json
+./dist/scotty beam "fix the failing tests" --title "Fix tests" --repo owner/project --provider cloudflare --json
+./dist/scotty vaporize SESSION_ID --yes --json
 ./dist/scotty inspect SESSION_ID --json
 ./dist/scotty steer SESSION_ID "check the focused tests" --json
 ./dist/scotty upgrade

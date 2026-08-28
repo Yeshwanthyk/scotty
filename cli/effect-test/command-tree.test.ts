@@ -59,6 +59,8 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "sync");
         assert.include(rootHelp, "skill");
         assert.include(rootHelp, "beam");
+        assert.include(rootHelp, "list");
+        assert.include(rootHelp, "vaporize");
         assert.include(rootHelp, "inspect");
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
@@ -90,16 +92,20 @@ describe("Effect command tree", () => {
 
         const beam = run(["beam", "--help"]);
         assert.strictEqual(yield* beam.effect, EXIT.OK);
-        assert.include(beam.stdout.join(""), "scotty beam <subcommand> [flags]");
-        assert.include(beam.stdout.join(""), "up");
-        assert.include(beam.stdout.join(""), "down");
-        assert.include(beam.stdout.join(""), "vaporize");
+        assert.include(beam.stdout.join(""), "scotty beam [flags] <prompt>");
+        assert.notInclude(beam.stdout.join(""), "up");
+        assert.notInclude(beam.stdout.join(""), "down");
+        assert.notInclude(beam.stdout.join(""), "vaporize");
+        assert.include(beam.stdout.join(""), "prompt");
+        assert.include(beam.stdout.join(""), "--new-repo");
+        assert.notInclude(beam.stdout.join(""), "SUBCOMMANDS");
         assert.strictEqual(beam.stderr.join(""), "");
 
-        const up = run(["beam", "up", "--help"]);
-        assert.strictEqual(yield* up.effect, EXIT.OK);
-        assert.include(up.stdout.join(""), "--new-repo");
-        assert.strictEqual(up.stderr.join(""), "");
+        const vaporize = run(["vaporize", "SESSION_ID", "--help"]);
+        assert.strictEqual(yield* vaporize.effect, EXIT.OK);
+        assert.include(vaporize.stdout.join(""), "scotty vaporize [flags] <id>");
+        assert.include(vaporize.stdout.join(""), "--yes");
+        assert.strictEqual(vaporize.stderr.join(""), "");
 
         const deploy = run(["deploy", "--help"]);
         assert.strictEqual(yield* deploy.effect, EXIT.OK);
@@ -560,7 +566,6 @@ describe("Effect command tree", () => {
     Effect.gen(function* () {
       const invocation = run([
         "beam",
-        "up",
         "fix",
         "--title",
         "Fix build",
@@ -582,7 +587,7 @@ describe("Effect command tree", () => {
 
   it.effect("accepts shared flags around nested commands and keeps version output exact", () =>
     Effect.gen(function* () {
-      const list = run(["--host", "https://worker.example", "ls", "--json"], {
+      const list = run(["--host", "https://worker.example", "list", "--json"], {
         env: { SCOTTY_TOKEN: "secret" },
         fetch: async () => Response.json([]),
       });

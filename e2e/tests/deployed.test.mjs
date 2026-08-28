@@ -152,7 +152,7 @@ const noOrphans = (value) =>
   value.createIdempotency === false;
 
 test(
-  "deployed canary: up/Pi terminal/snapshot/hard-cap/resume/down/vaporize leaves no orphans",
+  "deployed canary: beam/Pi terminal/snapshot/hard-cap/resume/archive/vaporize leaves no orphans",
   { skip: skipReason, timeout: 20 * 60_000 },
   async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-deployed-e2e-home-"));
@@ -172,7 +172,7 @@ test(
     let sourceId;
     let browserCookie;
     let remoteBranch;
-    const baseline = await runCli(["ls", "--json"], { env, cwd });
+    const baseline = await runCli(["list", "--json"], { env, cwd });
     assert.equal(baseline.code, 0, baseline.stderr);
     const baselineIds = new Set(baseline.json.map((session) => session.id));
     const configResponse = await canaryRequest("/__e2e/config");
@@ -180,7 +180,7 @@ test(
     assert.equal(config.githubStatus, 200, "the disposable Worker must have valid GitHub egress");
     assert.ok(config.githubTokenBytes >= 20, "the disposable GitHub credential is malformed");
     t.after(async () => {
-      const current = await runCli(["ls", "--json"], { env, cwd });
+      const current = await runCli(["list", "--json"], { env, cwd });
       const cleanupIds = new Set([id, peerTargetId, sourceId].filter(Boolean));
       if (current.code === 0) {
         for (const session of current.json) {
@@ -189,7 +189,7 @@ test(
         }
       }
       for (const sessionId of cleanupIds) {
-        await runCli(["beam", "vaporize", sessionId, "--yes", "--json"], {
+        await runCli(["vaporize", sessionId, "--yes", "--json"], {
           env,
           cwd,
           timeoutMs: 180_000,
@@ -201,7 +201,6 @@ test(
     const up = await runCli(
       [
         "beam",
-        "up",
         [
           `Scotty deployed E2E canary ${new Date().toISOString()}.`,
           "Create scotty-e2e-agent.txt containing SCOTTY_E2E_PUSHED.",
@@ -301,7 +300,7 @@ test(
 
     const timeoutMs = Number(process.env.SCOTTY_E2E_CAP_TIMEOUT_MS ?? 600_000);
     await poll(
-      async () => runCli(["ls", "--json"], { env, cwd, timeoutMs: 30_000 }),
+      async () => runCli(["list", "--json"], { env, cwd, timeoutMs: 30_000 }),
       (result) =>
         result.code === 0 &&
         result.json?.find((session) => session.id === id)?.status === "sleeping",
@@ -326,15 +325,19 @@ test(
       sentinelsOnly: true,
     });
 
-    const down = await runCli(["beam", "down", id, "--json"], { env, cwd, timeoutMs: 180_000 });
-    assert.equal(down.code, 0, down.stderr);
-    if (down.json.rolloutPath === null) assert.equal(down.json.resumeCmd, null);
-    else assert.equal(fs.statSync(down.json.rolloutPath).mode & 0o777, 0o600);
-    assert.equal(down.json.sha, await git(["rev-parse", "FETCH_HEAD"], cwd));
+    const down = await canaryRequest(`/api/sessions/${id}/down`, {
+      signal: AbortSignal.timeout(180_000),
+    });
+    assert.equal(down.headers.get("content-type"), "application/x-tar");
+    assert.match(
+      down.headers.get("content-disposition") ?? "",
+      /^attachment; filename="scotty-[^"]+\.tar"$/u,
+    );
+    assert.ok((await down.arrayBuffer()).byteLength > 0);
     await git(["push", "origin", "--delete", remoteBranch], cwd);
     remoteBranch = undefined;
 
-    const vaporize = await runCli(["beam", "vaporize", id, "--yes", "--json"], {
+    const vaporize = await runCli(["vaporize", id, "--yes", "--json"], {
       env,
       cwd,
       timeoutMs: 180_000,
@@ -343,7 +346,7 @@ test(
     const vaporizedId = id;
     id = undefined;
     const list = await poll(
-      () => runCli(["ls", "--json"], { env, cwd }),
+      () => runCli(["list", "--json"], { env, cwd }),
       (result) => result.code === 0 && !result.json.some((session) => session.id === vaporizedId),
       { timeoutMs: 120_000, intervalMs: 2_000 },
     );
@@ -363,7 +366,6 @@ test(
     const peerTargetUp = await runCli(
       [
         "beam",
-        "up",
         `Reply with exactly ${readyMarker} and nothing else. Do not modify files, commit, or push.`,
         "--title",
         "Deployed E2E peer target",
@@ -422,7 +424,6 @@ test(
     const sourceUp = await runCli(
       [
         "beam",
-        "up",
         "Remain idle. Do not modify files, commit, or push. This session is the source-side peer-control canary.",
         "--title",
         "Deployed E2E peer source",
@@ -475,7 +476,7 @@ test(
       { timeoutMs: 120_000, intervalMs: 2_000 },
     );
 
-    const sourceVaporize = await runCli(["beam", "vaporize", sourceId, "--yes", "--json"], {
+    const sourceVaporize = await runCli(["vaporize", sourceId, "--yes", "--json"], {
       env,
       cwd,
       timeoutMs: 180_000,
@@ -488,7 +489,7 @@ test(
       intervalMs: 2_000,
     });
 
-    const targetVaporize = await runCli(["beam", "vaporize", peerTargetId, "--yes", "--json"], {
+    const targetVaporize = await runCli(["vaporize", peerTargetId, "--yes", "--json"], {
       env,
       cwd,
       timeoutMs: 180_000,

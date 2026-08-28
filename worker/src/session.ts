@@ -2752,7 +2752,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (authoritative.execution.provider === "runner")
       return yield* wrongState(
         authoritative.status,
-        "beam down",
+        "archive",
         "Runner lifecycle is not supported yet",
       );
     const runtime = yield* SandboxRuntime;

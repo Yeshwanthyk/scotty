@@ -81,8 +81,9 @@ npx wrangler secret put PI_AUTH_JSON --name "$worker" <"$HOME/.pi/agent/auth.jso
 `PI_AUTH_JSON` and `GH_TOKEN` stay in the Worker/Durable Object credential boundary. The
 Container receives only its session-bound Codex and GitHub sentinels.
 
-Use a disposable clone of the repository. The canary pushes one random `scotty/<id>` branch so
-beam-down exercises a real remote fetch; the test deletes that branch in its cleanup hook.
+Use a disposable clone of the repository. The canary pushes one random `scotty/<id>` branch and
+proves the Worker `/api/sessions/:id/down` route returns its session archive; the test deletes that
+branch in its cleanup hook.
 
 ```sh
 SCOTTY_E2E_DEPLOYED=1 \
@@ -98,8 +99,9 @@ npm run test:e2e:deployed
 ```
 
 The test performs the real lifecycle sequence
-`up → root recovery on the disposable stage → Pi worklog/RPC boundary → snapshot → scheduled
-hard-cap sleep → resume → down → vaporize`, then runs isolated local and peer inspect/steer proofs.
+`beam → root recovery on the disposable stage → Pi worklog/RPC boundary → snapshot → scheduled
+hard-cap sleep → resume → Worker /down → vaporize`, then runs isolated local and peer inspect/steer
+proofs.
 The root-authenticated local CLI first steers a same-repository target and verifies its exact
 response through passive inspect. The disposable Container application permits a lingering
 lifecycle host plus two concurrent warm peer instances, so the peer proof then creates a separate
