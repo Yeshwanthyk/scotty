@@ -2,16 +2,16 @@ import { createHash } from "node:crypto";
 import { sandboxBundleItemDigestMaterial } from "../../protocol/sandbox-bundle";
 import { Schema } from "effect";
 import { CliError, EXIT } from "./core";
-import {
-  GitCommitSchema,
-  GitRepositorySchema,
-  PiPackageNameSchema,
-  SANDBOX_CONFIG_SCHEMA_VERSION,
-  SandboxDigestSchema,
-  SkillNameSchema,
-  formatSandboxStatus,
-  type SandboxConfig,
-} from "./sandbox-config-contracts";
+
+export const SandboxDigestSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+export const SkillNameSchema = Schema.String.check(
+  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u),
+);
+export const PiPackageNameSchema = Schema.String.check(
+  Schema.isPattern(/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u),
+);
+export const GitCommitSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
+export const GitRepositorySchema = Schema.NonEmptyString;
 
 export const SANDBOX_BUNDLE_SCHEMA_VERSION = 2 as const;
 
@@ -144,26 +144,6 @@ export const SandboxBundleManifestSchema = Schema.Union([
   SandboxBundleManifestV1Schema,
   SandboxBundleManifestV2Schema,
 ]);
-export const SandboxSyncOutputSchema = Schema.Struct({
-  schemaVersion: Schema.Literal(SANDBOX_CONFIG_SCHEMA_VERSION),
-  digest: SandboxDigestSchema,
-  bytes: Schema.Int,
-  fileCount: Schema.Int,
-  skills: Schema.Array(Schema.Struct({ name: SkillNameSchema, path: Schema.NonEmptyString })),
-  piPackages: Schema.Array(
-    Schema.Struct({
-      name: PiPackageNameSchema,
-      repository: GitRepositorySchema,
-      commit: GitCommitSchema,
-      requestedRef: Schema.NonEmptyString,
-    }),
-  ),
-  remote: Schema.Struct({
-    status: Schema.Literals(["not_queried", "unavailable", "synchronized", "diverged"]),
-    activeDigest: Schema.NullOr(SandboxDigestSchema),
-  }),
-});
-
 export type SandboxFileModeClass = typeof SandboxFileModeClassSchema.Type;
 export type SandboxFileRecord = typeof SandboxFileRecordSchema.Type;
 export type SandboxSkillManifest = typeof SandboxSkillManifestSchema.Type;
@@ -171,10 +151,15 @@ export type SandboxPiPackageManifest = typeof SandboxPiPackageManifestSchema.Typ
 export type SandboxBundleItemKind = typeof SandboxBundleItemKindSchema.Type;
 export type SandboxBundleItemManifest = typeof SandboxBundleItemManifestSchema.Type;
 export type SandboxBundleManifest = typeof SandboxBundleManifestSchema.Type;
-export type SandboxSyncOutput = typeof SandboxSyncOutputSchema.Type;
 
+export interface BuiltSandboxBundle {
+  readonly digest: string;
+  readonly bytes: number;
+  readonly fileCount: number;
+  readonly manifest: SandboxBundleManifest;
+  readonly archive: Uint8Array;
+}
 const encodeSandboxBundleManifest = Schema.encodeSync(SandboxBundleManifestSchema);
-const encodeSandboxSyncOutput = Schema.encodeSync(SandboxSyncOutputSchema);
 const decodeSandboxBundleManifestJson = Schema.decodeUnknownResult(
   Schema.fromJsonString(SandboxBundleManifestSchema),
   { onExcessProperty: "error" },
@@ -218,36 +203,3 @@ export const encodeBundleManifestJson = (manifest: SandboxBundleManifest): strin
   `${JSON.stringify(encodeSandboxBundleManifest(manifest), null, 2)}\n`;
 
 export const decodeBundleManifestText = decodeSandboxBundleManifestJson;
-
-export type SandboxRemoteSnapshot = SandboxSyncOutput["remote"] & {
-  readonly status: "synchronized" | "diverged";
-};
-
-export const sandboxSyncOutput = (
-  config: SandboxConfig,
-  digest: string,
-  bytes: number,
-  fileCount: number,
-  remote: SandboxRemoteSnapshot,
-): SandboxSyncOutput => ({
-  schemaVersion: SANDBOX_CONFIG_SCHEMA_VERSION,
-  digest,
-  bytes,
-  fileCount,
-  skills: config.skills,
-  piPackages: config.piPackages,
-  remote,
-});
-
-export const encodeSandboxSyncJson = (output: SandboxSyncOutput): unknown =>
-  encodeSandboxSyncOutput(output);
-
-export const formatSandboxSync = (output: SandboxSyncOutput): string =>
-  `Prepared sandbox bundle ${output.digest} (${output.bytes} bytes, ${output.fileCount} files).\n${formatSandboxStatus(
-    {
-      schemaVersion: output.schemaVersion,
-      skills: output.skills,
-      piPackages: output.piPackages,
-      remote: output.remote,
-    },
-  )}`;

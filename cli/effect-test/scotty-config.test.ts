@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
@@ -281,6 +281,39 @@ describe("Scotty TOML configuration boundary", () => {
         yield* writeToml(home, validToml({ skills: ["~"], tools: [], extensions: [] }));
         const broad = yield* Effect.result(load(home, home));
         assert.include(failure(broad).message, "unsafe");
+      }),
+    ),
+  );
+
+  it.effect("reports missing and invalid TOML without falling back to legacy JSON", () =>
+    withTempDirectory((home) =>
+      Effect.gen(function* () {
+        const legacyPath = join(home, ".scotty", "sandbox.json");
+        const legacyText = '{"schemaVersion":1,"skills":[],"piPackages":[]}\n';
+        yield* Effect.promise(() => mkdir(join(home, ".scotty"), { recursive: true }));
+        yield* Effect.promise(() => writeFile(legacyPath, legacyText, { mode: 0o600 }));
+
+        const missing = runCommand(["--json", "config", "check"], { home, cwd: home });
+        const missingError = failure(yield* Effect.result(missing.effect));
+        assert.instanceOf(missingError, CliError);
+        assert.strictEqual(missingError.code, "scotty_config_invalid");
+        assert.strictEqual(missingError.exitCode, EXIT.USAGE);
+        assert.include(missingError.message, "TOML");
+        assert.notInclude(missingError.message.toLowerCase(), "sandbox");
+        assert.strictEqual(missing.stdout.join(""), "");
+        assert.strictEqual(missing.stderr.join(""), "");
+
+        yield* writeToml(home, "version =\n");
+        const invalid = runCommand(["--json", "config", "check"], { home, cwd: home });
+        const invalidError = failure(yield* Effect.result(invalid.effect));
+        assert.instanceOf(invalidError, CliError);
+        assert.strictEqual(invalidError.code, "scotty_config_invalid");
+        assert.strictEqual(invalidError.exitCode, EXIT.USAGE);
+        assert.include(invalidError.message, "TOML");
+        assert.notInclude(invalidError.message.toLowerCase(), "sandbox");
+        assert.strictEqual(yield* Effect.promise(() => readFile(legacyPath, "utf8")), legacyText);
+        assert.strictEqual(invalid.stdout.join(""), "");
+        assert.strictEqual(invalid.stderr.join(""), "");
       }),
     ),
   );

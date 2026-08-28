@@ -65,7 +65,7 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
         assert.include(rootHelp, "auth");
-        assert.include(rootHelp, "sandbox");
+        assert.notInclude(rootHelp, "\n  sandbox");
         assert.include(rootHelp, "runner");
         assert.notInclude(rootHelp, "tui");
         assert.include(rootHelp, "--version, -V");
@@ -136,14 +136,20 @@ describe("Effect command tree", () => {
         assert.include(auth.stdout.join(""), "sync");
         assert.notInclude(auth.stdout.join(""), "reseed");
         assert.strictEqual(auth.stderr.join(""), "");
-        const sandbox = run(["sandbox", "--help"]);
-        assert.strictEqual(yield* sandbox.effect, EXIT.OK);
-        assert.include(sandbox.stdout.join(""), "scotty sandbox <subcommand> [flags]");
-        assert.include(sandbox.stdout.join(""), "add");
-        assert.include(sandbox.stdout.join(""), "remove");
-        assert.include(sandbox.stdout.join(""), "list");
-        assert.include(sandbox.stdout.join(""), "sync");
-        assert.strictEqual(sandbox.stderr.join(""), "");
+        for (const args of [
+          ["sandbox"],
+          ["sandbox", "add"],
+          ["sandbox", "remove"],
+          ["sandbox", "list"],
+          ["sandbox", "sync"],
+        ] as const) {
+          const invocation = run(args);
+          const error = failure(yield* Effect.result(invocation.effect));
+          assert.strictEqual(error.code, "bad_usage");
+          assert.strictEqual(error.message, "Unknown command: sandbox");
+          assert.strictEqual(invocation.stdout.join(""), "");
+          assert.strictEqual(invocation.stderr.join(""), "");
+        }
       }),
   );
 

@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { createDeterministicTarGz } from "../src/sandbox-archive.ts";
 import { CliError, EXIT } from "../src/core.ts";
-import type { BuiltSandboxBundle } from "../src/sandbox-prepare.ts";
+import type { BuiltSandboxBundle } from "../src/sandbox-bundle.ts";
 import { synchronizeSandboxBundle } from "../src/sandbox-sync.ts";
 import { HttpTransport } from "../src/services.ts";
 
@@ -76,7 +76,7 @@ describe("sandbox sync transport", () => {
                 error: {
                   code: "conflict",
                   message: "Sandbox configuration revision conflict",
-                  hint: "Retry scotty sandbox sync.",
+                  hint: "Retry scotty sync.",
                 },
               },
               { status: 409 },

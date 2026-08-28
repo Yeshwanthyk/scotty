@@ -1,5 +1,7 @@
 # Slice 1 — TOML to synchronized skill
 
+> **Status:** Historical implementation plan. The current operator surface is `scotty config check` plus top-level `scotty sync`, backed by `~/.config/scotty/scotty.toml`. The plan below records the original slice intent; retired CLI module references have been updated to their current owners.
+
 ## Orientation
 
 Make the existing working bundle path operator-readable and prove it through one deployed Session. Replace the legacy sandbox JSON/source-management surface with a small TOML input at `~/.config/scotty/scotty.toml`. `scotty sync` builds one deterministic non-secret archive containing skills, user-space tools, and allowed Pi extensions, publishes it through the existing bundle authority, and makes a new Session pin it.
@@ -31,6 +33,7 @@ version = 1
 
 [sync]
 skills = ["~/.pi/agent/skills"]
+packages = []
 tools = ["~/.pi/agent/tools"]
 extensions = ["~/.pi/agent/extensions"]
 
@@ -45,7 +48,7 @@ Only these keys are required in this slice. Preserve credential tables as unknow
 - TOML owns local source paths and the exact repository allowlist.
 - The generated manifest owns relative paths, modes, sizes, and content digests.
 - R2 owns immutable archive bytes by digest.
-- The existing Bundle/SandboxConfig authority owns the verified current pointer.
+- The existing remote Bundle/SandboxConfig authority owns the verified current pointer.
 - Each Session records one digest before Sandbox allocation.
 - Fixed destination layout remains owned by the existing container/bootstrap; TOML cannot configure it.
 
@@ -70,8 +73,8 @@ The walker must fail closed for credential-bearing or runtime-local material, in
 
 **Likely baseline files:**
 
-- `cli/src/sandbox-config-contracts.ts`
-- `cli/src/sandbox-config.ts`
+- `cli/src/scotty-config-contracts.ts`
+- `cli/src/scotty-config.ts`
 - `cli/src/commands.ts`
 - `cli/src/main.ts`
 - `skills/scotty/SKILL.md`
@@ -87,7 +90,7 @@ Use one small TOML parser and immediately Schema-decode its output. Remove the l
 
 **Likely baseline files:**
 
-- `cli/src/sandbox-{bundle,walk,archive,prepare,sources,sync}.ts`
+- `cli/src/{scotty-bundle,sandbox-bundle,sandbox-walk,sandbox-archive,sandbox-sync}.ts`
 - `worker/src/sandbox-{config-contracts,config-store,bundle-store,bundle-materializer}.ts`
 - existing focused bundle and sync tests
 

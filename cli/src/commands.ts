@@ -53,36 +53,18 @@ import {
   stableSession,
   usage,
 } from "./pure";
-import { encodeSandboxSyncJson, formatSandboxSync, sandboxSyncOutput } from "./sandbox-bundle";
-import {
-  formatSandboxStatus,
-  loadSandboxConfig,
-  localSandboxStatus,
-  sandboxConfigPath,
-  saveSandboxConfig,
-} from "./sandbox-config";
 import {
   formatScottyConfigCheck,
   loadScottyTomlConfig,
   scottyConfigCheckOutput,
 } from "./scotty-config";
-import { synchronizeLocalSandbox, type SandboxSyncTarget } from "./sandbox-sync";
+import { synchronizeScottyToml, type SandboxSyncTarget } from "./sandbox-sync";
 import { buildScottyTomlBundle, bundleItemSummaries } from "./scotty-bundle";
-import { synchronizeScottyToml } from "./sandbox-sync";
-import {
-  addPiPackageSource,
-  addSkillSource,
-  classifySandboxSource,
-  mutateSandboxConfig,
-  readSkillDirectoryName,
-  removeSandboxSource,
-} from "./sandbox-sources";
 import {
   BrowserLauncher,
   CliRuntime,
   CliUpgrader,
   FileSystem as CliFileSystem,
-  GitResolver,
   InstallationCreator,
   InstallationDeployer,
   InstallationRecovery,
@@ -158,22 +140,36 @@ const flushCapturedOutput = (
 const validateSessionId = (id: string): Effect.Effect<string, CliError> =>
   SESSION_ID_PATTERN.test(id) ? Effect.succeed(id) : Effect.fail(usage("Invalid session ID"));
 
+const prepareScottyTomlBundle = Effect.fnUntraced(function* (home: string, cwd: string) {
+  const loaded = yield* loadScottyTomlConfig({ home, cwd });
+  return yield* buildScottyTomlBundle(loaded);
+});
+
+const mapLifecycleSyncError = (failure: CliError): CliError => {
+  const hint = failure.hint;
+  const preservesCorrectionContext =
+    failure.code === "scotty_config_invalid" ||
+    failure.code === "scotty_config_read_failed" ||
+    failure.code === "sandbox_source_invalid" ||
+    failure.code === "sandbox_package_unsupported" ||
+    failure.code === "sandbox_bundle_too_large";
+  const mappedHint = hint.includes("scotty sync")
+    ? hint
+    : preservesCorrectionContext
+      ? `${hint} Run scotty sync after correcting the issue.`
+      : "Retry scotty sync.";
+  return new CliError(failure.code, failure.message, mappedHint, failure.exitCode);
+};
+
 const synchronizeInstallationSandbox = Effect.fnUntraced(function* (
   home: string,
+  cwd: string,
   target: SandboxSyncTarget,
 ) {
-  return yield* synchronizeLocalSandbox({ home, target }).pipe(
-    Effect.mapError((failure) =>
-      failure.hint.includes("sandbox sync")
-        ? failure
-        : new CliError(
-            failure.code,
-            failure.message,
-            "Retry scotty sandbox sync.",
-            failure.exitCode,
-          ),
-    ),
-  );
+  return yield* Effect.gen(function* () {
+    const built = yield* prepareScottyTomlBundle(home, cwd);
+    return yield* synchronizeScottyToml({ built, target });
+  }).pipe(Effect.mapError(mapLifecycleSyncError));
 });
 
 const runnerChildEnvironment = (
@@ -630,7 +626,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               host,
               rootTokenRotated: true,
             };
-            yield* synchronizeInstallationSandbox(runtime.home, { host, token });
+            yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, { host, token });
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
@@ -1011,7 +1007,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Scotty token is not configured",
               "Run scotty init or pass --token-file / SCOTTY_TOKEN.",
             );
-          yield* synchronizeInstallationSandbox(runtime.home, {
+          yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, {
             host: yield* Effect.fromResult(normalizeHost(config.host)),
             token: config.token,
           });
@@ -1061,7 +1057,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           changes: plan.changes,
           rootTokenRotated: false,
         };
-        yield* synchronizeInstallationSandbox(runtime.home, { host, token: config.token });
+        yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, {
+          host,
+          token: config.token,
+        });
         if (autoJson) outputJson(runtime.stdout, result);
         else
           runtime.stdout(
@@ -1314,8 +1313,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const sync = Command.make("sync", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
-      const loaded = yield* loadScottyTomlConfig({ home: runtime.home, cwd: runtime.cwd });
-      const built = yield* buildScottyTomlBundle(loaded);
+      const built = yield* prepareScottyTomlBundle(runtime.home, runtime.cwd);
       const target = yield* credentials(options);
       const synced = yield* synchronizeScottyToml({ built, target });
       const result = {
@@ -1603,143 +1601,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const auth = Command.make("auth").pipe(
     Command.withDescription("Manage Pi credentials"),
     Command.withSubcommands([authStatus, authSync, authReseed]),
-  );
-
-  const emitSandboxStatus = (
-    autoJson: boolean,
-    runtime: { readonly stdout: (text: string) => void },
-    status: ReturnType<typeof localSandboxStatus>,
-    prefix?: string,
-  ): void => {
-    if (autoJson) outputJson(runtime.stdout, status);
-    else {
-      if (prefix !== undefined) runtime.stdout(`${prefix}\n`);
-      runtime.stdout(formatSandboxStatus(status));
-    }
-  };
-
-  const emitSandboxSync = (
-    autoJson: boolean,
-    runtime: { readonly stdout: (text: string) => void },
-    output: ReturnType<typeof sandboxSyncOutput>,
-  ): void => {
-    if (autoJson) outputJson(runtime.stdout, encodeSandboxSyncJson(output));
-    else runtime.stdout(formatSandboxSync(output));
-  };
-
-  const sandboxAdd = Command.make(
-    "add",
-    {
-      source: Argument.string("source").pipe(
-        Argument.withDescription("Local Skill directory or Git repository URL"),
-      ),
-      ref: Flag.string("ref").pipe(
-        Flag.optional,
-        Flag.withDescription("Git tag or commit for a Pi package repository"),
-      ),
-    },
-    ({ ref, source }) =>
-      Effect.gen(function* () {
-        const { autoJson, runtime } = yield* commandContext();
-        const requestedRef = Option.getOrUndefined(ref);
-        const classified = yield* classifySandboxSource(source, runtime.cwd, requestedRef);
-        const path = sandboxConfigPath(runtime.home);
-        if (classified.kind === "skill") {
-          const name = yield* readSkillDirectoryName(classified.path);
-          const saved = yield* mutateSandboxConfig(path, (config) =>
-            addSkillSource(config, { name, path: classified.path }),
-          );
-          emitSandboxStatus(
-            autoJson,
-            runtime,
-            localSandboxStatus(saved),
-            `Added skill ${name} to the local sandbox configuration.`,
-          );
-          return;
-        }
-        if (requestedRef === undefined) return yield* usage("Git package sources require --ref");
-        const git = yield* GitResolver;
-        const resolved = yield* git.resolvePackage(classified.repository, requestedRef);
-        const saved = yield* mutateSandboxConfig(path, (config) =>
-          addPiPackageSource(config, {
-            name: resolved.name,
-            repository: classified.repository,
-            commit: resolved.commit,
-            requestedRef,
-          }),
-        );
-        emitSandboxStatus(
-          autoJson,
-          runtime,
-          localSandboxStatus(saved),
-          `Added Pi package ${resolved.name} to the local sandbox configuration.`,
-        );
-      }),
-  ).pipe(Command.withDescription("Add a Skill directory or Git-backed Pi package"));
-
-  const sandboxRemove = Command.make(
-    "remove",
-    {
-      name: Argument.string("name").pipe(
-        Argument.withDescription("Configured Skill or Pi package name"),
-      ),
-    },
-    ({ name }) =>
-      Effect.gen(function* () {
-        const { autoJson, runtime } = yield* commandContext();
-        const path = sandboxConfigPath(runtime.home);
-        const fileSystem = yield* CliFileSystem;
-        const removed = yield* fileSystem.withLock(
-          path,
-          Effect.gen(function* () {
-            const current = yield* loadSandboxConfig(path, true);
-            const next = yield* Effect.fromResult(removeSandboxSource(current, name));
-            const saved = yield* saveSandboxConfig(path, next.config);
-            return { kind: next.kind, saved };
-          }),
-        );
-        const label = removed.kind === "skill" ? "skill" : "Pi package";
-        emitSandboxStatus(
-          autoJson,
-          runtime,
-          localSandboxStatus(removed.saved),
-          `Removed ${label} ${name} from the local sandbox configuration.`,
-        );
-      }),
-  ).pipe(Command.withDescription("Remove a configured Skill or Pi package"));
-
-  const sandboxList = Command.make("list", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, runtime } = yield* commandContext();
-      const path = sandboxConfigPath(runtime.home);
-      const fileSystem = yield* CliFileSystem;
-      const config = yield* fileSystem.withLock(path, loadSandboxConfig(path, true));
-      emitSandboxStatus(autoJson, runtime, localSandboxStatus(config));
-    }),
-  ).pipe(Command.withDescription("List local sandbox sources and remote status"));
-
-  const sandboxSync = Command.make("sync", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, options, runtime } = yield* commandContext();
-      const target = yield* credentials(options);
-      const synced = yield* synchronizeInstallationSandbox(runtime.home, target);
-      emitSandboxSync(
-        autoJson,
-        runtime,
-        sandboxSyncOutput(
-          synced.config,
-          synced.built.digest,
-          synced.built.bytes,
-          synced.built.fileCount,
-          synced.remote,
-        ),
-      );
-    }),
-  ).pipe(Command.withDescription("Prepare the local sandbox bundle and synchronize it"));
-
-  const sandbox = Command.make("sandbox").pipe(
-    Command.withDescription("Manage installation sandbox Skills and Pi packages"),
-    Command.withSubcommands([sandboxAdd, sandboxRemove, sandboxList, sandboxSync]),
   );
 
   const toolsList = Command.make("list", {}, () =>
@@ -2195,7 +2056,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       snapshot,
       resume,
       vaporize,
-      sandbox,
       tools,
       runner,
     ]),
