@@ -1329,7 +1329,7 @@ async function serveScottySessionPage(
     return Response.redirect(new URL("/sessions", request.url).toString(), 302);
   if (session.provider === "runner")
     return Response.redirect(new URL("/sessions", request.url).toString(), 302);
-  return secureAsset(env, request, "/terminal.html", true);
+  return secureAsset(env, request, "/session.html", true);
 }
 
 async function serveScottySessionSubpath(
