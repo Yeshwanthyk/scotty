@@ -208,6 +208,9 @@ export function applyEvent(projection, envelope) {
   if (TERMINAL_EVENTS.has(type)) {
     projection.active = false;
     projection.pendingUi.clear();
+    projection.queue = { steer: [], followUp: [] };
+    for (const tool of projection.tools.values())
+      if (tool.status === "running") tool.status = "done";
   }
   if (type === "message_start" || type === "message_end") {
     if (!claimsSnapshotMessage(projection, event.message))
@@ -244,6 +247,7 @@ export function applyEvent(projection, envelope) {
     if (typeof event.id === "string") projection.pendingUi.delete(event.id);
   } else if (type === "state_update" && isObject(event.state)) {
     projection.state = { ...projection.state, ...event.state };
+    if (typeof event.state.isStreaming === "boolean") projection.active = event.state.isStreaming;
   }
   return "applied";
 }
@@ -455,6 +459,7 @@ function renderQuestion(document, request) {
       button.type = "button";
       button.className = "question-option";
       button.dataset.uiValue = String(option);
+      button.dataset.focusKey = `question:${request.id}:option:${String(option)}`;
       button.textContent = sanitizeText(option, 500);
       controls.append(button);
     }
@@ -467,6 +472,7 @@ function renderQuestion(document, request) {
       button.type = "button";
       button.className = "question-option";
       button.dataset.uiConfirmed = confirmed;
+      button.dataset.focusKey = `question:${request.id}:confirm:${confirmed}`;
       button.textContent = copy;
       controls.append(button);
     }
@@ -475,10 +481,12 @@ function renderQuestion(document, request) {
     form.dataset.uiForm = "";
     const input = document.createElement(request.method === "editor" ? "textarea" : "input");
     input.name = "answer";
+    input.dataset.focusKey = `question:${request.id}:answer`;
     input.placeholder = request.placeholder ?? "Your response…";
     if (request.method === "editor") input.value = request.prefill ?? "";
     const reply = document.createElement("button");
     reply.type = "submit";
+    reply.dataset.focusKey = `question:${request.id}:reply`;
     reply.textContent = "Reply";
     form.append(input, reply);
     controls.append(form);
@@ -487,9 +495,12 @@ function renderQuestion(document, request) {
   cancel.type = "button";
   cancel.className = "question-cancel";
   cancel.dataset.uiCancel = "";
+  cancel.dataset.focusKey = `question:${request.id}:cancel`;
   cancel.textContent = "Cancel";
   controls.append(cancel);
   card.append(controls);
+  if (request.delivered)
+    for (const control of card.querySelectorAll("button, input, textarea")) control.disabled = true;
   return card;
 }
 
@@ -539,7 +550,8 @@ export function createChatView({ document, feed, baseUrl }) {
   let renderedSignature = "";
   return {
     render(projection, sessionId) {
-      const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 100;
+      const scroller = feed.parentElement;
+      const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 100;
       const focused = document.activeElement?.dataset?.focusKey;
       const selection =
         document.activeElement?.selectionStart === undefined
@@ -589,7 +601,7 @@ export function createChatView({ document, feed, baseUrl }) {
             target.setSelectionRange(selection.start, selection.end);
         }
       }
-      if (nearBottom) feed.parentElement.scrollTop = feed.parentElement.scrollHeight;
+      if (nearBottom) scroller.scrollTop = scroller.scrollHeight;
     },
     reset() {
       renderedSignature = "";

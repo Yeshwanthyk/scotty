@@ -2967,11 +2967,23 @@ describe("real Hono boundary", () => {
     expect(apiRootCookie.status).toBe(401);
   });
 
-  it("serves the terminal shell for Cloudflare sessions with registered-client cookies", async () => {
+  it("serves the session shell for Cloudflare sessions with registered-client cookies", async () => {
+    const assetPaths: string[] = [];
+    const assets = {
+      fetch: async (request: Request) => {
+        assetPaths.push(new URL(request.url).pathname);
+        return new Response("<!doctype html><title>Scotty</title>", {
+          headers: { "content-type": "text/html" },
+        });
+      },
+      connect: () => {
+        throw new RouteTestFailure("ASSETS.connect isn't used by route tests");
+      },
+    } as Fetcher;
     const response = await app.request(
       "/s/a0b1c2d3e4f5",
       { headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` } },
-      { ...env(), SCOTTY_PREVIEW_BASE: "preview.example.test" },
+      { ...env({ assets }), SCOTTY_PREVIEW_BASE: "preview.example.test" },
     );
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("<title>Scotty</title>");
@@ -2983,6 +2995,7 @@ describe("real Hono boundary", () => {
     expect(response.headers.get("content-length")).toBeNull();
     expect(response.headers.get("etag")).toBeNull();
     expect(sandbox.fetch).not.toHaveBeenCalled();
+    expect(assetPaths[0]).toBe("/session.html");
 
     const sessions = await app.request(
       "/sessions",
