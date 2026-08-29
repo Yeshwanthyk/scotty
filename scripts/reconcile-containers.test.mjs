@@ -89,6 +89,18 @@ describe("Container reconciliation", () => {
     );
   });
 
+  it("rejects an empty direct host or token instead of falling through", async () => {
+    for (const environment of [
+      { SCOTTY_HOST: "", SCOTTY_TOKEN: "root-token" },
+      { SCOTTY_HOST: "https://baseline.example", SCOTTY_TOKEN: "" },
+    ]) {
+      await assert.rejects(
+        () => readSessions(environment),
+        /SCOTTY_HOST and SCOTTY_TOKEN must be provided together/u,
+      );
+    }
+  });
+
   it("accepts one active session, one running instance, and inactive history", () => {
     const report = reconcileContainerInventory({
       applicationName: APPLICATION_NAME,

@@ -185,7 +185,7 @@ export async function readSessions(
 ) {
   let host = environment.SCOTTY_HOST;
   let token = environment.SCOTTY_TOKEN;
-  if ((host === undefined) !== (token === undefined)) {
+  if (Boolean(host) !== Boolean(token)) {
     throw new Error("SCOTTY_HOST and SCOTTY_TOKEN must be provided together.");
   }
   if (!host && !token) {
