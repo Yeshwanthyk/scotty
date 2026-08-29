@@ -365,12 +365,19 @@ const LegacyCredentialRegistryVersionRecordSchema = Schema.Struct({
   versionRef: CredentialVersionRefSchema,
   envelope: EncryptedCredentialEnvelopeSchema,
   createdAt: CredentialTimestampSchema,
+  expires: Schema.optionalKey(Schema.Finite),
   refreshLease: Schema.optionalKey(LegacyCredentialRefreshLeaseSchema),
-}).check(
-  Schema.makeFilter((version) => version.kind === version.envelope.kind, {
-    expected: "credential kind matching its encrypted envelope",
-  }),
-);
+})
+  .check(
+    Schema.makeFilter((version) => version.kind === "pi-auth" || version.expires === undefined, {
+      expected: "expiry metadata on Pi credentials only",
+    }),
+  )
+  .check(
+    Schema.makeFilter((version) => version.kind === version.envelope.kind, {
+      expected: "credential kind matching its encrypted envelope",
+    }),
+  );
 
 const LegacyCredentialRegistryRotationCompletionSchema = Schema.Struct({
   sessionId: CredentialSessionIdSchema,
