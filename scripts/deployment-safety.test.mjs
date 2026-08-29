@@ -13,6 +13,7 @@ import {
   auditProductionHatchEvidenceTopology,
   assertContainerPlanAuthorized,
   assertSettledContainerBaseline,
+  assertProductionCredentialWrappingKeyBinding,
   CONTAINER_ROLLOUT_ABSENCE_QUIET_MS,
   createProductionDeploymentProgressReporter,
   executeProductionDeploySteps,
@@ -39,6 +40,9 @@ const PRODUCTION_TOPOLOGY_ENVIRONMENT = {
   ...INSTALLATION_ENVIRONMENT,
   SCOTTY_PREVIEW_BASE: "preview.scotty.example",
   SCOTTY_PREVIEW_ZONE_ID: "0123456789abcdef0123456789abcdef",
+  GH_TOKEN: "legacy-github-secret",
+  PI_AUTH_JSON: "legacy-pi-secret",
+  CREDENTIAL_WRAPPING_KEY: "installation-wrapping-secret",
 };
 const CONTAINER_APPLICATION_ID = "application-id";
 const CONTAINER_APPLICATION_NAME = "scotty-test-sandbox";
@@ -248,6 +252,7 @@ describe("production deployment ownership", () => {
         "Check repository",
         "Audit current runtime inventory",
         "Prepare isolated Container context",
+        "Check Worker credential binding",
         "Plan production through Alchemy",
         "Deploy production through Alchemy",
         "Audit deployed runtime inventory",
@@ -256,9 +261,10 @@ describe("production deployment ownership", () => {
     const commands = PRODUCTION_DEPLOY_STEPS.map(
       ({ command, args }) => `${command} ${args.join(" ")}`,
     );
-    assert.equal(commands[3], "npx --no-install alchemy plan alchemy.run.ts --stage production");
+    assert.equal(commands[3], "npx --no-install wrangler secret list --name ${workerName} --json");
+    assert.equal(commands[4], "npx --no-install alchemy plan alchemy.run.ts --stage production");
     assert.equal(
-      commands[4],
+      commands[5],
       "npx --no-install alchemy deploy alchemy.run.ts --stage production --yes",
     );
     assert.equal(commands.filter((command) => command === "npm run audit:containers").length, 2);
@@ -269,20 +275,39 @@ describe("production deployment ownership", () => {
     assert.equal(commands[2], `${process.execPath} scripts/prepare-container-context.mjs`);
     assert.equal(PRODUCTION_DEPLOY_STEPS[1].redact, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[3].capture, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[3].tee, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[3].projectOutput, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[3].redact, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[4].capture, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[4].tee, true);
     assert.equal(PRODUCTION_DEPLOY_STEPS[4].projectOutput, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[4].reportProgress, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[4].explainFailure, true);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[4].failureDiagnostic, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[5].capture, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[5].tee, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[5].projectOutput, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[5].reportProgress, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[5].explainFailure, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[5].failureDiagnostic, true);
     assert.match(PRODUCTION_DEPLOY_DIAGNOSTIC_PATH, /scotty-production-deploy-failure\.log$/u);
-    assert.equal(PRODUCTION_DEPLOY_STEPS[5].redact, true);
+    assert.equal(PRODUCTION_DEPLOY_STEPS[6].redact, true);
     assert.equal(readAlchemyContainerAction("[SandboxContainer] updated\n"), "updated");
     assert.equal(
       readAlchemyContainerAction("\u001B[32m[SandboxContainer] noop\u001B[0m\n"),
       "noop",
+    );
+  });
+
+  it("requires the Worker wrapping-key binding by name before planning", () => {
+    assert.doesNotThrow(() =>
+      assertProductionCredentialWrappingKeyBinding(
+        JSON.stringify([{ name: "CREDENTIAL_WRAPPING_KEY", type: "secret_text" }]),
+      ),
+    );
+    assert.throws(
+      () =>
+        assertProductionCredentialWrappingKeyBinding(JSON.stringify([{ name: "SCOTTY_TOKEN" }])),
+      /installation_fresh_required.*fresh Scotty installation/u,
+    );
+    assert.throws(
+      () => assertProductionCredentialWrappingKeyBinding(JSON.stringify({ result: [] })),
+      /installation_fresh_required/u,
     );
   });
 
@@ -608,7 +633,10 @@ describe("production deployment ownership", () => {
       executeProductionDeploySteps(
         async (step, env, options) => {
           executed.push(step.name);
-          environments.set(step.name, { env, options });
+          environments.set(step.name, { env, options, args: step.args });
+          if (step.name === "Check Worker credential binding") {
+            return JSON.stringify([{ name: "CREDENTIAL_WRAPPING_KEY", type: "secret_text" }]);
+          }
           if (step.name === "Plan production through Alchemy") {
             return "[SandboxContainer] noop\n";
           }
@@ -645,6 +673,7 @@ describe("production deployment ownership", () => {
       "Audit current runtime inventory",
       "Prepare isolated Container context",
       "Revalidate release state",
+      "Check Worker credential binding",
       "Plan production through Alchemy",
       "Read Container baseline",
       "Deploy production through Alchemy",
@@ -653,16 +682,29 @@ describe("production deployment ownership", () => {
       "Audit deployed Hatch and Evidence topology",
     ]);
     assert.equal(executed.filter((name) => name === "Deploy production through Alchemy").length, 1);
+    assert.deepEqual(environments.get("Check Worker credential binding").args, [
+      "--no-install",
+      "wrangler",
+      "secret",
+      "list",
+      "--name",
+      "scotty-test-worker",
+      "--json",
+    ]);
     const verificationEnv = environments.get("Check repository").env;
     assert.equal(verificationEnv.CLOUDFLARE_API_TOKEN, undefined);
     assert.equal(verificationEnv.SCOTTY_RUNNER_TOKEN, undefined);
     assert.equal(verificationEnv.SCOTTY_TOKEN, undefined);
+    assert.equal(verificationEnv.GH_TOKEN, undefined);
+    assert.equal(verificationEnv.PI_AUTH_JSON, undefined);
+    assert.equal(verificationEnv.CREDENTIAL_WRAPPING_KEY, undefined);
     assert.equal(verificationEnv.SCOTTY_E2E_EXPLICIT, undefined);
     for (const name of [
       "Audit current runtime inventory",
       "Plan production through Alchemy",
       "Deploy production through Alchemy",
       "Read Container baseline",
+      "Check Worker credential binding",
       "Wait for Container rollout",
       "Audit deployed runtime inventory",
       "Audit deployed Hatch and Evidence topology",
@@ -675,6 +717,9 @@ describe("production deployment ownership", () => {
       assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
       assert.equal(env.SCOTTY_RUNNER_TOKEN, undefined);
       assert.equal(env.SCOTTY_TOKEN, undefined);
+      assert.equal(env.GH_TOKEN, undefined);
+      assert.equal(env.PI_AUTH_JSON, undefined);
+      assert.equal(env.CREDENTIAL_WRAPPING_KEY, undefined);
       assert.equal(env.DOCKER_HOST, undefined);
       assert.equal(
         env.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED,
@@ -683,7 +728,7 @@ describe("production deployment ownership", () => {
           "test",
           "worker=scotty-test-worker",
           "runnerWorker=scotty-test-runner",
-          "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig",
+          "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig,ScottyCredentialRegistry",
           `container=${CONTAINER_APPLICATION_NAME}`,
           "kv=scotty-test-sessions",
           "r2=scotty-test-backups",
@@ -712,6 +757,9 @@ describe("production deployment ownership", () => {
     let deployEnvironment;
     await executeProductionDeploySteps(
       async (step, env) => {
+        if (step.name === "Check Worker credential binding") {
+          return JSON.stringify([{ name: "CREDENTIAL_WRAPPING_KEY", type: "secret_text" }]);
+        }
         if (step.name === "Plan production through Alchemy") {
           return "[SandboxContainer] update\n";
         }

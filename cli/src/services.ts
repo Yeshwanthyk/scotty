@@ -2,11 +2,32 @@ import { chmod, lstat, mkdir, open, readFile, rename, stat, unlink } from "node:
 import { constants, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { Context, Data, Effect, Layer, Option } from "effect";
+import { Context, Data, Effect, Layer, Option, Predicate } from "effect";
 import lockfile from "proper-lockfile";
 import { decodePreviewCleanupOwnershipError } from "../../infra/preview-ownership.ts";
 import { CliError, EXIT, type Writer } from "./core";
 import { InstallationHostFailure, installationCommandFailure } from "./installation-diagnostics.ts";
+
+const isFreshInstallationRequired = (cause: unknown): boolean => {
+  let current = cause;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!Predicate.isTagged(current, "CredentialWrappingKeyUnavailable")) {
+      if (!Predicate.hasProperty(current, "cause")) return false;
+      current = current.cause;
+      continue;
+    }
+    return true;
+  }
+  return false;
+};
+
+const freshInstallationRequired = (): CliError =>
+  new CliError(
+    "installation_fresh_required",
+    "This installation is missing the Credential Registry wrapping key",
+    "Create a fresh Scotty installation before deploying or recovering Registry-backed code; existing sessions are unsupported and are not migrated.",
+    EXIT.GENERIC,
+  );
 
 export interface CliDependencies {
   fetch: typeof fetch;
@@ -33,8 +54,6 @@ export interface CliDependencies {
     request: InstallationUninstallRequest,
   ) => Promise<InstallationUninstallResult>;
   upgradeCli: (request: CliUpgradeRequest) => Promise<CliUpgradeResult>;
-  inspectPiAuthTarget: (request: PiAuthTargetRequest) => Promise<PiAuthTargetResult>;
-  uploadPiAuthSecret: (request: PiAuthUploadRequest) => Promise<PiAuthTargetResult>;
 }
 
 export interface InstallationDeployRequest {
@@ -48,7 +67,7 @@ export interface InstallationDeployRequest {
 
 export interface InstallationCreateRequest extends InstallationDeployRequest {
   readonly token: string;
-  readonly githubToken: string;
+  readonly credentialWrappingKey: string;
   readonly expectedAccountId: string;
   readonly expectedPlanFingerprint: string;
   readonly mode: "fresh" | "resume";
@@ -133,27 +152,6 @@ export interface CliUpgradeResult {
   readonly updated: boolean;
 }
 
-export interface PiAuthTargetRequest {
-  readonly profile: string;
-  readonly expectedAccountId: string;
-  readonly expectedWorkerName: string;
-  readonly expectedRunnerWorkerName: string;
-  readonly expectedContainerName: string;
-  readonly expectedKvTitle: string;
-  readonly expectedBackupBucketName: string;
-  readonly expectedHost: string;
-}
-
-export interface PiAuthUploadRequest extends PiAuthTargetRequest {
-  readonly json: string;
-}
-
-export interface PiAuthTargetResult {
-  readonly accountId: string;
-  readonly workerName: string;
-  readonly host: string;
-}
-
 export interface InstallationResult {
   readonly installationName: string;
   readonly profile: string;
@@ -221,16 +219,6 @@ interface BrowserLauncherShape {
 export class BrowserLauncher extends Context.Service<BrowserLauncher, BrowserLauncherShape>()(
   "scotty/cli/BrowserLauncher",
 ) {}
-
-interface PiAuthSecretManagerShape {
-  readonly inspect: (request: PiAuthTargetRequest) => Effect.Effect<PiAuthTargetResult, CliError>;
-  readonly upload: (request: PiAuthUploadRequest) => Effect.Effect<PiAuthTargetResult, CliError>;
-}
-
-export class PiAuthSecretManager extends Context.Service<
-  PiAuthSecretManager,
-  PiAuthSecretManagerShape
->()("scotty/cli/PiAuthSecretManager") {}
 
 interface InstallationCreatorShape {
   readonly plan: (request: InstallationDeployRequest) => Effect.Effect<InstallationPlan, CliError>;
@@ -439,6 +427,19 @@ const appendOnce = Effect.fnUntraced(function* (path: string, marker: string, co
   return true;
 });
 
+const CHILD_ENVIRONMENT_SECRET_NAMES = new Set([
+  "GH_TOKEN",
+  "PI_AUTH_JSON",
+  "CREDENTIAL_WRAPPING_KEY",
+]);
+
+export const sanitizedChildEnvironment = (
+  environment: Record<string, string | undefined>,
+): Record<string, string | undefined> =>
+  Object.fromEntries(
+    Object.entries(environment).filter(([name]) => !CHILD_ENVIRONMENT_SECRET_NAMES.has(name)),
+  );
+
 export const defaultDependencies = (): CliDependencies => ({
   // oxlint-disable-next-line scotty/no-raw-fetch -- boundary: CliDependencies captures native fetch for the interruptible CLI host adapter
   fetch: globalThis.fetch,
@@ -459,7 +460,11 @@ export const defaultDependencies = (): CliDependencies => ({
         : process.platform === "win32"
           ? ["cmd", "/c", "start", "", url]
           : ["xdg-open", url];
-    const child = Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
+    const child = Bun.spawn(command, {
+      stdout: "ignore",
+      stderr: "ignore",
+      env: sanitizedChildEnvironment(process.env),
+    });
     const code = await child.exited;
     if (code !== 0) {
       // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: CliDependencies preserves the Promise-rejection host contract for injected browser openers
@@ -476,7 +481,7 @@ export const defaultDependencies = (): CliDependencies => ({
       stdout: "pipe",
       stderr: "pipe",
       cwd: options?.cwd ?? process.cwd(),
-      env: { ...process.env, ...options?.env },
+      env: sanitizedChildEnvironment({ ...process.env, ...options?.env }),
     });
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
@@ -517,14 +522,6 @@ export const defaultDependencies = (): CliDependencies => ({
     const { upgradeCli } = await import("./upgrade-host.ts");
     return upgradeCli(request);
   },
-  inspectPiAuthTarget: async (request) => {
-    const { inspectPiAuthTarget } = await import("./installation-deployment.ts");
-    return inspectPiAuthTarget(request);
-  },
-  uploadPiAuthSecret: async (request) => {
-    const { uploadPiAuthSecret } = await import("./installation-deployment.ts");
-    return uploadPiAuthSecret(request);
-  },
 });
 
 export const cliLayer = (
@@ -534,7 +531,6 @@ export const cliLayer = (
   | HttpTransport
   | ProcessRunner
   | BrowserLauncher
-  | PiAuthSecretManager
   | FileSystem
   | InstallationCreator
   | InstallationDeployer
@@ -577,30 +573,6 @@ export const cliLayer = (
           catch: unexpected,
         }),
     }),
-    Layer.succeed(PiAuthSecretManager)({
-      inspect: (request) =>
-        Effect.tryPromise({
-          try: () => dependencies.inspectPiAuthTarget(request),
-          catch: () =>
-            new CliError(
-              "pi_auth_target_failed",
-              "Could not verify the managed Pi auth destination",
-              "Check the saved Cloudflare profile, account, Worker, and origin.",
-              EXIT.GENERIC,
-            ),
-        }),
-      upload: (request) =>
-        Effect.tryPromise({
-          try: () => dependencies.uploadPiAuthSecret(request),
-          catch: () =>
-            new CliError(
-              "pi_auth_upload_failed",
-              "Could not upload PI_AUTH_JSON to the managed Worker",
-              "The upload may have succeeded. Run scotty auth status before retrying.",
-              EXIT.GENERIC,
-            ),
-        }),
-    }),
     Layer.succeed(InstallationCreator)({
       plan: (request) =>
         Effect.tryPromise({
@@ -633,6 +605,7 @@ export const cliLayer = (
               phase: "create",
               installationName: request.installationName,
               profile: request.profile,
+              secrets: [request.credentialWrappingKey],
             }),
           ),
         ),
@@ -644,15 +617,17 @@ export const cliLayer = (
           catch: (cause) => new InstallationHostFailure({ cause }),
         }).pipe(
           Effect.catchTag("InstallationHostFailure", ({ cause }) =>
-            failInstallation(cause, {
-              code: "installation_plan_failed",
-              message: "Could not plan the Scotty deployment",
-              hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
-              operation: "deploy",
-              phase: "plan",
-              installationName: request.installationName,
-              profile: request.profile,
-            }),
+            isFreshInstallationRequired(cause)
+              ? Effect.fail(freshInstallationRequired())
+              : failInstallation(cause, {
+                  code: "installation_plan_failed",
+                  message: "Could not plan the Scotty deployment",
+                  hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
+                  operation: "deploy",
+                  phase: "plan",
+                  installationName: request.installationName,
+                  profile: request.profile,
+                }),
           ),
         ),
       deploy: (request) =>
@@ -661,15 +636,17 @@ export const cliLayer = (
           catch: (cause) => new InstallationHostFailure({ cause }),
         }).pipe(
           Effect.catchTag("InstallationHostFailure", ({ cause }) =>
-            failInstallation(cause, {
-              code: "installation_deploy_failed",
-              message: "Could not deploy the Scotty installation",
-              hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
-              operation: "deploy",
-              phase: "apply",
-              installationName: request.installationName,
-              profile: request.profile,
-            }),
+            isFreshInstallationRequired(cause)
+              ? Effect.fail(freshInstallationRequired())
+              : failInstallation(cause, {
+                  code: "installation_deploy_failed",
+                  message: "Could not deploy the Scotty installation",
+                  hint: "Check Cloudflare authentication and Docker, then retry scotty deploy.",
+                  operation: "deploy",
+                  phase: "apply",
+                  installationName: request.installationName,
+                  profile: request.profile,
+                }),
           ),
         ),
     }),
@@ -719,24 +696,28 @@ export const cliLayer = (
       inspect: (request) =>
         Effect.tryPromise({
           try: () => dependencies.inspectInstallation(request),
-          catch: () =>
-            new CliError(
-              "installation_inspection_failed",
-              "Could not find the Scotty installation",
-              "Check the installation name, Cloudflare profile, and resource mapping, then retry.",
-              EXIT.NOT_FOUND,
-            ),
+          catch: (cause) =>
+            isFreshInstallationRequired(cause)
+              ? freshInstallationRequired()
+              : new CliError(
+                  "installation_inspection_failed",
+                  "Could not find the Scotty installation",
+                  "Check the installation name, Cloudflare profile, and resource mapping, then retry.",
+                  EXIT.NOT_FOUND,
+                ),
         }),
       recover: (request) =>
         Effect.tryPromise({
           try: () => dependencies.recoverInstallation(request),
-          catch: () =>
-            new CliError(
-              "installation_recovery_failed",
-              "Could not recover the Scotty installation",
-              "Check the installation name, Cloudflare profile, and permissions, then retry.",
-              EXIT.GENERIC,
-            ),
+          catch: (cause) =>
+            isFreshInstallationRequired(cause)
+              ? freshInstallationRequired()
+              : new CliError(
+                  "installation_recovery_failed",
+                  "Could not recover the Scotty installation",
+                  "Check the installation name, Cloudflare profile, and permissions, then retry.",
+                  EXIT.GENERIC,
+                ),
         }),
     }),
     Layer.succeed(FileSystem)({

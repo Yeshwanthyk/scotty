@@ -201,7 +201,6 @@ test("the first-party Hatch package stays source-bound, process-scoped, and cred
   for (const forbidden of [
     "SCOTTY_SESSION_ID",
     "GH_TOKEN",
-    "GITHUB_SENTINEL",
     'authorization"',
     "x-api-key",
     "R2_ACCESS_KEY_ID",

@@ -333,12 +333,7 @@ export async function prepareStart(manifest) {
   return {
     dockerConfig: inputs.dockerConfig,
     dockerHost: inputs.dockerHost,
-    secrets: [
-      inputs.rootToken,
-      inputs.githubToken,
-      inputs.piAuthJson,
-      JSON.stringify(JSON.parse(inputs.piAuthJson)),
-    ],
+    secrets: [inputs.rootToken],
   };
 }
 

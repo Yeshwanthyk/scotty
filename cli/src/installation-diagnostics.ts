@@ -54,6 +54,7 @@ export interface InstallationCommandFailureSpec {
   readonly phase: InstallationDiagnosticPhase;
   readonly installationName: string;
   readonly profile: string;
+  readonly secrets?: ReadonlyArray<string>;
 }
 
 const boundText = (value: string): string => value.slice(0, FAILURE_OUTPUT_TAIL_CHARACTERS);
@@ -116,6 +117,7 @@ export const renderInstallationFailureDiagnostic = (input: {
   readonly context: InstallationDiagnosticContext;
   readonly cause: unknown;
   readonly environment?: Record<string, string | undefined>;
+  readonly secrets?: ReadonlyArray<string>;
 }): string => {
   const record: InstallationDiagnosticRecord = {
     version: INSTALLATION_DIAGNOSTIC_VERSION,
@@ -128,9 +130,11 @@ export const renderInstallationFailureDiagnostic = (input: {
     },
     cause: projectCause(input.cause),
   };
-  return redactProductionDeploymentOutput(`${JSON.stringify(record, null, 2)}\n`, {
-    ...input.environment,
-  });
+  return redactProductionDeploymentOutput(
+    `${JSON.stringify(record, null, 2)}\n`,
+    { ...input.environment },
+    input.secrets,
+  );
 };
 
 export const persistInstallationFailureDiagnostic = async (input: {
@@ -141,6 +145,7 @@ export const persistInstallationFailureDiagnostic = async (input: {
   readonly context: InstallationDiagnosticContext;
   readonly cause: unknown;
   readonly environment?: Record<string, string | undefined>;
+  readonly secrets?: ReadonlyArray<string>;
 }): Promise<string> => {
   const path = installationDiagnosticPath(input.home, input.operation, input.phase);
   const body = renderInstallationFailureDiagnostic(input);
@@ -170,6 +175,7 @@ export const installationCommandFailure = (
           },
           cause,
           environment,
+          secrets: spec.secrets,
         }),
       catch: (persistCause) => new InstallationHostFailure({ cause: persistCause }),
     }).pipe(Effect.orElseSucceed(() => undefined));

@@ -1,7 +1,6 @@
 import {
   commandIntentDigest,
   PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
-  redactCredentialSentinels,
 } from "../../protocol/pi-console-shared.mjs";
 
 export { commandIntentDigest };
@@ -160,13 +159,12 @@ const truncateUtf8 = (value, maxBytes) => {
 
 export const sanitizeRemoteString = (value) =>
   truncateUtf8(
-    redactCredentialSentinels(
-      value
-        // oxlint-disable-next-line eslint/no-control-regex -- sanitizer intentionally matches OSC control bytes
-        .replaceAll(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
-        // oxlint-disable-next-line eslint/no-control-regex -- sanitizer intentionally matches ANSI escape bytes
-        .replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, ""),
-    )
+    value
+      // oxlint-disable-next-line eslint/no-control-regex -- sanitizer intentionally matches OSC control bytes
+      .replaceAll(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+      // oxlint-disable-next-line eslint/no-control-regex -- sanitizer intentionally matches ANSI escape bytes
+      .replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+      .replaceAll(/scotty-managed:\/\/[^\s"'<>]+/gu, "[managed-handle]")
       .replaceAll(/(?:ghp_|github_pat_)[A-Za-z0-9_]+/gu, "[credential]")
       // oxlint-disable-next-line eslint/no-control-regex -- remote projections exclude terminal control bytes
       .replaceAll(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu, ""),

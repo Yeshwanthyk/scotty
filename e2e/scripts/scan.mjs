@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const forbidden = [
-  process.env.PI_AUTH_JSON,
   process.env.GH_TOKEN,
+  process.env.PI_AUTH_JSON,
+  process.env.CREDENTIAL_WRAPPING_KEY,
   process.env.SCOTTY_TOKEN,
   process.env.SCOTTY_E2E_TOKEN,
 ].filter((value) => value && value.length >= 8);

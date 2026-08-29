@@ -2,15 +2,12 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
-export { accountSecretsStoreWorkerBinding as m01cAccountSecretBinding } from "./account-secrets-store-binding.ts";
 import { bindExternalSandboxContainer } from "../../infra/external-sandbox-container-binding.ts";
 
 export const M01C_STACK_NAME = "ScottyM01CSandboxCanary";
 export const M01C_STAGE_PREFIX = "m01c-canary-";
 export const M01C_DEPLOY_APPROVAL = "SCOTTY_M01C_APPROVE_DEPLOY";
 export const M01C_CLEANUP_APPROVAL = "SCOTTY_M01C_APPROVE_CLEANUP";
-export const M01C_ACCOUNT_SECRET_MAX_BYTES = 1024;
-
 const syntheticNamePrefix = "scotty-m01c-disposable";
 const compatibilityDate = "2026-07-20";
 
@@ -26,18 +23,6 @@ export interface M01CCanaryNames {
   readonly container: string;
   readonly sessions: string;
   readonly backups: string;
-}
-
-/** Metadata-only input for the deferred Account Secrets Store provider. */
-export interface M01CAccountSecretReference {
-  readonly sourceId: string;
-  readonly storeId: string;
-  readonly secretId: string;
-  readonly secretName: string;
-  readonly bindingName: string;
-  readonly providerVersion: number;
-  readonly keyedDigest: string;
-  readonly expectedOwnerMarker: string;
 }
 
 export type M01CLiveStatus = "unverified-live" | "verified-live";

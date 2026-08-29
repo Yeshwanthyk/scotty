@@ -1,3 +1,4 @@
+import { strict as nodeAssert } from "node:assert";
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -666,14 +667,48 @@ describe("configuration and transport", () => {
     expect(h.prompts()).toBe(0);
   });
 
+  test("init rejects a legacy retry journal without a wrapping key", async () => {
+    const home = await temporaryDirectory();
+    await mkdir(join(home, ".scotty"), { recursive: true });
+    await writeFile(
+      join(home, ".scotty", "init-home.json"),
+      JSON.stringify({
+        version: 1,
+        operation: "init",
+        phase: "apply_started",
+        installationName: "home",
+        profile: "default",
+        accountId: "0123456789abcdef0123456789abcdef",
+        stackName: "Scotty-home",
+        workerName: "scotty-home-worker",
+        runnerWorkerName: "scotty-home-runner",
+        containerName: "scotty-home-sandbox",
+        kvTitle: "scotty-home-sessions",
+        backupBucketName: "scotty-home-backups",
+        planFingerprint: "legacy-plan",
+        token: "root-token",
+      }) + "\n",
+      { mode: 0o600 },
+    );
+    const h = harness({ home });
+
+    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error().error.code).toBe("init_journal_invalid");
+  });
+
   test("init creates a required named installation and stores a portable pointer", async () => {
     const home = await temporaryDirectory();
     await writeScottyToml(home);
     let request: Parameters<NonNullable<CliDependencies["createInstallation"]>>[0] | undefined;
     let putCount = 0;
+    const commands: string[][] = [];
     let putAuthorization: string | null = null;
     let putOrigin: string | undefined;
     const h = harness({
+      run: async (command) => {
+        commands.push(command);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
       home,
       fetch: async (input, init) => {
         const request = new Request(input, init);
@@ -721,6 +756,8 @@ describe("configuration and transport", () => {
     expect(await main(["init", "--name", "home", "--profile", "personal", "--yes"], h.deps)).toBe(
       EXIT.OK,
     );
+    expect(request).not.toHaveProperty("githubToken");
+    expect(request).not.toHaveProperty("piAuthJson");
     expect(request).toMatchObject({
       installationName: "home",
       profile: "personal",
@@ -729,8 +766,10 @@ describe("configuration and transport", () => {
       mode: "fresh",
     });
     expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
-    expect(request?.githubToken).toBe("0123456789abcdef0123456789abcdef01234567");
+    expect(request?.credentialWrappingKey).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(Buffer.from(request?.credentialWrappingKey ?? "", "base64url")).toHaveLength(32);
     const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    expect(commands.some(([command]) => command === "gh")).toBe(false);
     expect((await stat(join(home, ".scotty.json"))).mode & 0o777).toBe(0o600);
     expect(config).toEqual({
       version: 1,
@@ -748,6 +787,8 @@ describe("configuration and transport", () => {
       token: request?.token,
     });
     expect(h.stdout.join("")).not.toContain(request?.token ?? "impossible");
+    expect(h.stdout.join("")).not.toContain(request?.credentialWrappingKey ?? "impossible");
+    expect(JSON.stringify(config)).not.toContain(request?.credentialWrappingKey ?? "impossible");
     expect(h.json()).toEqual({
       configPath: join(home, ".scotty.json"),
       installationName: "home",
@@ -840,6 +881,8 @@ describe("configuration and transport", () => {
             revision: 1,
             activeDigest: uploadedDigest,
           });
+        if (url.pathname === "/api/credentials/sync")
+          return Response.json({ version: 1, credentials: [] });
         if (url.pathname.startsWith("/api/sandbox/bundles/")) secondPutCount++;
         return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
       },
@@ -1221,12 +1264,14 @@ describe("configuration and transport", () => {
     const journalPath = join(home, ".scotty", "init-home.json");
     const journal = JSON.parse(await readFile(journalPath, "utf8"));
     expect(journal.phase).toBe("apply_started");
+    expect(journal.credentialWrappingKey).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect((await stat(journalPath)).mode & 0o777).toBe(0o600);
 
     expect(await main(["init", "--name", "home", "--profile", "personal"], h.deps)).toBe(EXIT.OK);
     expect(requests).toHaveLength(2);
     expect(requests[1]).toMatchObject({ mode: "resume", expectedPlanFingerprint: "resume-plan" });
     expect(requests[1]?.token).toBe(requests[0]?.token);
+    expect(requests[1]?.credentialWrappingKey).toBe(requests[0]?.credentialWrappingKey);
     await expect(stat(journalPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -1647,6 +1692,7 @@ describe("configuration and transport", () => {
     const home = await temporaryDirectory();
     const secret = "ghp_syntheticInitSecretTokenValue";
     const account = "0123456789abcdef0123456789abcdef";
+    let wrappingKey: string | undefined;
     const h = harness({
       home,
       env: { SCOTTY_TOKEN: secret, CLOUDFLARE_API_TOKEN: secret },
@@ -1657,11 +1703,15 @@ describe("configuration and transport", () => {
         fingerprint: "create-plan-1",
         changes: [{ id: "Scotty-home/Worker", action: "create" }],
       }),
-      createInstallation: async () => {
-        throw Object.assign(new Error(`Alchemy failed for ${account} with ${secret}`), {
-          _tag: "InstallationDeploymentError",
-          cause: { message: `nested ${secret}` },
-        });
+      createInstallation: async (input) => {
+        wrappingKey = input.credentialWrappingKey;
+        throw Object.assign(
+          new Error(`Alchemy failed for ${account} with ${secret} and ${wrappingKey}`),
+          {
+            _tag: "InstallationDeploymentError",
+            cause: { message: `nested ${secret} and ${wrappingKey}` },
+          },
+        );
       },
     });
 
@@ -1688,6 +1738,11 @@ describe("configuration and transport", () => {
     const diagnosticPath = join(home, ".scotty", "diagnostics", "init-create.json");
     expect((await stat(diagnosticPath)).mode & 0o777).toBe(0o600);
     const diagnostic = await readFile(diagnosticPath, "utf8");
+    expect(wrappingKey).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect((await stat(join(home, ".scotty", "init-home.json"))).mode & 0o777).toBe(0o600);
+    const journal = JSON.parse(await readFile(join(home, ".scotty", "init-home.json"), "utf8"));
+    expect(journal.credentialWrappingKey).toBe(wrappingKey);
+    expect(diagnostic).not.toContain(wrappingKey ?? "impossible");
     expect(diagnostic).not.toContain(secret);
     expect(diagnostic).not.toContain(account);
     expect(diagnostic).toContain("[redacted-secret]");
@@ -1697,6 +1752,107 @@ describe("configuration and transport", () => {
     expect(diagnostic).toContain('"installationName": "home"');
     expect(diagnostic).toContain("Alchemy failed");
     expect(diagnostic).toContain("nested");
+  });
+
+  test("deployment without the Registry wrapping key requires a fresh installation", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "personal",
+        accountId: "0123456789abcdef0123456789abcdef",
+        host: "https://old.example",
+        token: "root-secret",
+      }),
+      { mode: 0o600 },
+    );
+    const h = harness({
+      home,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "plan-1",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async () => {
+        throw {
+          _tag: "InstallationDeploymentError",
+          cause: {
+            _tag: "CredentialWrappingKeyUnavailable",
+            message: "The installation has no CREDENTIAL_WRAPPING_KEY binding.",
+          },
+        };
+      },
+    });
+
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error()).toEqual({
+      error: {
+        code: "installation_fresh_required",
+        message: "This installation is missing the Credential Registry wrapping key",
+        hint: "Create a fresh Scotty installation before deploying or recovering Registry-backed code; existing sessions are unsupported and are not migrated.",
+      },
+    });
+  });
+
+  test("no-op deploy refuses to synchronize before the wrapping-key preflight", async () => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({
+        version: 1,
+        installationName: "home",
+        profile: "default",
+        accountId: "0123456789abcdef0123456789abcdef",
+        host: "https://worker.example",
+        token: "root-secret",
+      }),
+      { mode: 0o600 },
+    );
+    let synchronized = false;
+    const h = harness({
+      home,
+      planInstallation: async () => {
+        throw {
+          _tag: "CredentialWrappingKeyUnavailable",
+          message: "missing",
+        };
+      },
+      fetch: async () => {
+        synchronized = true;
+        return Response.json(
+          { error: { code: "unexpected", message: "must not sync" } },
+          { status: 500 },
+        );
+      },
+    });
+
+    expect(await main(["deploy"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error().error.code).toBe("installation_fresh_required");
+    expect(synchronized).toBe(false);
+  });
+
+  test("recover refuses to rotate access when the wrapping-key preflight is missing", async () => {
+    const h = harness({
+      home: await temporaryDirectory(),
+      inspectInstallation: async () => {
+        throw {
+          _tag: "CredentialWrappingKeyUnavailable",
+          message: "missing",
+        };
+      },
+      recoverInstallation: async () => rejected("must not recover"),
+    });
+
+    expect(await main(["recover", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(h.error().error).toEqual({
+      code: "installation_fresh_required",
+      message: "This installation is missing the Credential Registry wrapping key",
+      hint: "Create a fresh Scotty installation before deploying or recovering Registry-backed code; existing sessions are unsupported and are not migrated.",
+    });
   });
 
   test("deploy apply failures keep the public envelope and persist a redacted diagnostic", async () => {
@@ -2156,291 +2312,94 @@ describe("configuration and transport", () => {
   });
 });
 
-describe("Pi auth commands", () => {
-  test("sync posts one canonical record, skips secret upload and polling, and reports warm reconciliation failures", async () => {
+describe("Credential sync commands", () => {
+  test("resolves every declared Pi and GitHub credential before one sync request", async () => {
     const home = await temporaryDirectory();
-    const authDirectory = join(home, ".pi", "agent");
-    const authPath = join(authDirectory, "auth.json");
-    await mkdir(authDirectory, { recursive: true });
+    const source = join(home, "pi-auth.json");
     await writeFile(
-      authPath,
+      source,
       JSON.stringify({
         openai: { type: "api_key", key: "$OPENAI_TEST_KEY" },
-        "openai-codex": {
-          type: "oauth",
-          access: "local-access",
-          refresh: "local-refresh",
-          expires: 0,
-          accountId: "local-account",
-          idToken: "local-id-token",
-          oauthExtension: { nested: "must-preserve" },
-        },
-        anthropic: {
-          type: "oauth",
-          access: "anthropic-access",
-          refresh: "anthropic-refresh",
-          expires: 0,
-        },
+        "openai-codex": { type: "oauth", access: "access", refresh: "refresh", expires: 0 },
       }),
       { mode: 0o600 },
     );
+    await mkdir(join(home, ".config", "scotty"), { recursive: true });
     await writeFile(
-      join(home, ".scotty.json"),
-      JSON.stringify({
-        version: 1,
-        installationName: "home",
-        profile: "personal",
-        accountId: "a".repeat(32),
-        workerName: "scotty-home-worker",
-        runnerWorkerName: "scotty-home-runner",
-        containerName: "scotty-home-sandbox",
-        kvTitle: "scotty-home-sessions",
-        backupBucketName: "scotty-home-backups",
-        host: "https://scotty-home-worker.example.workers.dev",
-        token: "worker-token",
-      }),
+      scottyTomlConfigPath(home),
+      [
+        "version = 1",
+        "[sync]",
+        "skills = []",
+        "packages = []",
+        "tools = []",
+        "extensions = []",
+        "[repos]",
+        'allowed = ["owner/project"]',
+        "[credentials.openai]",
+        'kind = "pi-auth"',
+        `source = ${JSON.stringify(source)}`,
+        'scope = "global"',
+        "[credentials.github]",
+        'kind = "github-cli"',
+        'scope = "repository"',
+        'repositories = ["owner/project"]',
+      ].join("\n"),
       { mode: 0o600 },
     );
-    let secretUploads = 0;
-    let postedRecord = "";
     const requests: Request[] = [];
-    const targets: unknown[] = [];
-    const target = {
-      accountId: "a".repeat(32),
-      workerName: "scotty-home-worker",
-      host: "https://scotty-home-worker.example.workers.dev",
-    };
     const h = harness({
       home,
-      env: { OPENAI_TEST_KEY: "resolved-openai-key" },
-      inspectPiAuthTarget: async (request) => {
-        targets.push(request);
-        return target;
-      },
-      uploadPiAuthSecret: async (request) => {
-        secretUploads += 1;
-        return rejected(`must not upload ${request.json}`);
+      env: {
+        OPENAI_TEST_KEY: "openai-secret",
+        SCOTTY_HOST: "https://worker.example",
+        SCOTTY_TOKEN: "worker-token",
       },
       fetch: async (input, init) => {
         const request = new Request(input, init);
         requests.push(request);
-        const path = new URL(request.url).pathname;
-        if (path === "/api/auth/pi") {
-          postedRecord = await request.text();
+        const pathname = new URL(request.url).pathname;
+        if (pathname === "/api/credentials/sync")
+          return Response.json({ version: 1, credentials: [] });
+        if (
+          pathname === "/api/sandbox/configuration" ||
+          pathname.startsWith("/api/sandbox/bundles/")
+        )
           return Response.json({
-            source: "sync",
-            sourceDigest: "a".repeat(64),
-            updatedAt: "2026-08-15T12:00:00.000Z",
-            providers: [
-              { id: "openai", type: "api_key", adapter: "supported" },
-              { id: "openai-codex", type: "oauth", adapter: "supported" },
-            ],
+            schemaVersion: 1,
+            revision: 0,
+            activeDigest:
+              pathname === "/api/sandbox/configuration" ? null : pathname.split("/").pop(),
           });
-        }
-        if (path === "/api/sessions")
-          return Response.json(
-            ["warm-ok", "warm-failed", "sleeping"].map((id) => ({
-              id,
-              title: id,
-              status: id === "sleeping" ? "sleeping" : "warm",
-              provider: "cloudflare",
-              repo: "owner/repo",
-              defaultBranch: "main",
-              branch: `scotty/${id}`,
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              hardCapAt: "2026-01-01T04:00:00.000Z",
-              ageSeconds: 1,
-              capRemainingSeconds: 1,
-            })),
-          );
-        if (path.endsWith("/warm-failed/auth/reseed"))
-          return Response.json({ error: { code: "internal", message: "failed" } }, { status: 500 });
-        return Response.json({ id: "warm-ok", updatedAt: "now", providers: [] });
+        return Response.json({ error: { code: "not_found", message: "missing" } }, { status: 404 });
       },
     });
-
-    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.OK);
-    expect(targets).toHaveLength(1);
-    expect(secretUploads).toBe(0);
-    const normalized = JSON.parse(postedRecord);
-    expect(normalized.providers.openai.key).toBe("resolved-openai-key");
-    expect(normalized.providers["openai-codex"].accountId).toBe("local-account");
-    expect(normalized.providers["openai-codex"].idToken).toBe("local-id-token");
-    expect(normalized.providers["openai-codex"].oauthExtension).toEqual({
-      nested: "must-preserve",
-    });
-    expect(normalized.providers.anthropic).toBeUndefined();
-    const expectedTarget = {
-      profile: "personal",
-      expectedAccountId: "a".repeat(32),
-      expectedWorkerName: "scotty-home-worker",
-      expectedRunnerWorkerName: "scotty-home-runner",
-      expectedContainerName: "scotty-home-sandbox",
-      expectedKvTitle: "scotty-home-sessions",
-      expectedBackupBucketName: "scotty-home-backups",
-      expectedHost: "https://scotty-home-worker.example.workers.dev",
-    };
-    expect(targets[0]).toEqual(expectedTarget);
-    expect(h.json()).toMatchObject({
-      synchronized: true,
-      worker: "scotty-home-worker",
-      providers: [
-        { id: "openai", adapter: "supported" },
-        { id: "openai-codex", adapter: "supported" },
-      ],
-      reconciled: ["warm-ok"],
-      failed: ["warm-failed"],
-      partial: true,
-    });
-    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
-      "/api/auth/pi",
-      "/api/sessions",
-      "/api/sessions/warm-ok/auth/reseed",
-      "/api/sessions/warm-failed/auth/reseed",
-    ]);
-    expect(
-      requests.every((request) => request.headers.get("authorization") === "Bearer worker-token"),
-    ).toBe(true);
-    expect(JSON.stringify(h.json())).not.toContain("local-access");
-    expect(JSON.stringify(h.json())).not.toContain("resolved-openai-key");
-  });
-
-  test("sync verifies the managed target before reading Pi credentials", async () => {
-    const home = await temporaryDirectory();
-    await writeFile(
-      join(home, ".scotty.json"),
-      JSON.stringify({
-        version: 1,
-        installationName: "home",
-        profile: "personal",
-        accountId: "a".repeat(32),
-        workerName: "scotty-home-worker",
-        runnerWorkerName: "scotty-home-runner",
-        containerName: "scotty-home-sandbox",
-        kvTitle: "scotty-home-sessions",
-        backupBucketName: "scotty-home-backups",
-        host: "https://scotty-home-worker.example.workers.dev",
-        token: "worker-token",
-      }),
-      { mode: 0o600 },
+    expect(await main(["sync"], h.deps)).toBe(EXIT.OK);
+    const credentialRequest = requests.find(
+      (request) => new URL(request.url).pathname === "/api/credentials/sync",
     );
-    let uploaded = false;
-    const h = harness({
-      home,
-      inspectPiAuthTarget: async () => {
-        return rejected("wrong account");
-      },
-      uploadPiAuthSecret: async () => {
-        uploaded = true;
-        return rejected("must not upload");
-      },
-    });
-
-    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.GENERIC);
-    expect(h.error().error.code).toBe("pi_auth_target_failed");
-    expect(uploaded).toBe(false);
-    expect(h.stderr.join("")).not.toContain("wrong account");
-  });
-
-  test("sync rejects a symlinked Pi auth file", async () => {
-    const home = await temporaryDirectory();
-    const authDirectory = join(home, ".pi", "agent");
-    await mkdir(authDirectory, { recursive: true });
-    const targetPath = join(home, "auth-target.json");
-    await writeFile(targetPath, JSON.stringify({ openai: { type: "api_key", key: "secret" } }), {
-      mode: 0o600,
-    });
-    await symlink(targetPath, join(authDirectory, "auth.json"));
-    await writeFile(
-      join(home, ".scotty.json"),
-      JSON.stringify({
-        version: 1,
-        installationName: "home",
-        profile: "personal",
-        accountId: "a".repeat(32),
-        workerName: "scotty-home-worker",
-        runnerWorkerName: "scotty-home-runner",
-        containerName: "scotty-home-sandbox",
-        kvTitle: "scotty-home-sessions",
-        backupBucketName: "scotty-home-backups",
-        host: "https://scotty-home-worker.example.workers.dev",
-        token: "worker-token",
-      }),
-      { mode: 0o600 },
+    expect(credentialRequest).toBeDefined();
+    nodeAssert(credentialRequest !== undefined, "credential sync request missing");
+    const credentialBody = JSON.parse(await credentialRequest.text());
+    expect(credentialBody.credentials).toHaveLength(2);
+    const openAiCredential = credentialBody.credentials.find(
+      (credential: { name: string; kind: string }) =>
+        credential.name === "openai" && credential.kind === "pi-auth",
     );
-    const target = {
-      accountId: "a".repeat(32),
-      workerName: "scotty-home-worker",
-      host: "https://scotty-home-worker.example.workers.dev",
-    };
-    const h = harness({ home, inspectPiAuthTarget: async () => target });
-
-    expect(await main(["auth", "sync"], h.deps)).toBe(EXIT.USAGE);
-    expect(h.error().error.message).toBe("Pi auth.json must be a private regular file");
-    expect(h.stderr.join("")).not.toContain("secret");
-  });
-
-  test("reseed --all-active targets only warm Cloudflare sessions", async () => {
-    const requests: Request[] = [];
-    const h = harness({
-      env: { SCOTTY_HOST: "https://worker.example", SCOTTY_TOKEN: "worker-token" },
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        requests.push(request);
-        if (new URL(request.url).pathname === "/api/sessions")
-          return Response.json([
-            {
-              id: "warm-cloud",
-              title: "Warm",
-              status: "warm",
-              provider: "cloudflare",
-              repo: "owner/repo",
-              defaultBranch: "main",
-              branch: "scotty/warm",
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              hardCapAt: "2026-01-01T04:00:00.000Z",
-              ageSeconds: 1,
-              capRemainingSeconds: 1,
-            },
-            {
-              id: "sleeping-cloud",
-              title: "Sleeping",
-              status: "sleeping",
-              provider: "cloudflare",
-              repo: "owner/repo",
-              defaultBranch: "main",
-              branch: "scotty/sleeping",
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              hardCapAt: "2026-01-01T04:00:00.000Z",
-              ageSeconds: 1,
-              capRemainingSeconds: 1,
-            },
-          ]);
-        return Response.json({
-          id: "warm-cloud",
-          updatedAt: "2026-01-02T00:00:00.000Z",
-          providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-        });
-      },
+    expect(openAiCredential).toMatchObject({
+      kind: "pi-auth",
+      providers: { openai: { key: "openai-secret" } },
     });
-
-    expect(await main(["auth", "reseed", "--all-active"], h.deps)).toBe(EXIT.OK);
-    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
-      "/api/sessions",
-      "/api/sessions/warm-cloud/auth/reseed",
-    ]);
-    expect(h.json()).toEqual({
-      reseeded: [
-        {
-          id: "warm-cloud",
-          updatedAt: "2026-01-02T00:00:00.000Z",
-          providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-        },
-      ],
+    const githubCredential = credentialBody.credentials.find(
+      (credential: { name: string; kind: string }) =>
+        credential.name === "github" && credential.kind === "github-cli",
+    );
+    expect(githubCredential).toMatchObject({
+      kind: "github-cli",
+      token: expect.any(String),
     });
+    expect(JSON.stringify(h.json())).toMatch(/^\{"digest":"[0-9a-f]{64}","items":\[\]\}$/u);
+    expect(h.stderr.join("")).not.toContain("openai-secret");
   });
 });
 

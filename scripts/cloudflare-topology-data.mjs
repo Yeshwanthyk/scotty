@@ -7,6 +7,11 @@ export const CLOUDFLARE_BINDING_TOPOLOGY = Object.freeze({
   runnerRegistryDurableObject: binding("RunnerRegistry", "RUNNER_REGISTRY", "ScottyRunnerRegistry"),
   runnerDurableObject: binding("Runner", "RUNNERS", "ScottyRunner"),
   sandboxConfigDurableObject: binding("SandboxConfig", "SANDBOX_CONFIG", "ScottySandboxConfig"),
+  credentialRegistryDurableObject: binding(
+    "CredentialRegistry",
+    "CREDENTIALS",
+    "ScottyCredentialRegistry",
+  ),
   kv: binding("SessionsProjection", "SESSIONS"),
   r2: binding("BackupBucket", "BACKUP_BUCKET"),
   artifactR2: binding("ArtifactBucket", "ARTIFACT_BUCKET"),
@@ -18,6 +23,7 @@ export const REQUIRED_TOPOLOGY_DO_FIELDS = Object.freeze([
   "authDurableObject",
   "runnerRegistryDurableObject",
   "sandboxConfigDurableObject",
+  "credentialRegistryDurableObject",
 ]);
 export const EXCLUDED_TOPOLOGY_DO_FIELDS = Object.freeze(["runnerDurableObject"]);
 export const REQUIRED_TOPOLOGY_R2_FIELDS = Object.freeze(["r2", "artifactR2", "sandboxBundleR2"]);

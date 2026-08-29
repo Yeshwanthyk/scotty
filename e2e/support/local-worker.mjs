@@ -8,6 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { scrubAmbientCredentialEnvironment } from "./credential-canary.mjs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -65,11 +66,16 @@ function requireExecutable(command, arguments_) {
   }
 }
 
-export function formatLocalDevVars({ rootToken, githubToken, piAuthJson }) {
+export function formatLocalDevVars({
+  rootToken,
+  credentialWrappingKey,
+  installationName = "local",
+}) {
+  const wrappingKey = credentialWrappingKey ?? randomBytes(32).toString("base64url");
   return [
     `SCOTTY_TOKEN=${JSON.stringify(rootToken)}`,
-    `GH_TOKEN=${JSON.stringify(githubToken)}`,
-    `PI_AUTH_JSON=${JSON.stringify(JSON.parse(piAuthJson))}`,
+    `CREDENTIAL_WRAPPING_KEY=${JSON.stringify(wrappingKey)}`,
+    `SCOTTY_INSTALLATION_NAME=${JSON.stringify(installationName)}`,
     'SANDBOX_TRANSPORT="http"',
     'SCOTTY_LOCAL_E2E="1"',
     "",
@@ -98,32 +104,42 @@ export function labSystemEnvironment(home, explicit = {}, source = process.env) 
 }
 
 export function requireLocalInputs(home = homedir(), source = process.env) {
-  const piAuthPath = path.join(home, ".pi/agent/auth.json");
+  const sanitizedSource = scrubAmbientCredentialEnvironment(source);
+  requireExecutable("docker", ["info"]);
+  requireExecutable("gh", ["--version"]);
+  requireExecutable("bun", ["--version"]);
+
+  const piAuthPath =
+    source.SCOTTY_PI_AUTH_FILE?.trim() || path.join(home, ".pi", "agent", "auth.json");
   if (!existsSync(piAuthPath))
     throw new Error(`Pi auth is missing at ${piAuthPath}; sign in with Pi first`);
   const mode = statSync(piAuthPath).mode & 0o777;
   if (mode !== 0o600)
     throw new Error(`Pi auth must be mode 0600, received ${mode.toString(8).padStart(3, "0")}`);
   const piAuthJson = readFileSync(piAuthPath, "utf8");
-  const parsed = JSON.parse(piAuthJson);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error("Pi auth must contain a provider object");
-
-  requireExecutable("docker", ["info"]);
-  requireExecutable("gh", ["auth", "status"]);
-  requireExecutable("bun", ["--version"]);
-
+  const githubConfigDir =
+    source.SCOTTY_GH_CONFIG_DIR?.trim() ||
+    source.GH_CONFIG_DIR?.trim() ||
+    path.join(home, ".config", "gh");
   const githubToken = execFileSync("gh", ["auth", "token"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    env: {
+      ...sanitizedSource,
+      GH_CONFIG_DIR: githubConfigDir,
+    },
   }).trim();
-  if (githubToken.length < 20) throw new Error("GitHub returned an invalid auth token");
+  if (githubToken.length < 8) throw new Error("GitHub returned an invalid auth token");
+
   return {
     dockerConfig: source.DOCKER_CONFIG?.trim() || path.join(home, ".docker"),
-    dockerHost: resolveDockerHost(source),
-    githubToken,
-    piAuthJson,
+    dockerHost: resolveDockerHost(sanitizedSource),
     rootToken: randomBytes(32).toString("hex"),
+    credentialWrappingKey: randomBytes(32).toString("base64url"),
+    piAuthPath,
+    piAuthJson,
+    githubConfigDir,
+    githubToken,
   };
 }
 

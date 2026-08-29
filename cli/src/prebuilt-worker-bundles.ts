@@ -20,6 +20,7 @@ export const MAIN_WORKER_EXPORTS = Object.freeze([
   "ScottyAuthRegistry",
   "ScottyRunnerRegistry",
   "ScottySandboxConfig",
+  "ScottyCredentialRegistry",
 ] as const);
 
 export const RUNNER_WORKER_EXPORTS = Object.freeze(["ScottyRunner"] as const);

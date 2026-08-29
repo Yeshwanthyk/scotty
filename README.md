@@ -54,13 +54,13 @@ or permanently destroy the session.
           | Cloudflare Sandbox + Container    |
           | persistent workspace              |
           | scotty-pi-shell + Pi RPC worklog  |
-          | session-bound sentinels only      |
+          | fixed managed handles only        |
           +------------------+-----------------+
                              |
                              v
           +------------------------------------+
           | ContainerProxy allowlisted egress |
-          | sentinel -> credential substitution |
+          | Registry-backed exact egress       |
           +------------------+-----------------+
                              |
                          GitHub + Pi providers
@@ -84,7 +84,7 @@ it has the native Pi RPC worklog transport.
 
 ## Security model
 
-Repository code is untrusted. Real Pi provider and GitHub credentials stay in Worker secrets or per-session Durable Object storage. The container receives session-bound sentinels only. `ContainerProxy` replaces sentinels on allowlisted egress, sanitizes OAuth refresh responses before they return to the container, and denies all other outbound traffic.
+Repository code is untrusted. Real Pi provider and GitHub credentials stay in the credential Registry. The container receives fixed managed handles only. Registry-backed `ContainerProxy` serves allowlisted exact-origin egress, sanitizes OAuth refresh responses before they return to the container, and denies all other outbound traffic.
 
 Browser authority is separate from the root credential. `SCOTTY_TOKEN` is accepted only as a CLI
 bearer and break-glass recovery credential; it is never accepted from a cookie, browser URL, or
@@ -98,7 +98,7 @@ and revocation time. The default standard-client label contains no hostname.
 
 The browser never receives container credentials. For Cloudflare sessions, the Worker authenticates
 the terminal WebSocket and attaches it to the Sandbox native PTY running Pi. Pi and Codex receive
-only session-bound provider and GitHub sentinels.
+only fixed managed provider and GitHub handles.
 
 Residual limitation: any allowed package registry is still a potential source/prompt exfiltration channel. Keep `ALLOWED_HOSTS` in `worker/src/egress.ts` minimal for the target repository.
 
@@ -172,8 +172,8 @@ npm run lab -- exec RUN_ID -- doctor --json
 npm run lab -- stop RUN_ID
 ```
 
-`start` requires Docker, authenticated `gh`, Bun, and mode-0600 `~/.pi/agent/auth.json`. It uses
-isolated temporary Wrangler state and CLI `HOME`, passes a run-specific Wrangler worker name, and
+`start` requires Docker and Bun. It uses isolated temporary Wrangler state and CLI `HOME`, passes a
+run-specific Wrangler worker name, and
 prints a JSON run ID and host after `/health` passes. Commands forwarded through `exec` use the
 actual CLI and can exercise real local Sandbox lifecycles; `doctor` alone does not create one.
 `stop` removes only Sandbox containers named for that worker. The private `.scotty-lab/run.json`
@@ -193,8 +193,8 @@ DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
   npm run test:e2e:local-live -- --no-open --no-hold
 ```
 
-This requires a healthy Docker daemon, authenticated `gh`, and mode-0600
-`~/.pi/agent/auth.json`. It proves both fresh-start auth hydration and warm-session reseeding. Add
+This requires a healthy Docker daemon. It proves fresh-start managed-credential wiring; provider
+credential proof requires a deployed Registry. Add
 `--require-response` only when the local network permits model traffic from the container.
 
 A Wrangler dry run remains as a local rollback probe. It builds the Sandbox image and therefore
@@ -223,14 +223,14 @@ never inferred from a username, machine, repository, or Cloudflare account.
 For a clean first run:
 
 1. Run `scotty init --name NAME` and confirm the displayed Cloudflare account and resource names.
-2. Sign in to OpenAI or OpenAI Codex with Pi, then run `scotty auth sync`.
+2. Declare the Pi and GitHub credential sources in `scotty.toml`, then run `scotty sync`.
 3. Run `scotty doctor --json`.
 4. Run `scotty owner recover` on the browser that will own the installation.
 5. If another browser needs access, open `/devices` in the owner browser and create a one-use pairing link.
 6. Use `scotty beam` to start a session and open its authenticated worklog in your browser.
 
-`auth sync` uses the account, Worker name, and origin saved by `init`. It fails before reading local
-Pi credentials if Cloudflare does not match that saved installation.
+`sync` uses the account, Worker name, and origin saved by `init`. It fails before reading local
+credential sources if Cloudflare does not match that saved installation.
 
 On a replacement machine, run `scotty recover --name NAME`. Cloudflare profile ownership is the
 recovery authority. The CLI first discovers and displays the resource mapping. It rotates only the

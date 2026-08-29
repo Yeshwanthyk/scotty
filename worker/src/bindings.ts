@@ -1,3 +1,4 @@
+import type { ScottyCredentialRegistryNamespace } from "./credential-object";
 import type { ScottyAuthRegistryNamespace } from "./auth-object";
 import type { ScottyRunnerNamespace } from "./runner-object";
 import type { ScottyRunnerRegistryNamespace } from "./runner-registry-object";
@@ -10,14 +11,15 @@ export interface Bindings {
   RUNNERS: ScottyRunnerNamespace;
   SANDBOX: DurableObjectNamespace<Sandbox>;
   SANDBOX_CONFIG: ScottySandboxConfigNamespace;
+  CREDENTIALS?: ScottyCredentialRegistryNamespace;
   SESSIONS: KVNamespace;
   BACKUP_BUCKET: R2Bucket;
   ARTIFACT_BUCKET: R2Bucket;
   SANDBOX_BUNDLE_BUCKET: R2Bucket;
   ASSETS: Fetcher;
   SCOTTY_TOKEN: string;
-  PI_AUTH_JSON: string;
-  GH_TOKEN: string;
+  CREDENTIAL_WRAPPING_KEY?: string;
+  SCOTTY_INSTALLATION_NAME?: string;
   SCOTTY_LOCAL_E2E?: string;
   SCOTTY_LOCAL_BACKUP?: string;
   R2_ACCESS_KEY_ID?: string;

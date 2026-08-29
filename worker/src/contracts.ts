@@ -1,7 +1,7 @@
 import type { DirectoryBackup as SandboxDirectoryBackup } from "@cloudflare/sandbox";
 import { Effect, Option, Predicate, Schema } from "effect";
 import { PI_CONSOLE_MAX_STRING_BYTES } from "../../protocol/pi-console";
-import { InstallationPiAuthRecordSchema, PiCredentialSchema } from "../../protocol/pi-auth";
+import { CredentialGrantSchema } from "../../protocol/credentials";
 import {
   RepositoryDefaultBranchSchema,
   RepositoryIdentitySchema,
@@ -144,6 +144,13 @@ export const SessionSandboxBundleSchema = Schema.Struct({
 });
 export type SessionSandboxBundle = typeof SessionSandboxBundleSchema.Type;
 
+export const SessionCredentialGrantSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  sessionId: SessionIdSchema,
+  grants: Schema.Array(CredentialGrantSchema),
+});
+export type SessionCredentialGrant = typeof SessionCredentialGrantSchema.Type;
+
 type Assert<T extends true> = T;
 export type DirectoryBackupSdkCompatibility = Assert<
   DirectoryBackup extends SandboxDirectoryBackup
@@ -183,6 +190,7 @@ export const SessionRecordSchema = Schema.Struct({
   lastAgentEventAt: Schema.optional(Schema.String),
   failure: Schema.optional(SessionFailureSchema),
   sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
+  credentialGrant: Schema.optionalKey(SessionCredentialGrantSchema),
 });
 export type SessionRecord = typeof SessionRecordSchema.Type;
 
@@ -333,48 +341,6 @@ export type DownArchive = typeof DownArchiveSchema.Type;
 
 const OptionalNonEmptyStringSchema = Schema.optional(Schema.NonEmptyString);
 
-export const CredentialRefreshLeaseValueSchema = Schema.Struct({
-  nonce: Schema.NonEmptyString,
-  startedAt: Schema.NonEmptyString,
-});
-
-export const StoredProviderCredentialSchema = Schema.Struct({
-  credential: PiCredentialSchema,
-  sentinel: Schema.NonEmptyString,
-});
-export type StoredProviderCredential = typeof StoredProviderCredentialSchema.Type;
-
-export const StoredCredentialSchema = Schema.Struct({
-  providers: Schema.Record(Schema.NonEmptyString, StoredProviderCredentialSchema),
-  githubToken: Schema.NonEmptyString,
-  githubSentinel: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
-  refreshLease: Schema.optional(CredentialRefreshLeaseValueSchema),
-});
-export type StoredCredential = typeof StoredCredentialSchema.Type;
-
-const CredentialSeedCommon = {
-  providerSentinelSeed: Schema.NonEmptyString,
-  githubSentinel: Schema.NonEmptyString,
-};
-export const CredentialSeedSchema = Schema.Union([
-  Schema.Struct({ ...CredentialSeedCommon, piAuthJson: Schema.NonEmptyString }),
-  Schema.Struct({ ...CredentialSeedCommon, installationRecord: InstallationPiAuthRecordSchema }),
-]);
-export type CredentialSeed = typeof CredentialSeedSchema.Type;
-
-export const CredentialReseedSchema = Schema.Struct({
-  piAuthJson: Schema.NonEmptyString,
-  providerSentinelSeed: Schema.NonEmptyString,
-});
-export type CredentialReseed = typeof CredentialReseedSchema.Type;
-
-export const CredentialRefreshLeaseSchema = Schema.Struct({
-  credential: StoredCredentialSchema,
-  nonce: Schema.NonEmptyString,
-});
-export type CredentialRefreshLease = typeof CredentialRefreshLeaseSchema.Type;
-
 const OAuthExpiresInSecondsSchema = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0));
 
 export const CredentialPatchSchema = Schema.Struct({
@@ -418,20 +384,8 @@ const RawOAuthUpstreamSuccessSchema = Schema.Struct({
 });
 
 export const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
-export const decodeStoredCredentialOption = Schema.decodeUnknownOption(StoredCredentialSchema);
-export const decodeStoredCredentialResult = Schema.decodeUnknownResult(StoredCredentialSchema, {
-  onExcessProperty: "error",
-});
-export const decodeCredentialSeedResult = Schema.decodeUnknownResult(CredentialSeedSchema, {
-  onExcessProperty: "error",
-});
-export const decodeCredentialReseedResult = Schema.decodeUnknownResult(CredentialReseedSchema, {
-  onExcessProperty: "error",
-});
+
 export const decodeNonEmptyStringResult = Schema.decodeUnknownResult(Schema.NonEmptyString);
-export const decodeCredentialRefreshLeaseOption = Schema.decodeUnknownOption(
-  Schema.NullOr(CredentialRefreshLeaseSchema),
-);
 export const decodeCredentialPatchOption = Schema.decodeUnknownOption(CredentialPatchSchema);
 export const decodeCredentialPatchResult = Schema.decodeUnknownResult(CredentialPatchSchema);
 export const decodeOAuthRefreshRequestOption =

@@ -4,7 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { git, poll, runCli } from "../support/harness.mjs";
+import { git, poll, runCli, runProcess } from "../support/harness.mjs";
+import {
+  credentialCanaryValues,
+  findCredentialLeaks,
+  formatCredentialToml,
+  scrubAmbientCredentialEnvironment,
+} from "../support/credential-canary.mjs";
 
 const REQUIRED = [
   "SCOTTY_E2E_DEPLOYED",
@@ -15,6 +21,9 @@ const REQUIRED = [
   "SCOTTY_E2E_LOCAL_REPO",
   "SCOTTY_E2E_CAP",
   "SCOTTY_E2E_CONFIRM_DESTRUCTIVE",
+  "SCOTTY_E2E_PI_AUTH_FILE",
+  "SCOTTY_E2E_GH_CONFIG_DIR",
+  "SCOTTY_E2E_CREDENTIAL_WRAPPING_KEY",
 ];
 const missing = REQUIRED.filter((name) => !process.env[name]);
 const stage = process.env.SCOTTY_E2E_STAGE ?? "";
@@ -49,12 +58,24 @@ const authorization = () => ({
   "x-scotty-e2e-stage": stage,
 });
 
+let activeCanaryValues = [];
+const canaryFetch = async (url, init = {}) => {
+  const response = await fetch(url, init);
+  if (activeCanaryValues.length > 0)
+    assertCanaryValuesAbsent(
+      new Uint8Array(await response.clone().arrayBuffer()),
+      activeCanaryValues,
+      `${init.method ?? "GET"} ${url} response`,
+    );
+  return response;
+};
+
 const canaryRequest = async (pathname, init) => {
-  const response = await fetch(`${host}${pathname}`, {
-    ...init,
-    headers: { ...authorization(), ...init?.headers },
+  const { expectedStatus = 200, ...requestInit } = init ?? {};
+  const response = await canaryFetch(`${host}${pathname}`, {
+    ...requestInit,
+    headers: { ...authorization(), ...requestInit.headers },
   });
-  const expectedStatus = init?.expectedStatus ?? 200;
   if (response.status !== expectedStatus) {
     assert.fail(
       `expected HTTP ${expectedStatus}, received ${response.status}: ${await response.text()}`,
@@ -80,7 +101,7 @@ const peerCommand = async (sourceId, action, targetId, message) => {
 };
 
 const probeDuringReconstruction = async (id) => {
-  const response = await fetch(`${host}/__e2e/probe/${id}`, {
+  const response = await canaryFetch(`${host}/__e2e/probe/${id}`, {
     headers: authorization(),
   });
   if (response.status === 500) return undefined;
@@ -90,7 +111,7 @@ const probeDuringReconstruction = async (id) => {
 };
 
 const requestReconstruction = async (id) => {
-  const response = await fetch(`${host}/__e2e/reconstruct/${id}`, {
+  const response = await canaryFetch(`${host}/__e2e/reconstruct/${id}`, {
     method: "POST",
     headers: authorization(),
   });
@@ -109,7 +130,7 @@ const pendingSessionId = (home) => {
 };
 
 const recoverOwnerCookie = async () => {
-  const issued = await fetch(`${host}/api/auth/recovery-grants`, {
+  const issued = await canaryFetch(`${host}/api/auth/recovery-grants`, {
     method: "POST",
     headers: {
       ...authorization(),
@@ -123,7 +144,7 @@ const recoverOwnerCookie = async () => {
   assert.equal(recoveryUrl.pathname, "/recover");
   const token = new URLSearchParams(recoveryUrl.hash.slice(1)).get("token");
   assert.match(token ?? "", /^scotty_recovery\./u);
-  const consumed = await fetch(`${host}/api/auth/recovery-grants/consume`, {
+  const consumed = await canaryFetch(`${host}/api/auth/recovery-grants/consume`, {
     method: "POST",
     headers: {
       origin: new URL(host).origin,
@@ -141,6 +162,43 @@ const recoverOwnerCookie = async () => {
   return cookie.split(";", 1)[0];
 };
 
+const writeCanaryToml = (home, repo, piAuthFile) => {
+  const directory = path.join(home, ".config", "scotty");
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    path.join(directory, "scotty.toml"),
+    formatCredentialToml({ repo, piAuthPath: piAuthFile }),
+    { mode: 0o600 },
+  );
+};
+
+const readCanaryCredentialValues = async (piAuthFile, githubConfigDir) => {
+  const piAuthJson = fs.readFileSync(piAuthFile, "utf8");
+  const github = await runProcess("gh", ["auth", "token"], {
+    env: {
+      ...scrubAmbientCredentialEnvironment(),
+      GH_CONFIG_DIR: githubConfigDir,
+    },
+    timeoutMs: 30_000,
+  });
+  assert.equal(github.code, 0, github.stderr);
+  const wrappingKey = process.env.SCOTTY_E2E_CREDENTIAL_WRAPPING_KEY;
+  assert.ok(wrappingKey, "set SCOTTY_E2E_CREDENTIAL_WRAPPING_KEY to the disposable stage key");
+  return credentialCanaryValues({
+    piAuthJson,
+    githubToken: github.stdout.trim(),
+    wrappingKey,
+  });
+};
+
+const assertCanaryValuesAbsent = (value, values, label) => {
+  const leaks = findCredentialLeaks(value, values);
+  assert.deepEqual(leaks, [], `${label} disclosed known disposable credential material`);
+};
+
+const assertCliResponseClean = (result, values, label) =>
+  assertCanaryValuesAbsent(`${result.stdout}\n${result.stderr}`, values, label);
+
 const noOrphans = (value) =>
   value.runtime === false &&
   value.kv === false &&
@@ -156,17 +214,34 @@ test(
   { skip: skipReason, timeout: 20 * 60_000 },
   async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "scotty-deployed-e2e-home-"));
-    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    t.after(() => {
+      activeCanaryValues = [];
+      fs.rmSync(home, { recursive: true, force: true });
+    });
+    const piAuthFile = process.env.SCOTTY_E2E_PI_AUTH_FILE ?? "";
+    const githubConfigDir = process.env.SCOTTY_E2E_GH_CONFIG_DIR ?? "";
+    assert.ok(
+      piAuthFile && githubConfigDir,
+      "set SCOTTY_E2E_PI_AUTH_FILE and SCOTTY_E2E_GH_CONFIG_DIR to disposable credential sources",
+    );
+    const knownValues = await readCanaryCredentialValues(piAuthFile, githubConfigDir);
+    activeCanaryValues = knownValues;
     const env = {
+      ...scrubAmbientCredentialEnvironment(),
       HOME: home,
       SCOTTY_HOST: host,
       SCOTTY_TOKEN: process.env.SCOTTY_E2E_TOKEN,
+      GH_CONFIG_DIR: githubConfigDir,
     };
     const cwd = process.env.SCOTTY_E2E_LOCAL_REPO;
     assert.ok(
       fs.statSync(cwd).isDirectory(),
       "SCOTTY_E2E_LOCAL_REPO must be a local checkout of SCOTTY_E2E_REPO",
     );
+    writeCanaryToml(home, process.env.SCOTTY_E2E_REPO, piAuthFile);
+    const sync = await runCli(["sync", "--json"], { env, cwd, timeoutMs: 120_000 });
+    assertCanaryValuesAbsent(`${sync.stdout}\n${sync.stderr}`, knownValues, "sync response");
+    assert.equal(sync.code, 0, sync.stderr);
     let id;
     let peerTargetId;
     let sourceId;
@@ -175,10 +250,6 @@ test(
     const baseline = await runCli(["list", "--json"], { env, cwd });
     assert.equal(baseline.code, 0, baseline.stderr);
     const baselineIds = new Set(baseline.json.map((session) => session.id));
-    const configResponse = await canaryRequest("/__e2e/config");
-    const config = await configResponse.json();
-    assert.equal(config.githubStatus, 200, "the disposable Worker must have valid GitHub egress");
-    assert.ok(config.githubTokenBytes >= 20, "the disposable GitHub credential is malformed");
     t.after(async () => {
       const current = await runCli(["list", "--json"], { env, cwd });
       const cleanupIds = new Set([id, peerTargetId, sourceId].filter(Boolean));
@@ -221,12 +292,14 @@ test(
     );
     if (up.code !== 0) id = pendingSessionId(home);
     assert.equal(up.code, 0, up.stderr);
+    assertCanaryValuesAbsent(`${up.stdout}\n${up.stderr}`, knownValues, "beam response");
     id = up.json.id;
     remoteBranch = up.json.branch;
     assert.equal(up.json.status, "warm");
 
     const attach = await runCli(["attach", id, "--json"], { env, cwd });
     assert.equal(attach.code, 0, attach.stderr);
+    assertCliResponseClean(attach, knownValues, "attach response");
     assert.deepEqual(attach.json, {
       id,
       url: `${host}/s/${id}`,
@@ -234,14 +307,16 @@ test(
     });
     browserCookie = await recoverOwnerCookie();
 
-    const terminalShell = await fetch(`${host}/s/${id}`, {
+    const terminalShell = await canaryFetch(`${host}/s/${id}`, {
       headers: { cookie: browserCookie },
     });
     assert.equal(terminalShell.status, 200);
     assert.match(terminalShell.headers.get("content-type") ?? "", /text\/html/iu);
-    assert.match(await terminalShell.text(), /<title>Scotty<\/title>/iu);
+    const terminalShellBody = await terminalShell.text();
+    assertCanaryValuesAbsent(terminalShellBody, knownValues, "session shell response");
+    assert.match(terminalShellBody, /<title>Scotty<\/title>/iu);
 
-    const terminalWithoutUpgrade = await fetch(`${host}/s/${id}/terminal`, {
+    const terminalWithoutUpgrade = await canaryFetch(`${host}/s/${id}/terminal`, {
       headers: { cookie: browserCookie },
     });
     assert.equal(terminalWithoutUpgrade.status, 426);
@@ -258,29 +333,23 @@ test(
       timeoutMs: 180_000,
     });
     assert.equal(snapshot.code, 0, snapshot.stderr);
+    assertCliResponseClean(snapshot, knownValues, "snapshot response");
     const wrongResume = await runCli(["resume", id, "--json"], { env, cwd });
     assert.equal(wrongResume.code, 5, wrongResume.stderr);
 
     const beforeReconstruction = await poll(
       () => probe(id),
-      (value) =>
-        value.kv === true && value.backups.length > 0 && value.security?.kvNonSecret === true,
+      (value) => value.kv === true && value.backups.length > 0,
       { timeoutMs: 120_000, intervalMs: 2_000 },
     );
     assert.equal(beforeReconstruction.authorityStatus, "warm");
     assert.equal(beforeReconstruction.credentials, true);
-    assert.equal(
-      beforeReconstruction.githubCredentialCurrent,
-      true,
-      "the session vault must retain the current Worker GitHub credential",
-    );
     assert.equal(beforeReconstruction.kv, true);
     assert.ok(beforeReconstruction.backups.length > 0);
-    assert.deepEqual(beforeReconstruction.security, {
-      defaultDeny: true,
-      kvNonSecret: true,
-      sentinelsOnly: true,
-    });
+    assert.deepEqual(beforeReconstruction.registry, [
+      { name: "codex", kind: "pi-auth", scope: "global" },
+      { name: "github", kind: "github-cli", scope: "repository" },
+    ]);
     assert.ok(beforeReconstruction.schedules.includes("enforceHardCap"));
 
     await requestReconstruction(id).catch(() => undefined);
@@ -319,11 +388,6 @@ test(
     assert.equal(resume.code, 0, resume.stderr);
     const resumed = await probe(id);
     assert.equal(resumed.runtime, true);
-    assert.deepEqual(resumed.security, {
-      defaultDeny: true,
-      kvNonSecret: true,
-      sentinelsOnly: true,
-    });
 
     const down = await canaryRequest(`/api/sessions/${id}/down`, {
       signal: AbortSignal.timeout(180_000),
@@ -333,7 +397,9 @@ test(
       down.headers.get("content-disposition") ?? "",
       /^attachment; filename="scotty-[^"]+\.tar"$/u,
     );
-    assert.ok((await down.arrayBuffer()).byteLength > 0);
+    const downBody = new Uint8Array(await down.arrayBuffer());
+    assert.ok(downBody.byteLength > 0);
+    assertCanaryValuesAbsent(downBody, knownValues, "session archive response");
     await git(["push", "origin", "--delete", remoteBranch], cwd);
     remoteBranch = undefined;
 
@@ -360,7 +426,6 @@ test(
       intervalMs: 2_000,
     });
     assert.equal(cleaned.authorityStatus, "gone");
-    assert.equal(cleaned.security, null);
 
     const readyMarker = `SCOTTY_E2E_PEER_READY_${randomUUID()}`;
     const peerTargetUp = await runCli(

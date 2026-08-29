@@ -162,7 +162,12 @@ describe("prebuilt worker bundle helpers", () => {
   it("reports missing durable object export names in bundled sources", () => {
     expect(
       missingWorkerBundleExports(["export class ScottySandbox {}"], MAIN_WORKER_EXPORTS),
-    ).toEqual(["ScottyAuthRegistry", "ScottyRunnerRegistry", "ScottySandboxConfig"]);
+    ).toEqual([
+      "ScottyAuthRegistry",
+      "ScottyRunnerRegistry",
+      "ScottySandboxConfig",
+      "ScottyCredentialRegistry",
+    ]);
     expect(
       missingWorkerBundleExports(
         [
@@ -170,6 +175,7 @@ describe("prebuilt worker bundle helpers", () => {
           "export class ScottyAuthRegistry {}",
           "export class ScottyRunnerRegistry {}",
           "export class ScottySandboxConfig {}",
+          "export class ScottyCredentialRegistry {}",
         ],
         MAIN_WORKER_EXPORTS,
       ),

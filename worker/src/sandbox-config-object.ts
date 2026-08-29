@@ -1,15 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Effect, Result } from "effect";
 import type { Bindings } from "./bindings";
-import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
 import type { RepositoryRegistryEntry } from "../../protocol/repository";
-import {
-  InstallationPiAuthStore,
-  type InstallationPiAuthFailure,
-  type InstallationPiAuthFailureReason,
-  durableObjectInstallationPiAuthStorage,
-  installationPiAuthStoreLayer,
-} from "./installation-pi-auth-store";
 import type { SandboxActivateInput, SandboxConfigStatus } from "./sandbox-config-contracts";
 import {
   SandboxConfigStore,
@@ -27,10 +19,7 @@ import {
 export const SANDBOX_CONFIG_OBJECT_NAME = "account";
 
 export interface SandboxConfigRpcError {
-  readonly reason:
-    | SandboxConfigFailure["reason"]
-    | InstallationPiAuthFailureReason
-    | InstallationRepoFailure["reason"];
+  readonly reason: SandboxConfigFailure["reason"] | InstallationRepoFailure["reason"];
   readonly message: string;
 }
 
@@ -41,26 +30,19 @@ export type SandboxConfigRpcResult<A> =
 const sandboxConfigRpcError = ({
   reason,
   message,
-}:
-  | SandboxConfigFailure
-  | InstallationPiAuthFailure
-  | InstallationRepoFailure): SandboxConfigRpcError => ({
+}: SandboxConfigFailure | InstallationRepoFailure): SandboxConfigRpcError => ({
   reason,
   message,
 });
 
 export class ScottySandboxConfig extends DurableObject<Bindings> {
   private readonly configLayer;
-  private readonly piAuthLayer;
   private readonly repoLayer;
 
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
     this.configLayer = sandboxConfigStoreLayer(
       durableObjectSandboxConfigAuthorityStorage(ctx.storage),
-    );
-    this.piAuthLayer = installationPiAuthStoreLayer(
-      durableObjectInstallationPiAuthStorage(ctx.storage),
     );
     this.repoLayer = installationRepoStoreLayer(durableObjectInstallationRepoStorage(ctx.storage));
   }
@@ -71,16 +53,6 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
 
   activate(input: SandboxActivateInput): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> {
     return this.#runConfig(Effect.flatMap(SandboxConfigStore, (store) => store.activate(input)));
-  }
-
-  piAuth(): Promise<SandboxConfigRpcResult<InstallationPiAuthRecord | null>> {
-    return this.#runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.read));
-  }
-
-  writePiAuth(
-    input: InstallationPiAuthRecord,
-  ): Promise<SandboxConfigRpcResult<InstallationPiAuthRecord>> {
-    return this.#runPiAuth(Effect.flatMap(InstallationPiAuthStore, (store) => store.write(input)));
   }
 
   listRepos(): Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>> {
@@ -108,19 +80,6 @@ export class ScottySandboxConfig extends DurableObject<Bindings> {
     });
   }
 
-  async #runPiAuth<A>(
-    operation: Effect.Effect<A, InstallationPiAuthFailure, InstallationPiAuthStore>,
-  ): Promise<SandboxConfigRpcResult<A>> {
-    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: Durable Object RPC methods must return Promises to the Cloudflare host
-    const result = await Effect.runPromise(
-      operation.pipe(Effect.provide(this.piAuthLayer), Effect.result),
-    );
-    return Result.match(result, {
-      onFailure: (error) => ({ ok: false, error: sandboxConfigRpcError(error) }),
-      onSuccess: (value) => ({ ok: true, value }),
-    });
-  }
-
   async #runRepo<A>(
     operation: Effect.Effect<A, InstallationRepoFailure, InstallationRepoStore>,
   ): Promise<SandboxConfigRpcResult<A>> {
@@ -140,10 +99,6 @@ export type ScottySandboxConfigStub = {
   readonly activate: (
     input: SandboxActivateInput,
   ) => Promise<SandboxConfigRpcResult<SandboxConfigStatus>>;
-  readonly piAuth: () => Promise<SandboxConfigRpcResult<InstallationPiAuthRecord | null>>;
-  readonly writePiAuth: (
-    input: InstallationPiAuthRecord,
-  ) => Promise<SandboxConfigRpcResult<InstallationPiAuthRecord>>;
   readonly listRepos: () => Promise<SandboxConfigRpcResult<ReadonlyArray<RepositoryRegistryEntry>>>;
   readonly addRepo: (input: unknown) => Promise<SandboxConfigRpcResult<RepositoryRegistryEntry>>;
   readonly removeRepo: (repo: unknown) => Promise<SandboxConfigRpcResult<boolean>>;

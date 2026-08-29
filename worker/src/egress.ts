@@ -1,28 +1,35 @@
 import type { OutboundHandlerContext } from "@cloudflare/containers";
-import { supportedPiProvider, type PiCredential } from "../../protocol/pi-auth";
-import { GITHUB_SENTINEL_PREFIX, PI_SENTINEL_PREFIX } from "../../protocol/pi-console-shared.mjs";
-import { Context, Data, Effect, Layer, Option, Result } from "effect";
+import { Context, Data, Effect, Layer, Option, Redacted, Result, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import {
+  formatManagedHandle,
+  parseManagedHandle,
+  type ManagedHandle,
+} from "../../protocol/credentials";
 import type { Bindings } from "./bindings";
 import { handleContainerSessionEgress, SCOTTY_INTERNAL_HOST } from "./container-session-egress";
 import {
-  decodeCredentialPatchOption,
-  decodeCredentialRefreshLeaseOption,
   decodeJsonValue,
   decodeOAuthContainerResultOption,
   decodeOAuthRefreshRequestOption,
   decodeOAuthUpstreamSuccessOption,
   decodeRawOAuthUpstreamSuccess,
-  decodeStoredCredentialOption,
-  type CredentialPatch,
-  type CredentialRefreshLease,
   type OAuthContainerResult,
   type OAuthRefreshRequest,
-  type StoredCredential,
-  type StoredProviderCredential,
 } from "./contracts";
-
-export { GITHUB_SENTINEL_PREFIX, PI_SENTINEL_PREFIX };
+import {
+  CredentialRegistryRotationPatchSchema,
+  type CredentialRegistryRotationPatch,
+} from "./credential-contracts";
+import {
+  decodeCredentialRefreshLeaseOption,
+  githubRepositoryFromUrl,
+  managedPiAccessToken,
+  managedPiIdToken,
+  parseManagedPiAccessToken,
+  type ManagedCredentialRefreshLease,
+} from "./managed-credentials";
+import { parsePiAuthJsonOption } from "../../protocol/pi-auth";
 
 export const ALLOWED_HOSTS = [
   "api.openai.com",
@@ -45,32 +52,38 @@ export const ALLOWED_HOSTS = [
   SCOTTY_INTERNAL_HOST,
 ] as const;
 
-export type { CredentialPatch, CredentialRefreshLease, StoredCredential } from "./contracts";
-
 type EgressContext = OutboundHandlerContext<unknown>;
 
 export class EgressFailure extends Data.TaggedError("EgressFailure")<{
-  readonly reason: "transport" | "vault" | "persistence";
+  readonly reason: "transport" | "credential" | "persistence";
   readonly message: string;
 }> {}
 
 class EgressBoundaryFailure extends Data.TaggedError("EgressBoundaryFailure")<{
   readonly message: string;
 }> {}
+const decodeCredentialRegistryRotationPatchOption = Schema.decodeUnknownOption(
+  CredentialRegistryRotationPatchSchema,
+);
 
-export interface EgressVaultShape {
-  readonly read: (sentinel: string) => Effect.Effect<StoredCredential | null, EgressFailure>;
-  readonly begin: (sentinel: string) => Effect.Effect<CredentialRefreshLease | null, EgressFailure>;
+export interface EgressCredentialShape {
+  readonly resolve: (
+    handle: string,
+    repository?: string,
+  ) => Effect.Effect<Redacted.Redacted<string> | null, EgressFailure>;
+  readonly begin: (
+    handle: string,
+  ) => Effect.Effect<ManagedCredentialRefreshLease | null, EgressFailure>;
   readonly persist: (
-    sentinel: string,
-    patch: CredentialPatch,
+    handle: string,
+    patch: CredentialRegistryRotationPatch,
     nonce: string,
   ) => Effect.Effect<void, EgressFailure>;
-  readonly cancel: (sentinel: string, nonce: string) => Effect.Effect<void, EgressFailure>;
+  readonly cancel: (handle: string, nonce: string) => Effect.Effect<void, EgressFailure>;
 }
 
-export class EgressVault extends Context.Service<EgressVault, EgressVaultShape>()(
-  "scotty/EgressVault",
+export class EgressCredential extends Context.Service<EgressCredential, EgressCredentialShape>()(
+  "scotty/EgressCredential",
 ) {}
 
 export interface EgressTransportShape {
@@ -115,21 +128,30 @@ export function egressTransportLayer(
   );
 }
 
-export function decodeStoredCredential(value: unknown): StoredCredential {
-  return Option.getOrThrowWith(decodeStoredCredentialOption(value), () =>
-    boundaryFailure("Stored credential record is invalid"),
-  );
-}
-
-export function decodeCredentialPatch(value: unknown): CredentialPatch {
-  return Option.getOrThrowWith(decodeCredentialPatchOption(value), () =>
-    boundaryFailure("Credential patch is invalid"),
-  );
-}
-
-export function decodeCredentialRefreshLease(value: unknown): CredentialRefreshLease | null {
-  return Option.getOrThrowWith(decodeCredentialRefreshLeaseOption(value), () =>
-    boundaryFailure("Credential refresh lease is invalid"),
+export function oauthContainerResult(
+  accessHandle: string,
+  refreshHandle: string,
+  expiresIn?: number,
+): OAuthContainerResult {
+  const access = parseManagedHandle(accessHandle);
+  const refresh = parseManagedHandle(refreshHandle);
+  if (
+    Option.isNone(access) ||
+    Option.isNone(refresh) ||
+    access.value.provider !== "openai-codex" ||
+    access.value.slot !== "access" ||
+    refresh.value.provider !== "openai-codex" ||
+    refresh.value.slot !== "refresh"
+  )
+    return Option.getOrThrowWith(Option.none(), () => boundaryFailure("OAuth handles are invalid"));
+  const value = {
+    id_token: managedPiIdToken(accessHandle),
+    access_token: managedPiAccessToken(accessHandle),
+    refresh_token: refreshHandle,
+    ...(expiresIn === undefined ? {} : { expires_in: expiresIn }),
+  };
+  return Option.getOrThrowWith(decodeOAuthContainerResultOption(value), () =>
+    boundaryFailure("OAuth container result is invalid"),
   );
 }
 
@@ -137,7 +159,7 @@ export function parseOAuthRefreshRequest(value: unknown): OAuthRefreshRequest | 
   return Option.getOrNull(decodeOAuthRefreshRequestOption(value, { onExcessProperty: "preserve" }));
 }
 
-export function parseOAuthUpstreamSuccess(value: unknown): CredentialPatch | null {
+export function parseOAuthUpstreamSuccess(value: unknown): CredentialRegistryRotationPatch | null {
   const raw = decodeRawOAuthUpstreamSuccess(value);
   if (Option.isNone(raw)) return null;
   const decoded = decodeOAuthUpstreamSuccessOption({
@@ -149,100 +171,57 @@ export function parseOAuthUpstreamSuccess(value: unknown): CredentialPatch | nul
       : { expires_in: optionalNumber(raw.value.expires_in) }),
   });
   if (Option.isNone(decoded)) return null;
-  return Option.getOrNull(
-    decodeCredentialPatchOption({
-      accessToken: decoded.value.access_token,
-      ...(decoded.value.id_token === undefined ? {} : { idToken: decoded.value.id_token }),
-      ...(decoded.value.refresh_token === undefined
-        ? {}
-        : { refreshToken: decoded.value.refresh_token }),
-      ...(decoded.value.expires_in === undefined
-        ? {}
-        : { expiresInSeconds: decoded.value.expires_in }),
-    }),
-  );
-}
-
-export function oauthContainerResult(
-  provider: StoredProviderCredential,
-  expiresIn?: number,
-): OAuthContainerResult {
-  if (provider.credential.type !== "oauth")
-    return Option.getOrThrowWith(Option.none(), () =>
-      boundaryFailure("OAuth container result is invalid"),
-    );
-  const value = {
-    id_token: syntheticIdToken(optionalString(provider.credential.accountId)),
-    access_token: piAccessSentinel(provider.sentinel),
-    refresh_token: provider.sentinel,
-    ...(expiresIn === undefined ? {} : { expires_in: expiresIn }),
+  const patch = {
+    accessToken: decoded.value.access_token,
+    ...(decoded.value.id_token === undefined ? {} : { idToken: decoded.value.id_token }),
+    ...(decoded.value.refresh_token === undefined
+      ? {}
+      : { refreshToken: decoded.value.refresh_token }),
+    ...(decoded.value.expires_in === undefined
+      ? {}
+      : { expiresInSeconds: decoded.value.expires_in }),
   };
-  return Option.getOrThrowWith(decodeOAuthContainerResultOption(value), () =>
-    boundaryFailure("OAuth container result is invalid"),
-  );
+  return Option.getOrNull(patchFromUpstream(patch));
 }
 
-export function piAccessSentinel(sentinel: string): string {
-  return `${sentinel}.${syntheticTokenPayload()}.scotty-pi`;
-}
-
-export function piAuthJson(credential: StoredCredential): string {
-  const projected: Record<string, PiCredential> = {};
-  for (const [providerId, provider] of Object.entries(credential.providers)) {
-    if (!supportedPiProvider(providerId)) continue;
-    projected[providerId] =
-      provider.credential.type === "api_key"
-        ? {
-            type: "api_key",
-            key: provider.sentinel,
-          }
-        : {
-            type: "oauth",
-            access: piAccessSentinel(provider.sentinel),
-            refresh: provider.sentinel,
-            expires: provider.credential.expires,
-            ...(providerId === "openai-codex" ? { accountId: "scotty-sentinel" } : {}),
-          };
-  }
-  return JSON.stringify(projected);
-}
-
-export function proxyOpenAIProgram(
-  request: Request,
-): Effect.Effect<Response, EgressFailure, EgressVault | EgressTransport> {
-  return Effect.gen(function* () {
-    const vault = yield* EgressVault;
-    const sentinel = presentedCredential(request.headers);
-    const credential = sentinel ? yield* vault.read(sentinel) : null;
-    const provider = credential ? openAiProvider(credential, sentinel) : null;
-    if (!provider) return forbidden();
-    const token =
-      provider.credential.type === "api_key" ? provider.credential.key : provider.credential.access;
-    if (!token) return forbidden();
-    const headers = sanitizedHeaders(request.headers);
-    headers.set("authorization", `Bearer ${token}`);
-    headers.delete("x-api-key");
-    return yield* forward(request, new URL(request.url), headers);
-  });
-}
+export const proxyOpenAIProgram = Effect.fnUntraced(function* (request: Request) {
+  const url = exactDestination(request, "api.openai.com");
+  if (url === undefined) return forbidden();
+  const handle = openAiHandle(request.headers);
+  if (handle === undefined) return forbidden();
+  const credential = yield* EgressCredential;
+  const resolved = yield* credential.resolve(formatManagedHandle(handle));
+  if (resolved === null) return forbidden();
+  const selected = selectPiCredential(resolved, handle);
+  if (selected === null) return forbidden();
+  const headers = sanitizedHeaders(request.headers);
+  headers.set("authorization", `Bearer ${selected.token}`);
+  return yield* forward(request, url, headers);
+});
 
 export const proxyChatGptProgram = Effect.fnUntraced(function* (request: Request) {
-  const vault = yield* EgressVault;
-  const sentinel = presentedCredential(request.headers);
-  const credential = sentinel ? yield* vault.read(sentinel) : null;
-  const provider = credential?.providers["openai-codex"];
-  if (provider?.credential.type !== "oauth" || !matchesPiSentinel(sentinel, provider.sentinel))
-    return forbidden();
+  const url = exactDestination(request, "chatgpt.com");
+  if (url === undefined) return forbidden();
+  const authorization = request.headers.get("authorization");
+  const handle = parseManagedPiAccessToken(
+    authorization === null ? undefined : bearerValue(authorization),
+  );
+  if (Option.isNone(handle)) return forbidden();
+  const credential = yield* EgressCredential;
+  const resolved = yield* credential.resolve(formatManagedHandle(handle.value));
+  if (resolved === null) return forbidden();
+  const selected = selectPiCredential(resolved, handle.value);
+  if (selected === null || selected.accountId === undefined) return forbidden();
   const headers = sanitizedHeaders(request.headers);
-  headers.set("authorization", `Bearer ${provider.credential.access}`);
-  const accountId = optionalString(provider.credential.accountId);
-  if (accountId) headers.set("chatgpt-account-id", accountId);
-  return yield* forward(request, new URL(request.url), headers);
+  headers.set("authorization", `Bearer ${selected.token}`);
+  headers.set("chatgpt-account-id", selected.accountId);
+  return yield* forward(request, url, headers);
 });
 
 const decodeOAuthRefreshIntent = Effect.fnUntraced(function* (request: Request) {
-  const url = new URL(request.url);
-  if (request.method !== "POST" || url.pathname !== "/oauth/token") return null;
+  const url = exactDestination(request, "auth.openai.com");
+  if (url === undefined || request.method !== "POST" || url.pathname !== "/oauth/token")
+    return null;
   const requestText = yield* Effect.tryPromise({
     try: () => request.text(),
     catch: () => new EgressFailure({ reason: "transport", message: "OAuth request failed" }),
@@ -260,22 +239,45 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
   const intent = yield* decodeOAuthRefreshIntent(request);
   if (intent === null) return forbidden();
   const { body, formEncoded, url } = intent;
-  const vault = yield* EgressVault;
-  const refresh = yield* vault.begin(body.refresh_token);
-  const credential = refresh?.credential;
-  const provider = credential?.providers["openai-codex"];
-  const realRefreshToken =
-    provider?.credential.type === "oauth" ? provider.credential.refresh : undefined;
-  if (!refresh || !credential || !provider || !realRefreshToken) {
+  const refreshHandle = parseManagedHandle(body.refresh_token);
+  if (
+    Option.isNone(refreshHandle) ||
+    refreshHandle.value.provider !== "openai-codex" ||
+    refreshHandle.value.slot !== "refresh"
+  )
+    return forbidden();
+
+  const credential = yield* EgressCredential;
+  const handle = formatManagedHandle(refreshHandle.value);
+  const lease = yield* credential.begin(handle);
+  if (lease === null)
     return Response.json(
       { error: { code: "oauth_refresh_busy", message: "OAuth refresh is already in progress" } },
       { status: 409, headers: { "cache-control": "no-store" } },
     );
+
+  const cancel = (): Effect.Effect<void, never> =>
+    credential.cancel(handle, lease.nonce).pipe(Effect.catchCause(() => Effect.void));
+  const resolved = yield* credential.resolve(handle).pipe(Effect.tapError(cancel));
+  if (resolved === null) {
+    yield* cancel();
+    return Response.json(
+      { error: { code: "oauth_refresh_failed", message: "OAuth refresh failed" } },
+      { status: 502, headers: { "cache-control": "no-store" } },
+    );
+  }
+  const selected = selectPiRefreshCredential(resolved);
+  if (selected === null) {
+    yield* cancel();
+    return Response.json(
+      { error: { code: "oauth_refresh_failed", message: "OAuth refresh failed" } },
+      { status: 502, headers: { "cache-control": "no-store" } },
+    );
   }
 
   const upstreamBody = formEncoded
-    ? formBody({ ...body, refresh_token: realRefreshToken })
-    : JSON.stringify({ ...body, refresh_token: realRefreshToken });
+    ? formBody({ ...body, refresh_token: selected.refresh })
+    : JSON.stringify({ ...body, refresh_token: selected.refresh });
   const headers = sanitizedHeaders(request.headers);
   const contentType = formEncoded ? "application/x-www-form-urlencoded" : "application/json";
   headers.set("content-type", contentType);
@@ -291,24 +293,20 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
       Effect.mapError(
         () => new EgressFailure({ reason: "transport", message: "OAuth refresh failed" }),
       ),
-      Effect.onError(() =>
-        vault.cancel(provider.sentinel, refresh.nonce).pipe(Effect.catchCause(() => Effect.void)),
-      ),
+      Effect.tapError(cancel),
     );
   if (upstream.status < 200 || upstream.status >= 300) {
-    yield* vault.cancel(provider.sentinel, refresh.nonce);
+    yield* cancel();
     return Response.json(
       { error: { code: "oauth_refresh_failed", message: "OAuth refresh failed" } },
       { status: upstream.status, headers: { "cache-control": "no-store" } },
     );
   }
 
+  // A 2xx response may have rotated upstream even if its body cannot be read or decoded.
   const responseText = yield* upstream.text.pipe(
     Effect.mapError(
       () => new EgressFailure({ reason: "transport", message: "OAuth refresh failed" }),
-    ),
-    Effect.onError(() =>
-      vault.cancel(provider.sentinel, refresh.nonce).pipe(Effect.catchCause(() => Effect.void)),
     ),
   );
   const responseJson = decodeJsonValue(responseText);
@@ -316,12 +314,13 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
     ? decodeRawOAuthUpstreamSuccess(responseJson.value)
     : Option.none();
   const patch = Option.isSome(responseJson) ? parseOAuthUpstreamSuccess(responseJson.value) : null;
-  if (!patch) {
-    yield* vault.cancel(provider.sentinel, refresh.nonce);
+  if (patch === null) {
     return new Response("Invalid OAuth response", { status: 502 });
   }
 
-  yield* vault.persist(provider.sentinel, patch, refresh.nonce).pipe(
+  // A successful provider response makes the old refresh token unsafe to reuse. Keep the
+  // lease on persistence failure so the durable completion can be retried without cancellation.
+  yield* credential.persist(handle, patch, lease.nonce).pipe(
     Effect.retry({ times: 2 }),
     Effect.mapError(
       () =>
@@ -331,12 +330,12 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
         }),
     ),
   );
-
   const expiresIn = Option.isSome(rawResponse)
     ? optionalNumber(rawResponse.value.expires_in)
     : null;
+  const access = piAccessHandleFromRefresh(refreshHandle.value);
   const safeBody = JSON.stringify(
-    oauthContainerResult(provider, formEncoded ? (expiresIn ?? 3600) : undefined),
+    oauthContainerResult(access, handle, formEncoded ? (expiresIn ?? 3600) : undefined),
   );
   const responseHeaders = new Headers({
     "content-type": "application/json",
@@ -347,26 +346,35 @@ export const proxyOAuthRefreshProgram = Effect.fnUntraced(function* (request: Re
 });
 
 export const proxyGitHubProgram = Effect.fnUntraced(function* (request: Request) {
-  const presented = presentedCredential(request.headers);
-  if (!presented) return yield* passThroughProgram(request);
-  const vault = yield* EgressVault;
-  const credential = yield* vault.read(presented);
-  if (!credential || presented !== credential.githubSentinel) return forbidden();
-
+  const url = githubDestination(request);
+  if (url === undefined) return forbidden();
+  const handle = githubHandle(request.headers);
+  if (handle === undefined) return yield* passThroughProgram(request);
+  const repository = githubRepositoryFromUrl(url);
+  if (repository === undefined) return forbidden();
+  const credential = yield* EgressCredential;
+  const resolved = yield* credential.resolve(handle, repository);
+  if (resolved === null) return forbidden();
+  const token = Redacted.value(resolved);
+  Redacted.wipeUnsafe(resolved);
+  if (token.length === 0) return forbidden();
   const headers = sanitizedHeaders(request.headers);
   const original = request.headers.get("authorization") ?? "";
-  if (original.startsWith("Basic ")) {
-    headers.set("authorization", `Basic ${btoa(`x-access-token:${credential.githubToken}`)}`);
-  } else {
-    headers.set("authorization", `Bearer ${credential.githubToken}`);
-  }
-  return yield* forward(request, new URL(request.url), headers);
+  headers.set(
+    "authorization",
+    original.startsWith("Basic ") ? `Basic ${btoa(`x-access-token:${token}`)}` : `Bearer ${token}`,
+  );
+  return yield* forward(request, url, headers);
 });
 
 export const passThroughProgram = Effect.fnUntraced(function* (request: Request) {
-  const headers = sanitizedHeaders(request.headers);
-  if (headers.has("authorization") || headers.has("proxy-authorization") || headers.has("cookie"))
+  if (
+    ["authorization", "x-api-key", "x-github-token", "proxy-authorization", "cookie"].some((name) =>
+      request.headers.has(name),
+    )
+  )
     return forbidden();
+  const headers = sanitizedHeaders(request.headers);
   return yield* forward(request, new URL(request.url), headers);
 });
 
@@ -375,7 +383,7 @@ export function denyOutbound(): Response {
 }
 
 export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
-  const run = <R extends EgressVault | EgressTransport | HttpClient.HttpClient>(
+  const run = <R extends EgressCredential | EgressTransport | HttpClient.HttpClient>(
     program: Effect.Effect<Response, EgressFailure, R>,
     env: Bindings,
     context: EgressContext,
@@ -414,47 +422,60 @@ export function makeOutboundByHost(nativeFetch: typeof globalThis.fetch) {
   };
 }
 
-function egressVaultLayer(env: Bindings, context: EgressContext): Layer.Layer<EgressVault> {
+function egressCredentialLayer(
+  env: Bindings,
+  context: EgressContext,
+): Layer.Layer<EgressCredential> {
   const stub = credentialStub(env, context);
   const rpc = <A>(operation: () => Promise<A>): Effect.Effect<A, EgressFailure> =>
-    Effect.tryPromise({
-      try: operation,
-      catch: () => new EgressFailure({ reason: "vault", message: "Credential vault failed" }),
-    });
-  return Layer.succeed(EgressVault)(
-    EgressVault.of({
-      read: (sentinel) => {
-        if (
-          !sentinel.startsWith(PI_SENTINEL_PREFIX) &&
-          !sentinel.startsWith(GITHUB_SENTINEL_PREFIX)
+    stub === undefined
+      ? Effect.fail(
+          new EgressFailure({ reason: "credential", message: "Credential registry unavailable" }),
         )
-          return Effect.succeed(null);
-        return rpc(() => stub.readCredentialForProxy(storedSentinel(sentinel))).pipe(
+      : Effect.tryPromise({
+          try: operation,
+          catch: () =>
+            new EgressFailure({
+              reason: "credential",
+              message: "Session credential access failed",
+            }),
+        });
+  const denied = (): Effect.Effect<never, EgressFailure> =>
+    Effect.fail(
+      new EgressFailure({ reason: "credential", message: "Session credential access failed" }),
+    );
+  return Layer.succeed(EgressCredential)(
+    EgressCredential.of({
+      resolve: (handle, repository) =>
+        rpc(() =>
+          stub!.resolveCredentialForProxy({
+            version: 1,
+            handle,
+            ...(repository === undefined ? {} : { repository }),
+          }),
+        ).pipe(
           Effect.flatMap((value) => {
             if (value === null) return Effect.succeed(null);
-            const decoded = decodeStoredCredentialOption(value);
-            return Option.isSome(decoded)
-              ? Effect.succeed(decoded.value)
-              : Effect.fail(
-                  new EgressFailure({ reason: "vault", message: "Credential vault failed" }),
-                );
+            return typeof value === "string" ? Effect.succeed(Redacted.make(value)) : denied();
           }),
-        );
-      },
-      begin: (sentinel) =>
-        rpc(() => stub.beginCredentialRefresh(storedSentinel(sentinel))).pipe(
+        ),
+      begin: (handle) =>
+        rpc(() =>
+          stub!.beginCredentialRefreshForProxy({ version: 1, handle, nonce: crypto.randomUUID() }),
+        ).pipe(
           Effect.flatMap((value) => {
             const decoded = decodeCredentialRefreshLeaseOption(value);
             return Option.isSome(decoded)
               ? Effect.succeed(decoded.value)
-              : Effect.fail(
-                  new EgressFailure({ reason: "vault", message: "Credential vault failed" }),
-                );
+              : value === null
+                ? Effect.succeed(null)
+                : denied();
           }),
         ),
-      persist: (sentinel, patch, nonce) =>
-        rpc(() => stub.persistRotatedCredential(sentinel, patch, nonce)),
-      cancel: (sentinel, nonce) => rpc(() => stub.cancelCredentialRefresh(sentinel, nonce)),
+      persist: (handle, patch, nonce) =>
+        rpc(() => stub!.persistCredentialRotationForProxy({ version: 1, handle, nonce, patch })),
+      cancel: (handle, nonce) =>
+        rpc(() => stub!.cancelCredentialRefreshForProxy({ version: 1, handle, nonce })),
     }),
   );
 }
@@ -462,41 +483,139 @@ function egressVaultLayer(env: Bindings, context: EgressContext): Layer.Layer<Eg
 function credentialStub(
   env: Bindings,
   context: EgressContext,
-): DurableObjectStub<import("./session").Sandbox> {
-  const containerId = Option.getOrThrowWith(Option.fromNullishOr(context.containerId), () =>
-    boundaryFailure("Missing sandbox container id"),
-  );
-  return env.SANDBOX.get(env.SANDBOX.idFromString(containerId));
+): DurableObjectStub<import("./session").Sandbox> | undefined {
+  const containerId = context.containerId;
+  if (
+    context.className !== "Sandbox" ||
+    typeof containerId !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(containerId)
+  )
+    return undefined;
+  const id = Result.try(() => env.SANDBOX.idFromString(containerId));
+  return Result.isFailure(id) ? undefined : env.SANDBOX.get(id.success);
 }
 
-function presentedCredential(headers: Headers): string | null {
-  const authorization = headers.get("authorization");
-  if (!authorization) return headers.get("x-api-key");
-  if (authorization.startsWith("Basic ")) {
-    return Result.match(
-      Result.try(() => atob(authorization.slice(6))),
-      {
-        onFailure: () => null,
-        onSuccess: (decoded) => {
-          const separator = decoded.indexOf(":");
-          return separator >= 0 ? decoded.slice(separator + 1) : null;
-        },
-      },
-    );
+function exactDestination(request: Request, host: string): URL | undefined {
+  const url = new URL(request.url);
+  return url.protocol === "https:" && url.hostname === host && url.port === "" ? url : undefined;
+}
+
+function githubDestination(request: Request): URL | undefined {
+  const url = new URL(request.url);
+  return url.protocol === "https:" &&
+    (url.hostname === "github.com" || url.hostname === "api.github.com") &&
+    url.port === ""
+    ? url
+    : undefined;
+}
+
+function openAiHandle(headers: Headers): ManagedHandle | undefined {
+  const apiKey = headers.get("x-api-key");
+  const bearer = bearerValue(headers.get("authorization"));
+  const candidates = [apiKey, bearer];
+  for (const candidate of candidates) {
+    const handle = parseManagedHandle(candidate);
+    if (
+      Option.isSome(handle) &&
+      handle.value.provider === "openai" &&
+      handle.value.slot === "api-key"
+    )
+      return handle.value;
   }
-  const match = /^(?:Bearer|token)\s+(.+)$/i.exec(authorization);
-  return match?.[1] ?? null;
+  return undefined;
+}
+
+function githubHandle(headers: Headers): string | undefined {
+  const authorization = headers.get("authorization");
+  if (authorization === null) return undefined;
+  if (authorization.startsWith("Basic ")) {
+    const decoded = Result.try(() => atob(authorization.slice(6)));
+    if (Result.isFailure(decoded)) return undefined;
+    const separator = decoded.success.indexOf(":");
+    const password = separator < 0 ? undefined : decoded.success.slice(separator + 1);
+    return managedGitHubHandle(password);
+  }
+  return managedGitHubHandle(bearerValue(authorization));
+}
+
+function managedGitHubHandle(value: string | undefined): string | undefined {
+  const handle = parseManagedHandle(value);
+  return Option.isSome(handle) &&
+    handle.value.provider === "github" &&
+    handle.value.slot === "git-https"
+    ? value
+    : undefined;
+}
+
+function bearerValue(authorization: string | null): string | undefined {
+  if (authorization === null) return undefined;
+  const match = /^(?:Bearer|token)\s+(.+)$/iu.exec(authorization);
+  return match?.[1];
+}
+
+function selectPiCredential(
+  resolved: Redacted.Redacted<string>,
+  handle: ManagedHandle,
+): { readonly token: string; readonly accountId?: string } | null {
+  const parsed = parsePiAuthJsonOption(Redacted.value(resolved));
+  const provider = Option.isSome(parsed) ? parsed.value[handle.provider] : undefined;
+  if (provider === undefined) {
+    Redacted.wipeUnsafe(resolved);
+    return null;
+  }
+  const selected =
+    handle.provider === "openai" && handle.slot === "api-key" && provider.type === "api_key"
+      ? provider.key === undefined
+        ? null
+        : { token: provider.key }
+      : handle.provider === "openai-codex" && handle.slot === "access" && provider.type === "oauth"
+        ? {
+            token: provider.access,
+            ...(provider.accountId === undefined ? {} : { accountId: provider.accountId }),
+          }
+        : null;
+  Redacted.wipeUnsafe(resolved);
+  return selected?.token === undefined ? null : selected;
+}
+
+function selectPiRefreshCredential(
+  resolved: Redacted.Redacted<string>,
+): { readonly refresh: string } | null {
+  const parsed = parsePiAuthJsonOption(Redacted.value(resolved));
+  const provider = Option.isSome(parsed) ? parsed.value["openai-codex"] : undefined;
+  const selected = provider?.type === "oauth" ? { refresh: provider.refresh } : null;
+  Redacted.wipeUnsafe(resolved);
+  return selected;
+}
+
+function piAccessHandleFromRefresh(refresh: {
+  readonly name: string;
+  readonly provider: string;
+  readonly slot: string;
+}): string {
+  return formatManagedHandle({ name: refresh.name, provider: "openai-codex", slot: "access" });
+}
+
+function patchFromUpstream(value: unknown): Option.Option<CredentialRegistryRotationPatch> {
+  const decoded = decodeCredentialRegistryRotationPatchOption(value);
+  return decoded;
 }
 
 function sanitizedHeaders(source: Headers): Headers {
   const headers = new Headers(source);
-  headers.delete("host");
-  headers.delete("cookie");
-  headers.delete("proxy-authorization");
-  headers.delete("cf-connecting-ip");
-  headers.delete("cf-ipcountry");
-  headers.delete("cf-ray");
-  headers.delete("x-forwarded-for");
+  for (const name of [
+    "host",
+    "authorization",
+    "x-api-key",
+    "x-github-token",
+    "cookie",
+    "proxy-authorization",
+    "cf-connecting-ip",
+    "cf-ipcountry",
+    "cf-ray",
+    "x-forwarded-for",
+  ])
+    headers.delete(name);
   return headers;
 }
 
@@ -512,7 +631,7 @@ function runEgress(
   program: Effect.Effect<
     Response,
     EgressFailure,
-    EgressVault | EgressTransport | HttpClient.HttpClient
+    EgressCredential | EgressTransport | HttpClient.HttpClient
   >,
   env: Bindings,
   context: EgressContext,
@@ -521,7 +640,7 @@ function runEgress(
   // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: official native Cloudflare outbound callback must return a Promise
   return Effect.runPromise(
     program.pipe(
-      Effect.provide(egressVaultLayer(env, context)),
+      Effect.provide(egressCredentialLayer(env, context)),
       Effect.provide(egressTransportLayer(nativeFetch)),
       Effect.provide(FetchHttpClient.layer),
       Effect.provideService(FetchHttpClient.Fetch, nativeFetch),
@@ -554,47 +673,13 @@ function formBody(value: OAuthRefreshRequest): string {
   return body.toString();
 }
 
-function storedSentinel(presented: string): string {
-  const parts = presented.split(".");
-  return parts.length === 3 && parts[2] === "scotty-pi" ? (parts[0] ?? presented) : presented;
-}
-
-function matchesPiSentinel(presented: string | null, stored: string): boolean {
-  return presented === stored || presented === piAccessSentinel(stored);
-}
-
-function openAiProvider(
-  credential: StoredCredential,
-  presented: string | null,
-): StoredProviderCredential | null {
-  for (const providerId of ["openai", "openai-codex"] as const) {
-    const provider = credential.providers[providerId];
-    if (provider && matchesPiSentinel(presented, provider.sentinel)) return provider;
-  }
-  return null;
-}
-
-function syntheticIdToken(accountId?: string | null): string {
-  const header = base64Url(JSON.stringify({ alg: "none", typ: "JWT" }));
-  const payload = syntheticTokenPayload(accountId);
-  return `${header}.${payload}.scotty`;
-}
-
-function syntheticTokenPayload(accountId: string | null = "scotty-sentinel"): string {
-  return base64Url(
-    JSON.stringify({
-      "https://api.openai.com/auth": {
-        chatgpt_account_id: accountId ? "scotty-sentinel" : undefined,
-        chatgpt_plan_type: "unknown",
-      },
-    }),
-  );
-}
-
-function base64Url(value: string): string {
-  return btoa(value).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-}
-
 function forbidden(): Response {
   return new Response("Forbidden by Scotty egress policy", { status: 403 });
 }
+
+export type { CredentialRegistryRotationPatch } from "./credential-contracts";
+export type {
+  SessionCredentialAccess,
+  SessionCredentialRefresh,
+  SessionCredentialRotation,
+} from "./managed-credentials";

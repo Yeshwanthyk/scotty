@@ -1,5 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
-import { parsePiAuthJsonOption } from "../../protocol/pi-auth";
+import {
+  formatManagedHandle,
+  parseManagedHandle,
+  type CredentialGrant,
+} from "../../protocol/credentials";
 import { Effect, Option, Result } from "effect";
 import { isAuthorizedRequest } from "../src/auth";
 import {
@@ -22,14 +26,12 @@ import {
   type SessionRecord,
 } from "../src/contracts";
 import {
-  decodeCredentialPatch,
-  decodeStoredCredential,
-  oauthContainerResult,
-  piAuthJson,
-  parseOAuthRefreshRequest,
-  parseOAuthUpstreamSuccess,
-  type StoredCredential,
-} from "../src/egress";
+  githubManagedHandle,
+  piAccessHandle,
+  piApiKeyHandle,
+  piRefreshHandle,
+  sessionRuntimeCredentials,
+} from "../src/managed-credentials";
 
 describe("request contracts", () => {
   it("parses and bounds create input", () => {
@@ -483,182 +485,52 @@ describe("public errors", () => {
     }),
   );
 });
-
-describe("credential boundary", () => {
-  const storedCredential = (): StoredCredential => ({
-    providers: {
-      "openai-codex": {
-        credential: {
-          type: "oauth",
-          access: "real-access-token",
-          refresh: "real-refresh-token",
-          expires: 0,
-          accountId: "real-account",
-        },
-        sentinel: "scotty-pi-session-sentinel",
-      },
+describe("managed credential handles", () => {
+  const grants: ReadonlyArray<CredentialGrant> = [
+    {
+      name: "openai",
+      kind: "pi-auth",
+      versionRef: "version-a",
+      handleSlots: [
+        { provider: "openai", slot: "api-key" },
+        { provider: "openai-codex", slot: "access" },
+        { provider: "openai-codex", slot: "refresh" },
+      ],
     },
-    githubToken: "real-github-token",
-    githubSentinel: "scotty-github-session-sentinel",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-  });
-  const assertFixedError = (evaluate: () => unknown, message: string): void => {
-    const result = Result.try(evaluate);
-    assert.ok(Result.isFailure(result));
-    assert.ok(result.failure instanceof Error);
-    assert.strictEqual(result.failure.message, message);
-  };
+    {
+      name: "github",
+      kind: "github-cli",
+      versionRef: "version-b",
+      handleSlots: [{ provider: "github", slot: "git-https" }],
+    },
+  ];
 
-  it("decodes Pi API-key and OAuth credentials while preserving provider fields", () => {
-    const decoded = Option.getOrThrow(
-      parsePiAuthJsonOption(
-        JSON.stringify({
-          openai: { type: "api_key", key: "api-key" },
-          "openai-codex": {
-            type: "oauth",
-            access: "access",
-            refresh: "refresh",
-            expires: 0,
-            accountId: "account",
-          },
-          "github-copilot": {
-            type: "oauth",
-            access: "copilot-access",
-            refresh: "copilot-refresh",
-            expires: 1,
-            enterpriseUrl: "https://github.example",
-            availableModelIds: ["model-a"],
-          },
-        }),
-      ),
-    );
-    assert.deepInclude(decoded["openai-codex"], { accountId: "account" });
-    assert.deepInclude(decoded["github-copilot"], {
-      enterpriseUrl: "https://github.example",
-      availableModelIds: ["model-a"],
-    });
+  it("derives fixed handles only from granted slots", () => {
+    assert.strictEqual(piApiKeyHandle(grants), "scotty-managed://openai/openai/api-key");
+    assert.strictEqual(piAccessHandle(grants), "scotty-managed://openai/openai-codex/access");
+    assert.strictEqual(piRefreshHandle(grants), "scotty-managed://openai/openai-codex/refresh");
+    assert.strictEqual(githubManagedHandle(grants), "scotty-managed://github/github/git-https");
+    assert.deepStrictEqual(sessionRuntimeCredentials(grants).piProviders, [
+      "openai",
+      "openai-codex",
+    ]);
+
+    const ungranted = grants.filter(({ name }) => name !== "github");
+    assert.isUndefined(githubManagedHandle(ungranted));
   });
 
-  it("rejects malformed Pi core fields and timestamps but accepts expired OAuth", () => {
-    for (const value of [
-      "{",
-      "[]",
-      '{"openai-codex":{"type":"oauth","access":"a","expires":0}}',
-      '{"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":"soon"}}',
-      '{"openai":{"type":"api_key","key":42}}',
+  it("accepts only canonical managed handles", () => {
+    const handle = { name: "openai", provider: "openai-codex", slot: "access" } as const;
+    assert.strictEqual(formatManagedHandle(handle), "scotty-managed://openai/openai-codex/access");
+    assert.deepStrictEqual(parseManagedHandle(formatManagedHandle(handle)), Option.some(handle));
+    for (const malformed of [
+      "not-a-managed-handle",
+      "scotty-managed://openai/openai-codex/access/extra",
+      "scotty-managed://OpenAI/openai-codex/access",
+      "scotty-managed://openai/openai-codex/api_key",
+      "scotty-managed://openai/openai-codex/access%2Fextra",
     ])
-      assert.ok(Option.isNone(parsePiAuthJsonOption(value)));
-    assert.ok(
-      Option.isSome(
-        parsePiAuthJsonOption(
-          '{"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":0}}',
-        ),
-      ),
-    );
-  });
-
-  it("decodes stored authority, strips unknown fields, and fails closed with a fixed error", () => {
-    const secret = "stored-honeypot-secret";
-    const decoded = decodeStoredCredential({
-      ...storedCredential(),
-      unknown: secret,
-    });
-    assert.ok(!("unknown" in decoded));
-    assertFixedError(
-      () =>
-        decodeStoredCredential({
-          providers: {
-            openai: { credential: { type: "api_key", key: secret }, sentinel: "sentinel" },
-          },
-        }),
-      "Stored credential record is invalid",
-    );
-  });
-
-  it("accepts only the current OAuth shape while preserving unknown request fields", () => {
-    assert.deepStrictEqual(
-      parseOAuthRefreshRequest({
-        grant_type: "refresh_token",
-        refresh_token: "",
-        client_id: "forward-me",
-      }),
-      { grant_type: "refresh_token", refresh_token: "", client_id: "forward-me" },
-    );
-    assert.strictEqual(
-      parseOAuthRefreshRequest({ grant_type: "authorization_code", refresh_token: "token" }),
-      null,
-    );
-    assert.strictEqual(
-      parseOAuthRefreshRequest({ grant_type: "refresh_token", refresh_token: 1 }),
-      null,
-    );
-  });
-
-  it("requires an upstream access token and omits invalid optional patch values", () => {
-    assert.deepStrictEqual(
-      parseOAuthUpstreamSuccess({
-        access_token: "next-access",
-        id_token: "",
-        refresh_token: 1,
-        expires_in: 3600,
-        ignored: "strip-me",
-      }),
-      { accessToken: "next-access", expiresInSeconds: 3600 },
-    );
-    assert.strictEqual(parseOAuthUpstreamSuccess({ refresh_token: "next-refresh" }), null);
-    assert.strictEqual(parseOAuthUpstreamSuccess({ access_token: "" }), null);
-    assert.deepStrictEqual(decodeCredentialPatch({ accessToken: "next-access", ignored: true }), {
-      accessToken: "next-access",
-    });
-  });
-
-  it("emits sentinel-only auth and OAuth success without disclosing honeypot secrets", () => {
-    const realAccess = "honeypot-real-access";
-    const realRefresh = "honeypot-real-refresh";
-    const realGithub = "honeypot-real-github";
-    const realExpires = 1_800_000_000_000;
-    const stored = {
-      ...storedCredential(),
-      providers: {
-        ...storedCredential().providers,
-        "openai-codex": {
-          credential: {
-            type: "oauth" as const,
-            access: realAccess,
-            refresh: realRefresh,
-            expires: realExpires,
-            accountId: "honeypot-account",
-          },
-          sentinel: "scotty-pi-session-sentinel",
-        },
-        anthropic: {
-          credential: {
-            type: "oauth" as const,
-            access: "honeypot-anthropic-access",
-            refresh: "honeypot-anthropic-refresh",
-            expires: 0,
-          },
-          sentinel: "scotty-pi-anthropic-sentinel",
-        },
-      },
-      githubToken: realGithub,
-    };
-    const containerAuth = piAuthJson(stored);
-    const provider = stored.providers["openai-codex"];
-    assert.ok(provider);
-    const refreshResult = JSON.stringify(oauthContainerResult(provider));
-    const projected = Option.getOrThrow(parsePiAuthJsonOption(containerAuth));
-    assert.strictEqual(
-      projected["openai-codex"]?.type === "oauth" ? projected["openai-codex"].expires : undefined,
-      realExpires,
-    );
-    assert.ok(containerAuth.includes(provider.sentinel));
-    assert.ok(refreshResult.includes(provider.sentinel));
-    assert.ok(!containerAuth.includes("anthropic"));
-    for (const secret of [realAccess, realRefresh, realGithub, "honeypot-account"]) {
-      assert.ok(!containerAuth.includes(secret));
-      assert.ok(!refreshResult.includes(secret));
-    }
+      assert.ok(Option.isNone(parseManagedHandle(malformed)));
   });
 });
 

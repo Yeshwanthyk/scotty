@@ -28,6 +28,13 @@ export const PRODUCTION_DEPLOY_STEPS = [
     args: ["scripts/prepare-container-context.mjs"],
   },
   {
+    name: "Check Worker credential binding",
+    command: "npx",
+    args: ["--no-install", "wrangler", "secret", "list", "--name", "${workerName}", "--json"],
+    capture: true,
+    redact: true,
+  },
+  {
     name: "Plan production through Alchemy",
     command: "npx",
     args: ["--no-install", "alchemy", "plan", "alchemy.run.ts", "--stage", "production"],
@@ -60,6 +67,7 @@ const PRODUCTION_AUTH_CLASS_NAME = "ScottyAuthRegistry";
 const PRODUCTION_RUNNER_REGISTRY_CLASS_NAME = "ScottyRunnerRegistry";
 const PRODUCTION_RUNNER_CLASS_NAME = "ScottyRunner";
 const PRODUCTION_SANDBOX_CONFIG_CLASS_NAME = "ScottySandboxConfig";
+const PRODUCTION_CREDENTIAL_REGISTRY_CLASS_NAME = "ScottyCredentialRegistry";
 const DEPLOY_LOCK_PATH = join(tmpdir(), "scotty-production-deploy.lock");
 export const PRODUCTION_DEPLOY_DIAGNOSTIC_PATH = join(
   tmpdir(),
@@ -739,6 +747,7 @@ function sanitizedLocalEnvironment(environment = process.env) {
       [
         "PI_AUTH_JSON",
         "GH_TOKEN",
+        "CREDENTIAL_WRAPPING_KEY",
         "GITHUB_TOKEN",
         "OPENAI_API_KEY",
         "R2_ACCESS_KEY_ID",
@@ -749,6 +758,28 @@ function sanitizedLocalEnvironment(environment = process.env) {
     }
   }
   return localEnvironment;
+}
+
+const PRODUCTION_CREDENTIAL_WRAPPING_KEY_ERROR =
+  "installation_fresh_required: This installation is missing the Credential Registry wrapping key. Create a fresh Scotty installation before deploying or recovering Registry-backed code; existing sessions are unsupported and are not migrated.";
+
+export function assertProductionCredentialWrappingKeyBinding(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new Error("Could not verify the production Worker CREDENTIAL_WRAPPING_KEY binding.");
+  }
+  const secrets = Array.isArray(parsed) ? parsed : parsed?.result;
+  if (
+    !Array.isArray(secrets) ||
+    !secrets.some(
+      (secret) =>
+        secret !== null && typeof secret === "object" && secret.name === "CREDENTIAL_WRAPPING_KEY",
+    )
+  ) {
+    throw new Error(PRODUCTION_CREDENTIAL_WRAPPING_KEY_ERROR);
+  }
 }
 
 export function resolveProductionTopology(environment = process.env) {
@@ -928,7 +959,7 @@ function productionEnvironment(environment = process.env) {
     topology.installationName,
     `worker=${topology.workerName}`,
     `runnerWorker=${topology.runnerWorkerName}`,
-    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME},${PRODUCTION_RUNNER_REGISTRY_CLASS_NAME},${PRODUCTION_RUNNER_CLASS_NAME},${PRODUCTION_SANDBOX_CONFIG_CLASS_NAME}`,
+    `durableObjects=${PRODUCTION_SANDBOX_CLASS_NAME},${PRODUCTION_AUTH_CLASS_NAME},${PRODUCTION_RUNNER_REGISTRY_CLASS_NAME},${PRODUCTION_RUNNER_CLASS_NAME},${PRODUCTION_SANDBOX_CONFIG_CLASS_NAME},${PRODUCTION_CREDENTIAL_REGISTRY_CLASS_NAME}`,
     `container=${topology.containerName}`,
     `kv=${topology.kvTitle}`,
     `r2=${topology.backupBucketName}`,
@@ -1016,7 +1047,13 @@ export async function executeProductionDeploySteps(
   await execute(PRODUCTION_DEPLOY_STEPS[1], productionEnv);
   await execute(PRODUCTION_DEPLOY_STEPS[2], verificationEnv);
   await revalidate();
-  const planOutput = await execute(PRODUCTION_DEPLOY_STEPS[3], productionEnv);
+  const credentialPreflight = {
+    ...PRODUCTION_DEPLOY_STEPS[3],
+    args: ["--no-install", "wrangler", "secret", "list", "--name", topology.workerName, "--json"],
+  };
+  const credentialBindings = await execute(credentialPreflight, productionEnv);
+  assertProductionCredentialWrappingKeyBinding(credentialBindings);
+  const planOutput = await execute(PRODUCTION_DEPLOY_STEPS[4], productionEnv);
   const plannedContainerAction = assertContainerPlanAuthorized(planOutput, allowContainerRollout);
   const controlPlaneBeforeDeploy = await readControlPlane(productionEnv);
   assertSettledContainerBaseline(controlPlaneBeforeDeploy);
@@ -1028,7 +1065,7 @@ export async function executeProductionDeploySteps(
   let deployError;
   let containerAction = "unknown";
   try {
-    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[4], deployEnv);
+    const deployOutput = await execute(PRODUCTION_DEPLOY_STEPS[5], deployEnv);
     containerAction = readAlchemyContainerAction(deployOutput);
   } catch (error) {
     deployError = error;
@@ -1044,7 +1081,7 @@ export async function executeProductionDeploySteps(
 
   let auditError;
   try {
-    await execute(PRODUCTION_DEPLOY_STEPS[5], productionEnv, { allowAfterSignal: true });
+    await execute(PRODUCTION_DEPLOY_STEPS[6], productionEnv, { allowAfterSignal: true });
   } catch (error) {
     auditError = error;
   }

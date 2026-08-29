@@ -6,7 +6,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { execute } from "../src/commands";
 import { EXIT } from "../src/core";
-import { cliLayer } from "../src/dependencies";
+import { cliLayer, type CliDependencies } from "../src/dependencies";
 import { scottyTomlConfigPath } from "../src/scotty-config";
 
 const withTempDirectory = <A, E, R>(
@@ -79,6 +79,7 @@ const run = (
   args: ReadonlyArray<string>,
   fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
   stdoutIsTTY = false,
+  processRun?: CliDependencies["run"],
 ) => {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -97,6 +98,7 @@ const run = (
           stdout: (text) => stdout.push(text),
           stderr: (text) => stderr.push(text),
           fetch,
+          ...(processRun === undefined ? {} : { run: processRun }),
         }),
       ),
     ),
@@ -110,9 +112,16 @@ describe("top-level sync and embedded skill commands", () => {
         yield* writeFixture(home);
         let activeDigest: string | null = null;
         let putCalls = 0;
+        const registryBodies: string[] = [];
+        const calls: string[] = [];
         const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
           const request = new Request(input, init);
           const path = new URL(request.url).pathname;
+          calls.push(path);
+          if (path === "/api/credentials/sync") {
+            registryBodies.push(await request.text());
+            return Response.json({ version: 1, credentials: [] });
+          }
           if (path === "/api/sandbox/configuration")
             return Response.json({ schemaVersion: 1, revision: 0, activeDigest });
           putCalls += 1;
@@ -132,11 +141,186 @@ describe("top-level sync and embedded skill commands", () => {
         ]);
         assert.match(output.digest, /^[0-9a-f]{64}$/u);
         assert.strictEqual(first.stderr.join(""), "");
+        assert.deepStrictEqual(JSON.parse(registryBodies[0] ?? "{}"), {
+          version: 1,
+          credentials: [],
+        });
+        assert.deepStrictEqual(calls, [
+          "/api/credentials/sync",
+          "/api/sandbox/configuration",
+          `/api/sandbox/bundles/${output.digest}`,
+        ]);
 
         const second = run(home, ["sync", "--json", "--host", "https://worker.example"], fetch);
         assert.strictEqual(yield* second.effect, EXIT.OK);
         assert.deepStrictEqual(JSON.parse(second.stdout.join("")), output);
         assert.strictEqual(putCalls, 1);
+        assert.deepStrictEqual(JSON.parse(registryBodies[1] ?? "{}"), {
+          version: 1,
+          credentials: [],
+        });
+        assert.deepStrictEqual(calls, [
+          "/api/credentials/sync",
+          "/api/sandbox/configuration",
+          `/api/sandbox/bundles/${output.digest}`,
+          "/api/credentials/sync",
+          "/api/sandbox/configuration",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("publishes Pi auth before the bundle and keeps the output redacted", () =>
+    withTempDirectory((home) =>
+      Effect.gen(function* () {
+        yield* writeFixture(home);
+        const authPath = join(home, ".pi", "agent", "auth.json");
+        yield* Effect.promise(() => mkdir(join(home, ".pi", "agent"), { recursive: true }));
+        const providerSecret = "pi-provider-secret";
+        yield* Effect.promise(() =>
+          writeFile(
+            authPath,
+            JSON.stringify({ openai: { type: "api_key", key: providerSecret } }),
+            { mode: 0o600 },
+          ),
+        );
+        const configPath = scottyTomlConfigPath(home);
+        const config = yield* Effect.promise(() => readFile(configPath, "utf8"));
+        yield* Effect.promise(() =>
+          writeFile(
+            configPath,
+            `${config}[credentials.openai]\nkind = "pi-auth"\nsource = ${JSON.stringify(authPath)}\nscope = "global"\n`,
+            { mode: 0o600 },
+          ),
+        );
+
+        const calls: string[] = [];
+        let registryBody: string | undefined;
+        let failRegistry = false;
+        let activeDigest: string | null = null;
+        const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          const request = new Request(input, init);
+          const path = new URL(request.url).pathname;
+          calls.push(path);
+          if (path === "/api/credentials/sync") {
+            registryBody = await request.text();
+            if (failRegistry)
+              return new Response(
+                JSON.stringify({ error: { code: "upstream", message: "registry-secret" } }),
+                { status: 502, headers: { "content-type": "application/json" } },
+              );
+            return Response.json({
+              version: 1,
+              credentials: [{ name: "openai", kind: "pi-auth", scope: "global", configured: true }],
+            });
+          }
+          if (path === "/api/sandbox/configuration")
+            return Response.json({ schemaVersion: 1, revision: 0, activeDigest });
+          activeDigest = path.slice(path.lastIndexOf("/") + 1);
+          return Response.json({ schemaVersion: 1, revision: 1, activeDigest });
+        };
+
+        const invocation = run(home, ["sync", "--json", "--host", "https://worker.example"], fetch);
+        assert.strictEqual(yield* invocation.effect, EXIT.OK);
+        const output = JSON.parse(invocation.stdout.join(""));
+        assert.deepStrictEqual(Object.keys(output), ["digest", "items"]);
+        assert.strictEqual(
+          JSON.parse(registryBody ?? "{}").credentials[0].providers.openai.key,
+          providerSecret,
+        );
+        assert.notInclude(invocation.stdout.join(""), providerSecret);
+        assert.deepStrictEqual(calls, [
+          "/api/credentials/sync",
+          "/api/sandbox/configuration",
+          `/api/sandbox/bundles/${output.digest}`,
+        ]);
+
+        failRegistry = true;
+        const failed = run(home, ["sync", "--json", "--host", "https://worker.example"], fetch);
+        const failure = yield* Effect.result(failed.effect);
+        assert.ok(Result.isFailure(failure));
+        assert.strictEqual(failure.failure.code, "credential_registry_sync_failed");
+        assert.notInclude(failure.failure.message, "registry-secret");
+        assert.notInclude(failed.stderr.join(""), "registry-secret");
+        assert.deepStrictEqual(calls.slice(-1), ["/api/credentials/sync"]);
+      }),
+    ),
+  );
+
+  it.effect("resolves GitHub CLI credentials locally before one complete registry sync", () =>
+    withTempDirectory((home) =>
+      Effect.gen(function* () {
+        yield* writeFixture(home);
+        const configPath = scottyTomlConfigPath(home);
+        const config = yield* Effect.promise(() => readFile(configPath, "utf8"));
+        yield* Effect.promise(() =>
+          writeFile(
+            configPath,
+            `${config.replace("allowed = []", 'allowed = ["owner/repo"]')}[credentials.github]\nkind = "github-cli"\nscope = "repository"\nrepositories = ["owner/repo"]\n`,
+            { mode: 0o600 },
+          ),
+        );
+        const calls: string[] = [];
+        let registryBody: unknown;
+        const fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          const request = new Request(input, init);
+          const path = new URL(request.url).pathname;
+          calls.push(path);
+          if (path === "/api/credentials/sync") {
+            registryBody = JSON.parse(await request.text());
+            return Response.json({
+              version: 1,
+              credentials: [
+                {
+                  name: "github",
+                  kind: "github-cli",
+                  scope: "repository",
+                  repositories: ["owner/repo"],
+                  configured: true,
+                },
+              ],
+            });
+          }
+          if (path === "/api/sandbox/configuration")
+            return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+          return Response.json({
+            schemaVersion: 1,
+            revision: 1,
+            activeDigest: path.slice(path.lastIndexOf("/") + 1),
+          });
+        };
+        const processCalls: Array<ReadonlyArray<string>> = [];
+        const processRun: CliDependencies["run"] = async (command) => {
+          processCalls.push(command);
+          return { exitCode: 0, stdout: "github-token-local\n", stderr: "" };
+        };
+        const invocation = run(
+          home,
+          ["sync", "--json", "--host", "https://worker.example"],
+          fetch,
+          false,
+          processRun,
+        );
+        assert.strictEqual(yield* invocation.effect, EXIT.OK);
+        assert.deepStrictEqual(processCalls, [["gh", "auth", "token"]]);
+        assert.deepStrictEqual(registryBody, {
+          version: 1,
+          credentials: [
+            {
+              name: "github",
+              kind: "github-cli",
+              scope: "repository",
+              repositories: ["owner/repo"],
+              token: "github-token-local",
+            },
+          ],
+        });
+        assert.notInclude(invocation.stdout.join(""), "github-token-local");
+        assert.deepStrictEqual(calls, [
+          "/api/credentials/sync",
+          "/api/sandbox/configuration",
+          `/api/sandbox/bundles/${JSON.parse(invocation.stdout.join("")).digest}`,
+        ]);
       }),
     ),
   );

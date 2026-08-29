@@ -1,5 +1,4 @@
 import { Effect, Option, Schema } from "effect";
-import { PiAuthDigestSchema, PiAuthUpdatedAtSchema } from "../../protocol/pi-auth";
 import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
 import {
   RepositoryRegistryEntrySchema,
@@ -55,6 +54,7 @@ export const InitJournalSchema = Schema.Struct({
   evidenceEnabled: Schema.optionalKey(Schema.Literal(true)),
   planFingerprint: Schema.NonEmptyString,
   token: Schema.NonEmptyString,
+  credentialWrappingKey: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u)),
 });
 export type InitJournal = typeof InitJournalSchema.Type;
 
@@ -257,23 +257,6 @@ export const VaporizeOutputSchema = Schema.Struct({
   status: Schema.Literal("gone"),
 });
 export type VaporizeOutput = typeof VaporizeOutputSchema.Type;
-export const PiProviderMetadataSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  type: Schema.Literals(["api_key", "oauth"]),
-  adapter: Schema.Literals(["supported", "unsupported"]),
-});
-export const PiAuthStatusResponseSchema = Schema.Struct({
-  source: Schema.Literals(["bootstrap", "sync", "rotation"]),
-  sourceDigest: PiAuthDigestSchema,
-  updatedAt: Schema.NullOr(PiAuthUpdatedAtSchema),
-  providers: Schema.Array(PiProviderMetadataSchema),
-});
-export type PiAuthStatusResponse = typeof PiAuthStatusResponseSchema.Type;
-export const PiAuthReseedResponseSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
-  providers: Schema.Array(PiProviderMetadataSchema),
-});
 export const CloudflareApiEnvelopeSchema = Schema.Struct({
   success: Schema.Boolean,
 });
@@ -338,8 +321,6 @@ export const decodeSteerResponse = Schema.decodeUnknownOption(SteerResponseSchem
 export const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchema);
 export const decodeErrorFields = Schema.decodeUnknownOption(ErrorFieldsSchema);
 export const decodeVaporizeResponse = Schema.decodeUnknownOption(VaporizeResponseSchema);
-export const decodePiAuthStatusResponse = Schema.decodeUnknownOption(PiAuthStatusResponseSchema);
-export const decodePiAuthReseedResponse = Schema.decodeUnknownOption(PiAuthReseedResponseSchema);
 export const decodeCloudflareApiEnvelope = Schema.decodeUnknownOption(CloudflareApiEnvelopeSchema);
 export const decodeRunnerRegistrationResponse = Schema.decodeUnknownOption(
   RunnerRegistrationResponseSchema,

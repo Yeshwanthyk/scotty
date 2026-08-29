@@ -61,10 +61,10 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "beam");
         assert.include(rootHelp, "list");
         assert.include(rootHelp, "vaporize");
+        assert.notInclude(rootHelp, "\n  auth");
         assert.include(rootHelp, "inspect");
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
-        assert.include(rootHelp, "auth");
         assert.notInclude(rootHelp, "\n  sandbox");
         assert.notInclude(rootHelp, "\n  tools");
         assert.include(rootHelp, "runner");
@@ -131,11 +131,11 @@ describe("Effect command tree", () => {
         assert.include(repo.stdout.join(""), "remove");
         assert.strictEqual(repo.stderr.join(""), "");
 
-        const auth = run(["auth", "--help"]);
-        assert.strictEqual(yield* auth.effect, EXIT.OK);
-        assert.include(auth.stdout.join(""), "status");
-        assert.include(auth.stdout.join(""), "sync");
-        assert.notInclude(auth.stdout.join(""), "reseed");
+        const auth = run(["auth"]);
+        const authError = failure(yield* Effect.result(auth.effect));
+        assert.strictEqual(authError.code, "bad_usage");
+        assert.strictEqual(authError.message, "Unknown command: auth");
+        assert.strictEqual(auth.stdout.join(""), "");
         assert.strictEqual(auth.stderr.join(""), "");
         for (const args of [
           ["sandbox"],
@@ -317,21 +317,6 @@ describe("Effect command tree", () => {
       const failedError = failure(yield* Effect.result(failed.effect));
       assert.strictEqual(failedError.code, "not_found");
       assert.strictEqual(failedError.exitCode, EXIT.NOT_FOUND);
-    }),
-  );
-
-  it.effect("requires exactly one auth reseed target", () =>
-    Effect.gen(function* () {
-      const missing = run(["auth", "reseed"]);
-      assert.strictEqual(
-        failure(yield* Effect.result(missing.effect)).message,
-        "Pass exactly one session ID or --all-active",
-      );
-      const both = run(["auth", "reseed", "abc123", "--all-active"]);
-      assert.strictEqual(
-        failure(yield* Effect.result(both.effect)).message,
-        "Pass exactly one session ID or --all-active",
-      );
     }),
   );
 

@@ -16,8 +16,6 @@ import {
   decodeInitJournalJson,
   decodeInspectResponse,
   decodeOperationResponse,
-  decodePiAuthReseedResponse,
-  decodePiAuthStatusResponse,
   decodeRepositoriesResponse,
   decodeRepositoryRemovalResponse,
   decodeRepositoryResponse,
@@ -33,7 +31,7 @@ import {
   type VaporizeOutput,
 } from "./schemas";
 import { readLocalPiAuth } from "./pi-auth";
-import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
+import { PI_AUTH_MAX_MATERIAL_BYTES, serializePiAuthProviders } from "../../protocol/pi-auth";
 import { isRepositoryIdentity } from "../../protocol/repository";
 import {
   browserUrl,
@@ -54,9 +52,15 @@ import {
 import {
   formatScottyConfigCheck,
   loadScottyTomlConfig,
+  resolveConfiguredCredentialSource,
   scottyConfigCheckOutput,
 } from "./scotty-config";
-import { synchronizeScottyToml, type SandboxSyncTarget } from "./sandbox-sync";
+import {
+  synchronizeCredentialedScottyToml,
+  synchronizeScottyToml,
+  type ScottyCredentialSyncMaterial,
+  type SandboxSyncTarget,
+} from "./sandbox-sync";
 import { buildScottyTomlBundle, bundleItemSummaries } from "./scotty-bundle";
 import {
   BrowserLauncher,
@@ -67,7 +71,6 @@ import {
   InstallationDeployer,
   InstallationRecovery,
   InstallationUninstaller,
-  PiAuthSecretManager,
   ProcessRunner,
   type InstallationResult,
 } from "./services";
@@ -100,7 +103,6 @@ const RUNNER_CHILD_ENV_KEYS = [
 ] as const;
 const formatConsoleArguments = (args: ReadonlyArray<unknown>): string =>
   args.map((value) => String(value)).join(" ");
-
 const captureConsole = (stdout: string[], stderr: string[]): Console.Console => ({
   assert: (condition, ...args) => {
     if (!condition) stderr.push(formatConsoleArguments(args));
@@ -138,9 +140,87 @@ const flushCapturedOutput = (
 const validateSessionId = (id: string): Effect.Effect<string, CliError> =>
   SESSION_ID_PATTERN.test(id) ? Effect.succeed(id) : Effect.fail(usage("Invalid session ID"));
 
+const readLocalGithubCliToken = Effect.fnUntraced(function* () {
+  const processRunner = yield* ProcessRunner;
+  const result = yield* processRunner
+    .run(["gh", "auth", "token"])
+    .pipe(
+      Effect.mapError(
+        () =>
+          new CliError(
+            "credential_registry_sync_invalid",
+            "Could not read the GitHub CLI credential",
+            "Run gh auth login, then retry scotty sync.",
+            EXIT.USAGE,
+          ),
+      ),
+    );
+  const token = result.stdout.trim();
+  const bytes = new TextEncoder().encode(token);
+  const valid =
+    result.exitCode === 0 &&
+    token.length > 0 &&
+    bytes.byteLength <= PI_AUTH_MAX_MATERIAL_BYTES &&
+    [...token].every((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint > 31 && codePoint !== 127;
+    });
+  if (!valid)
+    return yield* new CliError(
+      "credential_registry_sync_invalid",
+      "Could not read the GitHub CLI credential",
+      "Run gh auth login, then retry scotty sync.",
+      EXIT.USAGE,
+    );
+  return token;
+});
+
 const prepareScottyTomlBundle = Effect.fnUntraced(function* (home: string, cwd: string) {
   const loaded = yield* loadScottyTomlConfig({ home, cwd });
   return yield* buildScottyTomlBundle(loaded);
+});
+
+const prepareScottyTomlSync = Effect.fnUntraced(function* (home: string, cwd: string) {
+  const loaded = yield* loadScottyTomlConfig({ home, cwd });
+  const built = yield* buildScottyTomlBundle(loaded);
+  const credentials: ScottyCredentialSyncMaterial[] = [];
+  for (const [name, declaration] of Object.entries(loaded.config.credentials ?? {}).toSorted(
+    ([left], [right]) => left.localeCompare(right),
+  )) {
+    if (declaration.kind === "pi-auth") {
+      const local = yield* readLocalPiAuth(
+        resolveConfiguredCredentialSource(declaration.source, home, cwd),
+      );
+      if (
+        new TextEncoder().encode(serializePiAuthProviders(local.providerStore)).byteLength >
+        PI_AUTH_MAX_MATERIAL_BYTES
+      )
+        return yield* new CliError(
+          "credential_registry_sync_invalid",
+          "Declared Pi auth material exceeds the size limit",
+          "Reduce the declared Pi auth file and retry scotty sync.",
+          EXIT.USAGE,
+        );
+      credentials.push({
+        name,
+        kind: "pi-auth",
+        scope: declaration.scope,
+        providers: local.providerStore,
+      });
+    } else {
+      const token = yield* readLocalGithubCliToken();
+      credentials.push({
+        name,
+        kind: "github-cli",
+        scope: declaration.scope,
+        ...(declaration.repositories === undefined
+          ? {}
+          : { repositories: declaration.repositories }),
+        token,
+      });
+    }
+  }
+  return { built, credentials } as const;
 });
 
 const mapLifecycleSyncError = (failure: CliError): CliError => {
@@ -334,22 +414,13 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     );
   });
 
-  const requireGithubToken = Effect.fnUntraced(function* () {
-    const processRunner = yield* ProcessRunner;
-    const result = yield* processRunner.run(["gh", "auth", "token"]);
-    const token = result.stdout.trim();
-    if (result.exitCode !== 0 || token.length === 0 || token.includes("\n") || token.includes("\r"))
-      return yield* new CliError(
-        "github_auth_unavailable",
-        "GitHub CLI is not authenticated",
-        "Run gh auth login, then retry scotty init.",
-        EXIT.GENERIC,
-      );
-    return token;
-  });
-
   const rootToken = (): string =>
     `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
+
+  const credentialWrappingKey = (): string => {
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    return Buffer.from(bytes).toString("base64url");
+  };
 
   const managedConfig = (
     deployed: InstallationResult,
@@ -416,7 +487,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
         const evidenceEnabled = enableEvidence ? (true as const) : undefined;
         yield* ensureDocker();
-        const githubToken = yield* requireGithubToken();
         const fileSystem = yield* CliFileSystem;
         const journalPath = join(runtime.home, ".scotty", `init-${installationName}.json`);
         const lockPath = join(runtime.home, ".scotty", "locks", `init-${installationName}`);
@@ -550,6 +620,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const token = Option.isSome(existingJournal)
               ? existingJournal.value.token
               : rootToken();
+            const wrappingKey = Option.isSome(existingJournal)
+              ? existingJournal.value.credentialWrappingKey
+              : credentialWrappingKey();
             const journal = {
               version:
                 evidenceEnabled === true
@@ -574,6 +647,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               ...(evidenceEnabled === true ? { evidenceEnabled } : {}),
               planFingerprint: plan.fingerprint,
               token,
+              credentialWrappingKey: wrappingKey,
             };
             if (Option.isNone(existingJournal))
               yield* secureWrite(journalPath, `${JSON.stringify(journal, null, 2)}\n`);
@@ -588,7 +662,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const deployed = yield* creator.create({
               ...deploymentTarget,
               token,
-              githubToken,
+              credentialWrappingKey: wrappingKey,
               expectedAccountId: plan.accountId,
               expectedPlanFingerprint: plan.fingerprint,
               mode: Option.isSome(existingJournal) ? "resume" : "fresh",
@@ -628,7 +702,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
-              runtime.stdout("Scotty is deployed. Run scotty auth sync next.\n");
+              runtime.stdout("Scotty is deployed. Run scotty sync to publish credentials.\n");
             }
           }),
         );
@@ -1311,9 +1385,13 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const sync = Command.make("sync", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
-      const built = yield* prepareScottyTomlBundle(runtime.home, runtime.cwd);
+      const prepared = yield* prepareScottyTomlSync(runtime.home, runtime.cwd);
       const target = yield* credentials(options);
-      const synced = yield* synchronizeScottyToml({ built, target });
+      const synced = yield* synchronizeCredentialedScottyToml({
+        built: prepared.built,
+        credentials: prepared.credentials,
+        target,
+      });
       const result = {
         digest: synced.built.digest,
         items: bundleItemSummaries(synced.built.manifest),
@@ -1412,193 +1490,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const owner = Command.make("owner").pipe(
     Command.withDescription("Manage browser ownership"),
     Command.withSubcommands([ownerRecover]),
-  );
-
-  const readPiAuthStatus = Effect.fnUntraced(function* (auth: {
-    readonly host: string;
-    readonly token: string;
-  }) {
-    const raw = yield* requestJson(auth, "/api/auth/pi");
-    const decoded = decodePiAuthStatusResponse(raw);
-    if (Option.isNone(decoded))
-      return yield* invalidResponse("Server response is not a valid Pi auth status");
-    return decoded.value;
-  });
-
-  const authStatus = Command.make("status", {}, () =>
-    Effect.gen(function* () {
-      const { autoJson, options, runtime } = yield* commandContext();
-      const status = yield* readPiAuthStatus(yield* credentials(options));
-      if (autoJson) outputJson(runtime.stdout, status);
-      else
-        runtime.stdout(
-          `${status.providers.map((provider) => `${provider.id} ${provider.type} ${provider.adapter}`).join("\n")}\n`,
-        );
-    }),
-  ).pipe(Command.withDescription("Show redacted Pi credential status"));
-
-  const authSync = Command.make(
-    "sync",
-    {
-      authFile: Flag.string("auth-file").pipe(
-        Flag.optional,
-        Flag.withDescription("Override ~/.pi/agent/auth.json"),
-      ),
-    },
-    ({ authFile }) =>
-      Effect.gen(function* () {
-        const { autoJson, options, runtime } = yield* commandContext();
-        if (options.host || options.tokenFile)
-          return yield* usage(
-            "auth sync does not accept --host or --token-file",
-            "Use the managed installation saved by scotty init or scotty recover.",
-          );
-        const config = yield* readConfig(join(runtime.home, ".scotty.json"));
-        if (
-          !config.installationName ||
-          !config.profile ||
-          !config.accountId ||
-          !config.workerName ||
-          !config.runnerWorkerName ||
-          !config.containerName ||
-          !config.kvTitle ||
-          !config.backupBucketName ||
-          !config.host ||
-          !config.token ||
-          !/^[0-9a-f]{32}$/u.test(config.accountId) ||
-          !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(config.workerName)
-        )
-          return yield* usage(
-            "auth sync requires a complete managed Scotty installation",
-            "Run scotty init or scotty recover, then retry.",
-          );
-        const host = yield* Effect.fromResult(normalizeHost(config.host));
-        const targetRequest = {
-          profile: config.profile,
-          expectedAccountId: config.accountId,
-          expectedWorkerName: config.workerName,
-          expectedRunnerWorkerName: config.runnerWorkerName,
-          expectedContainerName: config.containerName,
-          expectedKvTitle: config.kvTitle,
-          expectedBackupBucketName: config.backupBucketName,
-          expectedHost: host,
-        } as const;
-        const secretManager = yield* PiAuthSecretManager;
-        yield* secretManager.inspect(targetRequest);
-        const local = yield* readLocalPiAuth(Option.getOrUndefined(authFile));
-        const workerAuth = { host, token: config.token };
-        const now = new Date(yield* Clock.currentTimeMillis).toISOString();
-        const record = yield* Effect.tryPromise({
-          try: () => makeInstallationPiAuthRecord(local.providerStore, now, "sync"),
-          catch: () =>
-            new CliError(
-              "pi_auth_sync_failed",
-              "Could not prepare the Pi credential record",
-              "Retry scotty auth sync.",
-              EXIT.GENERIC,
-            ),
-        });
-        const remoteRaw = yield* requestJson(workerAuth, "/api/auth/pi", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(record),
-        });
-        const remote = decodePiAuthStatusResponse(remoteRaw);
-        if (Option.isNone(remote))
-          return yield* invalidResponse("Server response is not a valid Pi auth status");
-        const sessionsRaw = yield* requestJson(workerAuth, "/api/sessions");
-        const sessions = decodeSessionsResponse(sessionsRaw);
-        if (Option.isNone(sessions))
-          return yield* invalidResponse("Server response is not a valid session array");
-        const warmIds = sessions.value
-          .filter((session) => session.provider === "cloudflare" && session.status === "warm")
-          .map((session) => session.id);
-        const reconciled: string[] = [];
-        const failed: string[] = [];
-        for (const sessionId of warmIds) {
-          const outcome = yield* Effect.result(
-            requestJson(workerAuth, `/api/sessions/${encodeURIComponent(sessionId)}/auth/reseed`, {
-              method: "POST",
-            }),
-          );
-          if (Result.isSuccess(outcome)) reconciled.push(sessionId);
-          else failed.push(sessionId);
-        }
-        const result = {
-          synchronized: true,
-          sourceDigest: local.sourceDigest,
-          worker: targetRequest.expectedWorkerName,
-          providers: remote.value.providers,
-          reconciled,
-          failed,
-          partial: failed.length > 0,
-        };
-        if (autoJson) outputJson(runtime.stdout, result);
-        else {
-          runtime.stdout(
-            `Synchronized ${result.providers.length} Pi provider credentials to ${result.worker}.\n`,
-          );
-          if (result.failed.length > 0)
-            runtime.stdout(
-              `Reconciled ${result.reconciled.length} warm sessions; ${result.failed.length} failed: ${result.failed.join(", ")}.\n`,
-            );
-        }
-      }),
-  ).pipe(Command.withDescription("Synchronize local Pi credentials"));
-
-  const authReseed = Command.make(
-    "reseed",
-    {
-      id: Argument.string("id").pipe(
-        Argument.withDescription("Warm Cloudflare session ID"),
-        Argument.optional,
-      ),
-      allActive: Flag.boolean("all-active").pipe(
-        Flag.withDescription("Reseed every warm Cloudflare session"),
-      ),
-    },
-    ({ allActive, id }) =>
-      Effect.gen(function* () {
-        const { autoJson, options, runtime } = yield* commandContext();
-        if (Option.isSome(id) === allActive)
-          return yield* usage("Pass exactly one session ID or --all-active");
-        const workerAuth = yield* credentials(options);
-        let ids: ReadonlyArray<string>;
-        if (Option.isSome(id)) {
-          ids = [yield* validateSessionId(id.value)];
-        } else {
-          const raw = yield* requestJson(workerAuth, "/api/sessions");
-          const decoded = decodeSessionsResponse(raw);
-          if (Option.isNone(decoded))
-            return yield* invalidResponse("Server response is not a valid session array");
-          ids = decoded.value
-            .filter((session) => session.provider === "cloudflare" && session.status === "warm")
-            .map((session) => session.id);
-        }
-        const results = yield* Effect.forEach(
-          ids,
-          (sessionId) =>
-            requestJson(workerAuth, `/api/sessions/${encodeURIComponent(sessionId)}/auth/reseed`, {
-              method: "POST",
-            }).pipe(
-              Effect.flatMap((raw) => {
-                const decoded = decodePiAuthReseedResponse(raw);
-                return Option.isSome(decoded)
-                  ? Effect.succeed(decoded.value)
-                  : invalidResponse("Server response is not a valid Pi auth reseed result");
-              }),
-            ),
-          { concurrency: 1 },
-        );
-        const result = { reseeded: results };
-        if (autoJson) outputJson(runtime.stdout, result);
-        else runtime.stdout(`Reseeded ${results.length} warm Cloudflare sessions.\n`);
-      }),
-  ).pipe(Command.withDescription("Explicitly replace session Pi credentials"), Command.unlisted);
-
-  const auth = Command.make("auth").pipe(
-    Command.withDescription("Manage Pi credentials"),
-    Command.withSubcommands([authStatus, authSync, authReseed]),
   );
 
   const runnerServe = Command.make(
@@ -1981,7 +1872,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       steer,
       doctor,
       attach,
-      auth,
       owner,
       snapshot,
       resume,

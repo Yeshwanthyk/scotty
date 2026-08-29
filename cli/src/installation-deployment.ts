@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { NodeServices } from "@effect/platform-node";
+import { Retry as DistilledRetry } from "@distilled.cloud/cloudflare";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
 import { Credentials as DistilledCredentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as DNS from "@distilled.cloud/cloudflare/dns";
@@ -69,9 +70,6 @@ import type {
   InstallationPlan,
   InstallationRecoverRequest,
   InstallationResult,
-  PiAuthTargetRequest,
-  PiAuthTargetResult,
-  PiAuthUploadRequest,
   InstallationUninstallRequest,
   InstallationUninstallResult,
 } from "./services.ts";
@@ -342,9 +340,20 @@ export type InstallationDockerInspect = (
 const decodeDockerContextHostJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.String),
 );
+const sanitizedChildEnvironment = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+  const sanitized = { ...environment };
+  for (const name of ["GH_TOKEN", "PI_AUTH_JSON", "CREDENTIAL_WRAPPING_KEY"]) {
+    delete sanitized[name];
+  }
+  return sanitized;
+};
 
 const inspectDockerContextHost: InstallationDockerInspect = async (command, args) => {
-  const child = Bun.spawn([command, ...args], { stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([command, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: sanitizedChildEnvironment(process.env),
+  });
   let timedOut = false;
   // oxlint-disable-next-line scotty/no-raw-wall-clock -- boundary: host subprocess timeout uses the platform timer API
   const timer = setTimeout(() => {
@@ -379,23 +388,33 @@ export const resolveInstallationDockerHost = Effect.fnUntraced(function* (
   return decoded.value;
 });
 
+export class CredentialWrappingKeyUnavailable extends Data.TaggedError(
+  "CredentialWrappingKeyUnavailable",
+)<{
+  readonly message: string;
+}> {}
+
 const runWithProfile = async <A, E>(
   profile: string,
   root: string,
   makeProgram: () => Effect.Effect<A, E>,
+  secrets: { readonly credentialWrappingKey?: string } = {},
 ): Promise<A> => {
   const previousProfile = process.env.ALCHEMY_PROFILE;
   const previousTelemetry = process.env.ALCHEMY_TELEMETRY_DISABLED;
   const previousDockerHost = process.env.DOCKER_HOST;
+  const previousCredentialWrappingKey = process.env.CREDENTIAL_WRAPPING_KEY;
   const previousDirectory = process.cwd();
   process.env.ALCHEMY_PROFILE = profile;
   process.env.ALCHEMY_TELEMETRY_DISABLED = "1";
+  if (secrets.credentialWrappingKey === undefined) delete process.env.CREDENTIAL_WRAPPING_KEY;
+  else process.env.CREDENTIAL_WRAPPING_KEY = secrets.credentialWrappingKey;
   process.chdir(root);
-  // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone CLI owns this Alchemy Effect-to-Promise execution
-  const resolvedDockerHost = await Effect.runPromise(resolveInstallationDockerHost());
-  if (resolvedDockerHost !== undefined) process.env.DOCKER_HOST = resolvedDockerHost;
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must restore process-wide profile and cwd state
   try {
+    // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone CLI owns this Alchemy Effect-to-Promise execution
+    const resolvedDockerHost = await Effect.runPromise(resolveInstallationDockerHost());
+    if (resolvedDockerHost !== undefined) process.env.DOCKER_HOST = resolvedDockerHost;
     // oxlint-disable-next-line scotty/no-effect-runtime-escape -- boundary: standalone CLI owns this Alchemy Effect-to-Promise execution
     return await Effect.runPromise(makeProgram());
   } finally {
@@ -406,6 +425,8 @@ const runWithProfile = async <A, E>(
     else process.env.ALCHEMY_TELEMETRY_DISABLED = previousTelemetry;
     if (previousDockerHost === undefined) delete process.env.DOCKER_HOST;
     else process.env.DOCKER_HOST = previousDockerHost;
+    if (previousCredentialWrappingKey === undefined) delete process.env.CREDENTIAL_WRAPPING_KEY;
+    else process.env.CREDENTIAL_WRAPPING_KEY = previousCredentialWrappingKey;
   }
 };
 
@@ -558,85 +579,190 @@ const deployWithProfile = async (
   root: string,
   adoption: AdoptionManifest | undefined,
   prebuiltWorkers: boolean,
+  credentialWrappingKey?: string,
 ): Promise<InstallationResult> => {
   const { installation, stack } = makeStack(request, adoption, prebuiltWorkers);
-  return runWithProfile(request.profile, root, () =>
-    provideAlchemy(
-      evalStack(
-        stack,
-        (compiled) =>
-          Effect.gen(function* () {
-            const environment = yield* Cloudflare.CloudflareEnvironment;
-            const { accountId } = yield* environment;
-            if (accountId !== request.expectedAccountId)
-              return yield* new InstallationDeploymentError({
-                message: "The Cloudflare account changed after confirmation.",
-              });
-            const plan = yield* Plan.make(compiled);
-            const summary = yield* fingerprintPlan(request.installationName, accountId, plan);
-            if (summary.fingerprint !== request.expectedPlanFingerprint)
-              return yield* new InstallationDeploymentError({
-                message: "The deployment plan changed after confirmation.",
-              });
-
-            const containerChanged = isContainerPlanChanged(plan);
-            let beforeSnapshot: ContainerControlPlaneSnapshot | undefined;
-            let containerAppId: string | undefined;
-
-            if (containerChanged) {
-              const applications = yield* Containers.listContainerApplications({ accountId });
-              const application = applications.find(
-                (candidate) => candidate.name === installation.containerName,
-              );
-              if (application) {
-                containerAppId = application.id;
-                beforeSnapshot = yield* defaultReadControlPlane({
-                  accountId,
-                  applicationId: application.id,
+  return runWithProfile(
+    request.profile,
+    root,
+    () =>
+      provideAlchemy(
+        evalStack(
+          stack,
+          (compiled) =>
+            Effect.gen(function* () {
+              const environment = yield* Cloudflare.CloudflareEnvironment;
+              const { accountId } = yield* environment;
+              if (accountId !== request.expectedAccountId)
+                return yield* new InstallationDeploymentError({
+                  message: "The Cloudflare account changed after confirmation.",
                 });
-                yield* assertContainerBaselineSettled(beforeSnapshot);
+              const plan = yield* Plan.make(compiled);
+              const summary = yield* fingerprintPlan(request.installationName, accountId, plan);
+              if (summary.fingerprint !== request.expectedPlanFingerprint)
+                return yield* new InstallationDeploymentError({
+                  message: "The deployment plan changed after confirmation.",
+                });
+              if (credentialWrappingKey === undefined)
+                yield* requireCredentialWrappingKeyBinding({
+                  accountId,
+                  scriptName: installation.workerName,
+                });
+
+              const containerChanged = isContainerPlanChanged(plan);
+              let beforeSnapshot: ContainerControlPlaneSnapshot | undefined;
+              let containerAppId: string | undefined;
+
+              if (containerChanged) {
+                const applications = yield* Containers.listContainerApplications({ accountId });
+                const application = applications.find(
+                  (candidate) => candidate.name === installation.containerName,
+                );
+                if (application) {
+                  containerAppId = application.id;
+                  beforeSnapshot = yield* defaultReadControlPlane({
+                    accountId,
+                    applicationId: application.id,
+                  });
+                  yield* assertContainerBaselineSettled(beforeSnapshot);
+                }
               }
-            }
 
-            const output = yield* Apply.apply(plan);
-            if (!output.url)
-              return yield* new InstallationDeploymentError({
-                message: "Deployed Worker has no URL.",
-              });
+              const output = yield* Apply.apply(plan);
+              if (!output.url)
+                return yield* new InstallationDeploymentError({
+                  message: "Deployed Worker has no URL.",
+                });
 
-            if (beforeSnapshot !== undefined && containerAppId !== undefined) {
-              yield* waitForContainerRollout(beforeSnapshot, {
-                accountId,
-                applicationId: containerAppId,
-              });
-            }
+              if (beforeSnapshot !== undefined && containerAppId !== undefined) {
+                yield* waitForContainerRollout(beforeSnapshot, {
+                  accountId,
+                  applicationId: containerAppId,
+                });
+              }
 
-            return {
-              installationName: request.installationName,
-              profile: request.profile,
-              stackName: installation.stackName,
-              stage: CLOUDFLARE_STAGE,
-              accountId: output.accountId,
-              workerName: output.workerName,
-              runnerWorkerName: installation.runnerWorkerName,
-              containerName: installation.containerName,
-              kvTitle: installation.kvTitle,
-              backupBucketName: installation.backupBucketName,
-              ...(installation.preview === undefined
-                ? {}
-                : {
-                    previewBase: installation.preview.base,
-                    previewZoneId: installation.preview.zoneId,
-                  }),
-              ...(installation.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
-              host: output.url,
-            } satisfies InstallationResult;
-          }).pipe(Effect.provide(cloudflareApiLive())),
-        { stage: CLOUDFLARE_STAGE },
+              return {
+                installationName: request.installationName,
+                profile: request.profile,
+                stackName: installation.stackName,
+                stage: CLOUDFLARE_STAGE,
+                accountId: output.accountId,
+                workerName: output.workerName,
+                runnerWorkerName: installation.runnerWorkerName,
+                containerName: installation.containerName,
+                kvTitle: installation.kvTitle,
+                backupBucketName: installation.backupBucketName,
+                ...(installation.preview === undefined
+                  ? {}
+                  : {
+                      previewBase: installation.preview.base,
+                      previewZoneId: installation.preview.zoneId,
+                    }),
+                ...(installation.evidenceEnabled === true
+                  ? { evidenceEnabled: true as const }
+                  : {}),
+                host: output.url,
+              } satisfies InstallationResult;
+            }).pipe(Effect.provide(cloudflareApiLive())),
+          { stage: CLOUDFLARE_STAGE },
+        ),
+      ),
+    { credentialWrappingKey },
+  );
+};
+
+type PutScriptSecret<R = never> = (
+  input: Workers.PutScriptSecretRequest,
+) => Effect.Effect<unknown, unknown, R>;
+export const uploadCredentialWrappingKey = Effect.fnUntraced(function* <R>(
+  input: {
+    readonly accountId: string;
+    readonly scriptName: string;
+    readonly value: string | undefined;
+  },
+  putScriptSecret: PutScriptSecret<R>,
+) {
+  if (input.value === undefined) return;
+  yield* putScriptSecret({
+    accountId: input.accountId,
+    scriptName: input.scriptName,
+    name: "CREDENTIAL_WRAPPING_KEY",
+    text: input.value,
+    type: "secret_text",
+  }).pipe(
+    DistilledRetry.none,
+    Effect.mapError(
+      (cause) =>
+        new InstallationDeploymentError({
+          message: "Could not determine whether CREDENTIAL_WRAPPING_KEY was stored.",
+          cause,
+        }),
+    ),
+  );
+});
+
+const requireCredentialWrappingKeyBinding = Effect.fnUntraced(function* (input: {
+  readonly accountId: string;
+  readonly scriptName: string;
+}) {
+  // The list endpoint establishes binding presence by name without requesting credential material.
+  const matchingSecret = yield* Workers.listScriptSecrets
+    .items({ accountId: input.accountId, scriptName: input.scriptName })
+    .pipe(
+      Stream.filter((secret) => secret.name === "CREDENTIAL_WRAPPING_KEY"),
+      Stream.runHead,
+    )
+    .pipe(
+      Effect.mapError(
+        (cause) =>
+          new InstallationDeploymentError({
+            message: "Could not verify the installation CREDENTIAL_WRAPPING_KEY binding.",
+            cause,
+          }),
+      ),
+    );
+  if (Option.isNone(matchingSecret))
+    return yield* new CredentialWrappingKeyUnavailable({
+      message:
+        "The installation has no CREDENTIAL_WRAPPING_KEY binding; create a fresh installation before deploying Registry-backed code.",
+    });
+});
+
+const requireCredentialWrappingKeyWithProfile = async (
+  profile: string,
+  root: string,
+  input: { readonly accountId?: string; readonly scriptName: string },
+): Promise<void> =>
+  runWithProfile(profile, root, () =>
+    provideAlchemy(
+      Effect.gen(function* () {
+        const environment = yield* Cloudflare.CloudflareEnvironment;
+        const { accountId } = yield* environment;
+        if (input.accountId !== undefined && input.accountId !== accountId)
+          return yield* new InstallationDeploymentError({
+            message: "The Cloudflare account changed after confirmation.",
+          });
+        yield* requireCredentialWrappingKeyBinding({ accountId, scriptName: input.scriptName });
+      }).pipe(Effect.provide(cloudflareApiLive())),
+    ),
+  );
+
+const uploadCredentialWrappingKeyWithProfile = async (
+  profile: string,
+  root: string,
+  input: {
+    readonly accountId: string;
+    readonly scriptName: string;
+    readonly value: string;
+  },
+): Promise<void> =>
+  runWithProfile(profile, root, () =>
+    provideAlchemy(
+      uploadCredentialWrappingKey(input, (request) => Workers.putScriptSecret(request)).pipe(
+        Effect.provide(cloudflareApiLive()),
       ),
     ),
   );
-};
 
 const inspectWithProfile = async (
   request: InstallationInspectRequest,
@@ -644,7 +770,6 @@ const inspectWithProfile = async (
   adoption: AdoptionManifest | undefined,
   token?: string,
   expectedAccountId?: string,
-  githubToken?: string,
 ): Promise<InstallationResult> => {
   const installation = makeInstallationTopology(
     request.installationName,
@@ -661,6 +786,10 @@ const inspectWithProfile = async (
           return yield* new InstallationDeploymentError({
             message: "The Cloudflare account changed after confirmation.",
           });
+        yield* requireCredentialWrappingKeyBinding({
+          accountId,
+          scriptName: installation.workerName,
+        });
         const workerSettings = yield* Workers.getScriptScriptAndVersionSetting({
           accountId,
           scriptName: installation.workerName,
@@ -673,6 +802,7 @@ const inspectWithProfile = async (
           "RUNNERS",
           "SANDBOX",
           "SANDBOX_CONFIG",
+          "CREDENTIALS",
           "SESSIONS",
           "BACKUP_BUCKET",
           "ARTIFACT_BUCKET",
@@ -794,14 +924,6 @@ const inspectWithProfile = async (
             text: token,
             type: "secret_text",
           });
-        if (githubToken !== undefined)
-          yield* Workers.putScriptSecret({
-            accountId,
-            scriptName: installation.workerName,
-            name: "GH_TOKEN",
-            text: githubToken,
-            type: "secret_text",
-          });
         return {
           installationName: request.installationName,
           profile: request.profile,
@@ -851,6 +973,9 @@ export async function planInstallation(
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
+    await requireCredentialWrappingKeyWithProfile(request.profile, deployment.root, {
+      scriptName: installation.workerName,
+    });
     await prepareInstallationDeployment(deployment, installation);
     return await planWithProfile(request, deployment.root, adoption, deployment.prebuiltWorkers);
   } finally {
@@ -874,6 +999,10 @@ export async function deployInstallation(
       previewConfiguration(request),
       request.evidenceEnabled === true,
     );
+    await requireCredentialWrappingKeyWithProfile(request.profile, deployment.root, {
+      accountId: request.expectedAccountId,
+      scriptName: installation.workerName,
+    });
     await prepareInstallationDeployment(deployment, installation);
     return await deployWithProfile(request, deployment.root, adoption, deployment.prebuiltWorkers);
   } finally {
@@ -962,26 +1091,38 @@ export async function createInstallation(
         message: "The named Scotty installation cannot be created or safely resumed.",
       });
     }
-    const deployed =
-      plan.changes.length === 0
-        ? await inspectWithProfile(
-            request,
-            deployment.root,
-            undefined,
-            request.token,
-            request.expectedAccountId,
-            request.githubToken,
-          )
-        : await deployWithProfile(
-            {
-              ...deployRequest,
-              expectedAccountId: request.expectedAccountId,
-              expectedPlanFingerprint: plan.fingerprint,
-            },
-            deployment.root,
-            undefined,
-            deployment.prebuiltWorkers,
-          );
+    let deployed: InstallationResult;
+    if (plan.changes.length === 0) {
+      await uploadCredentialWrappingKeyWithProfile(request.profile, deployment.root, {
+        accountId: plan.accountId,
+        scriptName: installation.workerName,
+        value: request.credentialWrappingKey,
+      });
+      deployed = await inspectWithProfile(
+        request,
+        deployment.root,
+        undefined,
+        request.token,
+        request.expectedAccountId,
+      );
+    } else {
+      deployed = await deployWithProfile(
+        {
+          ...deployRequest,
+          expectedAccountId: request.expectedAccountId,
+          expectedPlanFingerprint: plan.fingerprint,
+        },
+        deployment.root,
+        undefined,
+        deployment.prebuiltWorkers,
+        request.credentialWrappingKey,
+      );
+      await uploadCredentialWrappingKeyWithProfile(request.profile, deployment.root, {
+        accountId: deployed.accountId,
+        scriptName: deployed.workerName,
+        value: request.credentialWrappingKey,
+      });
+    }
     if (plan.changes.length > 0)
       await inspectWithProfile(
         request,
@@ -989,7 +1130,6 @@ export async function createInstallation(
         undefined,
         request.token,
         request.expectedAccountId,
-        request.githubToken,
       );
     return deployed;
   } finally {
@@ -1167,128 +1307,6 @@ export async function uninstallInstallation(
             }).pipe(Effect.provide(cloudflareApiLive())),
           { stage: CLOUDFLARE_STAGE },
         ),
-      ),
-    );
-  } finally {
-    await deployment.cleanup();
-  }
-}
-
-const piAuthTargetProgram = Effect.fnUntraced(function* (request: PiAuthTargetRequest) {
-  const environment = yield* Cloudflare.CloudflareEnvironment;
-  const { accountId } = yield* environment;
-  if (accountId !== request.expectedAccountId)
-    return yield* new InstallationDeploymentError({
-      message: "The Cloudflare account does not match the saved Scotty installation.",
-    });
-  const settings = yield* Workers.getScriptScriptAndVersionSetting({
-    accountId,
-    scriptName: request.expectedWorkerName,
-  });
-  const bindings = settings.bindings ?? [];
-  const durableObjectBinding = (name: string) =>
-    bindings.filter(isDurableObjectBinding).find((binding) => binding.name === name);
-  const authBinding = durableObjectBinding("AUTH");
-  const runnerRegistryBinding = durableObjectBinding("RUNNER_REGISTRY");
-  const runnersBinding = durableObjectBinding("RUNNERS");
-  const sandboxBinding = durableObjectBinding("SANDBOX");
-  const sessionsBinding = bindings
-    .filter(isKvBinding)
-    .find((binding) => binding.name === "SESSIONS");
-  const backupBinding = bindings
-    .filter(isR2Binding)
-    .find((binding) => binding.name === "BACKUP_BUCKET");
-  if (
-    authBinding?.className !== "ScottyAuthRegistry" ||
-    runnerRegistryBinding?.className !== "ScottyRunnerRegistry" ||
-    runnersBinding?.className !== "ScottyRunner" ||
-    runnersBinding.scriptName !== request.expectedRunnerWorkerName ||
-    sandboxBinding?.className !== "ScottySandbox" ||
-    sandboxBinding.namespaceId === undefined ||
-    sessionsBinding?.namespaceId === undefined ||
-    backupBinding?.bucketName !== request.expectedBackupBucketName
-  )
-    return yield* new InstallationDeploymentError({
-      message: "The saved Worker does not have the exact Scotty binding topology.",
-    });
-  yield* Workers.getScriptScriptAndVersionSetting({
-    accountId,
-    scriptName: request.expectedRunnerWorkerName,
-  }).pipe(Effect.asVoid);
-  const applications = yield* Containers.listContainerApplications({ accountId });
-  const application = applications.find(
-    (candidate) => candidate.name === request.expectedContainerName,
-  );
-  if (!application || application.durableObjects?.namespaceId !== sandboxBinding.namespaceId)
-    return yield* new InstallationDeploymentError({
-      message: "The saved Scotty Container application is not bound to this Worker.",
-    });
-  const namespace = yield* KV.listNamespaces.items({ accountId, perPage: 100 }).pipe(
-    Stream.filter((candidate) => candidate.title === request.expectedKvTitle),
-    Stream.runHead,
-  );
-  if (Option.isNone(namespace) || namespace.value.id !== sessionsBinding.namespaceId)
-    return yield* new InstallationDeploymentError({
-      message: "The saved Scotty KV namespace is not bound to this Worker.",
-    });
-  yield* R2.getBucket({
-    accountId,
-    bucketName: request.expectedBackupBucketName,
-  }).pipe(Effect.asVoid);
-  const scriptSubdomain = yield* Workers.getScriptSubdomain({
-    accountId,
-    scriptName: request.expectedWorkerName,
-  });
-  if (!scriptSubdomain.enabled)
-    return yield* new InstallationDeploymentError({
-      message: "The saved Scotty Worker has no workers.dev URL.",
-    });
-  const { subdomain } = yield* Workers.getSubdomain({ accountId });
-  const host = `https://${request.expectedWorkerName}.${subdomain}.workers.dev`;
-  if (host !== request.expectedHost)
-    return yield* new InstallationDeploymentError({
-      message: "The saved Worker origin does not match Cloudflare.",
-    });
-  return {
-    accountId,
-    workerName: request.expectedWorkerName,
-    host,
-  } satisfies PiAuthTargetResult;
-});
-
-export async function inspectPiAuthTarget(
-  request: PiAuthTargetRequest,
-): Promise<PiAuthTargetResult> {
-  const deployment = await prepareDeploymentRoot();
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone inspection must remove its extracted payload on every exit
-  try {
-    return await runWithProfile(request.profile, deployment.root, () =>
-      provideAlchemy(piAuthTargetProgram(request).pipe(Effect.provide(cloudflareApiLive()))),
-    );
-  } finally {
-    await deployment.cleanup();
-  }
-}
-
-export async function uploadPiAuthSecret(
-  request: PiAuthUploadRequest,
-): Promise<PiAuthTargetResult> {
-  const deployment = await prepareDeploymentRoot();
-  // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: standalone secret upload must remove its extracted payload on every exit
-  try {
-    return await runWithProfile(request.profile, deployment.root, () =>
-      provideAlchemy(
-        Effect.gen(function* () {
-          const target = yield* piAuthTargetProgram(request);
-          yield* Workers.putScriptSecret({
-            accountId: target.accountId,
-            scriptName: target.workerName,
-            name: "PI_AUTH_JSON",
-            text: request.json,
-            type: "secret_text",
-          });
-          return target;
-        }).pipe(Effect.provide(cloudflareApiLive())),
       ),
     );
   } finally {

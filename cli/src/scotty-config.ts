@@ -19,7 +19,7 @@ const invalidScottyConfig = (path: string, reason: string): CliError =>
   new CliError(
     "scotty_config_invalid",
     `Scotty TOML configuration is invalid: ${reason}`,
-    `Fix ${path}; only version, sync.skills/packages/tools/extensions, and repos.allowed are accepted.`,
+    `Fix ${path}; only version, sync.skills/packages/tools/extensions, repos.allowed, and credentials.<name> are accepted.`,
     EXIT.USAGE,
   );
 
@@ -169,6 +169,22 @@ const resolveConfiguredRoots = Effect.fnUntraced(function* (input: {
   return resolved;
 });
 
+export const resolveConfiguredCredentialSource = (
+  source: string | undefined,
+  home: string,
+  cwd: string,
+): string =>
+  resolve(
+    cwd,
+    source === undefined
+      ? ""
+      : source === "~"
+        ? home
+        : source.startsWith("~/")
+          ? join(home, source.slice(2))
+          : source,
+  );
+
 export type ResolvedScottyTomlRoots = {
   readonly skills: ReadonlyArray<string>;
   readonly packages: ReadonlyArray<string>;
@@ -228,6 +244,7 @@ export const scottyConfigCheckOutput = (loaded: LoadedScottyTomlConfig) => ({
   version: loaded.config.version,
   sync: loaded.config.sync,
   repos: loaded.config.repos,
+  ...(loaded.config.credentials === undefined ? {} : { credentials: loaded.config.credentials }),
 });
 
 export const formatScottyConfigCheck = (loaded: LoadedScottyTomlConfig): string =>

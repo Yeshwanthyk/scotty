@@ -1,7 +1,11 @@
 import { Context, Effect, Layer, Option, Result, Schema } from "effect";
+import {
+  githubManagedHandle,
+  piAuthJson,
+  type SessionRuntimeCredentials,
+} from "./managed-credentials";
 import type { SessionRecord } from "./contracts";
 import { sha256Hex } from "./digest";
-import { piAuthJson, type StoredCredential } from "./egress";
 import {
   PiPackageNameSchema,
   SandboxBundleItemNameSchema,
@@ -10,6 +14,8 @@ import {
 } from "./sandbox-config-contracts";
 import { SandboxRuntime, SandboxRuntimeFailure, shellQuote } from "./sandbox-runtime";
 import { sessionRoot } from "./workspace";
+
+export { piAuthJson } from "./managed-credentials";
 
 export const PI_PACKAGES = [
   "/opt/scotty/pi-packages/sources/scotty-browser-test",
@@ -23,17 +29,14 @@ export const PI_SESSION_TOKEN_HEADER = "x-scotty-pi-session";
 const piSessionTokenPath = (id: SessionRecord["id"]): string =>
   `${sessionRoot(id)}/.pi-agent/scotty-pi-session.token`;
 
-export const piSessionTransportToken = (
-  id: SessionRecord["id"],
-  credential: StoredCredential,
-): Promise<string> => sha256Hex(`scotty-pi-session-v1\0${id}\0${credential.githubToken}`);
+export const piSessionTransportToken = (id: SessionRecord["id"]): Promise<string> =>
+  sha256Hex(`scotty-pi-session-v1\0${id}`);
 
 const derivePiSessionTransportToken = (
   id: SessionRecord["id"],
-  credential: StoredCredential,
 ): Effect.Effect<string, SandboxRuntimeFailure> =>
   Effect.tryPromise({
-    try: () => piSessionTransportToken(id, credential),
+    try: () => piSessionTransportToken(id),
     catch: () =>
       new SandboxRuntimeFailure({
         reason: "transport",
@@ -191,12 +194,12 @@ const existingExtraResources = Effect.fnUntraced(function* (
 });
 
 const piSettings = (
-  credential: StoredCredential,
+  credentials: SessionRuntimeCredentials,
   extraPackagePaths: ReadonlyArray<string> = [],
   extensionPaths: ReadonlyArray<string> = [],
 ): string =>
   JSON.stringify({
-    defaultProvider: credential.providers["openai-codex"] ? "openai-codex" : "openai",
+    defaultProvider: credentials.piProviders.includes("openai-codex") ? "openai-codex" : "openai",
     defaultModel: "gpt-5.6-sol",
     defaultThinkingLevel: "high",
     steeringMode: "one-at-a-time",
@@ -239,8 +242,8 @@ const buildMergedSkillsCommand = (
 };
 
 const gitConfig = (): string => `[credential]
-	helper = !f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f
-	useHttpPath = true
+\thelper = !f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f
+\tuseHttpPath = true
 `;
 
 export const terminalShellPath = (id: SessionRecord["id"]): string =>
@@ -248,11 +251,11 @@ export const terminalShellPath = (id: SessionRecord["id"]): string =>
 
 const terminalShell = (
   id: SessionRecord["id"],
-  credential: StoredCredential,
+  credentials: SessionRuntimeCredentials,
   toolPaths: ReadonlyArray<string> = [],
 ): string => {
   const env = {
-    ...agentEnv(id, credential),
+    ...agentEnv(id, credentials),
     ...(toolPaths.length === 0
       ? {}
       : { PATH: `${toolPaths.join(":")}:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin` }),
@@ -299,30 +302,30 @@ export interface ContainerAuthSeedOptions {
 interface ContainerAuthShape {
   readonly seed: (
     id: SessionRecord["id"],
-    credential: StoredCredential,
+    credentials: SessionRuntimeCredentials,
     options?: ContainerAuthSeedOptions,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly preflight: (
     id: SessionRecord["id"],
-    credential: StoredCredential,
+    credentials: SessionRuntimeCredentials,
     options?: ContainerAuthSeedOptions,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly ensureTerminal: (
     id: SessionRecord["id"],
-    credential: StoredCredential,
+    credentials: SessionRuntimeCredentials,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly ensurePiSession: (
     id: SessionRecord["id"],
-    credential: StoredCredential,
+    credentials: SessionRuntimeCredentials,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly quiescePiSession: (
     id: SessionRecord["id"],
-    credential: StoredCredential,
+    credentials: SessionRuntimeCredentials,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly stopPiSession: () => Effect.Effect<void, SandboxRuntimeFailure>;
   readonly refreshPiAuth: (
     id: SessionRecord["id"],
-    credential: StoredCredential,
+    credentials: SessionRuntimeCredentials,
   ) => Effect.Effect<void, SandboxRuntimeFailure>;
 }
 
@@ -335,23 +338,23 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
   Effect.map(SandboxRuntime, (runtime) => {
     const refreshPiAuth = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
-      credential: StoredCredential,
+      credentials: SessionRuntimeCredentials,
     ) {
       const piHome = `${sessionRoot(id)}/.pi-agent`;
       const authPath = `${piHome}/auth.json`;
       const settingsPath = `${piHome}/settings.json`;
       yield* runtime.mkdir(piHome, { recursive: true });
-      yield* runtime.writeFile(authPath, piAuthJson(credential));
+      yield* runtime.writeFile(authPath, piAuthJson(credentials));
       const resources = yield* existingExtraResources(runtime, settingsPath);
       yield* runtime.writeFile(
         settingsPath,
-        piSettings(credential, resources.packagePaths, resources.extensionPaths),
+        piSettings(credentials, resources.packagePaths, resources.extensionPaths),
       );
       yield* runtime.execChecked(`chmod 600 ${shellQuote(authPath)} ${shellQuote(settingsPath)}`);
     });
     const preflight = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
-      _credential: StoredCredential,
+      _credentials: SessionRuntimeCredentials,
       options?: ContainerAuthSeedOptions,
     ) {
       const { skills, extraPackagePaths, extensionPaths, toolPaths, bundleRoot } =
@@ -428,7 +431,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
     });
     const seed = Effect.fnUntraced(function* (
       id: SessionRecord["id"],
-      credential: StoredCredential,
+      credentials: SessionRuntimeCredentials,
       options?: ContainerAuthSeedOptions,
     ) {
       const { skills, extraPackagePaths, extensionPaths, toolPaths } =
@@ -447,46 +450,41 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
       yield* runtime.mkdir(piHome, { recursive: true });
       yield* runtime.writeFile(configPath, codexConfig(id));
       yield* runtime.writeFile(agentsPath, sandboxAgentsInstructions);
-      yield* runtime.writeFile(piAuthPath, piAuthJson(credential));
+      yield* runtime.writeFile(piAuthPath, piAuthJson(credentials));
       yield* runtime.writeFile(
         piSettingsPath,
-        piSettings(credential, extraPackagePaths, extensionPaths),
+        piSettings(credentials, extraPackagePaths, extensionPaths),
       );
       yield* runtime.writeFile(piAgentsPath, sandboxAgentsInstructions);
       yield* runtime.writeFile(gitConfigPath, gitConfig());
-      yield* runtime.writeFile(shellPath, terminalShell(id, credential, toolPaths));
+      yield* runtime.writeFile(shellPath, terminalShell(id, credentials, toolPaths));
       if (options?.initialPrompt !== undefined)
         yield* runtime.writeFile(promptPath, options.initialPrompt);
       yield* runtime.execChecked(
         `chmod 700 ${shellQuote(codexHome)} ${shellQuote(piHome)} ${shellQuote(shellPath)} && chmod 600 ${shellQuote(configPath)} ${shellQuote(agentsPath)} ${shellQuote(piAuthPath)} ${shellQuote(piSettingsPath)} ${shellQuote(piAgentsPath)} ${shellQuote(gitConfigPath)} && ${buildMergedSkillsCommand(id, skills, options?.bundleRoot)}`,
       );
       const env = {
-        ...agentEnv(id, credential),
+        ...agentEnv(id, credentials),
         ...(toolPaths.length === 0
           ? {}
           : { PATH: `${toolPaths.join(":")}:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin` }),
       };
       yield* runtime.setEnvVars(env);
       const root = sessionRoot(id);
-      const ghIdentityCommand = `github_identity="$(gh api user)" && git_name="$(printf '%s' "$github_identity" | jq -r '.name // .login')" && git_email="$(printf '%s' "$github_identity" | jq -r 'if (.email // "") != "" then .email else "\\(.id)+\\(.login)@users.noreply.github.com" end')" && git -C ${shellQuote(root)} config user.name "$git_name" && git -C ${shellQuote(root)} config user.email "$git_email"`;
-      const fallbackIdentityCommand = `git -C ${shellQuote(root)} config user.name "Scotty Session" && git -C ${shellQuote(root)} config user.email "scotty-session-${id}@users.noreply.github.com"`;
-      yield* runtime
-        .execChecked(ghIdentityCommand, { env, timeout: 20_000 })
-        .pipe(
-          Effect.catch(() =>
-            runtime.execChecked(fallbackIdentityCommand, { env, timeout: 10_000 }),
-          ),
-        );
+      yield* runtime.execChecked(
+        `git -C ${shellQuote(root)} config user.name "Scotty Session" && git -C ${shellQuote(root)} config user.email "scotty-session-${id}@users.noreply.github.com"`,
+        { env, timeout: 10_000 },
+      );
     });
     return ContainerAuth.of({
       seed,
       preflight,
-      ensureTerminal: Effect.fnUntraced(function* (id, credential) {
+      ensureTerminal: Effect.fnUntraced(function* (id, credentials) {
         const existing = yield* runtime.exec(`test -x ${shellQuote(terminalShellPath(id))}`);
         if (existing.success) return;
-        yield* seed(id, credential);
+        yield* seed(id, credentials);
       }),
-      ensurePiSession: Effect.fnUntraced(function* (id, credential) {
+      ensurePiSession: Effect.fnUntraced(function* (id, credentials) {
         const existing = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
         if (existing?.status === "starting" || existing?.status === "running") {
           yield* existing.waitForPort(PI_SESSION_PORT, {
@@ -496,8 +494,8 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           });
           return;
         }
-        yield* refreshPiAuth(id, credential);
-        const transportToken = yield* derivePiSessionTransportToken(id, credential);
+        yield* refreshPiAuth(id, credentials);
+        const transportToken = yield* derivePiSessionTransportToken(id);
         const tokenPath = piSessionTokenPath(id);
         yield* runtime.writeFile(tokenPath, transportToken);
         yield* runtime.execChecked(`chmod 600 ${shellQuote(tokenPath)}`);
@@ -505,7 +503,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           autoCleanup: true,
           cwd: sessionRoot(id),
           env: {
-            ...agentEnv(id, credential),
+            ...agentEnv(id, credentials),
             SCOTTY_PI_SESSION_PORT: String(PI_SESSION_PORT),
             SCOTTY_PI_SESSION_TOKEN_FILE: tokenPath,
             SCOTTY_WORKSPACE: sessionRoot(id),
@@ -524,7 +522,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
             message: "Pi session mapped port health check failed",
           });
       }),
-      quiescePiSession: Effect.fnUntraced(function* (id, credential) {
+      quiescePiSession: Effect.fnUntraced(function* (id, _credentials) {
         const process = yield* runtime.getProcess(PI_SESSION_PROCESS_ID);
         if (
           process === null ||
@@ -534,7 +532,7 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
           process.status === "error"
         )
           return;
-        const transportToken = yield* derivePiSessionTransportToken(id, credential);
+        const transportToken = yield* derivePiSessionTransportToken(id);
         const status = yield* runtime.fetchPortStatus("/quiesce", PI_SESSION_PORT, "POST", {
           [PI_SESSION_TOKEN_HEADER]: transportToken,
         });
@@ -564,15 +562,15 @@ export const containerAuthLayer: Layer.Layer<ContainerAuth, never, SandboxRuntim
 
 export function agentEnv(
   id: SessionRecord["id"],
-  credential: StoredCredential,
+  credentials: SessionRuntimeCredentials,
 ): Record<string, string> {
+  const github = githubManagedHandle(credentials.grants);
   return {
     CODEX_HOME: `${sessionRoot(id)}/.codex`,
     PI_CODING_AGENT_DIR: `${sessionRoot(id)}/.pi-agent`,
     SCOTTY_SESSION_ID: id,
     GIT_CONFIG_GLOBAL: `${sessionRoot(id)}/.pi-agent/gitconfig`,
-    GH_TOKEN: credential.githubSentinel,
-    GITHUB_SENTINEL: credential.githubSentinel,
+    ...(github === undefined ? {} : { GH_TOKEN: github }),
     GH_PROMPT_DISABLED: "1",
     GH_NO_UPDATE_NOTIFIER: "1",
     GIT_TERMINAL_PROMPT: "0",

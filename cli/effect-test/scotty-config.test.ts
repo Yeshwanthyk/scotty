@@ -20,6 +20,7 @@ const validToml = (
     readonly tools?: ReadonlyArray<string>;
     readonly extensions?: ReadonlyArray<string>;
     readonly allowed?: ReadonlyArray<string>;
+    readonly credentials?: string;
   } = {},
 ): string =>
   [
@@ -33,6 +34,7 @@ const validToml = (
     "",
     "[repos]",
     `allowed = ${JSON.stringify(input.allowed ?? ["owner/fixture"])}`,
+    ...(input.credentials === undefined ? [] : ["", input.credentials]),
     "",
   ].join("\n");
 
@@ -143,6 +145,68 @@ describe("Scotty TOML configuration boundary", () => {
         validToml({ allowed: ["owner/fixture", "OWNER/FIXTURE"] }),
         validToml({ allowed: ["owner/not/a-repository"] }),
         validToml({ skills: ["${HOME}/.pi/agent/skills"] }),
+      ];
+      for (const document of invalidDocuments) {
+        const result = yield* Effect.result(decodeScottyTomlText(document));
+        assert.instanceOf(failure(result), CliError);
+      }
+    }),
+  );
+
+  it.effect("accepts one global Pi auth declaration without reading its source", () =>
+    Effect.gen(function* () {
+      const source = "/does/not/exist/auth.json";
+      const decoded = yield* Effect.result(
+        decodeScottyTomlText(
+          `${validToml()}[credentials.openai]\nkind = "pi-auth"\nsource = ${JSON.stringify(source)}\nscope = "global"\n`,
+        ),
+      );
+      const config = success(decoded);
+      assert.deepStrictEqual(config.credentials, {
+        openai: { kind: "pi-auth", source, scope: "global" },
+      });
+    }),
+  );
+
+  it.effect("accepts a repository-scoped GitHub CLI declaration", () =>
+    Effect.gen(function* () {
+      const decoded = yield* Effect.result(
+        decodeScottyTomlText(
+          `${validToml({ allowed: ["owner/repo"] })}[credentials.github]
+kind = "github-cli"
+scope = "repository"
+repositories = ["owner/repo"]
+`,
+        ),
+      );
+      assert.deepStrictEqual(success(decoded).credentials, {
+        github: {
+          kind: "github-cli",
+          scope: "repository",
+          repositories: ["owner/repo"],
+        },
+      });
+      const global = yield* Effect.result(
+        decodeScottyTomlText(
+          `${validToml()}[credentials.github]
+kind = "github-cli"
+scope = "global"
+`,
+        ),
+      );
+      assert.deepStrictEqual(success(global).credentials, {
+        github: { kind: "github-cli", scope: "global" },
+      });
+    }),
+  );
+
+  it.effect("rejects multiple declarations and unsupported credential fields", () =>
+    Effect.gen(function* () {
+      const invalidDocuments = [
+        `${validToml()}[credentials.openai]\nkind = "github-cli"\nsource = "./auth.json"\nscope = "global"\n`,
+        `${validToml()}[credentials.openai]\nkind = "pi-auth"\nsource = "./auth.json"\nscope = "repository"\n`,
+        `${validToml()}[credentials.openai]\nkind = "pi-auth"\nsource = "./auth.json"\nscope = "global"\nrepositories = ["owner/repo"]\n`,
+        `${validToml()}[credentials.openai]\nkind = "pi-auth"\nsource = "./auth.json"\nscope = "global"\nunknown = true\n`,
       ];
       for (const document of invalidDocuments) {
         const result = yield* Effect.result(decodeScottyTomlText(document));
@@ -330,6 +394,8 @@ describe("Scotty TOML configuration boundary", () => {
             skills: ["./skills"],
             tools: ["./tools"],
             extensions: ["./extensions"],
+            credentials:
+              '[credentials.pi]\nkind = "pi-auth"\nsource = "./missing-secret/auth.json"\nscope = "global"',
           }),
         );
         let fetchCalls = 0;
@@ -360,6 +426,9 @@ describe("Scotty TOML configuration boundary", () => {
             extensions: ["./extensions"],
           },
           repos: { allowed: ["owner/fixture"] },
+          credentials: {
+            pi: { kind: "pi-auth", source: "./missing-secret/auth.json", scope: "global" },
+          },
         });
         assert.strictEqual(invocation.stderr.join(""), "");
       }),

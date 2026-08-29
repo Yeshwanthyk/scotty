@@ -17,5 +17,14 @@ export const makeSessionRecord = (overrides: Partial<SessionRecord> = {}): Sessi
   hardCapDurationSeconds: 14_400,
   ownedBackupIds: [],
   ...overrides,
+  ...(Object.hasOwn(overrides, "credentialGrant")
+    ? {}
+    : {
+        credentialGrant: {
+          version: 1 as const,
+          sessionId: overrides.id ?? "a0b1c2d3e4f5",
+          grants: [],
+        },
+      }),
   title: overrides.title ?? "Test session",
 });

@@ -23,8 +23,12 @@ const CONFIRMED_RESOURCE_KEYS = Object.freeze([
 export function redactProductionDeploymentOutput(
   value: unknown,
   environment: Record<string, string | undefined> = {},
+  secrets: ReadonlyArray<string> = [],
 ): string {
   let redacted = String(value);
+  for (const secret of secrets) {
+    if (secret.length > 0) redacted = redacted.replaceAll(secret, "[redacted-secret]");
+  }
   for (const [key, secret] of Object.entries(environment)) {
     if (
       /(?:AUTH|KEY|PASSWORD|SECRET|TOKEN)/iu.test(key) &&

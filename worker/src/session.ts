@@ -11,12 +11,8 @@ import {
   type PiConsoleStaleCommandV1,
   type PiConsoleUnavailableV1,
 } from "../../protocol/pi-console";
+import { parseManagedHandle, type ManagedHandle } from "../../protocol/credentials";
 import { RUNNER_PROTOCOL_VERSION, type RunnerOperation } from "../../protocol/runner";
-import {
-  makeInstallationPiAuthRecord,
-  piProviderMetadata,
-  type InstallationPiAuthRecord,
-} from "../../protocol/pi-auth";
 import {
   type Cause,
   Clock,
@@ -27,6 +23,7 @@ import {
   Option,
   Predicate,
   Result,
+  Redacted,
   Schedule,
   Schema,
 } from "effect";
@@ -132,11 +129,22 @@ import {
   piSessionTransportToken,
 } from "./container-auth";
 import {
-  CredentialVault,
-  credentialVaultLayer,
-  durableObjectCredentialVaultStorage,
-} from "./credential-vault";
+  credentialGrantHasHandle,
+  credentialKindForHandle,
+  decodeCredentialRefreshLeaseOption,
+  decodeSessionCredentialAccessResult,
+  decodeSessionCredentialRefreshResult,
+  decodeSessionCredentialRotationResult,
+  githubManagedHandle,
+  sessionRuntimeCredentials,
+  type ManagedCredentialRefreshLease,
+} from "./managed-credentials";
 import { readBoundedUtf8Body } from "./bounded-http";
+import { CREDENTIAL_REGISTRY_OBJECT_NAME } from "./credential-object";
+import {
+  decodeCredentialRegistryGrantResult,
+  decodeCredentialRegistryResolvedCredentialResult,
+} from "./credential-contracts";
 import {
   badRequest,
   conflict,
@@ -153,21 +161,13 @@ import {
   type DownManifest,
   type OperationKind,
   type SessionCreateSetupStage,
+  type SessionCredentialGrant,
   type SessionRecord,
   type SessionStatus,
   type SessionView,
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
-import {
-  ALLOWED_HOSTS,
-  GITHUB_SENTINEL_PREFIX,
-  PI_SENTINEL_PREFIX,
-  denyOutbound,
-  makeOutboundByHost,
-  type CredentialPatch,
-  type CredentialRefreshLease,
-  type StoredCredential,
-} from "./egress";
+import { ALLOWED_HOSTS, denyOutbound, makeOutboundByHost } from "./egress";
 import { inspectPassiveSession, scottyErrorResponse, steerPassiveSession } from "./passive-session";
 import {
   durableObjectSessionRecordStorage,
@@ -291,7 +291,6 @@ type SandboxServices =
   | BackupStore
   | ContainerEvidenceRecorder
   | ContainerAuth
-  | CredentialVault
   | EvidenceStore
   | HatchStore
   | RolloutDiscovery
@@ -388,10 +387,6 @@ type HostOperation = "destroy" | "expose" | "schedule" | "stop" | "unexpose";
 class HostOperationFailure extends Data.TaggedError("HostOperationFailure")<{
   readonly operation: HostOperation;
   readonly cause: unknown;
-}> {}
-
-class InstallationPiAuthRpcFailure extends Data.TaggedError("InstallationPiAuthRpcFailure")<{
-  readonly message: string;
 }> {}
 
 interface InFlightCreate {
@@ -687,12 +682,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
       runtimeAccess,
       { fetchPortReadiness: env.SCOTTY_LOCAL_E2E === "1" },
     );
-    const vault = credentialVaultLayer(
-      // oxlint-disable-next-line scotty/no-direct-do-storage -- boundary: constructor wires Durable Object storage into its owning CredentialVault adapter
-      durableObjectCredentialVaultStorage(ctx.storage),
-      env.GH_TOKEN,
+    const runtimeAndContainerAuth = Layer.merge(
+      runtime,
+      containerAuthLayer.pipe(Layer.provide(runtime)),
     );
-    const runtimeAndVault = Layer.merge(runtime, vault);
     const backup = backupStoreLayer(
       {
         createBackup: (backupOptions) => this.createBackup(backupOptions),
@@ -728,10 +721,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
       artifacts,
       sessionProjectionLayer(kvSessionProjectionStorage(env.SESSIONS)),
       backup,
-      runtimeAndVault,
+      runtimeAndContainerAuth,
       rolloutDiscoveryLayer.pipe(Layer.provide(runtime)),
       workspaceLayer.pipe(Layer.provide(runtime)),
-      containerAuthLayer.pipe(Layer.provide(runtime)),
       evidenceRecorder,
       materializer,
       repoVerifier,
@@ -748,37 +740,102 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return Option.getOrUndefined(yield* store.read);
   });
 
-  private readonly readInstallationPiAuthProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const result = yield* Effect.tryPromise({
-      try: () => this.env.SANDBOX_CONFIG.getByName("account").piAuth(),
-      catch: () =>
-        new InstallationPiAuthRpcFailure({
-          message: "Installation Pi credential authority is unavailable",
-        }),
+  private readonly resolveGithubCliCredentialProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    repository: string,
+    sessionId: string,
+  ) {
+    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+    if (registry === undefined)
+      return yield* this.upstreamError("Credential registry is unavailable", undefined, sessionId);
+    const resolved = yield* Effect.tryPromise({
+      try: () => registry.resolveGithubCliCredential({ version: 1, repository }),
+      catch: (cause) =>
+        this.upstreamError("Repository credential resolution failed", cause, sessionId),
     });
-    if (!result.ok)
-      return yield* new InstallationPiAuthRpcFailure({
-        message: "Installation Pi credential authority is unavailable",
-      });
-    return result.value;
+    if (!resolved.ok)
+      return yield* this.upstreamError(
+        "Repository credential resolution failed",
+        resolved.error,
+        sessionId,
+      );
+    const decoded = decodeCredentialRegistryResolvedCredentialResult(resolved.value);
+    if (Result.isFailure(decoded))
+      return yield* this.upstreamError(
+        "Repository credential resolution failed",
+        "invalid_response",
+        sessionId,
+      );
+    return Redacted.make(decoded.success.value);
   });
 
-  private readonly writeInstallationPiAuthProgram = Effect.fnUntraced(function* (
+  private readonly pinPiGrantProgram = Effect.fnUntraced(function* (
     this: Sandbox,
-    record: InstallationPiAuthRecord,
+    record: SessionRecord,
+    nonce: string,
   ) {
-    const result = yield* Effect.tryPromise({
-      try: () => this.env.SANDBOX_CONFIG.getByName("account").writePiAuth(record),
-      catch: () =>
-        new InstallationPiAuthRpcFailure({
-          message: "Installation Pi credential write-back failed",
-        }),
+    if (record.credentialGrant !== undefined) {
+      if (record.credentialGrant.sessionId !== record.id)
+        return yield* new SessionCreateUncertain({ cause: "Session credential grant mismatch" });
+      return record;
+    }
+    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+    if (registry === undefined)
+      return yield* new SessionCreateUncertain({ cause: "Credential registry is unavailable" });
+    const issued = yield* Effect.tryPromise({
+      try: () =>
+        registry.issueGrants({ version: 1, sessionId: record.id, repository: record.repo }),
+      catch: (cause) => new SessionCreateUncertain({ cause }),
     });
-    if (!result.ok)
-      return yield* new InstallationPiAuthRpcFailure({
-        message: "Installation Pi credential write-back failed",
+    if (!issued.ok) return yield* new SessionCreateUncertain({ cause: issued.error });
+    const decodedGrant = decodeCredentialRegistryGrantResult(issued.value);
+    if (Result.isFailure(decodedGrant))
+      return yield* new SessionCreateUncertain({ cause: "Credential Registry grant is invalid" });
+    if (decodedGrant.success.sessionId !== record.id)
+      return yield* new SessionCreateUncertain({
+        cause: "Credential Registry grant session mismatch",
       });
-    return result.value;
+    const credentialGrant: SessionCredentialGrant = {
+      version: 1,
+      sessionId: record.id,
+      grants: decodedGrant.success.grants,
+    };
+    return yield* this.updateForOperationProgram(nonce, (current) => ({
+      ...current,
+      credentialGrant,
+    })).pipe(Effect.mapError((cause) => new SessionCreateUncertain({ cause })));
+  });
+
+  private readonly releasePiGrantProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    record: SessionRecord,
+  ) {
+    const grant = record.credentialGrant;
+    if (grant === undefined || grant.sessionId !== record.id) return;
+    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+    if (registry === undefined)
+      return yield* this.upstreamError("Credential grant release failed", undefined, record.id);
+    const released = yield* Effect.tryPromise({
+      try: () =>
+        registry.release({
+          version: 1,
+          sessionId: record.id,
+          grants: grant.grants,
+        }),
+      catch: (cause) => this.upstreamError("Credential grant release failed", cause, record.id),
+    });
+    if (!released.ok)
+      return yield* this.upstreamError(
+        "Credential grant release failed",
+        released.error,
+        record.id,
+      );
+    if (!released.value.released)
+      return yield* this.upstreamError(
+        "Credential grant release was not confirmed",
+        undefined,
+        record.id,
+      );
   });
 
   private readonly deleteRuntimeEpochProgram = Effect.fnUntraced(function* (this: Sandbox) {
@@ -1929,10 +1986,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
       return yield* conflict(`Session is already running ${record.operation.kind}`);
     if (record.execution.provider !== "cloudflare")
       return yield* wrongState(record.status, "access", "This session uses the runner runtime");
-    const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
-    const credential = yield* vault.require;
-    yield* containerAuth.ensurePiSession(record.id, credential);
+    const grant = record.credentialGrant;
+    if (grant === undefined)
+      return yield* this.upstreamError(
+        "Session credential grant is unavailable",
+        undefined,
+        record.id,
+      );
+    yield* containerAuth.ensurePiSession(record.id, sessionRuntimeCredentials(grant.grants));
   });
 
   private readonly projectProgram = Effect.fnUntraced(function* (record: SessionRecord) {
@@ -2010,17 +2072,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
       ? { exists: true, defaultBranch: record.defaultBranch }
       : { exists: false },
   ) {
-    const vault = yield* CredentialVault;
+    const pinned = yield* this.pinPiGrantProgram(record, nonce);
     const workspace = yield* Workspace;
-    const installationRecord = yield* this.readInstallationPiAuthProgram();
-    const credential = yield* vault.seed({
-      ...(installationRecord === null
-        ? { piAuthJson: this.env.PI_AUTH_JSON }
-        : { installationRecord }),
-      providerSentinelSeed: `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-      githubSentinel: `${GITHUB_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-    });
-    const worktree = yield* workspace.prepare(record, credential.githubSentinel, verified);
+    const grant = pinned.credentialGrant;
+    if (grant === undefined)
+      return yield* this.upstreamError(
+        "Session credential grant is unavailable",
+        undefined,
+        record.id,
+      );
+    const githubHandle = githubManagedHandle(grant.grants);
+    const worktree = yield* workspace.prepare(record, githubHandle ?? "", verified);
     yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       operation: {
@@ -2032,13 +2094,13 @@ export class Sandbox extends BaseSandbox<Bindings> {
       repoExistsAtCreate: worktree.repoExists,
       defaultBranch: worktree.defaultBranch,
     })).pipe(Effect.mapError(mapCreateUncertain("runtime_phase")));
-    return yield* this.continueCloudflarePiCreateProgram(record, prompt, nonce);
+    return yield* this.continueCloudflarePiCreateProgram(pinned, prompt, nonce);
   });
 
   private readonly materializeAndSeedSandboxProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     record: SessionRecord,
-    credential: StoredCredential,
+    grant: SessionCredentialGrant,
     options?: { readonly initialPrompt?: string },
   ) {
     const containerAuth = yield* ContainerAuth;
@@ -2055,10 +2117,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
       bundleRoot: materialized.bundleRoot,
     };
     yield* containerAuth
-      .seed(record.id, credential, seedOptions)
+      .seed(record.id, sessionRuntimeCredentials(grant.grants), seedOptions)
       .pipe(Effect.mapError(mapCreateUncertain("seed")));
     yield* containerAuth
-      .preflight(record.id, credential, seedOptions)
+      .preflight(record.id, sessionRuntimeCredentials(grant.grants), seedOptions)
       .pipe(Effect.mapError(mapCreateUncertain("preflight")));
   });
 
@@ -2068,12 +2130,17 @@ export class Sandbox extends BaseSandbox<Bindings> {
     prompt: string,
     nonce: string,
   ) {
-    const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
-    const credential = yield* vault.require;
-    yield* this.materializeAndSeedSandboxProgram(record, credential, { initialPrompt: prompt });
+    const grant = record.credentialGrant;
+    if (grant === undefined)
+      return yield* this.upstreamError(
+        "Session credential grant is unavailable",
+        undefined,
+        record.id,
+      );
+    yield* this.materializeAndSeedSandboxProgram(record, grant, { initialPrompt: prompt });
     yield* containerAuth
-      .ensurePiSession(record.id, credential)
+      .ensurePiSession(record.id, sessionRuntimeCredentials(grant.grants))
       .pipe(Effect.mapError(mapCreateUncertain("pi_health")));
     const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
     return yield* this.updateForOperationProgram(nonce, (current) => ({
@@ -2133,16 +2200,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return yield* this.upstreamError("Session setup failed", failure, failed.id);
   });
 
-  private readonly finishCreateReconciliationProgram = Effect.fnUntraced(function* (
+  private readonly finishCreateReplayProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     id: string,
     nonce: string,
-    reconciled: Result.Result<SessionRecord, unknown>,
+    completed: Result.Result<SessionRecord, unknown>,
   ) {
-    if (Result.isFailure(reconciled))
-      return yield* this.failCreateSetupProgram(id, nonce, reconciled.failure);
+    if (Result.isFailure(completed))
+      return yield* this.failCreateSetupProgram(id, nonce, completed.failure);
     const completedAt = yield* Clock.currentTimeMillis;
-    return toSessionView(toProjection(reconciled.success, new Date(completedAt)), completedAt);
+    return toSessionView(toProjection(completed.success, new Date(completedAt)), completedAt);
   });
 
   private readonly replayCreateProgram = Effect.fnUntraced(function* (
@@ -2159,7 +2226,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           "Runner-backed sessions require a native Pi transport and cannot be created yet",
         );
       if (operation.createPhase === "setup") {
-        const reconciled = yield* Effect.result(
+        const completed = yield* Effect.result(
           this.prepareCloudflarePiCreateProgram(
             record,
             prompt,
@@ -2167,27 +2234,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
             operation.startedAt,
           ),
         );
-        return yield* this.finishCreateReconciliationProgram(
-          record.id,
-          operation.nonce,
-          reconciled,
-        );
+        return yield* this.finishCreateReplayProgram(record.id, operation.nonce, completed);
       }
       if (operation.createPhase === "runtime") {
-        const reconciled = yield* Effect.result(
+        const completed = yield* Effect.result(
           this.continueCloudflarePiCreateProgram(record, prompt, operation.nonce),
         );
-        return yield* this.finishCreateReconciliationProgram(
-          record.id,
-          operation.nonce,
-          reconciled,
-        );
+        return yield* this.finishCreateReplayProgram(record.id, operation.nonce, completed);
       }
       return yield* new ScottyError("internal", "Authoritative create phase is invalid", {
         httpStatus: 500,
         exitCode: 1,
       });
     }
+    if (record.credentialGrant === undefined || record.credentialGrant.sessionId !== record.id)
+      return yield* this.upstreamError(
+        "Session credential grant is unavailable",
+        undefined,
+        record.id,
+      );
     const replayNow = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(record, new Date(replayNow)), replayNow);
   });
@@ -2273,7 +2338,9 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (decisionBeforeSchedule.kind === "replay")
       return yield* this.replayCreateProgram(decisionBeforeSchedule.record, input.prompt);
 
-    const verified = yield* verifier.verify(input.repo, this.env.GH_TOKEN).pipe(
+    const githubCredential = yield* this.resolveGithubCliCredentialProgram(input.repo, id);
+    const verified = yield* verifier.verify(input.repo, Redacted.value(githubCredential)).pipe(
+      Effect.ensuring(Effect.sync(() => void Redacted.wipeUnsafe(githubCredential))),
       Effect.mapError(
         (_failure: RepoVerifierFailure) =>
           new ScottyError("upstream", "Repository verification failed", {
@@ -2366,48 +2433,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const record = yield* this.requireRecordProgram();
     const now = yield* Clock.currentTimeMillis;
     return toSessionView(toProjection(record, new Date(now)), now);
-  });
-
-  private readonly reseedPiAuthProgram = Effect.fnUntraced(function* (this: Sandbox) {
-    const record = yield* this.requireRecordProgram();
-    if (record.status !== "warm")
-      return yield* wrongState(record.status, "reseed auth", "Only warm sessions can be reseeded");
-    if (record.execution.provider !== "cloudflare")
-      return yield* wrongState(
-        record.status,
-        "reseed auth",
-        "Runner credentials are managed by the runner host",
-      );
-    if (record.operation)
-      return yield* conflict(`Session is already running ${record.operation.kind}`);
-    const vault = yield* CredentialVault;
-    const containerAuth = yield* ContainerAuth;
-    const currentCredential = yield* vault.require;
-    const installationRecord = yield* this.readInstallationPiAuthProgram();
-    yield* containerAuth.quiescePiSession(record.id, currentCredential);
-    const sentinelSeed = `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`;
-    const credential =
-      installationRecord === null
-        ? yield* vault.reseed({
-            piAuthJson: this.env.PI_AUTH_JSON,
-            providerSentinelSeed: sentinelSeed,
-          })
-        : yield* vault.reconcile(installationRecord, sentinelSeed);
-    yield* containerAuth.refreshPiAuth(record.id, credential);
-    yield* containerAuth.stopPiSession();
-    yield* containerAuth.ensurePiSession(record.id, credential);
-    return {
-      id: record.id,
-      updatedAt: credential.updatedAt,
-      providers: piProviderMetadata(
-        Object.fromEntries(
-          Object.entries(credential.providers).map(([providerId, provider]) => [
-            providerId,
-            provider.credential,
-          ]),
-        ),
-      ),
-    };
   });
 
   private readonly renameScottySessionProgram = Effect.fnUntraced(function* (
@@ -2519,8 +2544,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const authoritative = yield* this.requireRecordProgram();
     if (authoritative.execution.provider === "runner")
       return yield* this.resumeRunnerSessionProgram();
+    const pinnedGrant = authoritative.credentialGrant;
+    if (pinnedGrant === undefined || pinnedGrant.sessionId !== authoritative.id)
+      return yield* this.upstreamError(
+        "Session credential grant is unavailable",
+        undefined,
+        authoritative.id,
+      );
     const backups = yield* BackupStore;
-    const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
     const operation = yield* this.acquireOperationProgram("resume", ["sleeping", "failed"]);
     let record = yield* this.requireRecordProgram();
@@ -2551,18 +2582,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
         }));
         yield* hostEffect("schedule", () => this.scheduleHardCap(hardCapAt));
         yield* backups.restore(backup);
-        const installationRecord = yield* this.readInstallationPiAuthProgram();
-        const credential =
-          installationRecord === null
-            ? yield* vault.require
-            : yield* vault.reconcile(
-                installationRecord,
-                `${PI_SENTINEL_PREFIX}${record.id}-${randomToken(12)}`,
-              );
-        yield* this.materializeAndSeedSandboxProgram(record, credential);
+        yield* this.materializeAndSeedSandboxProgram(record, pinnedGrant);
         yield* this.restorePiAndHatchProgram(
           operation.nonce,
-          containerAuth.ensurePiSession(record.id, credential),
+          containerAuth.ensurePiSession(record.id, sessionRuntimeCredentials(pinnedGrant.grants)),
         );
         const readyAt = new Date(yield* Clock.currentTimeMillis).toISOString();
         const ready = yield* this.updateForOperationProgram(operation.nonce, (current) => ({
@@ -2607,7 +2630,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     payload: VaporizeRetryPayload,
   ) {
     const backups = yield* BackupStore;
-    const vault = yield* CredentialVault;
     const store = yield* SessionStore;
     const current = yield* this.readRecordProgram();
     if (!current) return yield* notFound(payload.id);
@@ -2659,22 +2681,25 @@ export class Sandbox extends BaseSandbox<Bindings> {
       yield* this.deleteEvidenceArtifactsProgram(pending);
       yield* evidence.clearForVaporize(payload.nonce);
     }
-    yield* vault.delete;
+    yield* this.releasePiGrantProgram(current);
     yield* store.clearCreateIdempotency;
     const updatedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-    const gone = yield* this.updateForOperationProgram(payload.nonce, (record) => ({
-      ...record,
-      status: "gone",
-      operation: null,
-      backup: undefined,
-      ownedBackupIds: [],
-      backupExpiresAt: undefined,
-      codexThreadId: undefined,
-      agentState: undefined,
-      lastAgentEventAt: undefined,
-      failure: undefined,
-      updatedAt,
-    }));
+    const gone = yield* this.updateForOperationProgram(payload.nonce, (record) => {
+      const { credentialGrant: _credentialGrant, ...withoutCredentialGrant } = record;
+      return {
+        ...withoutCredentialGrant,
+        status: "gone",
+        operation: null,
+        backup: undefined,
+        ownedBackupIds: [],
+        backupExpiresAt: undefined,
+        codexThreadId: undefined,
+        agentState: undefined,
+        lastAgentEventAt: undefined,
+        failure: undefined,
+        updatedAt,
+      };
+    });
     yield* removeSessionProjection(gone.id);
     yield* Effect.sync(() => this.cancelAllSessionSchedules());
     return { id: gone.id, status: "gone" as const };
@@ -2727,7 +2752,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this: Sandbox,
     record: SessionRecord,
   ) {
-    const vault = yield* CredentialVault;
     const store = yield* SessionStore;
     if (record.execution.provider === "cloudflare" && this.rawContainer?.running === true) {
       const destroyed = yield* Effect.raceFirst(
@@ -2740,7 +2764,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
           exitCode: 1,
         });
     }
-    yield* vault.delete;
+    yield* this.releasePiGrantProgram(record);
     yield* store.clearCreateIdempotency;
     yield* removeSessionProjection(record.id);
     yield* Effect.sync(() => this.cancelAllSessionSchedules());
@@ -3759,10 +3783,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.expireRetainedEvidenceProgram(payload));
   }
 
-  async reseedPiAuth() {
-    return this.#run(this.reseedPiAuthProgram());
-  }
-
   async preparePiSessionAccess(): Promise<void> {
     return this.#run(this.preparePiSessionAccessProgram());
   }
@@ -3892,12 +3912,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (container === undefined || !container.running)
       return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
 
-    const credential = await this.#run(
-      Effect.result(CredentialVault.pipe(Effect.flatMap((vault) => vault.require))),
-    );
-    if (Result.isFailure(credential))
+    const record = await this.#run(Effect.result(this.requireRecordProgram()));
+    if (Result.isFailure(record) || record.success.credentialGrant === undefined)
       return this.passiveConsoleUnavailable("provider_passive_relay_unavailable", 503);
-    const transportToken = await piSessionTransportToken(input.sessionId, credential.success).then(
+    const transportToken = await piSessionTransportToken(input.sessionId).then(
       (value) => Result.succeed(value),
       () => Result.fail(undefined),
     );
@@ -4383,6 +4401,158 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return super.fetch(request);
   }
 
+  private readonly resolveCredentialForProxyProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: import("./managed-credentials").SessionCredentialAccess,
+  ) {
+    const record = yield* this.requireRecordProgram();
+    const handle = parseManagedHandle(input.handle);
+    if (Option.isNone(handle)) return null;
+    const grant = credentialProxyGrant(record, handle.value, input.repository);
+    if (grant === undefined) return null;
+    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+    if (registry === undefined)
+      return yield* this.upstreamError("Credential registry is unavailable", undefined, record.id);
+    const resolved = yield* Effect.tryPromise({
+      try: () =>
+        registry.resolve({
+          version: 1,
+          sessionId: record.id,
+          name: grant.name,
+          kind: grant.kind,
+          versionRef: grant.versionRef,
+          handle: input.handle,
+        }),
+      catch: (cause) => this.upstreamError("Credential resolution failed", cause, record.id),
+    });
+    if (!resolved.ok)
+      return yield* this.upstreamError("Credential resolution failed", resolved.error, record.id);
+    const decoded = decodeCredentialRegistryResolvedCredentialResult(resolved.value);
+    if (Result.isFailure(decoded))
+      return yield* this.upstreamError(
+        "Credential resolution failed",
+        "invalid_response",
+        record.id,
+      );
+    const credential = Redacted.make(decoded.success.value);
+    const plaintext = Redacted.value(credential);
+    Redacted.wipeUnsafe(credential);
+    return plaintext;
+  });
+
+  private readonly beginCredentialRefreshForProxyProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: import("./managed-credentials").SessionCredentialRefresh,
+  ) {
+    const record = yield* this.requireRecordProgram();
+    const handle = parseManagedHandle(input.handle);
+    if (
+      Option.isNone(handle) ||
+      handle.value.provider !== "openai-codex" ||
+      handle.value.slot !== "refresh"
+    )
+      return null;
+    const grant = credentialProxyGrant(record, handle.value);
+    if (grant === undefined) return null;
+    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+    if (registry === undefined)
+      return yield* this.upstreamError("Credential registry is unavailable", undefined, record.id);
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        registry.beginRefresh({
+          version: 1,
+          sessionId: record.id,
+          name: grant.name,
+          versionRef: grant.versionRef,
+          nonce: input.nonce,
+        }),
+      catch: (cause) => this.upstreamError("Credential refresh failed", cause, record.id),
+    });
+    if (!result.ok)
+      return yield* this.upstreamError("Credential refresh failed", result.error, record.id);
+    if (result.value === null) return null;
+    const lease = decodeCredentialRefreshLeaseOption(result.value);
+    if (
+      Option.isNone(lease) ||
+      lease.value.sessionId !== record.id ||
+      lease.value.name !== grant.name ||
+      lease.value.versionRef !== grant.versionRef ||
+      lease.value.nonce !== input.nonce
+    )
+      return yield* this.upstreamError("Credential refresh lease is invalid", undefined, record.id);
+    return lease.value;
+  });
+
+  private readonly persistCredentialRotationForProxyProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: import("./managed-credentials").SessionCredentialRotation,
+  ) {
+    const record = yield* this.requireRecordProgram();
+    const handle = parseManagedHandle(input.handle);
+    if (
+      Option.isNone(handle) ||
+      handle.value.provider !== "openai-codex" ||
+      handle.value.slot !== "refresh"
+    )
+      return;
+    const grant = credentialProxyGrant(record, handle.value);
+    if (grant === undefined) return;
+    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+    if (registry === undefined)
+      return yield* this.upstreamError("Credential registry is unavailable", undefined, record.id);
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        registry.persistRotation({
+          version: 1,
+          sessionId: record.id,
+          name: grant.name,
+          versionRef: grant.versionRef,
+          nonce: input.nonce,
+          patch: input.patch,
+        }),
+      catch: (cause) => this.upstreamError("Credential rotation failed", cause, record.id),
+    });
+    if (!result.ok)
+      return yield* this.upstreamError("Credential rotation failed", result.error, record.id);
+  });
+
+  private readonly cancelCredentialRefreshForProxyProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    input: import("./managed-credentials").SessionCredentialRefresh,
+  ) {
+    const record = yield* this.requireRecordProgram();
+    const handle = parseManagedHandle(input.handle);
+    if (
+      Option.isNone(handle) ||
+      handle.value.provider !== "openai-codex" ||
+      handle.value.slot !== "refresh"
+    )
+      return;
+    const grant = credentialProxyGrant(record, handle.value);
+    if (grant === undefined) return;
+    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+    if (registry === undefined)
+      return yield* this.upstreamError("Credential registry is unavailable", undefined, record.id);
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        registry.cancelRefresh({
+          version: 1,
+          sessionId: record.id,
+          name: grant.name,
+          versionRef: grant.versionRef,
+          nonce: input.nonce,
+        }),
+      catch: (cause) =>
+        this.upstreamError("Credential refresh cancellation failed", cause, record.id),
+    });
+    if (!result.ok)
+      return yield* this.upstreamError(
+        "Credential refresh cancellation failed",
+        result.error,
+        record.id,
+      );
+  });
+
   async snapshotScottySession(): Promise<SessionView> {
     return this.#run(this.snapshotScottySessionProgram());
   }
@@ -4416,48 +4586,30 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.renameScottySessionProgram(title));
   }
 
-  async readCredentialForProxy(sentinel: string): Promise<StoredCredential | null> {
-    return this.#run(Effect.flatMap(CredentialVault, (vault) => vault.readForProxy(sentinel)));
+  async resolveCredentialForProxy(input: unknown): Promise<string | null> {
+    const decoded = decodeSessionCredentialAccessResult(input);
+    if (Result.isFailure(decoded)) return null;
+    return this.#run(this.resolveCredentialForProxyProgram(decoded.success));
   }
 
-  async beginCredentialRefresh(sentinel: string): Promise<CredentialRefreshLease | null> {
-    return this.#run(
-      Effect.flatMap(CredentialVault, (vault) => vault.beginRefresh(sentinel, crypto.randomUUID())),
-    );
+  async beginCredentialRefreshForProxy(
+    input: unknown,
+  ): Promise<ManagedCredentialRefreshLease | null> {
+    const decoded = decodeSessionCredentialRefreshResult(input);
+    if (Result.isFailure(decoded)) return null;
+    return this.#run(this.beginCredentialRefreshForProxyProgram(decoded.success));
   }
 
-  async persistRotatedCredential(
-    sentinel: string,
-    patch: CredentialPatch,
-    nonce: string,
-  ): Promise<void> {
-    await this.#run(
-      Effect.gen({ self: this }, function* () {
-        const vault = yield* CredentialVault;
-        yield* vault.persistRotation(sentinel, patch, nonce);
-        const credential = yield* vault.require;
-        const providers = Object.fromEntries(
-          Object.entries(credential.providers).map(([providerId, provider]) => [
-            providerId,
-            provider.credential,
-          ]),
-        );
-        const record = yield* Effect.tryPromise({
-          try: () => makeInstallationPiAuthRecord(providers, credential.updatedAt, "rotation"),
-          catch: () =>
-            new InstallationPiAuthRpcFailure({
-              message: "Installation Pi credential write-back failed",
-            }),
-        });
-        yield* this.writeInstallationPiAuthProgram(record);
-      }),
-    );
+  async persistCredentialRotationForProxy(input: unknown): Promise<void> {
+    const decoded = decodeSessionCredentialRotationResult(input);
+    if (Result.isFailure(decoded)) return;
+    return this.#run(this.persistCredentialRotationForProxyProgram(decoded.success));
   }
 
-  async cancelCredentialRefresh(sentinel: string, nonce: string): Promise<void> {
-    await this.#run(
-      Effect.flatMap(CredentialVault, (vault) => vault.cancelRefresh(sentinel, nonce)),
-    );
+  async cancelCredentialRefreshForProxy(input: unknown): Promise<void> {
+    const decoded = decodeSessionCredentialRefreshResult(input);
+    if (Result.isFailure(decoded)) return;
+    return this.#run(this.cancelCredentialRefreshForProxyProgram(decoded.success));
   }
 
   async enforceHardCap(payload: HardCapPayload): Promise<void> {
@@ -4584,7 +4736,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     }
     const runtime = yield* SandboxRuntime;
     const backups = yield* BackupStore;
-    const vault = yield* CredentialVault;
     const containerAuth = yield* ContainerAuth;
     const root = sessionRoot(record.id);
     let runtimeStopAttempted = false;
@@ -4600,9 +4751,15 @@ export class Sandbox extends BaseSandbox<Bindings> {
           piProcess.status !== "killed" &&
           piProcess.status !== "error"
         ) {
-          const credential = yield* vault.require;
+          const grant = record.credentialGrant;
+          if (grant === undefined)
+            return yield* this.upstreamError(
+              "Session credential grant is unavailable",
+              undefined,
+              record.id,
+            );
           yield* containerAuth
-            .quiescePiSession(record.id, credential)
+            .quiescePiSession(record.id, sessionRuntimeCredentials(grant.grants))
             .pipe(
               Effect.mapError((cause) => new PiRuntimeStopFailure({ stage: "quiesce", cause })),
             );
@@ -4641,10 +4798,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
       }),
       {
         restore: Effect.gen({ self: this }, function* () {
-          const credential = yield* vault.require;
+          const grant = record.credentialGrant;
+          if (grant === undefined)
+            return yield* this.upstreamError(
+              "Session credential grant is unavailable",
+              undefined,
+              record.id,
+            );
           yield* this.restorePiAndHatchProgram(
             nonce,
-            containerAuth.ensurePiSession(record.id, credential),
+            containerAuth.ensurePiSession(record.id, sessionRuntimeCredentials(grant.grants)),
           );
         }),
         resumeRuntime,
@@ -4856,6 +5019,21 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
 Sandbox.outboundByHost = makeOutboundByHost(fetch);
 Sandbox.outbound = denyOutbound;
+
+function credentialProxyGrant(
+  record: SessionRecord,
+  handle: ManagedHandle,
+  repository?: string,
+): SessionCredentialGrant["grants"][number] | undefined {
+  const pinned = record.credentialGrant;
+  if (pinned === undefined || pinned.sessionId !== record.id) return undefined;
+  if (handle.provider === "github" ? repository !== record.repo : repository !== undefined)
+    return undefined;
+  const kind = credentialKindForHandle(handle);
+  return pinned.grants.find(
+    (grant) => grant.kind === kind && credentialGrantHasHandle(grant, handle),
+  );
+}
 
 function isHatchStateError(error: unknown): error is HatchStateError {
   return Predicate.isTagged("HatchStateError")(error);

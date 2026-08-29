@@ -42,11 +42,17 @@ describe("Wrangler binding coverage", () => {
 
     assert.deepEqual(
       result.required.durableObjects.map((entry) => entry.className),
-      ["ScottySandbox", "ScottyAuthRegistry", "ScottyRunnerRegistry", "ScottySandboxConfig"],
+      [
+        "ScottySandbox",
+        "ScottyAuthRegistry",
+        "ScottyRunnerRegistry",
+        "ScottySandboxConfig",
+        "ScottyCredentialRegistry",
+      ],
     );
     assert.deepEqual(
       result.required.durableObjects.map((entry) => entry.bindingName),
-      ["SANDBOX", "AUTH", "RUNNER_REGISTRY", "SANDBOX_CONFIG"],
+      ["SANDBOX", "AUTH", "RUNNER_REGISTRY", "SANDBOX_CONFIG", "CREDENTIALS"],
     );
     assert.deepEqual(result.required.r2Bindings, [
       "BACKUP_BUCKET",
@@ -72,6 +78,7 @@ describe("Wrangler binding coverage", () => {
         "authDurableObject",
         "runnerRegistryDurableObject",
         "sandboxConfigDurableObject",
+        "credentialRegistryDurableObject",
       ],
     );
     assert.equal(WRANGLER_BINDINGS_INSTALLATION_NAME, "local");

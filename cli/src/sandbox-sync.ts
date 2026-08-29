@@ -1,4 +1,11 @@
 import { Effect, Schema } from "effect";
+import {
+  CredentialRedactedMetadataSchema,
+  type CredentialName,
+  type CredentialRepositories,
+  type CredentialScope,
+} from "../../protocol/credentials";
+import type { PiAuthStore } from "../../protocol/pi-auth";
 import { CliError, EXIT } from "./core";
 import { invalidResponse } from "./pure";
 import {
@@ -21,16 +28,74 @@ export type SandboxSyncTarget = ApiRequestTarget & {
   readonly token: string;
 };
 
+export type ScottyCredentialSyncMaterial =
+  | {
+      readonly name: CredentialName;
+      readonly kind: "pi-auth";
+      readonly scope: "global";
+      readonly providers: PiAuthStore;
+    }
+  | {
+      readonly name: CredentialName;
+      readonly kind: "github-cli";
+      readonly scope: CredentialScope;
+      readonly repositories?: CredentialRepositories;
+      readonly token: string;
+    };
+
+const CredentialRegistrySyncResultSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  credentials: Schema.Array(CredentialRedactedMetadataSchema),
+});
+const decodeCredentialRegistrySyncResult = Schema.decodeUnknownEffect(
+  CredentialRegistrySyncResultSchema,
+  { onExcessProperty: "error" },
+);
 const decodeSandboxRemoteConfigStatus = Schema.decodeUnknownEffect(SandboxRemoteConfigStatusSchema);
 
 const sandboxBundleActivationConflict = (message: string, hint: string): CliError =>
   new CliError("sandbox_bundle_activation_conflict", message, hint, EXIT.WRONG_STATE);
-
 const sandboxBundleUploadFailed = (message: string, hint: string): CliError =>
   new CliError("sandbox_bundle_upload_failed", message, hint, EXIT.GENERIC);
-
 const sandboxBundleUnavailable = (message: string, hint: string): CliError =>
   new CliError("sandbox_bundle_unavailable", message, hint, EXIT.GENERIC);
+const credentialRegistrySyncInvalid = (): CliError =>
+  new CliError(
+    "credential_registry_sync_invalid",
+    "Credential registry input is invalid",
+    "Fix the declared Pi auth material and retry scotty sync.",
+    EXIT.USAGE,
+  );
+const credentialRegistrySyncUnavailable = (): CliError =>
+  new CliError(
+    "credential_registry_sync_unavailable",
+    "Credential registry is unavailable",
+    "Check the Worker and network, then retry scotty sync.",
+    EXIT.GENERIC,
+  );
+const credentialRegistrySyncConflict = (): CliError =>
+  new CliError(
+    "credential_registry_sync_conflict",
+    "Credential registry synchronization conflicted",
+    "Retry scotty sync.",
+    EXIT.WRONG_STATE,
+  );
+
+const credentialRegistrySyncPartial = (): CliError =>
+  new CliError(
+    "credential_registry_sync_partial",
+    "Credentials committed, but bundle synchronization did not complete",
+    "Credentials are committed; retry scotty sync so the operation converges.",
+    EXIT.GENERIC,
+  );
+
+const credentialRegistrySyncFailed = (): CliError =>
+  new CliError(
+    "credential_registry_sync_failed",
+    "Credential registry synchronization failed",
+    "Retry scotty sync.",
+    EXIT.GENERIC,
+  );
 
 const mapSyncTransportError = (failure: CliError): CliError => {
   if (failure.code === "network_error" || failure.code === "timeout")
@@ -50,6 +115,15 @@ const mapSyncTransportError = (failure: CliError): CliError => {
 const withSyncTransportError = <A, R>(
   program: Effect.Effect<A, CliError, R>,
 ): Effect.Effect<A, CliError, R> => program.pipe(Effect.mapError(mapSyncTransportError));
+
+const mapCredentialTransportError = (failure: CliError): CliError => {
+  if (failure.code === "network_error" || failure.code === "timeout")
+    return credentialRegistrySyncUnavailable();
+  if (failure.code === "auth") return failure;
+  if (failure.code === "bad_request") return credentialRegistrySyncInvalid();
+  if (failure.code === "conflict") return credentialRegistrySyncConflict();
+  return credentialRegistrySyncFailed();
+};
 
 const decodeStatusJson = Effect.fnUntraced(function* (value: unknown) {
   return yield* decodeSandboxRemoteConfigStatus(value).pipe(
@@ -107,5 +181,33 @@ export const synchronizeScottyToml = Effect.fnUntraced(function* (input: {
   readonly target: SandboxSyncTarget;
 }) {
   const remote = yield* synchronizeSandboxBundle({ target: input.target, built: input.built });
+  return { built: input.built, remote };
+});
+
+export const synchronizeCredentialRegistry = Effect.fnUntraced(function* (input: {
+  readonly target: SandboxSyncTarget;
+  readonly credentials: ReadonlyArray<ScottyCredentialSyncMaterial>;
+}) {
+  const value = yield* requestJson(input.target, "/api/credentials/sync", {
+    method: "POST",
+    body: JSON.stringify({
+      version: 1,
+      credentials: input.credentials,
+    }),
+  }).pipe(Effect.mapError(mapCredentialTransportError));
+  return yield* decodeCredentialRegistrySyncResult(value).pipe(
+    Effect.mapError(() => credentialRegistrySyncFailed()),
+  );
+});
+
+export const synchronizeCredentialedScottyToml = Effect.fnUntraced(function* (input: {
+  readonly target: SandboxSyncTarget;
+  readonly built: BuiltSandboxBundle;
+  readonly credentials: ReadonlyArray<ScottyCredentialSyncMaterial>;
+}) {
+  yield* synchronizeCredentialRegistry({ target: input.target, credentials: input.credentials });
+  const remote = yield* synchronizeSandboxBundle({ target: input.target, built: input.built }).pipe(
+    Effect.mapError(() => credentialRegistrySyncPartial()),
+  );
   return { built: input.built, remote };
 });

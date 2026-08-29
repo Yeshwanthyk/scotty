@@ -11,11 +11,18 @@ import {
   type InitialStorageEntries,
   lifecycleWallClock,
   makeResumeBackup,
-  makeStoredCredential,
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
+import type { CredentialGrant } from "../../protocol/credentials";
+
+const VAPORIZE_PI_GRANT: CredentialGrant = {
+  name: "openai",
+  kind: "pi-auth",
+  versionRef: "version-a",
+  handleSlots: [{ provider: "openai", slot: "api-key" }],
+};
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
   operation.then(
@@ -33,7 +40,6 @@ const warmRecord = (overrides: Partial<SessionRecord> = {}): SessionRecord =>
 
 const authorityEntries = (record: SessionRecord = warmRecord()): InitialStorageEntries => ({
   [sessionHarnessKeys.record]: record,
-  [sessionHarnessKeys.credential]: makeStoredCredential(),
 });
 
 const assertUpstream = (error: unknown): void => {
@@ -161,7 +167,7 @@ describe("Sandbox vaporize orchestration", () => {
     "backups/unowned/archive",
   ];
 
-  it("cancels schedules in order, deduplicates backups, deletes credentials, and writes gone", async () => {
+  it("cancels schedules in order, deduplicates backups, releases grants, and writes gone", async () => {
     const harness = await createVaporizeHarness({
       initialEntries: authorityEntries(vaporizeRecord()),
       initialProjections: {
@@ -193,7 +199,9 @@ describe("Sandbox vaporize orchestration", () => {
       ["backups/backup-1/archive", "backups/backup-1/meta.json"],
       ["backups/backup-2/archive"],
     ]);
-    assert.strictEqual(harness.read(sessionHarnessKeys.credential), undefined);
+    assert.deepStrictEqual(harness.credentialGrantReleases, [
+      { version: 1, sessionId: SESSION_ID, grants: [] },
+    ]);
     const gone = harness.readRecord();
     assert.strictEqual(gone?.status, "gone");
     assert.strictEqual(gone?.operation, null);
@@ -205,15 +213,69 @@ describe("Sandbox vaporize orchestration", () => {
 
     const destroyIndex = harness.events.indexOf("host:destroy");
     const backupIndex = harness.events.indexOf("r2:list:backups/backup-1/");
-    const credentialIndex = harness.events.indexOf(
-      `storage:delete:${sessionHarnessKeys.credential}`,
-    );
     const goneIndex = harness.events.indexOf("record:gone");
     const projectionIndex = harness.events.indexOf(`projection:delete:session:${SESSION_ID}`);
     assert.ok(destroyIndex < backupIndex);
-    assert.ok(backupIndex < credentialIndex);
-    assert.ok(credentialIndex < goneIndex);
+    assert.ok(backupIndex < goneIndex);
     assert.ok(goneIndex < projectionIndex);
+  });
+
+  it("retries vaporize after a committed grant release loses its RPC response", async () => {
+    const harness = await createVaporizeHarness({
+      credentialRegistryReleaseResponseLoss: true,
+      initialEntries: authorityEntries(
+        vaporizeRecord({
+          credentialGrant: {
+            version: 1,
+            sessionId: SESSION_ID,
+            grants: [VAPORIZE_PI_GRANT],
+          },
+        }),
+      ),
+      credentialRegistryGrants: [VAPORIZE_PI_GRANT],
+    });
+
+    const first = await rejection(harness.sandbox.vaporizeScottySession());
+
+    assertUpstream(first);
+    const operation = harness.readRecord()?.operation;
+    const nonce = operation?.kind === "vaporize" ? operation.nonce : undefined;
+    assert.ok(nonce !== undefined);
+    assert.strictEqual(harness.readRecord()?.credentialGrant?.grants.length, 1);
+
+    await harness.sandbox.retryVaporizeSession({ id: SESSION_ID, nonce });
+
+    assert.deepStrictEqual(harness.credentialGrantReleases, [
+      { version: 1, sessionId: SESSION_ID, grants: [VAPORIZE_PI_GRANT] },
+      { version: 1, sessionId: SESSION_ID, grants: [VAPORIZE_PI_GRANT] },
+    ]);
+    assert.deepStrictEqual(harness.readRecord()?.status, "gone");
+  });
+
+  it("releases the pinned Registry grant before completing vaporize", async () => {
+    const harness = await createVaporizeHarness({
+      initialEntries: authorityEntries(
+        vaporizeRecord({
+          credentialGrant: {
+            version: 1,
+            sessionId: SESSION_ID,
+            grants: [VAPORIZE_PI_GRANT],
+          },
+        }),
+      ),
+      credentialRegistryGrants: [VAPORIZE_PI_GRANT],
+    });
+
+    await harness.sandbox.vaporizeScottySession();
+
+    assert.deepStrictEqual(harness.credentialGrantReleases, [
+      {
+        version: 1,
+        sessionId: SESSION_ID,
+        grants: [VAPORIZE_PI_GRANT],
+      },
+    ]);
+    assert.strictEqual(harness.readRecord()?.credentialGrant, undefined);
   });
 
   it("deletes session-owned backups without touching shared sandbox bundle objects", async () => {
@@ -263,7 +325,6 @@ describe("Sandbox vaporize orchestration", () => {
 
     assert.deepStrictEqual(result, { id: SESSION_ID, status: "gone" });
     assert.strictEqual(harness.readRecord()?.status, "gone");
-    assert.strictEqual(harness.read(sessionHarnessKeys.credential), undefined);
     assert.ok(!harness.events.includes("host:destroy"));
     assert.ok(harness.events.includes(`projection:delete:session:${SESSION_ID}`));
   });
@@ -476,27 +537,10 @@ describe("Sandbox vaporize orchestration", () => {
     });
   }
 
-  it("retries safely after credential deletion fails", async () => {
-    const harness = await createVaporizeHarness({
-      initialEntries: authorityEntries(vaporizeRecord({ ownedBackupIds: [], backup: undefined })),
-      transactionFailureCountdown: 1,
-    });
-
-    const error = await rejection(harness.sandbox.vaporizeScottySession());
-    assertUpstream(error);
-    const nonce = harness.readRecord()?.operation?.nonce;
-    assert.ok(nonce !== undefined);
-    assert.notStrictEqual(harness.read(sessionHarnessKeys.credential), undefined);
-
-    await harness.sandbox.retryVaporizeSession({ id: SESSION_ID, nonce });
-    assert.strictEqual(harness.readRecord()?.status, "gone");
-    assert.strictEqual(harness.read(sessionHarnessKeys.credential), undefined);
-  });
-
   it("retries safely after gone-tombstone persistence fails", async () => {
     const harness = await createVaporizeHarness({
       initialEntries: authorityEntries(vaporizeRecord({ ownedBackupIds: [], backup: undefined })),
-      transactionFailureCountdown: 2,
+      transactionFailureCountdown: 1,
     });
 
     const error = await rejection(harness.sandbox.vaporizeScottySession());
@@ -505,7 +549,6 @@ describe("Sandbox vaporize orchestration", () => {
     assert.strictEqual(partial?.operation?.kind, "vaporize");
     const nonce = partial?.operation?.nonce;
     assert.ok(nonce !== undefined);
-    assert.strictEqual(harness.read(sessionHarnessKeys.credential), undefined);
 
     await harness.sandbox.retryVaporizeSession({ id: SESSION_ID, nonce });
     assert.strictEqual(harness.readRecord()?.status, "gone");

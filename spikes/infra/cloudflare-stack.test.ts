@@ -72,7 +72,7 @@ describe("Cloudflare stack guard", () => {
         "home",
         "worker=scotty-home-worker",
         "runnerWorker=scotty-home-runner",
-        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig",
+        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig,ScottyCredentialRegistry",
         "container=scotty-home-sandbox",
         "kv=scotty-home-sessions",
         "r2=scotty-home-backups",
@@ -90,7 +90,7 @@ describe("Cloudflare stack guard", () => {
         "home",
         "worker=scotty-home-worker",
         "runnerWorker=scotty-home-runner",
-        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig",
+        "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig,ScottyCredentialRegistry",
         "container=scotty-home-sandbox",
         "kv=scotty-home-sessions",
         "r2=scotty-home-backups",
@@ -169,7 +169,7 @@ describe("Cloudflare stack topology", () => {
       sandboxBundleBucketName: "scotty-home-sandbox-bundles",
       workerLogicalId: "Worker",
     });
-    assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["GH_TOKEN", "PI_AUTH_JSON", "SCOTTY_TOKEN"]);
+    assert.deepEqual(CLOUDFLARE_WORKER_SECRETS, ["SCOTTY_TOKEN", "CREDENTIAL_WRAPPING_KEY"]);
     const topology = makeCloudflareStackTopology(installation);
     assert.strictEqual(topology.worker.name, "scotty-home-worker");
     assert.strictEqual(topology.worker.main, "worker/src/index.ts");
@@ -193,7 +193,13 @@ describe("Cloudflare stack topology", () => {
       bindingName: "SANDBOX_CONFIG",
       className: "ScottySandboxConfig",
     });
+    assert.deepEqual(topology.credentialRegistryDurableObject, {
+      logicalId: "CredentialRegistry",
+      bindingName: "CREDENTIALS",
+      className: "ScottyCredentialRegistry",
+    });
     assert.deepEqual(topology.vars, {
+      SCOTTY_INSTALLATION_NAME: "home",
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: "scotty-home-backups",
     });
@@ -219,6 +225,7 @@ describe("Cloudflare stack topology", () => {
       },
     });
     assert.deepEqual(topology.vars, {
+      SCOTTY_INSTALLATION_NAME: "home",
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: "scotty-home-backups",
       SCOTTY_PREVIEW_BASE: "preview.scotty.example",
@@ -292,8 +299,6 @@ describe("Cloudflare stack source contract", () => {
           stdio: "pipe",
           env: {
             ...process.env,
-            PI_AUTH_JSON: syntheticMaterial,
-            GH_TOKEN: syntheticMaterial,
             SCOTTY_TOKEN: syntheticMaterial,
           },
         },
@@ -472,6 +477,8 @@ describe("Cloudflare stack source contract", () => {
     assert.notMatch(source, /SecretsStore|WriteOnlySecret|secret_text|\bvalue\s*:/u);
     assert.match(source, /worker\.bind\("InheritedWorkerSecrets"/u);
     assert.match(source, /type: "inherit", name/u);
+    assert.match(source, /CREDENTIAL_WRAPPING_KEY/u);
+    assert.equal(/CREDENTIAL_WRAPPING_KEY\s*:/u.test(source), false);
   });
 
   it("uses prebuilt runner entrypoints when embedded deployment is enabled", () => {
