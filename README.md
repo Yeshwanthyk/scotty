@@ -214,15 +214,19 @@ Wrangler is not a production infrastructure or deployment path.
 
 ## Cloudflare deployment
 
-The standalone CLI owns installation. Run `scotty init --name NAME`; it asks Alchemy to authenticate
-the selected Cloudflare profile, shows the target account and resources, deploys only after
-confirmation, generates and uploads the root Worker secret without putting it in Alchemy state, and
-stores the local pointer in mode-0600 `~/.config/scotty/installation.json`. The installation name is required and is
-never inferred from a username, machine, repository, or Cloudflare account.
+The standalone CLI owns installation. Run `scotty init --name NAME --preview-base DOMAIN
+--preview-zone-id ZONE_ID`; it asks Alchemy to authenticate the selected Cloudflare profile, shows
+the target account and resources, provisions the wildcard DNS and Worker route used by Hatch and
+Evidence, deploys only after confirmation, generates and uploads the root Worker secret without
+putting it in Alchemy state, and stores the local pointer in mode-0600
+`~/.config/scotty/installation.json`. The installation name and explicit Cloudflare-owned preview
+topology are required and are never inferred from a username, machine, repository, or Cloudflare
+account.
 
 For a clean first run:
 
-1. Run `scotty init --name NAME` and confirm the displayed Cloudflare account and resource names.
+1. Run `scotty init --name NAME --preview-base DOMAIN --preview-zone-id ZONE_ID` and confirm the
+   displayed Cloudflare account, Hatch/Evidence domain, and resource names.
 2. Declare the Pi and GitHub credential sources in `scotty.toml`, then run `scotty sync`.
 3. Run `scotty doctor --json`.
 4. Run `scotty owner recover` on the browser that will own the installation.
@@ -360,7 +364,9 @@ Contributors can instead run `npm run build:cli` and use `./dist/scotty` directl
 
 ```sh
 npm run build:cli
-./dist/scotty init --name home
+./dist/scotty init --name home \
+  --preview-base example.com \
+  --preview-zone-id 0123456789abcdef0123456789abcdef
 ./dist/scotty recover --name home
 ./dist/scotty deploy
 ./dist/scotty doctor --json

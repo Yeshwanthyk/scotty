@@ -91,6 +91,14 @@ describe("Effect command tree", () => {
 
         assert.strictEqual(root.stderr.join(""), "");
 
+        const init = run(["init", "--help"]);
+        assert.strictEqual(yield* init.effect, EXIT.OK);
+        assert.include(init.stdout.join(""), "--preview-base");
+        assert.include(init.stdout.join(""), "Hatch and Evidence preview DNS base");
+        assert.include(init.stdout.join(""), "--preview-zone-id");
+        assert.notInclude(init.stdout.join(""), "--enable-evidence");
+        assert.strictEqual(init.stderr.join(""), "");
+
         const beam = run(["beam", "--help"]);
         assert.strictEqual(yield* beam.effect, EXIT.OK);
         assert.include(beam.stdout.join(""), "scotty beam [flags] <prompt>");
