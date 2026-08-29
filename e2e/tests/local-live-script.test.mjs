@@ -1,3 +1,8 @@
+import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parse as parseToml } from "smol-toml";
@@ -5,12 +10,17 @@ import {
   formatLocalDevVars,
   formatLocalCredentialToml,
   localHarnessContainerIds,
+  localLiveCanaryValues,
   messageText,
   promptAttempt,
   repositoryFromRemote,
   snapshotSummary,
 } from "../scripts/local-live.mjs";
-import { localHarnessContainerIdsForWorker, waitForWorker } from "../support/local-worker.mjs";
+import {
+  localHarnessContainerIdsForWorker,
+  startWrangler,
+  waitForWorker,
+} from "../support/local-worker.mjs";
 import {
   credentialCanaryValues,
   findCredentialLeaks,
@@ -156,6 +166,59 @@ test("credential canary helpers scrub ambient secrets and compare exact values",
   assert.deepEqual(findCredentialLeaks("leak=github-token", values), ["github-token"]);
   assert.deepEqual(findCredentialLeaks("leak=pi-refresh", values), ["pi-refresh"]);
 });
+test("local-live canary values include root and generated Registry secrets", () => {
+  const values = localLiveCanaryValues(
+    {
+      rootToken: "root-token",
+      credentialWrappingKey: "wrapping-key",
+      piAuthJson: JSON.stringify({ "openai-codex": { access: "pi-access" } }),
+      githubToken: "github-token",
+    },
+    {
+      GH_TOKEN: "ambient-github-token",
+      PI_AUTH_JSON: "ambient-pi-auth",
+      CREDENTIAL_WRAPPING_KEY: "ambient-wrapping-key",
+    },
+  );
+  assert.ok(values.includes("root-token"));
+  assert.ok(values.includes("wrapping-key"));
+  assert.ok(values.includes("pi-access"));
+  assert.deepEqual(values, [...new Set(values)]);
+  assert.deepEqual(
+    values,
+    [...values].sort((left, right) => right.length - left.length),
+  );
+});
+
+test("local Wrangler detects split raw canaries but only retains redacted logs", () => {
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), "scotty-local-worker-test-"));
+  const logFile = path.join(temporaryRoot, "wrangler.log");
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  try {
+    const started = startWrangler({
+      envFile: "unused",
+      persistPath: "unused",
+      port: 8791,
+      secrets: ["root-token", "", "root-token"],
+      logFile,
+      spawnWranglerImpl: () => ({ child, invocation: { command: "synthetic", args: [] } }),
+    });
+    child.stdout.emit("data", Buffer.from("before root-"));
+    child.stdout.emit("data", Buffer.from("token after\n"));
+    child.emit("close");
+
+    const persisted = readFileSync(logFile, "utf8");
+    assert.equal(started.rawSecretDetected(), true);
+    assert.doesNotMatch(started.log.join(""), /root-token/u);
+    assert.doesNotMatch(persisted, /root-token/u);
+    assert.match(persisted, /\[redacted-secret\]/u);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("local-live helper recognizes an assistant marker in Pi message content", () => {
   const snapshot = {
     messages: [

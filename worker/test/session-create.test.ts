@@ -28,6 +28,15 @@ const PI_GRANT: CredentialGrant = {
   ],
 };
 
+const GITHUB_GRANT: CredentialGrant = {
+  name: "github",
+  kind: "github-cli",
+  versionRef: "version-github",
+  handleSlots: [{ provider: "github", slot: "git-https" }],
+};
+
+const VALID_GRANTS = [PI_GRANT, GITHUB_GRANT] as const;
+
 const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
   {
     path: "manifest.json",
@@ -210,7 +219,7 @@ describe("Sandbox create orchestration", () => {
   });
 
   it("pins the current Registry grant without storing credential plaintext", async () => {
-    const harness = await createSessionHarness({ credentialRegistryGrants: [PI_GRANT] });
+    const harness = await createSessionHarness({ credentialRegistryGrants: [...VALID_GRANTS] });
 
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
 
@@ -220,7 +229,7 @@ describe("Sandbox create orchestration", () => {
     assert.deepStrictEqual(harness.readRecord()?.credentialGrant, {
       version: 1,
       sessionId: SESSION_ID,
-      grants: [PI_GRANT],
+      grants: [...VALID_GRANTS],
     });
     const serialized = JSON.stringify(harness.readRecord());
     assert.ok(!serialized.includes("seed-access-token"));
@@ -229,17 +238,11 @@ describe("Sandbox create orchestration", () => {
   });
 
   it("carries the pinned GitHub managed handle through create and vaporize", async () => {
-    const githubGrant: CredentialGrant = {
-      name: "github",
-      kind: "github-cli",
-      versionRef: "version-github",
-      handleSlots: [{ provider: "github", slot: "git-https" }],
-    };
-    const harness = await createSessionHarness({ credentialRegistryGrants: [githubGrant] });
+    const harness = await createSessionHarness({ credentialRegistryGrants: [...VALID_GRANTS] });
 
     await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
 
-    assert.deepStrictEqual(harness.readRecord()?.credentialGrant?.grants, [githubGrant]);
+    assert.deepStrictEqual(harness.readRecord()?.credentialGrant?.grants, [...VALID_GRANTS]);
     const shell = harness.writtenFiles.find((file) =>
       file.path.endsWith("/.pi-agent/scotty-shell"),
     );
@@ -249,21 +252,91 @@ describe("Sandbox create orchestration", () => {
     await harness.sandbox.vaporizeScottySession();
 
     assert.deepStrictEqual(harness.credentialGrantReleases, [
-      { version: 1, sessionId: SESSION_ID, grants: [githubGrant] },
+      { version: 1, sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
     ]);
     assert.strictEqual(harness.readRecord()?.status, "gone");
   });
 
-  it("persists an empty Registry grant as a pinned Session grant", async () => {
+  it("fails before workspace and container execution when Pi credential selection is missing", async () => {
     const harness = await createSessionHarness({ credentialRegistryGrants: [] });
 
-    await harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY);
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
 
-    assert.deepStrictEqual(harness.readRecord()?.credentialGrant, {
-      version: 1,
-      sessionId: SESSION_ID,
-      grants: [],
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.include(error.message, "Pi session creation is ambiguous");
+    assert.deepStrictEqual(workspaceResetCommands(harness.commands), []);
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+
+  it("fails before workspace and container execution when Pi credential selection is ambiguous", async () => {
+    const alternatePiGrant: CredentialGrant = {
+      ...PI_GRANT,
+      name: "alternate",
+      versionRef: "version-alternate",
+    };
+    const harness = await createSessionHarness({
+      credentialRegistryGrants: [PI_GRANT, alternatePiGrant, GITHUB_GRANT],
     });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.include(error.message, "Pi session creation is ambiguous");
+    assert.deepStrictEqual(workspaceResetCommands(harness.commands), []);
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+
+  it("fails explicitly before workspace.prepare when the GitHub managed handle is missing", async () => {
+    const harness = await createSessionHarness({ credentialRegistryGrants: [PI_GRANT] });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(error.message, "Session setup failed");
+    assert.deepStrictEqual(workspaceResetCommands(harness.commands), []);
+    assert.ok(!harness.events.includes("host:exec:workspace"));
+    assert.ok(!harness.events.includes("host:mkdir"));
+  });
+  it("fails explicitly before workspace.prepare when replaying a setup with a missing GitHub managed handle", async () => {
+    const nonce = "create-before-missing-github-replay";
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: makeSessionRecord({
+          id: SESSION_ID,
+          status: "booting",
+          operation: {
+            kind: "create",
+            nonce,
+            startedAt: "2026-07-24T12:00:00.000Z",
+            createPhase: "setup",
+          },
+          branch: `scotty/${SESSION_ID}`,
+          credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [PI_GRANT] },
+        }),
+        [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
+      },
+    });
+
+    const error = await rejection(
+      harness.sandbox.createScottySession(CREATE_INPUT, SESSION_ID, CREATE_IDEMPOTENCY),
+    );
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(error.message, "Session setup failed");
+    assert.strictEqual(harness.readRecord()?.status, "failed");
+    assert.deepStrictEqual(workspaceResetCommands(harness.commands), []);
+    assert.ok(!harness.events.includes("host:exec:workspace"));
+    assert.ok(!harness.events.includes("host:mkdir"));
   });
   it("requires Registry issuance before creating runtime state", async () => {
     const harness = await createSessionHarness({ credentialRegistryIssueFailure: true });
@@ -400,6 +473,7 @@ describe("Sandbox create orchestration", () => {
       repoExistsAtCreate: true,
       defaultBranch: "main",
       codexThreadId: undefined,
+      credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
     });
     const harness = await createSessionHarness({
       initialEntries: {
@@ -445,6 +519,7 @@ describe("Sandbox create orchestration", () => {
           },
           branch: `scotty/${SESSION_ID}`,
           codexThreadId: undefined,
+          credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
       },
@@ -478,6 +553,7 @@ describe("Sandbox create orchestration", () => {
           },
           branch: `scotty/${SESSION_ID}`,
           codexThreadId: undefined,
+          credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
       },
@@ -508,6 +584,7 @@ describe("Sandbox create orchestration", () => {
           },
           branch: `scotty/${SESSION_ID}`,
           codexThreadId: undefined,
+          credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
       },
@@ -611,6 +688,7 @@ describe("Sandbox create orchestration", () => {
             },
             branch: `scotty/${SESSION_ID}`,
             codexThreadId: undefined,
+            credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
           }),
           [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
         },
@@ -657,6 +735,7 @@ describe("Sandbox create orchestration", () => {
           },
           branch: `scotty/${SESSION_ID}`,
           codexThreadId: undefined,
+          credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
       },
@@ -702,6 +781,7 @@ describe("Sandbox create orchestration", () => {
           branch: `scotty/${SESSION_ID}`,
           defaultBranch: "main",
           codexThreadId: undefined,
+          credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [...VALID_GRANTS] },
         }),
         [sessionHarnessKeys.createIdempotency]: CREATE_IDEMPOTENCY,
       },

@@ -1,9 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
+import { Result } from "effect";
 import { agentEnv, piAuthJson } from "../src/container-auth";
 import {
   githubManagedHandle,
   managedPiAccessToken,
   piAuthJson as managedPiAuthJson,
+  selectPiAuthGrant,
   sessionRuntimeCredentials,
 } from "../src/managed-credentials";
 import type { CredentialGrant } from "../../protocol/credentials";
@@ -66,5 +68,15 @@ describe("container managed credential projection", () => {
     assert.deepStrictEqual(JSON.parse(managedPiAuthJson(empty)), {});
     const env = agentEnv(SESSION_ID, empty);
     assert.strictEqual(env.GH_TOKEN, undefined);
+  });
+
+  it("rejects multiple Pi grants while preserving single-grant selection", () => {
+    const piGrant = grants[0];
+    assert.ok(piGrant !== undefined);
+    const alternate = { ...piGrant, name: "alternate", versionRef: "version-c" };
+
+    assert.deepStrictEqual(selectPiAuthGrant([piGrant]), Result.succeed(piGrant));
+    assert.deepStrictEqual(selectPiAuthGrant([piGrant, alternate]), Result.fail("ambiguous"));
+    assert.deepStrictEqual(selectPiAuthGrant([alternate, piGrant]), Result.fail("ambiguous"));
   });
 });

@@ -487,7 +487,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (enableEvidence && preview === undefined)
           return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
         const evidenceEnabled = enableEvidence ? (true as const) : undefined;
-        yield* ensureDocker();
         const fileSystem = yield* CliFileSystem;
         const journalPath = join(runtime.home, ".scotty", `init-${installationName}.json`);
         const lockPath = join(runtime.home, ".scotty", "locks", `init-${installationName}`);
@@ -517,6 +516,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                 `Repair or remove ${journalPath} after verifying Cloudflare state.`,
                 EXIT.GENERIC,
               );
+            if (Option.isSome(existingJournal) && existingJournal.value.phase === "apply_started")
+              return yield* new CliError(
+                "init_outcome_ambiguous",
+                "The previous installation initialization has an ambiguous outcome",
+                `Verify Cloudflare state before removing ${journalPath} or retrying scotty init; the journal was preserved and init will not retry automatically.`,
+                EXIT.GENERIC,
+              );
+            yield* ensureDocker();
             const creator = yield* InstallationCreator;
             const deploymentTarget = {
               installationName,

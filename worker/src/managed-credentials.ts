@@ -30,6 +30,16 @@ export interface SessionRuntimeCredentials {
   readonly piProviders: ReadonlyArray<ManagedPiProvider>;
 }
 
+export type PiAuthGrantSelectionFailure = "missing" | "ambiguous";
+
+export const selectPiAuthGrant = (
+  grants: ReadonlyArray<CredentialGrant>,
+): Result.Result<CredentialGrant, PiAuthGrantSelectionFailure> => {
+  const piGrants = grants.filter(({ kind }) => kind === "pi-auth");
+  if (piGrants.length === 1) return Result.succeed(piGrants[0]);
+  return Result.fail(piGrants.length === 0 ? "missing" : "ambiguous");
+};
+
 const managedHandleTextSchema = Schema.String.check(
   Schema.makeFilter(isManagedHandle, { expected: "a valid managed credential handle" }),
 );

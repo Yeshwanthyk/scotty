@@ -213,6 +213,25 @@ export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
   inputDigest: "b".repeat(64),
 };
 
+const DEFAULT_CREDENTIAL_REGISTRY_GRANTS: ReadonlyArray<CredentialGrant> = [
+  {
+    name: "openai",
+    kind: "pi-auth",
+    versionRef: "version-default-pi",
+    handleSlots: [
+      { provider: "openai", slot: "api-key" },
+      { provider: "openai-codex", slot: "access" },
+      { provider: "openai-codex", slot: "refresh" },
+    ],
+  },
+  {
+    name: "github",
+    kind: "github-cli",
+    versionRef: "version-default-github",
+    handleSlots: [{ provider: "github", slot: "git-https" }],
+  },
+];
+
 export type HarnessFailureStage =
   | "artifactDelete"
   | "artifactDeleteAmbiguous"
@@ -573,7 +592,9 @@ const makeCredentialRegistry = (
           value: {
             version: 1 as const,
             sessionId,
-            grants: structuredClone(options.credentialRegistryGrants ?? []),
+            grants: structuredClone(
+              options.credentialRegistryGrants ?? DEFAULT_CREDENTIAL_REGISTRY_GRANTS,
+            ),
           },
         };
       },

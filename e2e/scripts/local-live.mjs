@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { buildSecretSet } from "../../cli/src/deployment-redaction.ts";
 import { runCli } from "../support/harness.mjs";
 import {
   assertPortAvailable,
@@ -31,6 +32,16 @@ const DEFAULT_PORT = 8791;
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export const formatLocalCredentialToml = formatCredentialToml;
+
+export function localLiveCanaryValues(inputs, source = process.env) {
+  return buildSecretSet([
+    ...credentialCanaryValues({ ...inputs, wrappingKey: inputs.credentialWrappingKey }),
+    inputs.rootToken,
+    ...[source.GH_TOKEN, source.PI_AUTH_JSON, source.CREDENTIAL_WRAPPING_KEY].filter(
+      (value) => typeof value === "string" && value.length > 0,
+    ),
+  ]);
+}
 
 export function repositoryFromRemote(remote) {
   const match = remote
@@ -232,12 +243,7 @@ async function run() {
   });
   const repo = options.repo ?? repositoryFromRemote(remote);
   const host = `http://127.0.0.1:${options.port}`;
-  const canaryValues = [
-    ...credentialCanaryValues(inputs),
-    ...[process.env.GH_TOKEN, process.env.PI_AUTH_JSON, process.env.CREDENTIAL_WRAPPING_KEY].filter(
-      (value) => typeof value === "string" && value.length >= 8,
-    ),
-  ];
+  const canaryValues = localLiveCanaryValues(inputs);
   const isolatedEnv = withoutAmbientCredentialEnvironment({
     ...process.env,
     HOME: cliHome,
@@ -252,7 +258,7 @@ async function run() {
     persistPath,
     port: options.port,
     env: isolatedEnv,
-    secrets: [inputs.rootToken, ...canaryValues],
+    secrets: canaryValues,
   });
   let cleaned = false;
   let holding = false;
@@ -341,7 +347,10 @@ async function run() {
       }`,
     );
 
-    if (findCredentialLeaks(wrangler.log.join(""), canaryValues).length > 0)
+    if (
+      wrangler.rawSecretDetected() ||
+      findCredentialLeaks(wrangler.log.join(""), canaryValues).length > 0
+    )
       throw new Error("Local Wrangler logs disclosed a canary value");
     console.log("3/3 Preparing browser access…");
     const pairing = await issueBrowserPairing(host, cookie);

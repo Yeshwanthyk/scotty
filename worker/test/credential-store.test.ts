@@ -11,6 +11,7 @@ import {
   credentialStoreLayer,
   type CredentialRegistryFailure,
   selectGithubCliCredential,
+  selectPiAuthCredential,
   type CredentialRegistryStorage,
 } from "../src/credential-store";
 import {
@@ -186,6 +187,27 @@ describe("CredentialStore", () => {
     assert.deepStrictEqual(selectGithubCliCredential([], "owner/repo"), Result.fail("missing"));
   });
 
+  it("selects at most one applicable Pi credential", () => {
+    const credential = (name: string): CredentialRegistryCredential => ({
+      name,
+      kind: "pi-auth",
+      scope: "global",
+      currentVersionRef: "version-a",
+    });
+    assert.strictEqual(
+      Result.match(selectPiAuthCredential([credential("openai")]), {
+        onFailure: () => "selection-failed",
+        onSuccess: ({ name }) => name,
+      }),
+      "openai",
+    );
+    assert.deepStrictEqual(selectPiAuthCredential([]), Result.fail("missing"));
+    assert.deepStrictEqual(
+      selectPiAuthCredential([credential("openai"), credential("alternate")]),
+      Result.fail("ambiguous"),
+    );
+  });
+
   it.effect(
     "pins encrypted versions, removes the desired value for new Sessions, and garbage-collects after release",
     () =>
@@ -353,6 +375,38 @@ describe("CredentialStore", () => {
         repository.grants.map(({ name }) => name),
         ["repo-github"],
       );
+    }),
+  );
+
+  it.effect("fails closed when multiple Pi credentials are applicable", () =>
+    Effect.gen(function* () {
+      const storage = memoryStorage();
+      yield* useStore(storage, (store) =>
+        store.sync({
+          version: 1,
+          credentials: [
+            {
+              name: "openai",
+              kind: "pi-auth" as const,
+              scope: "global" as const,
+              providers: { openai: { type: "api_key" as const, key: `${BASE}-one` } },
+            },
+            {
+              name: "alternate",
+              kind: "pi-auth" as const,
+              scope: "global" as const,
+              providers: { openai: { type: "api_key" as const, key: `${BASE}-two` } },
+            },
+          ],
+        }),
+      );
+      const issued = yield* Effect.result(
+        useStore(storage, (store) => store.issueGrants({ version: 1, sessionId: SESSION })),
+      );
+      assert.deepInclude(failure(issued), { reason: "credential_ambiguous" });
+      const authority = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
+      assert.deepStrictEqual(authority.grants, []);
+      assert.deepStrictEqual(authority.issuedSessions, []);
     }),
   );
 

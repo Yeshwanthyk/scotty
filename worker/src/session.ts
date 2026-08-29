@@ -136,6 +136,7 @@ import {
   decodeSessionCredentialRefreshResult,
   decodeSessionCredentialRotationResult,
   githubManagedHandle,
+  selectPiAuthGrant,
   sessionRuntimeCredentials,
   type ManagedCredentialRefreshLease,
 } from "./managed-credentials";
@@ -358,6 +359,15 @@ class SessionCreateUncertain extends Data.TaggedError("SessionCreateUncertain")<
   readonly cause: unknown;
   readonly stage?: SessionCreateSetupStage;
 }> {}
+
+const piGrantSelectionFailure = (
+  grants: SessionCredentialGrant["grants"],
+): SessionCreateUncertain | undefined => {
+  const selected = selectPiAuthGrant(grants);
+  return Result.isFailure(selected)
+    ? new SessionCreateUncertain({ cause: `Pi credential selection is ${selected.failure}` })
+    : undefined;
+};
 
 const mapCreateUncertain =
   (stage: SessionCreateSetupStage) =>
@@ -777,6 +787,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (record.credentialGrant !== undefined) {
       if (record.credentialGrant.sessionId !== record.id)
         return yield* new SessionCreateUncertain({ cause: "Session credential grant mismatch" });
+      const selectionFailure = piGrantSelectionFailure(record.credentialGrant.grants);
+      if (selectionFailure !== undefined) return yield* selectionFailure;
       return record;
     }
     const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
@@ -800,6 +812,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
       sessionId: record.id,
       grants: decodedGrant.success.grants,
     };
+    const selectionFailure = piGrantSelectionFailure(credentialGrant.grants);
+    if (selectionFailure !== undefined) return yield* selectionFailure;
     return yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       credentialGrant,
@@ -2073,7 +2087,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
       : { exists: false },
   ) {
     const pinned = yield* this.pinPiGrantProgram(record, nonce);
-    const workspace = yield* Workspace;
     const grant = pinned.credentialGrant;
     if (grant === undefined)
       return yield* this.upstreamError(
@@ -2082,7 +2095,14 @@ export class Sandbox extends BaseSandbox<Bindings> {
         record.id,
       );
     const githubHandle = githubManagedHandle(grant.grants);
-    const worktree = yield* workspace.prepare(record, githubHandle ?? "", verified);
+    if (githubHandle === undefined)
+      return yield* this.upstreamError(
+        "Session GitHub credential handle is unavailable",
+        undefined,
+        record.id,
+      );
+    const workspace = yield* Workspace;
+    const worktree = yield* workspace.prepare(record, githubHandle, verified);
     yield* this.updateForOperationProgram(nonce, (current) => ({
       ...current,
       operation: {
@@ -2138,6 +2158,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
         undefined,
         record.id,
       );
+    const selectionFailure = piGrantSelectionFailure(grant.grants);
+    if (selectionFailure !== undefined) return yield* selectionFailure;
     yield* this.materializeAndSeedSandboxProgram(record, grant, { initialPrompt: prompt });
     yield* containerAuth
       .ensurePiSession(record.id, sessionRuntimeCredentials(grant.grants))

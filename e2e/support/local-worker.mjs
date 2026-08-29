@@ -8,6 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { buildSecretSet, redactWithSecretSet } from "../../cli/src/deployment-redaction.ts";
 import { scrubAmbientCredentialEnvironment } from "./credential-canary.mjs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
@@ -151,14 +152,8 @@ export async function assertPortAvailable(port) {
   });
 }
 
-export function redact(text, secrets) {
-  return secrets.reduce(
-    (result, secret) =>
-      typeof secret === "string" && secret.length > 0
-        ? result.replaceAll(secret, "[redacted]")
-        : result,
-    text,
-  );
+export function redact(text, secrets = []) {
+  return redactWithSecretSet(text, buildSecretSet(secrets), "[redacted]");
 }
 
 export function dockerContainers() {
@@ -264,13 +259,14 @@ export function startWrangler({
   secrets = [],
   env = process.env,
   logFile,
+  spawnWranglerImpl = spawnWrangler,
 }) {
   const log = [];
-  const maxSecretLength = secrets.reduce(
-    (length, secret) => (typeof secret === "string" ? Math.max(length, secret.length) : length),
-    0,
-  );
+  const redactionSecrets = buildSecretSet(secrets);
+  const maxSecretLength = redactionSecrets[0]?.length ?? 0;
   let pending = "";
+  let rawTail = "";
+  let rawSecretDetected = false;
   if (logFile) {
     writeFileSync(logFile, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
     chmodSync(logFile, 0o600);
@@ -281,9 +277,22 @@ export function startWrangler({
     log.push(text);
     if (log.length > 200) log.shift();
   };
+  const inspectRaw = (raw) => {
+    if (rawSecretDetected || maxSecretLength === 0) return;
+    const combined = rawTail + raw;
+    if (redactionSecrets.some((secret) => combined.includes(secret))) {
+      rawSecretDetected = true;
+      rawTail = "";
+      return;
+    }
+    const keep = maxSecretLength - 1;
+    rawTail = keep > 0 ? combined.slice(-keep) : "";
+  };
   const remember = (chunk) => {
-    const combined = pending + chunk.toString();
-    const redacted = redact(combined, secrets);
+    const raw = chunk.toString();
+    inspectRaw(raw);
+    const combined = pending + raw;
+    const redacted = redactWithSecretSet(combined, redactionSecrets);
     if (maxSecretLength === 0) {
       pending = "";
       rememberSafe(redacted);
@@ -294,15 +303,19 @@ export function startWrangler({
     pending = redacted.slice(redacted.length - keep);
   };
   const flushLog = () => {
-    if (pending) rememberSafe(redact(pending, secrets));
+    if (pending) rememberSafe(redactWithSecretSet(pending, redactionSecrets));
     pending = "";
   };
-  const { child, invocation } = spawnWrangler({ envFile, persistPath, port, name, env });
+  const finishLog = () => {
+    flushLog();
+    rawTail = "";
+  };
+  const { child, invocation } = spawnWranglerImpl({ envFile, persistPath, port, name, env });
   child.stdout.on("data", remember);
   child.stderr.on("data", remember);
-  child.once("close", flushLog);
-  child.once("error", flushLog);
-  return { child, invocation, log, flushLog };
+  child.once("close", finishLog);
+  child.once("error", finishLog);
+  return { child, invocation, log, flushLog, rawSecretDetected: () => rawSecretDetected };
 }
 
 export function readStartupLogTail(started) {

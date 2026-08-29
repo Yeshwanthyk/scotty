@@ -1230,24 +1230,12 @@ describe("configuration and transport", () => {
     expect(h.error().error.code).toBe("invalid_config");
   });
 
-  test("init resumes an apply-started journal with the same token", async () => {
+  test("init preserves an apply-started journal and refuses an automatic retry", async () => {
     const home = await temporaryDirectory();
     await writeScottyToml(home);
     const requests: Array<Parameters<NonNullable<CliDependencies["createInstallation"]>>[0]> = [];
     let plans = 0;
-    const result = {
-      installationName: "home",
-      profile: "personal",
-      stackName: "Scotty-home",
-      stage: "production",
-      accountId: "0123456789abcdef0123456789abcdef",
-      workerName: "scotty-home-worker",
-      runnerWorkerName: "scotty-home-runner",
-      containerName: "scotty-home-sandbox",
-      kvTitle: "scotty-home-sessions",
-      backupBucketName: "scotty-home-backups",
-      host: "https://scotty-home-worker.example.workers.dev",
-    } as const;
+    const accountId = "0123456789abcdef0123456789abcdef";
     const h = harness({
       home,
       fetch: acceptingSandboxSyncFetch(),
@@ -1255,22 +1243,15 @@ describe("configuration and transport", () => {
         plans += 1;
         return {
           installationName: "home",
-          accountId: result.accountId,
-          hasExistingResources: plans > 1,
-          fingerprint: plans === 1 ? "create-plan" : "resume-plan",
-          changes:
-            plans === 1
-              ? [{ id: "Scotty-home/Worker", action: "create" }]
-              : [
-                  { id: "Scotty-home/Worker", action: "update" },
-                  { id: "Scotty-home/Worker/SESSIONS", action: "binding-update" },
-                ],
+          accountId,
+          hasExistingResources: false,
+          fingerprint: "create-plan",
+          changes: [{ id: "Scotty-home/Worker", action: "create" }],
         };
       },
       createInstallation: async (request) => {
         requests.push(request);
-        if (requests.length === 1) return rejected("ambiguous apply result");
-        return result;
+        return rejected("ambiguous apply result");
       },
     });
 
@@ -1278,17 +1259,40 @@ describe("configuration and transport", () => {
       EXIT.GENERIC,
     );
     const journalPath = join(home, ".scotty", "init-home.json");
-    const journal = JSON.parse(await readFile(journalPath, "utf8"));
+    const journalText = await readFile(journalPath, "utf8");
+    const journal = JSON.parse(journalText);
     expect(journal.phase).toBe("apply_started");
     expect(journal.credentialWrappingKey).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect((await stat(journalPath)).mode & 0o777).toBe(0o600);
 
-    expect(await main(["init", "--name", "home", "--profile", "personal"], h.deps)).toBe(EXIT.OK);
-    expect(requests).toHaveLength(2);
-    expect(requests[1]).toMatchObject({ mode: "resume", expectedPlanFingerprint: "resume-plan" });
-    expect(requests[1]?.token).toBe(requests[0]?.token);
-    expect(requests[1]?.credentialWrappingKey).toBe(requests[0]?.credentialWrappingKey);
-    await expect(stat(journalPath)).rejects.toMatchObject({ code: "ENOENT" });
+    let retryPlans = 0;
+    let retryCreates = 0;
+    const retry = harness({
+      home,
+      planCreateInstallation: async () => {
+        retryPlans += 1;
+        return Promise.reject(new Error("init must not re-plan an ambiguous installation"));
+      },
+      createInstallation: async () => {
+        retryCreates += 1;
+        return Promise.reject(new Error("init must not retry an ambiguous installation"));
+      },
+    });
+    expect(await main(["init", "--name", "home", "--profile", "personal"], retry.deps)).toBe(
+      EXIT.GENERIC,
+    );
+    expect(plans).toBe(1);
+    expect(retryPlans).toBe(0);
+    expect(retryCreates).toBe(0);
+    const error = retry.error().error;
+    expect(error).toMatchObject({
+      code: "init_outcome_ambiguous",
+      message: "The previous installation initialization has an ambiguous outcome",
+    });
+    expect(error.hint).toContain(`Verify Cloudflare state before removing ${journalPath}`);
+    expect(error.hint).toContain("init will not retry automatically");
+    expect(await readFile(journalPath, "utf8")).toBe(journalText);
+    expect(requests).toHaveLength(1);
   });
 
   test("recover inspects, confirms, rotates only the token, and stores a private mapping", async () => {

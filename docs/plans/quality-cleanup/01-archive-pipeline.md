@@ -57,13 +57,13 @@ Do not add speculative malformed-input cases.
 The planning snapshot is `14baadf5768792c28992b79d038055037cb960bf` on `main`. At that
 snapshot, `npm run lint` reports 64 complexity findings. The scoped findings are:
 
-| File and live function | Complexity |
-|---|---:|
-| `cli/src/sandbox-walk.ts` — `walkSandboxTree` | 23 |
-| `cli/src/sandbox-archive.ts` — `parseSandboxTar` | 28 |
-| `cli/src/sandbox-archive.ts` — `expectedV2Files` | 30 |
-| `worker/src/sandbox-archive.ts` — `parseSandboxTar` | 30 |
-| `worker/src/sandbox-archive.ts` — `validateV2Manifest` | 30 |
+| File and live function                                 | Complexity |
+| ------------------------------------------------------ | ---------: |
+| `cli/src/sandbox-walk.ts` — `walkSandboxTree`          |         23 |
+| `cli/src/sandbox-archive.ts` — `parseSandboxTar`       |         28 |
+| `cli/src/sandbox-archive.ts` — `expectedV2Files`       |         30 |
+| `worker/src/sandbox-archive.ts` — `parseSandboxTar`    |         30 |
+| `worker/src/sandbox-archive.ts` — `validateV2Manifest` |         30 |
 
 A fresh implementation session must not assume that snapshot is still HEAD. Before editing:
 

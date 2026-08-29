@@ -136,6 +136,17 @@ export const credentialStoreLayer = (
 
 export type GithubCliCredentialSelectionFailure = "missing" | "ambiguous";
 
+export type PiAuthCredentialSelectionFailure = "missing" | "ambiguous";
+
+/** Selects the only Pi credential that can apply to a Session. */
+export const selectPiAuthCredential = (
+  credentials: ReadonlyArray<CredentialRegistryCredential>,
+): Result.Result<CredentialRegistryCredential, PiAuthCredentialSelectionFailure> => {
+  const piCredentials = credentials.filter(({ kind }) => kind === "pi-auth");
+  if (piCredentials.length === 1) return Result.succeed(piCredentials[0]);
+  return Result.fail(piCredentials.length === 0 ? "missing" : "ambiguous");
+};
+
 /**
  * Selects one GitHub credential without exposing plaintext: one exact match wins; otherwise
  * exactly one global declaration is allowed as the fallback.
@@ -364,6 +375,22 @@ const makeCredentialStore = (
         });
 
       const repository = decoded.success.repository;
+      const piCredentials = authority.credentials.filter(({ kind }) => kind === "pi-auth");
+      const selectedPi =
+        piCredentials.length === 0 ? undefined : selectPiAuthCredential(piCredentials);
+      if (selectedPi !== undefined && Result.isFailure(selectedPi))
+        return Result.fail(
+          failure(
+            selectedPi.failure === "ambiguous" ? "credential_ambiguous" : "credential_missing",
+            selectedPi.failure === "ambiguous"
+              ? "Pi credential declaration is ambiguous"
+              : "Pi credential is not declared",
+          ),
+        );
+      const selectedPiName =
+        selectedPi === undefined || Result.isFailure(selectedPi)
+          ? undefined
+          : selectedPi.success.name;
       const githubCredentials = authority.credentials.filter(({ kind }) => kind === "github-cli");
       const selectedGithub =
         githubCredentials.length === 0
@@ -383,6 +410,7 @@ const makeCredentialStore = (
           ? undefined
           : selectedGithub.success.name;
       const grants = authority.credentials.flatMap((credential) => {
+        if (credential.kind === "pi-auth" && credential.name !== selectedPiName) return [];
         if (credential.kind === "github-cli" && credential.name !== selectedGithubName) return [];
         const inScope =
           credential.kind === "github-cli" ||

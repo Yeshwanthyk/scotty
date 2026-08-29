@@ -1,9 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Predicate, Result } from "effect";
-import {
-  InstallationDeploymentError,
-  uploadCredentialWrappingKey,
-} from "../src/installation-deployment";
+import { uploadCredentialWrappingKey } from "../src/installation-deployment";
 import { sanitizedChildEnvironment } from "../src/services.ts";
 
 const KEY = "A".repeat(43);
@@ -55,15 +52,9 @@ describe("credential wrapping key upload", () => {
         }),
       );
       assert.strictEqual(calls, 1);
+      const failure = Result.isFailure(result) ? result.failure : undefined;
       assert.isTrue(Result.isFailure(result));
-      const failure = Result.match(result, {
-        onFailure: (cause) =>
-          new InstallationDeploymentError({
-            message: "Could not determine whether CREDENTIAL_WRAPPING_KEY was stored.",
-            cause,
-          }),
-        onSuccess: () => new InstallationDeploymentError({ message: "unexpected success" }),
-      });
+      assert.isDefined(failure);
       assert.isTrue(Predicate.isTagged(failure, "InstallationDeploymentError"));
       assert.strictEqual(
         failure.message,
