@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { managedInstallationPath } from "../cli/src/managed-installation-path.mjs";
 import {
   STANDALONE_DEPLOY_ARGS,
   STANDALONE_DEPLOY_ERROR,
@@ -73,7 +74,7 @@ describe("standalone deployment clean-room proof", () => {
         assert.equal(options.env.PI_AUTH_JSON, undefined);
         assert.equal(options.env.CREDENTIAL_WRAPPING_KEY, undefined);
         assert.match(options.env.DOCKER_HOST, /scotty-clean-room/u);
-        assert.ok(existsSync(join(options.env.HOME, ".scotty.json")));
+        assert.ok(existsSync(managedInstallationPath(options.env.HOME)));
         writeDiagnostic(options.env.HOME);
         return failure();
       },

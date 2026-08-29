@@ -10,6 +10,7 @@ import {
   GlobalFlag,
 } from "effect/unstable/cli";
 import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
+import { managedInstallationPath } from "./managed-installation-path.mjs";
 import { loadEmbeddedScottySkill } from "./embedded-scotty-skill";
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
@@ -668,7 +669,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               mode: Option.isSome(existingJournal) ? "resume" : "fresh",
             });
             const host = yield* Effect.fromResult(normalizeHost(deployed.host));
-            const configPath = join(runtime.home, ".scotty.json");
+            const configPath = managedInstallationPath(runtime.home);
             yield* secureWrite(
               configPath,
               `${JSON.stringify(managedConfig({ ...deployed, host }, token), null, 2)}\n`,
@@ -801,7 +802,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             );
         }
 
-        const configPath = join(runtime.home, ".scotty.json");
+        const configPath = managedInstallationPath(runtime.home);
         const journalPath = join(runtime.home, ".scotty", `recover-${installationName}.json`);
         const fileSystem = yield* CliFileSystem;
         yield* fileSystem.withLock(
@@ -902,7 +903,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("uninstall does not accept --host or --token-file");
-        const configPath = join(runtime.home, ".scotty.json");
+        const configPath = managedInstallationPath(runtime.home);
         const config = yield* readConfig(configPath);
         if (!config.installationName || !config.profile)
           return yield* usage(
@@ -1030,7 +1031,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("deploy does not accept --host or --token-file");
-        const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+        const config = yield* readConfig(managedInstallationPath(runtime.home));
         if (!config.installationName || !config.profile || !config.accountId)
           return yield* usage(
             "No managed Scotty installation is configured",
@@ -1113,7 +1114,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         });
         const host = yield* Effect.fromResult(normalizeHost(deployed.host));
         yield* secureWrite(
-          join(runtime.home, ".scotty.json"),
+          managedInstallationPath(runtime.home),
           `${JSON.stringify(
             managedConfig({ ...deployed, host }, config.token, config.adoptionManifestPath),
             null,
@@ -1423,7 +1424,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const doctor = Command.make("doctor", {}, () =>
     Effect.gen(function* () {
       const { autoJson, options, runtime } = yield* commandContext();
-      const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+      const config = yield* readConfig(managedInstallationPath(runtime.home));
       const auth = yield* credentials(options);
       const value = yield* requestJson(auth, "/api/sessions");
       if (Option.isNone(decodeSessionsResponse(value)))

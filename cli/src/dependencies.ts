@@ -2,6 +2,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { Clock, Effect, Option, Result } from "effect";
 import { decodeInstallationPreviewConfiguration } from "../../infra/installation";
 import { CliError, EXIT, PENDING_UP_TTL_MS, type GlobalOptions } from "./core";
+import { managedInstallationPath } from "./managed-installation-path.mjs";
 import {
   decodeJsonValue,
   decodePendingUp,
@@ -311,7 +312,7 @@ export const credentials = Effect.fnUntraced(function* (options: GlobalOptions) 
       );
   }
   if (!hostValue || !token) {
-    const config = yield* readConfig(join(runtime.home, ".scotty.json"));
+    const config = yield* readConfig(managedInstallationPath(runtime.home));
     hostValue ??= config.host;
     token ??= config.token;
   }

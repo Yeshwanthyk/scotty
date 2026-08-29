@@ -9,6 +9,7 @@ import { AuthError } from "alchemy/Auth";
 import { EXIT, main, VERSION, type CliDependencies } from "../scotty";
 import { BeamUpRequestSchema } from "../src/schemas";
 import { scottyTomlConfigPath } from "../src/scotty-config";
+import { managedInstallationPath } from "../src/managed-installation-path.mjs";
 import { Schema } from "effect";
 
 const temporaryDirectories: string[] = [];
@@ -21,6 +22,7 @@ afterEach(async () => {
 
 async function temporaryDirectory(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "scotty-cli-test-"));
+  await mkdir(join(path, ".config", "scotty"), { recursive: true });
   temporaryDirectories.push(path);
   return path;
 }
@@ -134,10 +136,24 @@ function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
 }
 
 describe("configuration and transport", () => {
+  test("uses only the managed installation pointer path", async () => {
+    const home = await temporaryDirectory();
+    expect(managedInstallationPath(home)).toBe(
+      join(home, ".config", "scotty", "installation.json"),
+    );
+    await writeFile(
+      join(home, ".scotty.json"),
+      JSON.stringify({ host: "https://legacy.example", token: "legacy-token" }),
+      { mode: 0o600 },
+    );
+    const h = harness({ home, env: {}, fetch: async () => Response.json([]) });
+    expect(await main(["list"], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error.code).toBe("bad_usage");
+  });
   test("flags override env and config; non-TTY output is stable JSON", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({ host: "https://config.example", token: "config-token" }),
       { mode: 0o600 },
     );
@@ -559,7 +575,7 @@ describe("configuration and transport", () => {
   test("env overrides config and config is the final fallback", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({ host: "https://config.example", token: "config-token" }),
       { mode: 0o600 },
     );
@@ -593,7 +609,7 @@ describe("configuration and transport", () => {
 
   test("rejects unsafe and symlinked config files", async () => {
     const home = await temporaryDirectory();
-    const configPath = join(home, ".scotty.json");
+    const configPath = managedInstallationPath(home);
     await writeFile(
       configPath,
       JSON.stringify({ host: "https://worker.example", token: "root-secret" }),
@@ -620,7 +636,7 @@ describe("configuration and transport", () => {
 
   test("complete overrides bypass a malformed config for stateless agents", async () => {
     const home = await temporaryDirectory();
-    await writeFile(join(home, ".scotty.json"), "not-json", { mode: 0o600 });
+    await writeFile(managedInstallationPath(home), "not-json", { mode: 0o600 });
     const h = harness({ home, fetch: async () => Response.json([]) });
     expect(await main(["list", "--host", "https://worker.example"], h.deps)).toBe(EXIT.OK);
     expect(h.json()).toEqual([]);
@@ -629,7 +645,7 @@ describe("configuration and transport", () => {
   test("config fields decode independently and unknown fields are ignored", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         host: { wrong: true },
         token: "config-token",
@@ -768,9 +784,9 @@ describe("configuration and transport", () => {
     expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
     expect(request?.credentialWrappingKey).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect(Buffer.from(request?.credentialWrappingKey ?? "", "base64url")).toHaveLength(32);
-    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(commands.some(([command]) => command === "gh")).toBe(false);
-    expect((await stat(join(home, ".scotty.json"))).mode & 0o777).toBe(0o600);
+    expect((await stat(managedInstallationPath(home))).mode & 0o777).toBe(0o600);
     expect(config).toEqual({
       version: 1,
       installationName: "home",
@@ -790,7 +806,7 @@ describe("configuration and transport", () => {
     expect(h.stdout.join("")).not.toContain(request?.credentialWrappingKey ?? "impossible");
     expect(JSON.stringify(config)).not.toContain(request?.credentialWrappingKey ?? "impossible");
     expect(h.json()).toEqual({
-      configPath: join(home, ".scotty.json"),
+      configPath: managedInstallationPath(home),
       installationName: "home",
       profile: "personal",
       accountId: "0123456789abcdef0123456789abcdef",
@@ -939,15 +955,15 @@ describe("configuration and transport", () => {
     expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
     expect(h.error().error.code).toBe("sandbox_bundle_upload_failed");
     expect(h.error().error.hint).toBe("Retry scotty sync.");
-    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config.host).toBe("https://scotty-home-worker.example.workers.dev");
     expect(config.token).toMatch(/^[0-9a-f]{64}$/u);
-    expect((await stat(join(home, ".scotty.json"))).mode & 0o777).toBe(0o600);
+    expect((await stat(managedInstallationPath(home))).mode & 0o777).toBe(0o600);
   });
 
   test("init keeps provider and pointer ordering when TOML is missing", async () => {
     const home = await temporaryDirectory();
-    const pointerPath = join(home, ".scotty.json");
+    const pointerPath = managedInstallationPath(home);
     const providerCalls: string[] = [];
     const bundleRequests: string[] = [];
     const h = harness({
@@ -1066,14 +1082,14 @@ describe("configuration and transport", () => {
       previewBase: "preview.scotty.example",
       previewZoneId: "0123456789abcdef0123456789abcdef",
     });
-    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config).toMatchObject({
       version: 2,
       previewBase: "preview.scotty.example",
       previewZoneId: "0123456789abcdef0123456789abcdef",
     });
     expect(h.json()).toEqual({
-      configPath: join(home, ".scotty.json"),
+      configPath: managedInstallationPath(home),
       installationName: "home",
       profile: "default",
       accountId: "0123456789abcdef0123456789abcdef",
@@ -1173,7 +1189,7 @@ describe("configuration and transport", () => {
         h.deps,
       ),
     ).toBe(EXIT.OK);
-    expect(JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"))).toMatchObject({
+    expect(JSON.parse(await readFile(managedInstallationPath(home), "utf8"))).toMatchObject({
       version: 3,
       previewBase: enabledResult.previewBase,
       previewZoneId: enabledResult.previewZoneId,
@@ -1187,7 +1203,7 @@ describe("configuration and transport", () => {
       previewZoneId: enabledResult.previewZoneId,
       evidenceEnabled: true,
     });
-    expect(JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"))).toMatchObject({
+    expect(JSON.parse(await readFile(managedInstallationPath(home), "utf8"))).toMatchObject({
       version: 3,
       evidenceEnabled: true,
     });
@@ -1196,7 +1212,7 @@ describe("configuration and transport", () => {
   test("rejects evidence opt-in stored under an older config version", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 2,
         installationName: "home",
@@ -1329,7 +1345,7 @@ describe("configuration and transport", () => {
       expectedBackupBucketName: "legacy-backups",
     });
     expect(recovered[0]?.token).toMatch(/^[0-9a-f]{64}$/u);
-    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config.adoptionManifestPath).toBe("/private/adoption.json");
     expect(config.token).toBe(recovered[0]?.token);
     expect(h.stdout.join("")).not.toContain(config.token);
@@ -1339,7 +1355,7 @@ describe("configuration and transport", () => {
     const home = await temporaryDirectory();
     await writeScottyToml(home);
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -1404,7 +1420,7 @@ describe("configuration and transport", () => {
       expectedPlanFingerprint: "plan-1",
     });
     expect(request).not.toHaveProperty("token");
-    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config.token).toBe("root-secret");
     expect(config.host).toBe("https://new.example");
     expect(h.json().rootTokenRotated).toBe(false);
@@ -1416,7 +1432,7 @@ describe("configuration and transport", () => {
     const home = await temporaryDirectory();
     await writeScottyToml(home);
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -1465,14 +1481,14 @@ describe("configuration and transport", () => {
     expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
     expect(h.error().error.code).toBe("sandbox_bundle_upload_failed");
     expect(h.error().error.hint).toBe("Retry scotty sync.");
-    const config = JSON.parse(await readFile(join(home, ".scotty.json"), "utf8"));
+    const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config.host).toBe("https://new.example");
     expect(config.token).toBe("root-secret");
   });
 
   test("deploy keeps provider and pointer ordering when TOML is invalid", async () => {
     const home = await temporaryDirectory();
-    const pointerPath = join(home, ".scotty.json");
+    const pointerPath = managedInstallationPath(home);
     await writeScottyToml(home);
     await writeFile(scottyTomlConfigPath(home), "version =\n", { mode: 0o600 });
     await writeFile(
@@ -1549,7 +1565,7 @@ describe("configuration and transport", () => {
     const home = await temporaryDirectory();
     await writeScottyToml(home);
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -1608,7 +1624,7 @@ describe("configuration and transport", () => {
 
   test("deploy no-change keeps the pointer and skips provider apply when TOML is missing", async () => {
     const home = await temporaryDirectory();
-    const pointerPath = join(home, ".scotty.json");
+    const pointerPath = managedInstallationPath(home);
     const pointerText = `${JSON.stringify({
       version: 1,
       installationName: "home",
@@ -1663,7 +1679,7 @@ describe("configuration and transport", () => {
   test("deploy requires confirmation only when a non-interactive plan has changes", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -1757,7 +1773,7 @@ describe("configuration and transport", () => {
   test("deployment without the Registry wrapping key requires a fresh installation", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -1801,7 +1817,7 @@ describe("configuration and transport", () => {
   test("no-op deploy refuses to synchronize before the wrapping-key preflight", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -1859,7 +1875,7 @@ describe("configuration and transport", () => {
     const home = await temporaryDirectory();
     const secret = "synthetic-deploy-environment-secret";
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -1935,7 +1951,7 @@ describe("configuration and transport", () => {
 
   test("uninstall removes compute, retains data by default, and deletes local config", async () => {
     const home = await temporaryDirectory();
-    const configPath = join(home, ".scotty.json");
+    const configPath = managedInstallationPath(home);
     await writeFile(
       configPath,
       JSON.stringify({
@@ -1986,7 +2002,7 @@ describe("configuration and transport", () => {
 
   test("uninstall reports manual preview cleanup and retains config without ownership proof", async () => {
     const home = await temporaryDirectory();
-    const configPath = join(home, ".scotty.json");
+    const configPath = managedInstallationPath(home);
     await writeFile(
       configPath,
       JSON.stringify({
@@ -2025,7 +2041,7 @@ describe("configuration and transport", () => {
 
   test("uninstall host failures keep the public envelope and persist prototype error details", async () => {
     const home = await temporaryDirectory();
-    const configPath = join(home, ".scotty.json");
+    const configPath = managedInstallationPath(home);
     const secret = "synthetic-uninstall-secret-token";
     await writeFile(
       configPath,
@@ -2105,7 +2121,7 @@ describe("configuration and transport", () => {
   test("uninstall passes the explicit data deletion choice", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -2150,7 +2166,7 @@ describe("configuration and transport", () => {
   test("doctor validates managed installation metadata and root authentication", async () => {
     const home = await temporaryDirectory();
     await writeFile(
-      join(home, ".scotty.json"),
+      managedInstallationPath(home),
       JSON.stringify({
         version: 1,
         installationName: "home",
@@ -2553,7 +2569,7 @@ describe("commands and schemas", () => {
 
   test("sandbox inspect and steer use only the exact internal peer-control transport", async () => {
     const home = await temporaryDirectory();
-    await mkdir(join(home, ".scotty.json"));
+    await mkdir(managedInstallationPath(home));
     const sourceMarker = "source-session-must-not-leave-the-container";
     const requests: Request[] = [];
     const snapshot = {

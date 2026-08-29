@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { isDirectRun } from "./is-direct-run.mjs";
+import { managedInstallationPath } from "../cli/src/managed-installation-path.mjs";
 
 export const STANDALONE_DEPLOY_ARGS = Object.freeze(["uninstall", "--yes", "--json"]);
 export const STANDALONE_DEPLOY_ERROR = Object.freeze({
@@ -203,7 +204,8 @@ export const checkCliStandaloneDeploy = async ({
       mkdir(cwd, { recursive: true }),
       mkdir(scratch, { recursive: true }),
     ]);
-    const configPath = join(home, ".scotty.json");
+    const configPath = managedInstallationPath(home);
+    await mkdir(dirname(configPath), { recursive: true });
     const configBody = `${JSON.stringify(CLEAN_ROOM_CONFIG, null, 2)}\n`;
     await writeFile(configPath, configBody, { mode: 0o600 });
     await chmod(configPath, 0o600);

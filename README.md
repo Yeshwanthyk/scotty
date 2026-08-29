@@ -217,7 +217,7 @@ Wrangler is not a production infrastructure or deployment path.
 The standalone CLI owns installation. Run `scotty init --name NAME`; it asks Alchemy to authenticate
 the selected Cloudflare profile, shows the target account and resources, deploys only after
 confirmation, generates and uploads the root Worker secret without putting it in Alchemy state, and
-stores the local pointer in mode-0600 `~/.scotty.json`. The installation name is required and is
+stores the local pointer in mode-0600 `~/.config/scotty/installation.json`. The installation name is required and is
 never inferred from a username, machine, repository, or Cloudflare account.
 
 For a clean first run:
@@ -239,7 +239,7 @@ a stopped command can reuse the same token. A pre-existing deployment whose phys
 logical names differ from the generic convention can be recovered with a private
 `--adoption-manifest PATH`; `.scotty-adoption.json` is ignored by Git.
 
-Use `scotty deploy` for normal updates. It reads the managed installation from `~/.scotty.json`,
+Use `scotty deploy` for normal updates. It reads the managed installation from `~/.config/scotty/installation.json`,
 checks the current Docker context, and shows the Alchemy resource plan. It asks for confirmation
 only when the plan has changes. A non-interactive deployment with changes needs `--yes`. Deployment
 never generates or changes the root token. On interactive macOS, Scotty offers to start Colima when
@@ -421,7 +421,7 @@ The installed `cloudflare/sandbox:0.12.3` HTTPS interceptor's trust of the reser
 proven by local tests. A deployed same-repository inspect/steer canary remains a production gate; the
 local suite is not production proof.
 
-The command uses the installation in `~/.scotty.json`, registers the required name with the
+The command uses the installation in `~/.config/scotty/installation.json`, registers the required name with the
 control plane, receives a one-time runner credential, imports the current GitHub CLI login,
 installs runner-only credential files, writes and restarts the hardened systemd user service, and
 fails if the service is not active. Pass `--replace` only when moving or reinstalling an existing
