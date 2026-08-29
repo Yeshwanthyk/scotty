@@ -169,8 +169,6 @@ const extractValidatedArchive = Effect.fnUntraced(function* (
   const extract = Effect.gen(function* () {
     yield* runtime.mkdir(stagingRoot, { recursive: true });
     yield* runtime.writeFile(archivePath, archive);
-    const gzip = yield* runtime.exec(`gzip -t ${shellQuote(archivePath)}`);
-    if (!gzip.success) return yield* archiveFailure("invalid_archive");
     yield* runtime.execChecked(
       `gzip -dc ${shellQuote(archivePath)} | head -c ${SANDBOX_MAX_UNCOMPRESSED_BYTES + 1} > ${shellQuote(tarPath)}`,
     );
@@ -178,6 +176,8 @@ const extractValidatedArchive = Effect.fnUntraced(function* (
       `test "$(wc -c < ${shellQuote(tarPath)})" -le ${SANDBOX_MAX_UNCOMPRESSED_BYTES}`,
     );
     if (!bounded.success) return yield* archiveFailure("too_large");
+    const gzip = yield* runtime.exec(`gzip -t ${shellQuote(archivePath)}`);
+    if (!gzip.success) return yield* archiveFailure("invalid_archive");
     // Upload validation owns the full archive/manifest contract. The immutable R2 object is safe to
     // extract only after its uncompressed TAR matches that content-addressed digest exactly.
     const matchesDigest = yield* runtime.exec(

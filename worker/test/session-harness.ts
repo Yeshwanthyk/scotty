@@ -1159,7 +1159,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           (stage === "downTar" && failures.has("downTar"))
         )
           throw injectedHarnessFailure(`injected ${stage} failure`);
-        const decompress = /^gzip -dc (.+) \| head -c [0-9]+ > (.+)$/u.exec(command);
+        const decompress = /^gzip -dc (.+) \| head -c ([0-9]+) > (.+)$/u.exec(command);
         if (decompress !== null) {
           const archive = runtimeFiles.get(unquoteHarnessShellArg(decompress[1]));
           if (archive === undefined)
@@ -1167,7 +1167,16 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           const tar = gunzipSandboxArchive(archive);
           if (Result.isFailure(tar))
             return { ...successfulExec(command), success: false, exitCode: 1 };
-          runtimeFiles.set(unquoteHarnessShellArg(decompress[2]), tar.success);
+          runtimeFiles.set(
+            unquoteHarnessShellArg(decompress[3]),
+            tar.success.slice(0, Number(decompress[2])),
+          );
+        }
+        const sizeCheck = /^test "\$\(wc -c < (.+)\)" -le ([0-9]+)$/u.exec(command);
+        if (sizeCheck !== null) {
+          const tar = runtimeFiles.get(unquoteHarnessShellArg(sizeCheck[1]));
+          if (tar === undefined || tar.byteLength > Number(sizeCheck[2]))
+            return { ...successfulExec(command), success: false, exitCode: 1 };
         }
         const extract = /^tar -xf (.+) -C (.+)$/u.exec(command);
         if (extract !== null) {

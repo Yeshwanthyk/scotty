@@ -87,6 +87,7 @@ class MaterializerFilesystemFake {
   readonly files = new Map<string, Uint8Array>();
   writeFileCalls = 0;
   streamWriteCalls = 0;
+  forceOversized = false;
   readonly execCommands: string[] = [];
 
   capabilities(): SandboxRuntimeCapabilities {
@@ -125,18 +126,18 @@ class MaterializerFilesystemFake {
       const archive = required(this.files.get(unquoteShellArg(gzipTest[1])));
       return Result.isSuccess(gunzipSandboxArchive(archive)) ? successResult(command) : failed();
     }
-    const decompress = /^gzip -dc (.+) \| head -c [0-9]+ > (.+)$/u.exec(command);
+    const decompress = /^gzip -dc (.+) \| head -c ([0-9]+) > (.+)$/u.exec(command);
     if (decompress !== null) {
       const archive = required(this.files.get(unquoteShellArg(decompress[1])));
       const tar = gunzipSandboxArchive(archive);
       if (Result.isFailure(tar)) return failed();
-      this.files.set(unquoteShellArg(decompress[2]), tar.success);
+      this.files.set(unquoteShellArg(decompress[3]), tar.success.slice(0, Number(decompress[2])));
       return successResult(command);
     }
     const sizeCheck = /^test "\$\(wc -c < (.+)\)" -le ([0-9]+)$/u.exec(command);
     if (sizeCheck !== null)
-      return required(this.files.get(unquoteShellArg(sizeCheck[1]))).byteLength <=
-        Number(sizeCheck[2])
+      return !this.forceOversized &&
+        required(this.files.get(unquoteShellArg(sizeCheck[1]))).byteLength <= Number(sizeCheck[2])
         ? successResult(command)
         : failed();
     const digestCheck = /^printf '[^']+' '([a-f0-9]{64})' (.+) \| sha256sum/u.exec(command);
@@ -380,6 +381,29 @@ describe("SandboxBundleMaterializer", () => {
       assert.ok(filesystem.files.has(`${root}/.verified`));
       assert.strictEqual(
         [...filesystem.files.keys()].some((path) => path.includes(".staging-")),
+        false,
+      );
+      assert.match(filesystem.execCommands.at(-1) ?? "", /^rm -rf/u);
+    }),
+  );
+
+  it.effect("rejects oversized output before full gzip validation", () =>
+    Effect.gen(function* () {
+      const filesystem = new MaterializerFilesystemFake();
+      filesystem.forceOversized = true;
+      const bundle = makeMemoryBundleCapabilities();
+      const built = emptyBundle();
+      seedBundle(bundle.objects, built);
+
+      const result = yield* Effect.result(
+        materialize(filesystem, bundle, { sessionId: SESSION_ID, digest: built.digest }),
+      );
+
+      assert.ok(Result.isFailure(result));
+      assert.strictEqual(result.failure.reason, "too_large");
+      assert.match(filesystem.execCommands[0] ?? "", /^gzip -dc /u);
+      assert.strictEqual(
+        filesystem.execCommands.some((command) => command.startsWith("gzip -t ")),
         false,
       );
       assert.match(filesystem.execCommands.at(-1) ?? "", /^rm -rf/u);
