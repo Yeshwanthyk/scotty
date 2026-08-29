@@ -261,7 +261,10 @@ describe("production deployment ownership", () => {
     const commands = PRODUCTION_DEPLOY_STEPS.map(
       ({ command, args }) => `${command} ${args.join(" ")}`,
     );
-    assert.equal(commands[3], "npx --no-install wrangler secret list --name ${workerName} --json");
+    assert.equal(
+      commands[3],
+      "npx --no-install wrangler secret list --name ${workerName} --format json",
+    );
     assert.equal(commands[4], "npx --no-install alchemy plan alchemy.run.ts --stage production");
     assert.equal(
       commands[5],
@@ -689,7 +692,8 @@ describe("production deployment ownership", () => {
       "list",
       "--name",
       "scotty-test-worker",
-      "--json",
+      "--format",
+      "json",
     ]);
     const verificationEnv = environments.get("Check repository").env;
     assert.equal(verificationEnv.CLOUDFLARE_API_TOKEN, undefined);
