@@ -86,6 +86,13 @@ describe("full-stack canary safety", () => {
     assert.notStrictEqual(token, digest);
   });
 
+  it("keeps the canary subclass on the production Sandbox egress identity", () => {
+    assert.match(
+      canaryWorkerSource,
+      /export const ScottySandbox = class Sandbox extends ProductionSandbox/u,
+    );
+  });
+
   it("keeps deployed credential proof at layered boundaries", () => {
     assert.notMatch(canaryWorkerSource, /e2eSecurityProbe|CanarySecurity|__e2e\/security/u);
     assert.notMatch(canaryWorkerSource, /scanCanaryR2Bucket|readBoundedBytes/u);
