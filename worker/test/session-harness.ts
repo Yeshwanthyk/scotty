@@ -221,8 +221,8 @@ const DEFAULT_CREDENTIAL_REGISTRY_GRANTS: ReadonlyArray<CredentialGrant> = [
     handleSlots: [
       { provider: "openai", slot: "api-key" },
       { provider: "openai-codex", slot: "access" },
-      { provider: "openai-codex", slot: "refresh" },
     ],
+    expires: 1_795_000_123_456,
   },
   {
     name: "github",

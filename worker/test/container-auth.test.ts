@@ -10,6 +10,8 @@ import {
 } from "../src/managed-credentials";
 import type { CredentialGrant } from "../../protocol/credentials";
 
+const PI_EXPIRES = 1_795_000_123_456;
+
 type ProjectedPiAuth = {
   readonly openai: { readonly type: "api_key"; readonly key: string };
   readonly "openai-codex": {
@@ -29,8 +31,8 @@ const grants: ReadonlyArray<CredentialGrant> = [
     handleSlots: [
       { provider: "openai", slot: "api-key" },
       { provider: "openai-codex", slot: "access" },
-      { provider: "openai-codex", slot: "refresh" },
     ],
+    expires: PI_EXPIRES,
   },
   {
     name: "github",
@@ -47,20 +49,20 @@ describe("container managed credential projection", () => {
     const auth = JSON.parse(piAuthJson(credentials)) as ProjectedPiAuth;
     const apiKey = "scotty-managed://codex/openai/api-key";
     const access = "scotty-managed://codex/openai-codex/access";
-    const refresh = "scotty-managed://codex/openai-codex/refresh";
     const github = "scotty-managed://github/github/git-https";
 
     assert.deepStrictEqual(auth.openai, { type: "api_key", key: apiKey });
     assert.deepStrictEqual(auth["openai-codex"], {
       type: "oauth",
       access: managedPiAccessToken(access),
-      refresh,
-      expires: 0,
+      refresh: access,
+      expires: PI_EXPIRES,
       accountId: "scotty-managed",
     });
     assert.strictEqual(githubManagedHandle(grants), github);
     assert.strictEqual(agentEnv(SESSION_ID, credentials).GH_TOKEN, github);
     assert.ok(!JSON.stringify(auth).includes("plaintext"));
+    assert.ok(!JSON.stringify(auth).includes("/refresh"));
   });
 
   it("projects an empty grant selection without ambient credential fallbacks", () => {

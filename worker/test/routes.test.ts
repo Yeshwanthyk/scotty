@@ -81,9 +81,6 @@ const credentialRegistry = vi.hoisted(() => ({
   resolve: vi.fn(),
   resolveGithubCliCredential: vi.fn(),
   release: vi.fn(),
-  beginRefresh: vi.fn(),
-  persistRotation: vi.fn(),
-  cancelRefresh: vi.fn(),
 }));
 
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
@@ -122,8 +119,8 @@ const DEFAULT_CREDENTIAL_GRANTS = [
     handleSlots: [
       { provider: "openai", slot: "api-key" },
       { provider: "openai-codex", slot: "access" },
-      { provider: "openai-codex", slot: "refresh" },
     ],
+    expires: 1_800_000_000_000,
   },
   {
     name: "github",

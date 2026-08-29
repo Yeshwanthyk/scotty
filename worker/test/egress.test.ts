@@ -1,13 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Layer, Option, Redacted } from "effect";
-import {
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
-import { decodeJsonValue } from "../src/contracts";
-import { managedPiAccessToken, managedPiIdToken } from "../src/managed-credentials";
+import { Effect, Layer, Redacted } from "effect";
+import { managedPiAccessToken } from "../src/managed-credentials";
 import { SCOTTY_INTERNAL_HOST } from "../src/container-session-egress";
 import {
   ALLOWED_HOSTS,
@@ -22,17 +15,14 @@ import {
   passThroughProgram,
   proxyChatGptProgram,
   proxyGitHubProgram,
-  proxyOAuthRefreshProgram,
   proxyOpenAIProgram,
 } from "../src/egress";
 
 const OPENAI_HANDLE = "scotty-managed://openai/openai/api-key";
 const ACCESS_HANDLE = "scotty-managed://openai/openai-codex/access";
-const REFRESH_HANDLE = "scotty-managed://openai/openai-codex/refresh";
 const GITHUB_HANDLE = "scotty-managed://github/github/git-https";
 const REAL_OPENAI = "real-openai-key";
 const REAL_ACCESS = "real-chatgpt-token";
-const REAL_REFRESH = "real-refresh-token";
 const REAL_GITHUB = "real-github-token";
 const HONEYPOT = "never-expose-honeypot-secret";
 const PI_AUTH = JSON.stringify({
@@ -40,7 +30,7 @@ const PI_AUTH = JSON.stringify({
   "openai-codex": {
     type: "oauth",
     access: REAL_ACCESS,
-    refresh: REAL_REFRESH,
+    refresh: ACCESS_HANDLE,
     expires: 0,
     accountId: "account-123",
   },
@@ -101,56 +91,30 @@ describe("native egress transport", () => {
     assert.strictEqual(handlers["github.com"], handlers["api.github.com"]);
     assert.strictEqual(handlers["codeload.github.com"], handlers["registry.npmjs.org"]);
     assert.notStrictEqual(handlers["api.openai.com"], handlers["chatgpt.com"]);
-    assert.notStrictEqual(handlers["auth.openai.com"], handlers["api.openai.com"]);
+    assert.notProperty(handlers, "auth.openai.com");
   });
 });
 
 function credential(overrides: Partial<EgressCredentialShape> = {}): EgressCredentialShape {
   return {
     resolve: (handle, repository) =>
-      handle === OPENAI_HANDLE || handle === ACCESS_HANDLE || handle === REFRESH_HANDLE
+      handle === OPENAI_HANDLE || handle === ACCESS_HANDLE
         ? Effect.succeed(Redacted.make(PI_AUTH))
         : handle === GITHUB_HANDLE && repository === "owner/project"
           ? Effect.succeed(Redacted.make(REAL_GITHUB))
           : Effect.succeed(null),
-    begin: () =>
-      Effect.succeed({
-        sessionId: "a0b1c2d3e4f5",
-        name: "openai",
-        versionRef: "version-a",
-        nonce: "lease-nonce",
-        startedAt: "2026-01-02T00:00:00.000Z",
-      }),
-    persist: () => Effect.void,
-    cancel: () => Effect.void,
     ...overrides,
   };
 }
 
 function run(
-  program: Effect.Effect<
-    Response,
-    EgressFailure,
-    EgressCredential | EgressTransport | HttpClient.HttpClient
-  >,
+  program: Effect.Effect<Response, EgressFailure, EgressCredential | EgressTransport>,
   options: {
     readonly credential?: EgressCredentialShape;
-    readonly respond?: (request: HttpClientRequest.HttpClientRequest) => Effect.Effect<Response>;
-    readonly requests?: Array<HttpClientRequest.HttpClientRequest>;
     readonly nativeRespond?: (request: Request) => Effect.Effect<Response>;
     readonly nativeRequests?: Array<Request>;
   } = {},
 ) {
-  const requests = options.requests ?? [];
-  const client = HttpClient.make((request) =>
-    Effect.gen(function* () {
-      requests.push(request);
-      const response = options.respond
-        ? yield* options.respond(request)
-        : new Response("ok", { status: 200 });
-      return HttpClientResponse.fromWeb(request, response);
-    }),
-  );
   const transport: EgressTransportShape = {
     forward: (request, url, headers) => {
       const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
@@ -173,7 +137,6 @@ function run(
       Layer.succeed(EgressCredential)(EgressCredential.of(options.credential ?? credential())),
     ),
     Effect.provide(Layer.succeed(EgressTransport)(EgressTransport.of(transport))),
-    Effect.provide(Layer.succeed(HttpClient.HttpClient)(client)),
   );
 }
 
@@ -313,7 +276,6 @@ describe("pass-through policy", () => {
           ![
             "api.openai.com",
             "chatgpt.com",
-            "auth.openai.com",
             "github.com",
             "api.github.com",
             SCOTTY_INTERNAL_HOST,
@@ -409,306 +371,6 @@ describe("pass-through policy", () => {
       );
       const sent = requests[0];
       assert.equal(yield* Effect.promise(() => sent.text()), "body-value");
-    }),
-  );
-});
-
-describe("OAuth refresh", () => {
-  const request = (body: unknown) =>
-    new Request("https://auth.openai.com/oauth/token", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  const body = { grant_type: "refresh_token", refresh_token: REFRESH_HANDLE, client_id: "client" };
-
-  it.effect("rejects malformed OAuth and reports busy or missing leases", () =>
-    Effect.gen(function* () {
-      assert.equal(
-        (yield* run(proxyOAuthRefreshProgram(new Request("https://auth.openai.com/oauth/token"))))
-          .status,
-        403,
-      );
-      assert.equal(
-        (yield* run(
-          proxyOAuthRefreshProgram(
-            new Request("https://auth.openai.com/not-token", {
-              method: "POST",
-              body: JSON.stringify(body),
-            }),
-          ),
-        )).status,
-        403,
-      );
-      assert.equal(
-        (yield* run(proxyOAuthRefreshProgram(request({ refresh_token: "not-a-managed-handle" }))))
-          .status,
-        403,
-      );
-      const busy = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        credential: credential({ begin: () => Effect.succeed(null) }),
-      });
-      assert.equal(busy.status, 409);
-      assert.deepEqual(yield* Effect.promise(() => busy.json()), {
-        error: { code: "oauth_refresh_busy", message: "OAuth refresh is already in progress" },
-      });
-      const missing = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        credential: credential({ resolve: () => Effect.succeed(null) }),
-      });
-      assert.equal(missing.status, 502);
-    }),
-  );
-
-  it.effect(
-    "sends the real refresh token only to the exact auth URL and persists before safe response",
-    () =>
-      Effect.gen(function* () {
-        const events: Array<string> = [];
-        const requests: Array<HttpClientRequest.HttpClientRequest> = [];
-        const response = yield* run(proxyOAuthRefreshProgram(request(body)), {
-          requests,
-          credential: credential({
-            persist: () => Effect.sync(() => events.push("persist")).pipe(Effect.asVoid),
-          }),
-          respond: (upstream) =>
-            Effect.gen(function* () {
-              events.push("upstream");
-              assert.equal(upstream.url, "https://auth.openai.com/oauth/token");
-              const upstreamRequest = yield* HttpClientRequest.toWeb(upstream).pipe(Effect.orDie);
-              const upstreamBody = yield* Effect.promise(() => upstreamRequest.text());
-              assert.deepEqual(
-                decodeJsonValue(upstreamBody),
-                Option.some({
-                  grant_type: "refresh_token",
-                  refresh_token: "real-refresh-token",
-                  client_id: "client",
-                }),
-              );
-              return new Response(
-                JSON.stringify({
-                  access_token: "rotated-access",
-                  refresh_token: "rotated-refresh",
-                }),
-                { status: 200 },
-              );
-            }),
-        });
-        events.push("response");
-        assert.deepEqual(events, ["upstream", "persist", "response"]);
-        const safeBody = yield* Effect.promise(() => response.json());
-        assert.deepStrictEqual(safeBody, {
-          id_token: managedPiIdToken(ACCESS_HANDLE),
-          access_token: managedPiAccessToken(ACCESS_HANDLE),
-          refresh_token: REFRESH_HANDLE,
-        });
-        assert.ok(!JSON.stringify(safeBody).includes(REAL_REFRESH));
-      }),
-  );
-
-  it.effect("accepts Pi form refresh and returns safe managed handles with expiry", () =>
-    Effect.gen(function* () {
-      const form = new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: REFRESH_HANDLE,
-        client_id: "pi-client",
-      });
-      const response = yield* run(
-        proxyOAuthRefreshProgram(
-          new Request("https://auth.openai.com/oauth/token", {
-            method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded" },
-            body: form,
-          }),
-        ),
-        {
-          respond: (upstream) =>
-            Effect.gen(function* () {
-              const web = yield* HttpClientRequest.toWeb(upstream).pipe(Effect.orDie);
-              assert.equal(web.headers.get("content-type"), "application/x-www-form-urlencoded");
-              assert.deepEqual(
-                Object.fromEntries(new URLSearchParams(yield* Effect.promise(() => web.text()))),
-                {
-                  grant_type: "refresh_token",
-                  refresh_token: "real-refresh-token",
-                  client_id: "pi-client",
-                },
-              );
-              return new Response(
-                JSON.stringify({
-                  access_token: "rotated-access",
-                  refresh_token: "rotated-refresh",
-                  expires_in: 3600,
-                }),
-                { status: 200 },
-              );
-            }),
-        },
-      );
-      assert.equal(response.status, 200);
-      assert.deepEqual(yield* Effect.promise(() => response.json()), {
-        id_token: managedPiIdToken(ACCESS_HANDLE),
-        access_token: managedPiAccessToken(ACCESS_HANDLE),
-        refresh_token: REFRESH_HANDLE,
-        expires_in: 3600,
-      });
-    }),
-  );
-
-  it.effect("preserves upstream non-2xx status/envelope/no-store and cancels", () =>
-    Effect.gen(function* () {
-      let cancels = 0;
-      const response = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        credential: credential({
-          cancel: () =>
-            Effect.sync(() => {
-              cancels += 1;
-            }),
-        }),
-        respond: () => Effect.succeed(new Response(HONEYPOT, { status: 429 })),
-      });
-      assert.equal(response.status, 429);
-      assert.equal(response.headers.get("cache-control"), "no-store");
-      assert.deepEqual(yield* Effect.promise(() => response.json()), {
-        error: { code: "oauth_refresh_failed", message: "OAuth refresh failed" },
-      });
-      assert.equal(cancels, 1);
-    }),
-  );
-
-  it.effect("retains refresh state when a successful upstream response is malformed", () =>
-    Effect.gen(function* () {
-      let cancels = 0;
-      const response = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        credential: credential({
-          cancel: () =>
-            Effect.sync(() => {
-              cancels += 1;
-            }),
-        }),
-        respond: () => Effect.succeed(new Response(HONEYPOT, { status: 200 })),
-      });
-      assert.equal(response.status, 502);
-      assert.equal(yield* Effect.promise(() => response.text()), "Invalid OAuth response");
-      assert.equal(cancels, 0);
-    }),
-  );
-
-  it.effect("cancels transport failures and redacts causes", () =>
-    Effect.gen(function* () {
-      let cancels = 0;
-      const client = HttpClient.make((outgoing) =>
-        Effect.fail(
-          new HttpClientError.HttpClientError({
-            reason: new HttpClientError.TransportError({ request: outgoing, cause: HONEYPOT }),
-          }),
-        ),
-      );
-      const exit = yield* proxyOAuthRefreshProgram(request(body)).pipe(
-        Effect.provide(
-          Layer.succeed(EgressCredential)(
-            EgressCredential.of(
-              credential({
-                cancel: () =>
-                  Effect.sync(() => {
-                    cancels += 1;
-                  }),
-              }),
-            ),
-          ),
-        ),
-        Effect.provide(Layer.succeed(HttpClient.HttpClient)(client)),
-        Effect.exit,
-      );
-      assert.equal(cancels, 1);
-      assert.ok(String(exit).includes("Failure"));
-      assert.ok(!String(exit).includes(HONEYPOT));
-    }),
-  );
-  it.effect(
-    "retries only Registry persistence exactly three times without canceling stale state",
-    () =>
-      Effect.gen(function* () {
-        let attempts = 0;
-        let upstreamCalls = 0;
-        let cancels = 0;
-        const exit = yield* run(proxyOAuthRefreshProgram(request(body)), {
-          credential: credential({
-            persist: () =>
-              Effect.sync(() => {
-                attempts += 1;
-              }).pipe(
-                Effect.andThen(
-                  Effect.fail(new EgressFailure({ reason: "persistence", message: HONEYPOT })),
-                ),
-              ),
-            cancel: () =>
-              Effect.sync(() => {
-                cancels += 1;
-              }),
-          }),
-          respond: () =>
-            Effect.sync(() => {
-              upstreamCalls += 1;
-              return new Response(JSON.stringify({ access_token: "new-access" }), { status: 200 });
-            }),
-        }).pipe(Effect.exit);
-        assert.strictEqual(attempts, 3);
-        assert.strictEqual(upstreamCalls, 1);
-        assert.strictEqual(cancels, 0);
-        assert.ok(String(exit).includes("Failure"));
-        assert.ok(!String(exit).includes(HONEYPOT));
-      }),
-  );
-
-  it.effect("returns sanitized OAuth output only after persistence confirms", () =>
-    Effect.gen(function* () {
-      const events: Array<string> = [];
-      let attempts = 0;
-      let upstreamCalls = 0;
-      const response = yield* run(proxyOAuthRefreshProgram(request(body)), {
-        credential: credential({
-          persist: () =>
-            Effect.sync(() => {
-              attempts += 1;
-              events.push(`persist-${attempts}`);
-            }).pipe(
-              Effect.flatMap(() =>
-                attempts < 3
-                  ? Effect.fail(
-                      new EgressFailure({ reason: "persistence", message: "not-yet-committed" }),
-                    )
-                  : Effect.void,
-              ),
-            ),
-        }),
-        respond: () =>
-          Effect.sync(() => {
-            upstreamCalls += 1;
-            events.push("upstream");
-            return new Response(
-              JSON.stringify({
-                access_token: "rotated-access",
-                refresh_token: "rotated-refresh",
-              }),
-              { status: 200 },
-            );
-          }),
-      });
-      events.push("response");
-      assert.deepStrictEqual(events, [
-        "upstream",
-        "persist-1",
-        "persist-2",
-        "persist-3",
-        "response",
-      ]);
-      assert.strictEqual(attempts, 3);
-      assert.strictEqual(upstreamCalls, 1);
-      assert.deepStrictEqual(yield* Effect.promise(() => response.json()), {
-        id_token: managedPiIdToken(ACCESS_HANDLE),
-        access_token: managedPiAccessToken(ACCESS_HANDLE),
-        refresh_token: REFRESH_HANDLE,
-      });
     }),
   );
 });
