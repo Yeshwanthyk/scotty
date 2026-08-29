@@ -48,6 +48,7 @@ describe("cloud-agent session application", () => {
     assert.include(appSource, "trapSidebarFocus");
     assert.include(appSource, 'event.key === "Escape"');
     assert.include(sessionCss, "env(safe-area-inset-bottom)");
+    assert.match(sessionCss, /\[hidden\]\s*\{\s*display: none !important;/u);
     assert.include(sessionCss, "@media (prefers-reduced-motion: reduce)");
     assert.include(sessionCss, ":focus-visible");
     assert.include(sessionCss, "font-size: 16px");
