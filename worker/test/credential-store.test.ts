@@ -87,39 +87,6 @@ const requireOAuthVersion = (storage: TestCredentialStorage): string => {
 };
 
 describe("CredentialStore", () => {
-  it.effect("migrates the retired OAuth rotation fields from persisted authority", () =>
-    Effect.gen(function* () {
-      const currentStorage = memoryStorage();
-      const desired = desiredPiInput({
-        openai: { type: "api_key" as const, key: `${BASE}-legacy` },
-      });
-      yield* useStore(currentStorage, (store) => store.sync(desired));
-      const current = success(decodeCredentialRegistryAuthorityResult(currentStorage.snapshot()));
-      const legacyStorage = memoryStorage({
-        ...current,
-        versions: current.versions.map((version) => ({
-          ...version,
-          refreshLease: {
-            sessionId: SESSION,
-            nonce: "retired-refresh-lease",
-            startedAt: "2026-08-29T12:00:00.000Z",
-          },
-        })),
-        rotationCompletions: [],
-      });
-
-      const listed = yield* useStore(legacyStorage, (store) => store.list);
-      assert.deepStrictEqual(
-        listed.map(({ name }) => name),
-        ["openai"],
-      );
-
-      yield* useStore(legacyStorage, (store) => store.sync(desired));
-      const migrated = success(decodeCredentialRegistryAuthorityResult(legacyStorage.snapshot()));
-      assert.strictEqual(migrated.versions.length, 1);
-    }),
-  );
-
   it("selects one exact GitHub declaration before globals and fails closed on ambiguity", () => {
     const credential = (
       name: string,

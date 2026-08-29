@@ -1,4 +1,4 @@
-import { Option, Result, Schema } from "effect";
+import { Option, Schema } from "effect";
 import {
   CredentialGrantHandleSlotsSchema,
   CredentialGrantSchema,
@@ -32,8 +32,6 @@ const SESSION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{5,31}$/u;
 const INSTALLATION_NAME_PATTERN = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/u;
 const CREDENTIAL_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const MAX_ENCRYPTED_CREDENTIAL_BYTES = 256 * 1024;
-const LEGACY_MAX_ROTATION_FIELD_LENGTH = 256 * 1024;
-const LEGACY_CREDENTIAL_DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
 
 const isCanonicalBase64Url = (value: string): boolean =>
   value.length > 0 &&
@@ -49,16 +47,6 @@ const boundedText = (value: string, maximum: number): boolean =>
     const codePoint = character.codePointAt(0) ?? 0;
     return codePoint > 31 && codePoint !== 127;
   });
-
-const LegacyBoundedRotationFieldSchema = Schema.String.check(
-  Schema.makeFilter((value) => boundedText(value, LEGACY_MAX_ROTATION_FIELD_LENGTH), {
-    expected: "a bounded non-empty rotation field",
-  }),
-);
-
-const LegacyCredentialDigestSchema = Schema.String.check(
-  Schema.isPattern(LEGACY_CREDENTIAL_DIGEST_PATTERN, { expected: "a SHA-256 digest" }),
-);
 
 export const CredentialBase64UrlSchema = Schema.String.check(
   Schema.makeFilter(isCanonicalBase64Url, { expected: "bounded unpadded base64url" }),
@@ -353,50 +341,6 @@ export const CredentialRegistryAuthoritySchema = Schema.Struct({
 });
 export type CredentialRegistryAuthority = typeof CredentialRegistryAuthoritySchema.Type;
 
-const LegacyCredentialRefreshLeaseSchema = Schema.Struct({
-  sessionId: CredentialSessionIdSchema,
-  nonce: LegacyBoundedRotationFieldSchema,
-  startedAt: CredentialTimestampSchema,
-});
-
-const LegacyCredentialRegistryVersionRecordSchema = Schema.Struct({
-  name: CredentialNameSchema,
-  kind: CredentialKindSchema,
-  versionRef: CredentialVersionRefSchema,
-  envelope: EncryptedCredentialEnvelopeSchema,
-  createdAt: CredentialTimestampSchema,
-  refreshLease: Schema.optionalKey(LegacyCredentialRefreshLeaseSchema),
-}).check(
-  Schema.makeFilter((version) => version.kind === version.envelope.kind, {
-    expected: "credential kind matching its encrypted envelope",
-  }),
-);
-
-const LegacyCredentialRegistryRotationCompletionSchema = Schema.Struct({
-  sessionId: CredentialSessionIdSchema,
-  name: CredentialNameSchema,
-  kind: CredentialKindSchema,
-  versionRef: CredentialVersionRefSchema,
-  nonceDigest: LegacyCredentialDigestSchema,
-  patchDigest: LegacyCredentialDigestSchema,
-  completedAt: CredentialTimestampSchema,
-});
-
-const LegacyCredentialRegistryAuthoritySchema = Schema.Struct({
-  version: Schema.Literal(1),
-  credentials: Schema.Array(CredentialRegistryCredentialSchema),
-  versions: Schema.Array(LegacyCredentialRegistryVersionRecordSchema),
-  grants: Schema.Array(CredentialRegistryGrantRecordSchema),
-  issuedSessions: Schema.optionalKey(Schema.Array(CredentialSessionIdSchema)),
-  rotationCompletions: Schema.optionalKey(
-    Schema.Array(LegacyCredentialRegistryRotationCompletionSchema).check(
-      Schema.makeFilter((completions) => completions.length <= 32, {
-        expected: "bounded OAuth rotation completion metadata",
-      }),
-    ),
-  ),
-});
-
 export const decodeEncryptedCredentialEnvelopeResult = Schema.decodeUnknownResult(
   EncryptedCredentialEnvelopeSchema,
   { onExcessProperty: "error" },
@@ -450,24 +394,6 @@ export const decodeCredentialRegistryAuthorityResult = Schema.decodeUnknownResul
   CredentialRegistryAuthoritySchema,
   { onExcessProperty: "error" },
 );
-const decodeLegacyCredentialRegistryAuthorityResult = Schema.decodeUnknownResult(
-  LegacyCredentialRegistryAuthoritySchema,
-  { onExcessProperty: "error" },
-);
-
-export const decodePersistedCredentialRegistryAuthorityResult = (
-  value: unknown,
-): Result.Result<CredentialRegistryAuthority, Schema.SchemaError> => {
-  const current = decodeCredentialRegistryAuthorityResult(value);
-  if (Result.isSuccess(current)) return current;
-  const legacy = decodeLegacyCredentialRegistryAuthorityResult(value);
-  if (Result.isFailure(legacy)) return current;
-  const { rotationCompletions: _rotationCompletions, ...authority } = legacy.success;
-  return Result.succeed({
-    ...authority,
-    versions: authority.versions.map(({ refreshLease: _refreshLease, ...version }) => version),
-  });
-};
 
 export type {
   CredentialGrant,

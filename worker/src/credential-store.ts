@@ -1,6 +1,6 @@
 import { Clock, Context, Data, Effect, Layer, Option, Redacted, Result, Schema } from "effect";
 import {
-  decodePersistedCredentialRegistryAuthorityResult,
+  decodeCredentialRegistryAuthorityResult,
   decodeCredentialRegistryGithubCliResolveInputResult,
   decodeCredentialRegistryGrantInputResult,
   decodeCredentialRegistryDesiredSyncInputResult,
@@ -174,7 +174,7 @@ const makeCredentialStore = (
     value: unknown | undefined,
   ): Result.Result<CredentialRegistryAuthority, CredentialRegistryFailure> => {
     if (value === undefined) return Result.succeed(emptyAuthority());
-    const decoded = decodePersistedCredentialRegistryAuthorityResult(value);
+    const decoded = decodeCredentialRegistryAuthorityResult(value);
     if (Result.isFailure(decoded)) return Result.fail(invalidAuthority());
     const normalized = normalizeAuthority(decoded.success);
     if (!validAuthority(normalized)) return Result.fail(invalidAuthority());
@@ -819,7 +819,7 @@ const parseAuthority = (
   value: unknown | undefined,
 ): Result.Result<CredentialRegistryAuthority, CredentialRegistryFailure> => {
   if (value === undefined) return Result.succeed(emptyAuthority());
-  const decoded = decodePersistedCredentialRegistryAuthorityResult(value);
+  const decoded = decodeCredentialRegistryAuthorityResult(value);
   if (Result.isFailure(decoded))
     return Result.fail(
       new CredentialRegistryFailure({
