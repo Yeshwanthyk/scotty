@@ -90,14 +90,8 @@ describe("CredentialStore", () => {
   it.effect("migrates the retired OAuth rotation fields from persisted authority", () =>
     Effect.gen(function* () {
       const currentStorage = memoryStorage();
-      const expires = 1_888_888_888_456;
       const desired = desiredPiInput({
-        "openai-codex": {
-          type: "oauth" as const,
-          access: `${BASE}-legacy-access`,
-          refresh: `${BASE}-legacy-refresh`,
-          expires,
-        },
+        openai: { type: "api_key" as const, key: `${BASE}-legacy` },
       });
       yield* useStore(currentStorage, (store) => store.sync(desired));
       const current = success(decodeCredentialRegistryAuthorityResult(currentStorage.snapshot()));
@@ -123,7 +117,6 @@ describe("CredentialStore", () => {
       yield* useStore(legacyStorage, (store) => store.sync(desired));
       const migrated = success(decodeCredentialRegistryAuthorityResult(legacyStorage.snapshot()));
       assert.strictEqual(migrated.versions.length, 1);
-      assert.strictEqual(migrated.versions[0]?.expires, expires);
     }),
   );
 
