@@ -314,6 +314,7 @@ test("status is read-only and close revokes authority before TERM-then-KILL clea
       signals.push(signal);
       if (signal === "SIGKILL") child.exit(signal);
     },
+    processGroupExists: () => child.signalCode === null,
     termTimeoutMillis: 1,
     killTimeoutMillis: 20,
   });
@@ -443,6 +444,7 @@ test("session shutdown stops the owned group without mutating authoritative inte
       signals.push(signal);
       child.exit(signal);
     },
+    processGroupExists: () => child.signalCode === null,
   });
 
   await manager.run(ensureInput());

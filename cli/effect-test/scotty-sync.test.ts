@@ -355,6 +355,9 @@ describe("top-level sync and embedded skill commands", () => {
         const scottySkillContent = yield* Effect.promise(() =>
           readFile(join(import.meta.dirname, "..", "..", "skills", "scotty", "SKILL.md"), "utf8"),
         );
+        assert.include(scottySkillContent, "scotty init --name NAME");
+        assert.include(scottySkillContent, "--preview-base DOMAIN --preview-zone-id ZONE_ID");
+        assert.include(scottySkillContent, "scotty_hatch ensure");
         const human = run(home, ["skill", "show"], async () => new Response(), true);
         assert.strictEqual(yield* human.effect, EXIT.OK);
         assert.strictEqual(human.stdout.join(""), scottySkillContent);

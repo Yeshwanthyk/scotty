@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { reconcileContainerInventory } from "./reconcile-containers.mjs";
+import {
+  namedInstallationPath,
+  readSessions,
+  reconcileContainerInventory,
+} from "./reconcile-containers.mjs";
 
 const NOW = Date.parse("2026-07-23T04:00:00.000Z");
 const APPLICATION_NAME = "scotty-test-sandbox";
@@ -31,6 +38,69 @@ const session = (overrides = {}) => ({
 });
 
 describe("Container reconciliation", () => {
+  it("reads session authority from the explicitly named installation", async () => {
+    const home = await mkdtemp(join(tmpdir(), "scotty-container-audit-"));
+    const configPath = namedInstallationPath(home, "baseline-v1");
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        installationName: "baseline-v1",
+        host: "https://baseline.example",
+        token: "root-token",
+      }),
+      { mode: 0o600 },
+    );
+    let request;
+    try {
+      const sessions = await readSessions(
+        { SCOTTY_INSTALLATION_NAME: "baseline-v1" },
+        {
+          home,
+          request: async (input, init) => {
+            request = new Request(input, init);
+            return Response.json([session()]);
+          },
+        },
+      );
+      assert.equal(request.url, "https://baseline.example/api/sessions");
+      assert.equal(request.headers.get("authorization"), "Bearer root-token");
+      assert.deepEqual(sessions, [session()]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a named config owned by another installation", async () => {
+    await assert.rejects(
+      () =>
+        readSessions(
+          { SCOTTY_INSTALLATION_NAME: "baseline-v1" },
+          {
+            readPrivateConfig: async () =>
+              JSON.stringify({
+                installationName: "baseline-v2",
+                host: "https://baseline.example",
+                token: "root-token",
+              }),
+          },
+        ),
+      /does not own baseline-v1/u,
+    );
+  });
+
+  it("rejects an empty direct host or token instead of falling through", async () => {
+    for (const environment of [
+      { SCOTTY_HOST: "", SCOTTY_TOKEN: "root-token" },
+      { SCOTTY_HOST: "https://baseline.example", SCOTTY_TOKEN: "" },
+    ]) {
+      await assert.rejects(
+        () => readSessions(environment),
+        /SCOTTY_HOST and SCOTTY_TOKEN must be provided together/u,
+      );
+    }
+  });
+
   it("accepts one active session, one running instance, and inactive history", () => {
     const report = reconcileContainerInventory({
       applicationName: APPLICATION_NAME,

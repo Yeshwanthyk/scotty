@@ -117,6 +117,13 @@ const beamArgs = (repo = "owner/project") =>
     "https://worker.example",
   ] as const;
 
+const HATCH_INIT_ARGS = [
+  "--preview-base",
+  "preview.scotty.example",
+  "--preview-zone-id",
+  "0123456789abcdef0123456789abcdef",
+] as const;
+
 function acceptingSandboxSyncFetch(): NonNullable<CliDependencies["fetch"]> {
   let revision = 0;
   let activeDigest: string | null = null;
@@ -708,7 +715,9 @@ describe("configuration and transport", () => {
     );
     const h = harness({ home });
 
-    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(await main(["init", "--name", "home", ...HATCH_INIT_ARGS, "--yes"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
     expect(h.error().error.code).toBe("init_journal_invalid");
   });
 
@@ -764,14 +773,20 @@ describe("configuration and transport", () => {
           containerName: "scotty-home-sandbox",
           kvTitle: "scotty-home-sessions",
           backupBucketName: "scotty-home-backups",
+          previewBase: input.previewBase,
+          previewZoneId: input.previewZoneId,
+          evidenceEnabled: input.evidenceEnabled,
           host: "https://scotty-home-worker.example.workers.dev/",
         };
       },
     });
 
-    expect(await main(["init", "--name", "home", "--profile", "personal", "--yes"], h.deps)).toBe(
-      EXIT.OK,
-    );
+    expect(
+      await main(
+        ["init", "--name", "home", "--profile", "personal", ...HATCH_INIT_ARGS, "--yes"],
+        h.deps,
+      ),
+    ).toBe(EXIT.OK);
     expect(request).not.toHaveProperty("githubToken");
     expect(request).not.toHaveProperty("piAuthJson");
     expect(request).toMatchObject({
@@ -780,6 +795,9 @@ describe("configuration and transport", () => {
       expectedAccountId: "0123456789abcdef0123456789abcdef",
       expectedPlanFingerprint: "create-plan-1",
       mode: "fresh",
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true,
     });
     expect(request?.token).toMatch(/^[0-9a-f]{64}$/u);
     expect(request?.credentialWrappingKey).toMatch(/^[A-Za-z0-9_-]{43}$/u);
@@ -788,7 +806,7 @@ describe("configuration and transport", () => {
     expect(commands.some(([command]) => command === "gh")).toBe(false);
     expect((await stat(managedInstallationPath(home))).mode & 0o777).toBe(0o600);
     expect(config).toEqual({
-      version: 1,
+      version: 3,
       installationName: "home",
       profile: "personal",
       stackName: "Scotty-home",
@@ -799,6 +817,9 @@ describe("configuration and transport", () => {
       containerName: "scotty-home-sandbox",
       kvTitle: "scotty-home-sessions",
       backupBucketName: "scotty-home-backups",
+      previewBase: "preview.scotty.example",
+      previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true,
       host: "https://scotty-home-worker.example.workers.dev",
       token: request?.token,
     });
@@ -871,11 +892,16 @@ describe("configuration and transport", () => {
         containerName: "scotty-home-sandbox",
         kvTitle: "scotty-home-sessions",
         backupBucketName: "scotty-home-backups",
+        previewBase: input.previewBase,
+        previewZoneId: input.previewZoneId,
+        evidenceEnabled: input.evidenceEnabled,
         host: "https://scotty-home-worker.example.workers.dev/",
       }),
     });
 
-    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.OK);
+    expect(await main(["init", "--name", "home", ...HATCH_INIT_ARGS, "--yes"], h.deps)).toBe(
+      EXIT.OK,
+    );
     expect(uploadedDigest).toMatch(/^[0-9a-f]{64}$/u);
     expect(
       await stat(join(home, ".scotty", "sandbox.json")).then(
@@ -948,11 +974,16 @@ describe("configuration and transport", () => {
         containerName: "scotty-home-sandbox",
         kvTitle: "scotty-home-sessions",
         backupBucketName: "scotty-home-backups",
+        previewBase: input.previewBase,
+        previewZoneId: input.previewZoneId,
+        evidenceEnabled: input.evidenceEnabled,
         host: "https://scotty-home-worker.example.workers.dev/",
       }),
     });
 
-    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(await main(["init", "--name", "home", ...HATCH_INIT_ARGS, "--yes"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
     expect(h.error().error.code).toBe("sandbox_bundle_upload_failed");
     expect(h.error().error.hint).toBe("Retry scotty sync.");
     const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
@@ -1004,12 +1035,17 @@ describe("configuration and transport", () => {
           containerName: "scotty-home-sandbox",
           kvTitle: "scotty-home-sessions",
           backupBucketName: "scotty-home-backups",
+          previewBase: input.previewBase,
+          previewZoneId: input.previewZoneId,
+          evidenceEnabled: input.evidenceEnabled,
           host: "https://scotty-home-worker.example.workers.dev/",
         };
       },
     });
 
-    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.USAGE);
+    expect(await main(["init", "--name", "home", ...HATCH_INIT_ARGS, "--yes"], h.deps)).toBe(
+      EXIT.USAGE,
+    );
     expect(providerCalls).toEqual(["plan", "create"]);
     expect(bundleRequests).toEqual([]);
     const error = h.error().error;
@@ -1034,6 +1070,7 @@ describe("configuration and transport", () => {
         expect(input).toMatchObject({
           previewBase: "preview.scotty.example",
           previewZoneId: "0123456789abcdef0123456789abcdef",
+          evidenceEnabled: true,
         });
         return {
           installationName: "home",
@@ -1059,6 +1096,7 @@ describe("configuration and transport", () => {
           host: "https://scotty-home-worker.example.workers.dev",
           previewBase: input.previewBase,
           previewZoneId: input.previewZoneId,
+          evidenceEnabled: input.evidenceEnabled,
         };
       },
     });
@@ -1084,9 +1122,10 @@ describe("configuration and transport", () => {
     });
     const config = JSON.parse(await readFile(managedInstallationPath(home), "utf8"));
     expect(config).toMatchObject({
-      version: 2,
+      version: 3,
       previewBase: "preview.scotty.example",
       previewZoneId: "0123456789abcdef0123456789abcdef",
+      evidenceEnabled: true,
     });
     expect(h.json()).toEqual({
       configPath: managedInstallationPath(home),
@@ -1108,11 +1147,9 @@ describe("configuration and transport", () => {
     expect(invalid.error().error.message).toContain("must both provide");
   });
 
-  test("evidence deployment requires explicit preview opt-in and persists across deploys", async () => {
+  test("init always enables Hatch and Evidence and persists them across deploys", async () => {
     const missingPreview = harness({ home: await temporaryDirectory() });
-    expect(
-      await main(["init", "--name", "home", "--enable-evidence", "--yes"], missingPreview.deps),
-    ).toBe(EXIT.USAGE);
+    expect(await main(["init", "--name", "home", "--yes"], missingPreview.deps)).toBe(EXIT.USAGE);
     expect(missingPreview.error().error.message).toContain("requires --preview-base");
 
     const home = await temporaryDirectory();
@@ -1183,7 +1220,6 @@ describe("configuration and transport", () => {
           enabledResult.previewBase,
           "--preview-zone-id",
           enabledResult.previewZoneId,
-          "--enable-evidence",
           "--yes",
         ],
         h.deps,
@@ -1255,9 +1291,12 @@ describe("configuration and transport", () => {
       },
     });
 
-    expect(await main(["init", "--name", "home", "--profile", "personal", "--yes"], h.deps)).toBe(
-      EXIT.GENERIC,
-    );
+    expect(
+      await main(
+        ["init", "--name", "home", "--profile", "personal", ...HATCH_INIT_ARGS, "--yes"],
+        h.deps,
+      ),
+    ).toBe(EXIT.GENERIC);
     const journalPath = join(home, ".scotty", "init-home.json");
     const journalText = await readFile(journalPath, "utf8");
     const journal = JSON.parse(journalText);
@@ -1278,9 +1317,12 @@ describe("configuration and transport", () => {
         return Promise.reject(new Error("init must not retry an ambiguous installation"));
       },
     });
-    expect(await main(["init", "--name", "home", "--profile", "personal"], retry.deps)).toBe(
-      EXIT.GENERIC,
-    );
+    expect(
+      await main(
+        ["init", "--name", "home", "--profile", "personal", ...HATCH_INIT_ARGS],
+        retry.deps,
+      ),
+    ).toBe(EXIT.GENERIC);
     expect(plans).toBe(1);
     expect(retryPlans).toBe(0);
     expect(retryCreates).toBe(0);
@@ -1735,7 +1777,9 @@ describe("configuration and transport", () => {
       },
     });
 
-    expect(await main(["init", "--name", "home", "--yes"], h.deps)).toBe(EXIT.GENERIC);
+    expect(await main(["init", "--name", "home", ...HATCH_INIT_ARGS, "--yes"], h.deps)).toBe(
+      EXIT.GENERIC,
+    );
     const envelope = h.error();
     expect(Object.keys(envelope)).toEqual(["error"]);
     expect(Object.keys(envelope.error).sort()).toEqual(["code", "hint", "message"]);

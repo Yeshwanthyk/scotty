@@ -1,7 +1,15 @@
 ---
 name: scotty
-description: Add or synchronize Scotty skills, command-line tools, and Pi extensions. Use when an agent needs new session capabilities or must publish changed local bundle content.
+description: Set up a Scotty installation or synchronize its skills, tools, packages, and extensions. Use when an agent needs to install Scotty, configure Hatch and Evidence, add session capabilities, or publish changed local bundle content.
 ---
+
+# Set up Scotty
+
+1. Obtain an explicit lowercase installation name, Cloudflare profile, preview DNS base, and the 32-character lowercase Cloudflare zone ID that owns that base. Never infer these values from a username, machine, repository, or Cloudflare account.
+2. Run `scotty init --name NAME --profile PROFILE --preview-base DOMAIN --preview-zone-id ZONE_ID`. Review and confirm the displayed account, resources, and Hatch/Evidence domain. Use `--yes` only when the user already authorized non-interactive creation.
+3. Treat successful init as the setup boundary: it provisions the wildcard DNS and Worker route used by Hatch and Evidence, enables both capabilities, and saves the private managed installation pointer. Do not create parallel Wrangler resources or manually copy root credentials.
+4. Declare Pi and repository-scoped GitHub credential sources in `~/.config/scotty/scotty.toml`, then run `scotty config check`, `scotty sync --json`, and `scotty doctor --json`.
+5. Run `scotty owner recover` in the browser that will own the installation. Create a fresh session and verify chat plus `scotty_hatch ensure` before calling setup complete.
 
 # Sync Scotty capabilities
 

@@ -466,27 +466,26 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       ),
       previewBase: Flag.string("preview-base").pipe(
         Flag.optional,
-        Flag.withDescription("Explicit installation preview DNS base"),
+        Flag.withDescription("Hatch and Evidence preview DNS base"),
       ),
       previewZoneId: Flag.string("preview-zone-id").pipe(
         Flag.optional,
-        Flag.withDescription("Explicit Cloudflare zone ID owning the preview base"),
-      ),
-      enableEvidence: Flag.boolean("enable-evidence").pipe(
-        Flag.withDescription("Explicitly enable the preview-backed evidence deployment gate"),
+        Flag.withDescription("Cloudflare zone ID owning the Hatch and Evidence preview base"),
       ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed installation")),
     },
-    ({ enableEvidence, name, previewBase, previewZoneId, profile, yes }) =>
+    ({ name, previewBase, previewZoneId, profile, yes }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("init does not accept --host or --token-file");
         const installationName = yield* requireInstallationName("init", name);
         const preview = yield* optionalPreviewConfiguration(previewBase, previewZoneId);
-        if (enableEvidence && preview === undefined)
-          return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
-        const evidenceEnabled = enableEvidence ? (true as const) : undefined;
+        if (preview === undefined)
+          return yield* usage(
+            "init requires --preview-base and --preview-zone-id for Hatch and Evidence",
+          );
+        const evidenceEnabled = true as const;
         const fileSystem = yield* CliFileSystem;
         const journalPath = join(runtime.home, ".scotty", `init-${installationName}.json`);
         const lockPath = join(runtime.home, ".scotty", "locks", `init-${installationName}`);
@@ -528,18 +527,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const deploymentTarget = {
               installationName,
               profile,
-              ...(preview === undefined
-                ? {}
-                : { previewBase: preview.base, previewZoneId: preview.zoneId }),
-              ...(evidenceEnabled === true ? { evidenceEnabled } : {}),
+              previewBase: preview.base,
+              previewZoneId: preview.zoneId,
+              evidenceEnabled,
             };
             const plan = yield* creator.plan(deploymentTarget);
-            const topology = makeInstallationTopology(
-              installationName,
-              undefined,
-              preview,
-              evidenceEnabled === true,
-            );
+            const topology = makeInstallationTopology(installationName, undefined, preview, true);
             const journalMatches =
               Option.isSome(existingJournal) &&
               existingJournal.value.installationName === installationName &&
@@ -604,13 +597,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
                   `Container: ${topology.containerName}`,
                   `KV: ${topology.kvTitle}`,
                   `R2: ${topology.backupBucketName}`,
-                  ...(topology.preview === undefined
-                    ? []
-                    : [
-                        `Preview base: ${topology.preview.base}`,
-                        `Preview zone: ${topology.preview.zoneId}`,
-                      ]),
-                  ...(topology.evidenceEnabled === true ? ["Evidence gate: enabled"] : []),
+                  `Preview base: ${preview.base}`,
+                  `Preview zone: ${preview.zoneId}`,
+                  "Hatch and Evidence: enabled",
                   "",
                 ].join("\n"),
               );
@@ -632,12 +621,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               ? existingJournal.value.credentialWrappingKey
               : credentialWrappingKey();
             const journal = {
-              version:
-                evidenceEnabled === true
-                  ? (3 as const)
-                  : preview === undefined
-                    ? (1 as const)
-                    : (2 as const),
+              version: 3 as const,
               operation: "init" as const,
               phase: "prepared" as const,
               installationName,
@@ -649,10 +633,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               containerName: topology.containerName,
               kvTitle: topology.kvTitle,
               backupBucketName: topology.backupBucketName,
-              ...(preview === undefined
-                ? {}
-                : { previewBase: preview.base, previewZoneId: preview.zoneId }),
-              ...(evidenceEnabled === true ? { evidenceEnabled } : {}),
+              previewBase: preview.base,
+              previewZoneId: preview.zoneId,
+              evidenceEnabled,
               planFingerprint: plan.fingerprint,
               token,
               credentialWrappingKey: wrappingKey,
@@ -718,7 +701,11 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   ).pipe(
     Command.withDescription("Create a new Scotty installation"),
     Command.withExamples([
-      { command: "scotty init --name home", description: "Create a named installation" },
+      {
+        command:
+          "scotty init --name home --preview-base example.com --preview-zone-id 0123456789abcdef0123456789abcdef",
+        description: "Create a Hatch and Evidence-capable installation",
+      },
     ]),
   );
 
