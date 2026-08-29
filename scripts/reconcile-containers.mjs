@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { lstat, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const HARD_CAP_GRACE_MS = 30_000;
@@ -165,11 +168,57 @@ function execJson(command, args) {
   });
 }
 
-async function readSessions() {
-  const host = process.env.SCOTTY_HOST;
-  const token = process.env.SCOTTY_TOKEN;
+export const namedInstallationPath = (home, installationName) =>
+  join(home, ".config", "scotty", "installations", `${installationName}.json`);
+
+async function readPrivateInstallationConfig(path) {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
+    throw new Error(`Scotty installation config must be a private regular file at ${path}.`);
+  }
+  return readFile(path, "utf8");
+}
+
+export async function readSessions(
+  environment = process.env,
+  { home = homedir(), request = fetch, readPrivateConfig = readPrivateInstallationConfig } = {},
+) {
+  let host = environment.SCOTTY_HOST;
+  let token = environment.SCOTTY_TOKEN;
+  if ((host === undefined) !== (token === undefined)) {
+    throw new Error("SCOTTY_HOST and SCOTTY_TOKEN must be provided together.");
+  }
+  if (!host && !token) {
+    const installationName = environment.SCOTTY_INSTALLATION_NAME?.trim();
+    if (installationName) {
+      if (!/^[a-z][a-z0-9-]{0,30}[a-z0-9]$/u.test(installationName)) {
+        throw new Error("SCOTTY_INSTALLATION_NAME is not a valid installation name.");
+      }
+      const configPath = namedInstallationPath(home, installationName);
+      let config;
+      try {
+        config = JSON.parse(await readPrivateConfig(configPath));
+      } catch (error) {
+        throw new Error(`Could not read the named Scotty installation config at ${configPath}.`, {
+          cause: error,
+        });
+      }
+      if (
+        !isObject(config) ||
+        config.installationName !== installationName ||
+        typeof config.host !== "string" ||
+        config.host.length === 0 ||
+        typeof config.token !== "string" ||
+        config.token.length === 0
+      ) {
+        throw new Error(`The named Scotty installation config does not own ${installationName}.`);
+      }
+      host = config.host;
+      token = config.token;
+    }
+  }
   if (host && token) {
-    const response = await fetch(new URL("/api/sessions", host), {
+    const response = await request(new URL("/api/sessions", host), {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
     });
     if (!response.ok) {
