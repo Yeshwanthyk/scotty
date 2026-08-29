@@ -26,18 +26,17 @@ test("critical auth pages externalize scripts and strip fragments before fetch",
   assert.doesNotMatch(devicesHtml, /<script(?![^>]*\bsrc=)[^>]*>/iu);
 });
 
-test("browser console modules keep protocol, state, view, and transport boundaries explicit", () => {
+test("browser chat modules keep protocol, state, view, and transport boundaries explicit", () => {
   const assets = path.join(ROOT, "worker/public");
-  const terminal = fs.readFileSync(path.join(assets, "terminal.js"), "utf8");
-  const commandLane = fs.readFileSync(path.join(assets, "terminal-command-lane.js"), "utf8");
-  const projection = fs.readFileSync(path.join(assets, "terminal-projection.js"), "utf8");
-  const commandView = fs.readFileSync(path.join(assets, "terminal-command-view.js"), "utf8");
-  const consoleClient = fs.readFileSync(path.join(assets, "terminal-console-client.js"), "utf8");
+  const app = fs.readFileSync(path.join(assets, "app.js"), "utf8");
+  const connection = fs.readFileSync(path.join(assets, "pi-connection.js"), "utf8");
+  const chat = fs.readFileSync(path.join(assets, "chat.js"), "utf8");
+  const artifacts = fs.readFileSync(path.join(assets, "artifacts.js"), "utf8");
 
-  assert.doesNotMatch(terminal, /\/rpc\//u);
-  assert.match(consoleClient, /\/console\/v1\//u);
-  for (const stateModule of [commandLane, projection]) {
-    assert.doesNotMatch(stateModule, /\bdocument\b|\bwindow\b/u);
-  }
-  assert.doesNotMatch(commandView, /\bfetch\b|\bEventSource\b/u);
+  assert.doesNotMatch(app + connection + chat + artifacts, /\/rpc\//u);
+  assert.match(connection, /\/console\/v1\//u);
+  assert.doesNotMatch(connection, /\bdocument\b|\bwindow\b/u);
+  assert.doesNotMatch(artifacts, /\bfetch\b|\bEventSource\b/u);
+  assert.doesNotMatch(chat, /innerHTML|outerHTML|insertAdjacentHTML|srcdoc/u);
+  assert.doesNotMatch(app, /localStorage|sessionStorage|new WebSocket/u);
 });

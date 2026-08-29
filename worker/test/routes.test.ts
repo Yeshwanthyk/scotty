@@ -90,7 +90,6 @@ import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../prot
 import { conflict } from "../src/contracts";
 import type { EvidenceStateV2 } from "../src/evidence-contracts";
 import { orderedEvidenceFrames } from "../public/evidence-view.js";
-import { browserEvidenceAttachment } from "../public/terminal-evidence-attachment.js";
 import evidenceHtml from "../public/evidence.html?raw";
 
 import evidenceScript from "../public/evidence.js?raw";
@@ -3131,28 +3130,12 @@ describe("real Hono boundary", () => {
       artifactBucket: evidenceArtifactBucket(accepted.jobId, firstFrame?.sha256 ?? ""),
     });
     const headers = { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` };
-    const worklogAttachment = browserEvidenceAttachment(
-      {
-        name: "scotty_browser_test",
-        result: {
-          details: {
-            version: 2,
-            jobId: accepted.jobId,
-            status: "failed",
-            summaryUrl: `/s/${SESSION_ID}/evidence/${accepted.jobId}`,
-            completedSteps: 2,
-            frameCount: 2,
-            video: false,
-            failure: { code: "assertion_mismatch", step: 1 },
-          },
-        },
-      },
-      SESSION_ID,
-    );
-    expect(worklogAttachment?.kind).toBe("evidence");
-    if (worklogAttachment?.kind !== "evidence") return;
+    const summaryPath = `/api/sessions/${SESSION_ID}/evidence/${accepted.jobId}`;
+    const detailPath = `/s/${SESSION_ID}/evidence/${accepted.jobId}`;
+    const framePath = (frameId: string) =>
+      `${detailPath}/frames/${encodeURIComponent(frameId)}.png`;
 
-    const denied = await app.request(worklogAttachment.paths.summary, undefined, testEnv);
+    const denied = await app.request(summaryPath, undefined, testEnv);
     expect(denied.status).toBe(401);
     expect(denied.headers.get("cache-control")).toBe("private, no-store");
 
@@ -3168,7 +3151,7 @@ describe("real Hono boundary", () => {
     const listBody: unknown = await list.json();
     expect(listBody).toMatchObject([{ jobId: accepted.jobId, status: "failed" }]);
 
-    const summary = await app.request(worklogAttachment.paths.summary, { headers }, testEnv);
+    const summary = await app.request(summaryPath, { headers }, testEnv);
     expect(summary.status).toBe(200);
     expect(summary.headers.get("cache-control")).toBe("private, no-store");
     const summaryBody: unknown = await summary.json();
@@ -3196,7 +3179,7 @@ describe("real Hono boundary", () => {
     expect(missingJob.status).toBe(404);
     expect(missingJob.headers.get("cache-control")).toBe("private, no-store");
 
-    const shell = await app.request(worklogAttachment.paths.detail, { headers }, testEnv);
+    const shell = await app.request(detailPath, { headers }, testEnv);
     expect(shell.status).toBe(200);
     expect(shell.headers.get("cache-control")).toBe("private, no-store");
     expect(await shell.text()).toContain("<title>Scotty evidence</title>");
@@ -3212,18 +3195,14 @@ describe("real Hono boundary", () => {
     expect(missingFrame.status).toBe(404);
     expect(missingFrame.headers.get("cache-control")).toBe("private, no-store");
 
-    const firstFramePath = worklogAttachment.paths.frame("frame-1");
-    expect(firstFramePath).toBeDefined();
-    if (firstFramePath === undefined) return;
+    const firstFramePath = framePath("frame-1");
     const frame = await app.request(firstFramePath, { headers }, testEnv);
     expect(frame.status).toBe(200);
     expect(frame.headers.get("content-type")).toBe("image/png");
     expect(frame.headers.get("cache-control")).toBe("private, no-store");
     expect(new Uint8Array(await frame.arrayBuffer())).toEqual(evidencePng);
 
-    const failedFramePath = worklogAttachment.paths.frame("frame-2");
-    expect(failedFramePath).toBeDefined();
-    if (failedFramePath === undefined) return;
+    const failedFramePath = framePath("frame-2");
     const failedFrame = await app.request(failedFramePath, { headers }, testEnv);
     expect(failedFrame.status).toBe(200);
     expect(failedFrame.headers.get("content-type")).toBe("image/png");
