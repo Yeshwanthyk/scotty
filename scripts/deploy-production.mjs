@@ -30,7 +30,16 @@ export const PRODUCTION_DEPLOY_STEPS = [
   {
     name: "Check Worker credential binding",
     command: "npx",
-    args: ["--no-install", "wrangler", "secret", "list", "--name", "${workerName}", "--json"],
+    args: [
+      "--no-install",
+      "wrangler",
+      "secret",
+      "list",
+      "--name",
+      "${workerName}",
+      "--format",
+      "json",
+    ],
     capture: true,
     redact: true,
   },
@@ -1049,7 +1058,16 @@ export async function executeProductionDeploySteps(
   await revalidate();
   const credentialPreflight = {
     ...PRODUCTION_DEPLOY_STEPS[3],
-    args: ["--no-install", "wrangler", "secret", "list", "--name", topology.workerName, "--json"],
+    args: [
+      "--no-install",
+      "wrangler",
+      "secret",
+      "list",
+      "--name",
+      topology.workerName,
+      "--format",
+      "json",
+    ],
   };
   const credentialBindings = await execute(credentialPreflight, productionEnv);
   assertProductionCredentialWrappingKeyBinding(credentialBindings);
