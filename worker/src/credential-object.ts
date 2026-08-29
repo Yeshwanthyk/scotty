@@ -25,7 +25,7 @@ import {
 } from "./credential-contracts";
 import type { CredentialRedactedMetadata } from "../../protocol/credentials";
 
-export const CREDENTIAL_REGISTRY_OBJECT_NAME = "account";
+export const CREDENTIAL_REGISTRY_OBJECT_NAME = "account-v2";
 const toResolvedCredentialWire = (
   resolved: Redacted.Redacted<string>,
 ): Effect.Effect<CredentialRegistryResolvedCredential, CredentialRegistryFailure> => {
