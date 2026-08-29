@@ -57,6 +57,13 @@ function upsertMessage(messages, message) {
   else messages.push(message);
 }
 
+function finalizeMessage(messages, message) {
+  if (!isObject(message)) return;
+  if (!messageId(message) && messages.at(-1)?.role === message.role)
+    messages[messages.length - 1] = message;
+  else upsertMessage(messages, message);
+}
+
 function appendAssistantDelta(messages, event) {
   let message = messages.at(-1);
   if (!isObject(message) || message.role !== "assistant") {
@@ -214,7 +221,8 @@ export function applyEvent(projection, envelope) {
   }
   if (type === "message_start" || type === "message_end") {
     if (!claimsSnapshotMessage(projection, event.message))
-      upsertMessage(projection.messages, event.message);
+      if (type === "message_end") finalizeMessage(projection.messages, event.message);
+      else upsertMessage(projection.messages, event.message);
   } else if (type === "message_update") {
     if (isObject(event.message)) {
       if (!claimsSnapshotMessage(projection, event.message))

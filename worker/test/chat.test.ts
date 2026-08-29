@@ -49,6 +49,24 @@ describe("canonical chat projection", () => {
     assert.strictEqual(projection.sequence, 1);
   });
 
+  it("finalizes one anonymous Pi message without rendering start and end twice", () => {
+    const projection = projectionFromSnapshot(snapshot());
+    const start = { role: "user", content: [{ type: "text", text: "Ship it" }] };
+    const end = { ...start, timestamp: 1_788_044_446_835 };
+    applyEvent(projection, {
+      epoch: "epoch-1",
+      sequence: 1,
+      event: { type: "message_start", message: start },
+    });
+    applyEvent(projection, {
+      epoch: "epoch-1",
+      sequence: 2,
+      event: { type: "message_end", message: end },
+    });
+
+    assert.deepStrictEqual(projection.messages, [end]);
+  });
+
   it("suppresses duplicates and requires a fresh snapshot for gaps or epoch changes", () => {
     const projection = projectionFromSnapshot(snapshot());
     assert.strictEqual(
