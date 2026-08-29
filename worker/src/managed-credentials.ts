@@ -2,8 +2,6 @@ import { Option, Result, Schema } from "effect";
 import type { PiCredential } from "../../protocol/pi-auth";
 import {
   CredentialGrantSchema,
-  CredentialNameSchema,
-  CredentialVersionRefSchema,
   formatManagedHandle,
   isManagedHandle,
   parseManagedHandle,
@@ -13,12 +11,6 @@ import {
   type ManagedHandleSlotName,
 } from "../../protocol/credentials";
 import { RepositoryIdentitySchema, isRepositoryIdentity } from "../../protocol/repository";
-import {
-  CredentialRegistryRotationPatchSchema,
-  CredentialSessionIdSchema,
-  CredentialTimestampSchema,
-  type CredentialRegistryRotationPatch,
-} from "./credential-contracts";
 
 export const MANAGED_PI_ACCOUNT_ID = "scotty-managed";
 export const MANAGED_PI_PLAN_TYPE = "managed";
@@ -51,47 +43,10 @@ export const SessionCredentialAccessSchema = Schema.Struct({
 });
 export type SessionCredentialAccess = typeof SessionCredentialAccessSchema.Type;
 
-export const SessionCredentialRefreshSchema = Schema.Struct({
-  version: Schema.Literal(1),
-  handle: managedHandleTextSchema,
-  nonce: Schema.NonEmptyString,
-});
-export type SessionCredentialRefresh = typeof SessionCredentialRefreshSchema.Type;
-
-export const SessionCredentialRotationSchema = Schema.Struct({
-  version: Schema.Literal(1),
-  handle: managedHandleTextSchema,
-  nonce: Schema.NonEmptyString,
-  patch: CredentialRegistryRotationPatchSchema,
-});
-export type SessionCredentialRotation = typeof SessionCredentialRotationSchema.Type;
-export const CredentialRefreshLeaseSchema = Schema.Struct({
-  sessionId: CredentialSessionIdSchema,
-  name: CredentialNameSchema,
-  versionRef: CredentialVersionRefSchema,
-  nonce: Schema.NonEmptyString,
-  startedAt: CredentialTimestampSchema,
-});
-export type ManagedCredentialRefreshLease = typeof CredentialRefreshLeaseSchema.Type;
-
-export const decodeCredentialRefreshLeaseOption = Schema.decodeUnknownOption(
-  CredentialRefreshLeaseSchema,
-  { onExcessProperty: "error" },
-);
-
 export const decodeSessionCredentialAccessResult = Schema.decodeUnknownResult(
   SessionCredentialAccessSchema,
   { onExcessProperty: "error" },
 );
-export const decodeSessionCredentialRefreshResult = Schema.decodeUnknownResult(
-  SessionCredentialRefreshSchema,
-  { onExcessProperty: "error" },
-);
-export const decodeSessionCredentialRotationResult = Schema.decodeUnknownResult(
-  SessionCredentialRotationSchema,
-  { onExcessProperty: "error" },
-);
-
 export const grantHandle = (
   grants: ReadonlyArray<CredentialGrant>,
   kind: CredentialGrant["kind"],
@@ -110,15 +65,22 @@ export const grantHandle = (
     : formatManagedHandle({ name: grant.name, provider, slot });
 };
 
+const piAccessGrant = (grants: ReadonlyArray<CredentialGrant>): CredentialGrant | undefined =>
+  grants.find(
+    (candidate) =>
+      candidate.kind === "pi-auth" &&
+      candidate.handleSlots.some(
+        ({ provider, slot }) => provider === "openai-codex" && slot === "access",
+      ),
+  );
+
 export const sessionRuntimeCredentials = (
   grants: ReadonlyArray<CredentialGrant>,
 ): SessionRuntimeCredentials => ({
   grants,
   piProviders: [
     ...(piApiKeyHandle(grants) === undefined ? [] : (["openai"] as const)),
-    ...(piAccessHandle(grants) === undefined || piRefreshHandle(grants) === undefined
-      ? []
-      : (["openai-codex"] as const)),
+    ...(piAccessGrant(grants)?.expires === undefined ? [] : (["openai-codex"] as const)),
   ],
 });
 
@@ -137,9 +99,6 @@ export const piApiKeyHandle = (grants: ReadonlyArray<CredentialGrant>): string |
 export const piAccessHandle = (grants: ReadonlyArray<CredentialGrant>): string | undefined =>
   piManagedHandle(grants, "openai-codex", "access");
 
-export const piRefreshHandle = (grants: ReadonlyArray<CredentialGrant>): string | undefined =>
-  piManagedHandle(grants, "openai-codex", "refresh");
-
 export const piAuthJson = (credentials: SessionRuntimeCredentials): string => {
   const projected: Partial<Record<ManagedPiProvider, PiCredential>> = {};
   if (credentials.piProviders.includes("openai")) {
@@ -148,13 +107,13 @@ export const piAuthJson = (credentials: SessionRuntimeCredentials): string => {
   }
   if (credentials.piProviders.includes("openai-codex")) {
     const access = piAccessHandle(credentials.grants);
-    const refresh = piRefreshHandle(credentials.grants);
-    if (access !== undefined && refresh !== undefined)
+    const grant = piAccessGrant(credentials.grants);
+    if (access !== undefined && grant?.expires !== undefined)
       projected["openai-codex"] = {
         type: "oauth",
         access: managedPiAccessToken(access),
-        refresh,
-        expires: 0,
+        refresh: access,
+        expires: grant.expires,
         accountId: MANAGED_PI_ACCOUNT_ID,
       };
   }
@@ -209,17 +168,6 @@ export const parseManagedPiAccessToken = (value: unknown): Option.Option<Managed
     : Option.none();
 };
 
-export const managedPiIdToken = (accessHandle: string): string => {
-  const header = base64Url(JSON.stringify({ alg: "none", typ: "JWT" }));
-  const payload = base64Url(
-    JSON.stringify({
-      scotty_managed_handle: accessHandle,
-      scotty_managed: true,
-    }),
-  );
-  return `${header}.${payload}.scotty-managed`;
-};
-
 export const githubRepositoryFromUrl = (url: URL): string | undefined => {
   const segments = url.pathname.split("/").filter((segment) => segment.length > 0);
   const decoded = segments.map((segment) => Result.try(() => decodeURIComponent(segment)));
@@ -246,5 +194,4 @@ export const credentialGrantHasHandle = (grant: CredentialGrant, handle: Managed
 const base64Url = (value: string): string =>
   btoa(value).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 
-export type { CredentialRegistryRotationPatch };
 export { CredentialGrantSchema };

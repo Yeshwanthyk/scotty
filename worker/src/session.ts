@@ -131,14 +131,10 @@ import {
 import {
   credentialGrantHasHandle,
   credentialKindForHandle,
-  decodeCredentialRefreshLeaseOption,
   decodeSessionCredentialAccessResult,
-  decodeSessionCredentialRefreshResult,
-  decodeSessionCredentialRotationResult,
   githubManagedHandle,
   selectPiAuthGrant,
   sessionRuntimeCredentials,
-  type ManagedCredentialRefreshLease,
 } from "./managed-credentials";
 import { readBoundedUtf8Body } from "./bounded-http";
 import { CREDENTIAL_REGISTRY_OBJECT_NAME } from "./credential-object";
@@ -4462,119 +4458,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return plaintext;
   });
 
-  private readonly beginCredentialRefreshForProxyProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    input: import("./managed-credentials").SessionCredentialRefresh,
-  ) {
-    const record = yield* this.requireRecordProgram();
-    const handle = parseManagedHandle(input.handle);
-    if (
-      Option.isNone(handle) ||
-      handle.value.provider !== "openai-codex" ||
-      handle.value.slot !== "refresh"
-    )
-      return null;
-    const grant = credentialProxyGrant(record, handle.value);
-    if (grant === undefined) return null;
-    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
-    if (registry === undefined)
-      return yield* this.upstreamError("Credential registry is unavailable", undefined, record.id);
-    const result = yield* Effect.tryPromise({
-      try: () =>
-        registry.beginRefresh({
-          version: 1,
-          sessionId: record.id,
-          name: grant.name,
-          versionRef: grant.versionRef,
-          nonce: input.nonce,
-        }),
-      catch: (cause) => this.upstreamError("Credential refresh failed", cause, record.id),
-    });
-    if (!result.ok)
-      return yield* this.upstreamError("Credential refresh failed", result.error, record.id);
-    if (result.value === null) return null;
-    const lease = decodeCredentialRefreshLeaseOption(result.value);
-    if (
-      Option.isNone(lease) ||
-      lease.value.sessionId !== record.id ||
-      lease.value.name !== grant.name ||
-      lease.value.versionRef !== grant.versionRef ||
-      lease.value.nonce !== input.nonce
-    )
-      return yield* this.upstreamError("Credential refresh lease is invalid", undefined, record.id);
-    return lease.value;
-  });
-
-  private readonly persistCredentialRotationForProxyProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    input: import("./managed-credentials").SessionCredentialRotation,
-  ) {
-    const record = yield* this.requireRecordProgram();
-    const handle = parseManagedHandle(input.handle);
-    if (
-      Option.isNone(handle) ||
-      handle.value.provider !== "openai-codex" ||
-      handle.value.slot !== "refresh"
-    )
-      return;
-    const grant = credentialProxyGrant(record, handle.value);
-    if (grant === undefined) return;
-    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
-    if (registry === undefined)
-      return yield* this.upstreamError("Credential registry is unavailable", undefined, record.id);
-    const result = yield* Effect.tryPromise({
-      try: () =>
-        registry.persistRotation({
-          version: 1,
-          sessionId: record.id,
-          name: grant.name,
-          versionRef: grant.versionRef,
-          nonce: input.nonce,
-          patch: input.patch,
-        }),
-      catch: (cause) => this.upstreamError("Credential rotation failed", cause, record.id),
-    });
-    if (!result.ok)
-      return yield* this.upstreamError("Credential rotation failed", result.error, record.id);
-  });
-
-  private readonly cancelCredentialRefreshForProxyProgram = Effect.fnUntraced(function* (
-    this: Sandbox,
-    input: import("./managed-credentials").SessionCredentialRefresh,
-  ) {
-    const record = yield* this.requireRecordProgram();
-    const handle = parseManagedHandle(input.handle);
-    if (
-      Option.isNone(handle) ||
-      handle.value.provider !== "openai-codex" ||
-      handle.value.slot !== "refresh"
-    )
-      return;
-    const grant = credentialProxyGrant(record, handle.value);
-    if (grant === undefined) return;
-    const registry = this.env.CREDENTIALS?.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
-    if (registry === undefined)
-      return yield* this.upstreamError("Credential registry is unavailable", undefined, record.id);
-    const result = yield* Effect.tryPromise({
-      try: () =>
-        registry.cancelRefresh({
-          version: 1,
-          sessionId: record.id,
-          name: grant.name,
-          versionRef: grant.versionRef,
-          nonce: input.nonce,
-        }),
-      catch: (cause) =>
-        this.upstreamError("Credential refresh cancellation failed", cause, record.id),
-    });
-    if (!result.ok)
-      return yield* this.upstreamError(
-        "Credential refresh cancellation failed",
-        result.error,
-        record.id,
-      );
-  });
-
   async snapshotScottySession(): Promise<SessionView> {
     return this.#run(this.snapshotScottySessionProgram());
   }
@@ -4612,26 +4495,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const decoded = decodeSessionCredentialAccessResult(input);
     if (Result.isFailure(decoded)) return null;
     return this.#run(this.resolveCredentialForProxyProgram(decoded.success));
-  }
-
-  async beginCredentialRefreshForProxy(
-    input: unknown,
-  ): Promise<ManagedCredentialRefreshLease | null> {
-    const decoded = decodeSessionCredentialRefreshResult(input);
-    if (Result.isFailure(decoded)) return null;
-    return this.#run(this.beginCredentialRefreshForProxyProgram(decoded.success));
-  }
-
-  async persistCredentialRotationForProxy(input: unknown): Promise<void> {
-    const decoded = decodeSessionCredentialRotationResult(input);
-    if (Result.isFailure(decoded)) return;
-    return this.#run(this.persistCredentialRotationForProxyProgram(decoded.success));
-  }
-
-  async cancelCredentialRefreshForProxy(input: unknown): Promise<void> {
-    const decoded = decodeSessionCredentialRefreshResult(input);
-    if (Result.isFailure(decoded)) return;
-    return this.#run(this.cancelCredentialRefreshForProxyProgram(decoded.success));
   }
 
   async enforceHardCap(payload: HardCapPayload): Promise<void> {

@@ -32,14 +32,6 @@ const SESSION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{5,31}$/u;
 const INSTALLATION_NAME_PATTERN = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/u;
 const CREDENTIAL_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const MAX_ENCRYPTED_CREDENTIAL_BYTES = 256 * 1024;
-const MAX_ROTATION_FIELD_LENGTH = 256 * 1024;
-const CREDENTIAL_DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
-
-export const CREDENTIAL_ROTATION_COMPLETION_MAX_ENTRIES = 32;
-
-const CredentialDigestSchema = Schema.String.check(
-  Schema.isPattern(CREDENTIAL_DIGEST_PATTERN, { expected: "a SHA-256 digest" }),
-);
 
 const isCanonicalBase64Url = (value: string): boolean =>
   value.length > 0 &&
@@ -55,12 +47,6 @@ const boundedText = (value: string, maximum: number): boolean =>
     const codePoint = character.codePointAt(0) ?? 0;
     return codePoint > 31 && codePoint !== 127;
   });
-
-const BoundedRotationFieldSchema = Schema.String.check(
-  Schema.makeFilter((value) => boundedText(value, MAX_ROTATION_FIELD_LENGTH), {
-    expected: "a bounded non-empty rotation field",
-  }),
-);
 
 export const CredentialBase64UrlSchema = Schema.String.check(
   Schema.makeFilter(isCanonicalBase64Url, { expected: "bounded unpadded base64url" }),
@@ -125,7 +111,13 @@ export const CredentialRegistrySyncEntrySchema = Schema.Struct({
   ...CredentialRepositoryPolicyShape,
   versionRef: CredentialVersionRefSchema,
   envelope: EncryptedCredentialEnvelopeSchema,
+  expires: Schema.optionalKey(Schema.Finite),
 })
+  .check(
+    Schema.makeFilter((entry) => entry.kind === "pi-auth" || entry.expires === undefined, {
+      expected: "expiry metadata on Pi credentials only",
+    }),
+  )
   .check(
     Schema.makeFilter((entry) => entry.kind === entry.envelope.kind, {
       expected: "credential kind matching its encrypted envelope",
@@ -291,77 +283,24 @@ export const CredentialRegistryReleaseResultSchema = Schema.Struct({
 });
 export type CredentialRegistryReleaseResult = typeof CredentialRegistryReleaseResultSchema.Type;
 
-export const CredentialRegistryRefreshInputSchema = Schema.Struct({
-  version: Schema.Literal(1),
-  sessionId: CredentialSessionIdSchema,
-  name: CredentialNameSchema,
-  versionRef: CredentialVersionRefSchema,
-  nonce: BoundedRotationFieldSchema,
-});
-export type CredentialRegistryRefreshInput = typeof CredentialRegistryRefreshInputSchema.Type;
-
-export const CredentialRegistryRotationPatchSchema = Schema.Struct({
-  accessToken: Schema.optionalKey(BoundedRotationFieldSchema),
-  refreshToken: Schema.optionalKey(BoundedRotationFieldSchema),
-  expiresInSeconds: Schema.optionalKey(
-    Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(31_536_000)),
-  ),
-  idToken: Schema.optionalKey(BoundedRotationFieldSchema),
-});
-export type CredentialRegistryRotationPatch = typeof CredentialRegistryRotationPatchSchema.Type;
-
-export const CredentialRegistryPersistRotationInputSchema = Schema.Struct({
-  version: Schema.Literal(1),
-  sessionId: CredentialSessionIdSchema,
-  name: CredentialNameSchema,
-  versionRef: CredentialVersionRefSchema,
-  nonce: BoundedRotationFieldSchema,
-  patch: CredentialRegistryRotationPatchSchema,
-});
-export type CredentialRegistryPersistRotationInput =
-  typeof CredentialRegistryPersistRotationInputSchema.Type;
-
-export const CredentialRegistryRotationCompletionSchema = Schema.Struct({
-  sessionId: CredentialSessionIdSchema,
-  name: CredentialNameSchema,
-  kind: CredentialKindSchema,
-  versionRef: CredentialVersionRefSchema,
-  nonceDigest: CredentialDigestSchema,
-  patchDigest: CredentialDigestSchema,
-  completedAt: CredentialTimestampSchema,
-});
-export type CredentialRegistryRotationCompletion =
-  typeof CredentialRegistryRotationCompletionSchema.Type;
-
-const CredentialRegistryRotationCompletionsSchema = Schema.Array(
-  CredentialRegistryRotationCompletionSchema,
-).check(
-  Schema.makeFilter(
-    (completions) => completions.length <= CREDENTIAL_ROTATION_COMPLETION_MAX_ENTRIES,
-    { expected: "bounded OAuth rotation completion metadata" },
-  ),
-);
-
-const CredentialRefreshLeaseSchema = Schema.Struct({
-  sessionId: CredentialSessionIdSchema,
-  nonce: BoundedRotationFieldSchema,
-  startedAt: CredentialTimestampSchema,
-});
-export { CredentialRefreshLeaseSchema };
-export type CredentialRefreshLeaseRecord = typeof CredentialRefreshLeaseSchema.Type;
-
 export const CredentialRegistryVersionRecordSchema = Schema.Struct({
   name: CredentialNameSchema,
   kind: CredentialKindSchema,
   versionRef: CredentialVersionRefSchema,
   envelope: EncryptedCredentialEnvelopeSchema,
   createdAt: CredentialTimestampSchema,
-  refreshLease: Schema.optionalKey(CredentialRefreshLeaseSchema),
-}).check(
-  Schema.makeFilter((version) => version.kind === version.envelope.kind, {
-    expected: "credential kind matching its encrypted envelope",
-  }),
-);
+  expires: Schema.optionalKey(Schema.Finite),
+})
+  .check(
+    Schema.makeFilter((version) => version.kind === "pi-auth" || version.expires === undefined, {
+      expected: "expiry metadata on Pi credentials only",
+    }),
+  )
+  .check(
+    Schema.makeFilter((version) => version.kind === version.envelope.kind, {
+      expected: "credential kind matching its encrypted envelope",
+    }),
+  );
 export type CredentialRegistryVersionRecord = typeof CredentialRegistryVersionRecordSchema.Type;
 export const CredentialRegistryCredentialSchema = Schema.Struct({
   name: CredentialNameSchema,
@@ -385,8 +324,13 @@ export const CredentialRegistryGrantRecordSchema = Schema.Struct({
   kind: CredentialKindSchema,
   versionRef: CredentialVersionRefSchema,
   handleSlots: CredentialGrantHandleSlotsSchema,
+  expires: Schema.optionalKey(Schema.Finite),
   issuedAt: CredentialTimestampSchema,
-});
+}).check(
+  Schema.makeFilter((grant) => grant.kind === "pi-auth" || grant.expires === undefined, {
+    expected: "expiry metadata on Pi credentials only",
+  }),
+);
 export type CredentialRegistryGrantRecord = typeof CredentialRegistryGrantRecordSchema.Type;
 export const CredentialRegistryAuthoritySchema = Schema.Struct({
   version: Schema.Literal(1),
@@ -394,7 +338,6 @@ export const CredentialRegistryAuthoritySchema = Schema.Struct({
   versions: Schema.Array(CredentialRegistryVersionRecordSchema),
   grants: Schema.Array(CredentialRegistryGrantRecordSchema),
   issuedSessions: Schema.optionalKey(Schema.Array(CredentialSessionIdSchema)),
-  rotationCompletions: Schema.optionalKey(CredentialRegistryRotationCompletionsSchema),
 });
 export type CredentialRegistryAuthority = typeof CredentialRegistryAuthoritySchema.Type;
 
@@ -445,14 +388,6 @@ export const decodeCredentialRegistryReleaseInputResult = Schema.decodeUnknownRe
 );
 export const decodeCredentialRegistryReleaseResult = Schema.decodeUnknownResult(
   CredentialRegistryReleaseResultSchema,
-  { onExcessProperty: "error" },
-);
-export const decodeCredentialRegistryRefreshInputResult = Schema.decodeUnknownResult(
-  CredentialRegistryRefreshInputSchema,
-  { onExcessProperty: "error" },
-);
-export const decodeCredentialRegistryPersistRotationInputResult = Schema.decodeUnknownResult(
-  CredentialRegistryPersistRotationInputSchema,
   { onExcessProperty: "error" },
 );
 export const decodeCredentialRegistryAuthorityResult = Schema.decodeUnknownResult(

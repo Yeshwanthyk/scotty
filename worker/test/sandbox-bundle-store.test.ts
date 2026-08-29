@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import {
   SandboxBundleStore,
+  SANDBOX_BUNDLE_MAX_GZIP_BYTES,
   sandboxBundleManifestKey,
   sandboxBundleStoreLayer,
   sandboxBundleTarGzKey,
@@ -112,35 +113,51 @@ describe("SandboxBundleStore", () => {
     }),
   );
 
-  it.effect("returns stored gzip bytes and rejects missing or mismatched metadata on get", () =>
-    Effect.gen(function* () {
-      const test = makeMemoryCapabilities();
-      const digest = "d".repeat(64);
-      const gzipBytes = Uint8Array.from([0x1f, 0x8b, 0x08, 0x00]);
-      test.objects.set(sandboxBundleTarGzKey(digest), {
-        key: sandboxBundleTarGzKey(digest),
-        size: gzipBytes.byteLength,
-        contentType: "application/gzip",
-        customMetadata: { digest },
-        bytes: gzipBytes,
-      });
+  it.effect(
+    "returns the stored gzip stream and rejects missing or mismatched metadata on get",
+    () =>
+      Effect.gen(function* () {
+        const test = makeMemoryCapabilities();
+        const digest = "d".repeat(64);
+        const gzipBytes = Uint8Array.from([0x1f, 0x8b, 0x08, 0x00]);
+        test.objects.set(sandboxBundleTarGzKey(digest), {
+          key: sandboxBundleTarGzKey(digest),
+          size: gzipBytes.byteLength,
+          contentType: "application/gzip",
+          customMetadata: { digest },
+          bytes: gzipBytes,
+        });
 
-      const loaded = yield* getBundle(test.capabilities, digest);
-      assert.deepStrictEqual(loaded.gzipBytes, gzipBytes);
-      assert.strictEqual(test.getCalls(), 1);
+        const loaded = yield* getBundle(test.capabilities, digest);
+        const loadedBytes = yield* Effect.promise(
+          async () => new Uint8Array(await new Response(loaded.gzipStream).arrayBuffer()),
+        );
+        assert.deepStrictEqual(loadedBytes, gzipBytes);
+        assert.strictEqual(test.getCalls(), 1);
 
-      const missing = yield* Effect.result(getBundle(test.capabilities, "e".repeat(64)));
-      assert.deepInclude(failure(missing), { reason: "missing" });
+        const missing = yield* Effect.result(getBundle(test.capabilities, "e".repeat(64)));
+        assert.deepInclude(failure(missing), { reason: "missing" });
 
-      test.objects.set(sandboxBundleTarGzKey("f".repeat(64)), {
-        key: sandboxBundleTarGzKey("f".repeat(64)),
-        size: 3,
-        contentType: "application/gzip",
-        customMetadata: { digest: "0".repeat(64) },
-        bytes: Uint8Array.from([1, 2, 3]),
-      });
-      const mismatch = yield* Effect.result(getBundle(test.capabilities, "f".repeat(64)));
-      assert.deepInclude(failure(mismatch), { reason: "metadata_mismatch" });
-    }),
+        const oversizedDigest = "1".repeat(64);
+        test.objects.set(sandboxBundleTarGzKey(oversizedDigest), {
+          key: sandboxBundleTarGzKey(oversizedDigest),
+          size: SANDBOX_BUNDLE_MAX_GZIP_BYTES + 1,
+          contentType: "application/gzip",
+          customMetadata: { digest: oversizedDigest },
+          bytes: Uint8Array.from([1]),
+        });
+        const oversized = yield* Effect.result(getBundle(test.capabilities, oversizedDigest));
+        assert.deepInclude(failure(oversized), { reason: "too_large" });
+
+        test.objects.set(sandboxBundleTarGzKey("f".repeat(64)), {
+          key: sandboxBundleTarGzKey("f".repeat(64)),
+          size: 3,
+          contentType: "application/gzip",
+          customMetadata: { digest: "0".repeat(64) },
+          bytes: Uint8Array.from([1, 2, 3]),
+        });
+        const mismatch = yield* Effect.result(getBundle(test.capabilities, "f".repeat(64)));
+        assert.deepInclude(failure(mismatch), { reason: "metadata_mismatch" });
+      }),
   );
 });

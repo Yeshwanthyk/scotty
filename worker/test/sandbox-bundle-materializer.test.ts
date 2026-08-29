@@ -44,17 +44,10 @@ const fileMember = (
   bytes: encoder.encode(content),
 });
 
-const resultSuccess = <A, E>(result: Result.Result<A, E>): A => {
-  assert.ok(Result.isSuccess(result));
-  return result.success;
-};
-
 const required = <A>(value: A | undefined): A => {
   assert.ok(value !== undefined);
   return value;
 };
-
-const assertSame = <A>(left: A, right: A): void => assert.strictEqual(left, right);
 
 const successResult = (command: string): ExecResult => ({
   success: true,
@@ -93,14 +86,15 @@ const readStreamBytes = async (stream: ReadableStream<Uint8Array>): Promise<Uint
 class MaterializerFilesystemFake {
   readonly files = new Map<string, Uint8Array>();
   writeFileCalls = 0;
+  streamWriteCalls = 0;
+  forceOversized = false;
   readonly execCommands: string[] = [];
 
   capabilities(): SandboxRuntimeCapabilities {
     return {
       exec: async (command) => {
         this.execCommands.push(command);
-        await this.applyExec(command);
-        return successResult(command);
+        return await this.applyExec(command);
       },
       mkdir: async () => undefined,
       readFileStream: async (path) => {
@@ -118,29 +112,66 @@ class MaterializerFilesystemFake {
           this.files.set(path, content);
           return;
         }
+        this.streamWriteCalls += 1;
         this.files.set(path, await readStreamBytes(content));
       },
       setEnvVars: async () => undefined,
     };
   }
 
-  private async applyExec(command: string): Promise<void> {
-    const extract = /^tar -xzf (.+) -C (.+) && rm -f (.+)$/u.exec(command);
+  private async applyExec(command: string): Promise<ExecResult> {
+    const failed = (): ExecResult => ({ ...successResult(command), success: false, exitCode: 1 });
+    const gzipTest = /^gzip -t (.+)$/u.exec(command);
+    if (gzipTest !== null) {
+      const archive = required(this.files.get(unquoteShellArg(gzipTest[1])));
+      return Result.isSuccess(gunzipSandboxArchive(archive)) ? successResult(command) : failed();
+    }
+    const decompress = /^gzip -dc (.+) \| head -c ([0-9]+) > (.+)$/u.exec(command);
+    if (decompress !== null) {
+      const archive = required(this.files.get(unquoteShellArg(decompress[1])));
+      const tar = gunzipSandboxArchive(archive);
+      if (Result.isFailure(tar)) return failed();
+      this.files.set(unquoteShellArg(decompress[3]), tar.success.slice(0, Number(decompress[2])));
+      return successResult(command);
+    }
+    const sizeCheck = /^test "\$\(wc -c < (.+)\)" -le ([0-9]+)$/u.exec(command);
+    if (sizeCheck !== null)
+      return !this.forceOversized &&
+        required(this.files.get(unquoteShellArg(sizeCheck[1]))).byteLength <= Number(sizeCheck[2])
+        ? successResult(command)
+        : failed();
+    const digestCheck = /^printf '[^']+' '([a-f0-9]{64})' (.+) \| sha256sum/u.exec(command);
+    if (digestCheck !== null) {
+      const tarPath = unquoteShellArg(digestCheck[2]);
+      const digest = await sha256BytesHex(required(this.files.get(tarPath)));
+      return digest === digestCheck[1] ? successResult(command) : failed();
+    }
+    const tarCheck = /^tar -t[v]?f (.+?)(?: >\/dev\/null| \| awk .*)?$/u.exec(command);
+    if (tarCheck !== null)
+      return Result.isSuccess(
+        parseSandboxTar(required(this.files.get(unquoteShellArg(tarCheck[1])))),
+      )
+        ? successResult(command)
+        : failed();
+    const extract = /^tar -xf (.+) -C (.+)$/u.exec(command);
     if (extract !== null) {
-      const archivePath = unquoteShellArg(extract[1]);
+      const tar = required(this.files.get(unquoteShellArg(extract[1])));
       const stagingRoot = unquoteShellArg(extract[2]);
-      assertSame(archivePath, unquoteShellArg(extract[3]));
-      const archive = required(this.files.get(archivePath));
-      const tar = resultSuccess(gunzipSandboxArchive(archive));
-      const members = resultSuccess(parseSandboxTar(tar));
-      for (const member of members) {
+      const members = parseSandboxTar(tar);
+      if (Result.isFailure(members)) return failed();
+      for (const member of members.success) {
         if (member.type === "file") this.files.set(`${stagingRoot}/${member.path}`, member.bytes);
       }
-      this.files.delete(archivePath);
-      return;
+      return successResult(command);
+    }
+    const removeFiles = /^rm -f (.+) (.+)$/u.exec(command);
+    if (removeFiles !== null) {
+      this.files.delete(unquoteShellArg(removeFiles[1]));
+      this.files.delete(unquoteShellArg(removeFiles[2]));
+      return successResult(command);
     }
     const promote = /^rm -rf (.+) && mv (.+) (.+)$/u.exec(command);
-    if (promote === null) return;
+    if (promote === null) return successResult(command);
     const finalRoot = unquoteShellArg(promote[1]);
     const stagingRoot = unquoteShellArg(promote[2]);
     const promotedFinalRoot = unquoteShellArg(promote[3]);
@@ -156,6 +187,7 @@ class MaterializerFilesystemFake {
       const suffix = key === stagingRoot ? "" : key.slice(stagingRoot.length);
       this.files.set(`${finalRoot}${suffix}`, value);
     }
+    return successResult(command);
   }
 
   pathsUnder(prefix: string): ReadonlyArray<string> {
@@ -355,6 +387,29 @@ describe("SandboxBundleMaterializer", () => {
     }),
   );
 
+  it.effect("rejects oversized output before full gzip validation", () =>
+    Effect.gen(function* () {
+      const filesystem = new MaterializerFilesystemFake();
+      filesystem.forceOversized = true;
+      const bundle = makeMemoryBundleCapabilities();
+      const built = emptyBundle();
+      seedBundle(bundle.objects, built);
+
+      const result = yield* Effect.result(
+        materialize(filesystem, bundle, { sessionId: SESSION_ID, digest: built.digest }),
+      );
+
+      assert.ok(Result.isFailure(result));
+      assert.strictEqual(result.failure.reason, "too_large");
+      assert.match(filesystem.execCommands[0] ?? "", /^gzip -dc /u);
+      assert.strictEqual(
+        filesystem.execCommands.some((command) => command.startsWith("gzip -t ")),
+        false,
+      );
+      assert.match(filesystem.execCommands.at(-1) ?? "", /^rm -rf/u);
+    }),
+  );
+
   it.effect("writes skill files under the digest directory without path escape", () =>
     Effect.gen(function* () {
       const filesystem = new MaterializerFilesystemFake();
@@ -393,8 +448,9 @@ describe("SandboxBundleMaterializer", () => {
       const root = sandboxBundleRoot(SESSION_ID, built.digest);
       assert.ok(filesystem.files.has(`${root}/skills/release-notes/SKILL.md`));
       assert.ok(filesystem.files.has(`${root}/tools/hello`));
-      assert.ok(filesystem.execCommands.some((command) => command.startsWith("tar -xzf ")));
+      assert.ok(filesystem.execCommands.some((command) => command.startsWith("tar -xf ")));
       assert.strictEqual(filesystem.writeFileCalls, 2);
+      assert.strictEqual(filesystem.streamWriteCalls, 1);
       assert.ok(filesystem.files.has(`${root}/extensions/review/index.ts`));
       assert.ok(filesystem.files.has(`${root}/pi-packages/@scope/ready-package/package.json`));
       assert.deepStrictEqual(materialized.items, [

@@ -29,41 +29,19 @@ const BASE = "scotty-managed-test-secret";
 
 type TestCredentialStorage = CredentialRegistryStorage & {
   readonly snapshot: () => unknown;
-  readonly failNextPut: () => void;
-  readonly loseNextCommitResponse: () => void;
 };
 
 const memoryStorage = (initial?: unknown): TestCredentialStorage => {
   let value = structuredClone(initial);
-  let failNextPut = false;
-  let loseNextCommitResponse = false;
   return {
-    transaction: async (operation) => {
-      let committed = false;
-      const result = await operation({
+    transaction: async (operation) =>
+      operation({
         get: async () => structuredClone(value),
         put: async (next) => {
-          if (failNextPut) {
-            failNextPut = false;
-            return Promise.reject(new Error("injected pre-commit persistence failure"));
-          }
           value = structuredClone(next);
-          committed = true;
         },
-      });
-      if (committed && loseNextCommitResponse) {
-        loseNextCommitResponse = false;
-        return Promise.reject(new Error("injected committed persistence response loss"));
-      }
-      return result;
-    },
+      }),
     snapshot: () => structuredClone(value),
-    failNextPut: () => {
-      failNextPut = true;
-    },
-    loseNextCommitResponse: () => {
-      loseNextCommitResponse = true;
-    },
   };
 };
 
@@ -107,37 +85,6 @@ const requireOAuthVersion = (storage: TestCredentialStorage): string => {
   assert.isString(versionRef);
   return versionRef;
 };
-
-const prepareOAuth = (storage: TestCredentialStorage) =>
-  Effect.gen(function* () {
-    yield* useStore(storage, (store) =>
-      store.sync(
-        desiredPiInput({
-          "openai-codex": {
-            type: "oauth",
-            access: `${BASE}-access`,
-            refresh: `${BASE}-refresh`,
-            expires: 1,
-          },
-        }),
-      ),
-    );
-    const versionRef = requireOAuthVersion(storage);
-    yield* useStore(storage, (store) => store.issueGrants(grantInput));
-    return versionRef;
-  });
-const refreshInput = (versionRef: string, nonce: string) => ({
-  version: 1 as const,
-  sessionId: SESSION,
-  name: "openai" as const,
-  versionRef,
-  nonce,
-});
-
-const persistInput = (versionRef: string, nonce: string, accessToken: string) => ({
-  ...refreshInput(versionRef, nonce),
-  patch: { accessToken },
-});
 
 describe("CredentialStore", () => {
   it("selects one exact GitHub declaration before globals and fails closed on ambiguity", () => {
@@ -468,255 +415,122 @@ describe("CredentialStore", () => {
     }),
   );
 
-  it.effect("serializes pinned OAuth rotation and commits only with the matching lease", () =>
+  it.effect("persists and replays the exact pinned Codex OAuth expiry without plaintext", () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(Date.parse("2026-04-05T06:07:08.000Z"));
       const storage = memoryStorage();
+      const firstExpires = 1_777_777_777_123;
+      const secondExpires = 1_888_888_888_456;
+      const firstAccess = `${BASE}-oauth-access-a`;
+      const firstRefresh = `${BASE}-oauth-refresh-a`;
+
       yield* useStore(storage, (store) =>
         store.sync(
           desiredPiInput({
             "openai-codex": {
               type: "oauth",
-              access: `${BASE}-access`,
-              refresh: `${BASE}-refresh`,
-              expires: 1,
+              access: firstAccess,
+              refresh: firstRefresh,
+              expires: firstExpires,
             },
           }),
         ),
       );
-      const oauthVersionRef = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()))
-        .credentials[0]?.currentVersionRef;
-      assert.isString(oauthVersionRef);
-      yield* useStore(storage, (store) => store.issueGrants(grantInput));
-      const lease = yield* useStore(storage, (store) =>
-        store.beginRefresh({
-          version: 1,
-          sessionId: SESSION,
-          name: "openai",
-          versionRef: oauthVersionRef,
-          nonce: "nonce-a",
-        }),
-      );
-      assert.strictEqual(lease?.nonce, "nonce-a");
-      const busy = yield* useStore(storage, (store) =>
-        store.beginRefresh({
-          version: 1,
-          sessionId: SESSION,
-          name: "openai",
-          versionRef: oauthVersionRef,
-          nonce: "nonce-b",
-        }),
-      );
-      assert.isNull(busy);
+      const firstVersionRef = requireOAuthVersion(storage);
+      const firstAuthority = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
+      assert.strictEqual(firstAuthority.versions[0]?.expires, firstExpires);
+      assert.notInclude(JSON.stringify(storage.snapshot()), firstAccess);
+      assert.notInclude(JSON.stringify(storage.snapshot()), firstRefresh);
+
+      const first = yield* useStore(storage, (store) => store.issueGrants(grantInput));
+      assert.strictEqual(first.grants[0]?.expires, firstExpires);
+      assert.deepStrictEqual(first.grants[0]?.handleSlots, [
+        { provider: "openai", slot: "api-key" },
+        { provider: "openai-codex", slot: "access" },
+      ]);
+
       yield* useStore(storage, (store) =>
-        store.persistRotation({
-          version: 1,
-          sessionId: SESSION,
-          name: "openai",
-          versionRef: oauthVersionRef,
-          nonce: "nonce-a",
-          patch: { accessToken: "rotated-access", expiresInSeconds: 3600 },
-        }),
-      );
-      const rotated = yield* useStore(storage, (store) =>
-        store.resolve({
-          ...grantInput,
-          name: "openai",
-          kind: "pi-auth",
-          versionRef: oauthVersionRef,
-          handle: PI_HANDLE,
-        }),
-      );
-      assert.include(Redacted.value(rotated), "rotated-access");
-      assert.notInclude(JSON.stringify(storage.snapshot()), "rotated-access");
-      const stale = yield* Effect.result(
-        useStore(storage, (store) =>
-          store.persistRotation({
-            version: 1,
-            sessionId: SESSION,
-            name: "openai",
-            versionRef: oauthVersionRef,
-            nonce: "nonce-a",
-            patch: { accessToken: "must-not-commit" },
+        store.sync(
+          desiredPiInput({
+            "openai-codex": {
+              type: "oauth",
+              access: `${BASE}-oauth-access-b`,
+              refresh: `${BASE}-oauth-refresh-b`,
+              expires: secondExpires,
+            },
           }),
         ),
       );
-      assert.deepInclude(failure(stale), { reason: "rotation_mismatch" });
-    }),
-  );
-  it.effect("does not publish completion metadata when the commit put fails", () =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(Date.parse("2026-04-05T06:07:08.000Z"));
-      const storage = memoryStorage();
-      const versionRef = yield* prepareOAuth(storage);
-      yield* useStore(storage, (store) =>
-        store.beginRefresh(refreshInput(versionRef, "nonce-pre")),
-      );
-      storage.failNextPut();
+      const replay = yield* useStore(storage, (store) => store.issueGrants(grantInput));
+      assert.deepStrictEqual(replay, first);
+      assert.strictEqual(replay.grants[0]?.versionRef, firstVersionRef);
+      assert.strictEqual(replay.grants[0]?.expires, firstExpires);
 
-      const failed = yield* Effect.result(
-        useStore(storage, (store) =>
-          store.persistRotation(persistInput(versionRef, "nonce-pre", "pre-commit-access")),
-        ),
+      const next = yield* useStore(storage, (store) =>
+        store.issueGrants({ version: 1, sessionId: "b0c1d2e3f4a5" }),
       );
-      assert.deepInclude(failure(failed), { reason: "storage" });
+      assert.strictEqual(next.grants[0]?.expires, secondExpires);
+      assert.notStrictEqual(next.grants[0]?.versionRef, firstVersionRef);
+
       const authority = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
       assert.strictEqual(
-        authority.versions.find((version) => version.versionRef === versionRef)?.refreshLease
-          ?.nonce,
-        "nonce-pre",
-      );
-      assert.deepStrictEqual(authority.rotationCompletions, []);
-
-      yield* useStore(storage, (store) =>
-        store.persistRotation(persistInput(versionRef, "nonce-pre", "pre-commit-access")),
+        authority.grants.find(({ sessionId }) => sessionId === SESSION)?.expires,
+        firstExpires,
       );
       assert.strictEqual(
-        success(decodeCredentialRegistryAuthorityResult(storage.snapshot())).rotationCompletions
-          ?.length,
-        1,
+        authority.grants.find(({ sessionId }) => sessionId === "b0c1d2e3f4a5")?.expires,
+        secondExpires,
       );
-    }),
-  );
+      const persisted = JSON.stringify(storage.snapshot());
+      assert.notInclude(persisted, firstAccess);
+      assert.notInclude(persisted, firstRefresh);
+      assert.notInclude(persisted, `${BASE}-oauth-access-b`);
+      assert.notInclude(persisted, `${BASE}-oauth-refresh-b`);
 
-  it.effect("replays a committed rotation after its persistence response is lost", () =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(Date.parse("2026-04-05T06:07:08.000Z"));
-      const storage = memoryStorage();
-      const versionRef = yield* prepareOAuth(storage);
-      const input = persistInput(versionRef, "nonce-lost", "response-loss-access");
-      yield* useStore(storage, (store) =>
-        store.beginRefresh(refreshInput(versionRef, input.nonce)),
-      );
-      storage.loseNextCommitResponse();
-
-      const lost = yield* Effect.result(useStore(storage, (store) => store.persistRotation(input)));
-      assert.deepInclude(failure(lost), { reason: "storage" });
-      const committed = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
-      assert.strictEqual(
-        committed.versions.find((version) => version.versionRef === versionRef)?.refreshLease,
-        undefined,
-      );
-      assert.strictEqual(committed.rotationCompletions?.length, 1);
-      assert.notInclude(JSON.stringify(storage.snapshot()), "response-loss-access");
-      assert.notInclude(JSON.stringify(storage.snapshot()), input.nonce);
-
-      yield* useStore(storage, (store) => store.sync({ version: 1, credentials: [] }));
-      assert.strictEqual(
-        success(decodeCredentialRegistryAuthorityResult(storage.snapshot())).rotationCompletions
-          ?.length,
-        1,
-      );
-
-      const replayed = yield* Effect.result(
-        useStore(storage, (store) => store.persistRotation(input)),
-      );
-      assert.isTrue(Result.isSuccess(replayed));
-      const mismatched = yield* Effect.result(
-        useStore(storage, (store) =>
-          store.persistRotation(persistInput(versionRef, input.nonce, "different-access")),
-        ),
-      );
-      assert.deepInclude(failure(mismatched), { reason: "rotation_mismatch" });
-
-      yield* useStore(storage, (store) =>
-        store.cancelRefresh(refreshInput(versionRef, input.nonce)),
-      );
       const resolved = yield* useStore(storage, (store) =>
         store.resolve({
           ...grantInput,
           name: "openai",
           kind: "pi-auth",
-          versionRef,
+          versionRef: firstVersionRef,
           handle: PI_HANDLE,
         }),
       );
-      assert.include(Redacted.value(resolved), "response-loss-access");
+      assert.include(Redacted.value(resolved), firstAccess);
+      Redacted.wipeUnsafe(resolved);
     }),
   );
 
-  it.effect("garbage-collects stale rotation completion metadata with released grants", () =>
+  it.effect("omits expiry from API-key and GitHub grants and persisted versions", () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(Date.parse("2026-04-05T06:07:08.000Z"));
       const storage = memoryStorage();
-      const versionRef = yield* prepareOAuth(storage);
-      yield* useStore(storage, (store) => store.beginRefresh(refreshInput(versionRef, "nonce-gc")));
       yield* useStore(storage, (store) =>
-        store.persistRotation(persistInput(versionRef, "nonce-gc", "gc-access")),
-      );
-      yield* useStore(storage, (store) => store.release({ version: 1, sessionId: SESSION }));
-      const released = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
-      assert.deepStrictEqual(released.rotationCompletions, []);
-
-      yield* useStore(storage, (store) => store.issueGrants(grantInput));
-      const stale = yield* Effect.result(
-        useStore(storage, (store) =>
-          store.persistRotation(persistInput(versionRef, "nonce-gc", "gc-access")),
-        ),
-      );
-      assert.deepInclude(failure(stale), { reason: "rotation_mismatch" });
-      const resolved = yield* useStore(storage, (store) =>
-        store.resolve({
-          ...grantInput,
-          name: "openai",
-          kind: "pi-auth",
-          versionRef,
-          handle: PI_HANDLE,
+        store.sync({
+          version: 1,
+          credentials: [
+            {
+              name: "openai",
+              kind: "pi-auth",
+              scope: "global",
+              providers: { openai: { type: "api_key", key: `${BASE}-api-key` } },
+            },
+            {
+              name: "github",
+              kind: "github-cli",
+              scope: "global",
+              token: `${BASE}-github-token`,
+            },
+          ],
         }),
       );
-      assert.include(Redacted.value(resolved), "gc-access");
-    }),
-  );
 
-  it.effect(
-    "keeps concurrent refreshes fenced and does not let a replay overwrite newer state",
-    () =>
-      Effect.gen(function* () {
-        yield* TestClock.setTime(Date.parse("2026-04-05T06:07:08.000Z"));
-        const storage = memoryStorage();
-        const versionRef = yield* prepareOAuth(storage);
-        yield* useStore(storage, (store) =>
-          store.beginRefresh(refreshInput(versionRef, "nonce-one")),
-        );
-        assert.isNull(
-          yield* useStore(storage, (store) =>
-            store.beginRefresh(refreshInput(versionRef, "nonce-two")),
-          ),
-        );
-        const rejected = yield* Effect.result(
-          useStore(storage, (store) =>
-            store.persistRotation(persistInput(versionRef, "nonce-two", "must-not-commit")),
-          ),
-        );
-        assert.deepInclude(failure(rejected), { reason: "rotation_mismatch" });
-        yield* useStore(storage, (store) =>
-          store.persistRotation(persistInput(versionRef, "nonce-one", "first-access")),
-        );
-        assert.isNull(
-          yield* useStore(storage, (store) =>
-            store.beginRefresh(refreshInput(versionRef, "nonce-one")),
-          ),
-        );
-        yield* useStore(storage, (store) =>
-          store.beginRefresh(refreshInput(versionRef, "nonce-two")),
-        );
-        yield* useStore(storage, (store) =>
-          store.persistRotation(persistInput(versionRef, "nonce-two", "second-access")),
-        );
-        yield* useStore(storage, (store) =>
-          store.persistRotation(persistInput(versionRef, "nonce-one", "first-access")),
-        );
-        const resolved = yield* useStore(storage, (store) =>
-          store.resolve({
-            ...grantInput,
-            name: "openai",
-            kind: "pi-auth",
-            versionRef,
-            handle: PI_HANDLE,
-          }),
-        );
-        assert.include(Redacted.value(resolved), "second-access");
-        assert.notInclude(Redacted.value(resolved), "must-not-commit");
-      }),
+      const issued = yield* useStore(storage, (store) =>
+        store.issueGrants({ ...grantInput, repository: "owner/repo" }),
+      );
+      assert.strictEqual(issued.grants.length, 2);
+      assert.isTrue(issued.grants.every((grant) => grant.expires === undefined));
+      const authority = success(decodeCredentialRegistryAuthorityResult(storage.snapshot()));
+      assert.isTrue(authority.versions.every((version) => version.expires === undefined));
+      assert.isTrue(authority.grants.every((grant) => grant.expires === undefined));
+    }),
   );
 });

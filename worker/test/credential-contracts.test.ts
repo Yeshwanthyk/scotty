@@ -135,6 +135,7 @@ describe("credential protocol contracts", () => {
       handleSlots: [{ provider: "openai-codex", slot: "access" }],
     } as const;
     assert.ok(Option.isSome(decodeCredentialGrantOption(grant)));
+    assert.ok(Option.isSome(decodeCredentialGrantOption({ ...grant, expires: 1_777_777_777_123 })));
     assert.ok(
       Option.isSome(
         decodeSyncInputOption({

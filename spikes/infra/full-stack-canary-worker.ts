@@ -11,7 +11,7 @@ import { decodeJsonValue, SESSION_KV_PREFIX, type SessionRecord } from "../../wo
 import { denyOutbound, makeOutboundByHost } from "../../worker/src/egress";
 import app from "../../worker/src/index";
 import { SESSION_SCHEDULE_CALLBACKS } from "../../worker/src/session-lifecycle";
-import { Sandbox } from "../../worker/src/session";
+import { Sandbox as ProductionSandbox } from "../../worker/src/session";
 import { shellQuote } from "../../worker/src/sandbox-runtime";
 import { ScottyAuthRegistry } from "../../worker/src/auth-object";
 import { ScottyRunnerRegistry } from "../../worker/src/runner-registry-object";
@@ -103,7 +103,7 @@ async function readBoundedJson(request: Request): Promise<unknown | undefined> {
   return Option.getOrUndefined(decodeJsonValue(text));
 }
 
-export class ScottySandbox extends Sandbox {
+export const ScottySandbox = class Sandbox extends ProductionSandbox {
   private readonly e2eIncarnation = crypto.randomUUID();
 
   async e2ePeerCommand(input: unknown): Promise<Response> {
@@ -197,7 +197,9 @@ export class ScottySandbox extends Sandbox {
     this.ctx.abort("Full-stack E2E requested host reconstruction");
     return Promise.resolve();
   }
-}
+};
+
+export type ScottySandbox = InstanceType<typeof ScottySandbox>;
 
 ScottySandbox.outboundByHost = makeOutboundByHost(fetch);
 ScottySandbox.outbound = denyOutbound;

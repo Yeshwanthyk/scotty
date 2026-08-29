@@ -17,6 +17,12 @@ import {
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
+type ProjectedManagedPiAuth = {
+  readonly "openai-codex": { readonly expires: number; readonly refresh: string };
+};
+
+const PI_EXPIRES = 1_795_000_123_456;
+
 const PI_GRANT: CredentialGrant = {
   name: "openai",
   kind: "pi-auth",
@@ -24,8 +30,8 @@ const PI_GRANT: CredentialGrant = {
   handleSlots: [
     { provider: "openai", slot: "api-key" },
     { provider: "openai-codex", slot: "access" },
-    { provider: "openai-codex", slot: "refresh" },
   ],
+  expires: PI_EXPIRES,
 };
 
 const GITHUB_GRANT: CredentialGrant = {
@@ -235,6 +241,15 @@ describe("Sandbox create orchestration", () => {
     assert.ok(!serialized.includes("seed-access-token"));
     assert.ok(!serialized.includes("seed-refresh-token"));
     assert.ok(!serialized.includes("seed-github-token"));
+    const authFile = harness.writtenFiles.find((file) =>
+      file.path.endsWith("/.pi-agent/auth.json"),
+    );
+    assert.ok(authFile !== undefined);
+    const auth = JSON.parse(authFile.content) as ProjectedManagedPiAuth;
+    assert.strictEqual(auth["openai-codex"].expires, PI_EXPIRES);
+    assert.strictEqual(auth["openai-codex"].refresh, "scotty-managed://openai/openai-codex/access");
+    assert.ok(!authFile.content.includes("seed-"));
+    assert.ok(!authFile.content.includes("/refresh"));
   });
 
   it("carries the pinned GitHub managed handle through create and vaporize", async () => {
@@ -950,9 +965,7 @@ describe("Sandbox create orchestration", () => {
     );
     assert.ok(archiveIndex >= 0);
     assert.ok(verifiedIndex >= 0);
-    const extractionIndex = harness.commands.findIndex((command) =>
-      command.startsWith("tar -xzf "),
-    );
+    const extractionIndex = harness.commands.findIndex((command) => command.startsWith("tar -xf "));
     const promotionIndex = harness.commands.findIndex(
       (command) => command.startsWith("rm -rf ") && command.includes(" && mv "),
     );

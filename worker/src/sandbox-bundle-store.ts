@@ -50,7 +50,7 @@ export class SandboxBundleFailure extends Data.TaggedError("SandboxBundleFailure
 }> {}
 
 export interface SandboxBundleGetResult {
-  readonly gzipBytes: Uint8Array;
+  readonly gzipStream: ReadableStream<Uint8Array>;
 }
 
 interface SandboxBundleStoreShape {
@@ -101,32 +101,6 @@ const reportSandboxBundleVerificationFailure = (
   reason: "missing" | "metadata_mismatch" | "too_large",
 ): void => {
   console.error("Sandbox bundle verification failed", { operation, reason });
-};
-
-const readBoundedStream = async (
-  stream: ReadableStream<Uint8Array>,
-  maxBytes: number,
-): Promise<Uint8Array | undefined> => {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for (;;) {
-    const next = await reader.read();
-    if (next.done) break;
-    length += next.value.byteLength;
-    if (length > maxBytes) {
-      await reader.cancel();
-      return undefined;
-    }
-    chunks.push(next.value);
-  }
-  const body = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return body;
 };
 
 export const sandboxBundleStoreLayer = (
@@ -234,24 +208,15 @@ const makeSandboxBundleStore = (
           message: "Sandbox bundle storage metadata mismatch",
         });
       }
-      const gzipBytes = yield* Effect.tryPromise({
-        try: () => readBoundedStream(object.body, SANDBOX_BUNDLE_MAX_GZIP_BYTES),
-        catch: (cause) => {
-          reportSandboxBundleStorageFailure("get", cause);
-          return new SandboxBundleFailure({
-            reason: "upstream",
-            message: "Sandbox bundle storage failed",
-          });
-        },
-      });
-      if (gzipBytes === undefined) {
+      if (object.metadata.size > SANDBOX_BUNDLE_MAX_GZIP_BYTES) {
+        yield* Effect.promise(() => object.body.cancel()).pipe(Effect.ignore);
         reportSandboxBundleVerificationFailure("get", "too_large");
         return yield* new SandboxBundleFailure({
           reason: "too_large",
           message: "Sandbox bundle exceeds the size limit",
         });
       }
-      return { gzipBytes };
+      return { gzipStream: object.body };
     }),
   });
 };

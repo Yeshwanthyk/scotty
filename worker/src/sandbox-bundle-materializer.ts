@@ -1,9 +1,5 @@
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
-import {
-  SANDBOX_MAX_FILE_BYTES,
-  SandboxArchiveInvalid,
-  validateSandboxArchive,
-} from "./sandbox-archive";
+import { SANDBOX_MAX_FILE_BYTES, SANDBOX_MAX_UNCOMPRESSED_BYTES } from "./sandbox-archive";
 import { SandboxBundleStore, type SandboxBundleFailure } from "./sandbox-bundle-store";
 import {
   SandboxBundleManifestSchema,
@@ -115,24 +111,16 @@ const materializationMessage = (reason: SandboxBundleMaterializationFailureReaso
   return "Sandbox bundle archive is invalid";
 };
 
-const archiveFailureReason = (
-  error: SandboxArchiveInvalid,
-): SandboxBundleMaterializationFailureReason => {
-  // oxlint-disable scotty/no-unknown-error-message -- SandboxArchiveInvalid owns the archive validation message used to classify materialization failures
-  const message = error.message;
-  // oxlint-enable scotty/no-unknown-error-message
-  if (message.includes("digest does not match")) return "digest_mismatch";
-  if (message.includes("size limit")) return "too_large";
-  return "invalid_archive";
-};
-
-const mapArchiveFailure = (error: SandboxArchiveInvalid): SandboxBundleMaterializationFailure => {
-  const reason = archiveFailureReason(error);
-  return new SandboxBundleMaterializationFailure({
+const archiveFailure = (
+  reason: Extract<
+    SandboxBundleMaterializationFailureReason,
+    "digest_mismatch" | "invalid_archive" | "too_large"
+  >,
+): SandboxBundleMaterializationFailure =>
+  new SandboxBundleMaterializationFailure({
     reason,
     message: materializationMessage(reason),
   });
-};
 
 const mapStoreFailure = (error: SandboxBundleFailure): SandboxBundleMaterializationFailure => {
   const reason: SandboxBundleMaterializationFailureReason =
@@ -170,14 +158,45 @@ const readVerifiedMarker = Effect.fnUntraced(function* (
 const extractValidatedArchive = Effect.fnUntraced(function* (
   runtime: SandboxRuntime["Service"],
   stagingRoot: string,
-  archive: Uint8Array,
+  digest: string,
+  archive: ReadableStream<Uint8Array>,
 ) {
   const archivePath = `${stagingRoot}.tar.gz`;
-  yield* runtime.mkdir(stagingRoot, { recursive: true });
-  yield* runtime.writeFile(archivePath, archive);
-  yield* runtime.execChecked(
-    `tar -xzf ${shellQuote(archivePath)} -C ${shellQuote(stagingRoot)} && rm -f ${shellQuote(archivePath)}`,
-  );
+  const tarPath = `${stagingRoot}.tar`;
+  const cleanup = runtime
+    .exec(`rm -rf ${shellQuote(stagingRoot)} ${shellQuote(archivePath)} ${shellQuote(tarPath)}`)
+    .pipe(Effect.ignore);
+  const extract = Effect.gen(function* () {
+    yield* runtime.mkdir(stagingRoot, { recursive: true });
+    yield* runtime.writeFile(archivePath, archive);
+    yield* runtime.execChecked(
+      `gzip -dc ${shellQuote(archivePath)} | head -c ${SANDBOX_MAX_UNCOMPRESSED_BYTES + 1} > ${shellQuote(tarPath)}`,
+    );
+    const bounded = yield* runtime.exec(
+      `test "$(wc -c < ${shellQuote(tarPath)})" -le ${SANDBOX_MAX_UNCOMPRESSED_BYTES}`,
+    );
+    if (!bounded.success) return yield* archiveFailure("too_large");
+    const gzip = yield* runtime.exec(`gzip -t ${shellQuote(archivePath)}`);
+    if (!gzip.success) return yield* archiveFailure("invalid_archive");
+    // Upload validation owns the full archive/manifest contract. The immutable R2 object is safe to
+    // extract only after its uncompressed TAR matches that content-addressed digest exactly.
+    const matchesDigest = yield* runtime.exec(
+      `printf '%s  %s\\n' ${shellQuote(digest)} ${shellQuote(tarPath)} | sha256sum --check --strict`,
+    );
+    if (!matchesDigest.success) return yield* archiveFailure("digest_mismatch");
+    const validTar = yield* runtime.exec(`tar -tf ${shellQuote(tarPath)} >/dev/null`);
+    if (!validTar.success) return yield* archiveFailure("invalid_archive");
+    const ordinaryMembers = yield* runtime.exec(
+      `tar -tvf ${shellQuote(tarPath)} | awk 'substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" { exit 1 }'`,
+    );
+    if (!ordinaryMembers.success) return yield* archiveFailure("invalid_archive");
+    const extracted = yield* runtime.exec(
+      `tar -xf ${shellQuote(tarPath)} -C ${shellQuote(stagingRoot)}`,
+    );
+    if (!extracted.success) return yield* archiveFailure("invalid_archive");
+    yield* runtime.execChecked(`rm -f ${shellQuote(archivePath)} ${shellQuote(tarPath)}`);
+  });
+  return yield* extract.pipe(Effect.tapError(() => cleanup));
 });
 
 const promoteStagingTree = Effect.fnUntraced(function* (
@@ -219,15 +238,18 @@ const materializeDigest = Effect.fnUntraced(function* (
   }
 
   const bundle = yield* store.getBundle(digest).pipe(Effect.mapError(mapStoreFailure));
-  const validated = yield* validateSandboxArchive(bundle.gzipBytes, digest).pipe(
-    Effect.mapError(mapArchiveFailure),
-  );
-
   const stagingRoot = sandboxBundleStagingRoot(sessionId, stagingNonce());
-  yield* extractValidatedArchive(runtime, stagingRoot, bundle.gzipBytes);
-  yield* runtime.writeFile(verifiedMarkerPath(stagingRoot), verifiedMarkerText(validated.digest));
+  yield* extractValidatedArchive(runtime, stagingRoot, digest, bundle.gzipStream);
+  const manifestBytes = yield* runtime.readFile(
+    `${stagingRoot}/manifest.json`,
+    SANDBOX_MAX_FILE_BYTES,
+  );
+  const manifest = yield* decodeMaterializedManifest(new TextDecoder().decode(manifestBytes)).pipe(
+    Effect.mapError(() => archiveFailure("invalid_archive")),
+  );
+  yield* runtime.writeFile(verifiedMarkerPath(stagingRoot), verifiedMarkerText(digest));
   yield* promoteStagingTree(runtime, stagingRoot, finalRoot);
-  return materializedFromManifest(sessionId, validated.digest, validated.manifest);
+  return materializedFromManifest(sessionId, digest, manifest);
 });
 
 export const sandboxBundleMaterializerLayer = Layer.effect(

@@ -134,12 +134,7 @@ export const ManagedHandleProviderSchema = Schema.String.check(
 );
 export type ManagedHandleProvider = typeof ManagedHandleProviderSchema.Type;
 
-export const ManagedHandleSlotNameSchema = Schema.Literals([
-  "api-key",
-  "access",
-  "refresh",
-  "git-https",
-]);
+export const ManagedHandleSlotNameSchema = Schema.Literals(["api-key", "access", "git-https"]);
 export type ManagedHandleSlotName = typeof ManagedHandleSlotNameSchema.Type;
 
 export const ManagedHandleSlotSchema = Schema.Struct({
@@ -195,7 +190,12 @@ export const CredentialGrantSchema = Schema.Struct({
   kind: CredentialKindSchema,
   versionRef: CredentialVersionRefSchema,
   handleSlots: CredentialGrantHandleSlotsSchema,
-});
+  expires: Schema.optionalKey(Schema.Finite),
+}).check(
+  Schema.makeFilter((grant) => grant.kind === "pi-auth" || grant.expires === undefined, {
+    expected: "expiry metadata on Pi credentials only",
+  }),
+);
 export type CredentialGrant = typeof CredentialGrantSchema.Type;
 
 export const CredentialRedactedMetadataSchema = Schema.Struct({

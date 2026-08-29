@@ -13,6 +13,13 @@ import {
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
+type ProjectedManagedPiAuth = {
+  readonly "openai-codex": { readonly expires: number; readonly refresh: string };
+};
+
+const PINNED_PI_EXPIRES = 1_795_000_123_456;
+const CURRENT_PI_EXPIRES = 1_795_999_999_999;
+
 const PINNED_PI_GRANT: CredentialGrant = {
   name: "openai",
   kind: "pi-auth",
@@ -20,8 +27,8 @@ const PINNED_PI_GRANT: CredentialGrant = {
   handleSlots: [
     { provider: "openai", slot: "api-key" },
     { provider: "openai-codex", slot: "access" },
-    { provider: "openai-codex", slot: "refresh" },
   ],
+  expires: PINNED_PI_EXPIRES,
 };
 
 const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
@@ -94,13 +101,24 @@ describe("Sandbox resume orchestration", () => {
           credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [PINNED_PI_GRANT] },
         }),
       },
-      credentialRegistryGrants: [{ ...PINNED_PI_GRANT, versionRef: "version-b" }],
+      credentialRegistryGrants: [
+        { ...PINNED_PI_GRANT, versionRef: "version-b", expires: CURRENT_PI_EXPIRES },
+      ],
     });
 
     await harness.sandbox.resumeScottySession();
 
     assert.deepStrictEqual(harness.readRecord()?.credentialGrant?.grants, [PINNED_PI_GRANT]);
     assert.deepStrictEqual(harness.credentialGrantRequests, []);
+    const authFile = harness.writtenFiles.find((file) =>
+      file.path.endsWith("/.pi-agent/auth.json"),
+    );
+    assert.ok(authFile !== undefined);
+    const auth = JSON.parse(authFile.content) as ProjectedManagedPiAuth;
+    assert.strictEqual(auth["openai-codex"].expires, PINNED_PI_EXPIRES);
+    assert.notStrictEqual(auth["openai-codex"].expires, CURRENT_PI_EXPIRES);
+    assert.strictEqual(auth["openai-codex"].refresh, "scotty-managed://openai/openai-codex/access");
+    assert.ok(!authFile.content.includes("/refresh"));
   });
 
   it("rematerializes the pinned sandbox bundle after backup restore", async () => {
@@ -131,9 +149,7 @@ describe("Sandbox resume orchestration", () => {
           file.path.includes("/.scotty/sandbox/.staging-") && file.path.endsWith("/.verified"),
       ),
     );
-    const extractionIndex = harness.commands.findIndex((command) =>
-      command.startsWith("tar -xzf "),
-    );
+    const extractionIndex = harness.commands.findIndex((command) => command.startsWith("tar -xf "));
     const promotionIndex = harness.commands.findIndex(
       (command) => command.startsWith("rm -rf ") && command.includes(" && mv "),
     );

@@ -3,19 +3,13 @@ import {
   decodeCredentialRegistryAuthorityResult,
   decodeCredentialRegistryGithubCliResolveInputResult,
   decodeCredentialRegistryGrantInputResult,
-  decodeCredentialRegistryPersistRotationInputResult,
   decodeCredentialRegistryDesiredSyncInputResult,
-  decodeCredentialRegistryRefreshInputResult,
   decodeCredentialRegistryReleaseInputResult,
   decodeCredentialRegistryResolveInputResult,
   decodeCredentialRegistrySyncInputResult,
-  CREDENTIAL_ROTATION_COMPLETION_MAX_ENTRIES,
   type CredentialRegistryAuthority,
   type CredentialRegistryCredential,
-  type CredentialRegistryRotationPatch,
   type CredentialRegistryGrantResult,
-  type CredentialRegistryRotationCompletion,
-  type CredentialRegistryRefreshInput,
   type CredentialRegistryReleaseResult,
   type CredentialRegistryResolveInput,
   type CredentialRegistrySyncEntry,
@@ -25,14 +19,13 @@ import {
   type EncryptedCredentialEnvelope,
 } from "./credential-contracts";
 import {
-  formatManagedHandle,
   parseManagedHandle,
   type CredentialGrant,
   type CredentialKind,
   type CredentialRedactedMetadata,
   type ManagedHandleSlot,
 } from "../../protocol/credentials";
-import { parsePiAuthJsonOption, serializePiAuthProviders } from "../../protocol/pi-auth";
+import { serializePiAuthProviders } from "../../protocol/pi-auth";
 import { repositoryIdentityKey } from "../../protocol/repository";
 import {
   CredentialCrypto,
@@ -42,7 +35,6 @@ import {
 
 // oxlint-disable-next-line scotty/no-storage-key-literal -- authority storage owns this single persisted record
 const CREDENTIAL_REGISTRY_KEY = "scotty:credential-registry:1";
-const REFRESH_LEASE_MILLIS = 60_000;
 
 type CredentialRegistryFailureReason =
   | "invalid_authority"
@@ -53,8 +45,6 @@ type CredentialRegistryFailureReason =
   | "version_missing"
   | "grant_missing"
   | "handle_mismatch"
-  | "rotation_mismatch"
-  | "not_refreshable"
   | "storage"
   | CredentialCryptoFailure["reason"];
 
@@ -72,14 +62,6 @@ export interface CredentialRegistryStorage {
   readonly transaction: <A>(
     operation: (transaction: CredentialRegistryTransaction) => Promise<A>,
   ) => Promise<A>;
-}
-
-export interface CredentialRefreshLease {
-  readonly sessionId: string;
-  readonly name: string;
-  readonly versionRef: string;
-  readonly nonce: string;
-  readonly startedAt: string;
 }
 
 export interface CredentialStoreShape {
@@ -102,11 +84,6 @@ export interface CredentialStoreShape {
   readonly release: (
     input: unknown,
   ) => Effect.Effect<CredentialRegistryReleaseResult, CredentialRegistryFailure>;
-  readonly beginRefresh: (
-    input: unknown,
-  ) => Effect.Effect<CredentialRefreshLease | null, CredentialRegistryFailure>;
-  readonly persistRotation: (input: unknown) => Effect.Effect<void, CredentialRegistryFailure>;
-  readonly cancelRefresh: (input: unknown) => Effect.Effect<void, CredentialRegistryFailure>;
 }
 
 export class CredentialStore extends Context.Service<CredentialStore, CredentialStoreShape>()(
@@ -193,24 +170,6 @@ const makeCredentialStore = (
         ? "Installation wrapping key is unavailable"
         : "Credential cryptographic operation failed",
     );
-  const digestText = (value: string): Effect.Effect<string, CredentialRegistryFailure> =>
-    Effect.tryPromise({
-      try: async () => {
-        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-        return Array.from(new Uint8Array(digest), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("");
-      },
-      catch: () => failure("crypto_failed", "Credential cryptographic operation failed"),
-    });
-  const rotationPatchText = (patch: CredentialRegistryRotationPatch): string =>
-    JSON.stringify({
-      accessToken: patch.accessToken ?? null,
-      refreshToken: patch.refreshToken ?? null,
-      expiresInSeconds: patch.expiresInSeconds ?? null,
-      idToken: patch.idToken ?? null,
-    });
-
   const parse = (
     value: unknown | undefined,
   ): Result.Result<CredentialRegistryAuthority, CredentialRegistryFailure> => {
@@ -305,7 +264,6 @@ const makeCredentialStore = (
       ? ([
           { provider: "openai", slot: "api-key" },
           { provider: "openai-codex", slot: "access" },
-          { provider: "openai-codex", slot: "refresh" },
         ] as const)
       : ([{ provider: "github", slot: "git-https" }] as const);
 
@@ -420,6 +378,13 @@ const makeCredentialStore = (
               (candidate) => repositoryIdentityKey(candidate) === repositoryIdentityKey(repository),
             ) === true);
         if (!inScope) return [];
+        const version = authority.versions.find(
+          (candidate) =>
+            candidate.name === credential.name &&
+            candidate.kind === credential.kind &&
+            candidate.versionRef === credential.currentVersionRef,
+        );
+        if (version === undefined) return [];
         return [
           {
             sessionId: decoded.success.sessionId,
@@ -427,6 +392,7 @@ const makeCredentialStore = (
             kind: credential.kind,
             versionRef: credential.currentVersionRef,
             handleSlots: handleSlots(credential.kind),
+            ...(version.expires === undefined ? {} : { expires: version.expires }),
             issuedAt: new Date(now).toISOString(),
           },
         ];
@@ -545,253 +511,6 @@ const makeCredentialStore = (
     });
   };
 
-  const refreshHandle = (name: CredentialRegistryRefreshInput["name"]): string =>
-    formatManagedHandle({ name, provider: "openai-codex", slot: "access" });
-
-  const refreshLocation = (
-    authority: CredentialRegistryAuthority,
-    input: CredentialRegistryRefreshInput,
-  ): Result.Result<CredentialRegistryVersionRecord, CredentialRegistryFailure> =>
-    grantFor(authority, {
-      sessionId: input.sessionId,
-      name: input.name,
-      kind: "pi-auth",
-      versionRef: input.versionRef,
-      handle: refreshHandle(input.name),
-    });
-
-  const beginRefresh = (
-    input: unknown,
-  ): Effect.Effect<CredentialRefreshLease | null, CredentialRegistryFailure> => {
-    const decoded = decode(decodeCredentialRegistryRefreshInputResult(input));
-    if (Result.isFailure(decoded)) return Effect.fail(decoded.failure);
-
-    return Effect.gen(function* () {
-      const nonceDigest = yield* digestText(decoded.success.nonce);
-      return yield* transact(async (authority, now) => {
-        const located = refreshLocation(authority, decoded.success);
-        if (Result.isFailure(located)) return Result.fail(located.failure);
-        if (located.success.kind !== "pi-auth")
-          return Result.fail(failure("not_refreshable", "Credential is not refreshable"));
-
-        const lease = located.success.refreshLease;
-        if (lease !== undefined && Date.parse(lease.startedAt) + REFRESH_LEASE_MILLIS > now) {
-          if (
-            lease.sessionId !== decoded.success.sessionId ||
-            lease.nonce !== decoded.success.nonce
-          )
-            return Result.succeed({ value: null, authority, write: false as const });
-          return Result.succeed({
-            value: {
-              ...lease,
-              name: decoded.success.name,
-              versionRef: decoded.success.versionRef,
-            },
-            authority,
-            write: false as const,
-          });
-        }
-
-        if (
-          (authority.rotationCompletions ?? []).some(
-            (completion) =>
-              completion.sessionId === decoded.success.sessionId &&
-              completion.name === decoded.success.name &&
-              completion.kind === located.success.kind &&
-              completion.versionRef === decoded.success.versionRef &&
-              completion.nonceDigest === nonceDigest,
-          )
-        )
-          return Result.succeed({ value: null, authority, write: false as const });
-
-        const refreshLease = {
-          sessionId: decoded.success.sessionId,
-          nonce: decoded.success.nonce,
-          startedAt: new Date(now).toISOString(),
-        };
-        return Result.succeed({
-          value: {
-            ...refreshLease,
-            name: decoded.success.name,
-            versionRef: decoded.success.versionRef,
-          },
-          authority: replaceVersion(authority, located.success, {
-            ...located.success,
-            refreshLease,
-          }),
-        });
-      });
-    });
-  };
-
-  const persistRotation = (input: unknown): Effect.Effect<void, CredentialRegistryFailure> => {
-    const decoded = decode(decodeCredentialRegistryPersistRotationInputResult(input));
-    if (Result.isFailure(decoded)) return Effect.fail(decoded.failure);
-
-    return Effect.gen(function* () {
-      const nonceDigest = yield* digestText(decoded.success.nonce);
-      const patchDigest = yield* digestText(rotationPatchText(decoded.success.patch));
-      const current = yield* read((authority) => {
-        const located = refreshLocation(authority, decoded.success);
-        if (Result.isFailure(located)) return Result.fail(located.failure);
-        const completion = (authority.rotationCompletions ?? []).find(
-          (candidate) =>
-            rotationCompletionKey(candidate) ===
-            rotationCompletionKey({
-              sessionId: decoded.success.sessionId,
-              name: decoded.success.name,
-              kind: located.success.kind,
-              versionRef: decoded.success.versionRef,
-              nonceDigest,
-            }),
-        );
-        return Result.succeed({ version: located.success, completion });
-      });
-      if (current.completion !== undefined) {
-        if (current.completion.patchDigest !== patchDigest)
-          return yield* Effect.fail(
-            failure("rotation_mismatch", "Credential rotation completion mismatch"),
-          );
-        return undefined;
-      }
-      if (
-        current.version.kind !== "pi-auth" ||
-        current.version.refreshLease?.sessionId !== decoded.success.sessionId ||
-        current.version.refreshLease?.nonce !== decoded.success.nonce
-      )
-        return yield* Effect.fail(
-          failure("rotation_mismatch", "Credential rotation lease mismatch"),
-        );
-
-      const plaintext = yield* credentialCrypto
-        .decrypt(
-          installation,
-          current.version.name,
-          current.version.versionRef,
-          current.version.kind,
-          current.version.envelope,
-        )
-        .pipe(Effect.mapError(cryptoFailure));
-
-      return yield* Effect.gen(function* () {
-        const providers = parsePiAuthJsonOption(Redacted.value(plaintext));
-        if (Option.isNone(providers) || providers.value["openai-codex"]?.type !== "oauth")
-          return yield* Effect.fail(failure("not_refreshable", "Credential is not refreshable"));
-
-        const provider = providers.value["openai-codex"];
-        const now = yield* Clock.currentTimeMillis;
-        const nextProviders = {
-          ...providers.value,
-          "openai-codex": {
-            ...provider,
-            ...(decoded.success.patch.accessToken === undefined
-              ? {}
-              : { access: decoded.success.patch.accessToken }),
-            ...(decoded.success.patch.refreshToken === undefined
-              ? {}
-              : { refresh: decoded.success.patch.refreshToken }),
-            ...(decoded.success.patch.expiresInSeconds === undefined
-              ? {}
-              : { expires: now + decoded.success.patch.expiresInSeconds * 1_000 }),
-            ...(decoded.success.patch.idToken === undefined
-              ? {}
-              : { idToken: decoded.success.patch.idToken }),
-          },
-        };
-        const nextPlaintext = Redacted.make(serializePiAuthProviders(nextProviders));
-        const envelope = yield* credentialCrypto
-          .encrypt(
-            installation,
-            current.version.name,
-            current.version.versionRef,
-            current.version.kind,
-            nextPlaintext,
-          )
-          .pipe(
-            Effect.mapError(cryptoFailure),
-            Effect.ensuring(Effect.sync(() => void Redacted.wipeUnsafe(nextPlaintext))),
-          );
-
-        yield* transact(async (authority, completedAt) => {
-          const latest = refreshLocation(authority, decoded.success);
-          if (Result.isFailure(latest))
-            return Result.fail(failure("rotation_mismatch", "Credential rotation lease mismatch"));
-          const completion = (authority.rotationCompletions ?? []).find(
-            (candidate) =>
-              rotationCompletionKey(candidate) ===
-              rotationCompletionKey({
-                sessionId: decoded.success.sessionId,
-                name: decoded.success.name,
-                kind: latest.success.kind,
-                versionRef: decoded.success.versionRef,
-                nonceDigest,
-              }),
-          );
-          if (completion !== undefined) {
-            return completion.patchDigest === patchDigest
-              ? Result.succeed({ value: undefined, authority, write: false as const })
-              : Result.fail(
-                  failure("rotation_mismatch", "Credential rotation completion mismatch"),
-                );
-          }
-          const lease = latest.success.refreshLease;
-          if (
-            latest.success.kind !== "pi-auth" ||
-            lease?.sessionId !== decoded.success.sessionId ||
-            lease?.nonce !== decoded.success.nonce ||
-            lease === undefined ||
-            Date.parse(lease.startedAt) + REFRESH_LEASE_MILLIS <= completedAt
-          )
-            return Result.fail(failure("rotation_mismatch", "Credential rotation lease mismatch"));
-          const { refreshLease: _refreshLease, ...withoutLease } = latest.success;
-          const nextAuthority = {
-            ...replaceVersion(authority, latest.success, {
-              ...withoutLease,
-              envelope,
-            }),
-            rotationCompletions: [
-              ...(authority.rotationCompletions ?? []),
-              {
-                sessionId: decoded.success.sessionId,
-                name: decoded.success.name,
-                kind: latest.success.kind,
-                versionRef: decoded.success.versionRef,
-                nonceDigest,
-                patchDigest,
-                completedAt: new Date(completedAt).toISOString(),
-              } satisfies CredentialRegistryRotationCompletion,
-            ],
-          };
-          return Result.succeed({
-            value: undefined,
-            authority: garbageCollect(nextAuthority),
-          });
-        });
-        return undefined;
-      }).pipe(Effect.ensuring(Effect.sync(() => void Redacted.wipeUnsafe(plaintext))));
-    });
-  };
-
-  const cancelRefresh = (input: unknown): Effect.Effect<void, CredentialRegistryFailure> => {
-    const decoded = decode(decodeCredentialRegistryRefreshInputResult(input));
-    if (Result.isFailure(decoded)) return Effect.fail(decoded.failure);
-
-    return transact(async (authority) => {
-      const located = refreshLocation(authority, decoded.success);
-      if (
-        Result.isFailure(located) ||
-        located.success.refreshLease?.sessionId !== decoded.success.sessionId ||
-        located.success.refreshLease?.nonce !== decoded.success.nonce
-      )
-        return Result.succeed({ value: undefined, authority, write: false as const });
-      const { refreshLease: _refreshLease, ...withoutLease } = located.success;
-      return Result.succeed({
-        value: undefined,
-        authority: replaceVersion(authority, located.success, withoutLease),
-      });
-    });
-  };
-
   const syncEncrypted = (
     input: unknown,
   ): Effect.Effect<CredentialRegistrySyncResult, CredentialRegistryFailure> => {
@@ -827,7 +546,10 @@ const makeCredentialStore = (
               version.versionRef === entry.versionRef,
           );
           if (existing !== undefined) {
-            if (!sameCredential(existing.envelope, entry.envelope))
+            if (
+              !sameCredential(existing.envelope, entry.envelope) ||
+              existing.expires !== entry.expires
+            )
               return Result.fail(
                 failure("credential_conflict", "Credential version conflicts with authority"),
               );
@@ -845,6 +567,7 @@ const makeCredentialStore = (
               versionRef: entry.versionRef,
               envelope: entry.envelope,
               createdAt: new Date(now).toISOString(),
+              ...(entry.expires === undefined ? {} : { expires: entry.expires }),
             });
           }
 
@@ -863,7 +586,6 @@ const makeCredentialStore = (
           versions,
           grants: authority.grants,
           issuedSessions: authority.issuedSessions ?? [],
-          rotationCompletions: authority.rotationCompletions ?? [],
         });
         return Result.succeed({
           value: {
@@ -887,6 +609,9 @@ const makeCredentialStore = (
       for (const entry of desired.success.credentials) {
         const plaintextValue =
           entry.kind === "pi-auth" ? serializePiAuthProviders(entry.providers) : entry.token;
+        const codexCredential =
+          entry.kind === "pi-auth" ? entry.providers["openai-codex"] : undefined;
+        const expires = codexCredential?.type === "oauth" ? codexCredential.expires : undefined;
         const versionRef = yield* Effect.tryPromise({
           try: async () => {
             const digest = await crypto.subtle.digest(
@@ -915,6 +640,7 @@ const makeCredentialStore = (
             : {}),
           versionRef,
           envelope,
+          ...(expires === undefined ? {} : { expires }),
         });
       }
       return yield* syncEncrypted({ version: 1, credentials: entries });
@@ -928,9 +654,6 @@ const makeCredentialStore = (
     resolve,
     resolveGithubCliCredential,
     release,
-    beginRefresh,
-    persistRotation,
-    cancelRefresh,
   });
 };
 
@@ -940,40 +663,10 @@ const emptyAuthority = (): CredentialRegistryAuthority => ({
   versions: [],
   grants: [],
   issuedSessions: [],
-  rotationCompletions: [],
 });
 
 const versionKey = (name: string, kind: string, versionRef: string): string =>
   `${name}\u0000${kind}\u0000${versionRef}`;
-
-const rotationCompletionKey = (
-  completion: Pick<
-    CredentialRegistryRotationCompletion,
-    "sessionId" | "name" | "kind" | "versionRef" | "nonceDigest"
-  >,
-): string =>
-  `${completion.sessionId}\u0000${versionKey(completion.name, completion.kind, completion.versionRef)}\u0000${completion.nonceDigest}`;
-
-const rotationGrantKey = (
-  sessionId: string,
-  name: string,
-  kind: string,
-  versionRef: string,
-): string => `${sessionId}\u0000${versionKey(name, kind, versionRef)}`;
-
-const replaceVersion = (
-  authority: CredentialRegistryAuthority,
-  current: CredentialRegistryVersionRecord,
-  replacement: CredentialRegistryVersionRecord,
-): CredentialRegistryAuthority => ({
-  ...authority,
-  versions: authority.versions.map((version) =>
-    versionKey(version.name, version.kind, version.versionRef) ===
-    versionKey(current.name, current.kind, current.versionRef)
-      ? replacement
-      : version,
-  ),
-});
 
 const garbageCollect = (authority: CredentialRegistryAuthority): CredentialRegistryAuthority => {
   const desired = new Set(
@@ -984,24 +677,6 @@ const garbageCollect = (authority: CredentialRegistryAuthority): CredentialRegis
   const granted = new Set(
     authority.grants.map((grant) => versionKey(grant.name, grant.kind, grant.versionRef)),
   );
-  const grantedCompletions = new Set(
-    authority.grants.map((grant) =>
-      rotationGrantKey(grant.sessionId, grant.name, grant.kind, grant.versionRef),
-    ),
-  );
-  const rotationCompletions = (authority.rotationCompletions ?? [])
-    .filter((completion) =>
-      grantedCompletions.has(
-        rotationGrantKey(
-          completion.sessionId,
-          completion.name,
-          completion.kind,
-          completion.versionRef,
-        ),
-      ),
-    )
-    .toSorted((left, right) => left.completedAt.localeCompare(right.completedAt))
-    .slice(-CREDENTIAL_ROTATION_COMPLETION_MAX_ENTRIES);
   return {
     ...authority,
     credentials: [...authority.credentials].toSorted((left, right) =>
@@ -1021,7 +696,6 @@ const garbageCollect = (authority: CredentialRegistryAuthority): CredentialRegis
       (left, right) =>
         left.sessionId.localeCompare(right.sessionId) || left.name.localeCompare(right.name),
     ),
-    rotationCompletions,
   };
 };
 
@@ -1039,6 +713,7 @@ const sameGrant = (left: CredentialGrant, right: CredentialGrant): boolean =>
   left.name === right.name &&
   left.kind === right.kind &&
   left.versionRef === right.versionRef &&
+  left.expires === right.expires &&
   left.handleSlots.length === right.handleSlots.length &&
   left.handleSlots.every((slot) =>
     right.handleSlots.some(
@@ -1056,7 +731,7 @@ const sameGrantSet = (
 const validHandleSlot = (kind: CredentialKind, slot: ManagedHandleSlot): boolean =>
   kind === "pi-auth"
     ? (slot.provider === "openai" && slot.slot === "api-key") ||
-      (slot.provider === "openai-codex" && (slot.slot === "access" || slot.slot === "refresh"))
+      (slot.provider === "openai-codex" && slot.slot === "access")
     : slot.provider === "github" && slot.slot === "git-https";
 const validIssuedSessions = (authority: CredentialRegistryAuthority): boolean => {
   const sessions = authority.issuedSessions ?? [];
@@ -1079,11 +754,11 @@ const validAuthority = (authority: CredentialRegistryAuthority): boolean => {
     desiredRefs.add(versionKey(credential.name, credential.kind, credential.currentVersionRef));
   }
 
-  const versions = new Set<string>();
+  const versions = new Map<string, CredentialRegistryVersionRecord>();
   for (const version of authority.versions) {
     const key = versionKey(version.name, version.kind, version.versionRef);
     if (versions.has(key) || version.envelope.kind !== version.kind) return false;
-    versions.add(key);
+    versions.set(key, version);
   }
   for (const credential of authority.credentials) {
     if (!versions.has(versionKey(credential.name, credential.kind, credential.currentVersionRef)))
@@ -1091,42 +766,18 @@ const validAuthority = (authority: CredentialRegistryAuthority): boolean => {
   }
 
   const grants = new Set<string>();
-  const grantReferences = new Set<string>();
   for (const grant of authority.grants) {
     const grantKey = `${grant.sessionId}\u0000${grant.name}`;
+    const version = versions.get(versionKey(grant.name, grant.kind, grant.versionRef));
     if (
       grants.has(grantKey) ||
       !issuedSessions.has(grant.sessionId) ||
-      !versions.has(versionKey(grant.name, grant.kind, grant.versionRef)) ||
+      version === undefined ||
+      grant.expires !== version.expires ||
       grant.handleSlots.some((slot) => !validHandleSlot(grant.kind, slot))
     )
       return false;
     grants.add(grantKey);
-    grantReferences.add(
-      rotationGrantKey(grant.sessionId, grant.name, grant.kind, grant.versionRef),
-    );
-  }
-
-  const rotationCompletions = authority.rotationCompletions ?? [];
-  if (rotationCompletions.length > CREDENTIAL_ROTATION_COMPLETION_MAX_ENTRIES) return false;
-  const completionKeys = new Set<string>();
-  for (const completion of rotationCompletions) {
-    const completionKey = rotationCompletionKey(completion);
-    if (
-      completionKeys.has(completionKey) ||
-      completion.kind !== "pi-auth" ||
-      !versions.has(versionKey(completion.name, completion.kind, completion.versionRef)) ||
-      !grantReferences.has(
-        rotationGrantKey(
-          completion.sessionId,
-          completion.name,
-          completion.kind,
-          completion.versionRef,
-        ),
-      )
-    )
-      return false;
-    completionKeys.add(completionKey);
   }
   for (const version of authority.versions) {
     const key = versionKey(version.name, version.kind, version.versionRef);
@@ -1151,7 +802,6 @@ const normalizeAuthority = (
       ...authority.grants.map(({ sessionId }) => sessionId),
     ]),
   ].toSorted(),
-  rotationCompletions: authority.rotationCompletions ?? [],
 });
 export const readCredentialRegistryAuthority = (
   storage: CredentialRegistryStorage,

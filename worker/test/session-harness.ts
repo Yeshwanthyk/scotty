@@ -6,7 +6,11 @@ import type {
   RestoreBackupResult,
 } from "@cloudflare/sandbox";
 import { Data, Effect, Match, Result } from "effect";
-import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
+import {
+  createDeterministicTarGz,
+  gunzipSandboxArchive,
+  parseSandboxTar,
+} from "../../cli/src/sandbox-archive";
 import type { RunnerOperation } from "../../protocol/runner";
 import type { CredentialGrant } from "../../protocol/credentials";
 import type { Bindings } from "../src/bindings";
@@ -154,7 +158,7 @@ class InjectedHarnessFailure extends Data.TaggedError("InjectedHarnessFailure")<
 export const injectedHarnessFailure = (message: string): InjectedHarnessFailure =>
   new InjectedHarnessFailure({ message });
 
-const readHarnessWriteStream = async (stream: ReadableStream<Uint8Array>): Promise<string> => {
+const readHarnessWriteStream = async (stream: ReadableStream<Uint8Array>): Promise<Uint8Array> => {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -170,11 +174,19 @@ const readHarnessWriteStream = async (stream: ReadableStream<Uint8Array>): Promi
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return Result.getOrElse(
+  return bytes;
+};
+
+const displayHarnessBytes = (bytes: Uint8Array): string =>
+  Result.getOrElse(
     Result.try(() => new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)),
     () => `[binary:${bytes.byteLength}]`,
   );
-};
+
+const unquoteHarnessShellArg = (quoted: string): string =>
+  quoted.startsWith("'") && quoted.endsWith("'")
+    ? quoted.slice(1, -1).replaceAll("'\\''", "'")
+    : quoted;
 
 interface StatusProjection {
   readonly id?: string;
@@ -221,8 +233,8 @@ const DEFAULT_CREDENTIAL_REGISTRY_GRANTS: ReadonlyArray<CredentialGrant> = [
     handleSlots: [
       { provider: "openai", slot: "api-key" },
       { provider: "openai-codex", slot: "access" },
-      { provider: "openai-codex", slot: "refresh" },
     ],
+    expires: 1_795_000_123_456,
   },
   {
     name: "github",
@@ -654,6 +666,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
   const piRequests: Request[] = [];
   const rawPiRequests: Request[] = [];
   const writtenFiles: Array<{ readonly path: string; readonly content: string }> = [];
+  const runtimeFiles = new Map<string, Uint8Array>();
   const r2DeletedKeys: ReadonlyArray<string>[] = [];
   const artifactDeletedKeys: string[] = [];
   const sandboxBundleDeletedKeys: string[] = [];
@@ -1146,6 +1159,53 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           (stage === "downTar" && failures.has("downTar"))
         )
           throw injectedHarnessFailure(`injected ${stage} failure`);
+        const decompress = /^gzip -dc (.+) \| head -c ([0-9]+) > (.+)$/u.exec(command);
+        if (decompress !== null) {
+          const archive = runtimeFiles.get(unquoteHarnessShellArg(decompress[1]));
+          if (archive === undefined)
+            return { ...successfulExec(command), success: false, exitCode: 1 };
+          const tar = gunzipSandboxArchive(archive);
+          if (Result.isFailure(tar))
+            return { ...successfulExec(command), success: false, exitCode: 1 };
+          runtimeFiles.set(
+            unquoteHarnessShellArg(decompress[3]),
+            tar.success.slice(0, Number(decompress[2])),
+          );
+        }
+        const sizeCheck = /^test "\$\(wc -c < (.+)\)" -le ([0-9]+)$/u.exec(command);
+        if (sizeCheck !== null) {
+          const tar = runtimeFiles.get(unquoteHarnessShellArg(sizeCheck[1]));
+          if (tar === undefined || tar.byteLength > Number(sizeCheck[2]))
+            return { ...successfulExec(command), success: false, exitCode: 1 };
+        }
+        const extract = /^tar -xf (.+) -C (.+)$/u.exec(command);
+        if (extract !== null) {
+          const tar = runtimeFiles.get(unquoteHarnessShellArg(extract[1]));
+          if (tar === undefined) return { ...successfulExec(command), success: false, exitCode: 1 };
+          const members = parseSandboxTar(tar);
+          if (Result.isFailure(members))
+            return { ...successfulExec(command), success: false, exitCode: 1 };
+          const root = unquoteHarnessShellArg(extract[2]);
+          for (const member of members.success)
+            if (member.type === "file") runtimeFiles.set(`${root}/${member.path}`, member.bytes);
+        }
+        const removeFiles = /^rm -f (.+) (.+)$/u.exec(command);
+        if (removeFiles !== null) {
+          runtimeFiles.delete(unquoteHarnessShellArg(removeFiles[1]));
+          runtimeFiles.delete(unquoteHarnessShellArg(removeFiles[2]));
+        }
+        const promote = /^rm -rf (.+) && mv (.+) (.+)$/u.exec(command);
+        if (promote !== null) {
+          const finalRoot = unquoteHarnessShellArg(promote[1]);
+          const stagingRoot = unquoteHarnessShellArg(promote[2]);
+          for (const path of runtimeFiles.keys())
+            if (path === finalRoot || path.startsWith(`${finalRoot}/`)) runtimeFiles.delete(path);
+          for (const [path, bytes] of Array.from(runtimeFiles)) {
+            if (path !== stagingRoot && !path.startsWith(`${stagingRoot}/`)) continue;
+            runtimeFiles.delete(path);
+            runtimeFiles.set(`${finalRoot}${path.slice(stagingRoot.length)}`, bytes);
+          }
+        }
         const configured = options.commandStdout?.(command);
         const stdout = configured ?? (stage === "downSha" ? "deadbeef\n" : "");
         return successfulExec(command, stdout);
@@ -1202,18 +1262,14 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
         path: string,
         content: string | Uint8Array | ReadableStream<Uint8Array>,
       ): Promise<void> => {
-        const stored =
+        const bytes =
           typeof content === "string"
-            ? content
+            ? new TextEncoder().encode(content)
             : content instanceof Uint8Array
-              ? Result.getOrElse(
-                  Result.try(() =>
-                    new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(content),
-                  ),
-                  () => `[binary:${content.byteLength}]`,
-                )
+              ? content
               : await readHarnessWriteStream(content);
-        writtenFiles.push({ path, content: stored });
+        runtimeFiles.set(path, bytes);
+        writtenFiles.push({ path, content: displayHarnessBytes(bytes) });
         events.push("host:writeFile");
         if (failures.has("downWriteManifest") && path === "/tmp/metadata.json")
           throw injectedHarnessFailure("injected manifest write failure");
@@ -1221,6 +1277,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     },
     readFile: {
       value: async (path: string, _options?: { readonly encoding?: string }) => {
+        const bytes = runtimeFiles.get(path);
+        if (bytes !== undefined) return { content: new Blob([bytes]).stream() };
         const latest = writtenFiles.filter((file) => file.path === path).at(-1);
         if (latest === undefined) throw injectedHarnessFailure(`missing harness file ${path}`);
         return {

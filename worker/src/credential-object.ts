@@ -6,7 +6,6 @@ import {
   CredentialStore,
   credentialStoreLayer,
   durableObjectCredentialRegistryStorage,
-  type CredentialRefreshLease,
 } from "./credential-store";
 import {
   credentialCryptoLayer,
@@ -109,20 +108,6 @@ export class ScottyCredentialRegistry extends DurableObject<Bindings> {
     return this.#run(Effect.flatMap(CredentialStore, (store) => store.release(input)));
   }
 
-  beginRefresh(
-    input: unknown,
-  ): Promise<CredentialRegistryRpcResult<CredentialRefreshLease | null>> {
-    return this.#run(Effect.flatMap(CredentialStore, (store) => store.beginRefresh(input)));
-  }
-
-  persistRotation(input: unknown): Promise<CredentialRegistryRpcResult<void>> {
-    return this.#run(Effect.flatMap(CredentialStore, (store) => store.persistRotation(input)));
-  }
-
-  cancelRefresh(input: unknown): Promise<CredentialRegistryRpcResult<void>> {
-    return this.#run(Effect.flatMap(CredentialStore, (store) => store.cancelRefresh(input)));
-  }
-
   async #run<A>(
     operation: Effect.Effect<A, CredentialRegistryFailure, CredentialStore>,
   ): Promise<CredentialRegistryRpcResult<A>> {
@@ -143,15 +128,7 @@ export class ScottyCredentialRegistry extends DurableObject<Bindings> {
 
 export type ScottyCredentialRegistryStub = Pick<
   ScottyCredentialRegistry,
-  | "beginRefresh"
-  | "cancelRefresh"
-  | "issueGrants"
-  | "list"
-  | "persistRotation"
-  | "release"
-  | "resolve"
-  | "resolveGithubCliCredential"
-  | "sync"
+  "issueGrants" | "list" | "release" | "resolve" | "resolveGithubCliCredential" | "sync"
 >;
 
 export interface ScottyCredentialRegistryNamespace {

@@ -29,7 +29,6 @@ import {
   githubManagedHandle,
   piAccessHandle,
   piApiKeyHandle,
-  piRefreshHandle,
   sessionRuntimeCredentials,
 } from "../src/managed-credentials";
 
@@ -494,8 +493,8 @@ describe("managed credential handles", () => {
       handleSlots: [
         { provider: "openai", slot: "api-key" },
         { provider: "openai-codex", slot: "access" },
-        { provider: "openai-codex", slot: "refresh" },
       ],
+      expires: 1_795_000_123_456,
     },
     {
       name: "github",
@@ -508,7 +507,6 @@ describe("managed credential handles", () => {
   it("derives fixed handles only from granted slots", () => {
     assert.strictEqual(piApiKeyHandle(grants), "scotty-managed://openai/openai/api-key");
     assert.strictEqual(piAccessHandle(grants), "scotty-managed://openai/openai-codex/access");
-    assert.strictEqual(piRefreshHandle(grants), "scotty-managed://openai/openai-codex/refresh");
     assert.strictEqual(githubManagedHandle(grants), "scotty-managed://github/github/git-https");
     assert.deepStrictEqual(sessionRuntimeCredentials(grants).piProviders, [
       "openai",
