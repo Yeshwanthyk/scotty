@@ -35,7 +35,7 @@ describe("clean-room CLI image gate", () => {
     assert.equal(plan.platform, CLEAN_ROOM_CLI_PLATFORM);
     assert.equal(plan.target, CLEAN_ROOM_CLI_TARGET);
     assert.equal(plan.image, CLEAN_ROOM_CLI_IMAGE);
-    assert.deepEqual(plan.verifyArgs, ["tui", "--help"]);
+    assert.deepEqual(plan.verifyArgs, ["--version"]);
     assert.equal(plan.cache, undefined);
     assert.deepEqual(dockerCalls, [
       { command: "docker", args: cleanRoomBuildArgs(plan) },
@@ -63,8 +63,7 @@ describe("clean-room CLI image gate", () => {
       "--entrypoint",
       "/out/scotty",
       "scotty-cli-build:clean-room",
-      "tui",
-      "--help",
+      "--version",
     ]);
   });
 
@@ -106,7 +105,7 @@ describe("clean-room CLI image gate", () => {
     assert.match(release, /bun-version-file: \.bun-version/u);
     assert.doesNotMatch(release, /bun-version: 1\.3\.13/u);
     assert.match(release, /Smoke native compiled release artifact/u);
-    assert.match(release, /dist\/release\/scotty-linux-x64 tui --help/u);
+    assert.match(release, /dist\/release\/scotty-linux-x64 --version/u);
     assert.match(
       release,
       /node scripts\/check-cli-standalone-deploy\.mjs dist\/release\/scotty-linux-x64/u,

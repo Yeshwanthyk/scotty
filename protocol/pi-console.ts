@@ -1,12 +1,8 @@
 import { Option, Schema } from "effect";
 export {
-  CREDENTIAL_SENTINEL_PREFIXES,
-  GITHUB_SENTINEL_PREFIX,
   PI_CONSOLE_PASSIVE_NO_HEARTBEAT_HEADER,
-  PI_SENTINEL_PREFIX,
   canonicalJson,
   commandIntentDigest,
-  redactCredentialSentinels,
 } from "./pi-console-shared.mjs";
 
 export const PI_CONSOLE_PROTOCOL_VERSION = 1 as const;

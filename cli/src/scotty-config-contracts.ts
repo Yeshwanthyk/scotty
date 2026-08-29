@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { CredentialDeclarationsSchema } from "../../protocol/credentials";
 import { RepositoryIdentitySchema, repositoryIdentityKey } from "../../protocol/repository";
 
 export const SCOTTY_TOML_CONFIG_SCHEMA_VERSION = 1 as const;
@@ -40,6 +41,8 @@ export const ScottyTomlSyncSchema = Schema.Struct({
   extensions: Schema.Array(ScottyLocalRootPathSchema),
 });
 
+export const ScottyTomlCredentialsSchema = CredentialDeclarationsSchema;
+
 export const ScottyTomlRepositoriesSchema = Schema.Struct({
   allowed: ScottyAllowedRepositorySchema,
 });
@@ -48,8 +51,24 @@ export const ScottyTomlConfigSchema = Schema.Struct({
   version: Schema.Literal(SCOTTY_TOML_CONFIG_SCHEMA_VERSION),
   sync: ScottyTomlSyncSchema,
   repos: ScottyTomlRepositoriesSchema,
-});
+  credentials: Schema.optionalKey(ScottyTomlCredentialsSchema),
+}).check(
+  Schema.makeFilter(
+    ({ repos, credentials }) =>
+      Object.values(credentials ?? {}).every(
+        (credential) =>
+          credential.scope === "global" ||
+          credential.repositories?.every((repo) =>
+            repos.allowed.some(
+              (allowed) => repositoryIdentityKey(allowed) === repositoryIdentityKey(repo),
+            ),
+          ) === true,
+      ),
+    { expected: "credential repositories must be listed in repos.allowed" },
+  ),
+);
 
 export type ScottyTomlSync = typeof ScottyTomlSyncSchema.Type;
 export type ScottyTomlRepositories = typeof ScottyTomlRepositoriesSchema.Type;
 export type ScottyTomlConfig = typeof ScottyTomlConfigSchema.Type;
+export type ScottyTomlCredentials = typeof ScottyTomlCredentialsSchema.Type;

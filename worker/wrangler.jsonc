@@ -40,6 +40,10 @@
         "name": "SANDBOX_CONFIG",
         "class_name": "ScottySandboxConfig",
       },
+      {
+        "name": "CREDENTIALS",
+        "class_name": "ScottyCredentialRegistry",
+      },
     ],
   },
   "migrations": [
@@ -54,6 +58,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["ScottyRunnerRegistry", "ScottySandboxConfig"],
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["ScottyCredentialRegistry"],
     },
   ],
   "containers": [
@@ -85,6 +93,7 @@
     },
   ],
   "vars": {
+    "SCOTTY_INSTALLATION_NAME": "local",
     "SANDBOX_TRANSPORT": "rpc",
     "BACKUP_BUCKET_NAME": "scotty-backups",
   },

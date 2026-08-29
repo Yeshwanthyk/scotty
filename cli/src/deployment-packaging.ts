@@ -24,8 +24,6 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
   entry("skills/scotty/SKILL.md", "archive", "containerStatic"),
   entry("infra", "archive", "cliSource"),
   entry("protocol", "archive", "cliSource"),
-  entry("tui/package.json", "archive", "containerStatic"),
-  entry("tui/src", "archive", "cliSource"),
   entry("worker/package.json", "archive", "containerStatic"),
   entry("worker/src", "archive", "cliSource"),
   entry("worker/public", "archive", "archivePublic"),
@@ -42,7 +40,6 @@ export const DEPLOYMENT_ENTRIES = Object.freeze([
     "archive",
     "containerStatic",
   ),
-  entry("patches/earendil-works+pi-coding-agent+0.84.0.patch", "archive", "containerStatic"),
 ]);
 
 const project = (...categories: readonly DeploymentPackagingCategory[]) =>

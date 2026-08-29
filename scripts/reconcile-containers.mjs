@@ -177,7 +177,7 @@ async function readSessions() {
     }
     return response.json();
   }
-  return execJson("bun", ["cli/scotty.ts", "ls", "--json"]);
+  return execJson("bun", ["cli/scotty.ts", "list", "--json"]);
 }
 
 async function main() {

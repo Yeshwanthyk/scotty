@@ -1,18 +1,28 @@
 import { assert, describe, it } from "@effect/vitest";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
-import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
+import type { CredentialGrant } from "../../protocol/credentials";
 import { ScottyError } from "../src/contracts";
 import {
   createSessionHarness,
   type InitialStorageEntries,
   makeResumeBackup,
-  makeStoredCredential,
   type HarnessFailureStage,
   type HarnessOptions,
   SESSION_ID,
   sessionHarnessKeys,
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
+
+const PINNED_PI_GRANT: CredentialGrant = {
+  name: "openai",
+  kind: "pi-auth",
+  versionRef: "version-a",
+  handleSlots: [
+    { provider: "openai", slot: "api-key" },
+    { provider: "openai-codex", slot: "access" },
+    { provider: "openai-codex", slot: "refresh" },
+  ],
+};
 
 const EMPTY_ADDITIONS_DIGEST = createDeterministicTarGz([
   {
@@ -36,7 +46,6 @@ const sleepingRecord = (overrides: Parameters<typeof makeSessionRecord>[0] = {})
 
 const resumeEntries = (): InitialStorageEntries => ({
   [sessionHarnessKeys.record]: sleepingRecord(),
-  [sessionHarnessKeys.credential]: makeStoredCredential(),
 });
 
 const rejection = (operation: Promise<unknown>): Promise<unknown> =>
@@ -52,7 +61,7 @@ const assertUpstreamFailure = async (operation: Promise<unknown>): Promise<void>
 };
 
 describe("Sandbox resume orchestration", () => {
-  it("restores the current backup, reseeds runtime state, and reaches warm", async () => {
+  it("restores the current backup with the pinned grant and reaches warm", async () => {
     const harness = await createSessionHarness({ initialEntries: resumeEntries() });
 
     const resumed = await harness.sandbox.resumeScottySession();
@@ -78,59 +87,20 @@ describe("Sandbox resume orchestration", () => {
     assert.deepStrictEqual(harness.aborts, []);
   });
 
-  it("applies only installation Pi authority newer than the session vault", async () => {
-    for (const [updatedAt, expectedAccess] of [
-      ["2025-12-31T00:00:00.000Z", "stored-access-token"],
-      ["2026-01-02T00:00:00.000Z", "installation-access"],
-    ] as const) {
-      const installationPiAuthRecord = await makeInstallationPiAuthRecord(
-        {
-          "openai-codex": {
-            type: "oauth",
-            access: "installation-access",
-            refresh: "installation-refresh",
-            expires: 1,
-          },
-        },
-        updatedAt,
-        "sync",
-      );
-      const harness = await createSessionHarness({
-        initialEntries: resumeEntries(),
-        installationPiAuthRecord,
-      });
-      await harness.sandbox.resumeScottySession();
-      const stored = harness.read<ReturnType<typeof makeStoredCredential>>(
-        sessionHarnessKeys.credential,
-      );
-      assert.strictEqual(
-        stored?.providers["openai-codex"]?.credential.type === "oauth"
-          ? stored.providers["openai-codex"].credential.access
-          : undefined,
-        expectedAccess,
-      );
-    }
-  });
-
-  it("treats an equal matching installation record as idempotent on resume", async () => {
-    const current = makeStoredCredential();
-    const providers = Object.fromEntries(
-      Object.entries(current.providers).map(([id, provider]) => [id, provider.credential]),
-    );
-    const installationPiAuthRecord = await makeInstallationPiAuthRecord(
-      providers,
-      current.updatedAt,
-      "rotation",
-    );
+  it("reuses the persisted grant without asking Registry for a new version", async () => {
     const harness = await createSessionHarness({
       initialEntries: {
-        [sessionHarnessKeys.record]: sleepingRecord(),
-        [sessionHarnessKeys.credential]: current,
+        [sessionHarnessKeys.record]: sleepingRecord({
+          credentialGrant: { version: 1, sessionId: SESSION_ID, grants: [PINNED_PI_GRANT] },
+        }),
       },
-      installationPiAuthRecord,
+      credentialRegistryGrants: [{ ...PINNED_PI_GRANT, versionRef: "version-b" }],
     });
+
     await harness.sandbox.resumeScottySession();
-    assert.deepStrictEqual(harness.read(sessionHarnessKeys.credential), current);
+
+    assert.deepStrictEqual(harness.readRecord()?.credentialGrant?.grants, [PINNED_PI_GRANT]);
+    assert.deepStrictEqual(harness.credentialGrantRequests, []);
   });
 
   it("rematerializes the pinned sandbox bundle after backup restore", async () => {
@@ -140,7 +110,6 @@ describe("Sandbox resume orchestration", () => {
         [sessionHarnessKeys.record]: sleepingRecord({
           sandboxBundle: { digest, manifestVersion: 1 },
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -186,7 +155,6 @@ describe("Sandbox resume orchestration", () => {
         [sessionHarnessKeys.record]: sleepingRecord({
           sandboxBundle: { digest, manifestVersion: 1 },
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       seedPinnedSandboxBundle: false,
     });
@@ -205,6 +173,24 @@ describe("Sandbox resume orchestration", () => {
     assert.strictEqual(harness.sandboxConfigStatusCallCount(), 0);
   });
 
+  it("rejects resume without the pinned Registry grant before restoring", async () => {
+    const { credentialGrant: _grant, ...legacyRecord } = sleepingRecord();
+    const harness = await createSessionHarness({
+      initialEntries: {
+        [sessionHarnessKeys.record]: legacyRecord,
+      },
+    });
+
+    const error = await rejection(harness.sandbox.resumeScottySession());
+
+    assert.ok(error instanceof ScottyError);
+    assert.strictEqual(error.code, "upstream");
+    assert.strictEqual(harness.readRecord()?.status, "sleeping");
+    assert.strictEqual(harness.readRecord()?.operation, null);
+    assert.deepStrictEqual(harness.credentialGrantRequests, []);
+    assert.ok(!harness.events.includes("host:restoreBackup"));
+  });
+
   it("rejects resume without a current backup and releases the lease", async () => {
     const withoutBackup = makeSessionRecord({
       id: SESSION_ID,
@@ -214,7 +200,6 @@ describe("Sandbox resume orchestration", () => {
     const harness = await createSessionHarness({
       initialEntries: {
         [sessionHarnessKeys.record]: withoutBackup,
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
 
@@ -246,7 +231,7 @@ describe("Sandbox resume orchestration", () => {
       },
     },
     {
-      name: "credential require",
+      name: "pinned grant access",
       options: {
         initialEntries: resumeEntries(),
         transactionFailureCountdown: 3,

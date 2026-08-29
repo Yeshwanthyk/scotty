@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
@@ -20,6 +20,7 @@ const validToml = (
     readonly tools?: ReadonlyArray<string>;
     readonly extensions?: ReadonlyArray<string>;
     readonly allowed?: ReadonlyArray<string>;
+    readonly credentials?: string;
   } = {},
 ): string =>
   [
@@ -33,6 +34,7 @@ const validToml = (
     "",
     "[repos]",
     `allowed = ${JSON.stringify(input.allowed ?? ["owner/fixture"])}`,
+    ...(input.credentials === undefined ? [] : ["", input.credentials]),
     "",
   ].join("\n");
 
@@ -143,6 +145,68 @@ describe("Scotty TOML configuration boundary", () => {
         validToml({ allowed: ["owner/fixture", "OWNER/FIXTURE"] }),
         validToml({ allowed: ["owner/not/a-repository"] }),
         validToml({ skills: ["${HOME}/.pi/agent/skills"] }),
+      ];
+      for (const document of invalidDocuments) {
+        const result = yield* Effect.result(decodeScottyTomlText(document));
+        assert.instanceOf(failure(result), CliError);
+      }
+    }),
+  );
+
+  it.effect("accepts one global Pi auth declaration without reading its source", () =>
+    Effect.gen(function* () {
+      const source = "/does/not/exist/auth.json";
+      const decoded = yield* Effect.result(
+        decodeScottyTomlText(
+          `${validToml()}[credentials.openai]\nkind = "pi-auth"\nsource = ${JSON.stringify(source)}\nscope = "global"\n`,
+        ),
+      );
+      const config = success(decoded);
+      assert.deepStrictEqual(config.credentials, {
+        openai: { kind: "pi-auth", source, scope: "global" },
+      });
+    }),
+  );
+
+  it.effect("accepts a repository-scoped GitHub CLI declaration", () =>
+    Effect.gen(function* () {
+      const decoded = yield* Effect.result(
+        decodeScottyTomlText(
+          `${validToml({ allowed: ["owner/repo"] })}[credentials.github]
+kind = "github-cli"
+scope = "repository"
+repositories = ["owner/repo"]
+`,
+        ),
+      );
+      assert.deepStrictEqual(success(decoded).credentials, {
+        github: {
+          kind: "github-cli",
+          scope: "repository",
+          repositories: ["owner/repo"],
+        },
+      });
+      const global = yield* Effect.result(
+        decodeScottyTomlText(
+          `${validToml()}[credentials.github]
+kind = "github-cli"
+scope = "global"
+`,
+        ),
+      );
+      assert.deepStrictEqual(success(global).credentials, {
+        github: { kind: "github-cli", scope: "global" },
+      });
+    }),
+  );
+
+  it.effect("rejects multiple declarations and unsupported credential fields", () =>
+    Effect.gen(function* () {
+      const invalidDocuments = [
+        `${validToml()}[credentials.openai]\nkind = "github-cli"\nsource = "./auth.json"\nscope = "global"\n`,
+        `${validToml()}[credentials.openai]\nkind = "pi-auth"\nsource = "./auth.json"\nscope = "repository"\n`,
+        `${validToml()}[credentials.openai]\nkind = "pi-auth"\nsource = "./auth.json"\nscope = "global"\nrepositories = ["owner/repo"]\n`,
+        `${validToml()}[credentials.openai]\nkind = "pi-auth"\nsource = "./auth.json"\nscope = "global"\nunknown = true\n`,
       ];
       for (const document of invalidDocuments) {
         const result = yield* Effect.result(decodeScottyTomlText(document));
@@ -285,6 +349,39 @@ describe("Scotty TOML configuration boundary", () => {
     ),
   );
 
+  it.effect("reports missing and invalid TOML without falling back to legacy JSON", () =>
+    withTempDirectory((home) =>
+      Effect.gen(function* () {
+        const legacyPath = join(home, ".scotty", "sandbox.json");
+        const legacyText = '{"schemaVersion":1,"skills":[],"piPackages":[]}\n';
+        yield* Effect.promise(() => mkdir(join(home, ".scotty"), { recursive: true }));
+        yield* Effect.promise(() => writeFile(legacyPath, legacyText, { mode: 0o600 }));
+
+        const missing = runCommand(["--json", "config", "check"], { home, cwd: home });
+        const missingError = failure(yield* Effect.result(missing.effect));
+        assert.instanceOf(missingError, CliError);
+        assert.strictEqual(missingError.code, "scotty_config_invalid");
+        assert.strictEqual(missingError.exitCode, EXIT.USAGE);
+        assert.include(missingError.message, "TOML");
+        assert.notInclude(missingError.message.toLowerCase(), "sandbox");
+        assert.strictEqual(missing.stdout.join(""), "");
+        assert.strictEqual(missing.stderr.join(""), "");
+
+        yield* writeToml(home, "version =\n");
+        const invalid = runCommand(["--json", "config", "check"], { home, cwd: home });
+        const invalidError = failure(yield* Effect.result(invalid.effect));
+        assert.instanceOf(invalidError, CliError);
+        assert.strictEqual(invalidError.code, "scotty_config_invalid");
+        assert.strictEqual(invalidError.exitCode, EXIT.USAGE);
+        assert.include(invalidError.message, "TOML");
+        assert.notInclude(invalidError.message.toLowerCase(), "sandbox");
+        assert.strictEqual(yield* Effect.promise(() => readFile(legacyPath, "utf8")), legacyText);
+        assert.strictEqual(invalid.stdout.join(""), "");
+        assert.strictEqual(invalid.stderr.join(""), "");
+      }),
+    ),
+  );
+
   it.effect("checks locally without network, provider, or credential effects", () =>
     withTempDirectory((home) =>
       Effect.gen(function* () {
@@ -297,6 +394,8 @@ describe("Scotty TOML configuration boundary", () => {
             skills: ["./skills"],
             tools: ["./tools"],
             extensions: ["./extensions"],
+            credentials:
+              '[credentials.pi]\nkind = "pi-auth"\nsource = "./missing-secret/auth.json"\nscope = "global"',
           }),
         );
         let fetchCalls = 0;
@@ -327,6 +426,9 @@ describe("Scotty TOML configuration boundary", () => {
             extensions: ["./extensions"],
           },
           repos: { allowed: ["owner/fixture"] },
+          credentials: {
+            pi: { kind: "pi-auth", source: "./missing-secret/auth.json", scope: "global" },
+          },
         });
         assert.strictEqual(invocation.stderr.join(""), "");
       }),

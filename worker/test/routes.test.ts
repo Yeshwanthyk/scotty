@@ -23,7 +23,6 @@ const sandbox = vi.hoisted(() => ({
   fetch: vi.fn(),
   containerFetch: vi.fn(),
   preparePiSessionAccess: vi.fn(),
-  reseedPiAuth: vi.fn(),
 }));
 
 const sandboxTarget = vi.hoisted((): { current: unknown } => ({
@@ -65,8 +64,6 @@ const runnerRegistry = vi.hoisted(() => ({
 const sandboxConfig = vi.hoisted(() => ({
   status: vi.fn(),
   activate: vi.fn(),
-  piAuth: vi.fn(),
-  writePiAuth: vi.fn(),
   listRepos: vi.fn(),
   addRepo: vi.fn(),
   removeRepo: vi.fn(),
@@ -77,31 +74,66 @@ vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   getSandbox: vi.fn(() => sandboxTarget.current),
 }));
 
+const credentialRegistry = vi.hoisted(() => ({
+  sync: vi.fn(),
+  issueGrants: vi.fn(),
+  list: vi.fn(),
+  resolve: vi.fn(),
+  resolveGithubCliCredential: vi.fn(),
+  release: vi.fn(),
+  beginRefresh: vi.fn(),
+  persistRotation: vi.fn(),
+  cancelRefresh: vi.fn(),
+}));
+
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import { app } from "../src/index";
 import type { Bindings } from "../src/bindings";
 import { commandIntentDigest, decodePiConsoleCommandV1Promise } from "../../protocol/pi-console";
-import { makeInstallationPiAuthRecord } from "../../protocol/pi-auth";
 import { conflict } from "../src/contracts";
 import type { EvidenceStateV2 } from "../src/evidence-contracts";
 import { orderedEvidenceFrames } from "../public/evidence-view.js";
 import { browserEvidenceAttachment } from "../public/terminal-evidence-attachment.js";
 import evidenceHtml from "../public/evidence.html?raw";
+
 import evidenceScript from "../public/evidence.js?raw";
 import showcaseHtml from "../public/showcase.html?raw";
 import showcaseScript from "../public/showcase.js?raw";
 import {
   createSessionHarness,
   makeResumeBackup,
-  makeStoredCredential,
   SESSION_ID,
   sessionHarnessKeys,
   type SessionHarness,
 } from "./session-harness";
 import { makeSessionRecord } from "./support";
 
+class RouteTestFailure extends Error {
+  readonly _tag = "RouteTestFailure" as const;
+}
+
 const TOKEN = "worker-test-token-1234567890";
 const CLIENT_CREDENTIAL = "scotty_client.111111111111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const DEFAULT_CREDENTIAL_GRANTS = [
+  {
+    name: "codex",
+    kind: "pi-auth",
+    versionRef: "version-a",
+    handleSlots: [
+      { provider: "openai", slot: "api-key" },
+      { provider: "openai-codex", slot: "access" },
+      { provider: "openai-codex", slot: "refresh" },
+    ],
+  },
+  {
+    name: "github",
+    kind: "github-cli",
+    versionRef: "version-b",
+    handleSlots: [{ provider: "github", slot: "git-https" }],
+  },
+] as const;
+const routeHarness = () =>
+  createSessionHarness({ credentialRegistryGrants: DEFAULT_CREDENTIAL_GRANTS });
 const REGISTERED_CLIENT = {
   id: "111111111111",
   label: "Trusted browser",
@@ -119,6 +151,10 @@ function authNamespace(): import("../src/auth-object").ScottyAuthRegistryNamespa
 
 function runnerRegistryNamespace(): import("../src/runner-registry-object").ScottyRunnerRegistryNamespace {
   return { getByName: () => runnerRegistry };
+}
+
+function credentialRegistryNamespace(): import("../src/credential-object").ScottyCredentialRegistryNamespace {
+  return { getByName: () => credentialRegistry };
 }
 
 function sandboxConfigNamespace(): import("../src/sandbox-config-object").ScottySandboxConfigNamespace {
@@ -141,7 +177,7 @@ function sandboxBundleBucket(): R2Bucket {
       value: ArrayBuffer | ArrayBufferView | Blob | ReadableStream | string | null,
       options?: R2PutOptions,
     ) => {
-      if (!(value instanceof Uint8Array)) throw new Error("expected Uint8Array body");
+      if (!(value instanceof Uint8Array)) throw new RouteTestFailure("expected Uint8Array body");
       if (
         options?.onlyIf !== undefined &&
         !(options.onlyIf instanceof Headers) &&
@@ -219,7 +255,11 @@ function emptySessionsNamespace(values = new Map<string, unknown>()): KVNamespac
 }
 
 function env(
-  options: { readonly assets?: Fetcher; readonly artifactBucket?: R2Bucket } = {},
+  options: {
+    readonly assets?: Fetcher;
+    readonly artifactBucket?: R2Bucket;
+    readonly unused?: never;
+  } = {},
 ): Bindings {
   const assets: Fetcher = options.assets ?? {
     fetch: async () =>
@@ -227,14 +267,12 @@ function env(
         headers: { "content-type": "text/html" },
       }),
     connect: () => {
-      throw new Error("ASSETS.connect isn't used by route tests");
+      throw new RouteTestFailure("ASSETS.connect isn't used by route tests");
     },
   };
   return {
     SCOTTY_TOKEN: TOKEN,
-    PI_AUTH_JSON:
-      '{"openai-codex":{"type":"oauth","access":"access","refresh":"refresh","expires":0}}',
-    GH_TOKEN: "github-test-sentinel",
+    CREDENTIALS: credentialRegistryNamespace(),
     ASSETS: assets,
     AUTH: authNamespace(),
     RUNNER_REGISTRY: runnerRegistryNamespace(),
@@ -245,7 +283,7 @@ function env(
     ARTIFACT_BUCKET: options.artifactBucket ?? ({} as R2Bucket),
     SANDBOX_BUNDLE_BUCKET: sandboxBundleBucket(),
     SANDBOX_CONFIG: sandboxConfigNamespace(),
-  };
+  } as Bindings;
 }
 
 function useRealSandbox(harness: SessionHarness): void {
@@ -310,7 +348,7 @@ const evidenceAssets = (): Fetcher => ({
     });
   },
   connect: () => {
-    throw new Error("evidence asset tests do not use connect");
+    throw new RouteTestFailure("evidence asset tests do not use connect");
   },
 });
 
@@ -323,7 +361,7 @@ const showcaseAssets = (): Fetcher => ({
     });
   },
   connect: () => {
-    throw new Error("Showcase asset tests do not use connect");
+    throw new RouteTestFailure("Showcase asset tests do not use connect");
   },
 });
 
@@ -434,11 +472,6 @@ describe("real Hono boundary", () => {
       createdAt: "2026-08-08T12:00:00.000Z",
       updatedAt: "2026-08-08T12:00:02.000Z",
     });
-    sandbox.reseedPiAuth.mockResolvedValue({
-      id: "a0b1c2d3e4f5",
-      updatedAt: "2026-07-29T12:00:00.000Z",
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-    });
     auth.authenticate.mockResolvedValue({
       ok: true,
       value: {
@@ -518,8 +551,6 @@ describe("real Hono boundary", () => {
       ok: true,
       value: { schemaVersion: 1, revision: 1, activeDigest: "a".repeat(64) },
     });
-    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: null });
-    sandboxConfig.writePiAuth.mockImplementation(async (record) => ({ ok: true, value: record }));
     sandboxConfig.listRepos.mockResolvedValue({ ok: true, value: [] });
     sandboxConfig.addRepo.mockImplementation(async (input) => ({
       ok: true,
@@ -531,6 +562,17 @@ describe("real Hono boundary", () => {
       },
     }));
     sandboxConfig.removeRepo.mockResolvedValue({ ok: true, value: true });
+    credentialRegistry.resolveGithubCliCredential.mockImplementation(async () => ({
+      ok: true,
+      value: { version: 1, value: "test-github-token" },
+    }));
+    credentialRegistry.issueGrants.mockImplementation(
+      async (input: { readonly sessionId: string }) => ({
+        ok: true,
+        value: { version: 1, sessionId: input.sessionId, grants: DEFAULT_CREDENTIAL_GRANTS },
+      }),
+    );
+    credentialRegistry.sync.mockResolvedValue({ ok: true, value: { version: 1, credentials: [] } });
   });
 
   it("projects and mutates the Schema-owned primary Hatch through existing auth envelopes", async () => {
@@ -740,6 +782,59 @@ describe("real Hono boundary", () => {
         hint: "Open a fresh pairing or recovery link, or configure the CLI root token.",
       },
     });
+  });
+
+  it("syncs a complete redacted credential desired set through the Registry", async () => {
+    credentialRegistry.sync.mockResolvedValue({
+      ok: true,
+      value: {
+        version: 1,
+        credentials: [
+          {
+            name: "github",
+            kind: "github-cli",
+            scope: "repository",
+            repositories: ["owner/repo"],
+            configured: true,
+          },
+        ],
+      },
+    });
+    const request = {
+      version: 1,
+      credentials: [
+        {
+          name: "github",
+          kind: "github-cli",
+          scope: "repository",
+          repositories: ["owner/repo"],
+          token: "github-token-must-not-be-returned",
+        },
+      ],
+    };
+    const response = await app.request(
+      "/api/credentials/sync",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      version: 1,
+      credentials: [
+        {
+          name: "github",
+          kind: "github-cli",
+          scope: "repository",
+          repositories: ["owner/repo"],
+          configured: true,
+        },
+      ],
+    });
+    expect(credentialRegistry.sync).toHaveBeenCalledWith(request);
   });
 
   it("reports providers separately from dynamically named runners", async () => {
@@ -1087,126 +1182,6 @@ describe("real Hono boundary", () => {
     expect(runnerRegistry.remove).not.toHaveBeenCalled();
   });
 
-  it("reports only redacted Pi auth metadata and explicitly reseeds one session", async () => {
-    const bindings = env();
-    bindings.PI_AUTH_JSON = JSON.stringify({
-      "openai-codex": {
-        type: "oauth",
-        access: "honeypot-access",
-        refresh: "honeypot-refresh",
-        expires: 0,
-        accountId: "honeypot-account",
-      },
-      anthropic: {
-        type: "oauth",
-        access: "honeypot-anthropic-access",
-        refresh: "honeypot-anthropic-refresh",
-        expires: 0,
-      },
-    });
-    const status = await app.request(
-      "/api/auth/pi",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      bindings,
-    );
-    expect(status.status).toBe(200);
-    const statusBody = await status.json();
-    expect(statusBody).toMatchObject({
-      source: "bootstrap",
-      updatedAt: null,
-      providers: [
-        { id: "anthropic", type: "oauth", adapter: "unsupported" },
-        { id: "openai-codex", type: "oauth", adapter: "supported" },
-      ],
-    });
-    const serializedStatus = JSON.stringify(statusBody);
-    expect(serializedStatus).toMatch(/"sourceDigest":"[0-9a-f]{64}"/u);
-    expect(serializedStatus).not.toContain("honeypot");
-
-    const reseeded = await app.request(
-      "/api/sessions/a0b1c2d3e4f5/auth/reseed",
-      { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } },
-      bindings,
-    );
-    expect(reseeded.status).toBe(200);
-    expect(sandbox.reseedPiAuth).toHaveBeenCalledTimes(1);
-    expect(await reseeded.json()).toEqual({
-      id: "a0b1c2d3e4f5",
-      updatedAt: "2026-07-29T12:00:00.000Z",
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-    });
-  });
-
-  it("keeps Pi credential writes root-only, schema-decoded, and metadata-only", async () => {
-    const record = await makeInstallationPiAuthRecord(
-      {
-        "openai-codex": {
-          type: "oauth",
-          access: "honeypot-access",
-          refresh: "honeypot-refresh",
-          expires: 0,
-        },
-      },
-      "2026-08-15T12:00:00.000Z",
-      "sync",
-    );
-    sandboxConfig.piAuth.mockResolvedValue({ ok: true, value: record });
-    const preferred = await app.request(
-      "/api/auth/pi",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env(),
-    );
-    expect(await preferred.json()).toEqual({
-      source: "sync",
-      sourceDigest: record.digest,
-      updatedAt: record.updatedAt,
-      providers: [{ id: "openai-codex", type: "oauth", adapter: "supported" }],
-    });
-
-    const ownerRejected = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: {
-          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
-          "content-type": "application/json",
-          origin: "http://localhost",
-          "sec-fetch-site": "same-origin",
-        },
-        body: JSON.stringify(record),
-      },
-      env(),
-    );
-    expect(ownerRejected.status).toBe(401);
-    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
-
-    const malformed = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ ...record, githubToken: "honeypot-github" }),
-      },
-      env(),
-    );
-    expect(malformed.status).toBe(400);
-    expect(sandboxConfig.writePiAuth).not.toHaveBeenCalled();
-
-    const written = await app.request(
-      "/api/auth/pi",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify(record),
-      },
-      env(),
-    );
-    expect(written.status).toBe(200);
-    expect(sandboxConfig.writePiAuth).toHaveBeenCalledWith(record);
-    const serialized = JSON.stringify(await written.json());
-    expect(serialized).not.toContain("honeypot");
-  });
-
   it("allows only the owner browser to control the configured runner", async () => {
     for (const action of ["enable", "drain", "disable", "disconnect"]) {
       const response = await app.request(
@@ -1282,7 +1257,7 @@ describe("real Hono boundary", () => {
   });
 
   it("preserves the create status, output shape, and ignored legacy cap", async () => {
-    const harness = await createSessionHarness();
+    const harness = await routeHarness();
     useRealSandbox(harness);
     const response = await app.request(
       "/api/sessions",
@@ -1361,7 +1336,7 @@ describe("real Hono boundary", () => {
   });
 
   it("maps repeated create keys to one Sandbox identity", async () => {
-    const harness = await createSessionHarness();
+    const harness = await routeHarness();
     useRealSandbox(harness);
     const request = {
       method: "POST",
@@ -1405,7 +1380,7 @@ describe("real Hono boundary", () => {
   });
 
   it("preserves legacy idempotency for omitted/false newRepo and separates true", async () => {
-    const harness = await createSessionHarness();
+    const harness = await routeHarness();
     useRealSandbox(harness);
     const headers = {
       authorization: `Bearer ${TOKEN}`,
@@ -1466,7 +1441,7 @@ describe("real Hono boundary", () => {
   });
 
   it("upserts the returned repository authority and best-effort projection", async () => {
-    const trackedHarness = await createSessionHarness();
+    const trackedHarness = await routeHarness();
     useRealSandbox(trackedHarness);
     const put = vi.fn(async (_key: string, _value: string) => undefined);
     const tracked = await app.request(
@@ -1496,9 +1471,9 @@ describe("real Hono boundary", () => {
     );
 
     put.mockImplementation(async (key: string) => {
-      if (key === "repo:owner/repo") throw new Error("KV unavailable");
+      if (key === "repo:owner/repo") throw new RouteTestFailure("KV unavailable");
     });
-    const unavailableHarness = await createSessionHarness();
+    const unavailableHarness = await routeHarness();
     useRealSandbox(unavailableHarness);
     const unavailable = await app.request(
       "/api/sessions",
@@ -1518,7 +1493,7 @@ describe("real Hono boundary", () => {
   });
 
   it("retries repository authority registration safely on an idempotent create replay", async () => {
-    const harness = await createSessionHarness();
+    const harness = await routeHarness();
     useRealSandbox(harness);
     const entry = {
       repo: "owner/repo",
@@ -1557,7 +1532,7 @@ describe("real Hono boundary", () => {
   });
 
   it("requires the creation marker write before reporting create success", async () => {
-    const harness = await createSessionHarness();
+    const harness = await routeHarness();
     useRealSandbox(harness);
     let releaseMarker = (): void => undefined;
     const markerRelease = new Promise<void>((resolve) => {
@@ -1601,7 +1576,7 @@ describe("real Hono boundary", () => {
   });
 
   it("converges the same idempotent create after a marker write failure", async () => {
-    const harness = await createSessionHarness();
+    const harness = await routeHarness();
     useRealSandbox(harness);
     const values = new Map<string, string>();
     let rejectMarker = true;
@@ -1610,7 +1585,7 @@ describe("real Hono boundary", () => {
       put: async (key: string, value: string) => {
         if (key.startsWith("stats:workspace-created:") && rejectMarker) {
           rejectMarker = false;
-          throw new Error("marker unavailable");
+          throw new RouteTestFailure("marker unavailable");
         }
         values.set(key, value);
       },
@@ -2141,7 +2116,6 @@ describe("real Hono boundary", () => {
           ownedBackupIds: ["backup-1"],
           codexThreadId: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
     });
     useRealSandbox(harness);
@@ -2173,7 +2147,7 @@ describe("real Hono boundary", () => {
     );
   });
 
-  it("vaporizes through real destruction, credential deletion, and authority transition", async () => {
+  it("vaporizes through real destruction, grant release, and authority transition", async () => {
     const harness = await createSessionHarness({
       rawPiContainerRunning: true,
       initialEntries: {
@@ -2181,7 +2155,6 @@ describe("real Hono boundary", () => {
           id: SESSION_ID,
           branch: `scotty/${SESSION_ID}`,
         }),
-        [sessionHarnessKeys.credential]: makeStoredCredential(),
       },
       initialProjections: {
         [`stats:workspace-created:${SESSION_ID}`]: {
@@ -2208,16 +2181,17 @@ describe("real Hono boundary", () => {
       operation: null,
       ownedBackupIds: [],
     });
-    expect(harness.read(sessionHarnessKeys.credential)).toBeUndefined();
     expect(harness.events).toEqual(
       expect.arrayContaining([
         "schedule:retryVaporizeSession",
         "host:destroy",
-        `storage:delete:${sessionHarnessKeys.credential}`,
         "record:gone",
         `projection:delete:session:${SESSION_ID}`,
       ]),
     );
+    expect(harness.credentialGrantReleases).toEqual([
+      { version: 1, sessionId: SESSION_ID, grants: [] },
+    ]);
     expect(harness.events).not.toContain(`projection:delete:stats:workspace-created:${SESSION_ID}`);
   });
 
@@ -2431,7 +2405,12 @@ describe("real Hono boundary", () => {
     );
 
     expect(response.status).toBe(200);
+    await expect(response.clone().text()).resolves.not.toContain("test-github-token");
     await expect(response.json()).resolves.toEqual(entry);
+    expect(credentialRegistry.resolveGithubCliCredential).toHaveBeenCalledWith({
+      version: 1,
+      repository: "owner/project",
+    });
     expect(sandboxConfig.addRepo).toHaveBeenCalledWith({
       repo: "owner/project",
       defaultBranch: "trunk",
@@ -2476,99 +2455,6 @@ describe("real Hono boundary", () => {
     expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalledWith("repo:owner/unavailable", expect.any(String));
     fetch.mockRestore();
-  });
-
-  it("does not register a repository when session creation fails", async () => {
-    const harness = await createSessionHarness({ failureStage: "workspacePrepare" });
-    useRealSandbox(harness);
-
-    const response = await app.request(
-      "/api/sessions",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          title: "Failed repository",
-          prompt: "fail it",
-          provider: "cloudflare",
-          repo: "owner/project",
-        }),
-      },
-      env(),
-    );
-
-    expect(response.status).toBe(502);
-    expect(sandboxConfig.addRepo).not.toHaveBeenCalled();
-  });
-
-  it("forgets only the requested repository projection", async () => {
-    const deleteKey = vi.fn(async (_name: string) => undefined);
-    const sessions = {
-      ...emptySessionsNamespace(),
-      list: async () => ({
-        keys: [
-          { name: "repo:owner/project" },
-          { name: "repo:OWNER/PROJECT" },
-          { name: "stats:workspace-created:a0b1c2d3e4f5" },
-        ],
-        list_complete: true,
-        cacheStatus: null,
-      }),
-      delete: deleteKey,
-    } as KVNamespace;
-
-    const response = await app.request(
-      "/api/repos/owner/project",
-      {
-        method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
-      },
-      { ...env(), SESSIONS: sessions },
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      repo: "owner/project",
-      removed: true,
-      forgotten: true,
-    });
-    expect(sandboxConfig.removeRepo).toHaveBeenCalledWith("owner/project");
-    expect(deleteKey).toHaveBeenCalledWith("repo:owner/project");
-    expect(deleteKey).toHaveBeenCalledWith("repo:OWNER/PROJECT");
-    expect(deleteKey).not.toHaveBeenCalledWith("stats:workspace-created:a0b1c2d3e4f5");
-    expect(sandbox.vaporizeScottySession).not.toHaveBeenCalled();
-  });
-
-  it("returns a generic internal error when repository projection deletion fails", async () => {
-    const sessions = {
-      ...emptySessionsNamespace(),
-      list: async () => ({
-        keys: [{ name: "repo:owner/project" }],
-        list_complete: true,
-        cacheStatus: null,
-      }),
-      delete: async (_name: string) => Promise.reject("delete failed"),
-    } as KVNamespace;
-    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    const response = await app.request(
-      "/api/repos/owner/project",
-      {
-        method: "DELETE",
-        headers: { authorization: `Bearer ${TOKEN}` },
-      },
-      { ...env(), SESSIONS: sessions },
-    );
-
-    expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "internal", message: "Internal error" },
-    });
-    expect(logged).toHaveBeenCalledWith("Projection failure", {
-      tag: "RepoProjectionFailure",
-      reason: "delete",
-    });
-    logged.mockRestore();
   });
 
   it("does not mutate the projection when repository authority removal fails", async () => {
@@ -3596,16 +3482,21 @@ describe("real Hono boundary", () => {
   });
 
   it("does not expose the removed browser RPC surface", async () => {
-    for (const [action, method] of [
-      ["snapshot", "GET"],
-      ["events", "GET"],
-      ["command", "POST"],
+    for (const [path, method] of [
+      ["/s/a0b1c2d3e4f5/rpc/snapshot", "GET"],
+      ["/s/a0b1c2d3e4f5/rpc/events", "GET"],
+      ["/s/a0b1c2d3e4f5/rpc/command", "POST"],
     ] as const) {
       const response = await app.request(
-        `/s/a0b1c2d3e4f5/rpc/${action}`,
+        path,
         {
           method,
-          headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` },
+          headers: {
+            cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+            "content-type": "application/json",
+            origin: "http://localhost",
+            "sec-fetch-site": "same-origin",
+          },
         },
         env(),
       );

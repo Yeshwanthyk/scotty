@@ -22,7 +22,6 @@ export const checkCompiledCli = async ({
   try {
     execute("bun", ["scripts/build-cli.mjs", executable], { cwd: root });
     execute(executable, ["--version"], { cwd: temporaryDirectory });
-    execute(executable, ["tui", "--help"], { cwd: temporaryDirectory });
   } finally {
     await removeTemporaryDirectory(temporaryDirectory);
   }

@@ -39,7 +39,7 @@ Do not weaken `validateLabProcess`, infer ownership from ports or generic proces
 Run the focused lab tests, then the same authorized local lifecycle:
 
 ```text
-start -> doctor --json -> beam up -> inspect -> steer -> settled inspect -> vaporize -> stop
+start -> doctor --json -> beam -> inspect -> steer -> settled inspect -> vaporize -> stop
 ```
 
 Prove both normal cleanup and the characterized missing-leader recovery. Run formatting, lint skills, affected typechecks, Knip, `npm run test:all`, and the static scan. The result remains local-only; guarded Alchemy deployment and deployed canary stay separate.

@@ -66,7 +66,7 @@ const resolveApiKey = Effect.fnUntraced(function* (
     if (result.exitCode !== 0 || resolved.length === 0)
       return yield* authFailure(
         `Pi API-key command failed for ${providerId}`,
-        "Fix the command in Pi auth.json and retry scotty auth sync.",
+        "Fix the command in Pi auth.json and retry scotty sync.",
       );
     return resolved;
   }
@@ -74,7 +74,7 @@ const resolveApiKey = Effect.fnUntraced(function* (
   if (resolved === undefined || resolved.length === 0)
     return yield* authFailure(
       `Pi API-key reference could not be resolved for ${providerId}`,
-      "Set the referenced environment variables and retry scotty auth sync.",
+      "Set the referenced environment variables and retry scotty sync.",
     );
   return resolved;
 });
@@ -102,7 +102,7 @@ export const readLocalPiAuth = Effect.fnUntraced(function* (path?: string) {
   if (Option.isNone(decoded) || Object.keys(decoded.value).length === 0)
     return yield* authFailure(
       "Pi auth.json is missing or malformed",
-      "Run Pi login, then retry scotty auth sync.",
+      "Run Pi login, then retry scotty sync.",
     );
 
   const normalized: Record<string, PiCredential> = {};
@@ -125,7 +125,7 @@ export const readLocalPiAuth = Effect.fnUntraced(function* (path?: string) {
   if (Object.keys(normalized).length === 0)
     return yield* authFailure(
       "Pi auth.json has no credential supported by Scotty",
-      "Sign in to OpenAI or OpenAI Codex with Pi, then retry scotty auth sync.",
+      "Sign in to OpenAI or OpenAI Codex with Pi, then retry scotty sync.",
     );
   return {
     path: authPath,
@@ -135,7 +135,7 @@ export const readLocalPiAuth = Effect.fnUntraced(function* (path?: string) {
       catch: () =>
         authFailure(
           "Could not digest Pi auth.json",
-          "Retry scotty auth sync. If the problem continues, update your local runtime.",
+          "Retry scotty sync. If the problem continues, update your local runtime.",
         ),
     }),
     providers: piProviderMetadata(normalized),

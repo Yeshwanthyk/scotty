@@ -172,8 +172,6 @@ function bindings(namespace: Bindings["SANDBOX"]): Bindings {
     SANDBOX_CONFIG: undefined as never,
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "unused",
-    PI_AUTH_JSON: "unused",
-    GH_TOKEN: "unused",
   };
 }
 
@@ -237,6 +235,88 @@ describe("container-only session egress", () => {
     assert.deepStrictEqual(selectedContainerIds, [SOURCE_CONTAINER_ID]);
     assert.deepStrictEqual(operations, [{ version: 1, action: "inspect", targetId: TARGET_ID }]);
     assert.strictEqual(nativeFetchCalls, 0);
+  });
+
+  it("accepts real Durable Object IDs for credentialed OpenAI and GitHub egress only", async () => {
+    const selectedContainerIds: string[] = [];
+    const forwarded: Request[] = [];
+    const credentials = [
+      JSON.stringify({ openai: { type: "api_key", key: "openai-egress-key" } }),
+      "github-egress-token",
+    ];
+    let sourceCalls = 0;
+    const source = {
+      resolveCredentialForProxy: async () => credentials[sourceCalls++] ?? null,
+    };
+    const namespace = sandboxNamespace({
+      fromString: () => source,
+      onString: (id) => selectedContainerIds.push(id),
+    });
+    const handlers = makeOutboundByHost((request) => {
+      forwarded.push(request instanceof Request ? request : new Request(request));
+      return Promise.resolve(new Response("upstream"));
+    });
+    const openAi = handlers["api.openai.com"];
+    const github = handlers["api.github.com"];
+    assert.isFunction(openAi);
+    assert.isFunction(github);
+
+    const openAiResponse = await openAi(
+      new Request("https://api.openai.com/v1/models", {
+        headers: { authorization: "Bearer scotty-managed://openai/openai/api-key" },
+      }),
+      bindings(namespace),
+      context(),
+    );
+    const githubResponse = await github(
+      new Request("https://api.github.com/repos/owner/project", {
+        headers: { authorization: "Bearer scotty-managed://github/github/git-https" },
+      }),
+      bindings(namespace),
+      context(),
+    );
+    assert.strictEqual(openAiResponse.status, 200);
+    assert.strictEqual(githubResponse.status, 200);
+    assert.deepStrictEqual(selectedContainerIds, [SOURCE_CONTAINER_ID, SOURCE_CONTAINER_ID]);
+    assert.strictEqual(sourceCalls, 2);
+    assert.strictEqual(forwarded[0]?.headers.get("authorization"), "Bearer openai-egress-key");
+    assert.strictEqual(forwarded[1]?.headers.get("authorization"), "Bearer github-egress-token");
+
+    const malformedIds = [
+      SESSION_ID,
+      SOURCE_CONTAINER_ID.slice(0, -1),
+      "g".repeat(64),
+      "A".repeat(64),
+    ];
+    for (const containerId of malformedIds) {
+      const rejected = await openAi(
+        new Request("https://api.openai.com/v1/models", {
+          headers: { authorization: "Bearer scotty-managed://openai/openai/api-key" },
+        }),
+        bindings(namespace),
+        context(containerId),
+      ).then(
+        () => false,
+        () => true,
+      );
+      assert.isTrue(rejected);
+    }
+    for (const className of ["ScottySandbox", "SandboxProxy", "sandbox"]) {
+      const rejected = await openAi(
+        new Request("https://api.openai.com/v1/models", {
+          headers: { authorization: "Bearer scotty-managed://openai/openai/api-key" },
+        }),
+        bindings(namespace),
+        { ...context(), className },
+      ).then(
+        () => false,
+        () => true,
+      );
+      assert.isTrue(rejected);
+    }
+    assert.deepStrictEqual(selectedContainerIds, [SOURCE_CONTAINER_ID, SOURCE_CONTAINER_ID]);
+    assert.strictEqual(sourceCalls, 2);
+    assert.strictEqual(forwarded.length, 2);
   });
 
   it("dispatches evidence with the SDK runtime class in the exported proxy", async () => {

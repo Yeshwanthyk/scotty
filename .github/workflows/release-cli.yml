@@ -65,14 +65,13 @@ jobs:
         env:
           SCOTTY_COMPILE_TARGET: ${{ matrix.target }}
         run: bun scripts/build-cli.mjs dist/release/scotty-${{ matrix.platform }}-${{ matrix.architecture }}
-      - name: Verify release artifact has no sidecars
+      - name: Verify release artifact is standalone
         run: |
           test -f dist/release/scotty-${{ matrix.platform }}-${{ matrix.architecture }}
-          test ! -e dist/release/theme
           test "$(find dist/release -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
       - name: Smoke native compiled release artifact
         if: matrix.platform == 'linux' && matrix.architecture == 'x64'
-        run: dist/release/scotty-linux-x64 tui --help
+        run: dist/release/scotty-linux-x64 --version
       - name: Prove native release deployment packaging in a clean room
         if: matrix.platform == 'linux' && matrix.architecture == 'x64'
         run: node scripts/check-cli-standalone-deploy.mjs dist/release/scotty-linux-x64

@@ -13,7 +13,7 @@ import {
 
 export { CLOUDFLARE_STAGE };
 
-export const CLOUDFLARE_WORKER_SECRETS = ["GH_TOKEN", "PI_AUTH_JSON", "SCOTTY_TOKEN"] as const;
+export const CLOUDFLARE_WORKER_SECRETS = ["SCOTTY_TOKEN", "CREDENTIAL_WRAPPING_KEY"] as const;
 
 export const makeCloudflareStackTopology = (
   installation: InstallationTopology,
@@ -69,6 +69,7 @@ export const makeCloudflareStackTopology = (
       name: installation.sandboxBundleBucketName,
     },
     sandboxConfigDurableObject: CLOUDFLARE_BINDING_TOPOLOGY.sandboxConfigDurableObject,
+    credentialRegistryDurableObject: CLOUDFLARE_BINDING_TOPOLOGY.credentialRegistryDurableObject,
     preview:
       installation.preview === undefined
         ? undefined
@@ -88,6 +89,7 @@ export const makeCloudflareStackTopology = (
             },
           },
     vars: {
+      SCOTTY_INSTALLATION_NAME: installation.installationName,
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: installation.backupBucketName,
       ...(installation.preview === undefined
@@ -116,7 +118,7 @@ export const expectedCloudflareResourceConfirmation = (
     installation.installationName,
     `worker=${installation.workerName}`,
     `runnerWorker=${installation.runnerWorkerName}`,
-    "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig",
+    "durableObjects=ScottySandbox,ScottyAuthRegistry,ScottyRunnerRegistry,ScottyRunner,ScottySandboxConfig,ScottyCredentialRegistry",
     `container=${installation.containerName}`,
     `kv=${installation.kvTitle}`,
     `r2=${installation.backupBucketName}`,
@@ -196,6 +198,12 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
       className: topology.sandboxConfigDurableObject.className,
     },
   );
+  const credentialRegistryDurableObject = Cloudflare.DurableObject(
+    topology.credentialRegistryDurableObject.logicalId,
+    {
+      className: topology.credentialRegistryDurableObject.className,
+    },
+  );
   const runnerWorker = yield* ScottyRunnerWorker.pipe(
     Effect.provide(
       makeScottyRunnerWorker(topology.runnerDurableObject.workerName, {
@@ -232,6 +240,7 @@ export const cloudflareStack = Effect.fnUntraced(function* (config: CloudflareSt
       RUNNERS: runnerDurableObject,
       SANDBOX: durableObject,
       SANDBOX_CONFIG: sandboxConfigDurableObject,
+      CREDENTIALS: credentialRegistryDurableObject,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,
       ARTIFACT_BUCKET: artifacts,

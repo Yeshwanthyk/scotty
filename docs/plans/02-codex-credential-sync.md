@@ -1,5 +1,7 @@
 # Slice 2 — Local Codex auth to a real cloud agent
 
+> **Status:** Historical implementation plan. The current TOML path is `~/.config/scotty/scotty.toml` and the synchronization command is top-level `scotty sync`; the plan below records the original slice intent.
+
 ## Orientation
 
 Add the smallest separate secret channel. `scotty sync` reads one declared local Pi/Codex authentication source, uploads an encrypted immutable generation to an installation Credential Durable Object, and lets a new Session pin and materialize that generation through the existing bootstrap. The unchanged agent must produce a real deployed model response.
@@ -81,7 +83,7 @@ Use the smallest wrapping-key boundary already proven by the baseline. Ciphertex
 
 - `cli/src/pi-auth.ts`
 - `protocol/pi-auth.ts`
-- `cli/src/sandbox-config-contracts.ts`
+- `cli/src/scotty-config-contracts.ts`
 - `cli/src/commands.ts`
 - CLI transport/schema modules and focused auth tests
 

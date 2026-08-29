@@ -1,8 +1,8 @@
 # Scotty
 
 Scotty runs Pi in a persistent Cloudflare Sandbox workspace, presents its live worklog at an
-authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, beam down, or
-permanently destroy the session.
+authenticated `/s/<id>` URL, checkpoints the workspace to R2, and can resume, archive a rollout,
+or permanently destroy the session.
 
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 
@@ -54,13 +54,13 @@ permanently destroy the session.
           | Cloudflare Sandbox + Container    |
           | persistent workspace              |
           | scotty-pi-shell + Pi RPC worklog  |
-          | session-bound sentinels only      |
+          | fixed managed handles only        |
           +------------------+-----------------+
                              |
                              v
           +------------------------------------+
           | ContainerProxy allowlisted egress |
-          | sentinel -> credential substitution |
+          | Registry-backed exact egress       |
           +------------------+-----------------+
                              |
                          GitHub + Pi providers
@@ -76,10 +76,7 @@ it has the native Pi RPC worklog transport.
 
 - `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, direct Pi RPC
   lifecycle and worklog, and trusted-runner control plane.
-- `cli/` — Effect-native Bun CLI, embedded `scotty tui`, and embedded `scotty skills` guide.
-- `tui/` — internal terminal fleet console and shared desktop-sidecar source modules; these
-  compile into Scotty artifacts and are not a separately installed product.
-- `desktop/` — macOS GPUI viewport for switching among existing warm Scotty sessions.
+- `cli/` — Effect-native Bun CLI and embedded `scotty skills` guide.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — direct static contract checks, the local-live harness and helper tests, deployed route
   checks, and an explicitly gated deployed canary.
@@ -87,7 +84,7 @@ it has the native Pi RPC worklog transport.
 
 ## Security model
 
-Repository code is untrusted. Real Pi provider and GitHub credentials stay in Worker secrets or per-session Durable Object storage. The container receives session-bound sentinels only. `ContainerProxy` replaces sentinels on allowlisted egress, sanitizes OAuth refresh responses before they return to the container, and denies all other outbound traffic.
+Repository code is untrusted. Real Pi provider and GitHub credentials stay in the credential Registry. The container receives fixed managed handles only. Registry-backed `ContainerProxy` serves allowlisted exact-origin egress, sanitizes OAuth refresh responses before they return to the container, and denies all other outbound traffic.
 
 Browser authority is separate from the root credential. `SCOTTY_TOKEN` is accepted only as a CLI
 bearer and break-glass recovery credential; it is never accepted from a cookie, browser URL, or
@@ -97,11 +94,11 @@ bound to one existing target browser, and root recovery revokes every browser cr
 creating a fresh owner. Raw client, pairing, transfer, and recovery secrets are never persisted.
 For each paired device, the Auth Durable Object retains a server client ID, credential digest,
 neutral or user-supplied label, scopes, created, expiry, and last-seen times, optional user agent,
-and revocation time. The default `scotty tui` label contains no hostname.
+and revocation time. The default standard-client label contains no hostname.
 
 The browser never receives container credentials. For Cloudflare sessions, the Worker authenticates
 the terminal WebSocket and attaches it to the Sandbox native PTY running Pi. Pi and Codex receive
-only session-bound provider and GitHub sentinels.
+only fixed managed provider and GitHub handles.
 
 Residual limitation: any allowed package registry is still a potential source/prompt exfiltration channel. Keep `ALLOWED_HOSTS` in `worker/src/egress.ts` minimal for the target repository.
 
@@ -123,17 +120,6 @@ git submodule update --init vendor/effect vendor/alchemy
 npm ci --no-audit --no-fund
 npm run check
 ```
-
-On macOS, build the ad-hoc-signed development desktop bundle with:
-
-```sh
-npm run build:desktop
-open dist/Scotty.app
-```
-
-Desktop uses the same mode-0600 paired-client config as `scotty tui` at
-`~/.config/scotty/tui.json`. See [`desktop/README.md`](desktop/README.md) for fixture testing,
-pairing, platform requirements, and distribution limitations.
 
 For a fresh Linux agent environment, [`.agents/setup`](.agents/setup) installs the pinned Node
 version, initializes the reference-source submodules, and runs `npm ci`. A resumed agent can use
@@ -186,8 +172,8 @@ npm run lab -- exec RUN_ID -- doctor --json
 npm run lab -- stop RUN_ID
 ```
 
-`start` requires Docker, authenticated `gh`, Bun, and mode-0600 `~/.pi/agent/auth.json`. It uses
-isolated temporary Wrangler state and CLI `HOME`, passes a run-specific Wrangler worker name, and
+`start` requires Docker and Bun. It uses isolated temporary Wrangler state and CLI `HOME`, passes a
+run-specific Wrangler worker name, and
 prints a JSON run ID and host after `/health` passes. Commands forwarded through `exec` use the
 actual CLI and can exercise real local Sandbox lifecycles; `doctor` alone does not create one.
 `stop` removes only Sandbox containers named for that worker. The private `.scotty-lab/run.json`
@@ -207,8 +193,8 @@ DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
   npm run test:e2e:local-live -- --no-open --no-hold
 ```
 
-This requires a healthy Docker daemon, authenticated `gh`, and mode-0600
-`~/.pi/agent/auth.json`. It proves both fresh-start auth hydration and warm-session reseeding. Add
+This requires a healthy Docker daemon. It proves fresh-start managed-credential wiring; provider
+credential proof requires a deployed Registry. Add
 `--require-response` only when the local network permits model traffic from the container.
 
 A Wrangler dry run remains as a local rollback probe. It builds the Sandbox image and therefore
@@ -231,22 +217,20 @@ Wrangler is not a production infrastructure or deployment path.
 The standalone CLI owns installation. Run `scotty init --name NAME`; it asks Alchemy to authenticate
 the selected Cloudflare profile, shows the target account and resources, deploys only after
 confirmation, generates and uploads the root Worker secret without putting it in Alchemy state, and
-stores the local pointer in mode-0600 `~/.scotty.json`. The installation name is required and is
+stores the local pointer in mode-0600 `~/.config/scotty/installation.json`. The installation name is required and is
 never inferred from a username, machine, repository, or Cloudflare account.
 
 For a clean first run:
 
 1. Run `scotty init --name NAME` and confirm the displayed Cloudflare account and resource names.
-2. Sign in to OpenAI or OpenAI Codex with Pi, then run `scotty auth sync`.
+2. Declare the Pi and GitHub credential sources in `scotty.toml`, then run `scotty sync`.
 3. Run `scotty doctor --json`.
 4. Run `scotty owner recover` on the browser that will own the installation.
-5. Open `/devices` in that owner browser and create a one-use pairing link.
-6. On each terminal or desktop device, run `scotty tui pair ORIGIN` and paste the link when asked.
-7. Run `scotty tui`, or build and open the desktop app.
+5. If another browser needs access, open `/devices` in the owner browser and create a one-use pairing link.
+6. Use `scotty beam` to start a session and open its authenticated worklog in your browser.
 
-`auth sync` uses the account, Worker name, and origin saved by `init`. It fails before reading local
-Pi credentials if Cloudflare does not match that saved installation. The pairing prompt does not
-echo its one-use credential. See [`desktop/README.md`](desktop/README.md) for the desktop build.
+`sync` uses the account, Worker name, and origin saved by `init`. It fails before reading local
+credential sources if Cloudflare does not match that saved installation.
 
 On a replacement machine, run `scotty recover --name NAME`. Cloudflare profile ownership is the
 recovery authority. The CLI first discovers and displays the resource mapping. It rotates only the
@@ -255,7 +239,7 @@ a stopped command can reuse the same token. A pre-existing deployment whose phys
 logical names differ from the generic convention can be recovered with a private
 `--adoption-manifest PATH`; `.scotty-adoption.json` is ignored by Git.
 
-Use `scotty deploy` for normal updates. It reads the managed installation from `~/.scotty.json`,
+Use `scotty deploy` for normal updates. It reads the managed installation from `~/.config/scotty/installation.json`,
 checks the current Docker context, and shows the Alchemy resource plan. It asks for confirmation
 only when the plan has changes. A non-interactive deployment with changes needs `--yes`. Deployment
 never generates or changes the root token. On interactive macOS, Scotty offers to start Colima when
@@ -349,7 +333,7 @@ update applies, the rollout settles, and the final audit runs.
 
 The current Cloudflare gate is forward-only: the full local suite and Colima-backed image build must
 pass with the pinned Pi version, then the guarded deployment and deployed canary must prove
-`beam up → Pi worklog → snapshot → resume → vaporize`.
+`beam → Pi worklog → snapshot → resume → vaporize`.
 
 ## CLI
 
@@ -381,9 +365,8 @@ npm run build:cli
 ./dist/scotty deploy
 ./dist/scotty doctor --json
 ./dist/scotty owner recover
-./dist/scotty beam up "fix the failing tests" --title "Fix tests" --repo owner/project --provider cloudflare --json
-./dist/scotty beam down SESSION_ID --json
-./dist/scotty beam vaporize SESSION_ID --yes --json
+./dist/scotty beam "fix the failing tests" --title "Fix tests" --repo owner/project --provider cloudflare --json
+./dist/scotty vaporize SESSION_ID --yes --json
 ./dist/scotty inspect SESSION_ID --json
 ./dist/scotty steer SESSION_ID "check the focused tests" --json
 ./dist/scotty upgrade
@@ -438,7 +421,7 @@ The installed `cloudflare/sandbox:0.12.3` HTTPS interceptor's trust of the reser
 proven by local tests. A deployed same-repository inspect/steer canary remains a production gate; the
 local suite is not production proof.
 
-The command uses the installation in `~/.scotty.json`, registers the required name with the
+The command uses the installation in `~/.config/scotty/installation.json`, registers the required name with the
 control plane, receives a one-time runner credential, imports the current GitHub CLI login,
 installs runner-only credential files, writes and restarts the hardened systemd user service, and
 fails if the service is not active. Pass `--replace` only when moving or reinstalling an existing

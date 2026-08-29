@@ -1,6 +1,7 @@
 import { Option, Schema } from "effect";
 
 export const PI_AUTH_ADAPTER_PROVIDER_IDS = ["openai", "openai-codex"] as const;
+export const PI_AUTH_MAX_MATERIAL_BYTES = 256 * 1024;
 
 export const PiProviderEnvSchema = Schema.Record(Schema.String, Schema.String);
 
@@ -29,27 +30,6 @@ export type PiOAuthCredential = typeof PiOAuthCredentialSchema.Type;
 
 export const PiAuthStoreSchema = Schema.Record(Schema.NonEmptyString, PiCredentialSchema);
 export type PiAuthStore = typeof PiAuthStoreSchema.Type;
-
-export const PiAuthDigestSchema = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
-export const PiAuthRecordSourceSchema = Schema.Literals(["sync", "rotation"]);
-export const PiAuthUpdatedAtSchema = Schema.String.check(
-  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
-  Schema.makeFilter(
-    (value) => {
-      const millis = Date.parse(value);
-      return Number.isFinite(millis) && new Date(millis).toISOString() === value;
-    },
-    { expected: "a canonical UTC timestamp with millisecond precision" },
-  ),
-);
-export const InstallationPiAuthRecordSchema = Schema.Struct({
-  version: Schema.Literal(1),
-  providers: PiAuthStoreSchema,
-  digest: PiAuthDigestSchema,
-  updatedAt: PiAuthUpdatedAtSchema,
-  source: PiAuthRecordSourceSchema,
-});
-export type InstallationPiAuthRecord = typeof InstallationPiAuthRecordSchema.Type;
 
 const stableJsonStringify = (value: unknown): string => {
   if (value === null) return "null";
@@ -111,21 +91,6 @@ export const digestPiAuthProviders = async (providers: PiAuthStore): Promise<str
     new TextEncoder().encode(serializePiAuthProviders(providers)),
   );
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-};
-
-export const makeInstallationPiAuthRecord = async (
-  providers: PiAuthStore,
-  updatedAt: string,
-  source: InstallationPiAuthRecord["source"],
-): Promise<InstallationPiAuthRecord> => {
-  const canonical = canonicalPiAuthProviders(providers);
-  return {
-    version: 1,
-    providers: canonical,
-    digest: await digestPiAuthProviders(canonical),
-    updatedAt,
-    source,
-  };
 };
 
 const decodePiAuthStoreJsonOption = Schema.decodeUnknownOption(

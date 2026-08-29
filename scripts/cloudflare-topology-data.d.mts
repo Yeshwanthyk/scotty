@@ -14,6 +14,9 @@ export const CLOUDFLARE_BINDING_TOPOLOGY: Readonly<{
   readonly sandboxConfigDurableObject: CloudflareBindingTopologyEntry & {
     readonly className: string;
   };
+  readonly credentialRegistryDurableObject: CloudflareBindingTopologyEntry & {
+    readonly className: string;
+  };
   readonly kv: CloudflareBindingTopologyEntry;
   readonly r2: CloudflareBindingTopologyEntry;
   readonly artifactR2: CloudflareBindingTopologyEntry;
@@ -25,6 +28,7 @@ export const REQUIRED_TOPOLOGY_DO_FIELDS: readonly [
   "authDurableObject",
   "runnerRegistryDurableObject",
   "sandboxConfigDurableObject",
+  "credentialRegistryDurableObject",
 ];
 export const EXCLUDED_TOPOLOGY_DO_FIELDS: readonly ["runnerDurableObject"];
 export const REQUIRED_TOPOLOGY_R2_FIELDS: readonly ["r2", "artifactR2", "sandboxBundleR2"];

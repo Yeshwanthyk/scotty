@@ -491,7 +491,7 @@ describe("Scotty Pi supervisor protocol", () => {
 
   it("strips control sequences, credentials, deep values, and oversized strings", () => {
     const sanitized = sanitizeRemoteValue({
-      text: "\u001b]0;owned\u0007\u001b[31mred\u001b[0m scotty-pi-a0b1c2-token_0 scotty-github-session-secret ghp_abcdef",
+      text: "\u001b]0;owned\u0007\u001b[31mred\u001b[0m scotty-managed://codex/openai-codex/access scotty-managed://github/github/git-https ghp_abcdef",
       deep: {
         one: {
           two: {
@@ -511,7 +511,7 @@ describe("Scotty Pi supervisor protocol", () => {
       },
     });
     assert.strictEqual(sanitized.truncated, true);
-    assert.strictEqual(sanitized.value.text, "red [sentinel] [sentinel] [credential]");
+    assert.strictEqual(sanitized.value.text, "red [managed-handle] [managed-handle] [credential]");
     assert.strictEqual(sanitizeRemoteString("a\u007fb\u0085c\u009fd"), "abcd");
 
     assert.deepStrictEqual(

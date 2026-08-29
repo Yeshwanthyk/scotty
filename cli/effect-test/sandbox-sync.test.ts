@@ -2,8 +2,11 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { createDeterministicTarGz } from "../src/sandbox-archive.ts";
 import { CliError, EXIT } from "../src/core.ts";
-import type { BuiltSandboxBundle } from "../src/sandbox-prepare.ts";
-import { synchronizeSandboxBundle } from "../src/sandbox-sync.ts";
+import type { BuiltSandboxBundle } from "../src/sandbox-bundle.ts";
+import {
+  synchronizeCredentialedScottyToml,
+  synchronizeSandboxBundle,
+} from "../src/sandbox-sync.ts";
 import { HttpTransport } from "../src/services.ts";
 
 const failure = (result: CliError | unknown): CliError => {
@@ -76,7 +79,7 @@ describe("sandbox sync transport", () => {
                 error: {
                   code: "conflict",
                   message: "Sandbox configuration revision conflict",
-                  hint: "Retry scotty sandbox sync.",
+                  hint: "Retry scotty sync.",
                 },
               },
               { status: 409 },
@@ -112,6 +115,45 @@ describe("sandbox sync transport", () => {
         Effect.flip,
       );
       assert.strictEqual(failure(result).code, "sandbox_bundle_unavailable");
+    }),
+  );
+
+  it.effect("reports committed credentials when bundle activation fails", () =>
+    Effect.gen(function* () {
+      const built = sampleBuilt();
+      const layer = Layer.succeed(HttpTransport)({
+        fetch: (input, init) =>
+          Effect.sync(() => {
+            const request = new Request(input, init);
+            const url = new URL(request.url);
+            if (url.pathname === "/api/credentials/sync")
+              return Response.json({ version: 1, credentials: [] });
+            if (url.pathname === "/api/sandbox/configuration")
+              return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+            return Response.json(
+              { error: { code: "conflict", message: "provider detail", hint: "provider hint" } },
+              { status: 409 },
+            );
+          }),
+      });
+      const result = yield* synchronizeCredentialedScottyToml({
+        target,
+        built,
+        credentials: [],
+      }).pipe(Effect.provide(layer), Effect.flip);
+      const error = failure(result);
+      assert.strictEqual(error.code, "credential_registry_sync_partial");
+      assert.strictEqual(
+        error.message,
+        "Credentials committed, but bundle synchronization did not complete",
+      );
+      assert.strictEqual(
+        error.hint,
+        "Credentials are committed; retry scotty sync so the operation converges.",
+      );
+      assert.strictEqual(error.exitCode, EXIT.GENERIC);
+      assert.notInclude(error.message, "provider detail");
+      assert.notInclude(error.hint, "provider hint");
     }),
   );
 });

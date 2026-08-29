@@ -15,11 +15,12 @@ import { sessionRoot, Workspace, workspaceLayer } from "../src/workspace";
 import { makeSessionRecord } from "./support";
 
 const ID = "a0b1c2d3e4f5";
-const SENTINEL = `scotty-github-${ID}-sentinel`;
+const MANAGED_GITHUB_HANDLE = "scotty-managed://github/github/git-https";
+const ENV = { GH_TOKEN: MANAGED_GITHUB_HANDLE, GIT_TERMINAL_PROMPT: "0" };
+const HELPER = "!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f";
+const basic = btoa(`x-access-token:${MANAGED_GITHUB_HANDLE}`);
 const REAL_GITHUB = "honeypot-real-github-credential";
 const ROOT = `/workspace/${ID}`;
-const ENV = { GH_TOKEN: SENTINEL, GIT_TERMINAL_PROMPT: "0" };
-const HELPER = "!f() { echo username=x-access-token; echo password=$GITHUB_SENTINEL; }; f";
 
 const execResult = (
   command: string,
@@ -61,13 +62,12 @@ const prepareWith = (
     status: "booting",
     operation: { kind: "create", nonce: "nonce", startedAt: "2026-07-22T00:00:00.000Z" },
   }),
-  sentinel = SENTINEL,
   verified?: VerifiedRepository,
 ) => {
   const runtimeLayer = sandboxRuntimeLayer(capabilities);
   const layer = workspaceLayer.pipe(Layer.provide(runtimeLayer));
   return Effect.flatMap(Workspace, (workspace) =>
-    workspace.prepare(session, sentinel, verified),
+    workspace.prepare(session, MANAGED_GITHUB_HANDLE, verified),
   ).pipe(Effect.provide(layer));
 };
 
@@ -86,7 +86,6 @@ describe("Workspace", () => {
         capabilities,
         makeSessionRecord({ repo, defaultBranch: "trunk", repoExistsAtCreate: true }),
       );
-      const basic = btoa(`x-access-token:${SENTINEL}`);
 
       assert.deepStrictEqual(prepared, {
         root: ROOT,
@@ -114,7 +113,6 @@ describe("Workspace", () => {
       const prepared = yield* prepareWith(
         capabilities,
         makeSessionRecord({ repo: "acme/new-project" }),
-        SENTINEL,
         { exists: false },
       );
 
@@ -215,7 +213,6 @@ describe("Workspace", () => {
           defaultBranch: hostileDefault,
           repoExistsAtCreate: true,
         }),
-        SENTINEL,
         { exists: true, defaultBranch: hostileDefault },
       );
       const surfaces = capabilities.calls.map(({ command }) => command).join("\n");
@@ -259,8 +256,6 @@ describe("Workspace", () => {
 
       const surfaces = JSON.stringify(capabilities.calls);
       assert.ok(!surfaces.includes(REAL_GITHUB));
-      assert.ok(surfaces.includes(SENTINEL));
-      assert.ok(surfaces.includes(btoa(`x-access-token:${SENTINEL}`)));
     }),
   );
 });

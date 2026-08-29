@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { buildSecretSet } from "../../cli/src/deployment-redaction.ts";
 import { runCli } from "../support/harness.mjs";
 import {
   assertPortAvailable,
@@ -16,12 +17,31 @@ import {
   stopProcessGroup,
   waitForWorker,
 } from "../support/local-worker.mjs";
+import {
+  credentialCanaryValues,
+  findCredentialLeaks,
+  formatCredentialToml,
+  scrubAmbientCredentialEnvironment,
+  withoutAmbientCredentialEnvironment,
+} from "../support/credential-canary.mjs";
 
 export { formatLocalDevVars, localHarnessContainerIds } from "../support/local-worker.mjs";
 
 const DEFAULT_PORT = 8791;
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export const formatLocalCredentialToml = formatCredentialToml;
+
+export function localLiveCanaryValues(inputs, source = process.env) {
+  return buildSecretSet([
+    ...credentialCanaryValues({ ...inputs, wrappingKey: inputs.credentialWrappingKey }),
+    inputs.rootToken,
+    ...[source.GH_TOKEN, source.PI_AUTH_JSON, source.CREDENTIAL_WRAPPING_KEY].filter(
+      (value) => typeof value === "string" && value.length > 0,
+    ),
+  ]);
+}
 
 export function repositoryFromRemote(remote) {
   const match = remote
@@ -177,37 +197,6 @@ async function waitForPromptAttempt(host, id, cookie, marker, label) {
   return attempt;
 }
 
-async function sendPrompt(host, id, cookie, marker) {
-  const snapshot = await fetchPiSnapshot(host, id, cookie);
-  if (
-    !snapshot?.epoch ||
-    !Number.isSafeInteger(snapshot.sessionRevision) ||
-    snapshot.sessionRevision < 0
-  )
-    throw new Error("Pi prompt requires a current versioned console snapshot");
-  const response = await fetch(`${host}/s/${encodeURIComponent(id)}/console/v1/command`, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      cookie,
-      origin: host,
-    },
-    body: JSON.stringify({
-      version: 1,
-      epoch: snapshot.epoch,
-      commandId: randomUUID(),
-      expectedSessionRevision: snapshot.sessionRevision,
-      intent: {
-        type: "prompt",
-        message: `Reply with exactly ${marker} and do nothing else.`,
-        streamingBehavior: "followUp",
-      },
-    }),
-  });
-  await requireJson(response, "Pi prompt", [200, 202]);
-}
-
 async function issueBrowserPairing(host, cookie) {
   const response = await fetch(`${host}/api/auth/pairings`, {
     method: "POST",
@@ -234,6 +223,10 @@ async function run() {
   const options = parseArguments(process.argv.slice(2));
   await assertPortAvailable(options.port);
   await assertPortAvailable(options.port + 1);
+  if (!process.env.SCOTTY_PI_AUTH_FILE || !process.env.SCOTTY_GH_CONFIG_DIR)
+    throw new Error(
+      "Local live E2E requires SCOTTY_PI_AUTH_FILE and SCOTTY_GH_CONFIG_DIR for disposable credential sources",
+    );
   const inputs = requireLocalInputs();
   const baselineContainerIds = new Set(dockerContainers().map(({ id }) => id));
   const temporaryRoot = mkdtempSync(path.join(tmpdir(), "scotty-local-live-"));
@@ -250,16 +243,22 @@ async function run() {
   });
   const repo = options.repo ?? repositoryFromRemote(remote);
   const host = `http://127.0.0.1:${options.port}`;
+  const canaryValues = localLiveCanaryValues(inputs);
+  const isolatedEnv = withoutAmbientCredentialEnvironment({
+    ...process.env,
+    HOME: cliHome,
+    USERPROFILE: cliHome,
+    XDG_CONFIG_HOME: path.join(cliHome, ".config"),
+    XDG_STATE_HOME: path.join(cliHome, ".local", "state"),
+    DOCKER_CONFIG: inputs.dockerConfig,
+    DOCKER_HOST: inputs.dockerHost,
+  });
   const wrangler = startWrangler({
     envFile,
     persistPath,
     port: options.port,
-    secrets: [
-      inputs.rootToken,
-      inputs.githubToken,
-      inputs.piAuthJson,
-      JSON.stringify(JSON.parse(inputs.piAuthJson)),
-    ],
+    env: isolatedEnv,
+    secrets: canaryValues,
   });
   let cleaned = false;
   let holding = false;
@@ -281,28 +280,32 @@ async function run() {
   process.once("SIGTERM", onSignal);
 
   try {
-    console.log("1/4 Starting isolated Wrangler Worker and Docker Sandbox…");
+    console.log("1/3 Starting isolated Wrangler Worker and Docker Sandbox…");
     await waitForWorker(host, wrangler);
-    await requireJson(
-      await fetch(`${host}/api/auth/pi`, {
-        headers: { authorization: `Bearer ${inputs.rootToken}` },
-      }),
-      "Local Pi auth preflight",
-    );
-    console.log("2/4 Creating a fresh session and proving first-start auth…");
-    const freshMarker = `FRESH_AUTH_READY_${randomBytes(4).toString("hex")}`;
+    console.log("2/3 Creating a fresh session through the managed-credential path…");
+    const freshMarker = `LOCAL_LIVE_READY_${randomBytes(4).toString("hex")}`;
     const cliEnv = {
+      ...scrubAmbientCredentialEnvironment(),
       HOME: cliHome,
       SCOTTY_HOST: host,
       SCOTTY_TOKEN: inputs.rootToken,
+      GH_CONFIG_DIR: inputs.githubConfigDir,
     };
+    const tomlPath = path.join(cliHome, ".config", "scotty", "scotty.toml");
+    mkdirSync(path.dirname(tomlPath), { recursive: true, mode: 0o700 });
+    writeFileSync(tomlPath, formatLocalCredentialToml({ repo, piAuthPath: inputs.piAuthPath }), {
+      mode: 0o600,
+    });
+    const synced = await runCli(["sync", "--json"], { env: cliEnv, timeoutMs: 5 * 60_000 });
+    if (findCredentialLeaks(`${synced.stdout}\n${synced.stderr}`, canaryValues).length > 0)
+      throw new Error("Credential Registry sync disclosed a canary value");
+    if (synced.code !== 0) throw new Error(`Credential Registry sync failed:\n${synced.stderr}`);
     const up = await runCli(
       [
         "beam",
-        "up",
         `Reply with exactly ${freshMarker} and do nothing else.`,
         "--title",
-        "Local auth E2E",
+        "Local managed-credential E2E",
         "--repo",
         repo,
         "--provider",
@@ -314,6 +317,8 @@ async function run() {
       ],
       { env: cliEnv, timeoutMs: 5 * 60_000 },
     );
+    if (findCredentialLeaks(`${up.stdout}\n${up.stderr}`, canaryValues).length > 0)
+      throw new Error("Fresh session creation disclosed a canary value");
     if (up.code !== 0) throw new Error(`Fresh session creation failed:\n${up.stderr}`);
     const id = up.json?.id;
     if (typeof id !== "string") throw new Error("Fresh session response omitted its ID");
@@ -342,39 +347,12 @@ async function run() {
       }`,
     );
 
-    console.log("3/4 Reseeding the warm session and proving restarted Pi auth…");
-    const reseed = await runCli(["auth", "reseed", id, "--json"], {
-      env: cliEnv,
-      timeoutMs: 5 * 60_000,
-    });
-    if (reseed.code !== 0) throw new Error(`Warm-session auth reseed failed:\n${reseed.stderr}`);
-    const reseedMarker = `RESEED_AUTH_READY_${randomBytes(4).toString("hex")}`;
-    await waitForSnapshot(
-      host,
-      id,
-      cookie,
-      (snapshot) => (snapshot.capabilities?.models?.length ?? 0) > 0,
-      "Reseeded Pi restart",
-    );
-    await sendPrompt(host, id, cookie, reseedMarker);
-    const reseedAttempt = await waitForPromptAttempt(
-      host,
-      id,
-      cookie,
-      reseedMarker,
-      "Reseeded auth response",
-    );
-    if (options.requireResponse && reseedAttempt.status !== "success")
-      throw new Error("Warm-session Pi auth passed, but strict model response proof did not");
-    console.log(
-      `    PASS warm-session reseed auth${
-        reseedAttempt.status === "upstream-failure"
-          ? " — provider request ran; upstream text generation was blocked"
-          : ""
-      }`,
-    );
-
-    console.log("4/4 Preparing browser access…");
+    if (
+      wrangler.rawSecretDetected() ||
+      findCredentialLeaks(wrangler.log.join(""), canaryValues).length > 0
+    )
+      throw new Error("Local Wrangler logs disclosed a canary value");
+    console.log("3/3 Preparing browser access…");
     const pairing = await issueBrowserPairing(host, cookie);
     console.log("");
     console.log("LOCAL LIVE E2E PASSED");

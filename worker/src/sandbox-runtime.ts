@@ -353,7 +353,7 @@ export function errorName(error: unknown): string {
 
 function redactCommandFailure(value: string): string {
   return value
-    .replaceAll(/scotty-(?:codex|github)-[A-Za-z0-9-]+/gu, "[sentinel]")
+    .replaceAll(/scotty-managed:\/\/[^\s"'<>]+/gu, "[managed-handle]")
     .replaceAll(/(?:ghp_|github_pat_)[A-Za-z0-9_]+/gu, "[credential]")
     .slice(0, 1_000);
 }

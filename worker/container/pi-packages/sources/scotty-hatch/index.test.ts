@@ -123,11 +123,9 @@ test("starts one process group with an allow-listed environment and registers so
   });
 
   const original = {
-    GH_TOKEN: process.env.GH_TOKEN,
     SCOTTY_SESSION_ID: process.env.SCOTTY_SESSION_ID,
     TEST_HATCH_CREDENTIAL: process.env.TEST_HATCH_CREDENTIAL,
   };
-  process.env.GH_TOKEN = "sentinel";
   process.env.SCOTTY_SESSION_ID = "abcdef123456";
   process.env.TEST_HATCH_CREDENTIAL = "real-secret";
   try {
@@ -182,7 +180,7 @@ test("starts one process group with an allow-listed environment and registers so
       },
     });
     assert.doesNotMatch(String(requests[0]?.init?.body), /sessionId|credential|https?:/u);
-    assert.doesNotMatch(JSON.stringify(spawns), /sentinel|real-secret|SCOTTY_SESSION_ID/u);
+    assert.doesNotMatch(JSON.stringify(spawns), /real-secret|SCOTTY_SESSION_ID/u);
   } finally {
     for (const [name, value] of Object.entries(original)) {
       if (value === undefined) delete process.env[name];

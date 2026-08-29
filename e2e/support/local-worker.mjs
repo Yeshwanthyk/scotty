@@ -8,6 +8,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { buildSecretSet, redactWithSecretSet } from "../../cli/src/deployment-redaction.ts";
+import { scrubAmbientCredentialEnvironment } from "./credential-canary.mjs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -65,11 +67,16 @@ function requireExecutable(command, arguments_) {
   }
 }
 
-export function formatLocalDevVars({ rootToken, githubToken, piAuthJson }) {
+export function formatLocalDevVars({
+  rootToken,
+  credentialWrappingKey,
+  installationName = "local",
+}) {
+  const wrappingKey = credentialWrappingKey ?? randomBytes(32).toString("base64url");
   return [
     `SCOTTY_TOKEN=${JSON.stringify(rootToken)}`,
-    `GH_TOKEN=${JSON.stringify(githubToken)}`,
-    `PI_AUTH_JSON=${JSON.stringify(JSON.parse(piAuthJson))}`,
+    `CREDENTIAL_WRAPPING_KEY=${JSON.stringify(wrappingKey)}`,
+    `SCOTTY_INSTALLATION_NAME=${JSON.stringify(installationName)}`,
     'SANDBOX_TRANSPORT="http"',
     'SCOTTY_LOCAL_E2E="1"',
     "",
@@ -98,32 +105,42 @@ export function labSystemEnvironment(home, explicit = {}, source = process.env) 
 }
 
 export function requireLocalInputs(home = homedir(), source = process.env) {
-  const piAuthPath = path.join(home, ".pi/agent/auth.json");
+  const sanitizedSource = scrubAmbientCredentialEnvironment(source);
+  requireExecutable("docker", ["info"]);
+  requireExecutable("gh", ["--version"]);
+  requireExecutable("bun", ["--version"]);
+
+  const piAuthPath =
+    source.SCOTTY_PI_AUTH_FILE?.trim() || path.join(home, ".pi", "agent", "auth.json");
   if (!existsSync(piAuthPath))
     throw new Error(`Pi auth is missing at ${piAuthPath}; sign in with Pi first`);
   const mode = statSync(piAuthPath).mode & 0o777;
   if (mode !== 0o600)
     throw new Error(`Pi auth must be mode 0600, received ${mode.toString(8).padStart(3, "0")}`);
   const piAuthJson = readFileSync(piAuthPath, "utf8");
-  const parsed = JSON.parse(piAuthJson);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error("Pi auth must contain a provider object");
-
-  requireExecutable("docker", ["info"]);
-  requireExecutable("gh", ["auth", "status"]);
-  requireExecutable("bun", ["--version"]);
-
+  const githubConfigDir =
+    source.SCOTTY_GH_CONFIG_DIR?.trim() ||
+    source.GH_CONFIG_DIR?.trim() ||
+    path.join(home, ".config", "gh");
   const githubToken = execFileSync("gh", ["auth", "token"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    env: {
+      ...sanitizedSource,
+      GH_CONFIG_DIR: githubConfigDir,
+    },
   }).trim();
-  if (githubToken.length < 20) throw new Error("GitHub returned an invalid auth token");
+  if (githubToken.length < 8) throw new Error("GitHub returned an invalid auth token");
+
   return {
     dockerConfig: source.DOCKER_CONFIG?.trim() || path.join(home, ".docker"),
-    dockerHost: resolveDockerHost(source),
-    githubToken,
-    piAuthJson,
+    dockerHost: resolveDockerHost(sanitizedSource),
     rootToken: randomBytes(32).toString("hex"),
+    credentialWrappingKey: randomBytes(32).toString("base64url"),
+    piAuthPath,
+    piAuthJson,
+    githubConfigDir,
+    githubToken,
   };
 }
 
@@ -135,14 +152,8 @@ export async function assertPortAvailable(port) {
   });
 }
 
-export function redact(text, secrets) {
-  return secrets.reduce(
-    (result, secret) =>
-      typeof secret === "string" && secret.length > 0
-        ? result.replaceAll(secret, "[redacted]")
-        : result,
-    text,
-  );
+export function redact(text, secrets = []) {
+  return redactWithSecretSet(text, buildSecretSet(secrets), "[redacted]");
 }
 
 export function dockerContainers() {
@@ -248,13 +259,14 @@ export function startWrangler({
   secrets = [],
   env = process.env,
   logFile,
+  spawnWranglerImpl = spawnWrangler,
 }) {
   const log = [];
-  const maxSecretLength = secrets.reduce(
-    (length, secret) => (typeof secret === "string" ? Math.max(length, secret.length) : length),
-    0,
-  );
+  const redactionSecrets = buildSecretSet(secrets);
+  const maxSecretLength = redactionSecrets[0]?.length ?? 0;
   let pending = "";
+  let rawTail = "";
+  let rawSecretDetected = false;
   if (logFile) {
     writeFileSync(logFile, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
     chmodSync(logFile, 0o600);
@@ -265,9 +277,22 @@ export function startWrangler({
     log.push(text);
     if (log.length > 200) log.shift();
   };
+  const inspectRaw = (raw) => {
+    if (rawSecretDetected || maxSecretLength === 0) return;
+    const combined = rawTail + raw;
+    if (redactionSecrets.some((secret) => combined.includes(secret))) {
+      rawSecretDetected = true;
+      rawTail = "";
+      return;
+    }
+    const keep = maxSecretLength - 1;
+    rawTail = keep > 0 ? combined.slice(-keep) : "";
+  };
   const remember = (chunk) => {
-    const combined = pending + chunk.toString();
-    const redacted = redact(combined, secrets);
+    const raw = chunk.toString();
+    inspectRaw(raw);
+    const combined = pending + raw;
+    const redacted = redactWithSecretSet(combined, redactionSecrets);
     if (maxSecretLength === 0) {
       pending = "";
       rememberSafe(redacted);
@@ -278,15 +303,19 @@ export function startWrangler({
     pending = redacted.slice(redacted.length - keep);
   };
   const flushLog = () => {
-    if (pending) rememberSafe(redact(pending, secrets));
+    if (pending) rememberSafe(redactWithSecretSet(pending, redactionSecrets));
     pending = "";
   };
-  const { child, invocation } = spawnWrangler({ envFile, persistPath, port, name, env });
+  const finishLog = () => {
+    flushLog();
+    rawTail = "";
+  };
+  const { child, invocation } = spawnWranglerImpl({ envFile, persistPath, port, name, env });
   child.stdout.on("data", remember);
   child.stderr.on("data", remember);
-  child.once("close", flushLog);
-  child.once("error", flushLog);
-  return { child, invocation, log, flushLog };
+  child.once("close", finishLog);
+  child.once("error", finishLog);
+  return { child, invocation, log, flushLog, rawSecretDetected: () => rawSecretDetected };
 }
 
 export function readStartupLogTail(started) {

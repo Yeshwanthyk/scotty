@@ -1,7 +1,7 @@
 # Copy to .dev.vars; never commit the populated file.
 SCOTTY_TOKEN="replace-with-a-random-32-byte-token"
-PI_AUTH_JSON='{"openai-codex":{"type":"oauth","refresh":"replace","access":"replace","expires":0,"accountId":"replace"}}'
-GH_TOKEN="github_pat_replace"
+SCOTTY_INSTALLATION_NAME="local"
+CREDENTIAL_WRAPPING_KEY="replace-with-a-32-byte-base64url-key"
 R2_ACCESS_KEY_ID="replace"
 R2_SECRET_ACCESS_KEY="replace"
 CLOUDFLARE_ACCOUNT_ID="replace"

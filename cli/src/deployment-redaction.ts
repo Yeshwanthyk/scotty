@@ -1,5 +1,25 @@
 export const FAILURE_OUTPUT_TAIL_CHARACTERS = 64 * 1_024;
 
+const SECRET_ENVIRONMENT_KEY = /(?:AUTH|KEY|PASSWORD|SECRET|TOKEN)/iu;
+
+export function buildSecretSet(values: Iterable<unknown>): ReadonlyArray<string> {
+  const unique = new Set<string>();
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) unique.add(value);
+  }
+  return Object.freeze([...unique].sort((left, right) => right.length - left.length));
+}
+
+export function redactWithSecretSet(
+  value: unknown,
+  secrets: ReadonlyArray<string>,
+  replacement = "[redacted-secret]",
+): string {
+  let redacted = String(value);
+  for (const secret of secrets) redacted = redacted.replaceAll(secret, replacement);
+  return redacted;
+}
+
 const CLOUDFLARE_ACCOUNT_ID = /\b[0-9a-f]{32}\b/giu;
 const CLOUDFLARE_WORKER_URL = /https:\/\/[^\s'"`]+\.workers\.dev(?:\/[^\s'"`]*)?/giu;
 const RESOURCE_ID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
@@ -23,17 +43,15 @@ const CONFIRMED_RESOURCE_KEYS = Object.freeze([
 export function redactProductionDeploymentOutput(
   value: unknown,
   environment: Record<string, string | undefined> = {},
+  secrets: ReadonlyArray<string> = [],
 ): string {
-  let redacted = String(value);
-  for (const [key, secret] of Object.entries(environment)) {
-    if (
-      /(?:AUTH|KEY|PASSWORD|SECRET|TOKEN)/iu.test(key) &&
-      typeof secret === "string" &&
-      secret.length > 0
-    ) {
-      redacted = redacted.replaceAll(secret, "[redacted-secret]");
-    }
-  }
+  const environmentSecrets = Object.entries(environment).flatMap(([key, secret]) =>
+    SECRET_ENVIRONMENT_KEY.test(key) && typeof secret === "string" && secret.length > 0
+      ? [secret]
+      : [],
+  );
+  const redactionSecrets = buildSecretSet([...secrets, ...environmentSecrets]);
+  let redacted = redactWithSecretSet(value, redactionSecrets);
   const confirmation = environment.SCOTTY_CLOUDFLARE_RESOURCES_CONFIRMED ?? "";
   for (const field of confirmation.split(":")) {
     const separator = field.indexOf("=");

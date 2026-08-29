@@ -8,14 +8,9 @@ import type {
 import { Data, Effect, Match, Result } from "effect";
 import { createDeterministicTarGz } from "../../cli/src/sandbox-archive";
 import type { RunnerOperation } from "../../protocol/runner";
-import type { InstallationPiAuthRecord } from "../../protocol/pi-auth";
+import type { CredentialGrant } from "../../protocol/credentials";
 import type { Bindings } from "../src/bindings";
-import type {
-  CreateSessionInput,
-  SessionRecord,
-  StoredCredential,
-  WorkspaceCreationMarker,
-} from "../src/contracts";
+import type { CreateSessionInput, SessionRecord, WorkspaceCreationMarker } from "../src/contracts";
 import type { CreateIdempotencyMetadata } from "../src/create-idempotency";
 import type { EvidenceArtifactV2 } from "../src/evidence-contracts";
 import type { RepoVerifier } from "../src/repo-verifier";
@@ -36,7 +31,6 @@ import { EVIDENCE_RECORD_KEY, RUNTIME_EPOCH_KEY } from "../src/session-store";
 import { InMemoryFaultInjectableFake } from "./support";
 
 const RECORD_KEY = "scotty:session";
-const CREDENTIAL_KEY = "scotty:credential";
 const CREATE_IDEMPOTENCY_KEY = "scotty:create-idempotency";
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const SANDBOX_BUNDLE_CONTENT_TYPE = "application/gzip";
@@ -191,7 +185,6 @@ type InitialProjection = StatusProjection | WorkspaceCreationMarker;
 
 export type InitialStorageEntries = Partial<{
   [RECORD_KEY]: SessionRecord;
-  [CREDENTIAL_KEY]: StoredCredential;
   [CREATE_IDEMPOTENCY_KEY]: CreateIdempotencyMetadata;
   [EVIDENCE_RECORD_KEY]: unknown;
   [HATCH_STATE_KEY]: unknown;
@@ -219,6 +212,25 @@ export const CREATE_IDEMPOTENCY: CreateIdempotencyMetadata = {
   keyDigest: "a".repeat(64),
   inputDigest: "b".repeat(64),
 };
+
+const DEFAULT_CREDENTIAL_REGISTRY_GRANTS: ReadonlyArray<CredentialGrant> = [
+  {
+    name: "openai",
+    kind: "pi-auth",
+    versionRef: "version-default-pi",
+    handleSlots: [
+      { provider: "openai", slot: "api-key" },
+      { provider: "openai-codex", slot: "access" },
+      { provider: "openai-codex", slot: "refresh" },
+    ],
+  },
+  {
+    name: "github",
+    kind: "github-cli",
+    versionRef: "version-default-github",
+    handleSlots: [{ provider: "github", slot: "git-https" }],
+  },
+];
 
 export type HarnessFailureStage =
   | "artifactDelete"
@@ -289,8 +301,12 @@ export interface HarnessOptions {
   readonly sandboxNamespace?: Bindings["SANDBOX"];
   readonly sandboxConfigStatus?: SandboxConfigStatus;
   readonly sandboxConfigStatusFailure?: "rpc-error" | "throw";
-  readonly installationPiAuthRecord?: InstallationPiAuthRecord;
-  readonly installationPiAuthWriteFailure?: boolean;
+  readonly credentialRegistryGrants?: ReadonlyArray<CredentialGrant>;
+  readonly credentialRegistryIssueFailure?: boolean;
+  readonly credentialRegistryGithubCliCredential?: string;
+  readonly credentialRegistryGithubCliResolveFailure?: boolean;
+  readonly credentialRegistryReleaseFailure?: boolean;
+  readonly credentialRegistryReleaseResponseLoss?: boolean;
   readonly sandboxBundleObjects?: ReadonlyArray<{
     readonly digest: string;
     readonly gzip: Uint8Array;
@@ -344,7 +360,8 @@ export interface SessionHarness {
   readonly read: <A>(key: string) => A | undefined;
   readonly readRecord: () => SessionRecord | undefined;
   readonly sandboxConfigStatusCallCount: () => number;
-  readonly installationPiAuthWrites: ReadonlyArray<InstallationPiAuthRecord>;
+  readonly credentialGrantRequests: ReadonlyArray<unknown>;
+  readonly credentialGrantReleases: ReadonlyArray<unknown>;
 }
 
 class HarnessStorage {
@@ -529,35 +546,11 @@ class HarnessStorage {
   private recordMutation(key: string, value: unknown): void {
     if (key === RECORD_KEY) {
       this.events.push(`record:${(value as SessionRecord).status}`);
-    } else if (key === CREDENTIAL_KEY) {
-      this.events.push("credential:put");
     } else {
       this.events.push(`storage:put:${key}`);
     }
   }
 }
-
-export const makeStoredCredential = (
-  overrides: Partial<StoredCredential> = {},
-): StoredCredential => ({
-  providers: {
-    "openai-codex": {
-      credential: {
-        type: "oauth",
-        access: "stored-access-token",
-        refresh: "stored-refresh-token",
-        expires: 0,
-        accountId: "stored-account-id",
-        idToken: "stored-id-token",
-      },
-      sentinel: `scotty-pi-${SESSION_ID}-sentinel-0`,
-    },
-  },
-  githubToken: "stored-github-token",
-  githubSentinel: `scotty-github-${SESSION_ID}-sentinel`,
-  updatedAt: "2026-01-01T00:00:00.000Z",
-  ...overrides,
-});
 
 export const makeResumeBackup = (): DirectoryBackup => ({
   id: "backup-1",
@@ -573,10 +566,86 @@ export const lifecycleWallClock = {
   nowIso: (): string => new Date(LIFECYCLE_TEST_TIME).toISOString(),
 };
 
+const makeCredentialRegistry = (
+  options: HarnessOptions,
+  requests: unknown[],
+  releases: unknown[],
+): Bindings["CREDENTIALS"] =>
+  ({
+    getByName: () => ({
+      issueGrants: async (input: unknown) => {
+        requests.push(structuredClone(input));
+        if (options.credentialRegistryIssueFailure)
+          return {
+            ok: false as const,
+            error: { reason: "storage" as const, message: "injected registry failure" },
+          };
+        const sessionId =
+          typeof input === "object" &&
+          input !== null &&
+          "sessionId" in input &&
+          typeof input.sessionId === "string"
+            ? input.sessionId
+            : SESSION_ID;
+        return {
+          ok: true as const,
+          value: {
+            version: 1 as const,
+            sessionId,
+            grants: structuredClone(
+              options.credentialRegistryGrants ?? DEFAULT_CREDENTIAL_REGISTRY_GRANTS,
+            ),
+          },
+        };
+      },
+      resolveGithubCliCredential: async () =>
+        options.credentialRegistryGithubCliResolveFailure
+          ? {
+              ok: false as const,
+              error: {
+                reason: "credential_missing" as const,
+                message: "injected missing credential",
+              },
+            }
+          : {
+              ok: true as const,
+              value: {
+                version: 1,
+                value: options.credentialRegistryGithubCliCredential ?? "test-github-token",
+              },
+            },
+
+      release: async (input: unknown) => {
+        releases.push(structuredClone(input));
+        if (options.credentialRegistryReleaseFailure)
+          return {
+            ok: false as const,
+            error: { reason: "storage" as const, message: "injected registry failure" },
+          };
+        if (options.credentialRegistryReleaseResponseLoss && releases.length === 1)
+          return Promise.reject(new Error("injected lost credential release response"));
+        return {
+          ok: true as const,
+          value: {
+            version: 1 as const,
+            sessionId: SESSION_ID,
+            released: true,
+          },
+        };
+      },
+    }),
+  }) as never;
+
 export async function createSessionHarness(options: HarnessOptions = {}): Promise<SessionHarness> {
   const events: string[] = [];
-  const installationPiAuthWrites: InstallationPiAuthRecord[] = [];
   const schedules: RecordedSchedule[] = [];
+  const credentialGrantRequests: unknown[] = [];
+  const credentialGrantReleases: unknown[] = [];
+  const credentialRegistry = makeCredentialRegistry(
+    options,
+    credentialGrantRequests,
+    credentialGrantReleases,
+  );
   const deletedSchedules: string[] = [];
   const aborts: string[] = [];
   const commands: string[] = [];
@@ -723,7 +792,8 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     }),
   } as KVNamespace;
 
-  const env: Bindings = {
+  // lint-allow-double-cast: boundary: excluded Worker bindings retain removed provider env fields
+  const env = {
     AUTH: undefined as never,
     RUNNER_REGISTRY: {
       getByName: () => ({
@@ -735,7 +805,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
             updatedAt: "2026-07-29T12:00:00.000Z",
           },
         }),
-        get: async (name) => ({
+        get: async (name: string) => ({
           ok: true,
           value: {
             name,
@@ -839,6 +909,7 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
       }),
     },
     SANDBOX: options.sandboxNamespace ?? (undefined as never),
+    CREDENTIALS: credentialRegistry,
     SANDBOX_CONFIG: {
       getByName: () => ({
         status: async (): Promise<SandboxConfigRpcResult<SandboxConfigStatus>> => {
@@ -859,17 +930,6 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
           ok: true,
           value: { schemaVersion: 1, revision: 1, activeDigest: null },
         }),
-        piAuth: async () => ({ ok: true, value: options.installationPiAuthRecord ?? null }),
-        writePiAuth: async (record) => {
-          events.push("installation-pi-auth:write");
-          installationPiAuthWrites.push(record);
-          if (options.installationPiAuthWriteFailure)
-            return {
-              ok: false,
-              error: { reason: "storage" as const, message: "injected write failure" },
-            };
-          return { ok: true, value: record };
-        },
         listRepos: async () => ({ ok: true, value: [] }),
         addRepo: async () => ({
           ok: true,
@@ -976,19 +1036,11 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     ),
     ASSETS: undefined as never,
     SCOTTY_TOKEN: "test-token",
-    PI_AUTH_JSON: JSON.stringify({
-      "openai-codex": {
-        type: "oauth",
-        access: "seed-access-token",
-        refresh: "seed-refresh-token",
-        expires: 0,
-        accountId: "seed-account-id",
-      },
-    }),
-    GH_TOKEN: "seed-github-token",
     ...(options.evidenceEnabled === true ? { SCOTTY_EVIDENCE_ENABLED: "true" } : {}),
     ...(options.previewBase === undefined ? {} : { SCOTTY_PREVIEW_BASE: options.previewBase }),
-  };
+    // The legacy provider bindings remain in the excluded Worker binding adapter (3A); this
+    // Session-only harness deliberately omits them because the runtime reads Registry grants.
+  } as unknown as Bindings;
 
   const sandbox = new Sandbox(ctx, env, {
     clock: options.clock,
@@ -1369,12 +1421,12 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     read: <A>(key: string) => storage.read<A>(key),
     readRecord: () => storage.read<SessionRecord>(RECORD_KEY),
     sandboxConfigStatusCallCount: () => sandboxConfigStatusCalls,
-    installationPiAuthWrites,
+    credentialGrantRequests,
+    credentialGrantReleases,
   };
 }
 
 export const sessionHarnessKeys = {
-  credential: CREDENTIAL_KEY,
   createIdempotency: CREATE_IDEMPOTENCY_KEY,
   evidence: EVIDENCE_RECORD_KEY,
   hatch: HATCH_STATE_KEY,

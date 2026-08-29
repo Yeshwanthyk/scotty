@@ -5,12 +5,6 @@ import {
   PI_CONSOLE_PUBLIC_PATH_SEGMENT,
   PI_CONSOLE_PROXY_PREFIX,
 } from "../../protocol/pi-console";
-import {
-  InstallationPiAuthRecordSchema,
-  digestPiAuthProviders,
-  parsePiAuthJsonOption,
-  piProviderMetadata,
-} from "../../protocol/pi-auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./bindings";
@@ -38,7 +32,7 @@ import {
   type CreateSessionInput,
 } from "./contracts";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
-import { Effect, Layer, Option, Predicate, Result, Schema } from "effect";
+import { Effect, Layer, Option, Predicate, Redacted, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { sha256Hex } from "./digest";
 import {
@@ -107,6 +101,17 @@ import {
 } from "./sandbox-config-object";
 import { inspectPassiveSession, steerPassiveSession } from "./passive-session";
 import { Sandbox as ScottySandbox } from "./session";
+import {
+  CREDENTIAL_REGISTRY_OBJECT_NAME,
+  ScottyCredentialRegistry,
+  type CredentialRegistryRpcResult,
+  type ScottyCredentialRegistryStub,
+} from "./credential-object";
+import {
+  CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES,
+  decodeCredentialRegistryDesiredSyncInputResult,
+  decodeCredentialRegistryResolvedCredentialResult,
+} from "./credential-contracts";
 
 export {
   ContainerProxy,
@@ -114,6 +119,7 @@ export {
   ScottyRunnerRegistry,
   ScottySandbox,
   ScottySandboxConfig,
+  ScottyCredentialRegistry,
 };
 
 export const app = new Hono<{ Bindings: Bindings; Variables: AuthVariables }>();
@@ -131,9 +137,6 @@ const RunnerRegistrationInputSchema = Schema.Struct({
   replace: Schema.optionalKey(Schema.Boolean),
 });
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
-  onExcessProperty: "error",
-});
-const decodeInstallationPiAuthRecord = Schema.decodeUnknownOption(InstallationPiAuthRecordSchema, {
   onExcessProperty: "error",
 });
 const WorkerErrorSchema = Schema.Struct({
@@ -420,43 +423,17 @@ app.post("/api/auth/recovery-grants/consume", async (c) => {
   return c.json({ client: issued.client });
 });
 
-app.get("/api/auth/pi", async (c) => {
-  requireAuthScope(c.get("auth"), "sessions:read");
-  const authority = unwrapSandboxConfigRpc(await sandboxConfig(c.env).piAuth());
-  if (authority !== null)
-    return c.json({
-      source: authority.source,
-      sourceDigest: authority.digest,
-      updatedAt: authority.updatedAt,
-      providers: piProviderMetadata(authority.providers),
-    });
-  const providers = parsePiAuthJsonOption(c.env.PI_AUTH_JSON);
-  if (Option.isNone(providers))
-    throw new ScottyError("internal", "PI_AUTH_JSON is missing or invalid", {
-      httpStatus: 500,
-      exitCode: 1,
-    });
-  return c.json({
-    source: "bootstrap" as const,
-    sourceDigest: await digestPiAuthProviders(providers.value),
-    updatedAt: null,
-    providers: piProviderMetadata(providers.value),
-  });
-});
-
-app.post("/api/auth/pi", async (c) => {
+app.post("/api/credentials/sync", async (c) => {
   requireRootPrincipal(c.get("auth"));
   requireJsonContentType(c.req.raw);
-  const decoded = decodeInstallationPiAuthRecord(await readJsonBody(c.req.raw));
-  if (Option.isNone(decoded)) throw badRequest("Pi credential record is invalid");
-  if (decoded.value.source !== "sync") throw badRequest("Pi credential record source is invalid");
-  const authority = unwrapSandboxConfigRpc(await sandboxConfig(c.env).writePiAuth(decoded.value));
-  return c.json({
-    source: authority.source,
-    sourceDigest: authority.digest,
-    updatedAt: authority.updatedAt,
-    providers: piProviderMetadata(authority.providers),
-  });
+  const bodyText = await readBoundedUtf8Body(c.req.raw, CREDENTIAL_REGISTRY_SYNC_MAX_BODY_BYTES);
+  if (bodyText === undefined)
+    throw badRequest("Credential registry request body exceeds the size limit");
+  const body = decodeJsonValue(bodyText);
+  if (Option.isNone(body)) throw badRequest("Credential registry request must be valid JSON");
+  const decoded = decodeCredentialRegistryDesiredSyncInputResult(body.value);
+  if (Result.isFailure(decoded)) throw badRequest("Credential registry request is invalid");
+  return c.json(unwrapCredentialRegistryRpc(await credentialRegistry(c.env).sync(decoded.success)));
 });
 
 app.get("/api/providers", async (c) => {
@@ -759,13 +736,6 @@ app.post("/api/sessions/:id/resume", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:write");
   const id = parseSessionId(c.req.param("id"));
   return c.json(await sessionSandbox(c.env, id).resumeScottySession());
-});
-
-app.post("/api/sessions/:id/auth/reseed", async (c) => {
-  const principal = c.get("auth");
-  if (principal.kind !== "root") requireOwnerPrincipal(principal);
-  const id = parseSessionId(c.req.param("id"));
-  return c.json(await sessionSandbox(c.env, id).reseedPiAuth());
 });
 
 app.get("/api/sessions/:id/down", async (c) => {
@@ -1206,11 +1176,31 @@ function runnerRegistry(env: Bindings): ScottyRunnerRegistryStub {
 function sandboxConfig(env: Bindings): ScottySandboxConfigStub {
   return env.SANDBOX_CONFIG.getByName(SANDBOX_CONFIG_OBJECT_NAME);
 }
+function credentialRegistry(env: Bindings): ScottyCredentialRegistryStub {
+  if (env.CREDENTIALS === undefined)
+    throw new ScottyError("internal", "Credential registry is unavailable", {
+      httpStatus: 500,
+      exitCode: 1,
+    });
+  return env.CREDENTIALS.getByName(CREDENTIAL_REGISTRY_OBJECT_NAME);
+}
 
+function unwrapCredentialRegistryRpc<A>(result: CredentialRegistryRpcResult<A>): A {
+  if (result.ok) return result.value;
+  const { reason } = result.error;
+  if (reason === "invalid_input") throw badRequest("Credential registry request is invalid");
+  if (reason === "credential_conflict")
+    throw conflict("Credential registry synchronization conflicted");
+  console.error("Credential registry RPC failed", { reason });
+  throw new ScottyError("upstream", "Credential registry synchronization failed", {
+    httpStatus: 502,
+    exitCode: 1,
+  });
+}
 function unwrapSandboxConfigRpc<A>(result: SandboxConfigRpcResult<A>): A {
   if (result.ok) return result.value;
   const { reason, message } = result.error;
-  if (reason === "conflict" || reason === "stale") throw conflict(message);
+  if (reason === "conflict") throw conflict(message);
   if (reason === "invalid_input") throw badRequest(message);
   console.error("Sandbox configuration RPC failed", { reason });
   throw new ScottyError("internal", "Sandbox configuration failed", {
@@ -1413,8 +1403,31 @@ async function verifyRepository(
   env: Bindings,
   repo: string,
 ): Promise<{ readonly exists: true; readonly defaultBranch: string } | { readonly exists: false }> {
+  const registry = credentialRegistry(env);
+  const resolved = await registry.resolveGithubCliCredential({ version: 1, repository: repo });
+  if (!resolved.ok) {
+    console.error("GitHub credential resolution failed", { reason: resolved.error.reason });
+    throw new ScottyError("upstream", "Repository verification failed", {
+      httpStatus: 502,
+      exitCode: 1,
+      hint: "GitHub repository verification did not complete; retry the request",
+    });
+  }
+  const decoded = decodeCredentialRegistryResolvedCredentialResult(resolved.value);
+  if (Result.isFailure(decoded)) {
+    console.error("GitHub credential resolution failed", { reason: "invalid_response" });
+    throw new ScottyError("upstream", "Repository verification failed", {
+      httpStatus: 502,
+      exitCode: 1,
+      hint: "GitHub repository verification did not complete; retry the request",
+    });
+  }
+  const credential = Redacted.make(decoded.success.value);
   const result = await Effect.runPromise(
-    Effect.flatMap(RepoVerifier, (verifier) => verifier.verify(repo, env.GH_TOKEN)).pipe(
+    Effect.flatMap(RepoVerifier, (verifier) =>
+      verifier.verify(repo, Redacted.value(credential)),
+    ).pipe(
+      Effect.ensuring(Effect.sync(() => void Redacted.wipeUnsafe(credential))),
       Effect.provide(repoVerifierLayer.pipe(Layer.provide(FetchHttpClient.layer))),
       Effect.result,
     ),

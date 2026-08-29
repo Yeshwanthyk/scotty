@@ -59,13 +59,16 @@ describe("Effect command tree", () => {
         assert.include(rootHelp, "sync");
         assert.include(rootHelp, "skill");
         assert.include(rootHelp, "beam");
+        assert.include(rootHelp, "list");
+        assert.include(rootHelp, "vaporize");
+        assert.notInclude(rootHelp, "\n  auth");
         assert.include(rootHelp, "inspect");
         assert.include(rootHelp, "steer");
         assert.include(rootHelp, "doctor");
-        assert.include(rootHelp, "auth");
-        assert.include(rootHelp, "sandbox");
+        assert.notInclude(rootHelp, "\n  sandbox");
+        assert.notInclude(rootHelp, "\n  tools");
         assert.include(rootHelp, "runner");
-        assert.include(rootHelp, "tui");
+        assert.notInclude(rootHelp, "tui");
         assert.include(rootHelp, "--version, -V");
         assert.notInclude(rootHelp, "--wizard");
         assert.notInclude(rootHelp, "--completions");
@@ -90,16 +93,20 @@ describe("Effect command tree", () => {
 
         const beam = run(["beam", "--help"]);
         assert.strictEqual(yield* beam.effect, EXIT.OK);
-        assert.include(beam.stdout.join(""), "scotty beam <subcommand> [flags]");
-        assert.include(beam.stdout.join(""), "up");
-        assert.include(beam.stdout.join(""), "down");
-        assert.include(beam.stdout.join(""), "vaporize");
+        assert.include(beam.stdout.join(""), "scotty beam [flags] <prompt>");
+        assert.notInclude(beam.stdout.join(""), "up");
+        assert.notInclude(beam.stdout.join(""), "down");
+        assert.notInclude(beam.stdout.join(""), "vaporize");
+        assert.include(beam.stdout.join(""), "prompt");
+        assert.include(beam.stdout.join(""), "--new-repo");
+        assert.notInclude(beam.stdout.join(""), "SUBCOMMANDS");
         assert.strictEqual(beam.stderr.join(""), "");
 
-        const up = run(["beam", "up", "--help"]);
-        assert.strictEqual(yield* up.effect, EXIT.OK);
-        assert.include(up.stdout.join(""), "--new-repo");
-        assert.strictEqual(up.stderr.join(""), "");
+        const vaporize = run(["vaporize", "SESSION_ID", "--help"]);
+        assert.strictEqual(yield* vaporize.effect, EXIT.OK);
+        assert.include(vaporize.stdout.join(""), "scotty vaporize [flags] <id>");
+        assert.include(vaporize.stdout.join(""), "--yes");
+        assert.strictEqual(vaporize.stderr.join(""), "");
 
         const deploy = run(["deploy", "--help"]);
         assert.strictEqual(yield* deploy.effect, EXIT.OK);
@@ -124,57 +131,30 @@ describe("Effect command tree", () => {
         assert.include(repo.stdout.join(""), "remove");
         assert.strictEqual(repo.stderr.join(""), "");
 
-        const auth = run(["auth", "--help"]);
-        assert.strictEqual(yield* auth.effect, EXIT.OK);
-        assert.include(auth.stdout.join(""), "status");
-        assert.include(auth.stdout.join(""), "sync");
-        assert.notInclude(auth.stdout.join(""), "reseed");
+        const auth = run(["auth"]);
+        const authError = failure(yield* Effect.result(auth.effect));
+        assert.strictEqual(authError.code, "bad_usage");
+        assert.strictEqual(authError.message, "Unknown command: auth");
+        assert.strictEqual(auth.stdout.join(""), "");
         assert.strictEqual(auth.stderr.join(""), "");
-        const tui = run(["tui", "--help"]);
-        assert.strictEqual(yield* tui.effect, EXIT.OK);
-        const tuiHelp = tui.stdout.join("");
-        assert.include(tuiHelp, "scotty tui");
-        assert.include(tuiHelp, "--config");
-        assert.include(tuiHelp, "pair");
-        assert.notInclude(tuiHelp, "__scotty_trailing__");
-        assert.strictEqual(tui.stderr.join(""), "");
-
-        const pair = run(["tui", "pair", "--help"]);
-        assert.strictEqual(yield* pair.effect, EXIT.OK);
-        const pairHelp = pair.stdout.join("");
-        assert.include(pairHelp, "scotty tui pair [flags] <origin>");
-        assert.include(pairHelp, "--label");
-        assert.include(pairHelp, "--config");
-        assert.notInclude(pairHelp, "__scotty_trailing__");
-        assert.strictEqual(pair.stderr.join(""), "");
-
-        const sandbox = run(["sandbox", "--help"]);
-        assert.strictEqual(yield* sandbox.effect, EXIT.OK);
-        assert.include(sandbox.stdout.join(""), "scotty sandbox <subcommand> [flags]");
-        assert.include(sandbox.stdout.join(""), "add");
-        assert.include(sandbox.stdout.join(""), "remove");
-        assert.include(sandbox.stdout.join(""), "list");
-        assert.include(sandbox.stdout.join(""), "sync");
-        assert.strictEqual(sandbox.stderr.join(""), "");
+        for (const args of [
+          ["sandbox"],
+          ["sandbox", "add"],
+          ["sandbox", "remove"],
+          ["sandbox", "list"],
+          ["sandbox", "sync"],
+          ["tools"],
+          ["tools", "list"],
+          ["tools", "doctor"],
+        ] as const) {
+          const invocation = run(args);
+          const error = failure(yield* Effect.result(invocation.effect));
+          assert.strictEqual(error.code, "bad_usage");
+          assert.strictEqual(error.message, `Unknown command: ${args[0]}`);
+          assert.strictEqual(invocation.stdout.join(""), "");
+          assert.strictEqual(invocation.stderr.join(""), "");
+        }
       }),
-  );
-
-  it.effect("validates tui pair grammar before starting an interactive flow", () =>
-    Effect.gen(function* () {
-      const missingOrigin = run(["tui", "pair"]);
-      const missingOriginError = failure(yield* Effect.result(missingOrigin.effect));
-      assert.strictEqual(missingOriginError.code, "bad_usage");
-      assert.include(missingOriginError.message, "origin");
-      assert.strictEqual(missingOrigin.stdout.join(""), "");
-      assert.strictEqual(missingOrigin.stderr.join(""), "");
-
-      const trailing = run(["tui", "pair", "https://scotty.example", "unexpected"]);
-      const trailingError = failure(yield* Effect.result(trailing.effect));
-      assert.strictEqual(trailingError.code, "bad_usage");
-      assert.strictEqual(trailingError.message, "Unexpected argument: unexpected");
-      assert.strictEqual(trailing.stdout.join(""), "");
-      assert.strictEqual(trailing.stderr.join(""), "");
-    }),
   );
 
   it.effect("lists and removes runners through authenticated control-plane routes", () =>
@@ -337,21 +317,6 @@ describe("Effect command tree", () => {
       const failedError = failure(yield* Effect.result(failed.effect));
       assert.strictEqual(failedError.code, "not_found");
       assert.strictEqual(failedError.exitCode, EXIT.NOT_FOUND);
-    }),
-  );
-
-  it.effect("requires exactly one auth reseed target", () =>
-    Effect.gen(function* () {
-      const missing = run(["auth", "reseed"]);
-      assert.strictEqual(
-        failure(yield* Effect.result(missing.effect)).message,
-        "Pass exactly one session ID or --all-active",
-      );
-      const both = run(["auth", "reseed", "abc123", "--all-active"]);
-      assert.strictEqual(
-        failure(yield* Effect.result(both.effect)).message,
-        "Pass exactly one session ID or --all-active",
-      );
     }),
   );
 
@@ -596,7 +561,6 @@ describe("Effect command tree", () => {
     Effect.gen(function* () {
       const invocation = run([
         "beam",
-        "up",
         "fix",
         "--title",
         "Fix build",
@@ -618,7 +582,7 @@ describe("Effect command tree", () => {
 
   it.effect("accepts shared flags around nested commands and keeps version output exact", () =>
     Effect.gen(function* () {
-      const list = run(["--host", "https://worker.example", "ls", "--json"], {
+      const list = run(["--host", "https://worker.example", "list", "--json"], {
         env: { SCOTTY_TOKEN: "secret" },
         fetch: async () => Response.json([]),
       });

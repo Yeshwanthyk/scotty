@@ -18,7 +18,7 @@ import {
   type SandboxBundleManifest,
   type SandboxFileRecord,
 } from "./sandbox-bundle";
-import { PiPackageNameSchema, SkillNameSchema } from "./sandbox-config-contracts";
+import { PiPackageNameSchema, SkillNameSchema, type BuiltSandboxBundle } from "./sandbox-bundle";
 import {
   installPiPackageDependencies,
   type PiPackageDependencyInstaller,
@@ -26,7 +26,6 @@ import {
 } from "./pi-package-prepare";
 import { createDeterministicTarGz, type TarMember } from "./sandbox-archive";
 import type { LoadedScottyTomlConfig, ResolvedScottyTomlRoots } from "./scotty-config";
-import type { BuiltSandboxBundle } from "./sandbox-prepare";
 import { walkSandboxItem, type SandboxWalkOptions, type WalkedSandboxFile } from "./sandbox-walk";
 const PiPackageMetadataSchema = Schema.Struct({
   extensions: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),

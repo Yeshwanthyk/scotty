@@ -1,11 +1,9 @@
 import { Effect, Option, Schema } from "effect";
-import { PiAuthDigestSchema, PiAuthUpdatedAtSchema } from "../../protocol/pi-auth";
 import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
 import {
   RepositoryRegistryEntrySchema,
   RepositoryRegistryRemovalResponseSchema,
 } from "../../protocol/repository";
-import rawStandardToolset from "../../worker/container/toolsets/standard.json" with { type: "json" };
 
 export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
@@ -56,37 +54,9 @@ export const InitJournalSchema = Schema.Struct({
   evidenceEnabled: Schema.optionalKey(Schema.Literal(true)),
   planFingerprint: Schema.NonEmptyString,
   token: Schema.NonEmptyString,
+  credentialWrappingKey: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u)),
 });
 export type InitJournal = typeof InitJournalSchema.Type;
-
-export const ToolCategorySchema = Schema.Union([
-  Schema.Literal("search-data"),
-  Schema.Literal("python"),
-  Schema.Literal("go"),
-  Schema.Literal("git-process"),
-  Schema.Literal("javascript"),
-  Schema.Literal("browser"),
-  Schema.Literal("build"),
-  Schema.Literal("scotty"),
-]);
-export const StandardToolSchema = Schema.Struct({
-  name: Schema.NonEmptyString,
-  category: ToolCategorySchema,
-  commands: Schema.Array(Schema.NonEmptyString),
-  source: Schema.NonEmptyString,
-  versionPolicy: Schema.Union([Schema.Literal("pinned"), Schema.Literal("image")]),
-  expectedVersion: Schema.optionalKey(Schema.NonEmptyString),
-  probe: Schema.NonEmptyArray(Schema.NonEmptyString),
-});
-export const StandardToolsetSchema = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
-  name: Schema.Literal("standard"),
-  tools: Schema.NonEmptyArray(StandardToolSchema),
-});
-export type StandardToolset = typeof StandardToolsetSchema.Type;
-
-export const STANDARD_TOOLSET: StandardToolset =
-  Schema.decodeUnknownSync(StandardToolsetSchema)(rawStandardToolset);
 
 export const RawConfigSchema = Schema.Struct({
   version: Schema.optionalKey(Schema.Unknown),
@@ -264,15 +234,6 @@ export const ErrorFieldsSchema = Schema.Struct({
   message: Schema.optionalKey(Schema.Unknown),
   hint: Schema.optionalKey(Schema.Unknown),
 });
-export const DownMetadataSchema = Schema.Struct({
-  branch: Schema.NonEmptyString,
-  sha: Schema.NonEmptyString,
-  codexThreadId: Schema.optionalKey(Schema.Unknown),
-  rolloutFile: Schema.optionalKey(Schema.Unknown),
-  rolloutPath: Schema.optionalKey(Schema.Unknown),
-  rolloutBase64: Schema.optionalKey(Schema.Unknown),
-  rolloutName: Schema.optionalKey(Schema.Unknown),
-});
 export const VaporizeResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   status: Schema.Literal("gone"),
@@ -296,30 +257,6 @@ export const VaporizeOutputSchema = Schema.Struct({
   status: Schema.Literal("gone"),
 });
 export type VaporizeOutput = typeof VaporizeOutputSchema.Type;
-export const DownOutputSchema = Schema.Struct({
-  branch: Schema.NonEmptyString,
-  sha: Schema.NonEmptyString,
-  rolloutPath: Schema.NullOr(Schema.String),
-  resumeCmd: Schema.NullOr(Schema.String),
-});
-export type DownOutput = typeof DownOutputSchema.Type;
-export const PiProviderMetadataSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  type: Schema.Literals(["api_key", "oauth"]),
-  adapter: Schema.Literals(["supported", "unsupported"]),
-});
-export const PiAuthStatusResponseSchema = Schema.Struct({
-  source: Schema.Literals(["bootstrap", "sync", "rotation"]),
-  sourceDigest: PiAuthDigestSchema,
-  updatedAt: Schema.NullOr(PiAuthUpdatedAtSchema),
-  providers: Schema.Array(PiProviderMetadataSchema),
-});
-export type PiAuthStatusResponse = typeof PiAuthStatusResponseSchema.Type;
-export const PiAuthReseedResponseSchema = Schema.Struct({
-  id: Schema.NonEmptyString,
-  updatedAt: Schema.NonEmptyString,
-  providers: Schema.Array(PiProviderMetadataSchema),
-});
 export const CloudflareApiEnvelopeSchema = Schema.Struct({
   success: Schema.Boolean,
 });
@@ -383,10 +320,7 @@ export const decodeSteerResponse = Schema.decodeUnknownOption(SteerResponseSchem
 });
 export const decodeErrorEnvelope = Schema.decodeUnknownOption(ErrorEnvelopeSchema);
 export const decodeErrorFields = Schema.decodeUnknownOption(ErrorFieldsSchema);
-export const decodeDownMetadata = Schema.decodeUnknownOption(DownMetadataSchema);
 export const decodeVaporizeResponse = Schema.decodeUnknownOption(VaporizeResponseSchema);
-export const decodePiAuthStatusResponse = Schema.decodeUnknownOption(PiAuthStatusResponseSchema);
-export const decodePiAuthReseedResponse = Schema.decodeUnknownOption(PiAuthReseedResponseSchema);
 export const decodeCloudflareApiEnvelope = Schema.decodeUnknownOption(CloudflareApiEnvelopeSchema);
 export const decodeRunnerRegistrationResponse = Schema.decodeUnknownOption(
   RunnerRegistrationResponseSchema,

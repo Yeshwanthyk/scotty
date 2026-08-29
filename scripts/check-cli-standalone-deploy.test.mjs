@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { managedInstallationPath } from "../cli/src/managed-installation-path.mjs";
 import {
   STANDALONE_DEPLOY_ARGS,
   STANDALONE_DEPLOY_ERROR,
@@ -51,6 +52,8 @@ describe("standalone deployment clean-room proof", () => {
         CLOUDFLARE_API_TOKEN: "must-not-pass",
         ALCHEMY_PROFILE: "must-not-pass",
         GH_TOKEN: "must-not-pass",
+        PI_AUTH_JSON: "must-not-pass",
+        CREDENTIAL_WRAPPING_KEY: "must-not-pass",
       },
       execute: (command, args, options) => {
         calls.push({ command, args, options });
@@ -68,8 +71,10 @@ describe("standalone deployment clean-room proof", () => {
         assert.equal(options.env.CLOUDFLARE_API_TOKEN, undefined);
         assert.equal(options.env.ALCHEMY_PROFILE, undefined);
         assert.equal(options.env.GH_TOKEN, undefined);
+        assert.equal(options.env.PI_AUTH_JSON, undefined);
+        assert.equal(options.env.CREDENTIAL_WRAPPING_KEY, undefined);
         assert.match(options.env.DOCKER_HOST, /scotty-clean-room/u);
-        assert.ok(existsSync(join(options.env.HOME, ".scotty.json")));
+        assert.ok(existsSync(managedInstallationPath(options.env.HOME)));
         writeDiagnostic(options.env.HOME);
         return failure();
       },

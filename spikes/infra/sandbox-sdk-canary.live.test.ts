@@ -83,7 +83,7 @@ describe.skipIf(!approved).sequential("M01C explicitly approved deployed asserti
       assert.equal(result.namedSession, "/tmp/m01c-canary:synthetic");
       assert.equal(result.marker, `marker-${stage}`);
       assert.match(result.allowedStatus, /^2\d\d$/u);
-      assert.match(result.deniedStatus, /^(?:403|520)$/u);
+      assert.equal(result.deniedStatus, "403");
     }),
   );
 

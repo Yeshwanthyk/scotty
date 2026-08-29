@@ -78,7 +78,7 @@ describe("SandboxRuntime", () => {
       const command = "git status --porcelain";
       const options: SandboxExecOptions = {
         cwd: "/workspace/a0b1c2d3e4f5",
-        env: { GH_TOKEN: "scotty-github-a0b1c2d3e4f5-token", EMPTY: undefined },
+        env: { GH_TOKEN: "scotty-managed://github/github/git-https", EMPTY: undefined },
         timeout: 120_000,
       };
       memory.respond("exec", successResult(command));
@@ -101,7 +101,9 @@ describe("SandboxRuntime", () => {
       const result = yield* Effect.result(
         withRuntime(
           capabilities,
-          execChecked(commandSecret, { env: { GH_TOKEN: providerDetail } }),
+          execChecked(commandSecret, {
+            env: { GH_TOKEN: "scotty-managed://github/github/git-https" },
+          }),
         ),
       );
       const error = failure(result);
@@ -240,25 +242,29 @@ describe("SandboxRuntime", () => {
     }),
   );
 
-  it.effect("redacts sentinels and GitHub PATs and truncates failures to 1000 characters", () =>
-    Effect.gen(function* () {
-      const memory = new InMemoryFaultInjectableFake();
-      const capabilities = sandboxRuntimeCapabilitiesFake(memory);
-      const secretOutput =
-        "scotty-codex-session-secret scotty-github-session-secret ghp_patsecret " +
-        "github_pat_pat_secret " +
-        "x".repeat(1_100);
-      memory.respond("exec", failedResult("false", secretOutput, ""));
+  it.effect(
+    "redacts managed handles and GitHub PATs and truncates failures to 1000 characters",
+    () =>
+      Effect.gen(function* () {
+        const memory = new InMemoryFaultInjectableFake();
+        const capabilities = sandboxRuntimeCapabilitiesFake(memory);
+        const secretOutput =
+          "scotty-managed://codex/openai-codex/access scotty-managed://github/github/git-https ghp_patsecret " +
+          "github_pat_pat_secret " +
+          "x".repeat(1_100);
+        memory.respond("exec", failedResult("false", secretOutput, ""));
 
-      const result = yield* Effect.result(withRuntime(capabilities, execChecked("false")));
-      const error = failure(result);
+        const result = yield* Effect.result(withRuntime(capabilities, execChecked("false")));
+        const error = failure(result);
 
-      assert.strictEqual(error.message.length, 1_000);
-      assert.ok(error.message.startsWith("[sentinel] [sentinel] [credential] [credential] "));
-      assert.ok(!error.message.includes("session-secret"));
-      assert.ok(!error.message.includes("patsecret"));
-      assert.ok(!error.message.includes("pat_secret"));
-    }),
+        assert.strictEqual(error.message.length, 1_000);
+        assert.ok(
+          error.message.startsWith("[managed-handle] [managed-handle] [credential] [credential] "),
+        );
+        assert.ok(!error.message.includes("session-secret"));
+        assert.ok(!error.message.includes("patsecret"));
+        assert.ok(!error.message.includes("pat_secret"));
+      }),
   );
 
   it.effect("does not claim remote process cancellation when interrupted", () =>

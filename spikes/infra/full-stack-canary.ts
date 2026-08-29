@@ -1,7 +1,9 @@
+import { Retry as DistilledRetry } from "@distilled.cloud/cloudflare";
+import * as Workers from "@distilled.cloud/cloudflare/workers";
+import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Effect from "effect/Effect";
-import { CLOUDFLARE_WORKER_SECRETS } from "../../infra/cloudflare-stack.ts";
 import { bindExternalSandboxContainer } from "../../infra/external-sandbox-container-binding.ts";
 
 export const FULL_STACK_CANARY_STAGE_PREFIX = "scotty-e2e-";
@@ -16,6 +18,7 @@ export interface FullStackCanaryConfig {
 }
 
 export interface FullStackCanaryNames {
+  readonly installationName: string;
   readonly worker: string;
   readonly container: string;
   readonly sessions: string;
@@ -24,6 +27,39 @@ export interface FullStackCanaryNames {
 }
 
 export const fullStackCanaryAssetHash = (digest: string): string => `scotty-assets-v1:${digest}`;
+
+const installCanaryWorkerSecrets = Alchemy.Action(
+  "InstallCanaryWorkerSecrets",
+  Effect.fnUntraced(function* (input: { readonly accountId: string; readonly workerName: string }) {
+    const credentialWrappingKey = process.env.CREDENTIAL_WRAPPING_KEY;
+    const scottyToken = process.env.SCOTTY_TOKEN;
+    if (
+      credentialWrappingKey === undefined ||
+      credentialWrappingKey.length === 0 ||
+      scottyToken === undefined ||
+      scottyToken.length === 0
+    )
+      return yield* Effect.fail(
+        "Full-stack E2E requires SCOTTY_TOKEN and CREDENTIAL_WRAPPING_KEY at action execution.",
+      );
+
+    yield* Workers.putScriptSecret({
+      accountId: input.accountId,
+      scriptName: input.workerName,
+      name: "CREDENTIAL_WRAPPING_KEY",
+      text: credentialWrappingKey,
+      type: "secret_text",
+    }).pipe(DistilledRetry.none, Effect.asVoid);
+    yield* Workers.putScriptSecret({
+      accountId: input.accountId,
+      scriptName: input.workerName,
+      name: "SCOTTY_TOKEN",
+      text: scottyToken,
+      type: "secret_text",
+    }).pipe(DistilledRetry.none, Effect.asVoid);
+    return { status: "secrets-installed" };
+  }),
+);
 
 export const expectedFullStackCanaryApprovals = (stage: string) => ({
   deploy: `deploy:${stage}`,
@@ -66,6 +102,7 @@ export function fullStackCanaryNames(stage: string): FullStackCanaryNames {
   );
   const prefix = `scotty-e2e-${suffix}`;
   return {
+    installationName: `scotty-e2e-${suffix.slice(0, 18)}`,
     worker: `${prefix}-worker`,
     container: `${prefix}-container`,
     sessions: `${prefix}-sessions`,
@@ -77,6 +114,8 @@ export function fullStackCanaryNames(stage: string): FullStackCanaryNames {
 export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullStackCanaryConfig) {
   assertFullStackCanaryConfig(config);
   const names = fullStackCanaryNames(config.stage);
+  const environment = yield* Cloudflare.CloudflareEnvironment;
+  const { accountId } = yield* environment;
   const removalPolicy = RemovalPolicy.destroy();
   const assetConfig = {
     directory: "worker/public",
@@ -126,6 +165,9 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
   const sandboxConfigDurableObject = Cloudflare.DurableObject("SandboxConfig", {
     className: "ScottySandboxConfig",
   });
+  const credentialRegistryDurableObject = Cloudflare.DurableObject("CredentialRegistry", {
+    className: "ScottyCredentialRegistry",
+  });
   const worker = yield* Cloudflare.Worker("CanaryWorker", {
     name: names.worker,
     main: "spikes/infra/full-stack-canary-worker.ts",
@@ -144,20 +186,23 @@ export const fullStackCanaryProgram = Effect.fnUntraced(function* (config: FullS
       RUNNER_REGISTRY: runnerRegistryDurableObject,
       SANDBOX: durableObject,
       SANDBOX_CONFIG: sandboxConfigDurableObject,
+      CREDENTIALS: credentialRegistryDurableObject,
       SANDBOX_BUNDLE_BUCKET: sandboxBundles,
       SESSIONS: sessions,
       BACKUP_BUCKET: backups,
       SANDBOX_TRANSPORT: "rpc",
       BACKUP_BUCKET_NAME: names.backups,
       SCOTTY_E2E_CANARY_STAGE: config.stage,
+      SCOTTY_INSTALLATION_NAME: names.installationName,
     },
   }).pipe(removalPolicy);
   yield* worker.bind("InheritedWorkerSecrets", {
-    bindings: CLOUDFLARE_WORKER_SECRETS.map((name) => ({
-      type: "inherit" as const,
-      name,
-    })),
+    bindings: [
+      { type: "inherit", name: "CREDENTIAL_WRAPPING_KEY" },
+      { type: "inherit", name: "SCOTTY_TOKEN" },
+    ],
   });
+  yield* installCanaryWorkerSecrets({ accountId, workerName: worker.workerName });
   const container = yield* Cloudflare.Containers.ContainerPlatform("SandboxContainer", {
     name: names.container,
     context: ".",

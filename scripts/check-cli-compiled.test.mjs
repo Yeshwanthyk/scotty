@@ -32,11 +32,6 @@ describe("compiled CLI smoke", () => {
         args: ["--version"],
         options: { cwd: "/tmp/scotty-cli-compiled-random" },
       },
-      {
-        command: executable,
-        args: ["tui", "--help"],
-        options: { cwd: "/tmp/scotty-cli-compiled-random" },
-      },
     ]);
     assert.deepEqual(removed, ["/tmp/scotty-cli-compiled-random"]);
   });

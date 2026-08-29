@@ -1,18 +1,8 @@
-import {
-  link,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  symlink,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
+import { link, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Result } from "effect";
 import { CliError } from "../src/core.ts";
 import {
   createDeterministicTarGz,
@@ -21,13 +11,8 @@ import {
   validateSandboxArchive,
   type TarMember,
 } from "../src/sandbox-archive.ts";
-import { emptySandboxConfig } from "../src/sandbox-config.ts";
 import { itemContentDigest, sha256Bytes } from "../src/sandbox-bundle.ts";
-import { buildSandboxBundle } from "../src/sandbox-prepare.ts";
 import { walkSandboxTree, type SandboxWalkOptions } from "../src/sandbox-walk.ts";
-import { ProcessRunner } from "../src/services.ts";
-
-const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const encoder = new TextEncoder();
 
 const failed = <A>(result: Result.Result<A, CliError>): CliError => {
@@ -334,177 +319,5 @@ describe("sandbox source walk", () => {
         assert.strictEqual(failed(huge).code, "sandbox_bundle_too_large");
       }),
     ),
-  );
-});
-
-describe("sandbox bundle preparation", () => {
-  it.effect("produces a stable digest for the empty configuration", () =>
-    Effect.gen(function* () {
-      const left = yield* buildSandboxBundle(emptySandboxConfig());
-      const right = yield* buildSandboxBundle(emptySandboxConfig());
-      assert.strictEqual(left.digest, right.digest);
-      assert.strictEqual(left.fileCount, 0);
-      assert.strictEqual(succeeded(validateSandboxArchive(left.archive)).digest, left.digest);
-    }),
-  );
-
-  it.effect(
-    "produces identical digests for identical Skill contents and changes when mutated",
-    () =>
-      withTempDir((root) =>
-        Effect.gen(function* () {
-          const first = join(root, "one");
-          const second = join(root, "two");
-          yield* Effect.promise(() => mkdir(first));
-          yield* Effect.promise(() => mkdir(second));
-          yield* Effect.promise(() => writeSkill(first, "release-notes", "# Same\n"));
-          yield* Effect.promise(() => writeSkill(second, "release-notes", "# Same\n"));
-          yield* Effect.promise(() => writeFile(join(first, ".DS_Store"), "junk"));
-          const left = yield* buildSandboxBundle({
-            ...emptySandboxConfig(),
-            skills: [{ name: "release-notes", path: first }],
-          });
-          const right = yield* buildSandboxBundle({
-            ...emptySandboxConfig(),
-            skills: [{ name: "release-notes", path: second }],
-          });
-          assert.strictEqual(left.digest, right.digest);
-          assert.strictEqual(left.fileCount, 1);
-          assert.strictEqual(succeeded(validateSandboxArchive(left.archive)).digest, left.digest);
-
-          yield* Effect.promise(() => writeSkill(second, "release-notes", "# Different\n"));
-          const mutated = yield* buildSandboxBundle({
-            ...emptySandboxConfig(),
-            skills: [{ name: "release-notes", path: second }],
-          });
-          assert.notStrictEqual(mutated.digest, left.digest);
-        }),
-      ),
-  );
-
-  it.effect("does not modify the Skill source directory", () =>
-    withTempDir((root) =>
-      Effect.gen(function* () {
-        yield* Effect.promise(() => writeSkill(root, "release-notes", "# Original\n"));
-        const skillMd = join(root, "SKILL.md");
-        const before = yield* Effect.promise(() => readFile(skillMd, "utf8"));
-        const stamped = new Date("2024-01-01T00:00:00Z");
-        yield* Effect.promise(() => utimes(skillMd, stamped, stamped));
-        const beforeStat = yield* Effect.promise(() => stat(skillMd));
-        yield* buildSandboxBundle({
-          ...emptySandboxConfig(),
-          skills: [{ name: "release-notes", path: root }],
-        });
-        const after = yield* Effect.promise(() => readFile(skillMd, "utf8"));
-        const afterStat = yield* Effect.promise(() => stat(skillMd));
-        assert.strictEqual(after, before);
-        assert.strictEqual(afterStat.mtimeMs, beforeStat.mtimeMs);
-      }),
-    ),
-  );
-
-  it.effect("checks out a Pi package without credentials in argv or the manifest", () => {
-    const captured: Array<{
-      readonly command: ReadonlyArray<string>;
-      readonly cwd?: string;
-      readonly env?: Readonly<Record<string, string | undefined>>;
-    }> = [];
-    const layer = Layer.succeed(ProcessRunner)({
-      run: (command, options) =>
-        Effect.gen(function* () {
-          captured.push({ command: [...command], cwd: options?.cwd, env: options?.env });
-          if (command[0] === "git" && command[1] === "checkout" && options?.cwd !== undefined) {
-            yield* Effect.promise(async () => {
-              await writeFile(
-                join(options.cwd, "package.json"),
-                JSON.stringify({
-                  name: "pi-review-tools",
-                  pi: { extensions: ["./index.ts"] },
-                }),
-              );
-              await writeFile(join(options.cwd, "index.ts"), "export {}\n");
-            });
-          }
-          if (command[0] === "git" && command[1] === "rev-parse")
-            return { exitCode: 0, stdout: `${COMMIT}\n`, stderr: "" };
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }),
-    });
-    return Effect.gen(function* () {
-      const built = yield* buildSandboxBundle({
-        ...emptySandboxConfig(),
-        piPackages: [
-          {
-            name: "pi-review-tools",
-            repository: "https://github.com/acme/pi-review-tools.git",
-            commit: COMMIT,
-            requestedRef: "v1.2.0",
-          },
-        ],
-      });
-      const argv = captured.map((entry) => entry.command.join(" ")).join("\n");
-      const env = JSON.stringify(captured.map((entry) => entry.env));
-      assert.notInclude(argv, "token");
-      assert.notInclude(argv, "user:pass");
-      assert.notInclude(env, "token");
-      assert.include(
-        argv,
-        "git fetch --quiet --depth 1 --no-tags https://github.com/acme/pi-review-tools.git",
-      );
-      assert.notInclude(argv, "npm ci");
-      assert.strictEqual(built.manifest.piPackages.length, 1);
-      assert.strictEqual(
-        built.manifest.piPackages[0].repository,
-        "https://github.com/acme/pi-review-tools.git",
-      );
-      assert.strictEqual(built.manifest.piPackages[0].commit, COMMIT);
-      assert.strictEqual(succeeded(validateSandboxArchive(built.archive)).digest, built.digest);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect(
-    "requires a lockfile and npm ci without scripts when runtime dependencies exist",
-    () => {
-      const captured: string[] = [];
-      const layer = Layer.succeed(ProcessRunner)({
-        run: (command, options) =>
-          Effect.gen(function* () {
-            captured.push(command.join(" "));
-            if (command[0] === "git" && command[1] === "checkout" && options?.cwd !== undefined) {
-              yield* Effect.promise(async () => {
-                await writeFile(
-                  join(options.cwd, "package.json"),
-                  JSON.stringify({
-                    name: "pi-review-tools",
-                    dependencies: { leftpad: "1.0.0" },
-                    pi: { extensions: ["./index.ts"] },
-                  }),
-                );
-                await writeFile(join(options.cwd, "index.ts"), "export {}\n");
-              });
-            }
-            if (command[0] === "git" && command[1] === "rev-parse")
-              return { exitCode: 0, stdout: `${COMMIT}\n`, stderr: "" };
-            return { exitCode: 0, stdout: "", stderr: "" };
-          }),
-      });
-      return Effect.gen(function* () {
-        const missingLock = yield* Effect.result(
-          buildSandboxBundle({
-            ...emptySandboxConfig(),
-            piPackages: [
-              {
-                name: "pi-review-tools",
-                repository: "https://github.com/acme/pi-review-tools.git",
-                commit: COMMIT,
-                requestedRef: "v1.2.0",
-              },
-            ],
-          }).pipe(Effect.provide(layer)),
-        );
-        assert.strictEqual(failed(missingLock).code, "sandbox_package_unsupported");
-        assert.notInclude(captured.join("\n"), "npm ci");
-      });
-    },
   );
 });

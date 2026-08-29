@@ -8,9 +8,7 @@ import {
   assertM01CCanaryConfig,
   expectedCleanupApproval,
   expectedDeployApproval,
-  M01C_ACCOUNT_SECRET_MAX_BYTES,
   M01C_LIVE_ASSERTIONS,
-  m01cAccountSecretBinding,
   m01cCanaryNames,
 } from "./sandbox-sdk-canary.ts";
 
@@ -141,30 +139,6 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
     );
   });
 
-  it("models only identifier metadata for the deferred Account Secrets Store binding", () => {
-    const suffix = randomBytes(8).toString("hex");
-    const reference = {
-      sourceId: `source-${suffix}`,
-      storeId: `store-${suffix}`,
-      secretId: `secret-id-${suffix}`,
-      secretName: `secret-name-${suffix}`,
-      bindingName: "M01C_BACKUP_REFERENCE",
-      providerVersion: 1,
-      keyedDigest: `hmac-sha256:v1:${randomBytes(32).toString("hex")}`,
-      expectedOwnerMarker: `scotty:v1:${randomBytes(24).toString("base64url")}`,
-    };
-
-    assert.deepEqual(m01cAccountSecretBinding(reference), {
-      type: "secrets_store_secret",
-      name: reference.bindingName,
-      storeId: reference.storeId,
-      secretName: reference.secretName,
-    });
-    assert.equal(M01C_ACCOUNT_SECRET_MAX_BYTES, 1024);
-    assert.equal("plaintext" in reference, false);
-    assert.equal("value" in reference, false);
-  });
-
   it("bundles the canary host without credential material", () => {
     const bundlePath = "/tmp/scotty-m01c-canary-worker.js";
     const syntheticMaterial = randomBytes(48).toString("base64url");
@@ -184,9 +158,9 @@ describe("M01C local Sandbox SDK canary scaffold", () => {
         stdio: "pipe",
         env: {
           ...process.env,
-          PI_AUTH_JSON: syntheticMaterial,
-          GH_TOKEN: syntheticMaterial,
-          SCOTTY_TOKEN: syntheticMaterial,
+          CREDENTIAL_WRAPPING_KEY: syntheticMaterial,
+          GH_TOKEN: "scotty-managed://github/github/git-https",
+          SCOTTY_TOKEN: "scotty-managed://scotty/http-auth/api-key",
         },
       },
     );

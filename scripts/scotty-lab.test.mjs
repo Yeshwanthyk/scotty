@@ -61,7 +61,7 @@ test("lab manifests are private, atomically replaceable, and contain no credenti
     writePrivateManifest(manifestPath, replacement);
     assert.deepEqual(readLabManifest(manifestPath), replacement);
     const serialized = readFileSync(manifestPath, "utf8");
-    assert.doesNotMatch(serialized, /SCOTTY_TOKEN|GH_TOKEN|PI_AUTH_JSON|root-token-value/u);
+    assert.doesNotMatch(serialized, /SCOTTY_TOKEN|root-token-value/u);
     assert.throws(
       () => writePrivateManifest(manifestPath, manifest, { exclusive: true }),
       /EEXIST/u,
@@ -187,8 +187,6 @@ test("lab child environments keep only benign system values and explicit lab val
       PATH: "/bin",
       DOCKER_HOST: "unix:///tmp/docker.sock",
       HOME: "/real/home",
-      GH_TOKEN: "github-secret",
-      PI_AUTH_JSON: '{"secret":true}',
       CLOUDFLARE_API_TOKEN: "cloudflare-secret",
       SCOTTY_TOKEN: "ambient-secret",
     },
@@ -198,8 +196,6 @@ test("lab child environments keep only benign system values and explicit lab val
   assert.equal(environment.HOME, "/tmp/scotty-lab-home");
   assert.equal(environment.SCOTTY_HOST, "http://127.0.0.1:8791");
   assert.equal(environment.SCOTTY_TOKEN, "root-token");
-  assert.equal(environment.GH_TOKEN, undefined);
-  assert.equal(environment.PI_AUTH_JSON, undefined);
   assert.equal(environment.CLOUDFLARE_API_TOKEN, undefined);
 });
 
