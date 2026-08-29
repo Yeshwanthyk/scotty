@@ -965,9 +965,7 @@ describe("Sandbox create orchestration", () => {
     );
     assert.ok(archiveIndex >= 0);
     assert.ok(verifiedIndex >= 0);
-    const extractionIndex = harness.commands.findIndex((command) =>
-      command.startsWith("tar -xzf "),
-    );
+    const extractionIndex = harness.commands.findIndex((command) => command.startsWith("tar -xf "));
     const promotionIndex = harness.commands.findIndex(
       (command) => command.startsWith("rm -rf ") && command.includes(" && mv "),
     );

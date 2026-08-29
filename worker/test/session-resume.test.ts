@@ -149,9 +149,7 @@ describe("Sandbox resume orchestration", () => {
           file.path.includes("/.scotty/sandbox/.staging-") && file.path.endsWith("/.verified"),
       ),
     );
-    const extractionIndex = harness.commands.findIndex((command) =>
-      command.startsWith("tar -xzf "),
-    );
+    const extractionIndex = harness.commands.findIndex((command) => command.startsWith("tar -xf "));
     const promotionIndex = harness.commands.findIndex(
       (command) => command.startsWith("rm -rf ") && command.includes(" && mv "),
     );
