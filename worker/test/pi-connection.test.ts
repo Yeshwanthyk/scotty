@@ -115,13 +115,12 @@ describe("Pi connection", () => {
     const snapshotA = deferred<unknown>();
     const signals: AbortSignal[] = [];
     const closed: string[] = [];
-    const source = (name: string) =>
-      ({
-        addEventListener() {},
-        close() {
-          closed.push(name);
-        },
-      }) as unknown as EventSource;
+    const source = (name: string) => ({
+      addEventListener() {},
+      close() {
+        closed.push(name);
+      },
+    });
     const transport = {
       snapshot: async (sessionId: string, signal: AbortSignal) => {
         signals.push(signal);
