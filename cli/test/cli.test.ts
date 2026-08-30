@@ -1023,6 +1023,8 @@ describe("configuration and transport", () => {
     expect(h.stdout.join("")).toContain(
       "Scotty is deployed and synchronized. Browser access is not active yet.\n",
     );
+    expect(h.stdout.join("")).not.toContain("Scotty init");
+    expect(h.stdout.join("")).not.toContain("Checking Docker");
     expect(h.stdout.join("")).toContain("Run `scotty owner recover` next to activate it.\n");
     expect(h.stdout.join("")).not.toContain("scotty sync");
     expect(uploadedDigest).toMatch(/^[0-9a-f]{64}$/u);

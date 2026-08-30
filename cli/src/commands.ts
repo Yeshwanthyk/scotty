@@ -612,7 +612,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     ({ name, previewBase, previewZoneId, profile, yes }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
-        const initUi = autoJson ? makeSilentInitUi() : makeInitUi(runtime.stdout);
+        const interactive = !options.json && runtime.stdinIsTTY && runtime.stdoutIsTTY;
+        const initUi = interactive ? makeInitUi(runtime.stdout) : makeSilentInitUi();
         initUi.start();
         if (options.host || options.tokenFile)
           return yield* usage("init does not accept --host or --token-file");
