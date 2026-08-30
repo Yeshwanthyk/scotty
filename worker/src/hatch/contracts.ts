@@ -112,10 +112,8 @@ export const decodeEnsureHatchInput = Schema.decodeUnknownOption(EnsureHatchInpu
   onExcessProperty: "error",
 });
 
-export const HatchToolEnsureRequestSchema = EnsureHatchInputSchema;
-export type HatchToolEnsureRequest = typeof HatchToolEnsureRequestSchema.Type;
 export const decodeHatchToolEnsureRequest = Schema.decodeUnknownOption(
-  HatchToolEnsureRequestSchema,
+  EnsureHatchInputSchema,
   { onExcessProperty: "error" },
 );
 
@@ -327,9 +325,6 @@ export const PublicHatchStatusSchema = Schema.Union([
 ]);
 export type PublicHatchStatus = typeof PublicHatchStatusSchema.Type;
 
-export const HatchToolStatusSchema = PublicHatchStatusSchema;
-export type HatchToolStatus = typeof HatchToolStatusSchema.Type;
-
 export const publicHatchStatusProjection = (state: HatchState): PublicHatchStatus => {
   const hatch = state.primary;
   if (hatch === undefined) return { status: "not_configured" };
@@ -429,9 +424,6 @@ export const HatchRestoreDescriptorSchema = Schema.Struct({
   service: HatchServiceSchema,
 });
 export type HatchRestoreDescriptor = typeof HatchRestoreDescriptorSchema.Type;
-
-export const HatchToolRestoreDescriptorSchema = HatchRestoreDescriptorSchema;
-export type HatchToolRestoreDescriptor = typeof HatchToolRestoreDescriptorSchema.Type;
 
 export type HatchStateFailureReason =
   | "conflict"
