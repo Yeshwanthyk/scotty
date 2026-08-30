@@ -112,10 +112,9 @@ export const decodeEnsureHatchInput = Schema.decodeUnknownOption(EnsureHatchInpu
   onExcessProperty: "error",
 });
 
-export const decodeHatchToolEnsureRequest = Schema.decodeUnknownOption(
-  EnsureHatchInputSchema,
-  { onExcessProperty: "error" },
-);
+export const decodeHatchToolEnsureRequest = Schema.decodeUnknownOption(EnsureHatchInputSchema, {
+  onExcessProperty: "error",
+});
 
 export const HatchDesiredStatusSchema = Schema.Literals(["open", "closed"]);
 export const HatchObservedStatusSchema = Schema.Literals([
