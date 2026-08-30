@@ -181,6 +181,7 @@ function syncDeliveredUiResponses(sessionId, nextProjection) {
 }
 
 function showLoadError(error) {
+  const recoverableRuntime = error?.status === 502 || error?.status === 503;
   setConnection(
     "unavailable",
     error instanceof Error ? error.message : "This cloud agent is unavailable",
@@ -191,17 +192,39 @@ function showLoadError(error) {
   const state = document.createElement("div");
   state.className = "conversation-state";
   const heading = document.createElement("strong");
-  heading.textContent = "Could not load this conversation";
+  heading.textContent = recoverableRuntime
+    ? "This agent runtime stopped"
+    : "Could not load this conversation";
   const copy = document.createElement("p");
-  copy.textContent = error instanceof Error ? error.message : "Try this cloud agent again.";
+  copy.textContent = recoverableRuntime
+    ? "Scotty can restart the runtime and reconnect from a fresh snapshot. Pending commands will not be replayed."
+    : error instanceof Error
+      ? error.message
+      : "Try this cloud agent again.";
   const retry = document.createElement("button");
   retry.type = "button";
   retry.className = "button button-secondary";
-  retry.textContent = "Retry";
-  retry.addEventListener("click", () => void loadSession(currentSessionId));
+  retry.textContent = recoverableRuntime ? "Recover runtime" : "Retry";
+  retry.addEventListener("click", () => {
+    if (recoverableRuntime) void recoverRuntime(currentSessionId, retry);
+    else void loadSession(currentSessionId);
+  });
   state.append(heading, copy, retry);
   feed.append(state);
   updateComposer();
+}
+
+async function recoverRuntime(sessionId, button) {
+  if (!sessionId) return;
+  button.disabled = true;
+  button.textContent = "Recovering…";
+  setConnection("connecting", "Recovering agent runtime…");
+  try {
+    await transport.prepare(sessionId);
+    if (currentSessionId === sessionId) await loadSession(sessionId);
+  } catch (error) {
+    if (currentSessionId === sessionId) showLoadError(error);
+  }
 }
 
 const transport = createConsoleTransport({

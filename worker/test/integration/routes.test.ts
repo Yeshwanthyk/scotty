@@ -3465,7 +3465,7 @@ describe("real Hono boundary", () => {
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
-  it("routes the versioned console only through the passive sandbox boundary", async () => {
+  it("routes console reads only through the passive sandbox boundary", async () => {
     sandbox.fetch.mockImplementationOnce(async (request: Request) => {
       expect(new URL(request.url).pathname).toBe("/_scotty/pi-console/snapshot");
       expect(request.headers.get("cookie")).toBeNull();
@@ -3489,6 +3489,34 @@ describe("real Hono boundary", () => {
     expect(response.status).toBe(503);
     expect(sandbox.fetch).toHaveBeenCalledOnce();
     expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+  });
+
+  it("prepares a missing Pi runtime only through an explicit authenticated mutation", async () => {
+    sandbox.getScottySession.mockResolvedValueOnce({
+      id: "a0b1c2d3e4f5",
+      provider: "cloudflare",
+      status: "warm",
+    });
+    sandbox.preparePiSessionAccess.mockResolvedValueOnce(undefined);
+
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/console/prepare",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(sandbox.preparePiSessionAccess).toHaveBeenCalledOnce();
+    expect(sandbox.fetch).not.toHaveBeenCalled();
     expect(sandbox.containerFetch).not.toHaveBeenCalled();
   });
 

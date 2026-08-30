@@ -44,6 +44,10 @@ describe("cloud-agent session application", () => {
     assert.include(appSource, 'type: "extension_ui_response"');
     assert.include(appSource, "connection.discard(currentSessionId)");
     assert.include(appSource, "syncDeliveredUiResponses");
+    assert.include(appSource, '"This agent runtime stopped"');
+    assert.include(appSource, '"Recover runtime"');
+    assert.include(appSource, "await transport.prepare(sessionId)");
+    assert.include(appSource, "Pending commands will not be replayed");
     assert.notInclude(appSource, "new WebSocket");
     assert.notInclude(appSource, "/rpc/");
   });

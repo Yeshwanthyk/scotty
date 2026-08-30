@@ -55,6 +55,12 @@ async function responseBody(response) {
   }
 }
 
+function requestError(response, body, fallback) {
+  const error = new Error(body.value?.error?.message ?? fallback);
+  error.status = response.status;
+  return error;
+}
+
 export function createConsoleTransport({ fetch, eventSource, origin }) {
   return {
     async snapshot(sessionId, signal) {
@@ -66,11 +72,21 @@ export function createConsoleTransport({ fetch, eventSource, origin }) {
       });
       const body = await responseBody(response);
       if (!response.ok)
-        throw new Error(
-          body.value?.error?.message ?? `Could not load Pi session (${response.status})`,
-        );
+        throw requestError(response, body, `Could not load Pi session (${response.status})`);
       if (!body.readable) throw new Error("Scotty returned an unreadable Pi session snapshot");
       return body.value;
+    },
+
+    async prepare(sessionId) {
+      const response = await fetch(consoleUrl(sessionId, "prepare"), {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { accept: "application/json" },
+        cache: "no-store",
+      });
+      if (response.ok) return;
+      const body = await responseBody(response);
+      throw requestError(response, body, `Could not recover Pi session (${response.status})`);
     },
 
     events(sessionId, { epoch, sequence }) {
