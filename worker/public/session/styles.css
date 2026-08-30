@@ -620,19 +620,23 @@ select:focus-visible {
   width: min(100%, var(--content));
   margin-inline: auto;
 }
+.composer-activity {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px 6px;
+}
 .composer {
   border: 1px solid var(--line);
-  border-radius: 13px;
+  border-radius: 12px;
   background: var(--control);
-  box-shadow:
-    0 16px 50px rgb(0 0 0 / 0.26),
-    0 0 0 1px rgb(238 231 211 / 0.025);
+  box-shadow: 0 6px 8px rgb(0 0 0 / 0.22);
 }
 .composer:focus-within {
   border-color: var(--focus);
-  box-shadow:
-    0 0 0 3px rgb(207 99 63 / 0.16),
-    0 16px 50px rgb(0 0 0 / 0.26);
+  box-shadow: 0 0 0 3px rgb(207 99 63 / 0.16);
 }
 .composer textarea {
   display: block;
@@ -654,36 +658,91 @@ select:focus-visible {
 }
 .composer-footer {
   display: flex;
-  min-height: 52px;
+  min-height: 58px;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  padding: 7px 8px 8px 14px;
+  padding: 7px 8px 8px;
+  border-top: 1px solid var(--soft-line);
 }
 .composer-hint {
   min-width: 0;
   flex: 1;
   overflow: hidden;
-  color: var(--quiet);
-  font-size: 0.72rem;
+  color: var(--muted);
+  font-size: 0.74rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.composer-hint[data-state="accepted"],
+.composer-hint[data-state="queued"],
+.composer-hint[data-state="delivered"] {
+  color: #8bc89d;
+}
+.composer-hint[data-state="stale"] {
+  color: #e4b878;
+}
+.composer-hint[data-state="ambiguous"],
+.composer-hint[data-state="failed"] {
+  color: #ff9b92;
+}
 .delivery-controls {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
-.delivery-controls label {
-  color: var(--quiet);
-  font-size: 0.7rem;
+.delivery-mode {
+  display: flex;
+  gap: 4px;
 }
-.delivery-controls select {
-  min-height: 38px;
-  border: 1px solid var(--line);
+.delivery-mode label {
+  position: relative;
+  display: block;
+  cursor: pointer;
+}
+.delivery-mode input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.delivery-mode label > span {
+  display: grid;
+  min-height: 42px;
+  align-content: center;
+  gap: 1px;
+  padding: 5px 10px;
   border-radius: 7px;
+  color: var(--quiet);
+}
+.delivery-mode strong {
+  font-size: 0.73rem;
+}
+.delivery-mode small {
+  font-size: 0.62rem;
+  white-space: nowrap;
+}
+.delivery-mode label:hover > span {
   background: var(--panel);
+  color: var(--muted);
+}
+.delivery-mode input:checked + span {
+  background: var(--raised);
   color: var(--ink);
-  font-size: 0.76rem;
+}
+.delivery-mode input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.button-stop {
+  min-height: 32px;
+  padding-inline: 10px;
+  border-color: transparent;
+  background: transparent;
+  color: #f3a49d;
+}
+.button-stop:hover:not(:disabled) {
+  background: rgb(255 130 120 / 0.09);
 }
 .button {
   min-height: 40px;
@@ -1002,11 +1061,23 @@ select:focus-visible {
     font-size: 16px;
   }
   .composer-footer {
-    min-height: 54px;
-    padding-left: 10px;
+    min-height: 60px;
+    gap: 6px;
+    padding: 7px;
+  }
+  .composer-activity {
+    min-height: 38px;
+    padding-inline: 2px;
   }
   .composer-hint {
-    display: none;
+    font-size: 0.7rem;
+  }
+  .delivery-mode label > span {
+    min-height: 44px;
+    padding-inline: 8px;
+  }
+  .delivery-mode small {
+    font-size: 0.58rem;
   }
   .button {
     min-height: 44px;

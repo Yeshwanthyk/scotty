@@ -124,6 +124,55 @@ describe("Pi connection", () => {
     lane.discard("agent-a");
     assert.strictEqual((await held.outcome).status, "discarded");
     assert.strictEqual(sends.length, 1);
+    assert.isUndefined(lane.state("agent-a").paused);
+    const explicitRetry = lane.enqueue({
+      ...authority,
+      expectedSessionRevision: 8,
+      intent: { type: "prompt", message: "first" },
+      label: "first",
+    });
+    assert.strictEqual((await explicitRetry.outcome).status, "accepted");
+    assert.strictEqual(sends.length, 2);
+    assert.strictEqual(sends[1].expectedSessionRevision, 8);
+  });
+
+  it("holds an ambiguous command for explicit recovery without replay", async () => {
+    let attempts = 0;
+    const lane = createCommandLane({
+      send: async (_sessionId, envelope) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("response lost");
+        return accepted(envelope);
+      },
+      randomUUID: () => ids[Math.min(attempts, 1)],
+    });
+    const authority = { sessionId: "agent-a", epoch: "epoch-1", expectedSessionRevision: 7 };
+    const uncertain = lane.enqueue({
+      ...authority,
+      intent: { type: "follow_up", message: "check later" },
+      label: "check later",
+    });
+
+    assert.strictEqual((await uncertain.outcome).status, "ambiguous");
+    assert.strictEqual(lane.state("agent-a").paused, "ambiguous");
+    assert.strictEqual(attempts, 1);
+    assert.throws(() =>
+      lane.enqueue({
+        ...authority,
+        intent: { type: "follow_up", message: "check later" },
+        label: "check later",
+      }),
+    );
+    assert.strictEqual(attempts, 1);
+
+    lane.discard("agent-a");
+    const explicitRetry = lane.enqueue({
+      ...authority,
+      intent: { type: "follow_up", message: "check later" },
+      label: "check later",
+    });
+    assert.strictEqual((await explicitRetry.outcome).status, "accepted");
+    assert.strictEqual(attempts, 2);
   });
 
   it("aborts the old snapshot and closes its stream before switching", async () => {

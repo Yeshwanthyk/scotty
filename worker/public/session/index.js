@@ -1,4 +1,12 @@
 import { createChatView, applyEvent, projectionFromSnapshot, sanitizeText } from "./chat.js";
+import {
+  composerPresentation,
+  createSessionMemory,
+  reconcileDelivery,
+  renderComposerPresentation,
+  selectedDeliveryMode,
+  shouldSubmitComposerKey,
+} from "./composer.js";
 import { createCloudAgentDirectory } from "./cloud-agents.js";
 import { createConsoleTransport, createPiConnection } from "./pi-connection.js";
 import { createSummaryView } from "./summary.js";
@@ -30,12 +38,10 @@ const stopButton = byId("stop-agent");
 const deliveryControls = byId("delivery-controls");
 const deliveryMode = byId("delivery-mode");
 const recovery = byId("command-recovery");
-const recoveryTitle = byId("recovery-title");
-const recoveryCopy = byId("recovery-copy");
 const discardCommands = byId("discard-commands");
 const compactViewport = matchMedia("(max-width: 760px)");
 const compactSummary = matchMedia("(max-width: 1180px)");
-const memory = new Map();
+const sessionMemory = createSessionMemory();
 const pendingUiResponses = new Set();
 const deliveredUiResponses = new Set();
 const chatView = createChatView({ document, feed, baseUrl: window.location.href });
@@ -63,14 +69,7 @@ function sessionIdFromLocation() {
   }
 }
 
-function memoryEntry(sessionId) {
-  let entry = memory.get(sessionId);
-  if (!entry) {
-    entry = { draft: "", scrollTop: 0 };
-    memory.set(sessionId, entry);
-  }
-  return entry;
-}
+const memoryEntry = (sessionId) => sessionMemory.entry(sessionId);
 
 function saveBrowserState() {
   if (!currentSessionId) return;
@@ -108,47 +107,17 @@ function laneState() {
 }
 
 function updateComposer() {
-  const lane = laneState();
-  const paused = lane.paused;
-  const active = Boolean(projection?.active);
-  const queuedFollowUps = Array.isArray(projection?.queue?.followUp)
-    ? projection.queue.followUp.length
-    : 0;
-  const hasDraft = composerInput.value.trim().length > 0;
-  recovery.hidden = !paused;
-  if (paused) {
-    recoveryTitle.textContent =
-      paused === "stale" ? "This session changed" : "Command outcome unknown";
-    recoveryCopy.textContent =
-      "Pending text is held. Discard it and refresh before sending anything else; Scotty will not replay it.";
-  }
-  deliveryControls.hidden = !active;
-  stopButton.hidden = !active;
-  stopButton.disabled = Boolean(paused);
-  sendButton.disabled = Boolean(paused || !projection || !hasDraft);
-  sendButton.textContent = active
-    ? deliveryMode.value === "steer"
-      ? "Steer"
-      : "Follow up"
-    : "Send";
-  const nextComposerHint = paused
-    ? paused === "stale"
-      ? "Session changed · commands held"
-      : "Outcome unknown · commands held"
-    : lane.items.some((item) => item.state === "sending")
-      ? "Submitting…"
-      : queuedFollowUps === 1
-        ? "1 follow-up queued · sends after Pi finishes"
-        : queuedFollowUps > 1
-          ? `${queuedFollowUps} follow-ups queued · send after Pi finishes`
-          : active
-            ? "Pi is working"
-            : projection
-              ? "Pi is ready"
-              : "Loading session state…";
-  if (composerHint.textContent !== nextComposerHint) {
-    composerHint.textContent = nextComposerHint;
-  }
+  const entry = currentSessionId ? memoryEntry(currentSessionId) : undefined;
+  renderComposerPresentation(
+    { recovery, deliveryControls, stopButton, sendButton, hint: composerHint },
+    composerPresentation({
+      projection,
+      lane: laneState(),
+      draft: composerInput.value,
+      delivery: entry?.delivery,
+      deliveryMode: selectedDeliveryMode(deliveryMode),
+    }),
+  );
 }
 
 function autosizeComposer() {
@@ -248,6 +217,8 @@ const connection = createPiConnection({
     }
     if (result !== "applied") return;
     const event = envelope?.event;
+    const entry = memoryEntry(currentSessionId);
+    entry.delivery = reconcileDelivery(entry.delivery, projection, event);
     if (event?.type === "extension_ui_request" && event.method === "set_editor_text") {
       composerInput.value = sanitizeText(event.text);
       memoryEntry(currentSessionId).draft = composerInput.value;
@@ -280,6 +251,10 @@ async function loadSession(sessionId, options = {}) {
       return;
     projection = projectionFromSnapshot(snapshot);
     syncDeliveredUiResponses(sessionId, projection);
+    const entry = memoryEntry(sessionId);
+    entry.delivery = reconcileDelivery(entry.delivery, projection);
+    if (entry.delivery?.status === "stale")
+      entry.delivery = { ...entry.delivery, detail: "refreshed" };
     scheduleRender();
     requestAnimationFrame(() => {
       transcript.scrollTop = memoryEntry(sessionId).scrollTop;
@@ -309,38 +284,72 @@ async function switchSession(sessionId, options = {}) {
   await loadSession(sessionId, { focusComposer: options.focusComposer });
 }
 
-function restoreDraft(text) {
+function restoreDraft(sessionId, text) {
   if (!text) return;
-  composerInput.value = composerInput.value.trim() ? `${text}\n\n${composerInput.value}` : text;
-  memoryEntry(currentSessionId).draft = composerInput.value;
+  const entry = sessionMemory.restoreDraft(sessionId, text);
+  if (currentSessionId !== sessionId) return;
+  composerInput.value = entry.draft;
   autosizeComposer();
 }
 
 async function submitIntent(intent, label, draft) {
+  const sessionId = currentSessionId;
+  const entry = memoryEntry(sessionId);
   const authority = {
-    sessionId: currentSessionId,
+    sessionId,
     epoch: projection.epoch,
     expectedSessionRevision: projection.sessionRevision,
   };
+  if (draft) entry.delivery = { kind: intent.type, message: draft.trim(), status: "submitting" };
   let submission;
   try {
     submission = connection.command(authority, intent, label);
   } catch (error) {
-    restoreDraft(draft);
+    restoreDraft(sessionId, draft);
+    if (draft)
+      entry.delivery = {
+        kind: intent.type,
+        message: draft.trim(),
+        status: "failed",
+        detail: error instanceof Error ? error.message : "Pi did not accept that message",
+      };
     updateComposer();
     throw error;
   }
   const outcome = await submission.outcome;
-  if (outcome.status !== "accepted") {
-    restoreDraft(draft);
-    setConnection(
-      outcome.status === "ambiguous"
-        ? "ambiguous"
-        : outcome.status === "stale"
-          ? "changed"
-          : "unavailable",
-      outcome.message,
-    );
+  if (outcome.status === "accepted") {
+    if (draft)
+      entry.delivery = reconcileDelivery(
+        { kind: intent.type, message: draft.trim(), status: "accepted" },
+        currentSessionId === sessionId ? projection : undefined,
+      );
+  } else {
+    restoreDraft(sessionId, draft);
+    if (draft)
+      entry.delivery = {
+        kind: intent.type,
+        message: draft.trim(),
+        status:
+          outcome.status === "stale"
+            ? "stale"
+            : outcome.status === "ambiguous"
+              ? "ambiguous"
+              : "failed",
+        ...(outcome.message ? { detail: outcome.message } : {}),
+      };
+    if (currentSessionId === sessionId)
+      setConnection(
+        outcome.status === "ambiguous"
+          ? "ambiguous"
+          : outcome.status === "stale"
+            ? "changed"
+            : "unavailable",
+        outcome.message,
+      );
+    if (outcome.status === "stale") {
+      connection.discard(sessionId);
+      if (currentSessionId === sessionId) await loadSession(sessionId, { focusComposer: true });
+    }
   }
   updateComposer();
   return outcome;
@@ -352,7 +361,7 @@ async function submitComposer() {
   const message = draft.trim();
   if (!message) return;
   const intent = projection.active
-    ? { type: deliveryMode.value === "steer" ? "steer" : "follow_up", message }
+    ? { type: selectedDeliveryMode(deliveryMode), message }
     : { type: "prompt", message };
   composerInput.value = "";
   memoryEntry(currentSessionId).draft = "";
@@ -474,7 +483,7 @@ composerInput.addEventListener("input", () => {
   updateComposer();
 });
 composerInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (shouldSubmitComposerKey(event)) {
     event.preventDefault();
     void submitComposer();
   }
@@ -484,13 +493,14 @@ stopButton.addEventListener("click", () => {
   if (projection) void submitIntent({ type: "abort" }, "Stop Pi", "");
 });
 discardCommands.addEventListener("click", async () => {
+  const sessionId = currentSessionId;
   discardCommands.disabled = true;
   try {
-    const snapshot = await connection.open(currentSessionId);
-    if (snapshot === undefined) return;
+    const snapshot = await connection.open(sessionId);
+    if (snapshot === undefined || currentSessionId !== sessionId) return;
     projection = projectionFromSnapshot(snapshot);
-    syncDeliveredUiResponses(currentSessionId, projection);
-    connection.discard(currentSessionId);
+    syncDeliveredUiResponses(sessionId, projection);
+    connection.discard(sessionId);
     chatView.reset();
     scheduleRender();
     composerInput.focus({ preventScroll: true });
