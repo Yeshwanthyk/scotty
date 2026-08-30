@@ -11,6 +11,8 @@ const run = (args: ReadonlyArray<string>, calls: string[]): Effect.Effect<void, 
     Effect.provide(
       Layer.succeed(LabOperations, {
         start: Effect.sync(() => calls.push("start")).pipe(Effect.asVoid),
+        setup: (runId, repo) =>
+          Effect.sync(() => calls.push(`setup:${runId}:${repo}`)).pipe(Effect.asVoid),
         exec: (runId, argv) =>
           Effect.sync(() => calls.push(`exec:${runId}:${JSON.stringify(argv)}`)).pipe(
             Effect.asVoid,
@@ -26,7 +28,8 @@ const assertUsageFailure = (result: Result.Result<void, unknown>): void => {
   assert.deepEqual(
     result.failure,
     new LabUsageError({
-      message: "Usage: npm run lab -- start | exec RUN_ID -- <scotty argv> | stop RUN_ID",
+      message:
+        "Usage: npm run lab -- start | setup RUN_ID --repo OWNER/REPO | exec RUN_ID -- <scotty argv> | stop RUN_ID",
     }),
   );
 };
@@ -36,9 +39,42 @@ describe("Effect Scotty lab command grammar", () => {
     Effect.gen(function* () {
       const calls: string[] = [];
       yield* run(["start"], calls);
+      yield* run(["setup", RUN_ID, "--repo", "owner/repo"], calls);
       yield* run(["exec", RUN_ID, "--", "doctor", "--json"], calls);
       yield* run(["stop", RUN_ID], calls);
-      assert.deepEqual(calls, ["start", `exec:${RUN_ID}:["doctor","--json"]`, `stop:${RUN_ID}`]);
+      assert.deepEqual(calls, [
+        "start",
+        `setup:${RUN_ID}:owner/repo`,
+        `exec:${RUN_ID}:["doctor","--json"]`,
+        `stop:${RUN_ID}`,
+      ]);
+    }),
+  );
+
+  it.effect("forwards the complete read invocation to the production CLI", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      yield* run(
+        [
+          "exec",
+          RUN_ID,
+          "--",
+          "read",
+          "session-1",
+          "--last",
+          "5",
+          "--role",
+          "assistant",
+          "--since",
+          "12",
+          "--follow",
+          "--json",
+        ],
+        calls,
+      );
+      assert.deepEqual(calls, [
+        `exec:${RUN_ID}:["read","session-1","--last","5","--role","assistant","--since","12","--follow","--json"]`,
+      ]);
     }),
   );
 
@@ -59,6 +95,8 @@ describe("Effect Scotty lab command grammar", () => {
         ["help"],
         ["--help"],
         ["start", "extra"],
+        ["setup", RUN_ID, "--repo", "not-a-repo"],
+        ["setup", RUN_ID, "--repo", "owner/repo", "extra"],
         ["stop", RUN_ID, "extra"],
         ["stop", "not-a-run"],
       ]) {

@@ -9,7 +9,9 @@ import {
   CliError as EffectCliError,
   CliOutput,
   Command,
+  Flag,
 } from "effect/unstable/cli";
+import { isRepositoryIdentity } from "../protocol/repository.ts";
 import {
   acquireLifecycleLock,
   awaitWrangler,
@@ -19,6 +21,7 @@ import {
   execManifest,
   launchWrangler,
   markCleanupPending,
+  prepareCredentialSetup,
   prepareStart,
   releaseLifecycleLock,
   removeOwnedTempRoot,
@@ -31,7 +34,8 @@ import {
 } from "./scotty-lab.mjs";
 
 const VERSION = "0.3.3";
-const USAGE = "Usage: npm run lab -- start | exec RUN_ID -- <scotty argv> | stop RUN_ID";
+const USAGE =
+  "Usage: npm run lab -- start | setup RUN_ID --repo OWNER/REPO | exec RUN_ID -- <scotty argv> | stop RUN_ID";
 const RUN_ID_PATTERN = /^lab-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 type Manifest = ReturnType<typeof createStartReservation>;
@@ -219,6 +223,23 @@ const executeLab = Effect.fnUntraced(function* (runId: string, argv: ReadonlyArr
   });
 });
 
+const setupLab = Effect.fnUntraced(function* (runId: string, repo: string) {
+  const manifest = yield* attempt("Unable to read the running lab", () => execManifest(runId));
+  const setup = yield* attempt("Unable to prepare the lab credential sources", () =>
+    prepareCredentialSetup(manifest, repo),
+  );
+  const child = yield* attempt("Unable to start Scotty credential sync", () =>
+    spawnCli(manifest, ["sync", "--json"], {
+      PATH: `${setup.credentialBin}:${process.env.PATH ?? ""}`,
+    }),
+  );
+  const result = yield* waitForChild(child);
+  yield* Effect.sync(() => {
+    if (result.signal) process.kill(process.pid, result.signal);
+    else process.exitCode = result.code ?? 1;
+  });
+});
+
 const stopLab = Effect.fnUntraced(function* (runId: string) {
   const stop = Effect.gen(function* () {
     const manifest = yield* attempt("Unable to read the lab", () => stopManifest(runId));
@@ -268,6 +289,7 @@ export class LabOperations extends Context.Service<
   LabOperations,
   {
     readonly start: Effect.Effect<void, LabFailure>;
+    readonly setup: (runId: string, repo: string) => Effect.Effect<void, LabFailure>;
     readonly exec: (runId: string, argv: ReadonlyArray<string>) => Effect.Effect<void, LabFailure>;
     readonly stop: (runId: string) => Effect.Effect<void, LabFailure>;
   }
@@ -275,6 +297,7 @@ export class LabOperations extends Context.Service<
 
 const productionOperations = Layer.succeed(LabOperations, {
   start: startLab(),
+  setup: setupLab,
   exec: executeLab,
   stop: stopLab,
 });
@@ -307,6 +330,23 @@ const execCommand = Command.make(
   ({ argv, runId }) => Effect.flatMap(LabOperations, (operations) => operations.exec(runId, argv)),
 );
 
+const setupCommand = Command.make(
+  "setup",
+  {
+    runId: runIdArgument,
+    repo: Flag.string("repo"),
+    extras: extrasArgument,
+  },
+  ({ extras, repo, runId }) =>
+    Effect.gen(function* () {
+      yield* rejectExtras(extras);
+      if (!isRepositoryIdentity(repo))
+        return yield* Effect.fail(new LabUsageError({ message: USAGE }));
+      const operations = yield* LabOperations;
+      yield* operations.setup(runId, repo);
+    }),
+);
+
 const stopCommand = Command.make(
   "stop",
   { runId: runIdArgument, extras: extrasArgument },
@@ -318,7 +358,7 @@ const stopCommand = Command.make(
 );
 
 export const labCommand = Command.make("scotty-lab").pipe(
-  Command.withSubcommands([startCommand, execCommand, stopCommand]),
+  Command.withSubcommands([startCommand, setupCommand, execCommand, stopCommand]),
 );
 
 const requireExecSeparator = (args: ReadonlyArray<string>): Effect.Effect<void, LabUsageError> =>

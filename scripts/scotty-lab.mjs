@@ -14,8 +14,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { formatCredentialToml } from "../e2e/support/credential-canary.mjs";
 import {
   assertPortAvailable,
   formatLocalDevVars,
@@ -448,13 +449,52 @@ export function execManifest(runId) {
   return manifest;
 }
 
-export function spawnCli(manifest, argv) {
+const shellWord = (value) => `'${value.replaceAll("'", `'\\''`)}'`;
+
+export function prepareCredentialSetup(manifest, repo, suppliedInputs) {
+  validateLabExecManifest(manifest);
+  const inputs =
+    suppliedInputs ??
+    Object.assign(requireLocalInputs(), {
+      githubHome: homedir(),
+      githubExecutable: execFileSync("which", ["gh"], { encoding: "utf8" }).trim(),
+    });
+  const configDirectory = path.join(manifest.cliHome, ".config", "scotty");
+  const configPath = path.join(configDirectory, "scotty.toml");
+  const credentialBin = path.join(manifest.cliHome, ".local", "credential-bin");
+  const githubLauncher = path.join(credentialBin, "gh");
+  mkdirSync(configDirectory, { recursive: true, mode: 0o700 });
+  validateExistingPath(
+    configDirectory,
+    "Lab Scotty config directory",
+    (info) => info.isDirectory(),
+    "directory",
+  );
+  chmodSync(configDirectory, 0o700);
+  validateExistingPath(configPath, "Lab Scotty config", (info) => info.isFile(), "regular file");
+  writeFileSync(configPath, formatCredentialToml({ repo, piAuthPath: inputs.piAuthPath }), {
+    mode: 0o600,
+  });
+  chmodSync(configPath, 0o600);
+  mkdirSync(credentialBin, { recursive: true, mode: 0o700 });
+  chmodSync(credentialBin, 0o700);
+  writeFileSync(
+    githubLauncher,
+    `#!/bin/sh\nexec env HOME=${shellWord(inputs.githubHome)} GH_CONFIG_DIR=${shellWord(inputs.githubConfigDir)} ${shellWord(inputs.githubExecutable)} "$@"\n`,
+    { mode: 0o700 },
+  );
+  chmodSync(githubLauncher, 0o700);
+  return { credentialBin };
+}
+
+export function spawnCli(manifest, argv, explicitEnvironment = {}) {
   const rootToken = readPrivateToken(manifest.tokenFile);
   return spawn("bun", [path.join(ROOT, "cli/scotty.ts"), ...argv], {
     cwd: ROOT,
     env: labSystemEnvironment(manifest.cliHome, {
       SCOTTY_HOST: manifest.host,
       SCOTTY_TOKEN: rootToken,
+      ...explicitEnvironment,
     }),
     stdio: "inherit",
   });

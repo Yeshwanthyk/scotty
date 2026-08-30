@@ -36,6 +36,13 @@ export interface ProcessResult {
   readonly error?: string;
 }
 
+export interface CredentialSetupInputs {
+  readonly piAuthPath: string;
+  readonly githubConfigDir: string;
+  readonly githubHome: string;
+  readonly githubExecutable: string;
+}
+
 export function acquireLifecycleLock(): number;
 export function releaseLifecycleLock(descriptor: number): void;
 export function createStartReservation(createdAt: string): LabManifest;
@@ -63,5 +70,14 @@ export function cleanupOwnedFiles(manifest: LabManifest): ReadonlyArray<string>;
 export function removeOwnedTempRoot(manifest: LabManifest): void;
 export function markCleanupPending(manifest: LabManifest): void;
 export function execManifest(runId: string): LabManifest;
-export function spawnCli(manifest: LabManifest, argv: ReadonlyArray<string>): ChildProcess;
+export function prepareCredentialSetup(
+  manifest: LabManifest,
+  repo: string,
+  inputs?: CredentialSetupInputs,
+): { readonly credentialBin: string };
+export function spawnCli(
+  manifest: LabManifest,
+  argv: ReadonlyArray<string>,
+  explicitEnvironment?: Readonly<Record<string, string>>,
+): ChildProcess;
 export function stopManifest(runId: string, manifestPath?: string): LabManifest;
