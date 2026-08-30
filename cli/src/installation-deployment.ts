@@ -16,13 +16,26 @@ import { ArtifactStore, createArtifactStore } from "alchemy/Artifacts";
 import { AuthProviders } from "alchemy/Auth/AuthProvider";
 import { CredentialsStoreLive } from "alchemy/Auth/Credentials";
 import { ProfileLive } from "alchemy/Auth/Profile";
+import { Cli as AlchemyCli } from "alchemy/Cli/Cli";
 import { LoggingCli } from "alchemy/Cli/LoggingCli";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Apply from "alchemy/Apply";
 import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
 import { PlatformServices } from "alchemy/Util/PlatformServices";
-import { Clock, Context, Data, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
+import {
+  Clock,
+  Context,
+  Data,
+  Duration,
+  Effect,
+  Layer,
+  Logger,
+  Option,
+  Schema,
+  Stream,
+} from "effect";
+import { MinimumLogLevel } from "effect/References";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import {
   assessContainerSettlement,
@@ -429,16 +442,32 @@ const prepareInstallationContainerContext = async (root: string): Promise<void> 
   await prepareContainerContext(root, { inputs: CONTAINER_INPUTS });
 };
 
-const alchemyRuntimeLayer = Layer.provideMerge(
-  Layer.mergeAll(LoggingCli, AlchemyContextLive),
-  Layer.mergeAll(
-    PlatformServices,
-    NodeServices.layer,
-    FetchHttpClient.layer,
-    Layer.provide(ProfileLive, PlatformServices),
-    Layer.provide(CredentialsStoreLive, PlatformServices),
-  ),
+const quietAlchemyCli = Layer.succeed(
+  AlchemyCli,
+  AlchemyCli.of({
+    approvePlan: () => Effect.succeed(false),
+    displayPlan: () => Effect.void,
+    startApplySession: () => Effect.succeed({ emit: () => Effect.void, done: () => Effect.void }),
+  }),
 );
+
+const alchemyRuntimeLayer = (quiet: boolean) =>
+  Layer.provideMerge(
+    Layer.mergeAll(
+      quiet ? quietAlchemyCli : LoggingCli,
+      AlchemyContextLive,
+      ...(quiet
+        ? [Logger.layer([], { mergeWithExisting: false }), Layer.succeed(MinimumLogLevel, "None")]
+        : []),
+    ),
+    Layer.mergeAll(
+      PlatformServices,
+      NodeServices.layer,
+      FetchHttpClient.layer,
+      Layer.provide(ProfileLive, PlatformServices),
+      Layer.provide(CredentialsStoreLive, PlatformServices),
+    ),
+  );
 
 const cloudflareApiLive = () => {
   const live = Cloudflare.CloudflareApiLive();
@@ -458,12 +487,12 @@ const cloudflareApiLive = () => {
   );
 };
 
-const provideAlchemy = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+const provideAlchemy = <A, E, R>(program: Effect.Effect<A, E, R>, quiet = false) =>
   program.pipe(
     Effect.provide(Cloudflare.state()),
     Effect.provideService(ArtifactStore, createArtifactStore()),
     Effect.provideService(AuthProviders, {}),
-    Effect.provide(alchemyRuntimeLayer),
+    Effect.provide(alchemyRuntimeLayer(quiet)),
   );
 
 const DOCKER_CONTEXT_INSPECT_ARGS = [
@@ -691,6 +720,7 @@ const planWithProfile = async (
   request: InstallationDeployRequest,
   root: string,
   prebuiltWorkers: boolean,
+  quiet = false,
 ): Promise<InstallationPlan> => {
   const { stack } = makeStack(request, prebuiltWorkers);
   return runWithProfile(request.profile, root, () =>
@@ -706,6 +736,7 @@ const planWithProfile = async (
           }).pipe(Effect.provide(cloudflareApiLive())),
         { stage: CLOUDFLARE_STAGE },
       ),
+      quiet,
     ),
   );
 };
@@ -716,6 +747,7 @@ const deployWithProfile = async (
   prebuiltWorkers: boolean,
   credentialWrappingKey?: string,
   readinessTarget?: InstallationDeploymentReadinessTarget,
+  quiet = false,
 ): Promise<InstallationResult> => {
   const { installation, stack } = makeStack(request, prebuiltWorkers);
   return runWithProfile(
@@ -814,6 +846,7 @@ const deployWithProfile = async (
             }).pipe(Effect.provide(cloudflareApiLive())),
           { stage: CLOUDFLARE_STAGE },
         ),
+        quiet,
       ),
     { credentialWrappingKey },
   );
@@ -903,12 +936,14 @@ const uploadCredentialWrappingKeyWithProfile = async (
     readonly scriptName: string;
     readonly value: string;
   },
+  quiet = false,
 ): Promise<void> =>
   runWithProfile(profile, root, () =>
     provideAlchemy(
       uploadCredentialWrappingKey(input, (request) => Workers.putScriptSecret(request)).pipe(
         Effect.provide(cloudflareApiLive()),
       ),
+      quiet,
     ),
   );
 
@@ -917,6 +952,7 @@ const inspectWithProfile = async (
   root: string,
   token?: string,
   expectedAccountId?: string,
+  quiet = false,
 ): Promise<InstallationResult> => {
   const installation = makeInstallationTopology(
     request.installationName,
@@ -1018,6 +1054,7 @@ const inspectWithProfile = async (
           host: `https://${installation.workerName}.${subdomain}.workers.dev`,
         } satisfies InstallationResult;
       }).pipe(Effect.provide(cloudflareApiLive())),
+      quiet,
     ),
   );
 };
@@ -1092,7 +1129,7 @@ export async function planCreateInstallation(
       request.evidenceEnabled === true,
     );
     await prepareInstallationDeployment(deployment, installation);
-    return await planWithProfile(request, deployment.root, deployment.prebuiltWorkers);
+    return await planWithProfile(request, deployment.root, deployment.prebuiltWorkers, true);
   } finally {
     await deployment.cleanup();
   }
@@ -1118,7 +1155,12 @@ export async function createInstallation(
       request.evidenceEnabled === true,
     );
     await prepareInstallationDeployment(deployment, installation);
-    const plan = await planWithProfile(deployRequest, deployment.root, deployment.prebuiltWorkers);
+    const plan = await planWithProfile(
+      deployRequest,
+      deployment.root,
+      deployment.prebuiltWorkers,
+      true,
+    );
     if (
       plan.accountId !== request.expectedAccountId ||
       plan.fingerprint !== request.expectedPlanFingerprint
@@ -1156,16 +1198,22 @@ export async function createInstallation(
     }
     let deployed: InstallationResult;
     if (plan.changes.length === 0) {
-      await uploadCredentialWrappingKeyWithProfile(request.profile, deployment.root, {
-        accountId: plan.accountId,
-        scriptName: installation.workerName,
-        value: request.credentialWrappingKey,
-      });
+      await uploadCredentialWrappingKeyWithProfile(
+        request.profile,
+        deployment.root,
+        {
+          accountId: plan.accountId,
+          scriptName: installation.workerName,
+          value: request.credentialWrappingKey,
+        },
+        true,
+      );
       deployed = await inspectWithProfile(
         request,
         deployment.root,
         request.token,
         request.expectedAccountId,
+        true,
       );
     } else {
       deployed = await deployWithProfile(
@@ -1177,15 +1225,28 @@ export async function createInstallation(
         deployment.root,
         deployment.prebuiltWorkers,
         request.credentialWrappingKey,
+        undefined,
+        true,
       );
-      await uploadCredentialWrappingKeyWithProfile(request.profile, deployment.root, {
-        accountId: deployed.accountId,
-        scriptName: deployed.workerName,
-        value: request.credentialWrappingKey,
-      });
+      await uploadCredentialWrappingKeyWithProfile(
+        request.profile,
+        deployment.root,
+        {
+          accountId: deployed.accountId,
+          scriptName: deployed.workerName,
+          value: request.credentialWrappingKey,
+        },
+        true,
+      );
     }
     if (plan.changes.length > 0)
-      await inspectWithProfile(request, deployment.root, request.token, request.expectedAccountId);
+      await inspectWithProfile(
+        request,
+        deployment.root,
+        request.token,
+        request.expectedAccountId,
+        true,
+      );
     return deployed;
   } finally {
     await deployment.cleanup();
