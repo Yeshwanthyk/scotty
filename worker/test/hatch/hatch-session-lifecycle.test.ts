@@ -454,6 +454,9 @@ describe("authoritative Hatch session lifecycle", () => {
       const rejected = yield* Effect.promise(() =>
         harness.sandbox
           .acceptScottyEvidenceJob({
+            version: 2,
+            viewport: { width: 1_280, height: 720 },
+            capture: { screenshots: "after-each-step", video: false },
             port: service.port,
             steps: [
               {
