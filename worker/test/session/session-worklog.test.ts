@@ -283,12 +283,12 @@ describe("Sandbox Pi worklog HTTP boundary", () => {
     assert.isFalse(harness.events.some((event) => event.startsWith("host:pi:")));
   });
 
-  it("relays a current native command over the raw TCP transport", async () => {
+  it("relays a current native follow-up command over the raw TCP transport", async () => {
     const command = {
       ...consoleCommand(0),
       intent: {
-        type: "prompt" as const,
-        message: "inspect",
+        type: "follow_up" as const,
+        message: "run the focused tests next",
         images: [{ type: "image" as const, data: "AA==", mimeType: "image/png" as const }],
       },
     };

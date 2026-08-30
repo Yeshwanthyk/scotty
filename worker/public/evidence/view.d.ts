@@ -35,3 +35,11 @@ export function orderedEvidenceSteps(summary: unknown): ReadonlyArray<EvidenceCh
 
 export function orderedEvidenceFrames(summary: unknown): ReadonlyArray<EvidenceFrame>;
 export function evidenceStatusLabel(status: unknown): string;
+
+export function evidenceFailurePresentation(failure: unknown):
+  | {
+      readonly title: string;
+      readonly detail: string;
+      readonly hint?: string;
+    }
+  | undefined;

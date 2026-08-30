@@ -61,3 +61,28 @@ export function evidenceStatusLabel(status) {
     }[status] || "Unknown"
   );
 }
+
+export function evidenceFailurePresentation(failure) {
+  if (!failure || typeof failure !== "object") return undefined;
+  if (failure.code === "port_conflict")
+    return {
+      title: "Evidence target conflicts with Hatch",
+      detail: "The requested app port is owned by Hatch or is still exposed.",
+      hint: "Start a separate temporary app server on a different port, then rerun the same flow. Leave Hatch running.",
+    };
+  if (failure.code === "assertion_mismatch")
+    return {
+      title: "Evidence assertion failed",
+      detail: `A required assertion failed at step ${(failure.step ?? 0) + 1}.`,
+    };
+  if (failure.code === "artifact_invalid")
+    return {
+      title: "Evidence capture failed",
+      detail: "Evidence did not produce a valid screenshot or recording.",
+      hint: "Check that the separate temporary app server is ready, then rerun the same flow.",
+    };
+  return {
+    title: "Evidence run failed",
+    detail: `Evidence stopped with ${String(failure.code).replaceAll("_", " ")}.`,
+  };
+}

@@ -1,12 +1,31 @@
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 const SESSION_ID = /^[0-9a-f]{12}$/u;
 const EVIDENCE_STATUSES = new Set(["succeeded", "failed", "interrupted", "unsupported"]);
+const EVIDENCE_FAILURE_CODES = new Set([
+  "assertion_mismatch",
+  "artifact_invalid",
+  "artifact_over_budget",
+  "artifact_put_unknown",
+  "deadline",
+  "interrupted",
+  "port_conflict",
+  "unsupported",
+]);
 const HATCH_STATES = new Set(["starting", "running", "sleeping", "unhealthy", "stopped", "failed"]);
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 function resultDetails(tool) {
   return [tool?.details, tool?.result?.details, tool?.output?.details].find(isObject);
+}
+
+function isEvidenceFailure(failure) {
+  return (
+    isObject(failure) &&
+    EVIDENCE_FAILURE_CODES.has(failure.code) &&
+    (failure.step === undefined ||
+      (Number.isSafeInteger(failure.step) && failure.step >= 0 && failure.step < 12))
+  );
 }
 
 function isEvidenceDetails(details) {
@@ -18,7 +37,8 @@ function isEvidenceDetails(details) {
     details.completedSteps >= 0 &&
     Number.isSafeInteger(details.frameCount) &&
     details.frameCount >= 0 &&
-    typeof details.video === "boolean"
+    typeof details.video === "boolean" &&
+    (details.failure === undefined || isEvidenceFailure(details.failure))
   );
 }
 
@@ -37,6 +57,32 @@ function isHatchDetails(details) {
   );
 }
 
+function evidenceArtifact(details, sessionId) {
+  const href = `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(details.jobId)}`;
+  if (details.summaryUrl !== href) return { kind: "unavailable", label: "Evidence unavailable" };
+  const failure =
+    details.failure === undefined
+      ? {}
+      : {
+          failure: {
+            code: details.failure.code,
+            ...(details.failure.step === undefined ? {} : { step: details.failure.step }),
+          },
+        };
+  return {
+    kind: "evidence",
+    reference: `scotty-evidence:${details.jobId}`,
+    jobId: details.jobId,
+    label: "Browser evidence",
+    status: details.status,
+    completedSteps: details.completedSteps,
+    frameCount: details.frameCount,
+    video: details.video,
+    ...failure,
+    href,
+  };
+}
+
 export function artifactForTool(tool, sessionId) {
   if (!SESSION_ID.test(sessionId)) return undefined;
   const name = tool?.name ?? tool?.toolName;
@@ -44,19 +90,7 @@ export function artifactForTool(tool, sessionId) {
   if (name === "scotty_browser_test") {
     if (!details && tool?.status === "running") return undefined;
     if (!isEvidenceDetails(details)) return { kind: "unavailable", label: "Evidence unavailable" };
-    const href = `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(details.jobId)}`;
-    if (details.summaryUrl !== href) return { kind: "unavailable", label: "Evidence unavailable" };
-    return {
-      kind: "evidence",
-      reference: `scotty-evidence:${details.jobId}`,
-      jobId: details.jobId,
-      label: "Browser evidence",
-      status: details.status,
-      completedSteps: details.completedSteps,
-      frameCount: details.frameCount,
-      video: details.video,
-      href,
-    };
+    return evidenceArtifact(details, sessionId);
   }
 
   if (name !== "scotty_hatch") return undefined;
@@ -88,7 +122,7 @@ export function renderArtifactCard(document, artifact) {
   title.textContent = artifact.label;
   const meta = document.createElement("span");
   if (artifact.kind === "evidence") {
-    meta.textContent = `${artifact.status} · ${artifact.completedSteps} steps · ${artifact.frameCount} frames${artifact.video ? " · video" : ""}`;
+    meta.textContent = `${artifact.status} · ${artifact.completedSteps} steps · ${artifact.frameCount} frames${artifact.video ? " · video" : ""}${artifact.failure === undefined ? "" : ` · ${artifact.failure.code.replaceAll("_", " ")}`}`;
   } else if (artifact.kind === "hatch") {
     meta.textContent = `Historical result · ${artifact.status}`;
   } else meta.textContent = "The structured result could not be verified.";

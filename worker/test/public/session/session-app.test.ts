@@ -27,9 +27,9 @@ describe("cloud-agent session application", () => {
     assert.notInclude(sessionHtml, "workflow");
   });
 
-  it("keeps only drafts and scroll positions across agent switches", () => {
-    assert.include(appSource, "const memory = new Map()");
-    assert.include(appSource, 'entry = { draft: "", scrollTop: 0 }');
+  it("keeps composer memory scoped across agent switches", () => {
+    assert.include(appSource, "createSessionMemory()");
+    assert.include(appSource, "memoryEntry(sessionId)");
     assert.include(appSource, "connection.open(sessionId)");
     assert.include(appSource, "window.history.pushState");
     assert.include(appSource, 'window.addEventListener("popstate"');
@@ -39,30 +39,39 @@ describe("cloud-agent session application", () => {
   });
 
   it("provides fenced command recovery and browser question responses", () => {
-    assert.include(appSource, 'deliveryMode.value === "steer" ? "steer" : "follow_up"');
+    assert.include(appSource, "selectedDeliveryMode(deliveryMode)");
     assert.include(appSource, 'type: "abort"');
     assert.include(appSource, 'type: "extension_ui_response"');
-    assert.include(appSource, "connection.discard(currentSessionId)");
     assert.match(
       appSource,
-      /connection\.discard\(currentSessionId\);\s*chatView\.reset\(\);\s*summaryView\.reset\(\);/u,
+      /connection\.discard\(sessionId\);\s*chatView\.reset\(\);\s*summaryView\.reset\(\);/u,
     );
     assert.include(appSource, "syncDeliveredUiResponses");
     assert.include(appSource, '"This agent runtime stopped"');
     assert.include(appSource, '"Recover runtime"');
     assert.include(appSource, "await transport.prepare(sessionId)");
-    assert.include(appSource, "Pending commands will not be replayed");
+    assert.include(appSource, "connection.discard(sessionId)");
+    assert.include(sessionHtml, "Scotty will never replay it automatically");
     assert.notInclude(appSource, "new WebSocket");
     assert.notInclude(appSource, "/rpc/");
   });
 
-  it("makes accepted follow-up delivery visible while Pi is working", () => {
+  it("reconciles accepted or queued delivery state from each authoritative reload", () => {
+    assert.match(
+      appSource,
+      /projection = projectionFromSnapshot\(snapshot\);[\s\S]{0,240}entry\.delivery = reconcileDelivery\(entry\.delivery, projection\);/u,
+    );
+  });
+
+  it("uses clear delivery choices and keeps Stop outside the message form", () => {
     assert.include(sessionHtml, 'id="composer-hint" class="composer-hint" role="status"');
     assert.include(sessionHtml, 'aria-live="polite"');
-    assert.include(appSource, "projection?.queue?.followUp");
-    assert.include(appSource, "follow-up queued · sends after Pi finishes");
-    assert.include(appSource, "follow-ups queued · send after Pi finishes");
-    assert.include(appSource, "composerHint.textContent !== nextComposerHint");
+    assert.match(sessionHtml, /id="stop-agent"[\s\S]*?<form id="composer"/u);
+    assert.include(sessionHtml, 'type="radio" name="delivery-mode" value="follow_up" checked');
+    assert.include(sessionHtml, 'type="radio" name="delivery-mode" value="steer"');
+    assert.include(sessionHtml, "After Pi finishes");
+    assert.include(sessionHtml, "Guide the next turn");
+    assert.notInclude(sessionHtml, '<select id="delivery-mode">');
   });
 
   it("uses a modal mobile sidebar, visible focus, safe areas, and reduced motion", () => {

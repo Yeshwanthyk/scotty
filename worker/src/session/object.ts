@@ -1293,13 +1293,6 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (!Number.isFinite(deadlineMillis) || deadlineMillis <= now)
       return yield* wrongState(record.status, "evidence", "The session hard cap has elapsed");
     const deadlineAt = new Date(deadlineMillis).toISOString();
-    const hatchState = yield* Effect.flatMap(HatchStore, (store) => store.read);
-    if (
-      hatchState.primary?.service.port === job.port &&
-      (hatchState.primary.exposure === "active" ||
-        hatchState.primary.exposure === "unexpose_pending")
-    )
-      return yield* conflict("Evidence cannot expose the active Hatch service port");
     const operationNonce = randomToken(12);
     const flowHash = yield* Effect.tryPromise({
       try: () => sha256Hex(JSON.stringify({ viewport: job.viewport, steps: job.steps })),
@@ -2073,11 +2066,24 @@ export class Sandbox extends BaseSandbox<Bindings> {
       Effect.mapError(() => badRequest("Evidence job is invalid")),
     );
     const active = yield* this.acceptDecodedScottyEvidenceJobProgram(job);
+    const hatchState = yield* Effect.result(Effect.flatMap(HatchStore, (store) => store.read));
+    const primary = Result.isSuccess(hatchState) ? hatchState.success.primary : undefined;
+    const portConflictsWithHatch =
+      primary?.service.port === job.port &&
+      (primary.desiredStatus === "open" ||
+        primary.exposure === "active" ||
+        primary.exposure === "unexpose_pending");
+    const preflightFailure = Result.isFailure(hatchState)
+      ? ({ code: "interrupted" } as const)
+      : portConflictsWithHatch
+        ? ({ code: "port_conflict" } as const)
+        : undefined;
     const record = yield* this.requireRecordProgram();
     return yield* runEvidenceWorkflow({
       active,
       job,
       summaryUrl: `/s/${record.id}/evidence/${active.jobId}`,
+      ...(preflightFailure === undefined ? {} : { preflightFailure }),
     }).pipe(Effect.provideService(EvidenceWorkflowControl, this.evidenceWorkflowControl()));
   });
 

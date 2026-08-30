@@ -160,6 +160,7 @@ const FailureSchema = Type.Object(
       Type.Literal("artifact_put_unknown"),
       Type.Literal("deadline"),
       Type.Literal("interrupted"),
+      Type.Literal("port_conflict"),
       Type.Literal("unsupported"),
     ]),
     step: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_STEPS - 1 })),
@@ -276,7 +277,10 @@ function errorMessage(status: number, value: unknown): string {
     return `Scotty browser test request failed with HTTP ${status}`;
   }
   const envelope: ErrorEnvelope = value;
-  return `Scotty browser test request failed (${envelope.error.code}): ${envelope.error.message}`;
+  return [
+    `Scotty browser test request failed (${envelope.error.code}): ${envelope.error.message}`,
+    ...(envelope.error.hint === undefined ? [] : [`Recovery: ${envelope.error.hint}`]),
+  ].join("\n");
 }
 
 export async function runScottyBrowserTest(
@@ -302,7 +306,7 @@ export async function runScottyBrowserTest(
   return result;
 }
 
-function renderResult(result: BrowserEvidenceResult): string {
+export function renderBrowserEvidenceResult(result: BrowserEvidenceResult): string {
   const lines = [
     `Browser evidence: ${result.status}`,
     `Completed steps: ${result.completedSteps}`,
@@ -312,6 +316,10 @@ function renderResult(result: BrowserEvidenceResult): string {
   if (result.failure !== undefined) {
     const step = result.failure.step === undefined ? "" : ` at step ${result.failure.step + 1}`;
     lines.push(`Failure: ${result.failure.code}${step}`);
+    if (result.failure.code === "port_conflict")
+      lines.push(
+        "Recovery: Start a separate temporary app server on a different port from Hatch, then rerun the same flow. Leave Hatch running.",
+      );
   }
   lines.push(`Authenticated summary: ${result.summaryUrl}`);
   return lines.join("\n");
@@ -334,7 +342,7 @@ export default function scottyBrowserTest(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, signal) {
       const result = await runScottyBrowserTest(params, signal);
       return {
-        content: [{ type: "text" as const, text: renderResult(result) }],
+        content: [{ type: "text" as const, text: renderBrowserEvidenceResult(result) }],
         details: result,
       };
     },

@@ -99,12 +99,21 @@
         <div class="composer-dock">
           <div id="command-recovery" class="command-recovery" role="alert" hidden>
             <div>
-              <strong id="recovery-title">This session needs recovery</strong>
-              <p id="recovery-copy">Pending commands are held and will not be replayed.</p>
+              <strong>Delivery could not be confirmed</strong>
+              <p>
+                This message may have arrived. Refresh, check the conversation, then send again only
+                if needed. Scotty will never replay it automatically.
+              </p>
             </div>
             <button id="discard-commands" class="button button-secondary" type="button">
-              Discard and refresh
+              Refresh and review
             </button>
+          </div>
+          <div class="composer-activity">
+            <span id="composer-hint" class="composer-hint" role="status" aria-live="polite">
+              Loading session state…
+            </span>
+            <button id="stop-agent" class="button button-stop" type="button" hidden>Stop Pi</button>
           </div>
           <form id="composer" class="composer" aria-label="Message Pi">
             <label class="visually-hidden" for="composer-input">Message Pi</label>
@@ -118,19 +127,19 @@
               aria-describedby="composer-hint"
             ></textarea>
             <div class="composer-footer">
-              <div id="delivery-controls" class="delivery-controls" hidden>
-                <label for="delivery-mode">Delivery</label>
-                <select id="delivery-mode">
-                  <option value="follow_up">Follow up</option>
-                  <option value="steer">Steer</option>
-                </select>
-              </div>
-              <span id="composer-hint" class="composer-hint" role="status" aria-live="polite">
-                Loading session state…
-              </span>
-              <button id="stop-agent" class="button button-secondary" type="button" hidden>
-                Stop
-              </button>
+              <fieldset id="delivery-controls" class="delivery-controls" hidden>
+                <legend class="visually-hidden">When should Pi receive this message?</legend>
+                <div id="delivery-mode" class="delivery-mode">
+                  <label>
+                    <input type="radio" name="delivery-mode" value="follow_up" checked />
+                    <span><strong>Follow up</strong><small>After Pi finishes</small></span>
+                  </label>
+                  <label>
+                    <input type="radio" name="delivery-mode" value="steer" />
+                    <span><strong>Steer</strong><small>Guide the next turn</small></span>
+                  </label>
+                </div>
+              </fieldset>
               <button id="send-message" class="button button-primary" type="submit" disabled>
                 Send
               </button>

@@ -9,6 +9,7 @@ export type Artifact =
       readonly completedSteps: number;
       readonly frameCount: number;
       readonly video: boolean;
+      readonly failure?: { readonly code: string; readonly step?: number };
       readonly href: string;
     }
   | {

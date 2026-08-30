@@ -639,52 +639,6 @@ describe("authoritative Hatch session lifecycle", () => {
     }),
   );
 
-  it.effect("keeps evidence preview from reusing an active Hatch port", () =>
-    Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
-      const clock = yield* Clock.Clock;
-      const harness = yield* Effect.promise(() =>
-        createSessionHarness({
-          clock,
-          evidenceEnabled: true,
-          previewBase: "preview.example.test",
-          rawPiContainerRunning: true,
-          initialEntries: {
-            [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
-          },
-        }),
-      );
-      yield* Effect.promise(() => harness.startRuntime());
-      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service }));
-      const rejected = yield* Effect.promise(() =>
-        harness.sandbox
-          .acceptScottyEvidenceJob({
-            version: 2,
-            viewport: { width: 1_280, height: 720 },
-            capture: { screenshots: "after-each-step", video: false },
-            port: service.port,
-            steps: [
-              {
-                name: "load",
-                action: { kind: "goto", path: "/" },
-                expect: [{ kind: "urlPath", expected: "/" }],
-              },
-            ],
-          })
-          .then(
-            () => false,
-            () => true,
-          ),
-      );
-      assert.isTrue(rejected);
-      assert.strictEqual(
-        harness.events.filter((event) => event === "host:preview:expose:4173").length,
-        1,
-      );
-      assert.strictEqual(hatchState(harness)?.primary?.exposure, "active");
-    }),
-  );
-
   it.effect("retains and completes close cleanup after unexpose fails", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness();

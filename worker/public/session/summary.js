@@ -1,6 +1,6 @@
 import { artifactForTool } from "./artifacts.js";
 import { conversationTurns, renderSafeMarkdown, sanitizeText } from "./chat.js";
-import { orderedEvidenceFrames } from "../evidence/view.js";
+import { evidenceFailurePresentation, orderedEvidenceFrames } from "../evidence/view.js";
 
 const REFERENCE = /\bscotty-(?:evidence|hatch):[A-Za-z0-9][A-Za-z0-9_-]{0,127}\b/gu;
 const SESSION_ID = /^[0-9a-f]{12}$/u;
@@ -19,9 +19,28 @@ const EVIDENCE_STATUSES = new Set([
   "interrupted",
   "unsupported",
 ]);
+const EVIDENCE_FAILURE_CODES = new Set([
+  "assertion_mismatch",
+  "artifact_invalid",
+  "artifact_over_budget",
+  "artifact_put_unknown",
+  "deadline",
+  "interrupted",
+  "port_conflict",
+  "unsupported",
+]);
 const HATCH_STATES = new Set(["starting", "running", "sleeping", "unhealthy", "stopped", "failed"]);
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+function isSummaryFailure(value) {
+  return (
+    isObject(value) &&
+    EVIDENCE_FAILURE_CODES.has(value.code) &&
+    (value.step === undefined ||
+      (Number.isSafeInteger(value.step) && value.step >= 0 && value.step < MAX_EVIDENCE_STEPS))
+  );
+}
 
 function isSummaryVideo(value) {
   return (
@@ -94,6 +113,31 @@ export function summaryProjection(projection, sessionId) {
   return { update: "", artifacts: [] };
 }
 
+function summaryVideoProjection(value) {
+  if (value === undefined) return {};
+  if (!isSummaryVideo(value)) return undefined;
+  return {
+    video: {
+      artifactId: value.artifactId,
+      sha256: value.sha256,
+      bytes: value.bytes,
+      capturedAt: value.capturedAt,
+      offsetMillis: value.offsetMillis,
+    },
+  };
+}
+
+function summaryFailureProjection(value) {
+  if (value === undefined) return {};
+  if (!isSummaryFailure(value)) return undefined;
+  return {
+    failure: {
+      code: value.code,
+      ...(value.step === undefined ? {} : { step: value.step }),
+    },
+  };
+}
+
 export function decodeSummaryEvidence(value, jobId) {
   if (
     !isObject(value) ||
@@ -112,8 +156,10 @@ export function decodeSummaryEvidence(value, jobId) {
     value.steps.length > value.totalSteps
   )
     return undefined;
-  const video = value.video;
-  if (video !== undefined && !isSummaryVideo(video)) return undefined;
+  const video = summaryVideoProjection(value.video);
+  if (video === undefined) return undefined;
+  const failure = summaryFailureProjection(value.failure);
+  if (failure === undefined) return undefined;
   const steps = value.steps.flatMap((step) => {
     if (
       !isObject(step) ||
@@ -167,17 +213,8 @@ export function decodeSummaryEvidence(value, jobId) {
     totalSteps: value.totalSteps,
     completedSteps: value.completedSteps,
     frameCount: value.frameCount,
-    ...(video === undefined
-      ? {}
-      : {
-          video: {
-            artifactId: video.artifactId,
-            sha256: video.sha256,
-            bytes: video.bytes,
-            capturedAt: video.capturedAt,
-            offsetMillis: video.offsetMillis,
-          },
-        }),
+    ...video,
+    ...failure,
     steps,
   };
 }
@@ -237,6 +274,7 @@ function renderUnavailable(document, target, artifact) {
 function renderEvidence(document, target, sessionId, evidence) {
   const assertions = evidence.steps.flatMap((step) => step.assertions);
   const passed = assertions.filter((assertion) => assertion.passed).length;
+  const failure = evidenceFailurePresentation(evidence.failure);
   const meta = document.createElement("p");
   meta.className = "summary-meta";
   meta.textContent = `${evidence.status} · ${evidence.completedSteps}/${evidence.totalSteps} steps · ${passed}/${assertions.length} checks`;
@@ -260,7 +298,17 @@ function renderEvidence(document, target, sessionId, evidence) {
     ? `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(evidence.jobId)}/video.webm`
     : `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(evidence.jobId)}`;
   link.textContent = recordingAvailable ? "Watch browser recording" : "Open full evidence";
-  target.replaceChildren(sectionHeading(document, "Browser evidence", "Verified run"), meta);
+  target.replaceChildren(
+    sectionHeading(document, "Browser evidence", failure?.title ?? "Verified run"),
+    meta,
+  );
+  if (failure !== undefined)
+    target.append(
+      summaryState(
+        document,
+        `${failure.detail}${failure.hint === undefined ? "" : ` ${failure.hint}`}`,
+      ),
+    );
   if (frames.childNodes.length > 0) target.append(frames);
   target.append(link);
 }

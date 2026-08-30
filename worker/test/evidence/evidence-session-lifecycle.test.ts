@@ -19,7 +19,7 @@ import {
   ContainerEvidenceRecorderError,
   type ContainerEvidenceRecording,
 } from "../../src/evidence/recorder";
-import { sha256Hex } from "../../src/shared/digest";
+import { sha256BytesHex, sha256Hex } from "../../src/shared/digest";
 import {
   SANDBOX_TEST_ACCEPT_EVIDENCE,
   SANDBOX_TEST_COMPLETE_EVIDENCE_STEP,
@@ -40,6 +40,14 @@ const NOW = Date.parse("2026-08-06T12:00:00.000Z");
 const PNG = Uint8Array.from([
   137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
 ]);
+const WEBM = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
+const hatchService = {
+  name: "Hatch app",
+  argv: ["npm", "run", "dev"] as const,
+  workingDirectory: `/workspace/${SESSION_ID}`,
+  port: 4_173,
+  healthPath: "/health",
+};
 
 const createHarness = (options: Omit<HarnessOptions, "clock" | "initialEntries"> = {}) =>
   Effect.gen(function* () {
@@ -186,7 +194,11 @@ const job = {
 } as const;
 
 const recordingFor = (
-  options: { readonly bytes?: Uint8Array; readonly passed?: boolean } = {},
+  options: {
+    readonly bytes?: Uint8Array;
+    readonly passed?: boolean;
+    readonly video?: Uint8Array;
+  } = {},
 ): ContainerEvidenceRecording => {
   const passed = options.passed ?? true;
   return {
@@ -206,6 +218,15 @@ const recordingFor = (
         },
       },
     ],
+    ...(options.video === undefined
+      ? {}
+      : {
+          video: {
+            bytes: options.video,
+            capturedAt: new Date(NOW + 2).toISOString(),
+            offsetMillis: 2,
+          },
+        }),
     ...(passed ? {} : { failure: { code: "assertion_mismatch" as const, step: 0 } }),
   };
 };
@@ -214,6 +235,105 @@ const recorderFor = (recording: ContainerEvidenceRecording): ContainerEvidenceRe
   ContainerEvidenceRecorder.of({ record: () => Effect.succeed(recording) });
 
 describe("evidence session lifecycle", () => {
+  it.effect("fails a Hatch-owned target before capture and retains the recovery reason", () =>
+    Effect.gen(function* () {
+      let recorderCalls = 0;
+      const harness = yield* createHarness({
+        containerEvidenceRecorder: ContainerEvidenceRecorder.of({
+          record: () => {
+            recorderCalls += 1;
+            return Effect.succeed(recordingFor());
+          },
+        }),
+        previewBase: "preview.scotty.example",
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service: hatchService }));
+
+      const result = yield* Effect.promise(() => harness.sandbox.runScottyEvidenceJob(job));
+
+      assert.deepInclude(result, {
+        status: "failed",
+        completedSteps: 0,
+        frameCount: 0,
+        video: false,
+        failure: { code: "port_conflict" },
+      });
+      assert.strictEqual(recorderCalls, 0);
+      assert.deepInclude(harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.jobs[0], {
+        status: "failed",
+        completedSteps: 0,
+        frameCount: 0,
+        failure: { code: "port_conflict" },
+        diagnostic: { operation: "validate", reason: "state" },
+      });
+      assert.strictEqual(harness.readRecord()?.operation, null);
+      assert.deepStrictEqual(harness.exposedPreviewPorts(), [hatchService.port]);
+    }),
+  );
+
+  it.effect("captures screenshots from a valid port distinct from Hatch", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness({
+        containerEvidenceRecorder: recorderFor(recordingFor()),
+        previewBase: "preview.scotty.example",
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service: hatchService }));
+
+      const result = yield* Effect.promise(() =>
+        harness.sandbox.runScottyEvidenceJob({ ...job, port: 4_174 }),
+      );
+
+      assert.deepInclude(result, {
+        status: "succeeded",
+        completedSteps: 1,
+        frameCount: 1,
+        video: false,
+      });
+      assert.lengthOf(harness.artifactKeys(), 1);
+      assert.deepStrictEqual(harness.exposedPreviewPorts(), [hatchService.port]);
+    }),
+  );
+
+  it.effect("projects verified screenshot and WebM metadata after finalization", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness({
+        containerEvidenceRecorder: recorderFor(recordingFor({ video: WEBM })),
+        previewBase: "preview.scotty.example",
+      });
+      yield* Effect.promise(() => harness.startRuntime());
+
+      const result = yield* Effect.promise(() =>
+        harness.sandbox.runScottyEvidenceJob({
+          ...job,
+          capture: { screenshots: "after-each-step", video: true },
+        }),
+      );
+
+      assert.deepInclude(result, {
+        status: "succeeded",
+        completedSteps: 1,
+        frameCount: 1,
+        video: true,
+      });
+      const summary = harness.read<EvidenceState>(sessionHarnessKeys.evidence)?.jobs[0];
+      const videoSha256 = yield* Effect.promise(() => sha256BytesHex(WEBM));
+      assert.deepInclude(summary, {
+        status: "succeeded",
+        frameCount: 1,
+        video: {
+          artifactId: "recording",
+          sha256: videoSha256,
+          bytes: WEBM.byteLength,
+          capturedAt: new Date(NOW + 2).toISOString(),
+          offsetMillis: 2,
+        },
+      });
+      assert.lengthOf(harness.artifactKeys(), 2);
+    }),
+  );
+
   it("does not expose low-level evidence mutation methods over Durable Object RPC", () => {
     const publicNames = Object.getOwnPropertyNames(Sandbox.prototype);
     assert.include(publicNames, "runScottyEvidenceJob");
