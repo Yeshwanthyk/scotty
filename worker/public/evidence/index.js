@@ -1,4 +1,9 @@
-import { evidenceStatusLabel, orderedEvidenceFrames, shouldPollEvidence } from "./view.js";
+import {
+  evidenceStatusLabel,
+  orderedEvidenceFrames,
+  orderedEvidenceSteps,
+  shouldPollEvidence,
+} from "./view.js";
 
 const POLL_INTERVAL = 1_000;
 const route = window.location.pathname.match(
@@ -15,6 +20,8 @@ const noticeText = document.querySelector("#notice-text");
 const retry = document.querySelector("#retry");
 const sessionLink = document.querySelector("#session-link");
 const evidenceListLink = document.querySelector("#evidence-list-link");
+const mobileSessionLink = document.querySelector("#session-link-mobile");
+const mobileEvidenceListLink = document.querySelector("#evidence-list-link-mobile");
 let pollTimer;
 
 function addText(parent, className, text, tag = "div") {
@@ -100,7 +107,7 @@ function assertionText(assertion) {
 function renderSteps(parent, summary) {
   const list = document.createElement("div");
   list.className = "evidence-step-list";
-  for (const step of summary.steps) {
+  for (const step of orderedEvidenceSteps(summary)) {
     const row = document.createElement("article");
     row.className = "evidence-step";
     row.dataset.status = step.status;
@@ -140,13 +147,18 @@ function renderScreenshots(parent, summary) {
   grid.className = "evidence-frames-grid";
   for (const frame of frames) {
     const figure = document.createElement("figure");
+    const link = document.createElement("a");
+    link.className = "evidence-frame-link";
+    link.href = framePath(frame.frameId);
+    link.setAttribute("aria-label", `Open ${frame.stepName} screenshot full size`);
     const image = document.createElement("img");
     image.src = framePath(frame.frameId);
     image.alt = frame.stepName;
     image.loading = "lazy";
     image.decoding = "async";
+    link.append(image);
     figure.append(
-      image,
+      link,
       textCaption(
         `${frame.stepIndex + 1}. ${frame.stepName} · ${formatOffset(frame.offsetMillis)}`,
       ),
@@ -228,8 +240,12 @@ async function refresh() {
 }
 
 if (sessionId) {
-  sessionLink.href = `/s/${encodeURIComponent(sessionId)}`;
-  evidenceListLink.href = `/s/${encodeURIComponent(sessionId)}/evidence`;
+  const sessionPath = `/s/${encodeURIComponent(sessionId)}`;
+  const evidenceListPath = `${sessionPath}/evidence`;
+  sessionLink.href = sessionPath;
+  mobileSessionLink.href = sessionPath;
+  evidenceListLink.href = evidenceListPath;
+  mobileEvidenceListLink.href = evidenceListPath;
 } else {
   noticeText.textContent = "Evidence route is invalid.";
   notice.hidden = false;

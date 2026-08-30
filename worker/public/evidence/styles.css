@@ -101,7 +101,7 @@
 .evidence-step-index {
   color: var(--quiet);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 0.72rem;
+  font-size: 0.76rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -114,13 +114,13 @@
 .evidence-assertion {
   margin-top: 4px;
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   line-height: 1.45;
 }
 
 .evidence-step-result {
   color: var(--beam);
-  font-size: 0.72rem;
+  font-size: 0.76rem;
   font-weight: 700;
 }
 
@@ -172,10 +172,22 @@
   object-fit: contain;
 }
 
+.evidence-frame-link {
+  display: block;
+  color: inherit;
+  cursor: zoom-in;
+}
+
+.evidence-frame-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
 .evidence-frames-grid figcaption {
   padding: 8px;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
 
 @media (max-width: 820px) {
@@ -209,5 +221,13 @@
 
   .evidence-frames-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  .evidence-page .subtitle {
+    display: block;
+    font-size: 0.78rem;
+    line-height: 1.45;
   }
 }

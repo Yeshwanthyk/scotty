@@ -16,24 +16,35 @@ export function shouldPollEvidence(payload, detail) {
     : false;
 }
 
-export function orderedEvidenceFrames(summary) {
+export function orderedEvidenceSteps(summary) {
   if (!summary || !Array.isArray(summary.steps)) return [];
-  return summary.steps
-    .flatMap((step) => {
-      const frame = step?.frame;
-      if (!frame || typeof frame.frameId !== "string") return [];
-      return [
-        {
-          ...frame,
-          stepIndex: Number.isInteger(step.index) ? step.index : 0,
-          stepName: typeof step.name === "string" ? step.name : "Evidence checkpoint",
-          stepStatus: step.status === "failed" ? "failed" : "passed",
-        },
-      ];
+  const positioned = summary.steps.map((step, position) => ({ step, position }));
+  const allHaveOffsets = positioned.every(({ step }) => Number.isFinite(step?.frame?.offsetMillis));
+  return positioned
+    .sort((left, right) => {
+      const leftOffset = left.step?.frame?.offsetMillis;
+      const rightOffset = right.step?.frame?.offsetMillis;
+      if (allHaveOffsets && leftOffset !== rightOffset) return leftOffset - rightOffset;
+      const leftIndex = Number.isInteger(left.step?.index) ? left.step.index : left.position;
+      const rightIndex = Number.isInteger(right.step?.index) ? right.step.index : right.position;
+      return leftIndex - rightIndex || left.position - right.position;
     })
-    .sort(
-      (left, right) => left.offsetMillis - right.offsetMillis || left.stepIndex - right.stepIndex,
-    );
+    .map(({ step }) => step);
+}
+
+export function orderedEvidenceFrames(summary) {
+  return orderedEvidenceSteps(summary).flatMap((step) => {
+    const frame = step?.frame;
+    if (!frame || typeof frame.frameId !== "string") return [];
+    return [
+      {
+        ...frame,
+        stepIndex: Number.isInteger(step.index) ? step.index : 0,
+        stepName: typeof step.name === "string" ? step.name : "Evidence checkpoint",
+        stepStatus: step.status === "failed" ? "failed" : "passed",
+      },
+    ];
+  });
 }
 
 export function evidenceStatusLabel(status) {
