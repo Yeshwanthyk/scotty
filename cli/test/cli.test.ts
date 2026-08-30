@@ -2903,6 +2903,104 @@ describe("commands and schemas", () => {
     ]);
   });
 
+  test("read selects recent user and assistant text with stable cursors and output", async () => {
+    const snapshot = {
+      epoch: "epoch-1",
+      baseSequence: 5,
+      sequence: 5,
+      sessionRevision: 7,
+      state: { isStreaming: false },
+      messages: [
+        { id: "u1", role: "user", content: "fix it" },
+        {
+          id: "a1",
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "private" },
+            { type: "text", text: "working" },
+          ],
+        },
+        { id: "t1", role: "toolResult", content: "secret tool output" },
+        { id: "u2", role: "user", content: [{ type: "text", text: "status?" }] },
+      ],
+      overlapEvents: [],
+      activeTools: [],
+      queue: { steer: [], followUp: [] },
+      pendingUi: [],
+      pendingUiAuthority: {
+        status: "partial",
+        reason: "pi_0_83_signal_cancellation_unobservable",
+      },
+      extensionSurface: { statuses: {}, widgets: [] },
+      capabilities: { models: [], thinkingLevels: [], commands: [] },
+      truncated: { messages: true, values: false },
+    } as const;
+    const requests: Request[] = [];
+    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(new Request(input, init));
+      return Response.json(snapshot);
+    };
+
+    const latest = harness({ fetch, stdoutIsTTY: true });
+    expect(
+      await main(["read", "s1", "--json", "--host", "https://worker.example"], latest.deps),
+    ).toBe(EXIT.OK);
+    expect(latest.json()).toEqual({
+      id: "s1",
+      epoch: "epoch-1",
+      sequence: 5,
+      messages: [{ index: 3, id: "u2", role: "user", content: "status?" }],
+      truncated: true,
+    });
+
+    const assistant = harness({ fetch, stdoutIsTTY: true });
+    expect(
+      await main(
+        ["read", "s1", "--last", "2", "--role", "assistant", "--host", "https://worker.example"],
+        assistant.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(assistant.stdout.join("")).toBe("[assistant] sequence=5 truncated=yes\nworking\n");
+
+    const unchanged = harness({ fetch, stdoutIsTTY: true });
+    expect(
+      await main(
+        ["read", "s1", "--since", "5", "--json", "--host", "https://worker.example"],
+        unchanged.deps,
+      ),
+    ).toBe(EXIT.OK);
+    expect(unchanged.json()).toEqual({
+      id: "s1",
+      epoch: "epoch-1",
+      sequence: 5,
+      messages: [],
+      truncated: true,
+    });
+    expect(requests).toHaveLength(3);
+    expect(requests.every((request) => request.method === "GET")).toBe(true);
+    expect(requests.every((request) => request.cache === "no-store")).toBe(true);
+    expect(requests.every((request) => request.redirect === "manual")).toBe(true);
+  });
+
+  test("read rejects invalid bounds and roles before fetching", async () => {
+    let calls = 0;
+    const h = harness({
+      fetch: async () => {
+        calls++;
+        return Response.json({});
+      },
+    });
+    for (const args of [
+      ["read", "s1", "--last", "0"],
+      ["read", "s1", "--last", "501"],
+      ["read", "s1", "--since", "-1"],
+      ["read", "s1", "--role", "tool"],
+      ["read", "s1", "extra"],
+    ])
+      expect(await main([...args, "--host", "https://worker.example"], h.deps)).toBe(EXIT.USAGE);
+    expect(calls).toBe(0);
+  });
+
   test("sandbox inspect and steer use only the exact internal peer-control transport", async () => {
     const home = await temporaryDirectory();
     await mkdir(managedInstallationPath(home));
@@ -2956,9 +3054,11 @@ describe("commands and schemas", () => {
     ];
 
     expect(await main(["inspect", "peer-1", ...ignoredOptions], h.deps)).toBe(EXIT.OK);
+    expect(await main(["read", "peer-1", ...ignoredOptions], h.deps)).toBe(EXIT.OK);
     expect(await main(["steer", "peer-1", "continue", ...ignoredOptions], h.deps)).toBe(EXIT.OK);
 
     expect(requests.map((request) => request.url)).toEqual([
+      "https://scotty.internal/api/sessions/peer-1/inspect",
       "https://scotty.internal/api/sessions/peer-1/inspect",
       "https://scotty.internal/api/sessions/peer-1/steer",
     ]);
@@ -2986,7 +3086,8 @@ describe("commands and schemas", () => {
       );
     }
     expect(requests[0]?.body).toBeNull();
-    expect(await requests[1]?.json()).toEqual({ message: "continue" });
+    expect(requests[1]?.body).toBeNull();
+    expect(await requests[2]?.json()).toEqual({ message: "continue" });
   });
 
   test("sandbox peer-control preserves invalid and Worker error exits", async () => {

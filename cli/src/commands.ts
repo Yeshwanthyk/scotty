@@ -47,6 +47,7 @@ import {
   browserUrl,
   durationSeconds,
   humanInspect,
+  humanRead,
   humanResult,
   humanSession,
   humanSteer,
@@ -54,10 +55,13 @@ import {
   normalizeHost,
   optionalString,
   outputJson,
+  readableMessages,
+  readOutput,
   sanitizeUrl,
   stableRecoveryGrant,
   stableSession,
   usage,
+  type ReadMessage,
 } from "./pure";
 import {
   formatScottyConfigCheck,
@@ -113,6 +117,23 @@ const RUNNER_CHILD_ENV_KEYS = [
   "TZ",
   "USER",
 ] as const;
+const changedReadMessages = (
+  selected: ReadonlyArray<ReadMessage>,
+  seen: Map<string, string>,
+  reset: boolean,
+): ReadonlyArray<ReadMessage> => {
+  if (reset) seen.clear();
+  const nextSeen = new Map<string, string>();
+  const changed = selected.filter((message) => {
+    const key = message.id ?? `${message.index}:${message.role}`;
+    const signature = message.content;
+    nextSeen.set(key, signature);
+    return seen.get(key) !== signature;
+  });
+  seen.clear();
+  for (const [key, signature] of nextSeen) seen.set(key, signature);
+  return changed;
+};
 const formatConsoleArguments = (args: ReadonlyArray<unknown>): string =>
   args.map((value) => String(value)).join(" ");
 const captureConsole = (stdout: string[], stderr: string[]): Console.Console => ({
@@ -1453,6 +1474,79 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       }),
   ).pipe(Command.withDescription("Inspect a warm session or sandbox peer without waking it"));
 
+  const read = Command.make(
+    "read",
+    {
+      id: Argument.string("id").pipe(Argument.withDescription("Session ID")),
+      last: Flag.integer("last").pipe(
+        Flag.withDescription("Show at most this many messages"),
+        Flag.withDefault(1),
+      ),
+      role: Flag.choice("role", ["user", "assistant"] as const).pipe(
+        Flag.withDescription("Show messages from one role"),
+        Flag.optional,
+      ),
+      since: Flag.integer("since").pipe(
+        Flag.withDescription("Emit only after this snapshot sequence"),
+        Flag.optional,
+      ),
+      follow: Flag.boolean("follow").pipe(
+        Flag.withDescription("Keep reading new or changed messages"),
+      ),
+    },
+    ({ follow, id, last, role, since }) =>
+      Effect.gen(function* () {
+        if (last < 1 || last > 500) return yield* usage("--last must be between 1 and 500");
+        const sinceSequence = Option.getOrUndefined(since);
+        if (sinceSequence !== undefined && sinceSequence < 0)
+          return yield* usage("--since must be zero or greater");
+        const { autoJson, options, runtime } = yield* commandContext();
+        const sessionId = yield* validateSessionId(id);
+        const target = yield* peerControlTarget(options);
+        const selectedRole = Option.getOrUndefined(role);
+        let cursor = sinceSequence ?? -1;
+        let epoch: string | undefined;
+        const seen = new Map<string, string>();
+
+        while (true) {
+          const decoded = decodeInspectResponse(
+            yield* requestJson(target, `/api/sessions/${encodeURIComponent(sessionId)}/inspect`, {
+              cache: "no-store",
+              redirect: "manual",
+            }),
+          );
+          if (Option.isNone(decoded))
+            return yield* invalidResponse("Server returned an invalid Pi snapshot");
+          const snapshot = decoded.value;
+          const epochChanged = epoch !== undefined && snapshot.epoch !== epoch;
+          const advanced = epochChanged || snapshot.sequence > cursor;
+          if (advanced) {
+            const selected = readableMessages(snapshot, { last, role: selectedRole });
+            const messages = follow ? changedReadMessages(selected, seen, epochChanged) : selected;
+            if (!follow || messages.length > 0) {
+              const output = readOutput(sessionId, snapshot, messages);
+              if (autoJson) outputJson(runtime.stdout, output);
+              else runtime.stdout(humanRead(output));
+            }
+            cursor = snapshot.sequence;
+          } else if (!follow) {
+            const output = readOutput(sessionId, snapshot, []);
+            if (autoJson) outputJson(runtime.stdout, output);
+            else runtime.stdout(humanRead(output));
+          } else if (seen.size === 0) {
+            changedReadMessages(
+              readableMessages(snapshot, { last, role: selectedRole }),
+              seen,
+              true,
+            );
+          }
+          epoch = snapshot.epoch;
+          if (!follow) return;
+          yield* Effect.sleep("1 second");
+        }
+      }),
+  ).pipe(Command.withDescription("Read recent messages from a warm session without waking it"));
+
   const steer = Command.make(
     "steer",
     {
@@ -1999,6 +2093,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       beam,
       list,
       inspect,
+      read,
       steer,
       doctor,
       attach,

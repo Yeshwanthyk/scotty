@@ -238,6 +238,92 @@ export function humanInspect(id: string, snapshot: InspectResponse): string {
   );
 }
 
+export type ReadMessageRole = "assistant" | "user";
+
+export interface ReadMessage {
+  readonly index: number;
+  readonly role: ReadMessageRole;
+  readonly content: string;
+  readonly id?: string;
+}
+
+export interface ReadOutput {
+  readonly id: string;
+  readonly epoch: string;
+  readonly sequence: number;
+  readonly messages: ReadonlyArray<ReadMessage>;
+  readonly truncated: boolean;
+}
+
+const jsonProperty = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
+
+const readableMessageContent = (content: unknown): string | undefined => {
+  if (typeof content === "string") return content.trim() || undefined;
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .flatMap((part) => {
+      const text = jsonProperty(part, "text");
+      return jsonProperty(part, "type") === "text" && typeof text === "string" ? [text] : [];
+    })
+    .join("\n")
+    .trim();
+  return text || undefined;
+};
+
+export function readableMessages(
+  snapshot: InspectResponse,
+  options: {
+    readonly last: number;
+    readonly role?: ReadMessageRole;
+  },
+): ReadonlyArray<ReadMessage> {
+  return snapshot.messages
+    .flatMap((message, index) => {
+      const rawRole = jsonProperty(message, "role");
+      const role: ReadMessageRole | undefined =
+        rawRole === "assistant" || rawRole === "user" ? rawRole : undefined;
+      if (role === undefined) return [];
+      if (options.role !== undefined && role !== options.role) return [];
+      const content = readableMessageContent(jsonProperty(message, "content"));
+      if (content === undefined) return [];
+      const id = optionalString(jsonProperty(message, "id"));
+      return [
+        {
+          index,
+          role,
+          content,
+          ...(id === undefined ? {} : { id }),
+        },
+      ];
+    })
+    .slice(-options.last);
+}
+
+export function readOutput(
+  id: string,
+  snapshot: InspectResponse,
+  messages: ReadonlyArray<ReadMessage>,
+): ReadOutput {
+  return {
+    id,
+    epoch: snapshot.epoch,
+    sequence: snapshot.sequence,
+    messages,
+    truncated: snapshot.truncated.messages,
+  };
+}
+
+export function humanRead(output: ReadOutput): string {
+  if (output.messages.length === 0) return "No matching messages.\n";
+  return `${output.messages
+    .map(
+      (message) =>
+        `[${message.role}] sequence=${output.sequence} truncated=${output.truncated ? "yes" : "no"}\n${message.content}`,
+    )
+    .join("\n\n")}\n`;
+}
+
 export function humanSteer(result: SteerResponse): string {
   if (result.status === "accepted")
     return `Steer accepted for ${result.id} at revision ${result.sessionRevision}.\n`;
