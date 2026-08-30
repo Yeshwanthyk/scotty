@@ -11,6 +11,12 @@ import {
 } from "effect/unstable/cli";
 import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
 import { managedInstallationPath } from "./managed-installation-path.mjs";
+import {
+  readDeploymentPlan,
+  removeDeploymentPlan,
+  writeDeploymentPlan,
+  type DeploymentPlan,
+} from "./deployment-plan";
 import { loadEmbeddedScottySkill } from "./embedded-scotty-skill";
 import { beamUpSession, credentials, readConfig, secureWrite } from "./dependencies";
 import {
@@ -253,6 +259,45 @@ const synchronizeInstallationSandbox = Effect.fnUntraced(function* (
     return yield* synchronizeScottyToml({ built, target });
   }).pipe(Effect.mapError(mapLifecycleSyncError));
 });
+
+const consumeAuthorizedDeploymentPlan = Effect.fnUntraced(function* (
+  home: string,
+  current: DeploymentPlan,
+) {
+  const authorized = yield* readDeploymentPlan(home);
+  if (authorized === undefined)
+    return yield* usage(
+      "deploy --yes requires a saved plan",
+      "Run scotty deploy --plan --json, review it, then retry with --yes.",
+    );
+  const changed =
+    authorized.cliVersion !== current.cliVersion ||
+    authorized.installationName !== current.installationName ||
+    authorized.accountId !== current.accountId ||
+    authorized.planFingerprint !== current.planFingerprint ||
+    authorized.bundleDigest !== current.bundleDigest;
+  if (changed)
+    return yield* new CliError(
+      "deployment_plan_changed",
+      "The deployment plan changed after it was reviewed",
+      "Run scotty deploy --plan --json again and review the new plan.",
+      EXIT.USAGE,
+    );
+  yield* removeDeploymentPlan(home);
+});
+
+const validateDeploymentMode = (
+  planOnly: boolean,
+  apply: boolean,
+): Effect.Effect<void, CliError> => {
+  if (planOnly && apply) return usage("deploy does not accept --plan with --yes");
+  if (!planOnly && !apply)
+    return usage(
+      "deploy requires --plan or --yes",
+      "Run scotty deploy --plan --json, review it, then apply it with --yes.",
+    );
+  return Effect.void;
+};
 
 const runnerChildEnvironment = (
   environment: Readonly<Record<string, string | undefined>>,
@@ -1025,13 +1070,17 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
   const deployInstallationCommand = Command.make(
     "deploy",
     {
-      yes: Flag.boolean("yes").pipe(Flag.withDescription("Apply a deployment with changes")),
+      plan: Flag.boolean("plan").pipe(
+        Flag.withDescription("Save and print the exact deployment plan without applying it"),
+      ),
+      yes: Flag.boolean("yes").pipe(Flag.withDescription("Apply the saved exact deployment plan")),
     },
-    ({ yes }) =>
+    ({ plan: planOnly, yes }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
           return yield* usage("deploy does not accept --host or --token-file");
+        yield* validateDeploymentMode(planOnly, yes);
         const config = yield* readConfig(managedInstallationPath(runtime.home));
         if (!config.installationName || !config.profile || !config.accountId)
           return yield* usage(
@@ -1043,6 +1092,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             "Managed installation credentials are missing",
             "Run scotty recover --name NAME first.",
           );
+        const built = yield* prepareScottyTomlBundle(runtime.home, runtime.cwd).pipe(
+          Effect.mapError(mapLifecycleSyncError),
+        );
         yield* ensureDocker();
         const deployer = yield* InstallationDeployer;
         const request = {
@@ -1059,9 +1111,36 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             "Select the saved Alchemy profile or recover the installation before deploying.",
             EXIT.GENERIC,
           );
+        const savedPlan = {
+          version: 1 as const,
+          cliVersion: VERSION,
+          installationName: config.installationName,
+          accountId: plan.accountId,
+          planFingerprint: plan.fingerprint,
+          bundleDigest: built.digest,
+        };
+        if (planOnly) {
+          yield* writeDeploymentPlan(runtime.home, savedPlan);
+          const result = {
+            installationName: config.installationName,
+            version: VERSION,
+            plan: plan.fingerprint,
+            bundle: built.digest,
+            changes: plan.changes,
+          };
+          if (autoJson) outputJson(runtime.stdout, result);
+          else
+            runtime.stdout(
+              `Installation: ${config.installationName}\nVersion: ${VERSION}\nPlan: ${plan.fingerprint}\nBundle: ${built.digest}\n${plan.changes.map((change) => `${change.action.padEnd(7)} ${change.id}`).join("\n")}${plan.changes.length === 0 ? "No infrastructure changes.\n" : "\n"}Run scotty deploy --yes to apply this exact plan.\n`,
+            );
+          return;
+        }
         if (plan.changes.length === 0) {
           const result = {
             installationName: config.installationName,
+            version: VERSION,
+            plan: plan.fingerprint,
+            bundle: built.digest,
             changed: false,
             changes: [],
             rootTokenRotated: false,
@@ -1076,32 +1155,19 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               "Scotty token is not configured",
               "Run scotty init or pass --token-file / SCOTTY_TOKEN.",
             );
-          yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, {
-            host: yield* Effect.fromResult(normalizeHost(config.host)),
-            token: config.token,
-          });
+          yield* consumeAuthorizedDeploymentPlan(runtime.home, savedPlan);
+          yield* synchronizeScottyToml({
+            built,
+            target: {
+              host: yield* Effect.fromResult(normalizeHost(config.host)),
+              token: config.token,
+            },
+          }).pipe(Effect.mapError(mapLifecycleSyncError));
           if (autoJson) outputJson(runtime.stdout, result);
           else runtime.stdout(`${config.installationName} is already up to date.\n`);
           return;
         }
-        if (!yes) {
-          if (!runtime.stdinIsTTY || !runtime.stdoutIsTTY)
-            return yield* usage(
-              "deploy requires --yes when the plan contains changes",
-              "Run scotty deploy interactively to review the plan, or retry with --yes.",
-            );
-          runtime.stdout(
-            `Account: ${plan.accountId}\n${plan.changes.map((change) => `${change.action.padEnd(7)} ${change.id}`).join("\n")}\n`,
-          );
-          const answer = runtime.prompt(`Deploy ${config.installationName}? [y/N]: `);
-          if (answer?.trim().toLowerCase() !== "y")
-            return yield* new CliError(
-              "cancelled",
-              "Deployment cancelled",
-              "No resources were changed.",
-              EXIT.USAGE,
-            );
-        }
+        yield* consumeAuthorizedDeploymentPlan(runtime.home, savedPlan);
         if (!autoJson) runtime.stdout(`Deploying ${config.installationName}...\n`);
         const deployed = yield* deployer.deploy({
           ...request,
@@ -1115,6 +1181,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         );
         const result = {
           installationName: deployed.installationName,
+          version: VERSION,
+          plan: plan.fingerprint,
+          bundle: built.digest,
           profile: deployed.profile,
           workerName: deployed.workerName,
           host,
@@ -1122,10 +1191,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           changes: plan.changes,
           rootTokenRotated: false,
         };
-        yield* synchronizeInstallationSandbox(runtime.home, runtime.cwd, {
-          host,
-          token: config.token,
-        });
+        yield* synchronizeScottyToml({ built, target: { host, token: config.token } }).pipe(
+          Effect.mapError(mapLifecycleSyncError),
+        );
         if (autoJson) outputJson(runtime.stdout, result);
         else
           runtime.stdout(

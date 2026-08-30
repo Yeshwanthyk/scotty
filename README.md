@@ -240,11 +240,13 @@ recovery authority. The CLI discovers the conventionally named resources and rot
 token after confirmation. It writes a mode-0600 recovery journal before the remote change, so a
 stopped command can reuse the same token.
 
-Use `scotty deploy` for normal updates. It reads the managed installation from `~/.config/scotty/installation.json`,
-checks the current Docker context, and shows the Alchemy resource plan. It asks for confirmation
-only when the plan has changes. A non-interactive deployment with changes needs `--yes`. Deployment
-never generates or changes the root token. On interactive macOS, Scotty offers to start Colima when
-the current Docker context is unavailable. It never changes `DOCKER_HOST`.
+Use the signed executable for normal updates. `scotty deploy --plan --json` reads the managed
+installation, plans the embedded release, builds the configured capability bundle, and saves a
+private one-use authorization record without changing provider or Worker state. Review its
+`version`, `plan`, `bundle`, and `changes`, then run `scotty deploy --yes --json`. Apply recomputes
+both identities and refuses any drift before provider writes. Deployment never generates or changes
+the root token. On interactive macOS, Scotty offers to start Colima when the current Docker context
+is unavailable. It never changes `DOCKER_HOST`.
 
 Use `scotty uninstall` to remove the Container application and both Workers. It removes the local
 config only after the remote work succeeds. KV and R2 remain by default. Pass `--delete-data` only
@@ -258,62 +260,40 @@ Container UUID, or runner instance name is committed.
 
 ### Production runbook
 
-Production deploys are local-only and forward-only. The guarded wrapper refuses CI, any branch
-other than `main`, a dirty worktree, or a local `main` that differs from `origin/main`.
+Operators need only the signed Scotty executable, Cloudflare authentication, and Docker. The
+executable contains the release source and does not depend on a Git checkout, Node, or npm.
 
-1. Fast-forward a clean local `main` to the reviewed GitHub state.
-
-   ```sh
-   git switch main
-   git fetch origin main
-   git merge --ff-only origin/main
-   git status --short --branch
-   ```
-
-2. Ensure Cloudflare authentication is available. Docker is required only for an intentional
-   Container release. On macOS with Colima:
+1. Upgrade to the intended signed release and ensure Docker is available. On macOS with Colima:
 
    ```sh
+   scotty upgrade
    colima start default
    DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" docker info
    ```
 
-3. Run the guarded deployment for the installation. Production requires the installation's
-   explicit Hatch/Evidence preview topology and always enables Evidence through
-   `SCOTTY_PREVIEW_BASE` and `SCOTTY_PREVIEW_ZONE_ID`.
+2. Plan without changing remote state. Save the complete JSON for review.
 
    ```sh
    DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
-   SCOTTY_INSTALLATION_NAME=home \
-   SCOTTY_PREVIEW_BASE="preview.example.com" \
-   SCOTTY_PREVIEW_ZONE_ID="0123456789abcdef0123456789abcdef" \
-     npm run deploy:production
+     scotty deploy --plan --json
    ```
 
-   The default command requires the Container plan to be a no-op and does not open Docker. When
-   the release intentionally changes the Container image or configuration, review that plan and
-   authorize it explicitly:
+3. After explicit authorization, apply only that saved plan. The command recomputes the provider
+   fingerprint and bundle digest, stops on drift, waits for Container rollout settlement, updates
+   the managed installation pointer, and publishes the exact reviewed bundle.
 
    ```sh
    DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
-   SCOTTY_INSTALLATION_NAME=home \
-   SCOTTY_PREVIEW_BASE="preview.example.com" \
-   SCOTTY_PREVIEW_ZONE_ID="0123456789abcdef0123456789abcdef" \
-     npm run deploy:production -- --container
+     scotty deploy --yes --json
+   scotty doctor --json
    ```
 
-4. Require the command to finish successfully. It runs `npm run check`, audits the current
-   Container inventory, builds a dependency-minimal image context, and runs an Alchemy plan before
-   applying anything. A normal release stops unless `SandboxContainer` is a no-op. An explicitly
-   authorized Container release waits for the exact rollout and health counters to converge. Both
-   paths audit the deployed inventory again.
+4. For full session proof, provide an explicit `OWNER/REPO` to `scotty beam`, verify the sandbox,
+   and vaporize that test session. Scotty never infers the verification repository.
 
-5. Verify the connected installation from the freshly built CLI:
-
-   ```sh
-   npm run build:cli
-   ./dist/scotty doctor --json
-   ```
+Source maintainers still run `npm run deploy:production -- --container` only as a checkout safety
+gate while preparing a signed executable; it is not the operator deployment interface. Without
+`--container`, that source gate requires a no-op Container plan and does not open Docker.
 
 Do not substitute a direct Wrangler production upload for this runbook. A Worker upload alone does
 not prove that the Container rollout converged or that runtime inventory remained healthy. If the
@@ -366,7 +346,8 @@ npm run build:cli
   --preview-base example.com \
   --preview-zone-id 0123456789abcdef0123456789abcdef
 ./dist/scotty recover --name home
-./dist/scotty deploy
+./dist/scotty deploy --plan --json
+./dist/scotty deploy --yes --json
 ./dist/scotty doctor --json
 ./dist/scotty owner recover
 ./dist/scotty beam "fix the failing tests" --title "Fix tests" --repo owner/project --provider cloudflare --json
@@ -375,7 +356,7 @@ npm run build:cli
 ./dist/scotty steer SESSION_ID "check the focused tests" --json
 ./dist/scotty upgrade
 ./dist/scotty uninstall
-./dist/scotty skills
+./dist/scotty skill show
 ```
 
 ### Hatch and Showcase

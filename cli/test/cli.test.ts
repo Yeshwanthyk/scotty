@@ -10,6 +10,7 @@ import { EXIT, main, VERSION, type CliDependencies } from "../scotty";
 import { BeamUpRequestSchema } from "../src/schemas";
 import { scottyTomlConfigPath } from "../src/scotty-config";
 import { managedInstallationPath } from "../src/managed-installation-path.mjs";
+import { deploymentPlanPath } from "../src/deployment-plan";
 import { Schema } from "effect";
 
 const temporaryDirectories: string[] = [];
@@ -91,6 +92,12 @@ function harness(overrides: Partial<CliDependencies> = {}) {
 
 function rejected<T = never>(message: string): Promise<T> {
   return new Promise((_, reject) => reject(new Error(message)));
+}
+
+async function planDeployment(h: ReturnType<typeof harness>): Promise<void> {
+  expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.OK);
+  h.stdout.length = 0;
+  h.stderr.length = 0;
 }
 
 const decodeBeamUpRequest = Schema.decodeUnknownSync(BeamUpRequestSchema);
@@ -1240,6 +1247,7 @@ describe("configuration and transport", () => {
       evidenceEnabled: true,
     });
 
+    await planDeployment(h);
     expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.OK);
     expect(deploymentRequests).toHaveLength(1);
     expect(deploymentRequests[0]).toMatchObject({
@@ -1267,7 +1275,7 @@ describe("configuration and transport", () => {
       { mode: 0o600 },
     );
     const h = harness({ home });
-    expect(await main(["deploy"], h.deps)).toBe(EXIT.USAGE);
+    expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.USAGE);
     expect(h.error().error.code).toBe("invalid_config");
   });
 
@@ -1454,6 +1462,7 @@ describe("configuration and transport", () => {
       },
     });
 
+    await planDeployment(h);
     expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.OK);
     expect(request).toEqual({
       installationName: "home",
@@ -1471,6 +1480,113 @@ describe("configuration and transport", () => {
     expect(h.json().rootTokenRotated).toBe(false);
     expect(putOrigin).toBe("https://new.example");
     expect(putAuthorization).toBe("Bearer root-secret");
+    await expect(readFile(deploymentPlanPath(home), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  test("deploy plan is read-only and saves the exact provider and bundle identities", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    let applied = false;
+    let fetched = false;
+    const h = harness({
+      home,
+      fetch: async () => {
+        fetched = true;
+        return new Response();
+      },
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "plan-reviewed",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async () => {
+        applied = true;
+        return rejected("plan must not apply");
+      },
+    });
+
+    expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.OK);
+    expect(applied).toBe(false);
+    expect(fetched).toBe(false);
+    expect(h.json()).toMatchObject({
+      installationName: "home",
+      version: VERSION,
+      plan: "plan-reviewed",
+      bundle: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      changes: [{ id: "Scotty-home/Worker", action: "update" }],
+    });
+    const saved = JSON.parse(await readFile(deploymentPlanPath(home), "utf8"));
+    expect(saved).toMatchObject({
+      version: 1,
+      cliVersion: VERSION,
+      installationName: "home",
+      accountId: "0123456789abcdef0123456789abcdef",
+      planFingerprint: "plan-reviewed",
+      bundleDigest: h.json().bundle,
+    });
+    expect((await stat(deploymentPlanPath(home))).mode & 0o777).toBe(0o600);
+  });
+
+  test("deploy yes fails closed when the reviewed bundle changes", async () => {
+    const home = await temporaryDirectory();
+    const skillRoot = join(home, "skills");
+    const skillDirectory = join(skillRoot, "example");
+    await mkdir(skillDirectory, { recursive: true });
+    await writeFile(join(skillDirectory, "SKILL.md"), "# Before\n");
+    await writeScottyToml(home, { skills: [skillRoot] });
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    let applied = false;
+    const h = harness({
+      home,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "plan-stable",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async () => {
+        applied = true;
+        return rejected("changed bundle must not apply");
+      },
+    });
+
+    await planDeployment(h);
+    await writeFile(join(skillDirectory, "SKILL.md"), "# After\n");
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.USAGE);
+    expect(applied).toBe(false);
+    expect(h.error().error.code).toBe("deployment_plan_changed");
+    expect(await stat(deploymentPlanPath(home))).toBeDefined();
+  });
+
+  test("deploy yes requires an explicit saved plan", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    const h = harness({
+      home,
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "plan-not-saved",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+    });
+
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.USAGE);
+    expect(h.error().error.message).toBe("deploy --yes requires a saved plan");
   });
 
   test("deploy keeps the rewritten pointer when TOML sync fails", async () => {
@@ -1523,6 +1639,7 @@ describe("configuration and transport", () => {
       }),
     });
 
+    await planDeployment(h);
     expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
     expect(h.error().error.code).toBe("sandbox_bundle_upload_failed");
     expect(h.error().error.hint).toBe("Retry scotty sync.");
@@ -1531,7 +1648,7 @@ describe("configuration and transport", () => {
     expect(config.token).toBe("root-secret");
   });
 
-  test("deploy keeps provider and pointer ordering when TOML is invalid", async () => {
+  test("deploy refuses provider writes when TOML is invalid", async () => {
     const home = await temporaryDirectory();
     const pointerPath = managedInstallationPath(home);
     await writeScottyToml(home);
@@ -1593,15 +1710,15 @@ describe("configuration and transport", () => {
       },
     });
 
-    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.USAGE);
-    expect(providerCalls).toEqual(["plan", "deploy"]);
+    expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.USAGE);
+    expect(providerCalls).toEqual([]);
     expect(bundleRequests).toEqual([]);
     const error = h.error().error;
     expect(error.code).toBe("scotty_config_invalid");
     expect(error.message).toContain("TOML syntax");
     expect(error.hint).toContain("Run scotty sync");
     expect(JSON.parse(await readFile(pointerPath, "utf8"))).toMatchObject({
-      host: "https://new.example",
+      host: "https://old.example",
       token: "root-secret",
     });
   });
@@ -1654,12 +1771,16 @@ describe("configuration and transport", () => {
       },
     });
 
-    expect(await main(["deploy"], h.deps)).toBe(EXIT.OK);
+    await planDeployment(h);
+    expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.OK);
     expect(applied).toBe(false);
     expect(putCount).toBe(1);
     expect(putAuthorization).toBe("Bearer root-secret");
     expect(h.json()).toEqual({
       installationName: "home",
+      version: VERSION,
+      plan: "plan-noop",
+      bundle: expect.stringMatching(/^[0-9a-f]{64}$/u),
       changed: false,
       changes: [],
       rootTokenRotated: false,
@@ -1710,8 +1831,8 @@ describe("configuration and transport", () => {
       },
     });
 
-    expect(await main(["deploy"], h.deps)).toBe(EXIT.USAGE);
-    expect(providerCalls).toEqual(["plan"]);
+    expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.USAGE);
+    expect(providerCalls).toEqual([]);
     expect(bundleRequests).toEqual([]);
     const error = h.error().error;
     expect(error.code).toBe("scotty_config_invalid");
@@ -1720,8 +1841,9 @@ describe("configuration and transport", () => {
     expect(await readFile(pointerPath, "utf8")).toBe(pointerText);
   });
 
-  test("deploy requires confirmation only when a non-interactive plan has changes", async () => {
+  test("deploy requires an explicit plan or apply mode", async () => {
     const home = await temporaryDirectory();
+    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -1745,7 +1867,7 @@ describe("configuration and transport", () => {
     });
 
     expect(await main(["deploy"], h.deps)).toBe(EXIT.USAGE);
-    expect(h.error().error.message).toBe("deploy requires --yes when the plan contains changes");
+    expect(h.error().error.message).toBe("deploy requires --plan or --yes");
   });
 
   test("init create failures keep the public envelope and persist a redacted diagnostic", async () => {
@@ -1818,6 +1940,7 @@ describe("configuration and transport", () => {
 
   test("deployment without the Registry wrapping key requires a fresh installation", async () => {
     const home = await temporaryDirectory();
+    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -1850,6 +1973,7 @@ describe("configuration and transport", () => {
       },
     });
 
+    await planDeployment(h);
     expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
     expect(h.error()).toEqual({
       error: {
@@ -1862,6 +1986,7 @@ describe("configuration and transport", () => {
 
   test("no-op deploy refuses to synchronize before the wrapping-key preflight", async () => {
     const home = await temporaryDirectory();
+    await writeScottyToml(home);
     await writeFile(
       managedInstallationPath(home),
       JSON.stringify({
@@ -1892,7 +2017,7 @@ describe("configuration and transport", () => {
       },
     });
 
-    expect(await main(["deploy"], h.deps)).toBe(EXIT.GENERIC);
+    expect(await main(["deploy", "--plan"], h.deps)).toBe(EXIT.GENERIC);
     expect(h.error().error.code).toBe("installation_fresh_required");
     expect(synchronized).toBe(false);
   });
@@ -1919,6 +2044,7 @@ describe("configuration and transport", () => {
 
   test("deploy apply failures keep the public envelope and persist a redacted diagnostic", async () => {
     const home = await temporaryDirectory();
+    await writeScottyToml(home);
     const secret = "synthetic-deploy-environment-secret";
     await writeFile(
       managedInstallationPath(home),
@@ -1950,6 +2076,7 @@ describe("configuration and transport", () => {
       },
     });
 
+    await planDeployment(h);
     expect(await main(["deploy", "--yes"], h.deps)).toBe(EXIT.GENERIC);
     const envelope = h.error();
     expect(Object.keys(envelope)).toEqual(["error"]);
