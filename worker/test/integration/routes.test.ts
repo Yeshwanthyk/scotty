@@ -24,11 +24,14 @@ const sandbox = vi.hoisted(() => ({
   fetch: vi.fn(),
   containerFetch: vi.fn(),
   preparePiSessionAccess: vi.fn(),
+  prepareTerminalAccess: vi.fn(),
+  restartScottyTerminal: vi.fn(),
 }));
 
 const sandboxTarget = vi.hoisted((): { current: unknown } => ({
   current: sandbox,
 }));
+const proxyTerminal = vi.hoisted(() => vi.fn());
 
 const auth = vi.hoisted(() => ({
   acceptOwnerTransfer: vi.fn(),
@@ -73,6 +76,7 @@ const sandboxConfig = vi.hoisted(() => ({
 vi.mock("@cloudflare/sandbox", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@cloudflare/sandbox")>()),
   getSandbox: vi.fn(() => sandboxTarget.current),
+  proxyTerminal,
 }));
 
 const credentialRegistry = vi.hoisted(() => ({
@@ -461,6 +465,9 @@ describe("real Hono boundary", () => {
       reason: "sleeping_checkpointed",
     });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
+    sandbox.prepareTerminalAccess.mockResolvedValue(undefined);
+    sandbox.restartScottyTerminal.mockResolvedValue(undefined);
+    proxyTerminal.mockResolvedValue(new Response("terminal-proxy"));
     sandbox.getScottyHatchStatus.mockResolvedValue({ status: "not_configured" });
     sandbox.ensureScottyHatch.mockResolvedValue({
       status: "configured",
@@ -3453,13 +3460,13 @@ describe("real Hono boundary", () => {
       error: {
         code: "wrong_state",
         message: "Cannot access a session in sleeping state",
-        hint: "Resume the session from Home before opening the worklog",
+        hint: "Resume the session from Home before opening the terminal",
       },
     });
   });
 
   it("rejects Cloudflare terminal access when an operation is active", async () => {
-    sandbox.preparePiSessionAccess.mockRejectedValueOnce(
+    sandbox.prepareTerminalAccess.mockRejectedValueOnce(
       conflict("Session is already running snapshot"),
     );
     const response = await app.request(
@@ -3479,9 +3486,9 @@ describe("real Hono boundary", () => {
     });
   });
 
-  it("retires Cloudflare terminal sockets after preparing the Pi worklog", async () => {
+  it("forwards authenticated terminal sockets to the separate native PTY session", async () => {
     const response = await app.request(
-      "/s/a0b1c2d3e4f5/terminal",
+      "/s/a0b1c2d3e4f5/terminal?cols=142&rows=61",
       {
         headers: {
           cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
@@ -3492,15 +3499,71 @@ describe("real Hono boundary", () => {
       },
       env(),
     );
-    expect(response.status).toBe(410);
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: "terminal_retired",
-        message: "This session uses the Pi worklog instead of a terminal",
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("terminal-proxy");
+    expect(proxyTerminal).toHaveBeenCalledWith(
+      sandbox,
+      "terminal-a0b1c2d3e4f5",
+      expect.any(Request),
+      {
+        cols: 142,
+        rows: 61,
+        shell: "/workspace/a0b1c2d3e4f5/.pi-agent/scotty-shell",
       },
-    });
-    expect(sandbox.preparePiSessionAccess).toHaveBeenCalledOnce();
-    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+    );
+    expect(sandbox.prepareTerminalAccess).toHaveBeenCalledOnce();
+    expect(sandbox.preparePiSessionAccess).not.toHaveBeenCalled();
+  });
+
+  it.each(["cols=0&rows=24", "cols=1001&rows=24", "cols=80", "cols=wide&rows=24"])(
+    "rejects invalid terminal dimensions: %s",
+    async (query) => {
+      const response = await app.request(
+        `/s/a0b1c2d3e4f5/terminal?${query}`,
+        {
+          headers: {
+            cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+            connection: "Upgrade",
+            upgrade: "websocket",
+            origin: "http://localhost",
+          },
+        },
+        env(),
+      );
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "bad_request", message: "Terminal dimensions are invalid" },
+      });
+      expect(proxyTerminal).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires cookie mutation security and returns the typed restart state", async () => {
+    const denied = await app.request(
+      "/s/a0b1c2d3e4f5/terminal/restart",
+      {
+        method: "POST",
+        headers: { cookie: `__Host-scotty=${CLIENT_CREDENTIAL}` },
+      },
+      env(),
+    );
+    expect(denied.status).toBe(400);
+
+    const response = await app.request(
+      "/s/a0b1c2d3e4f5/terminal/restart",
+      {
+        method: "POST",
+        headers: {
+          cookie: `__Host-scotty=${CLIENT_CREDENTIAL}`,
+          origin: "http://localhost",
+          "sec-fetch-site": "same-origin",
+        },
+      },
+      env(),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: "restarted" });
+    expect(sandbox.restartScottyTerminal).toHaveBeenCalledOnce();
   });
 
   it("does not expose the removed browser RPC surface", async () => {
@@ -3665,7 +3728,7 @@ describe("real Hono boundary", () => {
     expect(sandbox.fetch).not.toHaveBeenCalled();
   });
 
-  it("does not expose the Cloudflare Pi terminal on runner sessions", async () => {
+  it("does not expose the Cloudflare terminal on runner sessions", async () => {
     sandbox.getScottySession.mockResolvedValueOnce({
       id: "a0b1c2d3e4f5",
       status: "warm",
@@ -3687,9 +3750,9 @@ describe("real Hono boundary", () => {
     );
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({
-      error: { code: "not_found", message: "Pi session route not found" },
+      error: { code: "not_found", message: "Terminal route not found" },
     });
-    expect(sandbox.containerFetch).not.toHaveBeenCalled();
+    expect(proxyTerminal).not.toHaveBeenCalled();
   });
 
   it("redirects runner session roots to the session list", async () => {

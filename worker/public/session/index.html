@@ -10,6 +10,7 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/brand/scotty-favicon-32.png" />
     <link rel="apple-touch-icon" href="/brand/scotty-mark-128.png" />
     <link rel="stylesheet" href="/session/styles.css" />
+    <link rel="stylesheet" href="/vendor/xterm.css" />
   </head>
   <body>
     <div id="agent-backdrop" class="agent-backdrop" hidden></div>
@@ -75,6 +76,15 @@
               <span class="connection-dot" aria-hidden="true"></span>
               <span id="connection-label">Connecting</span>
             </div>
+            <button
+              id="open-terminal"
+              class="terminal-toggle"
+              type="button"
+              aria-controls="terminal-drawer"
+              aria-expanded="false"
+            >
+              Terminal
+            </button>
             <a id="manage-session" class="manage-session-link" href="/sessions"> Manage session </a>
             <button
               id="open-summary"
@@ -147,6 +157,61 @@
             </div>
           </form>
         </div>
+        <aside
+          id="terminal-drawer"
+          class="terminal-drawer"
+          data-open="false"
+          aria-label="Session terminal"
+          aria-hidden="true"
+        >
+          <div
+            id="terminal-resizer"
+            class="terminal-resizer"
+            role="separator"
+            aria-label="Resize terminal"
+            aria-orientation="horizontal"
+            aria-valuemin="220"
+            aria-valuemax="700"
+            aria-valuenow="360"
+            tabindex="0"
+          ></div>
+          <header class="terminal-header">
+            <div class="terminal-title">
+              <span aria-hidden="true">›_</span>
+              <div>
+                <h2>Terminal</h2>
+                <p>Session shell</p>
+              </div>
+            </div>
+            <div class="terminal-actions">
+              <div
+                id="terminal-state"
+                class="terminal-state"
+                data-state="closed"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <span class="terminal-state-dot" aria-hidden="true"></span>
+                <span id="terminal-state-label">Closed</span>
+              </div>
+              <button id="restart-terminal" class="terminal-action" type="button">Restart</button>
+              <button
+                id="close-terminal"
+                class="icon-button terminal-close"
+                type="button"
+                aria-label="Close terminal"
+              >
+                ×
+              </button>
+            </div>
+          </header>
+          <div
+            id="terminal-surface"
+            class="terminal-surface"
+            aria-label="Interactive terminal"
+          ></div>
+        </aside>
       </main>
 
       <aside id="summary-panel" class="summary-panel" aria-label="Agent summary">

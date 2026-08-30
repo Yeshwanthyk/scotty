@@ -1,10 +1,17 @@
-import { getSandbox } from "@cloudflare/sandbox";
+import { getSandbox, proxyTerminal } from "@cloudflare/sandbox";
 import {
   decodePiConsoleCommandPromise,
   PI_CONSOLE_MAX_COMMAND_BYTES,
   PI_CONSOLE_PUBLIC_PATH_SEGMENT,
   PI_CONSOLE_PROXY_PREFIX,
 } from "../../protocol/pi-console";
+import {
+  SESSION_TERMINAL_MAX_DIMENSION,
+  SESSION_TERMINAL_PATH_SEGMENT,
+  sessionTerminalId,
+  type SessionTerminalRestarted,
+} from "../../protocol/session-terminal";
+import { terminalShellPath } from "./sandbox/auth";
 import { Hono } from "hono";
 import qrcode from "qrcode-generator";
 import type { Bindings } from "./shared/bindings";
@@ -140,9 +147,29 @@ const RunnerRegistrationInputSchema = Schema.Struct({
   name: Schema.String,
   replace: Schema.optionalKey(Schema.Boolean),
 });
+const TerminalDimensionSchema = Schema.FiniteFromString.check(
+  Schema.isInt(),
+  Schema.isBetween({ minimum: 1, maximum: SESSION_TERMINAL_MAX_DIMENSION }),
+);
 const decodeRunnerRegistrationInput = Schema.decodeUnknownOption(RunnerRegistrationInputSchema, {
   onExcessProperty: "error",
 });
+const decodeTerminalDimension = Schema.decodeUnknownOption(TerminalDimensionSchema);
+
+function parseTerminalDimensions(request: Request): {
+  readonly cols?: number;
+  readonly rows?: number;
+} {
+  const search = new URL(request.url).searchParams;
+  const rawCols = search.get("cols");
+  const rawRows = search.get("rows");
+  if (rawCols === null && rawRows === null) return {};
+  const cols = decodeTerminalDimension(rawCols);
+  const rows = decodeTerminalDimension(rawRows);
+  if (Option.isNone(cols) || Option.isNone(rows))
+    throw badRequest("Terminal dimensions are invalid");
+  return { cols: cols.value, rows: rows.value };
+}
 const WorkerErrorSchema = Schema.Struct({
   _tag: Schema.optionalKey(Schema.String),
   operation: Schema.optionalKey(Schema.String),
@@ -907,7 +934,21 @@ app.get("/s/:id/hatch/open", async (c) => {
   return hatchHandoffPage(hatchOrigin(route, previewBase), issued.credential);
 });
 
-app.all("/s/:id/terminal", async (c) => {
+app.post(`/s/:id/${SESSION_TERMINAL_PATH_SEGMENT}/restart`, async (c) => {
+  const id = parseSessionId(c.req.param("id"));
+  rejectRootQuery(c.req.raw);
+  const principal = await requireClientCookieRequest(c.req.raw, c.env);
+  refreshClientAuthCookie(c, principal);
+  requireCookieMutationSecurity(c.req.raw);
+  const sandbox = sessionSandbox(c.env, id);
+  await assertCloudflareTerminalAccess(sandbox);
+  await sandbox.restartScottyTerminal();
+  return c.json({ status: "restarted" } satisfies SessionTerminalRestarted, 200, {
+    "cache-control": "no-store",
+  });
+});
+
+app.all(`/s/:id/${SESSION_TERMINAL_PATH_SEGMENT}`, async (c) => {
   const id = parseSessionId(c.req.param("id"));
   rejectRootQuery(c.req.raw);
   const principal = await requireClientCookieRequest(c.req.raw, c.env);
@@ -923,17 +964,13 @@ app.all("/s/:id/terminal", async (c) => {
       426,
     );
   requireSameOrigin(c.req.raw);
+  const dimensions = parseTerminalDimensions(c.req.raw);
   const sandbox = sessionSandbox(c.env, id);
-  await assertCloudflarePiAccess(sandbox);
-  return c.json(
-    {
-      error: {
-        code: "terminal_retired",
-        message: "This session uses the Pi worklog instead of a terminal",
-      },
-    },
-    410,
-  );
+  await assertCloudflareTerminalAccess(sandbox);
+  return proxyTerminal(sandbox, sessionTerminalId(id), c.req.raw, {
+    ...dimensions,
+    shell: terminalShellPath(id),
+  });
 });
 
 app.all(`/s/:id/${PI_CONSOLE_PUBLIC_PATH_SEGMENT}/:action`, async (c) => {
@@ -1378,6 +1415,24 @@ async function serveScottySessionSubpath(
       headers: { "content-type": "application/json" },
     },
   );
+}
+
+async function assertCloudflareTerminalAccess(sandbox: ScottySandbox): Promise<void> {
+  const session = await sandbox.getScottySession();
+  if (session.provider === "runner")
+    throw new ScottyError("not_found", "Terminal route not found", {
+      httpStatus: 404,
+      exitCode: 3,
+    });
+  if (session.status !== "warm")
+    throw wrongState(
+      session.status,
+      "access",
+      session.status === "sleeping"
+        ? "Resume the session from Home before opening the terminal"
+        : undefined,
+    );
+  await sandbox.prepareTerminalAccess();
 }
 
 async function assertCloudflarePiAccess(sandbox: ScottySandbox): Promise<void> {

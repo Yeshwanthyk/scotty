@@ -56,6 +56,23 @@ describe("cloud-agent session application", () => {
     assert.notInclude(appSource, "/rpc/");
   });
 
+  it("presents one explicit, resizable session terminal drawer", () => {
+    assert.include(sessionHtml, 'id="open-terminal"');
+    assert.include(sessionHtml, 'aria-controls="terminal-drawer"');
+    assert.include(sessionHtml, 'id="terminal-drawer"');
+    assert.include(sessionHtml, 'id="terminal-resizer"');
+    assert.include(sessionHtml, 'aria-orientation="horizontal"');
+    assert.include(sessionHtml, 'id="restart-terminal"');
+    assert.include(sessionHtml, 'aria-label="Close terminal"');
+    assert.include(appSource, 'await import("./terminal.js")');
+    assert.include(appSource, "terminalDrawer.open(currentSessionId, openTerminalButton)");
+    assert.include(sessionCss, "height: min(var(--terminal-height, 360px), 70vh)");
+    assert.match(
+      sessionCss,
+      /@media \(max-width: 760px\)[\s\S]*?\.terminal-drawer \{[\s\S]*?position: fixed;[\s\S]*?height: 100dvh;/u,
+    );
+  });
+
   it("links the conversation to its focused session management row", () => {
     assert.include(sessionHtml, 'id="manage-session"');
     assert.include(sessionHtml, "Manage session");

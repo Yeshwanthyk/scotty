@@ -10,9 +10,14 @@ worklog at `/s/:id` receives snapshots and live events through same-origin Worke
 ports and browser credentials are never forwarded. Root credentials are never accepted from
 cookies or query parameters.
 
-The worklog uses only `/s/:id/console/{snapshot,events,command}`. Commands are serialized with
-their snapshot epoch and session revision, and unconfirmed or stale mutations are held for explicit
-operator review rather than replayed.
+The worklog uses `/s/:id/console/{snapshot,events,command}`. Commands are serialized with their
+snapshot epoch and session revision, and unconfirmed or stale mutations are held for explicit
+operator review rather than replayed. Optional terminal access uses the separate authenticated
+`/s/:id/terminal` PTY stream; reconnects recover the SDK-owned output buffer and never replay
+browser input.
+
+The terminal presentation vendors the browser distributions from `@xterm/xterm` 6.0.0 and
+`@xterm/addon-fit` 0.11.0 under `vendor/`; both are MIT-licensed and covered by `xterm.LICENSE`.
 
 `auth/devices.html` is the primary-device-only browser manager. It creates five-minute one-use pairing
 links, starts target-bound ownership transfers, distinguishes the server-derived `Primary` role
