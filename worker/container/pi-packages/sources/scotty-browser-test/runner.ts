@@ -83,7 +83,11 @@ export interface RunnerPage {
   readonly getByTestId: (value: string) => RunnerLocator;
   readonly locator: (selector: string) => RunnerLocator;
   readonly url: () => string;
-  readonly screenshot: (options: { readonly path: string; readonly type: "png" }) => Promise<void>;
+  readonly screenshot: (options: {
+    readonly animations: "disabled";
+    readonly path: string;
+    readonly type: "png";
+  }) => Promise<void>;
 }
 
 export interface RunnerRoute {
@@ -613,9 +617,11 @@ export async function runBrowserEvidenceJob(
       if (firstAssertion === undefined)
         throw new BrowserTestFailure("interrupted", "interrupted", index);
       const framePath = resolve(output, `frame-${index + 1}.png`);
-      await page.screenshot({ path: framePath, type: "png" }).catch(() => {
-        throw new BrowserTestFailure("failed", "artifact_invalid", index);
-      });
+      await page
+        .screenshot({ animations: "disabled", path: framePath, type: "png" })
+        .catch(() => {
+          throw new BrowserTestFailure("failed", "artifact_invalid", index);
+        });
       await runtime.validateArtifact(framePath, "png", index);
       const completedAtMillis = runtime.now();
       const completedAt = new Date(completedAtMillis).toISOString();
