@@ -77,9 +77,17 @@ const makeSessionProjection = (storage: SessionProjectionStorage): SessionProjec
     new SessionProjectionFailure({ operation });
 
   const remove = (id: string): Effect.Effect<void, SessionProjectionFailure> =>
-    Effect.tryPromise({
-      try: () => storage.delete(`${SESSION_KV_PREFIX}${id}`),
-      catch: () => failure("delete"),
+    Effect.gen(function* () {
+      const key = `${SESSION_KV_PREFIX}${id}`;
+      yield* Effect.tryPromise({
+        try: () => storage.delete(key),
+        catch: () => failure("delete"),
+      });
+      const remaining = yield* Effect.tryPromise({
+        try: () => storage.get(key),
+        catch: () => failure("delete"),
+      });
+      if (remaining !== null) return yield* failure("delete");
     });
 
   return SessionProjection.of({

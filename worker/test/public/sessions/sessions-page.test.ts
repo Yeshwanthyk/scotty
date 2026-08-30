@@ -1,11 +1,18 @@
 import { assert, describe, it } from "vitest";
 import {
+  deletionActionLabel,
   focusKeyNeedsStableDraft,
+  lifecycleActionLabel,
   normalizeSessionListItem,
   sessionPrimaryTiming,
   sessionsRenderSignature,
   sleepingProjectFocusKey,
 } from "../../../public/sessions/list.js";
+import {
+  createRefreshCoordinator,
+  focusedSessionId,
+  reconcileCleanupProjection,
+} from "../../../public/sessions/lifecycle.js";
 import sessionListSource from "../../../public/sessions/list.js?raw";
 import sessionsHtml from "../../../public/sessions/index.html?raw";
 import sessionsScript from "../../../public/sessions/index.js?raw";
@@ -75,6 +82,86 @@ describe("sessions page", () => {
     assert.include(sessionListSource, 'detail.className = "mobile-session-detail"');
   });
 
+  it("labels the phone lifecycle disclosure as Actions", () => {
+    assert.strictEqual(lifecycleActionLabel(false), "Actions");
+    assert.strictEqual(lifecycleActionLabel(true), "Hide actions");
+    assert.include(sessionListSource, 'toggle.className = "session-disclosure-toggle"');
+    assert.include(sessionListSource, 'toggle.setAttribute("aria-expanded"');
+    assert.include(sessionListSource, 'detail.className = "mobile-session-detail"');
+  });
+
+  it("lets keyboard users close phone actions and restores disclosure focus", () => {
+    assert.include(sessionsScript, 'if (event.key !== "Escape") return');
+    assert.include(sessionsScript, "expandedSessionDetails.delete(id)");
+    assert.include(sessionsScript, '[data-action="toggle-details"]');
+  });
+
+  it("names both destructive resources in permanent-delete confirmation", () => {
+    assert.include(sessionListSource, "This permanently removes the session and its backups.");
+    assert.include(sessionListSource, '"Delete permanently", "delete"');
+  });
+
+  it("removes a deleted row only after the list projection omits it", () => {
+    const reconciled = reconcileCleanupProjection([], ["session-1"]);
+    assert.deepStrictEqual(reconciled.completedIds, ["session-1"]);
+    assert.deepStrictEqual(reconciled.pendingIds, []);
+    assert.include(sessionsScript, "await waitForRefresh()");
+    assert.include(sessionsScript, "afterActive: true");
+  });
+
+  it("queues a fresh deletion check behind an active sessions poll", async () => {
+    const started: string[] = [];
+    const releases = new Map<string, (value: boolean) => void>();
+    const coordinator = createRefreshCoordinator(
+      (options) =>
+        new Promise<boolean>((resolve) => {
+          const actionId = options.actionId || "passive";
+          started.push(actionId);
+          releases.set(actionId, resolve);
+        }),
+    );
+
+    const poll = coordinator.refresh({ actionId: "poll" });
+    const verification = coordinator.refresh({ actionId: "delete", afterActive: true });
+    assert.deepStrictEqual(started, ["poll"]);
+
+    const releasePoll = releases.get("poll");
+    assert.ok(releasePoll);
+    releasePoll(true);
+    await poll;
+    await Promise.resolve();
+    assert.deepStrictEqual(started, ["poll", "delete"]);
+
+    const releaseDelete = releases.get("delete");
+    assert.ok(releaseDelete);
+    releaseDelete(true);
+    assert.isTrue(await verification);
+  });
+
+  it("keeps stale projected rows visible as deleting", () => {
+    const reconciled = reconcileCleanupProjection(
+      [{ id: "session-1", status: "warm" }],
+      ["session-1"],
+    );
+    assert.deepInclude(reconciled.sessions[0], { id: "session-1", deleting: true });
+    assert.deepStrictEqual(reconciled.pendingIds, ["session-1"]);
+    assert.deepStrictEqual(reconciled.completedIds, []);
+  });
+
+  it("distinguishes initial deletion from retry cleanup", () => {
+    assert.strictEqual(deletionActionLabel("delete", "Delete permanently"), "Deleting…");
+    assert.strictEqual(deletionActionLabel("retry-delete", "Retry cleanup"), "Retrying cleanup…");
+    assert.include(sessionsScript, 'pendingAction === "retry-delete"');
+    assert.include(sessionsScript, "list cleanup is still pending. Retry cleanup.");
+  });
+
+  it("focuses the session requested by the conversation management path", () => {
+    assert.strictEqual(focusedSessionId("?focus=a0b1c2d3e4f5"), "a0b1c2d3e4f5");
+    assert.isUndefined(focusedSessionId("?focus=../../devices"));
+    assert.include(sessionListSource, "state.targetSessionId === session.id");
+    assert.include(sessionListSource, "target?.focus({ preventScroll: true })");
+  });
+
   it("summarizes the next relevant session event", () => {
     const session = {
       id: "session-1",
@@ -91,7 +178,10 @@ describe("sessions page", () => {
     assert.strictEqual(sessionPrimaryTiming(session, "warm"), "Auto-stop in 1h 30m");
     assert.strictEqual(sessionPrimaryTiming(session, "sleeping"), "Backup ready");
     assert.strictEqual(sessionPrimaryTiming(session, "stopping"), "Stopping now");
-    assert.strictEqual(sessionPrimaryTiming(session, "deleting", "delete"), "Retrying cleanup");
+    assert.strictEqual(
+      sessionPrimaryTiming(session, "deleting", "delete"),
+      "Deleting session and backups",
+    );
   });
 
   it("recognizes focused rename drafts as stable controls", () => {
