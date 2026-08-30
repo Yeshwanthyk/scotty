@@ -376,6 +376,23 @@ Hatch is the authenticated live app for the current sandbox. The sandbox agent s
 **Open Hatch** control, or open the session URL with `/hatch/open` appended. Do not copy or share the
 wildcard preview URL, handoff token, route nonce, or Hatch cookie.
 
+Repository-owned setup uses a strict `hatch.toml` at the repository root:
+
+```toml
+[hatch]
+service = "web"
+argv = ["pnpm", "exec", "vite", "dev", "--host", "0.0.0.0", "--port", "4173"]
+cwd = "."
+port = 4173
+health_path = "/"
+```
+
+Review that file, then invoke `scotty_hatch` with `{ "operation": "ensure" }`. Ensure is the
+semantic check and rejects absent, malformed, unknown, or unsafe configuration before process start
+or the existing authority POST. Complete inline ensure input remains a manual override. This flow
+does not require mode 0600 because `hatch.toml` is non-secret. `scotty hatch init` and
+`scotty hatch check` are deferred to a later PR.
+
 Browser evidence uses a separate temporary server on a different port from Hatch. Before changing
 visible behavior, define one bounded flow with at most three observable checks. Run that exact
 viewport, action, and assertion graph once with video disabled. Make the change, then run the same

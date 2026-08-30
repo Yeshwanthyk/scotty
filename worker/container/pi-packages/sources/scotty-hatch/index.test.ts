@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, realpath, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -11,6 +11,7 @@ import scottyHatch, {
   type ConfiguredStatus,
   type HatchChildProcess,
   type HatchServiceProcess,
+  loadRepositoryHatchConfig,
   ScottyHatchManager,
   ScottyHatchParameters,
   SCOTTY_HATCH_MAX_BYTES,
@@ -75,8 +76,20 @@ async function workspace(): Promise<{ readonly root: string; readonly app: strin
   return { root, app: await realpath(app) };
 }
 
+const hatchToml = (
+  overrides: Partial<Record<"service" | "argv" | "cwd" | "port" | "health_path", string>> = {},
+) => `[hatch]
+service = ${overrides.service ?? '"web"'}
+argv = ${overrides.argv ?? '["pnpm", "exec", "vite", "dev", "--host", "0.0.0.0", "--port", "4173"]'}
+cwd = ${overrides.cwd ?? '"."'}
+port = ${overrides.port ?? "4173"}
+health_path = ${overrides.health_path ?? '"/"'}
+`;
+
 test("exposes one strict bounded operation union without env, identity, URL, or shell fields", () => {
   assert.equal(Check(ScottyHatchParameters, ensureInput()), true);
+  assert.equal(Check(ScottyHatchParameters, { operation: "ensure" }), true);
+  assert.equal(Check(ScottyHatchParameters, { operation: "ensure", service: "web" }), false);
   assert.equal(Check(ScottyHatchParameters, { operation: "status" }), true);
   assert.equal(Check(ScottyHatchParameters, { operation: "close" }), true);
 
@@ -101,6 +114,59 @@ test("exposes one strict bounded operation union without env, identity, URL, or 
     false,
   );
   assert.equal(Check(ScottyHatchParameters, { ...ensureInput(), service: "web\n" }), false);
+});
+
+test("loads and normalizes strict repository-root hatch.toml", async () => {
+  const { root } = await workspace();
+  await writeFile(join(root, "hatch.toml"), hatchToml());
+
+  assert.deepEqual(await loadRepositoryHatchConfig(root), {
+    operation: "ensure",
+    service: "web",
+    argv: ["pnpm", "exec", "vite", "dev", "--host", "0.0.0.0", "--port", "4173"],
+    cwd: ".",
+    port: 4_173,
+    healthPath: "/",
+  });
+});
+
+test("rejects malformed TOML, unknown fields, unsafe cwd, and an absent config", async () => {
+  const malformed = await workspace();
+  await writeFile(join(malformed.root, "hatch.toml"), '[hatch\nservice = "web"\n');
+  await assert.rejects(loadRepositoryHatchConfig(malformed.root), /malformed TOML/u);
+
+  const unknown = await workspace();
+  await writeFile(
+    join(unknown.root, "hatch.toml"),
+    `${hatchToml()}environment = { TOKEN = "no" }\n`,
+  );
+  await assert.rejects(loadRepositoryHatchConfig(unknown.root), /unsupported or malformed fields/u);
+
+  const unsafe = await workspace();
+  await writeFile(join(unsafe.root, "hatch.toml"), hatchToml({ cwd: '"../outside"' }));
+  await assert.rejects(loadRepositoryHatchConfig(unsafe.root), /unsupported or malformed fields/u);
+
+  const absent = await workspace();
+  await assert.rejects(loadRepositoryHatchConfig(absent.root), /hatch\.toml is missing/u);
+});
+
+test("complete explicit ensure input overrides repository config", async () => {
+  const { root } = await workspace();
+  await writeFile(join(root, "hatch.toml"), "not valid TOML = [");
+  const child = new FakeChild(99);
+  const spawns: Array<readonly string[]> = [];
+  const manager = new ScottyHatchManager({
+    workspaceRoot: root,
+    spawnProcess: (argv) => {
+      spawns.push(argv);
+      return child;
+    },
+    localTransport: async () => new Response(),
+    authorityTransport: async () => Response.json(configured()),
+  });
+
+  await manager.run(ensureInput());
+  assert.deepEqual(spawns, [["node", "server.mjs", "--host", "0.0.0.0"]]);
 });
 
 test("starts one process group with an allow-listed environment and registers source-local authority", async () => {
@@ -287,6 +353,8 @@ test("rejects a symlink escape and an oversized request before spawning", async 
     },
   });
 
+  await writeFile(join(root, "hatch.toml"), hatchToml({ cwd: '"escape"' }));
+  await assert.rejects(manager.run({ operation: "ensure" }), /resolves outside the workspace/u);
   await assert.rejects(
     manager.run({ ...ensureInput(), cwd: "escape" }),
     /resolves outside the workspace/u,
