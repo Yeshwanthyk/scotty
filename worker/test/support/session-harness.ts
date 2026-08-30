@@ -21,6 +21,7 @@ import type {
 } from "../../src/session/contracts";
 import type { CreateIdempotencyMetadata } from "../../src/session/create-idempotency";
 import type { EvidenceArtifact } from "../../src/evidence/contracts";
+import { HATCH_PRIVATE_READINESS_HEADER } from "../../src/hatch/contracts";
 import type { RepoVerifier } from "../../src/repos/verifier";
 import type { SandboxConfigStatus } from "../../src/sandbox/config-contracts";
 import type { SandboxConfigRpcResult } from "../../src/sandbox/config-object";
@@ -300,6 +301,7 @@ export interface HarnessOptions {
   readonly previewBase?: string;
   readonly previewExposeGate?: Promise<void>;
   readonly hatchHealthGate?: Promise<void>;
+  readonly hatchPublicProbe?: SandboxEffectOptions["hatchPublicProbe"];
   readonly previewRequestForwarder?: SandboxEffectOptions["previewRequestForwarder"];
   readonly hatchRequestForwarder?: SandboxEffectOptions["hatchRequestForwarder"];
   readonly repoVerifier?: SandboxEffectOptions["repoVerifier"];
@@ -1209,6 +1211,17 @@ export async function createSessionHarness(options: HarnessOptions = {}): Promis
     clock: options.clock,
     containerEvidenceRecorder: options.containerEvidenceRecorder,
     evidencePreviewHostTimeoutMillis: options.evidencePreviewHostTimeoutMillis,
+    hatchPublicProbe:
+      options.hatchPublicProbe ??
+      (async () =>
+        new Response(null, {
+          status: 204,
+          headers: {
+            "cache-control": "no-store",
+            [HATCH_PRIVATE_READINESS_HEADER]: "ready",
+            "x-robots-tag": "noindex, nofollow, noarchive",
+          },
+        })),
     passivePiConsoleRelay: options.passivePiConsoleRelay,
     previewRequestForwarder: options.previewRequestForwarder,
     hatchRequestForwarder: options.hatchRequestForwarder,

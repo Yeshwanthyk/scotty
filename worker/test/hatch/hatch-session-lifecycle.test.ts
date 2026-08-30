@@ -8,10 +8,13 @@ import {
   HATCH_MAX_INGRESS_BYTES,
   HATCH_MAX_WEBSOCKET_MESSAGE_BYTES,
   HATCH_PRIVATE_CLAIMED_HEADER,
+  HATCH_PRIVATE_READINESS_CLAIMED_HEADER,
+  HATCH_PRIVATE_READINESS_HEADER,
   HATCH_PRIVATE_REQUEST_HEADER,
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
   HATCH_MAX_PERMIT_BYTES,
+  HATCH_READINESS_PATH,
   HATCH_RESERVED_RESPONSE_BYTES,
   decodeHatchStateResult,
   type HatchState,
@@ -28,7 +31,10 @@ const service = {
   healthPath: "/health",
 };
 
-const createHarness = Effect.fnUntraced(function* (stopCallsOnStop = false) {
+const createHarness = Effect.fnUntraced(function* (
+  stopCallsOnStop = false,
+  hatchPublicProbe?: (url: string, marker: string, signal: AbortSignal) => Promise<Response>,
+) {
   yield* TestClock.setTime(NOW);
   const clock = yield* Clock.Clock;
   const harness = yield* Effect.promise(() =>
@@ -38,6 +44,7 @@ const createHarness = Effect.fnUntraced(function* (stopCallsOnStop = false) {
       piSessionRunning: true,
       rawPiContainerRunning: true,
       stopCallsOnStop,
+      hatchPublicProbe,
       initialEntries: {
         [sessionHarnessKeys.record]: makeSessionRecord({
           id: SESSION_ID,
@@ -101,6 +108,25 @@ const assertInvalidPersistedHatch = (state: unknown): void => {
 };
 
 describe("persisted Hatch schema invariants", () => {
+  it("accepts a legacy active record without public readiness proof", () => {
+    assert.isTrue(Result.isSuccess(decodeHatchStateResult(persistedHatchState())));
+  });
+
+  it("rejects retained public readiness proof after the Hatch becomes inactive", () => {
+    const state = persistedHatchState();
+    const { runtimeEpoch: _runtimeEpoch, ...inactive } = state.primary;
+    assertInvalidPersistedHatch({
+      primary: {
+        ...inactive,
+        observedStatus: "failed",
+        exposure: "closed",
+        permits: [],
+        requests: [],
+        publicReadyAt: "2026-08-08T12:00:00.000Z",
+      },
+    });
+  });
+
   it("rejects request ingress greater than its reservation", () => {
     const state = persistedHatchState();
     state.primary.requests[0].ingressBytes = state.primary.requests[0].reservedIngressBytes + 1;
@@ -248,6 +274,7 @@ describe("authoritative Hatch session lifecycle", () => {
         assert.strictEqual(current.runtimeEpoch, harness.read(sessionHarnessKeys.runtimeEpoch));
         assert.lengthOf(current.permits, 0);
         assert.lengthOf(current.requests, 0);
+        assert.strictEqual(current.publicReadyAt, "2026-08-08T12:00:00.000Z");
 
         const route = yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute());
         assert.ok(route);
@@ -326,6 +353,184 @@ describe("authoritative Hatch session lifecycle", () => {
             );
         }
       }),
+  );
+
+  it.effect("fails closed when local health passes but public HTTPS is not ready", () =>
+    Effect.gen(function* () {
+      let publicOrigin = "";
+      const harness = yield* createHarness(false, async (url) => {
+        publicOrigin = url;
+        return new Response("TLS unavailable", { status: 525 });
+      });
+      const opened = yield* Effect.promise(() =>
+        harness.sandbox.ensureScottyHatch({ service }).then(
+          () => true,
+          () => false,
+        ),
+      );
+      assert.isFalse(opened);
+      assert.include(harness.events, "host:hatch:health:4173:/health");
+      assert.include(harness.events, "host:preview:expose:4173");
+      assert.include(harness.events, "host:preview:unexpose:4173");
+      assert.match(
+        publicOrigin,
+        /^https:\/\/4173-a0b1c2d3e4f5-h[a-z0-9]{14}\.preview\.example\.test\/_scotty\/hatch\/readiness$/u,
+      );
+      const current = hatchState(harness)?.primary;
+      assert.ok(current);
+      assert.strictEqual(current.observedStatus, "failed");
+      assert.strictEqual(current.exposure, "closed");
+      assert.isUndefined(current.publicReadyAt);
+      const status = yield* Effect.promise(() => harness.sandbox.getScottyHatchStatus());
+      assert.ok(status.status === "configured");
+      assert.strictEqual(status.observedStatus, "failed");
+      assert.strictEqual(status.exposure, "closed");
+      assert.isUndefined(yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute()));
+    }),
+  );
+
+  it.effect("proves the active route inside Sandbox without browser authority", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service }));
+      const current = hatchState(harness)?.primary;
+      assert.ok(current);
+      const response = yield* Effect.promise(() =>
+        harness.sandbox.fetch(
+          new Request(`http://sandbox${HATCH_READINESS_PATH}`, {
+            method: "HEAD",
+            headers: {
+              [HATCH_PRIVATE_READINESS_HEADER]: current.routeNonce,
+              "x-sandbox-preview-proxy": "1",
+              "x-sandbox-preview-port": String(current.service.port),
+              "x-sandbox-preview-sandbox-id": current.sessionId,
+              "x-sandbox-preview-token": current.routeNonce,
+            },
+          }),
+        ),
+      );
+      assert.strictEqual(response.status, 204);
+      assert.strictEqual(
+        response.headers.get(HATCH_PRIVATE_READINESS_CLAIMED_HEADER),
+        current.routeNonce,
+      );
+      const denied = yield* Effect.promise(() =>
+        harness.sandbox.fetch(
+          new Request(`http://sandbox${HATCH_READINESS_PATH}`, {
+            method: "HEAD",
+            headers: {
+              [HATCH_PRIVATE_READINESS_HEADER]: "wrong-marker",
+              "x-sandbox-preview-proxy": "1",
+              "x-sandbox-preview-port": String(current.service.port),
+              "x-sandbox-preview-sandbox-id": current.sessionId,
+              "x-sandbox-preview-token": current.routeNonce,
+            },
+          }),
+        ),
+      );
+      assert.strictEqual(denied.status, 404);
+    }),
+  );
+
+  it.effect("fails closed without teardown on a transient public-route failure", () =>
+    Effect.gen(function* () {
+      let publicReady = true;
+      const harness = yield* createHarness(false, async () =>
+        publicReady
+          ? new Response(null, {
+              status: 204,
+              headers: {
+                "cache-control": "no-store",
+                [HATCH_PRIVATE_READINESS_HEADER]: "ready",
+                "x-robots-tag": "noindex, nofollow, noarchive",
+              },
+            })
+          : new Response("edge unavailable", { status: 503 }),
+      );
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service }));
+      publicReady = false;
+      const unavailable = yield* Effect.promise(() => harness.sandbox.getScottyHatchStatus());
+      assert.ok(unavailable.status === "configured");
+      assert.strictEqual(unavailable.observedStatus, "running");
+      assert.strictEqual(unavailable.exposure, "not_exposed");
+      assert.strictEqual(hatchState(harness)?.primary?.exposure, "active");
+      assert.isUndefined(hatchState(harness)?.primary?.publicReadyAt);
+      assert.notInclude(harness.events, "host:preview:unexpose:4173");
+      assert.isUndefined(yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute()));
+
+      publicReady = true;
+      const recovered = yield* Effect.promise(() => harness.sandbox.getScottyHatchStatus());
+      assert.ok(recovered.status === "configured");
+      assert.strictEqual(recovered.exposure, "active");
+      assert.ok(hatchState(harness)?.primary?.publicReadyAt);
+      assert.ok(yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute()));
+    }),
+  );
+
+  it.effect("projects public-unready when route authorization is stale", () =>
+    Effect.gen(function* () {
+      const harness = yield* createHarness();
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service }));
+      harness.memory.values.set(sessionHarnessKeys.runtimeEpoch, "epoch-replaced");
+      const status = yield* Effect.promise(() => harness.sandbox.getScottyHatchStatus());
+      assert.ok(status.status === "configured");
+      assert.strictEqual(status.observedStatus, "running");
+      assert.strictEqual(status.exposure, "not_exposed");
+      assert.isUndefined(yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute()));
+    }),
+  );
+
+  it.effect("projects public-unready when the owning runtime is absent", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const clock = yield* Clock.Clock;
+      const persisted = persistedHatchState();
+      const state = {
+        primary: { ...persisted.primary, publicReadyAt: "2026-08-08T12:00:00.000Z" },
+      };
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          previewBase: "preview.example.test",
+          rawPiContainerRunning: false,
+          initialEntries: {
+            [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
+            [sessionHarnessKeys.hatch]: state,
+            [sessionHarnessKeys.runtimeEpoch]: "epoch-current",
+          },
+        }),
+      );
+      const status = yield* Effect.promise(() => harness.sandbox.getScottyHatchStatus());
+      assert.ok(status.status === "configured");
+      assert.strictEqual(status.exposure, "not_exposed");
+      assert.isUndefined(yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute()));
+    }),
+  );
+
+  it.effect("revalidates a legacy active record before returning an Open route", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const clock = yield* Clock.Clock;
+      const harness = yield* Effect.promise(() =>
+        createSessionHarness({
+          clock,
+          previewBase: "preview.example.test",
+          rawPiContainerRunning: true,
+          initialEntries: {
+            [sessionHarnessKeys.record]: makeSessionRecord({ id: SESSION_ID }),
+            [sessionHarnessKeys.hatch]: persistedHatchState(),
+            [sessionHarnessKeys.runtimeEpoch]: "epoch-current",
+          },
+        }),
+      );
+      assert.isUndefined(hatchState(harness)?.primary?.publicReadyAt);
+      const status = yield* Effect.promise(() => harness.sandbox.getScottyHatchStatus());
+      assert.ok(status.status === "configured");
+      assert.strictEqual(status.observedStatus, "running");
+      assert.strictEqual(status.exposure, "active");
+      assert.strictEqual(hatchState(harness)?.primary?.publicReadyAt, "2026-08-08T12:00:00.000Z");
+      assert.ok(yield* Effect.promise(() => harness.sandbox.getScottyHatchOpenRoute()));
+    }),
   );
 
   it.effect("rejects a different primary service without revoking the active Hatch", () =>

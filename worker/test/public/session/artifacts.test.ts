@@ -1,5 +1,6 @@
 import { assert, describe, it } from "vitest";
 import { artifactForTool } from "../../../public/session/artifacts.js";
+import artifactsSource from "../../../public/session/artifacts.js?raw";
 
 const sessionId = "a0b1c2d3e4f5";
 
@@ -81,7 +82,6 @@ describe("session artifacts", () => {
       label: "Preview",
       status: "running",
       available: true,
-      href: `/s/${sessionId}/hatch/open`,
     });
     assert.notProperty(
       artifactForTool(
@@ -93,5 +93,7 @@ describe("session artifacts", () => {
       ),
       "href",
     );
+    assert.include(artifactsSource, "Historical result ·");
+    assert.notInclude(artifactsSource, 'artifact.kind === "hatch" ? "Open Hatch"');
   });
 });

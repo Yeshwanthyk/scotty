@@ -10,9 +10,12 @@ import {
   HATCH_HANDOFF_PATH,
   HATCH_MAX_INGRESS_BYTES,
   HATCH_PRIVATE_CLAIMED_HEADER,
+  HATCH_PRIVATE_READINESS_CLAIMED_HEADER,
+  HATCH_PRIVATE_READINESS_HEADER,
   HATCH_PRIVATE_REQUEST_HEADER,
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
+  HATCH_READINESS_PATH,
   type HatchGatewayAdmission,
   type HatchWebSocketAdmission,
 } from "./contracts";
@@ -325,6 +328,45 @@ const issueHatchHandoff = async (
   });
 };
 
+const proxyHatchReadiness = async (
+  request: Request,
+  env: HatchGatewayBindings,
+): Promise<Response> => {
+  const marker = request.headers.get(HATCH_PRIVATE_READINESS_HEADER);
+  if (
+    request.method !== "HEAD" ||
+    marker === null ||
+    !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(marker)
+  )
+    return denied();
+  const proxied = await proxyToSandbox(
+    new Request(request.url, {
+      method: "HEAD",
+      headers: { [HATCH_PRIVATE_READINESS_HEADER]: marker },
+    }),
+    { Sandbox: env.SANDBOX },
+  ).then(
+    (response) => response,
+    () => null,
+  );
+  if (
+    proxied === null ||
+    proxied.status !== 204 ||
+    proxied.headers.get(HATCH_PRIVATE_READINESS_CLAIMED_HEADER) !== marker
+  )
+    return denied();
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-robots-tag": "noindex, nofollow, noarchive",
+      [HATCH_PRIVATE_READINESS_HEADER]: "ready",
+    },
+  });
+};
+
 const proxyHatchWebSocket = async (
   request: Request,
   env: HatchGatewayBindings,
@@ -458,6 +500,7 @@ export const handleHatchRequest = async (
   const parsed = parseHatchHost(authority, previewBase);
   if (parsed.kind === "not_hatch") return null;
   if (parsed.kind === "invalid_hatch") return denied();
+  if (url.pathname === HATCH_READINESS_PATH) return proxyHatchReadiness(request, env);
   if (url.pathname === HATCH_HANDOFF_PATH) return issueHatchHandoff(request, env, parsed.route);
   if (hasUpgradeFraming(request.headers))
     return proxyHatchWebSocket(request, env, authority, parsed.route);

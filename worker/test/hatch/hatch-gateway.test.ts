@@ -30,9 +30,12 @@ import {
   HATCH_HANDOFF_PATH,
   HATCH_MAX_INGRESS_BYTES,
   HATCH_PRIVATE_CLAIMED_HEADER,
+  HATCH_PRIVATE_READINESS_CLAIMED_HEADER,
+  HATCH_PRIVATE_READINESS_HEADER,
   HATCH_PRIVATE_REQUEST_HEADER,
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
+  HATCH_READINESS_PATH,
 } from "../../src/hatch/contracts";
 import {
   handleHatchRequest,
@@ -165,6 +168,37 @@ describe("Hatch exact-host gateway", () => {
     for (const host of [HOST.toUpperCase(), `3000-${SESSION_ID}-${ROUTE_NONCE}.${BASE}`, BASE]) {
       expect(parseHatchHost(host, BASE).kind).toBe("invalid_hatch");
     }
+  });
+
+  it("proves public readiness through Sandbox without forwarding browser authority", async () => {
+    const marker = "hatch-readiness-abcd1234";
+    proxy.mockImplementation(async (request: Request) => {
+      expect(request.method).toBe("HEAD");
+      expect(request.headers.get(HATCH_PRIVATE_READINESS_HEADER)).toBe(marker);
+      expect(request.headers.get("authorization")).toBeNull();
+      expect(request.headers.get("cookie")).toBeNull();
+      return new Response(null, {
+        status: 204,
+        headers: { [HATCH_PRIVATE_READINESS_CLAIMED_HEADER]: marker },
+      });
+    });
+    const request = new Request(`https://${HOST}${HATCH_READINESS_PATH}`, {
+      method: "HEAD",
+      headers: {
+        host: HOST,
+        authorization: "Bearer never-forward",
+        cookie: `${HATCH_COOKIE}=never-forward`,
+        [HATCH_PRIVATE_READINESS_HEADER]: marker,
+      },
+    });
+    const response = await handleHatchRequest(request, env);
+    expect(response?.status).toBe(204);
+    expect(response?.headers.get(HATCH_PRIVATE_READINESS_HEADER)).toBe("ready");
+    expect(response?.headers.get(HATCH_PRIVATE_READINESS_CLAIMED_HEADER)).toBeNull();
+
+    proxy.mockResolvedValue(new Response(null, { status: 204 }));
+    const unclaimed = await handleHatchRequest(request, env);
+    expect(unclaimed?.status).toBe(404);
   });
 
   it("consumes a one-use form handoff and installs an exact-host cookie usable by its redirect", async () => {

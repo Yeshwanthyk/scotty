@@ -78,10 +78,13 @@ import {
   HATCH_MAX_WEBSOCKET_MESSAGE_BYTES,
   HATCH_MAX_WEBSOCKET_MESSAGES,
   HATCH_PRIVATE_CLAIMED_HEADER,
+  HATCH_PRIVATE_READINESS_CLAIMED_HEADER,
+  HATCH_PRIVATE_READINESS_HEADER,
   HATCH_PRIVATE_REQUEST_HEADER,
   HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER,
   HATCH_PRIVATE_WEBSOCKET_HEADER,
   HATCH_RESERVED_RESPONSE_BYTES,
+  HATCH_READINESS_PATH,
   HATCH_WEBSOCKET_ABSOLUTE_MILLIS,
   HATCH_WEBSOCKET_ADMISSION_MILLIS,
   HATCH_WEBSOCKET_IDLE_MILLIS,
@@ -92,6 +95,7 @@ import {
   decodeHatchCleanupRetry,
   decodeHatchHostRoute,
   decodeHatchIngressBytes,
+  decodeHatchIdentifier,
   decodeHatchRequestAdmission,
   decodeHatchRequestId,
   decodeHatchWebSocketAdmission,
@@ -222,11 +226,35 @@ const EVIDENCE_PREVIEW_BASE_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const EVIDENCE_CLEANUP_RETRY_SECONDS = 5;
 const EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS = 5_000;
+const HATCH_PUBLIC_ROUTE_TIMEOUT_MILLIS = 10_000;
 const SANDBOX_PREVIEW_PROXY_HEADER = "x-sandbox-preview-proxy";
 const SANDBOX_PREVIEW_PORT_HEADER = "x-sandbox-preview-port";
 const SANDBOX_PREVIEW_TOKEN_HEADER = "x-sandbox-preview-token";
 const SANDBOX_PREVIEW_SANDBOX_ID_HEADER = "x-sandbox-preview-sandbox-id";
 const PREVIEW_PORT_PATTERN = /^(?:[1-9][0-9]{3,4})$/u;
+
+const authorizesHatchReadiness = (
+  hatch: HatchRecord | undefined,
+  route: HatchHostRoute & { readonly marker: string },
+): boolean => {
+  if (
+    hatch === undefined ||
+    hatch.sessionId !== route.sessionId ||
+    hatch.service.port !== route.port ||
+    hatch.routeNonce !== route.routeNonce ||
+    hatch.desiredStatus !== "open" ||
+    hatch.runtimeEpoch === undefined
+  )
+    return false;
+  return (
+    (hatch.observedStatus === "starting" &&
+      hatch.exposure === "unexpose_pending" &&
+      hatch.transitionNonce === route.marker) ||
+    (hatch.observedStatus === "running" &&
+      hatch.exposure === "active" &&
+      hatch.routeNonce === route.marker)
+  );
+};
 
 const adaptSandboxWriteFile = (
   sandbox: Pick<Sandbox, "writeFile">,
@@ -334,6 +362,11 @@ export interface SandboxEffectOptions {
   readonly clock?: Clock.Clock;
   readonly containerEvidenceRecorder?: ContainerEvidenceRecorder["Service"];
   readonly evidencePreviewHostTimeoutMillis?: number;
+  readonly hatchPublicProbe?: (
+    url: string,
+    marker: string,
+    signal: AbortSignal,
+  ) => Promise<Response>;
   readonly passivePiConsoleRelay?: PassivePiConsoleRelay;
   readonly previewRequestForwarder?: (request: Request) => Promise<Response>;
   readonly hatchRequestForwarder?: (request: Request) => Promise<Response>;
@@ -618,6 +651,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
   private readonly authoritativeStorage: SessionRecordStorage;
   private readonly evidenceEnabled: boolean;
   private readonly evidencePreviewHostTimeoutMillis: number;
+  private readonly hatchPublicProbe: (
+    url: string,
+    marker: string,
+    signal: AbortSignal,
+  ) => Promise<Response>;
   private readonly previewBase: string | undefined;
   // This only coalesces work inside one live DO instance. Durable createPhase remains authoritative
   // after eviction or a crash.
@@ -635,6 +673,16 @@ export class Sandbox extends BaseSandbox<Bindings> {
     this.evidenceEnabled = env.SCOTTY_EVIDENCE_ENABLED === "true";
     this.evidencePreviewHostTimeoutMillis =
       options.evidencePreviewHostTimeoutMillis ?? EVIDENCE_PREVIEW_HOST_TIMEOUT_MILLIS;
+    this.hatchPublicProbe =
+      options.hatchPublicProbe ??
+      ((url, marker, signal) =>
+        // oxlint-disable-next-line scotty/no-raw-fetch -- boundary: public Hatch readiness must traverse DNS, TLS, and the Worker route
+        fetch(url, {
+          method: "HEAD",
+          headers: { [HATCH_PRIVATE_READINESS_HEADER]: marker },
+          redirect: "manual",
+          signal,
+        }));
     this.previewBase =
       env.SCOTTY_PREVIEW_BASE !== undefined &&
       EVIDENCE_PREVIEW_BASE_PATTERN.test(env.SCOTTY_PREVIEW_BASE)
@@ -884,6 +932,53 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return decoded.value;
   });
 
+  private readonly verifyPublicHatchRouteProgram = Effect.fnUntraced(function* (
+    this: Sandbox,
+    hatch: HatchRecord,
+    operationNonce?: string,
+  ) {
+    const previewBase = this.previewBase;
+    if (previewBase === undefined)
+      return yield* new HatchStateError({
+        reason: "invalid_state",
+        message: "Hatch routing is unavailable",
+      });
+    const origin = hatchOrigin(
+      { sessionId: hatch.sessionId, port: hatch.service.port, routeNonce: hatch.routeNonce },
+      previewBase,
+    );
+    const marker = operationNonce ?? hatch.routeNonce;
+    const response = yield* Effect.tryPromise({
+      try: (signal) => this.hatchPublicProbe(`${origin}${HATCH_READINESS_PATH}`, marker, signal),
+      catch: () =>
+        new HatchStateError({
+          reason: "invalid_state",
+          message: "Hatch public route is unreachable",
+        }),
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: HATCH_PUBLIC_ROUTE_TIMEOUT_MILLIS,
+        orElse: () =>
+          Effect.fail(
+            new HatchStateError({
+              reason: "invalid_state",
+              message: "Hatch public route readiness timed out",
+            }),
+          ),
+      }),
+    );
+    if (
+      response.status !== 204 ||
+      response.headers.get("cache-control") !== "no-store" ||
+      response.headers.get("x-robots-tag") !== "noindex, nofollow, noarchive" ||
+      response.headers.get(HATCH_PRIVATE_READINESS_HEADER) !== "ready"
+    )
+      return yield* new HatchStateError({
+        reason: "invalid_state",
+        message: "Hatch public route did not reach Scotty",
+      });
+  });
+
   private readonly healthCheckAndExposeHatchProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     hatch: HatchRecord,
@@ -928,6 +1023,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
         reason: "invalid_state",
         message: "Hatch exposure host did not match authority",
       });
+    yield* this.verifyPublicHatchRouteProgram(hatch, operationNonce);
     const store = yield* HatchStore;
     return yield* store.publishRunning(
       operationNonce,
@@ -1034,8 +1130,23 @@ export class Sandbox extends BaseSandbox<Bindings> {
           runtimeEpoch,
           service: decoded.value.service,
         });
-        if (!beginning.needsExposure)
-          return publicHatchStatusProjection({ primary: beginning.hatch });
+        if (!beginning.needsExposure) {
+          cleanupRequired = true;
+          const ready = yield* this.requireReadyHatchServiceProgram({
+            sessionId: beginning.hatch.sessionId,
+            hatchId: beginning.hatch.hatchId,
+            generation: beginning.hatch.generation,
+            port: beginning.hatch.service.port,
+            routeNonce: beginning.hatch.routeNonce,
+            runtimeEpoch,
+          });
+          if (!ready)
+            return yield* new HatchStateError({
+              reason: "invalid_state",
+              message: "Hatch public route is unavailable",
+            });
+          return yield* hatch.publicStatus;
+        }
         cleanupRequired = true;
         const running = yield* this.healthCheckAndExposeHatchProgram(
           beginning.hatch,
@@ -3511,7 +3622,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return this.#run(this.getScottyDeploymentReadinessProgram());
   }
 
-  private readonly requireHealthyHatchServiceProgram = Effect.fnUntraced(function* (
+  private readonly requireReadyHatchServiceProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     authorization: HatchRouteAuthorization,
   ) {
@@ -3529,7 +3640,27 @@ export class Sandbox extends BaseSandbox<Bindings> {
     const health = yield* Effect.result(
       runtime.fetchPortStatus(hatch.service.healthPath, hatch.service.port, "GET"),
     );
-    if (Result.isSuccess(health) && health.success >= 200 && health.success <= 399) return true;
+    if (Result.isSuccess(health) && health.success >= 200 && health.success <= 399) {
+      const publicRoute = yield* Effect.result(this.verifyPublicHatchRouteProgram(hatch));
+      if (Result.isFailure(publicRoute)) {
+        yield* store
+          .clearPublicReady(
+            authorization.hatchId,
+            authorization.generation,
+            authorization.runtimeEpoch,
+          )
+          .pipe(Effect.ignore);
+        return false;
+      }
+      const confirmed = yield* Effect.result(
+        store.confirmPublicReady(
+          authorization.hatchId,
+          authorization.generation,
+          authorization.runtimeEpoch,
+        ),
+      );
+      return Result.isSuccess(confirmed);
+    }
     const operationNonce = `health-${randomToken(8)}`;
     const cleaned = yield* Effect.result(
       this.cleanupHatchProgram(operationNonce, "unhealthy", false, {
@@ -3556,14 +3687,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
         yield* this.requireRecordProgram();
         const store = yield* HatchStore;
         const status = yield* store.publicStatus;
-        if (
-          status.status === "configured" &&
-          status.observedStatus === "running" &&
-          status.exposure === "active" &&
-          this.rawContainer?.running === true
-        ) {
-          const route = yield* Effect.result(store.activeRoute);
-          if (Result.isSuccess(route)) yield* this.requireHealthyHatchServiceProgram(route.success);
+        if (status.status === "configured" && status.observedStatus === "running") {
+          if (this.rawContainer?.running !== true) return { ...status, exposure: "not_exposed" };
+          const route = yield* Effect.result(store.exposedRoute);
+          if (Result.isFailure(route)) return { ...status, exposure: "not_exposed" };
+          yield* this.requireReadyHatchServiceProgram(route.success);
           return yield* store.publicStatus;
         }
         return status;
@@ -3586,6 +3714,7 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async getScottyHatchOpenRoute(): Promise<HatchRouteAuthorization | undefined> {
     if (this.rawContainer?.running !== true) return undefined;
+    await this.getScottyHatchStatus();
     return this.#run(
       Effect.flatMap(HatchStore, (store) => store.activeRoute).pipe(
         Effect.catch(() => Effect.succeed(undefined)),
@@ -4219,6 +4348,58 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return new Response(null, { status: 101, webSocket: client, headers });
   }
 
+  private readonly hatchReadinessForwardingRoute = (
+    request: Request,
+  ): (HatchHostRoute & { readonly marker: string }) | undefined => {
+    const marker = request.headers.get(HATCH_PRIVATE_READINESS_HEADER);
+    const portValue = request.headers.get(SANDBOX_PREVIEW_PORT_HEADER);
+    const sessionId = request.headers.get(SANDBOX_PREVIEW_SANDBOX_ID_HEADER);
+    const routeNonce = request.headers.get(SANDBOX_PREVIEW_TOKEN_HEADER);
+    if (
+      request.method !== "HEAD" ||
+      new URL(request.url).pathname !== HATCH_READINESS_PATH ||
+      request.headers.get(SANDBOX_PREVIEW_PROXY_HEADER) !== "1" ||
+      marker === null ||
+      Option.isNone(decodeHatchIdentifier(marker)) ||
+      portValue === null ||
+      !PREVIEW_PORT_PATTERN.test(portValue) ||
+      sessionId === null ||
+      routeNonce === null
+    )
+      return undefined;
+    const decoded = decodeHatchHostRoute({ sessionId, port: Number(portValue), routeNonce });
+    return Option.isSome(decoded) ? { ...decoded.value, marker } : undefined;
+  };
+
+  private async fetchHatchReadiness(request: Request): Promise<Response> {
+    const route = this.hatchReadinessForwardingRoute(request);
+    if (route === undefined || this.rawContainer?.running !== true)
+      return deniedEvidencePreviewResponse();
+    const state = await this.#run(
+      Effect.flatMap(HatchStore, (store) => store.read).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      ),
+    );
+    const hatch = state?.primary;
+    if (!authorizesHatchReadiness(hatch, route)) return deniedEvidencePreviewResponse();
+    const runtimeEpoch = await this.#run(Effect.result(this.currentRuntimeEpochProgram()));
+    if (Result.isFailure(runtimeEpoch) || runtimeEpoch.success !== hatch.runtimeEpoch)
+      return deniedEvidencePreviewResponse();
+    const health = await this.#run(
+      Effect.result(
+        Effect.flatMap(SandboxRuntime, (runtime) =>
+          runtime.fetchPortStatus(hatch.service.healthPath, hatch.service.port, "GET"),
+        ),
+      ),
+    );
+    if (Result.isFailure(health) || health.success < 200 || health.success > 399)
+      return deniedEvidencePreviewResponse();
+    return new Response(null, {
+      status: 204,
+      headers: { [HATCH_PRIVATE_READINESS_CLAIMED_HEADER]: route.marker },
+    });
+  }
+
   private readonly hatchForwardingRoute = (
     request: Request,
   ): (HatchHostRoute & { readonly requestId: string }) | undefined => {
@@ -4429,6 +4610,8 @@ export class Sandbox extends BaseSandbox<Bindings> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (request.headers.has(HATCH_PRIVATE_READINESS_HEADER))
+      return this.fetchHatchReadiness(request);
     if (request.headers.has(HATCH_PRIVATE_WEBSOCKET_HEADER))
       return this.fetchHatchWebSocket(request);
     if (request.headers.has(HATCH_PRIVATE_REQUEST_HEADER)) return this.fetchHatchRequest(request);

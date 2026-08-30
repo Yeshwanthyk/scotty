@@ -74,7 +74,6 @@ export function artifactForTool(tool, sessionId) {
     label: hatch.service.name,
     status: hatch.observedStatus,
     available,
-    ...(available ? { href: `/s/${encodeURIComponent(sessionId)}/hatch/open` } : {}),
   };
 }
 
@@ -91,11 +90,11 @@ export function renderArtifactCard(document, artifact) {
   if (artifact.kind === "evidence") {
     meta.textContent = `${artifact.status} · ${artifact.completedSteps} steps · ${artifact.frameCount} frames${artifact.video ? " · video" : ""}`;
   } else if (artifact.kind === "hatch") {
-    meta.textContent = artifact.available ? `${artifact.status} · authenticated` : artifact.status;
+    meta.textContent = `Historical result · ${artifact.status}`;
   } else meta.textContent = "The structured result could not be verified.";
   copy.append(title, meta);
   card.append(marker, copy);
-  if (artifact.href) {
+  if (artifact.kind !== "hatch" && artifact.href) {
     const link = document.createElement("a");
     link.className = "artifact-link";
     link.href = artifact.href;

@@ -3,6 +3,7 @@ import { Data, Option, Schema } from "effect";
 export const HATCH_STATE_VERSION = 1 as const;
 export const HATCH_COOKIE = "__Host-scotty-hatch";
 export const HATCH_HANDOFF_PATH = "/_scotty/hatch/handoff";
+export const HATCH_READINESS_PATH = "/_scotty/hatch/readiness";
 export const HATCH_MAX_CONCURRENT_REQUESTS = 8;
 export const HATCH_MAX_CONCURRENT_SOCKETS = 4;
 export const HATCH_MAX_WEBSOCKET_MESSAGE_BYTES = 1 * 1_024 * 1_024;
@@ -18,6 +19,8 @@ export const HATCH_REQUEST_DURATION_MILLIS = 30_000;
 export const HATCH_PERMIT_DURATION_MILLIS = 60 * 60 * 1_000;
 export const HATCH_PRIVATE_REQUEST_HEADER = "x-scotty-hatch-request";
 export const HATCH_PRIVATE_CLAIMED_HEADER = "x-scotty-hatch-claimed";
+export const HATCH_PRIVATE_READINESS_HEADER = "x-scotty-hatch-readiness";
+export const HATCH_PRIVATE_READINESS_CLAIMED_HEADER = "x-scotty-hatch-readiness-claimed";
 export const HATCH_PRIVATE_WEBSOCKET_HEADER = "x-scotty-hatch-websocket";
 export const HATCH_PRIVATE_WEBSOCKET_CLAIMED_HEADER = "x-scotty-hatch-websocket-claimed";
 export const HATCH_RESERVED_PORTS = new Set([3_000, 43_117]);
@@ -200,6 +203,7 @@ const HatchRecordBaseSchema = Schema.Struct({
   createdAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
   lastHealthyAt: Schema.optionalKey(IsoTimestampSchema),
+  publicReadyAt: Schema.optionalKey(IsoTimestampSchema),
 });
 type HatchRecordBase = typeof HatchRecordBaseSchema.Type;
 
@@ -255,7 +259,10 @@ const isActiveHatch = (record: HatchRecordBase): boolean =>
 const hasValidRecordTimestamps = (record: HatchRecordBase): boolean =>
   Date.parse(record.createdAt) <= Date.parse(record.updatedAt) &&
   (record.lastHealthyAt === undefined ||
-    Date.parse(record.createdAt) <= Date.parse(record.lastHealthyAt));
+    Date.parse(record.createdAt) <= Date.parse(record.lastHealthyAt)) &&
+  (record.publicReadyAt === undefined ||
+    (Date.parse(record.createdAt) <= Date.parse(record.publicReadyAt) &&
+      Date.parse(record.publicReadyAt) <= Date.parse(record.updatedAt)));
 
 const hasValidCleanupState = (record: HatchRecordBase): boolean =>
   record.cleanup === undefined ||
@@ -267,6 +274,7 @@ const hasValidCleanupState = (record: HatchRecordBase): boolean =>
 
 const hasValidLifecycleState = (record: HatchRecordBase): boolean =>
   (record.exposure !== "active" || isActiveHatch(record)) &&
+  (record.publicReadyAt === undefined || isActiveHatch(record)) &&
   ((record.permits.length === 0 && record.requests.length === 0) || isActiveHatch(record)) &&
   (record.exposure !== "closed" || record.runtimeEpoch === undefined);
 
@@ -334,7 +342,10 @@ export const publicHatchStatusProjection = (state: HatchState): PublicHatchStatu
     service: { name: hatch.service.name, port: hatch.service.port },
     desiredStatus: hatch.desiredStatus,
     observedStatus: hatch.observedStatus,
-    exposure: hatch.exposure,
+    exposure:
+      hatch.exposure === "active" && hatch.publicReadyAt === undefined
+        ? "not_exposed"
+        : hatch.exposure,
     createdAt: hatch.createdAt,
     updatedAt: hatch.updatedAt,
     ...(hatch.lastHealthyAt === undefined ? {} : { lastHealthyAt: hatch.lastHealthyAt }),

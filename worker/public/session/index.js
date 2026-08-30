@@ -492,6 +492,7 @@ discardCommands.addEventListener("click", async () => {
     syncDeliveredUiResponses(currentSessionId, projection);
     connection.discard(currentSessionId);
     chatView.reset();
+    summaryView.reset();
     scheduleRender();
     composerInput.focus({ preventScroll: true });
   } catch (error) {

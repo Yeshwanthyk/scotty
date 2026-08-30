@@ -43,6 +43,10 @@ describe("cloud-agent session application", () => {
     assert.include(appSource, 'type: "abort"');
     assert.include(appSource, 'type: "extension_ui_response"');
     assert.include(appSource, "connection.discard(currentSessionId)");
+    assert.match(
+      appSource,
+      /connection\.discard\(currentSessionId\);\s*chatView\.reset\(\);\s*summaryView\.reset\(\);/u,
+    );
     assert.include(appSource, "syncDeliveredUiResponses");
     assert.include(appSource, '"This agent runtime stopped"');
     assert.include(appSource, '"Recover runtime"');

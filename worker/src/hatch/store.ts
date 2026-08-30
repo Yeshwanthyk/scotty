@@ -136,6 +136,17 @@ interface HatchStoreShape {
     generation: number,
     runtimeEpoch: string,
   ) => Effect.Effect<HatchRecord, HatchStateError>;
+  readonly confirmPublicReady: (
+    hatchId: string,
+    generation: number,
+    runtimeEpoch: string,
+  ) => Effect.Effect<HatchRecord, HatchStateError>;
+  readonly clearPublicReady: (
+    hatchId: string,
+    generation: number,
+    runtimeEpoch: string,
+  ) => Effect.Effect<HatchRecord, HatchStateError>;
+  readonly exposedRoute: Effect.Effect<HatchRouteAuthorization, HatchStateError>;
   readonly activeRoute: Effect.Effect<HatchRouteAuthorization, HatchStateError>;
   readonly issuePermit: (
     route: Pick<HatchRouteAuthorization, "sessionId" | "port" | "routeNonce">,
@@ -193,6 +204,11 @@ const changed = (): HatchStateError =>
 
 const withoutRuntimeEpoch = (hatch: HatchRecord): HatchRecord => {
   const { runtimeEpoch: _runtimeEpoch, ...current } = hatch;
+  return current;
+};
+
+const withoutPublicReadiness = (hatch: HatchRecord): HatchRecord => {
+  const { publicReadyAt: _publicReadyAt, ...current } = hatch;
   return current;
 };
 
@@ -450,7 +466,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     generation: number,
     now: string,
   ): HatchRecord => ({
-    ...withoutRuntimeEpoch(hatch),
+    ...withoutPublicReadiness(withoutRuntimeEpoch(hatch)),
     generation,
     desiredStatus: closeDesired ? "closed" : hatch.desiredStatus,
     observedStatus: cleanupObservedStatus(target),
@@ -483,6 +499,35 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
     hatch.runtimeEpoch === runtimeEpoch
       ? hatch
       : undefined;
+
+  const route = (requirePublicReady: boolean) =>
+    transact(async (transaction, state) => {
+      const hatch = state.primary;
+      if (
+        hatch === undefined ||
+        hatch.desiredStatus !== "open" ||
+        hatch.observedStatus !== "running" ||
+        hatch.exposure !== "active" ||
+        hatch.runtimeEpoch === undefined ||
+        (requirePublicReady && hatch.publicReadyAt === undefined)
+      )
+        return Result.fail(invalidState("Hatch is not available"));
+      const record = await requireWarmSession(transaction, hatch.sessionId);
+      if (Result.isFailure(record)) return Result.fail(invalidState("Hatch is not available"));
+      const runtime = await currentRuntime(transaction);
+      if (Result.isFailure(runtime) || runtime.success !== hatch.runtimeEpoch)
+        return Result.fail(
+          new HatchStateError({ reason: "runtime_changed", message: "Hatch runtime changed" }),
+        );
+      return Result.succeed({
+        sessionId: hatch.sessionId,
+        hatchId: hatch.hatchId,
+        generation: hatch.generation,
+        port: hatch.service.port,
+        routeNonce: hatch.routeNonce,
+        runtimeEpoch: hatch.runtimeEpoch,
+      });
+    });
 
   return HatchStore.of({
     read: read(),
@@ -565,7 +610,7 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           return Result.fail(invalidState("Hatch generation exhausted"));
         const now = new Date(nowMillis).toISOString();
         const hatch: HatchRecord = {
-          ...existing,
+          ...withoutPublicReadiness(existing),
           generation,
           observedStatus: "starting",
           runtimeEpoch: input.runtimeEpoch,
@@ -627,36 +672,61 @@ const makeHatchStore = (storage: HatchStateStorage): HatchStoreShape => {
           exposure: "active",
           updatedAt: now,
           lastHealthyAt: now,
+          publicReadyAt: now,
         };
         await transaction.putHatch({ primary: next });
         return Result.succeed(next);
       }),
-    activeRoute: transact(async (transaction, state) => {
-      const hatch = state.primary;
-      if (
-        hatch === undefined ||
-        hatch.desiredStatus !== "open" ||
-        hatch.observedStatus !== "running" ||
-        hatch.exposure !== "active" ||
-        hatch.runtimeEpoch === undefined
-      )
-        return Result.fail(invalidState("Hatch is not available"));
-      const record = await requireWarmSession(transaction, hatch.sessionId);
-      if (Result.isFailure(record)) return Result.fail(invalidState("Hatch is not available"));
-      const runtime = await currentRuntime(transaction);
-      if (Result.isFailure(runtime) || runtime.success !== hatch.runtimeEpoch)
-        return Result.fail(
-          new HatchStateError({ reason: "runtime_changed", message: "Hatch runtime changed" }),
-        );
-      return Result.succeed({
-        sessionId: hatch.sessionId,
-        hatchId: hatch.hatchId,
-        generation: hatch.generation,
-        port: hatch.service.port,
-        routeNonce: hatch.routeNonce,
-        runtimeEpoch: hatch.runtimeEpoch,
-      });
-    }),
+    confirmPublicReady: (hatchId, generation, runtimeEpoch) =>
+      transact(async (transaction, state, nowMillis) => {
+        const hatch = state.primary;
+        if (
+          hatch === undefined ||
+          hatch.hatchId !== hatchId ||
+          hatch.generation !== generation ||
+          hatch.runtimeEpoch !== runtimeEpoch ||
+          hatch.desiredStatus !== "open" ||
+          hatch.observedStatus !== "running" ||
+          hatch.exposure !== "active"
+        )
+          return Result.fail(changed());
+        const runtime = await currentRuntime(transaction);
+        if (Result.isFailure(runtime) || runtime.success !== runtimeEpoch)
+          return Result.fail(
+            new HatchStateError({ reason: "runtime_changed", message: "Hatch runtime changed" }),
+          );
+        if (hatch.publicReadyAt !== undefined) return Result.succeed(hatch);
+        const now = new Date(nowMillis).toISOString();
+        const next = { ...hatch, publicReadyAt: now, updatedAt: now };
+        await transaction.putHatch({ primary: next });
+        return Result.succeed(next);
+      }),
+    clearPublicReady: (hatchId, generation, runtimeEpoch) =>
+      transact(async (transaction, state, nowMillis) => {
+        const hatch = state.primary;
+        if (
+          hatch === undefined ||
+          hatch.hatchId !== hatchId ||
+          hatch.generation !== generation ||
+          hatch.runtimeEpoch !== runtimeEpoch ||
+          hatch.desiredStatus !== "open" ||
+          hatch.observedStatus !== "running" ||
+          hatch.exposure !== "active"
+        )
+          return Result.fail(changed());
+        const runtime = await currentRuntime(transaction);
+        if (Result.isFailure(runtime) || runtime.success !== runtimeEpoch)
+          return Result.fail(
+            new HatchStateError({ reason: "runtime_changed", message: "Hatch runtime changed" }),
+          );
+        if (hatch.publicReadyAt === undefined) return Result.succeed(hatch);
+        const now = new Date(nowMillis).toISOString();
+        const next = { ...withoutPublicReadiness(hatch), updatedAt: now };
+        await transaction.putHatch({ primary: next });
+        return Result.succeed(next);
+      }),
+    exposedRoute: route(false),
+    activeRoute: route(true),
     issuePermit: (route, browserClientId, cookieDigest) =>
       transact(async (transaction, state, nowMillis) => {
         const hatch = state.primary;
