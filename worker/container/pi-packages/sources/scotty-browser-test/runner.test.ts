@@ -51,6 +51,11 @@ const job = (video = true): BrowserEvidenceJob => ({
 
 const fakeRuntime = (options: { readonly browserCloseFails?: boolean } = {}) => {
   const events: string[] = [];
+  const screenshots: Array<{
+    readonly animations: "disabled";
+    readonly path: string;
+    readonly type: "png";
+  }> = [];
   let clock = 1_700_000_000_000;
   let currentUrl = "about:blank";
   const locator: RunnerLocator = {
@@ -127,7 +132,9 @@ const fakeRuntime = (options: { readonly browserCloseFails?: boolean } = {}) => 
           getByTestId: () => locator,
           locator: () => locator,
           url: () => currentUrl,
-          screenshot: async ({ path }) => {
+          screenshot: async (options) => {
+            const { path } = options;
+            screenshots.push(options);
             events.push(`screenshot:${path}`);
           },
         }),
@@ -155,7 +162,7 @@ const fakeRuntime = (options: { readonly browserCloseFails?: boolean } = {}) => 
       events.push(`remove:${path}`);
     },
   };
-  return { events, runtime };
+  return { events, runtime, screenshots };
 };
 
 test("runs every action and assertion, blocks cross-origin traffic, and finalizes before success", async () => {
@@ -181,6 +188,19 @@ test("runs every action and assertion, blocks cross-origin traffic, and finalize
   assert.ok(events.indexOf("context:close") < events.indexOf("browser:close"));
   assert.ok(events.indexOf("browser:close") < events.indexOf("display:close"));
   assert.ok(events.indexOf("display:close") < events.findIndex((event) => event.startsWith("move:")));
+});
+
+test("disables finite animations at the screenshot capture boundary", async () => {
+  const { runtime, screenshots } = fakeRuntime();
+  const result = await runBrowserEvidenceJob(
+    job(false),
+    "/tmp/scotty-browser-runner-test",
+    runtime,
+  );
+
+  assert.equal(result.status, "succeeded");
+  assert.equal(screenshots.length, 4);
+  assert.ok(screenshots.every((options) => options.animations === "disabled"));
 });
 
 test("retains the mismatch step PNG and omits video", async () => {
