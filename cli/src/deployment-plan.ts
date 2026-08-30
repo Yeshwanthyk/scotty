@@ -68,7 +68,11 @@ export const writeDeploymentPlan = Effect.fnUntraced(function* (
   plan: DeploymentPlan,
 ) {
   const fileSystem = yield* FileSystem;
-  yield* fileSystem.writeSecure(deploymentPlanPath(home), `${JSON.stringify(plan, null, 2)}\n`);
+  const path = deploymentPlanPath(home);
+  yield* fileSystem.withLock(
+    path,
+    fileSystem.writeSecure(path, `${JSON.stringify(plan, null, 2)}\n`),
+  );
 });
 
 export const removeDeploymentPlan = Effect.fnUntraced(function* (home: string) {

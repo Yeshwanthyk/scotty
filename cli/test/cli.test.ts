@@ -1589,6 +1589,55 @@ describe("configuration and transport", () => {
     expect(h.error().error.message).toBe("deploy --yes requires a saved plan");
   });
 
+  test("deploy plan can be consumed by only one concurrent apply", async () => {
+    const home = await temporaryDirectory();
+    await writeScottyToml(home);
+    await writeFile(managedInstallationPath(home), JSON.stringify(managedConfig()), {
+      mode: 0o600,
+    });
+    let applyCount = 0;
+    const overrides: Partial<CliDependencies> = {
+      home,
+      fetch: acceptingSandboxSyncFetch(),
+      planInstallation: async () => ({
+        installationName: "home",
+        accountId: "0123456789abcdef0123456789abcdef",
+        hasExistingResources: true,
+        fingerprint: "plan-one-use",
+        changes: [{ id: "Scotty-home/Worker", action: "update" }],
+      }),
+      deployInstallation: async (input) => {
+        applyCount += 1;
+        return {
+          installationName: input.installationName,
+          profile: input.profile,
+          stackName: "Scotty-home",
+          stage: "production",
+          accountId: "0123456789abcdef0123456789abcdef",
+          workerName: "scotty-home-worker",
+          runnerWorkerName: "scotty-home-runner",
+          containerName: "scotty-home-sandbox",
+          kvTitle: "scotty-home-sessions",
+          backupBucketName: "scotty-home-backups",
+          host: "https://worker.example",
+        };
+      },
+    };
+    await planDeployment(harness(overrides));
+    const first = harness(overrides);
+    const second = harness(overrides);
+
+    const exits = await Promise.all([
+      main(["deploy", "--yes"], first.deps),
+      main(["deploy", "--yes"], second.deps),
+    ]);
+
+    expect(exits.toSorted()).toEqual([EXIT.OK, EXIT.USAGE]);
+    expect(applyCount).toBe(1);
+    const failed = exits[0] === EXIT.USAGE ? first : second;
+    expect(failed.error().error.message).toBe("deploy --yes requires a saved plan");
+  });
+
   test("deploy keeps the rewritten pointer when TOML sync fails", async () => {
     const home = await temporaryDirectory();
     await writeScottyToml(home);

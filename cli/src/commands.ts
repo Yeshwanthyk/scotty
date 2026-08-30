@@ -12,6 +12,7 @@ import {
 import { CliError, EXIT, VERSION, type ExitCode, type GlobalOptions, type Writer } from "./core";
 import { managedInstallationPath } from "./managed-installation-path.mjs";
 import {
+  deploymentPlanPath,
   readDeploymentPlan,
   removeDeploymentPlan,
   writeDeploymentPlan,
@@ -264,26 +265,32 @@ const consumeAuthorizedDeploymentPlan = Effect.fnUntraced(function* (
   home: string,
   current: DeploymentPlan,
 ) {
-  const authorized = yield* readDeploymentPlan(home);
-  if (authorized === undefined)
-    return yield* usage(
-      "deploy --yes requires a saved plan",
-      "Run scotty deploy --plan --json, review it, then retry with --yes.",
-    );
-  const changed =
-    authorized.cliVersion !== current.cliVersion ||
-    authorized.installationName !== current.installationName ||
-    authorized.accountId !== current.accountId ||
-    authorized.planFingerprint !== current.planFingerprint ||
-    authorized.bundleDigest !== current.bundleDigest;
-  if (changed)
-    return yield* new CliError(
-      "deployment_plan_changed",
-      "The deployment plan changed after it was reviewed",
-      "Run scotty deploy --plan --json again and review the new plan.",
-      EXIT.USAGE,
-    );
-  yield* removeDeploymentPlan(home);
+  const fileSystem = yield* CliFileSystem;
+  yield* fileSystem.withLock(
+    deploymentPlanPath(home),
+    Effect.gen(function* () {
+      const authorized = yield* readDeploymentPlan(home);
+      if (authorized === undefined)
+        return yield* usage(
+          "deploy --yes requires a saved plan",
+          "Run scotty deploy --plan --json, review it, then retry with --yes.",
+        );
+      const changed =
+        authorized.cliVersion !== current.cliVersion ||
+        authorized.installationName !== current.installationName ||
+        authorized.accountId !== current.accountId ||
+        authorized.planFingerprint !== current.planFingerprint ||
+        authorized.bundleDigest !== current.bundleDigest;
+      if (changed)
+        return yield* new CliError(
+          "deployment_plan_changed",
+          "The deployment plan changed after it was reviewed",
+          "Run scotty deploy --plan --json again and review the new plan.",
+          EXIT.USAGE,
+        );
+      yield* removeDeploymentPlan(home);
+    }),
+  );
 });
 
 const validateDeploymentMode = (
