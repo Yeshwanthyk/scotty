@@ -18,16 +18,13 @@ export function shouldPollEvidence(payload, detail) {
 
 export function orderedEvidenceSteps(summary) {
   if (!summary || !Array.isArray(summary.steps)) return [];
-  return summary.steps
-    .map((step, position) => ({ step, position }))
+  const positioned = summary.steps.map((step, position) => ({ step, position }));
+  const allHaveOffsets = positioned.every(({ step }) => Number.isFinite(step?.frame?.offsetMillis));
+  return positioned
     .sort((left, right) => {
       const leftOffset = left.step?.frame?.offsetMillis;
       const rightOffset = right.step?.frame?.offsetMillis;
-      const leftHasOffset = Number.isFinite(leftOffset);
-      const rightHasOffset = Number.isFinite(rightOffset);
-      if (leftHasOffset && rightHasOffset && leftOffset !== rightOffset)
-        return leftOffset - rightOffset;
-      if (leftHasOffset !== rightHasOffset) return leftHasOffset ? -1 : 1;
+      if (allHaveOffsets && leftOffset !== rightOffset) return leftOffset - rightOffset;
       const leftIndex = Number.isInteger(left.step?.index) ? left.step.index : left.position;
       const rightIndex = Number.isInteger(right.step?.index) ? right.step.index : right.position;
       return leftIndex - rightIndex || left.position - right.position;

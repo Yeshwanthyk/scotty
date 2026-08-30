@@ -57,6 +57,31 @@ describe("evidence page", () => {
     assert.strictEqual(evidenceStatusLabel("failed"), "Failed");
   });
 
+  it("uses checkpoint index when only some steps have a frame offset", () => {
+    const steps = orderedEvidenceSteps({
+      steps: [
+        {
+          index: 2,
+          name: "Third",
+          status: "passed",
+          frame: { frameId: "third", offsetMillis: 100 },
+        },
+        { index: 0, name: "First", status: "passed" },
+        {
+          index: 1,
+          name: "Second",
+          status: "passed",
+          frame: { frameId: "second", offsetMillis: 200 },
+        },
+      ],
+    });
+
+    assert.deepStrictEqual(
+      steps.map((step) => step.name),
+      ["First", "Second", "Third"],
+    );
+  });
+
   it("polls while any run is active and stops at every terminal state", () => {
     assert.isFalse(isTerminalEvidenceStatus("running"));
     for (const status of ["succeeded", "failed", "interrupted", "unsupported"]) {
