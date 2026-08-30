@@ -34,7 +34,7 @@ const unversionedEvidenceJob = () => ({
   capture: { screenshots: "after-each-step" as const, video: false },
 });
 
-const evidenceJob = () => ({ version: 2 as const, ...unversionedEvidenceJob() });
+const evidenceJob = unversionedEvidenceJob;
 
 const evidenceResult = () => ({
   jobId: "job-abcd1234",
@@ -86,7 +86,7 @@ const hatchRestoreDescriptor = () => ({
 
 const hatchRequest = (
   method: "GET" | "POST" | "DELETE",
-  body: unknown = { version: 1, service: hatchService() },
+  body: unknown = { service: hatchService() },
   headers: Readonly<Record<string, string>> = {},
 ) =>
   new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}`, {
@@ -375,7 +375,7 @@ describe("container-only session egress", () => {
       assert.strictEqual(response.status, 200);
       assert.strictEqual(response.headers.get("cache-control"), "no-store");
       const result = await response.json();
-      assert.deepInclude(result, { version: 1 });
+      assert.notProperty(result, "version");
       assert.notProperty(result, "url");
       assert.notProperty(result, "credential");
     }
@@ -392,7 +392,7 @@ describe("container-only session egress", () => {
     ]);
   });
 
-  it("projects the v1 tool contract for an unconfigured Hatch", async () => {
+  it("projects the unversioned tool contract for an unconfigured Hatch", async () => {
     const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
       SCOTTY_INTERNAL_HOST
     ];
@@ -408,7 +408,7 @@ describe("container-only session egress", () => {
     const response = await handler(hatchRequest("GET"), env, context());
 
     assert.strictEqual(response.status, 200);
-    assert.deepStrictEqual(await response.json(), { version: 1, status: "not_configured" });
+    assert.deepStrictEqual(await response.json(), { status: "not_configured" });
   });
 
   it("returns only the source-derived strict Hatch restore descriptor", async () => {
@@ -427,7 +427,7 @@ describe("container-only session egress", () => {
     const restored = await handler(request(), env, context());
     assert.strictEqual(restored.status, 200);
     assert.strictEqual(restored.headers.get("cache-control"), "no-store");
-    assert.deepStrictEqual(await restored.json(), { version: 1, ...hatchRestoreDescriptor() });
+    assert.deepStrictEqual(await restored.json(), hatchRestoreDescriptor());
 
     descriptor = undefined;
     assert.strictEqual((await handler(request(), env, context())).status, 204);
@@ -472,11 +472,10 @@ describe("container-only session egress", () => {
 
     for (const request of [
       hatchRequest("POST", {
-        version: 1,
         service: { ...hatchService(), env: { TOKEN: "x" } },
       }),
-      hatchRequest("POST", { version: 1, service: hatchService(), sessionId: SESSION_ID }),
-      hatchRequest("POST", { service: hatchService() }),
+      hatchRequest("POST", { service: hatchService(), sessionId: SESSION_ID }),
+      hatchRequest("POST", { version: 1, service: hatchService() }),
       hatchRequest("POST", { service: hatchService() }, { authorization: "Bearer x" }),
       new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}?session=${SESSION_ID}`),
       new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}`, { method: "PUT" }),
@@ -639,7 +638,7 @@ describe("container-only session egress", () => {
     }
   });
 
-  it("admits one bounded v2 evidence job only on the source selected by actual container identity", async () => {
+  it("admits one bounded evidence job only on the source selected by actual container identity", async () => {
     const selectedContainerIds: string[] = [];
     const jobs: unknown[] = [];
     let unrelatedCalls = 0;
@@ -682,7 +681,7 @@ describe("container-only session egress", () => {
     assert.strictEqual(response.headers.get("cache-control"), "no-store");
   });
 
-  it("rejects missing, legacy, and excess evidence job shapes before source admission", async () => {
+  it("rejects versioned and excess evidence job shapes before source admission", async () => {
     let sourceCalls = 0;
     const source = {
       runScottyEvidenceJob: async () => {
@@ -697,8 +696,8 @@ describe("container-only session egress", () => {
     const env = bindings(sandboxNamespace({ fromString: () => source }));
 
     for (const body of [
-      unversionedEvidenceJob(),
       { ...evidenceJob(), version: 1 },
+      { ...evidenceJob(), version: 2 },
       { ...evidenceJob(), targetOrigin: "https://example.com" },
     ]) {
       const response = await handler(evidenceRequest(body), env, context());

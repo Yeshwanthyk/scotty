@@ -11,7 +11,6 @@ import scottyBrowserTest, {
 } from "./index.ts";
 
 const job = () => ({
-  version: 2 as const,
   port: 4_173,
   viewport: { width: 1_280, height: 720 },
   steps: [
@@ -27,7 +26,6 @@ const job = () => ({
 });
 
 const result = () => ({
-  version: 2 as const,
   jobId: "job-abcd1234",
   status: "succeeded" as const,
   summaryUrl: "/s/abcdef123456/evidence/job-abcd1234",
@@ -36,11 +34,12 @@ const result = () => ({
   video: true,
 });
 
-test("exposes only the bounded BrowserEvidenceJob v2 input", () => {
+test("exposes only the bounded BrowserEvidenceJob input", () => {
   assert.equal(Check(BrowserEvidenceJobParameters, job()), true);
   assert.doesNotThrow(() => serializeBrowserEvidenceJob(job()));
 
   for (const field of [
+    "version",
     "url",
     "evaluate",
     "cdp",
@@ -105,7 +104,6 @@ test("enforces every string and array bound plus the 64 KiB request cap", () => 
     })),
   };
   const validButOversize = {
-    version: 2 as const,
     port: 4_173,
     viewport: { width: 1_280, height: 720 },
     steps: Array.from({ length: 12 }, () => maximumStep),

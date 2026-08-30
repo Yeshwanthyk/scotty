@@ -20,7 +20,6 @@ import scottyHatch, {
 } from "./index.ts";
 
 const configured = (overrides: Partial<ConfiguredStatus> = {}): ConfiguredStatus => ({
-  version: 1 as const,
   status: "configured" as const,
   hatchId: "hatch-abcd1234",
   generation: 1,
@@ -81,7 +80,16 @@ test("exposes one strict bounded operation union without env, identity, URL, or 
   assert.equal(Check(ScottyHatchParameters, { operation: "status" }), true);
   assert.equal(Check(ScottyHatchParameters, { operation: "close" }), true);
 
-  for (const field of ["env", "credential", "headers", "sessionId", "url", "shell", "command"]) {
+  for (const field of [
+    "version",
+    "env",
+    "credential",
+    "headers",
+    "sessionId",
+    "url",
+    "shell",
+    "command",
+  ]) {
     assert.equal(Check(ScottyHatchParameters, { ...ensureInput(), [field]: "forbidden" }), false);
   }
   for (const port of [1_023, 3_000, 43_117, 65_536])
@@ -170,7 +178,6 @@ test("starts one process group with an allow-listed environment and registers so
       [["content-type", "application/json"]],
     );
     assert.deepEqual(JSON.parse(String(requests[0]?.init?.body)), {
-      version: 1,
       service: {
         name: "web",
         argv: ["node", "server.mjs", "--host", "0.0.0.0"],
@@ -397,7 +404,6 @@ test("session_start restores the exact fenced service without calling normal ens
     authorityTransport: async (input, init) => {
       requests.push({ input: String(input), method: init?.method ?? "GET" });
       return Response.json({
-        version: 1,
         hatchId: "hatch-abcd1234",
         generation: 7,
         operationNonce: "resume-abcd1234",

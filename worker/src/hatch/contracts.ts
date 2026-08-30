@@ -112,11 +112,7 @@ export const decodeEnsureHatchInput = Schema.decodeUnknownOption(EnsureHatchInpu
   onExcessProperty: "error",
 });
 
-export const HATCH_TOOL_PROTOCOL_VERSION = 1 as const;
-export const HatchToolEnsureRequestSchema = Schema.Struct({
-  version: Schema.Literal(HATCH_TOOL_PROTOCOL_VERSION),
-  service: HatchServiceSchema,
-});
+export const HatchToolEnsureRequestSchema = EnsureHatchInputSchema;
 export type HatchToolEnsureRequest = typeof HatchToolEnsureRequestSchema.Type;
 export const decodeHatchToolEnsureRequest = Schema.decodeUnknownOption(
   HatchToolEnsureRequestSchema,
@@ -331,22 +327,8 @@ export const PublicHatchStatusSchema = Schema.Union([
 ]);
 export type PublicHatchStatus = typeof PublicHatchStatusSchema.Type;
 
-export const HatchToolStatusSchema = Schema.Union([
-  Schema.Struct({
-    version: Schema.Literal(HATCH_TOOL_PROTOCOL_VERSION),
-    status: Schema.Literal("not_configured"),
-  }),
-  Schema.Struct({
-    version: Schema.Literal(HATCH_TOOL_PROTOCOL_VERSION),
-    ...PublicHatchConfiguredSchema.fields,
-  }),
-]);
+export const HatchToolStatusSchema = PublicHatchStatusSchema;
 export type HatchToolStatus = typeof HatchToolStatusSchema.Type;
-
-export const hatchToolStatusProjection = (status: PublicHatchStatus): HatchToolStatus => ({
-  version: HATCH_TOOL_PROTOCOL_VERSION,
-  ...status,
-});
 
 export const publicHatchStatusProjection = (state: HatchState): PublicHatchStatus => {
   const hatch = state.primary;
@@ -448,18 +430,8 @@ export const HatchRestoreDescriptorSchema = Schema.Struct({
 });
 export type HatchRestoreDescriptor = typeof HatchRestoreDescriptorSchema.Type;
 
-export const HatchToolRestoreDescriptorSchema = Schema.Struct({
-  version: Schema.Literal(HATCH_TOOL_PROTOCOL_VERSION),
-  ...HatchRestoreDescriptorSchema.fields,
-});
+export const HatchToolRestoreDescriptorSchema = HatchRestoreDescriptorSchema;
 export type HatchToolRestoreDescriptor = typeof HatchToolRestoreDescriptorSchema.Type;
-
-export const hatchToolRestoreDescriptorProjection = (
-  descriptor: HatchRestoreDescriptor,
-): HatchToolRestoreDescriptor => ({
-  version: HATCH_TOOL_PROTOCOL_VERSION,
-  ...descriptor,
-});
 
 export type HatchStateFailureReason =
   | "conflict"

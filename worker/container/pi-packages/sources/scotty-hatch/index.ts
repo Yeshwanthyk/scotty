@@ -88,7 +88,6 @@ type EnsureInput = Static<typeof EnsureParameters>;
 const TimestampSchema = Type.String({ minLength: 20, maxLength: 64 });
 const ConfiguredStatusSchema = Type.Object(
   {
-    version: Type.Literal(1),
     status: Type.Literal("configured"),
     hatchId: Type.String({
       pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?![\\s\\S])",
@@ -120,15 +119,11 @@ const ConfiguredStatusSchema = Type.Object(
   { additionalProperties: false },
 );
 const HatchStatusSchema = Type.Union([
-  Type.Object(
-    { version: Type.Literal(1), status: Type.Literal("not_configured") },
-    { additionalProperties: false },
-  ),
+  Type.Object({ status: Type.Literal("not_configured") }, { additionalProperties: false }),
   ConfiguredStatusSchema,
 ]);
 const RestoreDescriptorSchema = Type.Object(
   {
-    version: Type.Literal(1),
     hatchId: Type.String({
       pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?![\\s\\S])",
     }),
@@ -211,7 +206,6 @@ export interface ScottyHatchManagerOptions {
 }
 
 export interface ScottyHatchResult {
-  readonly version: 1;
   readonly operation: "ensure" | "status" | "close";
   readonly reference?: string;
   readonly hatch: HatchStatus;
@@ -565,7 +559,7 @@ async function resolveRestoreWorkingDirectory(
 
 function checkedInput(value: unknown): ScottyHatchInput {
   if (!Check(ScottyHatchParameters, value))
-    throw new Error("scotty_hatch input does not match the bounded v1 operation schema");
+    throw new Error("scotty_hatch input does not match the bounded operation schema");
   if (value.operation === "ensure" && value.argv[0]?.length === 0)
     throw new Error("scotty_hatch argv[0] must not be empty");
   return value;
@@ -586,7 +580,6 @@ function fingerprint(service: HatchServiceProcess, name: string): string {
 
 function ensureAuthorityBody(input: EnsureInput, workingDirectory: string): string {
   const body = JSON.stringify({
-    version: 1,
     service: {
       name: input.service,
       argv: input.argv,
@@ -855,7 +848,6 @@ export class ScottyHatchManager {
   ): ScottyHatchResult {
     const hatch = safeStatus(authoritative);
     const result: ScottyHatchResult = {
-      version: 1,
       operation,
       ...(statusReference(hatch) === undefined ? {} : { reference: statusReference(hatch) }),
       hatch,

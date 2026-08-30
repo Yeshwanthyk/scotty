@@ -125,7 +125,6 @@ const StepSchema = Type.Object(
 
 export const BrowserEvidenceJobParameters = Type.Object(
   {
-    version: Type.Literal(2),
     port: Type.Integer({
       minimum: 1_024,
       maximum: 65_535,
@@ -170,7 +169,6 @@ const FailureSchema = Type.Object(
 
 const BrowserEvidenceResultSchema = Type.Object(
   {
-    version: Type.Literal(2),
     jobId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" }),
     status: Type.Union([
       Type.Literal("succeeded"),
@@ -217,7 +215,7 @@ const byteLength = (value: string): number => new TextEncoder().encode(value).by
 
 export function serializeBrowserEvidenceJob(value: unknown): string {
   if (!Check(BrowserEvidenceJobParameters, value)) {
-    throw new Error("scotty_browser_test input does not match BrowserEvidenceJob v2");
+    throw new Error("scotty_browser_test input does not match BrowserEvidenceJob");
   }
   const body = JSON.stringify(value);
   if (byteLength(body) > SCOTTY_BROWSER_TEST_MAX_BYTES) {
@@ -324,7 +322,7 @@ export default function scottyBrowserTest(pi: ExtensionAPI): void {
     name: "scotty_browser_test",
     label: "Scotty Browser Test",
     description:
-      "Run one bounded BrowserEvidenceJob v2 against an app port in the current warm Scotty session. Captures verified screenshots and, when requested, a real WebM browser recording.",
+      "Run one bounded BrowserEvidenceJob against an app port in the current warm Scotty session. Captures verified screenshots and, when requested, a real WebM browser recording.",
     promptSnippet:
       "Run a bounded one-shot browser evidence job against the current warm Scotty session",
     promptGuidelines: [

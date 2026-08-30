@@ -15,7 +15,6 @@ const PNG = Uint8Array.from([
 const WEBM = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x81, 0x00]);
 
 const job: BrowserEvidenceJob = {
-  version: 2,
   port: 4_173,
   viewport: { width: 1_280, height: 720 },
   capture: { screenshots: "after-each-step", video: true },

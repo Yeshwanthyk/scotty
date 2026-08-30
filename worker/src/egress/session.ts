@@ -25,8 +25,6 @@ import {
 } from "../evidence/contracts";
 import {
   decodeHatchToolEnsureRequest,
-  hatchToolRestoreDescriptorProjection,
-  hatchToolStatusProjection,
   HatchRestoreDescriptorSchema,
   PublicHatchStatusSchema,
   type EnsureHatchInput,
@@ -309,7 +307,7 @@ function sanitizeHatchStatus(value: unknown): Response {
         exitCode: 1,
       }),
     );
-  const projected = JSON.stringify(hatchToolStatusProjection(decoded.value));
+  const projected = JSON.stringify(decoded.value);
   if (new TextEncoder().encode(projected).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES)
     return scottyErrorResponse(
       new ScottyError("upstream", "Scotty Hatch result is unavailable", {
@@ -365,7 +363,7 @@ async function handleHatchRestoreEgress(
         exitCode: 1,
       }),
     );
-  const body = JSON.stringify(hatchToolRestoreDescriptorProjection(descriptor.value));
+  const body = JSON.stringify(descriptor.value);
   if (new TextEncoder().encode(body).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES)
     return scottyErrorResponse(
       new ScottyError("upstream", "Scotty Hatch restore descriptor is unavailable", {
