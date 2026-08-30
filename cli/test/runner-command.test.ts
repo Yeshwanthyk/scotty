@@ -46,7 +46,6 @@ describe("runner serve", () => {
                 webSocket.send(
                   JSON.stringify({
                     _tag: "EnsureRuntime",
-                    version: 2,
                     sessionId: "session-a",
                     operationId: "ensure-initial",
                   }),
@@ -64,7 +63,6 @@ describe("runner serve", () => {
                     webSocket.send(
                       JSON.stringify({
                         _tag: "ExecRuntime",
-                        version: 2,
                         sessionId: "session-a",
                         operationId: "write-marker",
                         argv: [
@@ -79,7 +77,6 @@ describe("runner serve", () => {
                     webSocket.send(
                       JSON.stringify({
                         _tag: "StopRuntime",
-                        version: 2,
                         sessionId: "session-a",
                         operationId: "stop",
                       }),
@@ -89,7 +86,6 @@ describe("runner serve", () => {
                     webSocket.send(
                       JSON.stringify({
                         _tag: "EnsureRuntime",
-                        version: 2,
                         sessionId: "session-a",
                         operationId: "ensure-restored",
                       }),
@@ -99,7 +95,6 @@ describe("runner serve", () => {
                     webSocket.send(
                       JSON.stringify({
                         _tag: "ExecRuntime",
-                        version: 2,
                         sessionId: "session-a",
                         operationId: "read-marker",
                         argv: [
@@ -114,7 +109,6 @@ describe("runner serve", () => {
                     webSocket.send(
                       JSON.stringify({
                         _tag: "RemoveRuntime",
-                        version: 2,
                         sessionId: "session-a",
                         operationId: "remove",
                       }),

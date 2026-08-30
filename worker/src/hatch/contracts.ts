@@ -90,7 +90,7 @@ const ArgSchema = Schema.String.check(
   Schema.makeFilter((value) => !value.includes("\0"), { expected: "an argument without NUL" }),
 );
 
-export const HatchServiceV1Schema = Schema.Struct({
+export const HatchServiceSchema = Schema.Struct({
   name: Schema.NonEmptyString.check(Schema.isMaxLength(120)),
   argv: Schema.NonEmptyArray(ArgSchema).check(
     Schema.isMaxLength(64),
@@ -102,14 +102,13 @@ export const HatchServiceV1Schema = Schema.Struct({
   port: PortSchema,
   healthPath: HealthPathSchema,
 });
-export type HatchServiceV1 = typeof HatchServiceV1Schema.Type;
+export type HatchService = typeof HatchServiceSchema.Type;
 
-export const EnsureHatchInputV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
-  service: HatchServiceV1Schema,
+export const EnsureHatchInputSchema = Schema.Struct({
+  service: HatchServiceSchema,
 });
-export type EnsureHatchInputV1 = typeof EnsureHatchInputV1Schema.Type;
-export const decodeEnsureHatchInput = Schema.decodeUnknownOption(EnsureHatchInputV1Schema, {
+export type EnsureHatchInput = typeof EnsureHatchInputSchema.Type;
+export const decodeEnsureHatchInput = Schema.decodeUnknownOption(EnsureHatchInputSchema, {
   onExcessProperty: "error",
 });
 
@@ -129,7 +128,7 @@ export const HatchExposureSchema = Schema.Literals([
   "closed",
 ]);
 
-export const HatchBrowserPermitV1Schema = Schema.Struct({
+export const HatchBrowserPermitSchema = Schema.Struct({
   permitId: IdentifierSchema,
   browserClientId: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12}$/u)),
   cookieDigest: Sha256Schema,
@@ -138,9 +137,9 @@ export const HatchBrowserPermitV1Schema = Schema.Struct({
   ingressBytes: NonNegativeIntSchema,
   responseBytes: NonNegativeIntSchema,
 });
-export type HatchBrowserPermitV1 = typeof HatchBrowserPermitV1Schema.Type;
+export type HatchBrowserPermit = typeof HatchBrowserPermitSchema.Type;
 
-export const HatchHttpRequestV1Schema = Schema.Struct({
+export const HatchHttpRequestSchema = Schema.Struct({
   requestId: RequestIdSchema,
   permitId: IdentifierSchema,
   generation: PositiveIntSchema,
@@ -152,7 +151,7 @@ export const HatchHttpRequestV1Schema = Schema.Struct({
   admittedAt: IsoTimestampSchema,
   expiresAt: IsoTimestampSchema,
 });
-export type HatchHttpRequestV1 = typeof HatchHttpRequestV1Schema.Type;
+export type HatchHttpRequest = typeof HatchHttpRequestSchema.Type;
 
 export const HatchCleanupTargetSchema = Schema.Literals([
   "failed",
@@ -162,60 +161,60 @@ export const HatchCleanupTargetSchema = Schema.Literals([
   "gone",
 ]);
 export type HatchCleanupTarget = typeof HatchCleanupTargetSchema.Type;
-export const HatchCleanupRetryV1Schema = Schema.Struct({
+export const HatchCleanupRetrySchema = Schema.Struct({
   operationNonce: IdentifierSchema,
   target: HatchCleanupTargetSchema,
   closeDesired: Schema.Boolean,
 });
-export type HatchCleanupRetryV1 = typeof HatchCleanupRetryV1Schema.Type;
-export const decodeHatchCleanupRetry = Schema.decodeUnknownOption(HatchCleanupRetryV1Schema, {
+export type HatchCleanupRetry = typeof HatchCleanupRetrySchema.Type;
+export const decodeHatchCleanupRetry = Schema.decodeUnknownOption(HatchCleanupRetrySchema, {
   onExcessProperty: "error",
 });
-const HatchCleanupV1Schema = Schema.Struct({
+const HatchCleanupSchema = Schema.Struct({
   operationNonce: IdentifierSchema,
   target: HatchCleanupTargetSchema,
   generation: PositiveIntSchema,
   requestedAt: IsoTimestampSchema,
 });
 
-const HatchRecordV1BaseSchema = Schema.Struct({
+const HatchRecordBaseSchema = Schema.Struct({
   hatchId: IdentifierSchema,
   sessionId: SessionIdSchema,
   generation: PositiveIntSchema,
-  service: HatchServiceV1Schema,
+  service: HatchServiceSchema,
   desiredStatus: HatchDesiredStatusSchema,
   observedStatus: HatchObservedStatusSchema,
   runtimeEpoch: Schema.optionalKey(IdentifierSchema),
   exposure: HatchExposureSchema,
   routeNonce: RouteNonceSchema,
-  permits: Schema.Array(HatchBrowserPermitV1Schema).check(Schema.isMaxLength(64)),
-  requests: Schema.Array(HatchHttpRequestV1Schema).check(
+  permits: Schema.Array(HatchBrowserPermitSchema).check(Schema.isMaxLength(64)),
+  requests: Schema.Array(HatchHttpRequestSchema).check(
     Schema.isMaxLength(HATCH_MAX_CONCURRENT_REQUESTS),
   ),
   transitionNonce: Schema.optionalKey(IdentifierSchema),
-  cleanup: Schema.optionalKey(HatchCleanupV1Schema),
+  cleanup: Schema.optionalKey(HatchCleanupSchema),
   createdAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
   lastHealthyAt: Schema.optionalKey(IsoTimestampSchema),
 });
-type HatchRecordV1Base = typeof HatchRecordV1BaseSchema.Type;
+type HatchRecordBase = typeof HatchRecordBaseSchema.Type;
 
 const hasUniqueValues = (values: ReadonlyArray<string>): boolean =>
   new Set(values).size === values.length;
 
-const isPermitConsistent = (permit: HatchBrowserPermitV1): boolean =>
+const isPermitConsistent = (permit: HatchBrowserPermit): boolean =>
   permit.ingressBytes <= HATCH_MAX_PERMIT_BYTES &&
   permit.responseBytes <= HATCH_MAX_PERMIT_BYTES &&
   permit.ingressBytes + permit.responseBytes <= HATCH_MAX_PERMIT_BYTES &&
   Date.parse(permit.createdAt) < Date.parse(permit.expiresAt);
 
-const requestReservationBytes = (request: HatchHttpRequestV1): number =>
+const requestReservationBytes = (request: HatchHttpRequest): number =>
   request.reservedIngressBytes + request.reservedResponseBytes;
 
 const isRequestConsistent = (
-  record: HatchRecordV1Base,
-  request: HatchHttpRequestV1,
-  permitById: ReadonlyMap<string, HatchBrowserPermitV1>,
+  record: HatchRecordBase,
+  request: HatchHttpRequest,
+  permitById: ReadonlyMap<string, HatchBrowserPermit>,
 ): boolean => {
   const permit = permitById.get(request.permitId);
   return (
@@ -231,8 +230,8 @@ const isRequestConsistent = (
 };
 
 const permitsHaveRoomForRequests = (
-  permits: ReadonlyArray<HatchBrowserPermitV1>,
-  requests: ReadonlyArray<HatchHttpRequestV1>,
+  permits: ReadonlyArray<HatchBrowserPermit>,
+  requests: ReadonlyArray<HatchHttpRequest>,
 ): boolean =>
   permits.every((permit) => {
     const outstanding = requests
@@ -241,7 +240,7 @@ const permitsHaveRoomForRequests = (
     return permit.ingressBytes + permit.responseBytes + outstanding <= HATCH_MAX_PERMIT_BYTES;
   });
 
-const isActiveHatch = (record: HatchRecordV1Base): boolean =>
+const isActiveHatch = (record: HatchRecordBase): boolean =>
   record.desiredStatus === "open" &&
   record.observedStatus === "running" &&
   record.runtimeEpoch !== undefined &&
@@ -249,12 +248,12 @@ const isActiveHatch = (record: HatchRecordV1Base): boolean =>
   record.cleanup === undefined &&
   record.transitionNonce === undefined;
 
-const hasValidRecordTimestamps = (record: HatchRecordV1Base): boolean =>
+const hasValidRecordTimestamps = (record: HatchRecordBase): boolean =>
   Date.parse(record.createdAt) <= Date.parse(record.updatedAt) &&
   (record.lastHealthyAt === undefined ||
     Date.parse(record.createdAt) <= Date.parse(record.lastHealthyAt));
 
-const hasValidCleanupState = (record: HatchRecordV1Base): boolean =>
+const hasValidCleanupState = (record: HatchRecordBase): boolean =>
   record.cleanup === undefined ||
   (record.cleanup.generation === record.generation &&
     record.cleanup.operationNonce === record.transitionNonce) ||
@@ -262,12 +261,12 @@ const hasValidCleanupState = (record: HatchRecordV1Base): boolean =>
     record.exposure === "closed" &&
     record.transitionNonce === undefined);
 
-const hasValidLifecycleState = (record: HatchRecordV1Base): boolean =>
+const hasValidLifecycleState = (record: HatchRecordBase): boolean =>
   (record.exposure !== "active" || isActiveHatch(record)) &&
   ((record.permits.length === 0 && record.requests.length === 0) || isActiveHatch(record)) &&
   (record.exposure !== "closed" || record.runtimeEpoch === undefined);
 
-const isConsistentHatchRecord = (record: HatchRecordV1Base): boolean => {
+const isConsistentHatchRecord = (record: HatchRecordBase): boolean => {
   const permitIds = record.permits.map((permit) => permit.permitId);
   const requestIds = record.requests.map((request) => request.requestId);
   const permitById = new Map(record.permits.map((permit) => [permit.permitId, permit]));
@@ -284,25 +283,23 @@ const isConsistentHatchRecord = (record: HatchRecordV1Base): boolean => {
   );
 };
 
-export const HatchRecordV1Schema = HatchRecordV1BaseSchema.check(
+export const HatchRecordSchema = HatchRecordBaseSchema.check(
   Schema.makeFilter(isConsistentHatchRecord, {
     expected: "an internally consistent authoritative Hatch record",
   }),
 );
-export type HatchRecordV1 = typeof HatchRecordV1Schema.Type;
+export type HatchRecord = typeof HatchRecordSchema.Type;
 
-export const HatchStateV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
-  primary: Schema.optionalKey(HatchRecordV1Schema),
+export const HatchStateSchema = Schema.Struct({
+  primary: Schema.optionalKey(HatchRecordSchema),
 });
-export type HatchStateV1 = typeof HatchStateV1Schema.Type;
-export const emptyHatchState = (): HatchStateV1 => ({ version: 1 });
-export const decodeHatchStateResult = Schema.decodeUnknownResult(HatchStateV1Schema, {
+export type HatchState = typeof HatchStateSchema.Type;
+export const emptyHatchState = (): HatchState => ({});
+export const decodeHatchStateResult = Schema.decodeUnknownResult(HatchStateSchema, {
   onExcessProperty: "error",
 });
 
-const PublicHatchConfiguredV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
+const PublicHatchConfiguredSchema = Schema.Struct({
   status: Schema.Literal("configured"),
   hatchId: IdentifierSchema,
   generation: PositiveIntSchema,
@@ -317,17 +314,16 @@ const PublicHatchConfiguredV1Schema = Schema.Struct({
   updatedAt: IsoTimestampSchema,
   lastHealthyAt: Schema.optionalKey(IsoTimestampSchema),
 });
-export const PublicHatchStatusV1Schema = Schema.Union([
-  Schema.Struct({ version: Schema.Literal(1), status: Schema.Literal("not_configured") }),
-  PublicHatchConfiguredV1Schema,
+export const PublicHatchStatusSchema = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("not_configured") }),
+  PublicHatchConfiguredSchema,
 ]);
-export type PublicHatchStatusV1 = typeof PublicHatchStatusV1Schema.Type;
+export type PublicHatchStatus = typeof PublicHatchStatusSchema.Type;
 
-export const publicHatchStatusProjection = (state: HatchStateV1): PublicHatchStatusV1 => {
+export const publicHatchStatusProjection = (state: HatchState): PublicHatchStatus => {
   const hatch = state.primary;
-  if (hatch === undefined) return { version: 1, status: "not_configured" };
+  if (hatch === undefined) return { status: "not_configured" };
   return {
-    version: 1,
     status: "configured",
     hatchId: hatch.hatchId,
     generation: hatch.generation,
@@ -341,92 +337,88 @@ export const publicHatchStatusProjection = (state: HatchStateV1): PublicHatchSta
   };
 };
 
-export const HatchHostRouteV1Schema = Schema.Struct({
+export const HatchHostRouteSchema = Schema.Struct({
   sessionId: SessionIdSchema,
   port: PortSchema,
   routeNonce: RouteNonceSchema,
 });
-export type HatchHostRouteV1 = typeof HatchHostRouteV1Schema.Type;
-export const decodeHatchHostRoute = Schema.decodeUnknownOption(HatchHostRouteV1Schema, {
+export type HatchHostRoute = typeof HatchHostRouteSchema.Type;
+export const decodeHatchHostRoute = Schema.decodeUnknownOption(HatchHostRouteSchema, {
   onExcessProperty: "error",
 });
 
-export const HatchRouteAuthorizationV1Schema = Schema.Struct({
-  ...HatchHostRouteV1Schema.fields,
+export const HatchRouteAuthorizationSchema = Schema.Struct({
+  ...HatchHostRouteSchema.fields,
   hatchId: IdentifierSchema,
   generation: PositiveIntSchema,
   runtimeEpoch: IdentifierSchema,
 });
-export type HatchRouteAuthorizationV1 = typeof HatchRouteAuthorizationV1Schema.Type;
+export type HatchRouteAuthorization = typeof HatchRouteAuthorizationSchema.Type;
 
 export const sameHatchAuthorization = (
-  left: Pick<HatchRouteAuthorizationV1, "hatchId" | "generation" | "runtimeEpoch">,
-  right: Pick<HatchRouteAuthorizationV1, "hatchId" | "generation" | "runtimeEpoch">,
+  left: Pick<HatchRouteAuthorization, "hatchId" | "generation" | "runtimeEpoch">,
+  right: Pick<HatchRouteAuthorization, "hatchId" | "generation" | "runtimeEpoch">,
 ): boolean =>
   left.hatchId === right.hatchId &&
   left.generation === right.generation &&
   left.runtimeEpoch === right.runtimeEpoch;
 
-export const HatchRequestAdmissionV1Schema = Schema.Struct({
+export const HatchGatewayAdmissionSchema = Schema.Struct({
   sessionId: SessionIdSchema,
   port: PortSchema,
   routeNonce: RouteNonceSchema,
   cookieSecret: CookieSecretSchema,
   ingressBytes: NonNegativeIntSchema.check(Schema.isLessThanOrEqualTo(HATCH_MAX_INGRESS_BYTES)),
 });
-export type HatchRequestAdmissionV1 = typeof HatchRequestAdmissionV1Schema.Type;
-export const decodeHatchRequestAdmission = Schema.decodeUnknownOption(
-  HatchRequestAdmissionV1Schema,
-  {
-    onExcessProperty: "error",
-  },
-);
+export type HatchGatewayAdmission = typeof HatchGatewayAdmissionSchema.Type;
+export const decodeHatchRequestAdmission = Schema.decodeUnknownOption(HatchGatewayAdmissionSchema, {
+  onExcessProperty: "error",
+});
 export const decodeHatchRequestId = Schema.decodeUnknownOption(RequestIdSchema);
 export const decodeHatchIngressBytes = Schema.decodeUnknownOption(
-  HatchRequestAdmissionV1Schema.fields.ingressBytes,
+  HatchGatewayAdmissionSchema.fields.ingressBytes,
 );
 
-export const IssuedHatchPermitV1Schema = Schema.Struct({
+export const IssuedHatchPermitSchema = Schema.Struct({
   expiresAt: IsoTimestampSchema,
 });
-export type IssuedHatchPermitV1 = typeof IssuedHatchPermitV1Schema.Type;
+export type IssuedHatchPermit = typeof IssuedHatchPermitSchema.Type;
 
-export const HatchRequestPermitV1Schema = Schema.Struct({
+export const HatchRequestPermitSchema = Schema.Struct({
   requestId: RequestIdSchema,
   expiresAt: IsoTimestampSchema,
 });
-export type HatchRequestPermitV1 = typeof HatchRequestPermitV1Schema.Type;
+export type HatchRequestPermit = typeof HatchRequestPermitSchema.Type;
 
-export const HatchWebSocketAdmissionV1Schema = Schema.Struct({
-  ...HatchHostRouteV1Schema.fields,
+export const HatchWebSocketAdmissionSchema = Schema.Struct({
+  ...HatchHostRouteSchema.fields,
   host: HatchHostSchema,
   origin: Schema.String.check(Schema.isMaxLength(512)),
   cookieSecret: CookieSecretSchema,
 });
-export type HatchWebSocketAdmissionV1 = typeof HatchWebSocketAdmissionV1Schema.Type;
+export type HatchWebSocketAdmission = typeof HatchWebSocketAdmissionSchema.Type;
 export const decodeHatchWebSocketAdmission = Schema.decodeUnknownOption(
-  HatchWebSocketAdmissionV1Schema,
+  HatchWebSocketAdmissionSchema,
   { onExcessProperty: "error" },
 );
 
-export const HatchWebSocketPermitV1Schema = Schema.Struct({
+export const HatchWebSocketPermitSchema = Schema.Struct({
   socketId: WebSocketIdSchema,
   generation: PositiveIntSchema,
   runtimeEpoch: IdentifierSchema,
   expiresAt: IsoTimestampSchema,
 });
-export type HatchWebSocketPermitV1 = typeof HatchWebSocketPermitV1Schema.Type;
+export type HatchWebSocketPermit = typeof HatchWebSocketPermitSchema.Type;
 export const decodeHatchWebSocketId = Schema.decodeUnknownOption(WebSocketIdSchema);
 
-export const HatchRestoreDescriptorV1Schema = Schema.Struct({
-  version: Schema.Literal(1),
+export const HatchRestoreDescriptorSchema = Schema.Struct({
   hatchId: IdentifierSchema,
   generation: PositiveIntSchema,
   operationNonce: IdentifierSchema,
   runtimeEpoch: IdentifierSchema,
-  service: HatchServiceV1Schema,
+  service: HatchServiceSchema,
 });
-export type HatchRestoreDescriptorV1 = typeof HatchRestoreDescriptorV1Schema.Type;
+export type HatchRestoreDescriptor = typeof HatchRestoreDescriptorSchema.Type;
 
 export type HatchStateFailureReason =
   | "conflict"
@@ -443,11 +435,11 @@ export class HatchStateError extends Data.TaggedError("HatchStateError")<{
 }> {}
 
 export const hatchOrigin = (
-  route: Pick<HatchRouteAuthorizationV1, "port" | "sessionId" | "routeNonce">,
+  route: Pick<HatchRouteAuthorization, "port" | "sessionId" | "routeNonce">,
   previewBase: string,
 ): string => `https://${route.port}-${route.sessionId}-${route.routeNonce}.${previewBase}`;
 
-export const sameHatchService = (left: HatchServiceV1, right: HatchServiceV1): boolean =>
+export const sameHatchService = (left: HatchService, right: HatchService): boolean =>
   left.name === right.name &&
   left.workingDirectory === right.workingDirectory &&
   left.port === right.port &&
@@ -458,9 +450,9 @@ export const sameHatchService = (left: HatchServiceV1, right: HatchServiceV1): b
 export const decodeHatchCookieSecret = Schema.decodeUnknownOption(CookieSecretSchema);
 export const decodeHatchCookieDigest = Schema.decodeUnknownOption(Sha256Schema);
 export const decodeHatchBrowserClientId = Schema.decodeUnknownOption(
-  HatchBrowserPermitV1Schema.fields.browserClientId,
+  HatchBrowserPermitSchema.fields.browserClientId,
 );
 export const decodeHatchIdentifier = Schema.decodeUnknownOption(IdentifierSchema);
 export const decodeHatchRouteNonce = Schema.decodeUnknownOption(RouteNonceSchema);
-export const optionalHatch = (state: HatchStateV1): Option.Option<HatchRecordV1> =>
+export const optionalHatch = (state: HatchState): Option.Option<HatchRecord> =>
   Option.fromUndefinedOr(state.primary);

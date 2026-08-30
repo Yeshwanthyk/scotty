@@ -10,7 +10,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "cloudflare:workers": fileURLToPath(
-        new URL("./worker/test/cloudflare-workers-stub.ts", import.meta.url),
+        new URL("./worker/test/support/cloudflare-workers-stub.ts", import.meta.url),
       ),
     },
   },

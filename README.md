@@ -80,7 +80,6 @@ it has the native Pi RPC worklog transport.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — direct static contract checks, the local-live harness and helper tests, deployed route
   checks, and an explicitly gated deployed canary.
-- `spikes/` — executable probes for the upstream Sandbox contracts.
 
 ## Security model
 
@@ -100,7 +99,7 @@ The browser never receives container credentials. For Cloudflare sessions, the W
 the terminal WebSocket and attaches it to the Sandbox native PTY running Pi. Pi and Codex receive
 only fixed managed provider and GitHub handles.
 
-Residual limitation: any allowed package registry is still a potential source/prompt exfiltration channel. Keep `ALLOWED_HOSTS` in `worker/src/egress.ts` minimal for the target repository.
+Residual limitation: any allowed package registry is still a potential source/prompt exfiltration channel. Keep `ALLOWED_HOSTS` in `worker/src/egress/worker.ts` minimal for the target repository.
 
 ## Agent setup and test loops
 
@@ -143,17 +142,17 @@ touched files, then run the full gate once before handoff.
 
 ```sh
 # Worker or Durable Object: one pass, then watch mode
-npx vitest run worker/test/sandbox-runtime.test.ts
-npx vitest worker/test/sandbox-runtime.test.ts
+npx vitest run worker/test/sandbox/sandbox-runtime.test.ts
+npx vitest worker/test/sandbox/sandbox-runtime.test.ts
 
 # Effect CLI, Bun CLI, Node E2E, or operations
 npx vitest run cli/effect-test/command-tree.test.ts
 bun test cli/test/cli.test.ts
 npm run test:e2e:local-live:helpers
-node --test scripts/sessions-shell.test.mjs
+node --test scripts/reconcile-containers.test.mjs
 
 # Format touched files and finish with the complete repository gate
-npx oxfmt --disable-nested-config --write README.md worker/src/sandbox-runtime.ts
+npx oxfmt --disable-nested-config --write README.md worker/src/sandbox/runtime.ts
 npm run check
 ```
 
@@ -237,11 +236,9 @@ For a clean first run:
 credential sources if Cloudflare does not match that saved installation.
 
 On a replacement machine, run `scotty recover --name NAME`. Cloudflare profile ownership is the
-recovery authority. The CLI first discovers and displays the resource mapping. It rotates only the
-root token after confirmation. It writes a mode-0600 recovery journal before the remote change, so
-a stopped command can reuse the same token. A pre-existing deployment whose physical or Alchemy
-logical names differ from the generic convention can be recovered with a private
-`--adoption-manifest PATH`; `.scotty-adoption.json` is ignored by Git.
+recovery authority. The CLI discovers the conventionally named resources and rotates only the root
+token after confirmation. It writes a mode-0600 recovery journal before the remote change, so a
+stopped command can reuse the same token.
 
 Use `scotty deploy` for normal updates. It reads the managed installation from `~/.config/scotty/installation.json`,
 checks the current Docker context, and shows the Alchemy resource plan. It asks for confirmation
@@ -281,15 +278,15 @@ other than `main`, a dirty worktree, or a local `main` that differs from `origin
    DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" docker info
    ```
 
-3. Run the guarded deployment for the installation. Omit `SCOTTY_ADOPTION_MANIFEST` when the
-   installation uses Scotty's default resource names. Production requires the installation's
-   explicit Hatch/Evidence preview topology and always enables Evidence. Put that topology in the
-   private adoption manifest, or provide `SCOTTY_PREVIEW_BASE` and `SCOTTY_PREVIEW_ZONE_ID`.
+3. Run the guarded deployment for the installation. Production requires the installation's
+   explicit Hatch/Evidence preview topology and always enables Evidence through
+   `SCOTTY_PREVIEW_BASE` and `SCOTTY_PREVIEW_ZONE_ID`.
 
    ```sh
    DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
    SCOTTY_INSTALLATION_NAME=home \
-   SCOTTY_ADOPTION_MANIFEST="${HOME}/.config/scotty/production-adoption.json" \
+   SCOTTY_PREVIEW_BASE="preview.example.com" \
+   SCOTTY_PREVIEW_ZONE_ID="0123456789abcdef0123456789abcdef" \
      npm run deploy:production
    ```
 
@@ -300,7 +297,8 @@ other than `main`, a dirty worktree, or a local `main` that differs from `origin
    ```sh
    DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
    SCOTTY_INSTALLATION_NAME=home \
-   SCOTTY_ADOPTION_MANIFEST="${HOME}/.config/scotty/production-adoption.json" \
+   SCOTTY_PREVIEW_BASE="preview.example.com" \
+   SCOTTY_PREVIEW_ZONE_ID="0123456789abcdef0123456789abcdef" \
      npm run deploy:production -- --container
    ```
 
@@ -466,5 +464,5 @@ npm run test:e2e:deployed-routes
 npm run test:e2e:deployed
 ```
 
-The canary uses the stage-isolated `spikes/infra/full-stack-canary.run.ts` stack and requires every
+The canary uses the stage-isolated `e2e/canary/full-stack-canary.run.ts` stack and requires every
 stage-scoped gate documented in `e2e/README.md`. Its production Worker host check fails closed.

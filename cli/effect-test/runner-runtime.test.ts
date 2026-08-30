@@ -23,14 +23,12 @@ import { makeRunnerRuntime, makeRunnerRuntimeWithCompute } from "../src/runner-r
 
 const ensure = (operationId: string, sessionId = "session-a"): EnsureRuntime => ({
   _tag: "EnsureRuntime",
-  version: 2,
   operationId,
   sessionId,
 });
 
 const inspect = (operationId: string, sessionId = "session-a"): InspectRuntime => ({
   _tag: "InspectRuntime",
-  version: 2,
   operationId,
   sessionId,
 });
@@ -42,19 +40,17 @@ const exec = (
   sessionId = "session-a",
 ): ExecRuntime =>
   cwd === undefined
-    ? { _tag: "ExecRuntime", version: 2, operationId, sessionId, argv }
-    : { _tag: "ExecRuntime", version: 2, operationId, sessionId, argv, cwd };
+    ? { _tag: "ExecRuntime", operationId, sessionId, argv }
+    : { _tag: "ExecRuntime", operationId, sessionId, argv, cwd };
 
 const stop = (operationId: string, sessionId = "session-a"): StopRuntime => ({
   _tag: "StopRuntime",
-  version: 2,
   operationId,
   sessionId,
 });
 
 const remove = (operationId: string, sessionId = "session-a"): RemoveRuntime => ({
   _tag: "RemoveRuntime",
-  version: 2,
   operationId,
   sessionId,
 });
@@ -134,14 +130,13 @@ const recoveryFencePath = (root: string, sessionId: string): string =>
   `${root}/recovery/session-${hash(sessionId)}/recovery-required.json`;
 
 describe("runner protocol", () => {
-  it.effect("strictly decodes only version 2 operations with their exact fields", () =>
+  it.effect("strictly decodes only current operations with their exact fields", () =>
     Effect.gen(function* () {
       const valid = yield* decodeRunnerOperationText(JSON.stringify(ensure("ensure-valid")));
       assert.isTrue(Predicate.isTagged(valid, "EnsureRuntime"));
       const detached = yield* decodeRunnerOperationText(
         JSON.stringify({
           _tag: "ExecRuntime",
-          version: 2,
           operationId: "detached",
           sessionId: "session-a",
           argv: ["/usr/bin/printf", "ready"],
@@ -161,14 +156,12 @@ describe("runner protocol", () => {
       assert.isTrue(detachedValue);
 
       const malformed = [
-        JSON.stringify({ ...ensure("wrong-version"), version: 1 }),
         JSON.stringify({ ...ensure("excess"), env: { TOKEN: "secret" } }),
         JSON.stringify({ ...ensure("wrong-tag"), _tag: "StartRuntime" }),
         JSON.stringify({ ...ensure("invalid-session"), sessionId: "../outside" }),
         JSON.stringify({ ...ensure("too-long"), operationId: "x".repeat(201) }),
         JSON.stringify({
           _tag: "ExecRuntime",
-          version: 2,
           operationId: "empty-argv",
           sessionId: "session-a",
           argv: [],
@@ -241,7 +234,6 @@ describe("RunnerRuntime", () => {
         assert.deepStrictEqual(executions, [{ argv: ["tool", "arg"], relativeCwd: "nested" }]);
         yield* runtime.handle({
           _tag: "ExecRuntime",
-          version: 2,
           operationId: "compute-detached",
           sessionId,
           argv: ["/usr/bin/printf", "ready"],
@@ -280,7 +272,7 @@ describe("RunnerRuntime", () => {
         let calls = 0;
         const state = {
           phase: "running" as const,
-          resourceId: `runner-v1:${hash("session-a")}`,
+          resourceId: `runner:${hash("session-a")}`,
           workspace: `${root}/sessions/session-${hash("session-a")}`,
         };
         const compute: IsolatedRuntimeCompute = {
@@ -357,7 +349,6 @@ describe("RunnerRuntime", () => {
         const reorderedReplay = yield* runtime.handle({
           sessionId: "session-a",
           operationId: "ensure-once",
-          version: 2,
           _tag: "EnsureRuntime",
         });
         assert.deepStrictEqual(reorderedReplay, ensured);
@@ -745,7 +736,6 @@ describe("RunnerRuntime", () => {
         yield* fs.writeFileString(
           fencePath,
           JSON.stringify({
-            version: 1,
             operationId: operation.operationId,
             sessionId,
             status: "recovery_required",
@@ -765,7 +755,6 @@ describe("RunnerRuntime", () => {
         yield* fs.writeFileString(
           fencePath,
           JSON.stringify({
-            version: 1,
             operationId: operation.operationId,
             sessionId: "session-other",
             status: "recovery_required",
@@ -786,7 +775,6 @@ describe("RunnerRuntime", () => {
         yield* fs.writeFileString(
           fencePath,
           JSON.stringify({
-            version: 1,
             operationId: operation.operationId,
             sessionId,
             status: "recovery_required",
@@ -804,7 +792,6 @@ describe("RunnerRuntime", () => {
         yield* fs.writeFileString(
           fencePath,
           JSON.stringify({
-            version: 1,
             operationId: operation.operationId,
             sessionId,
             status: "recovery_required",

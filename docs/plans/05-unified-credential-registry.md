@@ -234,13 +234,13 @@ Persistence completes before the sanitized response. Concurrent refreshes collap
 **Primary files and symbols**
 
 - `protocol/credentials.ts` — names, kinds, scopes, handles, grants, redacted metadata.
-- `worker/src/credential-contracts.ts` — encrypted envelopes and Registry RPC schemas.
-- `worker/src/credential-crypto.ts` — wrapping-key decode, HKDF/AES-GCM/HMAC primitives adapted from historical commit `1637c182` after current Effect-source verification.
-- `worker/src/credential-store.ts` — current values, internal versions, Session grants, refresh operations.
-- `worker/src/credential-object.ts` — `ScottyCredentialRegistry`.
-- `worker/src/bindings.ts`, `worker/wrangler.jsonc`, `infra/cloudflare-stack.ts` — `CREDENTIALS` DO and inherited `CREDENTIAL_WRAPPING_KEY` name.
+- `worker/src/credentials/contracts.ts` — encrypted envelopes and Registry RPC schemas.
+- `worker/src/credentials/crypto.ts` — wrapping-key decode, HKDF/AES-GCM/HMAC primitives adapted from historical commit `1637c182` after current Effect-source verification.
+- `worker/src/credentials/store.ts` — current values, internal versions, Session grants, refresh operations.
+- `worker/src/credentials/object.ts` — `ScottyCredentialRegistry`.
+- `worker/src/shared/bindings.ts`, `worker/wrangler.jsonc`, `infra/cloudflare-stack.ts` — `CREDENTIALS` DO and inherited `CREDENTIAL_WRAPPING_KEY` name.
 - `cli/src/commands.ts`, `cli/src/scotty-config-contracts.ts`, `cli/src/scotty-config.ts`, `cli/src/pi-auth.ts` — init/sync/config ingestion.
-- `worker/src/session.ts`, `worker/src/container-auth.ts`, `worker/src/egress.ts` — new-session grants and Pi handle resolution.
+- `worker/src/session/object.ts`, `worker/src/sandbox/auth.ts`, `worker/src/egress/worker.ts` — new-session grants and Pi handle resolution.
 
 **Verification**
 
@@ -275,9 +275,9 @@ Persistence completes before the sanitized response. Concurrent refreshes collap
 
 - Stage 1 credential contracts/store/object and TOML source union.
 - `cli/src/commands.ts` `init`, `sync`; `cli/src/dependencies.ts`/services for bounded GitHub source read.
-- `worker/src/repo-verifier.ts`, `worker/src/session.ts` create path.
-- `worker/src/workspace.ts`, `worker/src/container-auth.ts` Git helper projection.
-- `worker/src/egress.ts` GitHub route/repository enforcement.
+- `worker/src/repos/verifier.ts`, `worker/src/session/object.ts` create path.
+- `worker/src/sandbox/workspace.ts`, `worker/src/sandbox/auth.ts` Git helper projection.
+- `worker/src/egress/worker.ts` GitHub route/repository enforcement.
 - `infra/cloudflare-stack.ts` and deployment services for eventual `GH_TOKEN` removal.
 
 **Verification**
@@ -311,7 +311,7 @@ Persistence completes before the sanitized response. Concurrent refreshes collap
 - CLI command-tree, integration, lab, docs, and completion tests.
 - `worker/src/index.ts` legacy auth routes.
 - `worker/src/installation-pi-auth-store.ts`, `worker/src/credential-vault.ts` legacy stores.
-- `worker/src/bindings.ts`, `infra/cloudflare-stack.ts`, deploy/install/uninstall secret lifecycle.
+- `worker/src/shared/bindings.ts`, `infra/cloudflare-stack.ts`, deploy/install/uninstall secret lifecycle.
 - `README.md`, `e2e/README.md`, lab scripts and scans.
 
 **Verification**

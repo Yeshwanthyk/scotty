@@ -125,7 +125,6 @@ const validateRunnerUrl = (value: string): Result.Result<string, RunnerLinkError
 
 const rejected: RunnerFrame = {
   _tag: "RunnerProtocolRejected",
-  version: 2,
   code: "invalid_message",
 };
 
@@ -251,7 +250,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
           pending.requestCredit += credit;
           yield* send({
             _tag: "HttpCredit",
-            version: 2,
             streamId,
             direction: "request",
             credit,
@@ -264,7 +262,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
           pending.requestEnded = true;
           yield* send({
             _tag: "HttpCancel",
-            version: 2,
             streamId,
             direction: "request",
           });
@@ -274,7 +271,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
           if (streams.get(pending.open.streamId) !== pending) return;
           yield* send({
             _tag: "HttpFailed",
-            version: 2,
             streamId: pending.open.streamId,
             code,
           });
@@ -292,7 +288,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
           pending.responseReader = reader;
           yield* send({
             _tag: "HttpResponse",
-            version: 2,
             streamId: pending.open.streamId,
             status: response.status,
             statusText: response.statusText,
@@ -316,7 +311,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
               pending.responseEnded = true;
               yield* send({
                 _tag: "HttpEnd",
-                version: 2,
                 streamId: pending.open.streamId,
                 direction: "response",
               });
@@ -344,7 +338,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
               offset += size;
               yield* send({
                 _tag: "HttpData",
-                version: 2,
                 streamId: pending.open.streamId,
                 direction: "response",
                 data: encodeBase64(chunk),
@@ -389,7 +382,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
           ) {
             yield* send({
               _tag: "HttpFailed",
-              version: 2,
               streamId: open.streamId,
               code: "request_failed",
             });
@@ -474,7 +466,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
           if (open.hasBody)
             yield* send({
               _tag: "HttpCredit",
-              version: 2,
               streamId: open.streamId,
               direction: "request",
               credit: RUNNER_CREDIT_WINDOW,
@@ -567,7 +558,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
           pendingHeartbeat = pending;
           yield* send({
             _tag: "RunnerProbe",
-            version: 2,
             probeId,
           });
           const result = yield* Deferred.await(acknowledged).pipe(
@@ -599,7 +589,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
               if (Predicate.isTagged("RunnerProbe")(decoded.success))
                 return yield* send({
                   _tag: "RunnerProbeAck",
-                  version: 2,
                   probeId: decoded.success.probeId,
                 });
               if (Predicate.isTagged("HttpOpen")(decoded.success))
@@ -618,7 +607,6 @@ export const runRunnerLinkWith = Effect.fnUntraced(function* (
 
       const announce = send({
         _tag: "RunnerHello",
-        version: 2,
         runner: config.runnerName,
       }).pipe(
         Effect.matchEffect({

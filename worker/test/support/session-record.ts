@@ -1,7 +1,6 @@
-import type { SessionRecord } from "../../src/contracts";
+import type { SessionRecord } from "../../src/session/contracts";
 
 export const makeSessionRecord = (overrides: Partial<SessionRecord> = {}): SessionRecord => ({
-  version: 1,
   id: "a0b1c2d3e4f5",
   status: "warm",
   operation: null,
@@ -17,11 +16,11 @@ export const makeSessionRecord = (overrides: Partial<SessionRecord> = {}): Sessi
   hardCapDurationSeconds: 14_400,
   ownedBackupIds: [],
   ...overrides,
+  sandboxBundle: overrides.sandboxBundle ?? { digest: null },
   ...(Object.hasOwn(overrides, "credentialGrant")
     ? {}
     : {
         credentialGrant: {
-          version: 1 as const,
           sessionId: overrides.id ?? "a0b1c2d3e4f5",
           grants: [],
         },

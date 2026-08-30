@@ -9,7 +9,7 @@ const scriptRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = "worker/container/pi-packages/manifest.json";
 const settingsPath = "worker/container/pi-packages/settings.json";
 const npmLockPath = "worker/container/pi-packages/npm/package-lock.json";
-const containerAuthPath = "worker/src/container-auth.ts";
+const containerAuthPath = "worker/src/sandbox/auth.ts";
 const gitMaxBuffer = 64 * 1_024 * 1_024;
 
 export const REQUIRED_PI_PACKAGE_NAMES = Object.freeze(["scotty-browser-test", "scotty-hatch"]);
@@ -230,32 +230,27 @@ function packagePathsFromContainerAuth(root) {
   return [...declaration[1].matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
 }
 
-export function verifyPiPackagePins(root = scriptRoot) {
-  assertRepositoryIndex(root);
-  const manifest = requireKeys(readJson(root, manifestPath), manifestPath, [
-    "schemaVersion",
-    "vendored",
-    "firstParty",
-    "npm",
-  ]);
-  if (manifest.schemaVersion !== 3) fail(`${manifestPath} has an unsupported schemaVersion`);
+function requirePackageArrays(manifest) {
   if (
     !Array.isArray(manifest.vendored) ||
     !Array.isArray(manifest.firstParty) ||
     !Array.isArray(manifest.npm)
   )
     fail(`${manifestPath} must contain vendored, firstParty, and npm arrays`);
+}
 
+function configuredSourcePackages(root, manifest) {
   const configured = [];
-  for (const [index, entry] of manifest.vendored.entries()) {
+  for (const [index, entry] of manifest.vendored.entries())
     configured.push(verifySourcePackage(root, entry, `vendored[${index}]`, "vendored"));
-  }
-  for (const [index, entry] of manifest.firstParty.entries()) {
+  for (const [index, entry] of manifest.firstParty.entries())
     configured.push(verifySourcePackage(root, entry, `firstParty[${index}]`, "firstParty"));
-  }
+  return configured;
+}
 
-  const npmLock = manifest.npm.length === 0 ? undefined : readJson(root, npmLockPath);
-  for (const [index, value] of manifest.npm.entries()) {
+function configuredNpmPackages(root, entries) {
+  const npmLock = entries.length === 0 ? undefined : readJson(root, npmLockPath);
+  return entries.map((value, index) => {
     const label = `npm[${index}]`;
     const entry = requireKeys(value, label, ["name", "order", "version", "integrity", "imagePath"]);
     const name = requireString(entry.name, `${label}.name`);
@@ -266,9 +261,11 @@ export function verifyPiPackagePins(root = scriptRoot) {
     const locked = npmLock?.packages?.[`node_modules/${name}`];
     if (locked?.version !== version) fail(`${name} lock version must be ${version}`);
     if (locked?.integrity !== integrity) fail(`${name} lock integrity does not match the manifest`);
-    configured.push({ name, order, imagePath });
-  }
+    return { name, order, imagePath };
+  });
+}
 
+function verifyConfiguredPackages(root, configured) {
   configured.sort((left, right) => left.order - right.order);
   const configuredNames = configured.map(({ name }) => name);
   const forbiddenPackage = FORBIDDEN_PI_PACKAGE_NAMES.find((name) =>
@@ -285,13 +282,29 @@ export function verifyPiPackagePins(root = scriptRoot) {
     fail("package load orders must be contiguous from zero");
   if (expectedPaths.some((path) => !path.startsWith("/opt/scotty/pi-packages/")))
     fail("every runtime package must be an image-local /opt/scotty/pi-packages path");
-
   const settings = readJson(root, settingsPath);
   if (JSON.stringify(settings.packages) !== JSON.stringify(expectedPaths))
     fail(`${settingsPath} package order does not match the pin manifest`);
   const containerAuthPaths = packagePathsFromContainerAuth(root);
   if (JSON.stringify(containerAuthPaths) !== JSON.stringify(expectedPaths))
     fail(`${containerAuthPath} PI_PACKAGES does not match the pin manifest`);
+}
+
+export function verifyPiPackagePins(root = scriptRoot) {
+  assertRepositoryIndex(root);
+  const manifest = requireKeys(readJson(root, manifestPath), manifestPath, [
+    "schemaVersion",
+    "vendored",
+    "firstParty",
+    "npm",
+  ]);
+  if (manifest.schemaVersion !== 3) fail(`${manifestPath} has an unsupported schemaVersion`);
+  requirePackageArrays(manifest);
+  const configured = [
+    ...configuredSourcePackages(root, manifest),
+    ...configuredNpmPackages(root, manifest.npm),
+  ];
+  verifyConfiguredPackages(root, configured);
 
   return {
     vendoredPackages: manifest.vendored.length,

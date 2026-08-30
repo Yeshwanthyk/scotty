@@ -14,13 +14,13 @@ These are local extractions, not new services or modules. Do not move authority 
 
 ### In scope
 
-- `worker/src/auth-registry.ts`
-- `worker/src/container-session-egress.ts`
-- `worker/src/egress.ts`
+- `worker/src/auth/registry.ts`
+- `worker/src/egress/session.ts`
+- `worker/src/egress/worker.ts`
 - Existing focused tests in:
-  - `worker/test/auth-registry.test.ts`
-  - `worker/test/container-session-egress.test.ts`
-  - `worker/test/egress.test.ts`
+  - `worker/test/auth/auth-registry.test.ts`
+  - `worker/test/egress/container-session-egress.test.ts`
+  - `worker/test/egress/egress.test.ts`
 
 Do not add or edit tests unless a move touches a real contract that the existing suite does not characterize. Do not add speculative negative cases.
 
@@ -67,9 +67,9 @@ NODE
 
 At drafting commit `14baadf5`, the count was 64, all `eslint(complexity)`, with exactly these three findings:
 
-- `worker/src/auth-registry.ts:1030` — `validAuthority`, complexity 25.
-- `worker/src/container-session-egress.ts:480` — `handleContainerSessionEgress`, complexity 26.
-- `worker/src/egress.ts:243` — the generator passed to `Effect.fnUntraced` as `proxyOAuthRefreshProgram`, complexity 24.
+- `worker/src/auth/registry.ts:1030` — `validAuthority`, complexity 25.
+- `worker/src/egress/session.ts:480` — `handleContainerSessionEgress`, complexity 26.
+- `worker/src/egress/worker.ts:243` — the generator passed to `Effect.fnUntraced` as `proxyOAuthRefreshProgram`, complexity 24.
 
 Earlier Q tickets may change line numbers or the total. Reconfirm the live symbols and use the live count as the baseline; do not force the drafting count.
 
@@ -79,9 +79,9 @@ Run the existing tests before editing:
 
 ```sh
 npx vitest run \
-  worker/test/auth-registry.test.ts \
-  worker/test/container-session-egress.test.ts \
-  worker/test/egress.test.ts
+  worker/test/auth/auth-registry.test.ts \
+  worker/test/egress/container-session-egress.test.ts \
+  worker/test/egress/egress.test.ts
 ```
 
 Drafting result: 3 files and 47 tests passed. The executor must establish its own result from the clean starting commit.
@@ -110,7 +110,7 @@ DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock" \
 
 This harness performs owner recovery through the Auth Durable Object, creates a real local Sandbox, starts Pi with sentinels, reaches the credential egress programs with a provider request, reseeds the warm session, and performs another provider request. Do not add `--require-response`; the existing harness already distinguishes credential rejection from an unrelated upstream generation failure. It cleans up its temporary Worker and containers.
 
-The local-live harness does not invoke `scotty.internal` peer control. The exact internal routing path remains proved by the focused test `delegates same-repo inspect and steer through context.containerId without credentials or wake` in `worker/test/container-session-egress.test.ts`. Do not claim broader local or deployed peer proof. The SDK interception certificate still requires the separately authorized deployed canary, which is outside this ticket.
+The local-live harness does not invoke `scotty.internal` peer control. The exact internal routing path remains proved by the focused test `delegates same-repo inspect and steer through context.containerId without credentials or wake` in `worker/test/egress/container-session-egress.test.ts`. Do not claim broader local or deployed peer proof. The SDK interception certificate still requires the separately authorized deployed canary, which is outside this ticket.
 
 If Docker, `gh`, or local Pi auth prerequisites are unavailable, record the block and stop before implementation; do not relabel unit tests as lab proof. On any unexplained before/after divergence, stop at the first difference.
 
@@ -118,29 +118,29 @@ If Docker, `gh`, or local Pi auth prerequisites are unavailable, record the bloc
 
 Recheck these names before editing; line numbers may move.
 
-- `worker/src/auth-registry.ts`
+- `worker/src/auth/registry.ts`
   - `AuthAuthoritySchema`, `AuthAuthority`, `makeAuthRegistry`
   - `parseAuthority`, `transact`, `purgeExpired`
   - `validAuthority`
   - `validOwnerTransferRecord`, `validRecoveryGrantRecord`, `validHatchHandoffRecord`
   - `ownerClientId`, `uniqueIds`, `activeClients`
-- `worker/src/container-session-egress.ts`
+- `worker/src/egress/session.ts`
   - `SCOTTY_INTERNAL_HOST`, `CONTAINER_SESSION_ROUTE`
   - `rejectsAmbientAuthority`, `rejectedRequest`
   - `handleContainerSessionEgress`
   - `handleEvidenceJobEgress`, `handleHatchEgress`, `handleHatchRestoreEgress`
   - `sanitizeResponse`
   - `ContainerProxy.fetch`
-- `worker/src/egress.ts`
+- `worker/src/egress/worker.ts`
   - `proxyOAuthRefreshProgram`
   - `EgressVault.begin`, `EgressVault.persist`, `EgressVault.cancel`
   - `parseOAuthRefreshRequest`, `parseOAuthUpstreamSuccess`
   - `mediaType`, `formBody`, `sanitizedHeaders`
   - `makeOutboundByHost`, `runEgress`, `egressTransportLayer`
 - Boundary callers that are orientation only, not editing targets:
-  - `worker/src/auth-object.ts`: `ScottyAuthRegistry.issueRecoveryGrant`, `#run`
-  - `worker/src/auth.ts`: `authenticateRequest`, `authRegistry`, `unwrapAuthRpc`
-  - `worker/src/session.ts`: `Sandbox.containerSessionRequest`, `Sandbox.outboundByHost`
+  - `worker/src/auth/object.ts`: `ScottyAuthRegistry.issueRecoveryGrant`, `#run`
+  - `worker/src/auth/request.ts`: `authenticateRequest`, `authRegistry`, `unwrapAuthRpc`
+  - `worker/src/session/object.ts`: `Sandbox.containerSessionRequest`, `Sandbox.outboundByHost`
   - `worker/src/index.ts`: `/api/auth/recovery-grants`, `/api/sessions/:id/inspect`, `/api/sessions/:id/steer`
 
 ## Target flow
@@ -176,13 +176,13 @@ Pi provider/OAuth request
 
 **Behavior delivered:** `validAuthority` expresses the same V2 authority invariants through a few named pure predicates instead of one compound expression.
 
-**Files and symbols:** edit only `worker/src/auth-registry.ts`, centered on `validAuthority`. Extract only cohesive checks already present in the expression—for example the Hatch handoff/client relationship, owner-transfer relationship, and recovery-grant epoch relationship. Keep primitive record validators and all callers in place.
+**Files and symbols:** edit only `worker/src/auth/registry.ts`, centered on `validAuthority`. Extract only cohesive checks already present in the expression—for example the Hatch handoff/client relationship, owner-transfer relationship, and recovery-grant epoch relationship. Keep primitive record validators and all callers in place.
 
 **Boundary/state touched:** read-only validation of the Auth Durable Object's decoded authority. No storage key, schema, transaction, purge, mutation, error, or timestamp change.
 
 **Dependency:** none.
 
-**Completion check:** run `worker/test/auth-registry.test.ts` and changed-file Oxlint. `validAuthority` must be at or below 20 and no helper may exceed 20. Compare the boolean conditions directly before moving on. Do not create a validator framework or split the file.
+**Completion check:** run `worker/test/auth/auth-registry.test.ts` and changed-file Oxlint. `validAuthority` must be at or below 20 and no helper may exceed 20. Compare the boolean conditions directly before moving on. Do not create a validator framework or split the file.
 
 **Risk:** accidentally weakening a conjunction or changing `undefined` handling. Preserve each operand exactly and in equivalent grouping.
 
@@ -190,13 +190,13 @@ Pi provider/OAuth request
 
 **Behavior delivered:** `handleContainerSessionEgress` delegates only its existing URL-envelope predicate to one pure helper; routing and relay behavior stay in the exported handler.
 
-**Files and symbols:** edit only `worker/src/container-session-egress.ts`. Extract the current conjunction over protocol, hostname, port, username, password, search, and hash from `handleContainerSessionEgress`. Leave ambient-header rejection, special-route ordering, `CONTAINER_SESSION_ROUTE`, request parsing, context validation, source lookup, RPC invocation, and `sanitizeResponse` where they are.
+**Files and symbols:** edit only `worker/src/egress/session.ts`. Extract the current conjunction over protocol, hostname, port, username, password, search, and hash from `handleContainerSessionEgress`. Leave ambient-header rejection, special-route ordering, `CONTAINER_SESSION_ROUTE`, request parsing, context validation, source lookup, RPC invocation, and `sanitizeResponse` where they are.
 
 **Boundary/state touched:** native Cloudflare outbound request admission only; no authority or state transition.
 
 **Dependency:** none; do it after Chunk 1 only to keep review and proof linear.
 
-**Completion check:** run `worker/test/container-session-egress.test.ts` and changed-file Oxlint. `handleContainerSessionEgress` must be at or below 20. Do not extract dispatch or invent a router unless this single helper unexpectedly fails the live diagnostic gate; if it fails, stop and discuss rather than broadening the design.
+**Completion check:** run `worker/test/egress/container-session-egress.test.ts` and changed-file Oxlint. `handleContainerSessionEgress` must be at or below 20. Do not extract dispatch or invent a router unless this single helper unexpectedly fails the live diagnostic gate; if it fails, stop and discuss rather than broadening the design.
 
 **Risk:** accepting a near-match origin. The helper must retain every existing exact-origin condition.
 
@@ -204,13 +204,13 @@ Pi provider/OAuth request
 
 **Behavior delivered:** `proxyOAuthRefreshProgram` receives one already-decoded refresh intent containing the current `formEncoded` choice and `OAuthRefreshRequest`, then performs the unchanged lease/upstream/persist/response sequence.
 
-**Files and symbols:** edit only `worker/src/egress.ts`. Extract the existing method/path check, bounded `request.text()` Effect, media-type choice, form-or-JSON conversion, and `parseOAuthRefreshRequest` call into one small local Effect-returning helper. Return an absent/forbidden outcome using an ordinary small value or `Option`; do not add a service, Layer, runtime, or new error hierarchy. Keep `EgressVault`, upstream `HttpClient`, cancellation, persistence retries, response schemas, native transport, and `runEgress` unchanged.
+**Files and symbols:** edit only `worker/src/egress/worker.ts`. Extract the existing method/path check, bounded `request.text()` Effect, media-type choice, form-or-JSON conversion, and `parseOAuthRefreshRequest` call into one small local Effect-returning helper. Return an absent/forbidden outcome using an ordinary small value or `Option`; do not add a service, Layer, runtime, or new error hierarchy. Keep `EgressVault`, upstream `HttpClient`, cancellation, persistence retries, response schemas, native transport, and `runEgress` unchanged.
 
 **Boundary/state touched:** untrusted OAuth refresh request decoding before the credential vault lease. No credential is added to logs, arguments, files, or responses.
 
 **Dependency:** none; sequence after Chunk 2.
 
-**Completion check:** run `worker/test/egress.test.ts` and changed-file Oxlint. `proxyOAuthRefreshProgram` and the new helper must each be at or below 20. Confirm the tests still prove form and JSON input, exact upstream URL, real-token substitution, cancellation, three total persistence attempts, redaction, and persist-before-response ordering. Stop once the diagnostic clears; do not restructure the rest of egress.
+**Completion check:** run `worker/test/egress/egress.test.ts` and changed-file Oxlint. `proxyOAuthRefreshProgram` and the new helper must each be at or below 20. Confirm the tests still prove form and JSON input, exact upstream URL, real-token substitution, cancellation, three total persistence attempts, redaction, and persist-before-response ordering. Stop once the diagnostic clears; do not restructure the rest of egress.
 
 **Risk:** reading the body twice, changing unsupported-content behavior, or acquiring a lease before validation. The extracted helper must preserve one body read and validation-before-lease ordering.
 
@@ -218,17 +218,17 @@ Pi provider/OAuth request
 
 Run formatting before lint so diagnostics refer to final positions.
 
-| Proof                  | Command                                                                                                                             | Required result                                                                                 |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Format touched files   | `npx oxfmt --disable-nested-config --write worker/src/auth-registry.ts worker/src/container-session-egress.ts worker/src/egress.ts` | Only intended formatting changes                                                                |
-| Lint-skill policy      | `npm run lint:skills`                                                                                                               | Pass                                                                                            |
-| Focused contracts      | `npx vitest run worker/test/auth-registry.test.ts worker/test/container-session-egress.test.ts worker/test/egress.test.ts`          | All pass; drafting baseline was 47 tests                                                        |
-| Worker types           | `npm run typecheck:worker`                                                                                                          | Pass                                                                                            |
-| Dead-code/export check | `npm run knip:check`                                                                                                                | Pass                                                                                            |
-| Changed-file Oxlint    | `npx oxlint --disable-nested-config worker/src/auth-registry.ts worker/src/container-session-egress.ts worker/src/egress.ts`        | Zero diagnostics in all three files                                                             |
-| Real local boundary    | repeat the exact lab and local-live commands under **Starting proof**                                                               | Same shapes, statuses, isolation, and cleanup as before                                         |
-| Full repository gate   | `npm run check`                                                                                                                     | Pass; includes format check, full lint, Knip, all typechecks, full test suites, and secret scan |
-| Final recount          | repeat the JSON Oxlint recount as `/tmp/q2-oxlint-after.json`                                                                       | Three scoped findings removed; no new diagnostics                                               |
+| Proof                  | Command                                                                                                                                       | Required result                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Format touched files   | `npx oxfmt --disable-nested-config --write worker/src/auth/registry.ts worker/src/egress/session.ts worker/src/egress/worker.ts`              | Only intended formatting changes                                                                |
+| Lint-skill policy      | `npm run lint:skills`                                                                                                                         | Pass                                                                                            |
+| Focused contracts      | `npx vitest run worker/test/auth/auth-registry.test.ts worker/test/egress/container-session-egress.test.ts worker/test/egress/egress.test.ts` | All pass; drafting baseline was 47 tests                                                        |
+| Worker types           | `npm run typecheck:worker`                                                                                                                    | Pass                                                                                            |
+| Dead-code/export check | `npm run knip:check`                                                                                                                          | Pass                                                                                            |
+| Changed-file Oxlint    | `npx oxlint --disable-nested-config worker/src/auth/registry.ts worker/src/egress/session.ts worker/src/egress/worker.ts`                     | Zero diagnostics in all three files                                                             |
+| Real local boundary    | repeat the exact lab and local-live commands under **Starting proof**                                                                         | Same shapes, statuses, isolation, and cleanup as before                                         |
+| Full repository gate   | `npm run check`                                                                                                                               | Pass; includes format check, full lint, Knip, all typechecks, full test suites, and secret scan |
+| Final recount          | repeat the JSON Oxlint recount as `/tmp/q2-oxlint-after.json`                                                                                 | Three scoped findings removed; no new diagnostics                                               |
 
 Do not run a deployment, deployed canary, push, tag, or release. This ticket does not authorize them.
 
@@ -253,8 +253,8 @@ After all proof passes:
 ```sh
 git diff --check
 git status --short
-git diff -- worker/src/auth-registry.ts worker/src/container-session-egress.ts worker/src/egress.ts
-git add worker/src/auth-registry.ts worker/src/container-session-egress.ts worker/src/egress.ts
+git diff -- worker/src/auth/registry.ts worker/src/egress/session.ts worker/src/egress/worker.ts
+git add worker/src/auth/registry.ts worker/src/egress/session.ts worker/src/egress/worker.ts
 git diff --cached --check
 git commit -m "refactor: simplify Worker runtime boundaries"
 git status --short --branch

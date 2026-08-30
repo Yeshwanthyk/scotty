@@ -24,14 +24,12 @@ import { RunnerRuntime } from "../src/runner-runtime";
 
 const inspect = (operationId: string): InspectRuntime => ({
   _tag: "InspectRuntime",
-  version: 2,
   operationId,
   sessionId: "session-a",
 });
 
 const response = (operation: InspectRuntime): RunnerResponse => ({
   _tag: "RunnerSuccess",
-  version: 2,
   operationId: operation.operationId,
   sessionId: operation.sessionId,
   result: {
@@ -60,7 +58,6 @@ const sentFrame = (socket: FakeWebSocket, index: number): RunnerFrame =>
 
 const openHttp = (overrides: Partial<HttpOpen> = {}): HttpOpen => ({
   _tag: "HttpOpen",
-  version: 2,
   streamId: "stream-1",
   sessionId: "session-a",
   runtimeId: "runtime-a",
@@ -150,14 +147,12 @@ describe("RunnerLink", () => {
               fake.receive(
                 encodeRunnerRequest({
                   _tag: "RunnerProbe",
-                  version: 2,
                   probeId: "probe-1",
                 }),
               );
               fake.receive(
                 encodeRunnerRequest({
                   _tag: "HttpOpen",
-                  version: 2,
                   streamId: "stream-1",
                   sessionId: "session-a",
                   runtimeId: "runtime-a",
@@ -203,35 +198,29 @@ describe("RunnerLink", () => {
       assert.deepStrictEqual(socket?.sent, [
         encodeRunnerFrame({
           _tag: "RunnerHello",
-          version: 2,
           runner: "runner-a",
         }),
         encodeRunnerFrame(response(first)),
         encodeRunnerFrame(response(second)),
         encodeRunnerFrame({
           _tag: "RunnerProbeAck",
-          version: 2,
           probeId: "probe-1",
         }),
         encodeRunnerFrame({
           _tag: "HttpFailed",
-          version: 2,
           streamId: "stream-1",
           code: "request_failed",
         }),
         encodeRunnerFrame({
           _tag: "RunnerProtocolRejected",
-          version: 2,
           code: "invalid_message",
         }),
         encodeRunnerFrame({
           _tag: "RunnerProtocolRejected",
-          version: 2,
           code: "invalid_message",
         }),
         encodeRunnerFrame({
           _tag: "RunnerProtocolRejected",
-          version: 2,
           code: "invalid_message",
         }),
       ]);
@@ -253,7 +242,6 @@ describe("RunnerLink", () => {
               fake.receive(
                 encodeRunnerRequest({
                   _tag: "RunnerProbeAck",
-                  version: 2,
                   probeId: frame.success.probeId,
                 }),
               );
@@ -320,7 +308,6 @@ describe("RunnerLink", () => {
       socket.receive(
         encodeRunnerRequest({
           _tag: "RunnerProbeAck",
-          version: 2,
           probeId: "wrong-probe",
         }),
       );
@@ -330,7 +317,6 @@ describe("RunnerLink", () => {
       socket.receive(
         encodeRunnerRequest({
           _tag: "RunnerProbeAck",
-          version: 2,
           probeId: probe.probeId,
         }),
       );
@@ -374,7 +360,6 @@ describe("RunnerLink", () => {
       socket.receive(
         encodeRunnerRequest({
           _tag: "RunnerProbeAck",
-          version: 2,
           probeId: probe.probeId,
         }),
       );
@@ -638,7 +623,6 @@ describe("RunnerLink", () => {
             fake.receive(
               encodeRunnerRequest({
                 _tag: "HttpCredit",
-                version: 2,
                 streamId: frame.success.streamId,
                 direction: "response",
                 credit: bytes.byteLength,
@@ -727,7 +711,6 @@ describe("RunnerLink", () => {
             fake.receive(
               encodeRunnerRequest({
                 _tag: "HttpData",
-                version: 2,
                 streamId: frame.success.streamId,
                 direction: "request",
                 data: encodeBase64(new TextEncoder().encode("hello runner")),
@@ -736,7 +719,6 @@ describe("RunnerLink", () => {
             fake.receive(
               encodeRunnerRequest({
                 _tag: "HttpEnd",
-                version: 2,
                 streamId: frame.success.streamId,
                 direction: "request",
               }),
@@ -795,7 +777,6 @@ describe("RunnerLink", () => {
             fake.receive(
               encodeRunnerRequest({
                 _tag: "HttpCancel",
-                version: 2,
                 streamId: frame.success.streamId,
                 direction: "both",
               }),
@@ -837,7 +818,6 @@ describe("RunnerLink", () => {
                   fake.receive(
                     encodeRunnerRequest({
                       _tag: "HttpData",
-                      version: 2,
                       streamId: "unknown",
                       direction: "request",
                       data: "AQ==",
@@ -874,7 +854,6 @@ describe("RunnerLink", () => {
               fake.receive(
                 encodeRunnerRequest({
                   _tag: "HttpCredit",
-                  version: 2,
                   streamId: frame.success.streamId,
                   direction: "response",
                   credit: 1,
@@ -994,7 +973,6 @@ describe("RunnerLink", () => {
               fake.receive(
                 encodeRunnerRequest({
                   _tag: "HttpCancel",
-                  version: 2,
                   streamId: `session-a-${index}`,
                   direction: "both",
                 }),
@@ -1003,7 +981,6 @@ describe("RunnerLink", () => {
             fake.receive(
               encodeRunnerRequest({
                 _tag: "HttpCancel",
-                version: 2,
                 streamId: "session-b-0",
                 direction: "both",
               }),

@@ -123,7 +123,7 @@ const StepSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const BrowserEvidenceJobV2Parameters = Type.Object(
+export const BrowserEvidenceJobParameters = Type.Object(
   {
     version: Type.Literal(2),
     port: Type.Integer({
@@ -150,7 +150,7 @@ export const BrowserEvidenceJobV2Parameters = Type.Object(
   { additionalProperties: false },
 );
 
-export type BrowserEvidenceJobV2 = Static<typeof BrowserEvidenceJobV2Parameters>;
+export type BrowserEvidenceJob = Static<typeof BrowserEvidenceJobParameters>;
 
 const FailureSchema = Type.Object(
   {
@@ -168,7 +168,7 @@ const FailureSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const BrowserEvidenceResultV2Schema = Type.Object(
+const BrowserEvidenceResultSchema = Type.Object(
   {
     version: Type.Literal(2),
     jobId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" }),
@@ -191,7 +191,7 @@ const BrowserEvidenceResultV2Schema = Type.Object(
   { additionalProperties: false },
 );
 
-export type BrowserEvidenceResultV2 = Static<typeof BrowserEvidenceResultV2Schema>;
+export type BrowserEvidenceResult = Static<typeof BrowserEvidenceResultSchema>;
 
 const ErrorEnvelopeSchema = Type.Object(
   {
@@ -216,7 +216,7 @@ type EvidenceTransport = (
 const byteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 export function serializeBrowserEvidenceJob(value: unknown): string {
-  if (!Check(BrowserEvidenceJobV2Parameters, value)) {
+  if (!Check(BrowserEvidenceJobParameters, value)) {
     throw new Error("scotty_browser_test input does not match BrowserEvidenceJob v2");
   }
   const body = JSON.stringify(value);
@@ -267,8 +267,8 @@ function parseJson(text: string): unknown {
   }
 }
 
-function validateResult(value: unknown): BrowserEvidenceResultV2 | undefined {
-  if (!Check(BrowserEvidenceResultV2Schema, value)) return undefined;
+function validateResult(value: unknown): BrowserEvidenceResult | undefined {
+  if (!Check(BrowserEvidenceResultSchema, value)) return undefined;
   if (!value.summaryUrl.endsWith(`/evidence/${value.jobId}`)) return undefined;
   return value;
 }
@@ -285,7 +285,7 @@ export async function runScottyBrowserTest(
   job: unknown,
   signal?: AbortSignal,
   transport: EvidenceTransport = fetch,
-): Promise<BrowserEvidenceResultV2> {
+): Promise<BrowserEvidenceResult> {
   const body = serializeBrowserEvidenceJob(job);
   const response = await transport(SCOTTY_BROWSER_TEST_ROUTE, {
     method: "POST",
@@ -304,7 +304,7 @@ export async function runScottyBrowserTest(
   return result;
 }
 
-function renderResult(result: BrowserEvidenceResultV2): string {
+function renderResult(result: BrowserEvidenceResult): string {
   const lines = [
     `Browser evidence: ${result.status}`,
     `Completed steps: ${result.completedSteps}`,
@@ -332,7 +332,7 @@ export default function scottyBrowserTest(pi: ExtensionAPI): void {
       "For user-visible work, run the same viewport, steps, and assertions before and after the change. Set video false for the before run and true for the after run so Scotty can build one matched Showcase.",
       "In the next meaningful progress or final update, include the exact scotty-evidence:<jobId> reference derived from the structured result once. Never invent or repeat a reference, and do not publish the authenticated summary URL.",
     ],
-    parameters: BrowserEvidenceJobV2Parameters,
+    parameters: BrowserEvidenceJobParameters,
     async execute(_toolCallId, params, signal) {
       const result = await runScottyBrowserTest(params, signal);
       return {

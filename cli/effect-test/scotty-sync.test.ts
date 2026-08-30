@@ -120,13 +120,13 @@ describe("top-level sync and embedded skill commands", () => {
           calls.push(path);
           if (path === "/api/credentials/sync") {
             registryBodies.push(await request.text());
-            return Response.json({ version: 1, credentials: [] });
+            return Response.json({ credentials: [] });
           }
           if (path === "/api/sandbox/configuration")
-            return Response.json({ schemaVersion: 1, revision: 0, activeDigest });
+            return Response.json({ revision: 0, activeDigest });
           putCalls += 1;
           activeDigest = path.slice(path.lastIndexOf("/") + 1);
-          return Response.json({ schemaVersion: 1, revision: 1, activeDigest });
+          return Response.json({ revision: 1, activeDigest });
         };
 
         const first = run(home, ["sync", "--json", "--host", "https://worker.example"], fetch);
@@ -142,7 +142,6 @@ describe("top-level sync and embedded skill commands", () => {
         assert.match(output.digest, /^[0-9a-f]{64}$/u);
         assert.strictEqual(first.stderr.join(""), "");
         assert.deepStrictEqual(JSON.parse(registryBodies[0] ?? "{}"), {
-          version: 1,
           credentials: [],
         });
         assert.deepStrictEqual(calls, [
@@ -156,7 +155,6 @@ describe("top-level sync and embedded skill commands", () => {
         assert.deepStrictEqual(JSON.parse(second.stdout.join("")), output);
         assert.strictEqual(putCalls, 1);
         assert.deepStrictEqual(JSON.parse(registryBodies[1] ?? "{}"), {
-          version: 1,
           credentials: [],
         });
         assert.deepStrictEqual(calls, [
@@ -210,14 +208,13 @@ describe("top-level sync and embedded skill commands", () => {
                 { status: 502, headers: { "content-type": "application/json" } },
               );
             return Response.json({
-              version: 1,
               credentials: [{ name: "openai", kind: "pi-auth", scope: "global", configured: true }],
             });
           }
           if (path === "/api/sandbox/configuration")
-            return Response.json({ schemaVersion: 1, revision: 0, activeDigest });
+            return Response.json({ revision: 0, activeDigest });
           activeDigest = path.slice(path.lastIndexOf("/") + 1);
-          return Response.json({ schemaVersion: 1, revision: 1, activeDigest });
+          return Response.json({ revision: 1, activeDigest });
         };
 
         const invocation = run(home, ["sync", "--json", "--host", "https://worker.example"], fetch);
@@ -269,7 +266,6 @@ describe("top-level sync and embedded skill commands", () => {
           if (path === "/api/credentials/sync") {
             registryBody = JSON.parse(await request.text());
             return Response.json({
-              version: 1,
               credentials: [
                 {
                   name: "github",
@@ -282,9 +278,8 @@ describe("top-level sync and embedded skill commands", () => {
             });
           }
           if (path === "/api/sandbox/configuration")
-            return Response.json({ schemaVersion: 1, revision: 0, activeDigest: null });
+            return Response.json({ revision: 0, activeDigest: null });
           return Response.json({
-            schemaVersion: 1,
             revision: 1,
             activeDigest: path.slice(path.lastIndexOf("/") + 1),
           });
@@ -304,7 +299,6 @@ describe("top-level sync and embedded skill commands", () => {
         assert.strictEqual(yield* invocation.effect, EXIT.OK);
         assert.deepStrictEqual(processCalls, [["gh", "auth", "token"]]);
         assert.deepStrictEqual(registryBody, {
-          version: 1,
           credentials: [
             {
               name: "github",

@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
   copyFileSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -41,9 +42,10 @@ function withIndexFixture(run) {
       join(root, "worker/container/pi-packages/settings.json"),
       join(fixture, "worker/container/pi-packages/settings.json"),
     );
+    mkdirSync(join(fixture, "worker/src/sandbox"), { recursive: true });
     copyFileSync(
-      join(root, "worker/src/container-auth.ts"),
-      join(fixture, "worker/src/container-auth.ts"),
+      join(root, "worker/src/sandbox/auth.ts"),
+      join(fixture, "worker/src/sandbox/auth.ts"),
     );
     copyFileSync(join(root, manifestPath), join(fixture, manifestPath));
     git(fixture, "init", "--quiet");

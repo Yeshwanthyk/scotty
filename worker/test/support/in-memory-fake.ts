@@ -1,11 +1,11 @@
 import type { BackupOptions, ExecResult, RestoreBackupResult } from "@cloudflare/sandbox";
-import type { BackupCapabilities, BackupObjectPage } from "../../src/backup-store";
-import type { DirectoryBackup } from "../../src/contracts";
-import type { RepoProjectionStorage } from "../../src/repo-projection";
-import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox-runtime";
-import type { SessionProjectionStorage } from "../../src/session-projection";
-import type { SessionRecordStorage, SessionRecordTransaction } from "../../src/session-store";
-import type { StatsProjectionStorage } from "../../src/stats-projection";
+import type { BackupCapabilities, BackupObjectPage } from "../../src/backups/store";
+import type { DirectoryBackup } from "../../src/session/contracts";
+import type { RepoProjectionStorage } from "../../src/repos/projection";
+import type { SandboxExecOptions, SandboxRuntimeCapabilities } from "../../src/sandbox/runtime";
+import type { SessionProjectionStorage } from "../../src/session/projection";
+import type { SessionRecordStorage, SessionRecordTransaction } from "../../src/session/store";
+import type { StatsProjectionStorage } from "../../src/projections/stats";
 
 interface InjectedFailure {
   readonly error: unknown;

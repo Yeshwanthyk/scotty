@@ -289,7 +289,6 @@ export const buildScottyTomlBundle = Effect.fnUntraced(function* (
       "Remove bundle items or reduce their contents, then retry.",
     );
   const manifest: SandboxBundleManifest = {
-    schemaVersion: 2,
     items: items.map((item) => item.manifest),
   };
   const built = createDeterministicTarGz(archiveMembers(encodeBundleManifestJson(manifest), items));
@@ -305,9 +304,4 @@ export const buildScottyTomlBundle = Effect.fnUntraced(function* (
 export const bundleItemSummaries = (
   manifest: SandboxBundleManifest,
 ): ReadonlyArray<{ readonly kind: SandboxBundleItemKind; readonly name: string }> =>
-  manifest.schemaVersion === 1
-    ? [
-        ...manifest.skills.map((item) => ({ kind: "skill" as const, name: item.name })),
-        ...manifest.piPackages.map((item) => ({ kind: "package" as const, name: item.name })),
-      ]
-    : manifest.items.map(({ kind, name }) => ({ kind, name }));
+  manifest.items.map(({ kind, name }) => ({ kind, name }));

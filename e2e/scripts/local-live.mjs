@@ -163,7 +163,7 @@ async function ownerCookie(host, rootToken) {
 }
 
 async function fetchPiSnapshot(host, id, cookie) {
-  const response = await fetch(`${host}/s/${encodeURIComponent(id)}/console/v1/snapshot`, {
+  const response = await fetch(`${host}/s/${encodeURIComponent(id)}/console/snapshot`, {
     headers: { accept: "application/json", cookie },
   });
   if (response.status === 503) return undefined;
@@ -217,6 +217,103 @@ function openBrowser(url) {
   } catch {
     return false;
   }
+}
+
+function assertNoCredentialLeaks(label, output, canaryValues) {
+  if (findCredentialLeaks(output, canaryValues).length > 0)
+    throw new Error(`${label} disclosed a canary value`);
+}
+
+async function proveFreshManagedSession({
+  options,
+  inputs,
+  cliHome,
+  host,
+  repo,
+  canaryValues,
+  wrangler,
+}) {
+  const freshMarker = `LOCAL_LIVE_READY_${randomBytes(4).toString("hex")}`;
+  const cliEnv = {
+    ...scrubAmbientCredentialEnvironment(),
+    HOME: cliHome,
+    SCOTTY_HOST: host,
+    SCOTTY_TOKEN: inputs.rootToken,
+    GH_CONFIG_DIR: inputs.githubConfigDir,
+  };
+  const tomlPath = path.join(cliHome, ".config", "scotty", "scotty.toml");
+  mkdirSync(path.dirname(tomlPath), { recursive: true, mode: 0o700 });
+  writeFileSync(tomlPath, formatLocalCredentialToml({ repo, piAuthPath: inputs.piAuthPath }), {
+    mode: 0o600,
+  });
+  const synced = await runCli(["sync", "--json"], { env: cliEnv, timeoutMs: 5 * 60_000 });
+  assertNoCredentialLeaks(
+    "Credential Registry sync",
+    `${synced.stdout}\n${synced.stderr}`,
+    canaryValues,
+  );
+  if (synced.code !== 0) throw new Error(`Credential Registry sync failed:\n${synced.stderr}`);
+  const up = await runCli(
+    [
+      "beam",
+      `Reply with exactly ${freshMarker} and do nothing else.`,
+      "--title",
+      "Local managed-credential E2E",
+      "--repo",
+      repo,
+      "--provider",
+      "cloudflare",
+      "--cap",
+      "30m",
+      "--detach",
+      "--json",
+    ],
+    { env: cliEnv, timeoutMs: 5 * 60_000 },
+  );
+  assertNoCredentialLeaks("Fresh session creation", `${up.stdout}\n${up.stderr}`, canaryValues);
+  if (up.code !== 0) throw new Error(`Fresh session creation failed:\n${up.stderr}`);
+  const id = up.json?.id;
+  if (typeof id !== "string") throw new Error("Fresh session response omitted its ID");
+  const cookie = await ownerCookie(host, inputs.rootToken);
+  await waitForSnapshot(
+    host,
+    id,
+    cookie,
+    (snapshot) => (snapshot.capabilities?.models?.length ?? 0) > 0,
+    "Fresh Pi model availability",
+  );
+  const freshAttempt = await waitForPromptAttempt(
+    host,
+    id,
+    cookie,
+    freshMarker,
+    "Fresh-start auth",
+  );
+  if (options.requireResponse && freshAttempt.status !== "success")
+    throw new Error("Fresh-start Pi auth passed, but strict model response proof did not");
+  console.log(
+    `    PASS fresh-start auth (${id})${
+      freshAttempt.status === "upstream-failure"
+        ? " — provider request ran; upstream text generation was blocked"
+        : ""
+    }`,
+  );
+  if (wrangler.rawSecretDetected()) throw new Error("Local Wrangler logs disclosed a canary value");
+  assertNoCredentialLeaks("Local Wrangler logs", wrangler.log.join(""), canaryValues);
+  return { id, cookie };
+}
+
+async function presentBrowserAccess(options, host, id, pairing) {
+  console.log("");
+  console.log("LOCAL LIVE E2E PASSED");
+  console.log(`Session: ${host}/s/${id}`);
+  if (options.open && openBrowser(pairing.url))
+    console.log("The pairing page is open. Finish pairing, then open the session.");
+  else if (options.hold) console.log(`Open this one-time local pairing URL: ${pairing.url}`);
+  else console.log("Browser pairing issuance passed; temporary access has been discarded.");
+  if (!options.hold) return;
+  console.log("Wrangler is still running. Press Ctrl-C when you are done.");
+  await new Promise(() => {});
 }
 
 async function run() {
@@ -283,89 +380,19 @@ async function run() {
     console.log("1/3 Starting isolated Wrangler Worker and Docker Sandbox…");
     await waitForWorker(host, wrangler);
     console.log("2/3 Creating a fresh session through the managed-credential path…");
-    const freshMarker = `LOCAL_LIVE_READY_${randomBytes(4).toString("hex")}`;
-    const cliEnv = {
-      ...scrubAmbientCredentialEnvironment(),
-      HOME: cliHome,
-      SCOTTY_HOST: host,
-      SCOTTY_TOKEN: inputs.rootToken,
-      GH_CONFIG_DIR: inputs.githubConfigDir,
-    };
-    const tomlPath = path.join(cliHome, ".config", "scotty", "scotty.toml");
-    mkdirSync(path.dirname(tomlPath), { recursive: true, mode: 0o700 });
-    writeFileSync(tomlPath, formatLocalCredentialToml({ repo, piAuthPath: inputs.piAuthPath }), {
-      mode: 0o600,
+    const { id, cookie } = await proveFreshManagedSession({
+      options,
+      inputs,
+      cliHome,
+      host,
+      repo,
+      canaryValues,
+      wrangler,
     });
-    const synced = await runCli(["sync", "--json"], { env: cliEnv, timeoutMs: 5 * 60_000 });
-    if (findCredentialLeaks(`${synced.stdout}\n${synced.stderr}`, canaryValues).length > 0)
-      throw new Error("Credential Registry sync disclosed a canary value");
-    if (synced.code !== 0) throw new Error(`Credential Registry sync failed:\n${synced.stderr}`);
-    const up = await runCli(
-      [
-        "beam",
-        `Reply with exactly ${freshMarker} and do nothing else.`,
-        "--title",
-        "Local managed-credential E2E",
-        "--repo",
-        repo,
-        "--provider",
-        "cloudflare",
-        "--cap",
-        "30m",
-        "--detach",
-        "--json",
-      ],
-      { env: cliEnv, timeoutMs: 5 * 60_000 },
-    );
-    if (findCredentialLeaks(`${up.stdout}\n${up.stderr}`, canaryValues).length > 0)
-      throw new Error("Fresh session creation disclosed a canary value");
-    if (up.code !== 0) throw new Error(`Fresh session creation failed:\n${up.stderr}`);
-    const id = up.json?.id;
-    if (typeof id !== "string") throw new Error("Fresh session response omitted its ID");
-    const cookie = await ownerCookie(host, inputs.rootToken);
-    await waitForSnapshot(
-      host,
-      id,
-      cookie,
-      (snapshot) => (snapshot.capabilities?.models?.length ?? 0) > 0,
-      "Fresh Pi model availability",
-    );
-    const freshAttempt = await waitForPromptAttempt(
-      host,
-      id,
-      cookie,
-      freshMarker,
-      "Fresh-start auth",
-    );
-    if (options.requireResponse && freshAttempt.status !== "success")
-      throw new Error("Fresh-start Pi auth passed, but strict model response proof did not");
-    console.log(
-      `    PASS fresh-start auth (${id})${
-        freshAttempt.status === "upstream-failure"
-          ? " — provider request ran; upstream text generation was blocked"
-          : ""
-      }`,
-    );
-
-    if (
-      wrangler.rawSecretDetected() ||
-      findCredentialLeaks(wrangler.log.join(""), canaryValues).length > 0
-    )
-      throw new Error("Local Wrangler logs disclosed a canary value");
     console.log("3/3 Preparing browser access…");
     const pairing = await issueBrowserPairing(host, cookie);
-    console.log("");
-    console.log("LOCAL LIVE E2E PASSED");
-    console.log(`Session: ${host}/s/${id}`);
-    if (options.open && openBrowser(pairing.url))
-      console.log("The pairing page is open. Finish pairing, then open the session.");
-    else if (options.hold) console.log(`Open this one-time local pairing URL: ${pairing.url}`);
-    else console.log("Browser pairing issuance passed; temporary access has been discarded.");
-    if (options.hold) {
-      holding = true;
-      console.log("Wrangler is still running. Press Ctrl-C when you are done.");
-      await new Promise(() => {});
-    }
+    if (options.hold) holding = true;
+    await presentBrowserAccess(options, host, id, pairing);
   } catch (error) {
     await delay(750);
     const message = error instanceof Error ? error.message : String(error);

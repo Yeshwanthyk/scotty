@@ -3,7 +3,7 @@ import {
   HATCH_HANDOFF_PATH,
   HATCH_MAX_INGRESS_BYTES,
   HATCH_RESERVED_PORTS,
-  type HatchHostRouteV1,
+  type HatchHostRoute as HatchHostRouteContract,
 } from "./contracts";
 
 export const HATCH_MAX_URL_BYTES = 8 * 1_024;
@@ -30,7 +30,7 @@ const HTTP_BLOCKED_METHODS = new Set(["CONNECT", "TRACE"]);
 
 export const isValidHatchPreviewBase = (value: string): boolean => BASE_PATTERN.test(value);
 
-export type HatchHostRoute = HatchHostRouteV1;
+export type HatchHostRoute = HatchHostRouteContract;
 
 export type HatchHostParse =
   | { readonly kind: "not_hatch" }

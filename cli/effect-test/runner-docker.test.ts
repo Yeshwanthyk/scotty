@@ -26,6 +26,57 @@ interface FakeDocker {
   readonly running: Map<string, boolean>;
 }
 
+const inspectDockerCommand = (
+  argv: ReadonlyArray<string>,
+  running: ReadonlyMap<string, boolean>,
+): RunnerComputeCommandOutput | undefined => {
+  if (argv[0] === "container" && argv[1] === "ls" && typeof argv[5] === "string") {
+    const name = argv[5].slice("name=^/".length, -1);
+    return successfulOutput({ stdout: running.has(name) ? "container-id\n" : "" });
+  }
+  if (argv[0] !== "container" || argv[1] !== "inspect" || typeof argv[3] !== "string")
+    return undefined;
+  if (argv[2] === "--format={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}")
+    return successfulOutput({ stdout: "172.17.0.2\n" });
+  return successfulOutput({ stdout: `${running.get(argv[3]) === true}\n` });
+};
+
+const mutateDockerCommand = (
+  argv: ReadonlyArray<string>,
+  running: Map<string, boolean>,
+): RunnerComputeCommandOutput | undefined => {
+  if (argv[0] === "container" && argv[1] === "create" && typeof argv[3] === "string") {
+    running.set(argv[3], false);
+    return successfulOutput({ stdout: "container-id\n" });
+  }
+  if (argv[0] === "container" && argv[1] === "start" && typeof argv[2] === "string") {
+    running.set(argv[2], true);
+    return successfulOutput();
+  }
+  if (argv[0] === "container" && argv[1] === "stop" && typeof argv[4] === "string") {
+    running.set(argv[4], false);
+    return successfulOutput();
+  }
+  if (argv[0] === "container" && argv[1] === "rm" && typeof argv[3] === "string") {
+    running.delete(argv[3]);
+    return successfulOutput();
+  }
+  return undefined;
+};
+
+const fakeDockerOutput = (
+  argv: ReadonlyArray<string>,
+  running: Map<string, boolean>,
+): RunnerComputeCommandOutput => {
+  const inspected = inspectDockerCommand(argv, running);
+  if (inspected !== undefined) return inspected;
+  const mutated = mutateDockerCommand(argv, running);
+  if (mutated !== undefined) return mutated;
+  if (argv[0] === "container" && argv[1] === "exec")
+    return successfulOutput({ stdout: "command output" });
+  return successfulOutput({ exitCode: 1 });
+};
+
 const fakeDocker = (): FakeDocker => {
   const commands: Array<ReadonlyArray<string>> = [];
   const running = new Map<string, boolean>();
@@ -33,36 +84,7 @@ const fakeDocker = (): FakeDocker => {
     run: (argv) =>
       Effect.sync(() => {
         commands.push([...argv]);
-        if (argv[0] === "container" && argv[1] === "ls" && typeof argv[5] === "string") {
-          const name = argv[5].slice("name=^/".length, -1);
-          return successfulOutput({ stdout: running.has(name) ? "container-id\n" : "" });
-        }
-        if (argv[0] === "container" && argv[1] === "inspect" && typeof argv[3] === "string") {
-          if (argv[2] === "--format={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}") {
-            return successfulOutput({ stdout: "172.17.0.2\n" });
-          }
-          return successfulOutput({ stdout: `${running.get(argv[3]) === true}\n` });
-        }
-        if (argv[0] === "container" && argv[1] === "create" && typeof argv[3] === "string") {
-          running.set(argv[3], false);
-          return successfulOutput({ stdout: "container-id\n" });
-        }
-        if (argv[0] === "container" && argv[1] === "start" && typeof argv[2] === "string") {
-          running.set(argv[2], true);
-          return successfulOutput();
-        }
-        if (argv[0] === "container" && argv[1] === "stop" && typeof argv[4] === "string") {
-          running.set(argv[4], false);
-          return successfulOutput();
-        }
-        if (argv[0] === "container" && argv[1] === "rm" && typeof argv[3] === "string") {
-          running.delete(argv[3]);
-          return successfulOutput();
-        }
-        if (argv[0] === "container" && argv[1] === "exec") {
-          return successfulOutput({ stdout: "command output" });
-        }
-        return successfulOutput({ exitCode: 1 });
+        return fakeDockerOutput(argv, running);
       }),
   };
   return { commands, process, running };
@@ -129,7 +151,7 @@ describe("Docker runner compute", () => {
           assert.notStrictEqual(first.workspace, second.workspace);
 
           const encoded = hash("session-a");
-          const container = `scotty-runner-v1-${encoded}`;
+          const container = `scotty-runner-${encoded}`;
           const sessionRoot = `${root}/sessions/session-${encoded}`;
           const workspace = `${sessionRoot}/workspace`;
           const create = fake.commands.find(
@@ -195,7 +217,7 @@ describe("Docker runner compute", () => {
         );
         const absent = yield* Effect.result(
           compute.mountedHttp(
-            { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
+            { sessionId: "session-a", runtimeId: "runner:session-a" },
             new Request("http://127.0.0.1:31415/s/session-a/health"),
             () => Promise.resolve(new Response()),
           ),
@@ -206,7 +228,7 @@ describe("Docker runner compute", () => {
         const commandsBeforeMismatch = fake.commands.length;
         const mismatch = yield* Effect.result(
           compute.mountedHttp(
-            { sessionId: "session-a", runtimeId: "runner-v1:wrong" },
+            { sessionId: "session-a", runtimeId: "runner:wrong" },
             new Request("http://ignored/s/session-a/health"),
             () => Promise.resolve(new Response()),
           ),
@@ -216,7 +238,7 @@ describe("Docker runner compute", () => {
 
         let forwarded = false;
         const response = yield* compute.mountedHttp(
-          { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
+          { sessionId: "session-a", runtimeId: "runner:session-a" },
           new Request("http://127.0.0.1:31415/s/session-a/echo?proof=yes", {
             method: "POST",
             body: "portable",
@@ -232,7 +254,7 @@ describe("Docker runner compute", () => {
         yield* compute.stop("session-a");
         const stopped = yield* Effect.result(
           compute.mountedHttp(
-            { sessionId: "session-a", runtimeId: "runner-v1:session-a" },
+            { sessionId: "session-a", runtimeId: "runner:session-a" },
             new Request("http://ignored/s/session-a/health"),
             () => Promise.resolve(new Response()),
           ),
@@ -331,7 +353,7 @@ describe("Docker runner compute", () => {
           "exec",
           "--workdir",
           "/workspace/session-a/repo/packages/app",
-          `scotty-runner-v1-${hash("session-a")}`,
+          `scotty-runner-${hash("session-a")}`,
           "node",
           "-e",
           "process.stdout.write('ok')",
@@ -346,7 +368,7 @@ describe("Docker runner compute", () => {
           "--detach",
           "--workdir",
           "/workspace/session-a",
-          `scotty-runner-v1-${hash("session-a")}`,
+          `scotty-runner-${hash("session-a")}`,
           "/usr/bin/printf",
           "ready",
         ]);

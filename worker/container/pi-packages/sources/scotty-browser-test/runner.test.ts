@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { BrowserEvidenceJobV2 } from "./index.ts";
+import type { BrowserEvidenceJob } from "./index.ts";
 import {
   runBrowserEvidenceJob,
   runBrowserTestCli,
@@ -12,7 +12,7 @@ import {
   type RunnerLocator,
 } from "./runner.ts";
 
-const job = (video = true): BrowserEvidenceJobV2 => ({
+const job = (video = true): BrowserEvidenceJob => ({
   version: 2,
   port: 4_173,
   viewport: { width: 800, height: 600 },

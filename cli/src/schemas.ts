@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { PiConsoleSnapshotV1Schema } from "../../protocol/pi-console";
+import { PiConsoleSnapshotSchema } from "../../protocol/pi-console";
 import {
   RepositoryRegistryEntrySchema,
   RepositoryRegistryRemovalResponseSchema,
@@ -9,7 +9,6 @@ export const PROVIDERS = ["cloudflare", "runner"] as const;
 export const ProviderSchema = Schema.Literals(PROVIDERS);
 
 export const ConfigSchema = Schema.Struct({
-  version: Schema.optionalKey(Schema.Literals([1, 2, 3])),
   installationName: Schema.optionalKey(Schema.String),
   profile: Schema.optionalKey(Schema.String),
   stackName: Schema.optionalKey(Schema.String),
@@ -23,21 +22,18 @@ export const ConfigSchema = Schema.Struct({
   previewBase: Schema.optionalKey(Schema.String),
   previewZoneId: Schema.optionalKey(Schema.String),
   evidenceEnabled: Schema.optionalKey(Schema.Literal(true)),
-  adoptionManifestPath: Schema.optionalKey(Schema.String),
   host: Schema.optionalKey(Schema.String),
   token: Schema.optionalKey(Schema.String),
 });
 export type Config = typeof ConfigSchema.Type;
 
 export const PendingUpSchema = Schema.Struct({
-  version: Schema.Literal(1),
   key: Schema.String,
   createdAt: Schema.String,
 });
 export type PendingUp = typeof PendingUpSchema.Type;
 
 export const InitJournalSchema = Schema.Struct({
-  version: Schema.Literals([1, 2, 3]),
   operation: Schema.Literal("init"),
   phase: Schema.Literals(["prepared", "apply_started"]),
   installationName: Schema.NonEmptyString,
@@ -59,7 +55,6 @@ export const InitJournalSchema = Schema.Struct({
 export type InitJournal = typeof InitJournalSchema.Type;
 
 export const RawConfigSchema = Schema.Struct({
-  version: Schema.optionalKey(Schema.Unknown),
   installationName: Schema.optionalKey(Schema.Unknown),
   profile: Schema.optionalKey(Schema.Unknown),
   stackName: Schema.optionalKey(Schema.Unknown),
@@ -73,10 +68,10 @@ export const RawConfigSchema = Schema.Struct({
   previewBase: Schema.optionalKey(Schema.Unknown),
   previewZoneId: Schema.optionalKey(Schema.Unknown),
   evidenceEnabled: Schema.optionalKey(Schema.Unknown),
-  adoptionManifestPath: Schema.optionalKey(Schema.Unknown),
   host: Schema.optionalKey(Schema.Unknown),
   token: Schema.optionalKey(Schema.Unknown),
 });
+export type RawConfig = typeof RawConfigSchema.Type;
 export const UpResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
   title: Schema.NonEmptyString,
@@ -128,7 +123,6 @@ export const RawSessionFailureSchema = Schema.Struct({
 });
 const SessionSandboxBundleSchema = Schema.Struct({
   digest: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u))),
-  manifestVersion: Schema.Literal(1),
 });
 export const SessionResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -148,7 +142,7 @@ export const SessionResponseSchema = Schema.Struct({
   agentState: Schema.optionalKey(Schema.Unknown),
   lastAgentEventAt: Schema.optionalKey(Schema.Unknown),
   failure: Schema.optionalKey(Schema.Unknown),
-  sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
+  sandboxBundle: SessionSandboxBundleSchema,
 });
 export const SessionsResponseSchema = Schema.Array(SessionResponseSchema);
 const StableSessionFailureSchema = Schema.Struct({
@@ -177,7 +171,7 @@ export const StableSessionSchema = Schema.Struct({
   sandboxBundle: Schema.optionalKey(SessionSandboxBundleSchema),
 });
 export type StableSession = typeof StableSessionSchema.Type;
-export const InspectResponseSchema = PiConsoleSnapshotV1Schema;
+export const InspectResponseSchema = PiConsoleSnapshotSchema;
 export type InspectResponse = typeof InspectResponseSchema.Type;
 const SteerAcceptedResponseSchema = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -298,11 +292,9 @@ export const decodeInitJournalJson = (input: unknown): Option.Option<InitJournal
   if (Option.isNone(decoded)) return Option.none();
   const journal = decoded.value;
   if (
-    (journal.version === 3 &&
-      (journal.evidenceEnabled !== true ||
-        journal.previewBase === undefined ||
-        journal.previewZoneId === undefined)) ||
-    (journal.version !== 3 && journal.evidenceEnabled !== undefined)
+    journal.evidenceEnabled !== true ||
+    journal.previewBase === undefined ||
+    journal.previewZoneId === undefined
   )
     return Option.none();
   return decoded;

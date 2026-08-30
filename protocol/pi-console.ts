@@ -5,9 +5,8 @@ export {
   commandIntentDigest,
 } from "./pi-console-shared.mjs";
 
-export const PI_CONSOLE_PROTOCOL_VERSION = 1 as const;
-export const PI_CONSOLE_PUBLIC_PATH_SEGMENT = "console/v1";
-export const PI_CONSOLE_PROXY_PREFIX = "/_scotty/pi-console/v1";
+export const PI_CONSOLE_PUBLIC_PATH_SEGMENT = "console";
+export const PI_CONSOLE_PROXY_PREFIX = "/_scotty/pi-console";
 export const PI_CONSOLE_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const PI_CONSOLE_MAX_COMMAND_BYTES = 8 * 1024 * 1024;
 export const PI_CONSOLE_MAX_IMAGES = 4;
@@ -59,7 +58,6 @@ const BrowserSteerMessageSchema = Schema.String.check(
   ),
 );
 const BrowserSteerPayloadSchema = Schema.Struct({
-  version: Schema.Literal(PI_CONSOLE_PROTOCOL_VERSION),
   action: Schema.Literal("steer"),
   childId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u)),
   revision: SessionRevisionSchema,
@@ -73,7 +71,7 @@ const BrowserSteerArgumentsSchema = Schema.String.check(
     (argumentsText) =>
       utf8Encoder.encode(argumentsText).byteLength <= 4 * 1_024 &&
       Option.isSome(decodeBrowserSteerPayloadJson(argumentsText)),
-    { expected: "a versioned browser steer payload" },
+    { expected: "a valid browser steer payload" },
   ),
 );
 const StatusesSchema = Schema.Record(IdentifierSchema, BoundedStringSchema).check(
@@ -82,12 +80,12 @@ const StatusesSchema = Schema.Record(IdentifierSchema, BoundedStringSchema).chec
   }),
 );
 
-export const PiConsoleEventEnvelopeV1Schema = Schema.Struct({
+export const PiConsoleEventEnvelopeSchema = Schema.Struct({
   epoch: IdentifierSchema,
   sequence: SequenceSchema,
   event: Schema.Json,
 });
-export type PiConsoleEventEnvelopeV1 = typeof PiConsoleEventEnvelopeV1Schema.Type;
+export type PiConsoleEventEnvelope = typeof PiConsoleEventEnvelopeSchema.Type;
 
 const QueueItemSchema = Schema.Struct({
   id: IdentifierSchema,
@@ -144,14 +142,13 @@ const ModelProjectionSchema = Schema.Struct({
   name: Schema.optionalKey(BoundedStringSchema),
 });
 
-const PiConsoleRelaySnapshotV1Schema = Schema.Struct({
-  version: Schema.Literal(PI_CONSOLE_PROTOCOL_VERSION),
+const PiConsoleRelaySnapshotSchema = Schema.Struct({
   epoch: IdentifierSchema,
   baseSequence: SequenceSchema,
   sequence: SequenceSchema,
   state: Schema.Json,
   messages: Schema.Array(Schema.Json).check(Schema.isMaxLength(PI_CONSOLE_MAX_MESSAGES)),
-  overlapEvents: Schema.Array(PiConsoleEventEnvelopeV1Schema).check(
+  overlapEvents: Schema.Array(PiConsoleEventEnvelopeSchema).check(
     Schema.isMaxLength(PI_CONSOLE_MAX_EVENTS),
   ),
   activeTools: Schema.Array(ActiveToolSchema).check(
@@ -191,13 +188,13 @@ const PiConsoleRelaySnapshotV1Schema = Schema.Struct({
     values: Schema.Boolean,
   }),
 });
-export type PiConsoleRelaySnapshotV1 = typeof PiConsoleRelaySnapshotV1Schema.Type;
+export type PiConsoleRelaySnapshot = typeof PiConsoleRelaySnapshotSchema.Type;
 
-export const PiConsoleSnapshotV1Schema = Schema.Struct({
-  ...PiConsoleRelaySnapshotV1Schema.fields,
+export const PiConsoleSnapshotSchema = Schema.Struct({
+  ...PiConsoleRelaySnapshotSchema.fields,
   sessionRevision: SessionRevisionSchema,
 });
-export type PiConsoleSnapshotV1 = typeof PiConsoleSnapshotV1Schema.Type;
+export type PiConsoleSnapshot = typeof PiConsoleSnapshotSchema.Type;
 
 const maxBase64ImageCharacters = Math.ceil(PI_CONSOLE_MAX_IMAGE_BYTES / 3) * 4;
 const isBase64Character = (code: number): boolean =>
@@ -274,7 +271,7 @@ const ExtensionUiResponseIntentSchema = Schema.Union([
   }),
 ]);
 
-export const PiConsoleRemoteIntentV1Schema = Schema.Union([
+export const PiConsoleRemoteIntentSchema = Schema.Union([
   PromptIntentSchema,
   MessageIntentSchema,
   Schema.Struct({ type: Schema.Literal("abort") }),
@@ -296,35 +293,32 @@ export const PiConsoleRemoteIntentV1Schema = Schema.Union([
     arguments: Schema.optionalKey(WorkflowRunIdSchema),
   }),
 ]);
-export type PiConsoleRemoteIntentV1 = typeof PiConsoleRemoteIntentV1Schema.Type;
+export type PiConsoleRemoteIntent = typeof PiConsoleRemoteIntentSchema.Type;
 
-export type PiConsoleLocalIntentV1 = {
+export type PiConsoleLocalIntent = {
   readonly type: "fold";
   readonly targetId: string;
   readonly folded: boolean;
 };
 
-export const PiConsoleCommandV1Schema = Schema.Struct({
-  version: Schema.Literal(PI_CONSOLE_PROTOCOL_VERSION),
+export const PiConsoleCommandSchema = Schema.Struct({
   epoch: IdentifierSchema,
   commandId: CommandIdSchema,
   expectedSessionRevision: SessionRevisionSchema,
-  intent: PiConsoleRemoteIntentV1Schema,
+  intent: PiConsoleRemoteIntentSchema,
 });
-export type PiConsoleCommandV1 = typeof PiConsoleCommandV1Schema.Type;
+export type PiConsoleCommand = typeof PiConsoleCommandSchema.Type;
 
-export const PiConsoleCommandReceiptV1Schema = Schema.Struct({
-  version: Schema.Literal(PI_CONSOLE_PROTOCOL_VERSION),
+export const PiConsoleCommandReceiptSchema = Schema.Struct({
   epoch: IdentifierSchema,
   commandId: CommandIdSchema,
   commandDigest: DigestSchema,
   status: Schema.Literals(["accepted", "rejected", "delivered"]),
   response: Schema.Json,
 });
-export type PiConsoleCommandReceiptV1 = typeof PiConsoleCommandReceiptV1Schema.Type;
+export type PiConsoleCommandReceipt = typeof PiConsoleCommandReceiptSchema.Type;
 
-export const PiConsoleCommandErrorV1Schema = Schema.Struct({
-  version: Schema.Literal(PI_CONSOLE_PROTOCOL_VERSION),
+export const PiConsoleCommandErrorSchema = Schema.Struct({
   status: Schema.Literal("error"),
   code: Schema.Literals([
     "command_id_conflict",
@@ -336,19 +330,17 @@ export const PiConsoleCommandErrorV1Schema = Schema.Struct({
   ]),
   retryable: Schema.Literal(false),
 });
-export type PiConsoleCommandErrorV1 = typeof PiConsoleCommandErrorV1Schema.Type;
+export type PiConsoleCommandError = typeof PiConsoleCommandErrorSchema.Type;
 
-export const PiConsoleStaleCommandV1Schema = Schema.Struct({
-  version: Schema.Literal(PI_CONSOLE_PROTOCOL_VERSION),
+export const PiConsoleStaleCommandSchema = Schema.Struct({
   status: Schema.Literal("stale"),
   expectedSessionRevision: SessionRevisionSchema,
   sessionRevision: SessionRevisionSchema,
   retryable: Schema.Literal(false),
 });
-export type PiConsoleStaleCommandV1 = typeof PiConsoleStaleCommandV1Schema.Type;
+export type PiConsoleStaleCommand = typeof PiConsoleStaleCommandSchema.Type;
 
-export const PiConsoleUnavailableV1Schema = Schema.Struct({
-  version: Schema.Literal(PI_CONSOLE_PROTOCOL_VERSION),
+export const PiConsoleUnavailableSchema = Schema.Struct({
   status: Schema.Literal("unavailable"),
   reason: Schema.Literals([
     "provider_passive_relay_unavailable",
@@ -359,30 +351,21 @@ export const PiConsoleUnavailableV1Schema = Schema.Struct({
   ]),
   retryable: Schema.Boolean,
 });
-export type PiConsoleUnavailableV1 = typeof PiConsoleUnavailableV1Schema.Type;
+export type PiConsoleUnavailable = typeof PiConsoleUnavailableSchema.Type;
 
-export const decodePiConsoleRelaySnapshotV1 = Schema.decodeUnknownPromise(
-  PiConsoleRelaySnapshotV1Schema,
+export const decodePiConsoleRelaySnapshot = Schema.decodeUnknownPromise(
+  PiConsoleRelaySnapshotSchema,
 );
-export const decodePiConsoleSnapshotV1 = Schema.decodeUnknownEffect(PiConsoleSnapshotV1Schema);
-export const decodePiConsoleCommandV1 = Schema.decodeUnknownEffect(PiConsoleCommandV1Schema, {
+export const decodePiConsoleSnapshot = Schema.decodeUnknownEffect(PiConsoleSnapshotSchema);
+export const decodePiConsoleCommand = Schema.decodeUnknownEffect(PiConsoleCommandSchema, {
   onExcessProperty: "error",
 });
-export const decodePiConsoleCommandV1Promise = Schema.decodeUnknownPromise(
-  PiConsoleCommandV1Schema,
-  {
-    onExcessProperty: "error",
-  },
+export const decodePiConsoleCommandPromise = Schema.decodeUnknownPromise(PiConsoleCommandSchema, {
+  onExcessProperty: "error",
+});
+export const decodePiConsoleCommandReceipt = Schema.decodeUnknownEffect(
+  PiConsoleCommandReceiptSchema,
 );
-export const decodePiConsoleCommandReceiptV1 = Schema.decodeUnknownEffect(
-  PiConsoleCommandReceiptV1Schema,
-);
-export const decodePiConsoleCommandErrorV1 = Schema.decodeUnknownEffect(
-  PiConsoleCommandErrorV1Schema,
-);
-export const decodePiConsoleUnavailableV1 = Schema.decodeUnknownEffect(
-  PiConsoleUnavailableV1Schema,
-);
-export const decodePiConsoleStaleCommandV1 = Schema.decodeUnknownEffect(
-  PiConsoleStaleCommandV1Schema,
-);
+export const decodePiConsoleCommandError = Schema.decodeUnknownEffect(PiConsoleCommandErrorSchema);
+export const decodePiConsoleUnavailable = Schema.decodeUnknownEffect(PiConsoleUnavailableSchema);
+export const decodePiConsoleStaleCommand = Schema.decodeUnknownEffect(PiConsoleStaleCommandSchema);

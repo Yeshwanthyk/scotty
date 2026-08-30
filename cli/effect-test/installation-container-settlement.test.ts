@@ -311,7 +311,7 @@ describe("installation container rollout settlement", () => {
 
   it.effect("asserts settled container baseline before deploy", () =>
     Effect.gen(function* () {
-      const cleanBaseline = makeSnapshot({ version: 1, activeRolloutId: null, rollouts: [] });
+      const cleanBaseline = makeSnapshot({ activeRolloutId: null, rollouts: [] });
       const cleanResult = yield* Effect.result(assertContainerBaselineSettled(cleanBaseline));
       assert.isTrue(Result.isSuccess(cleanResult));
 

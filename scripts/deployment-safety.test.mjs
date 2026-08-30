@@ -234,7 +234,6 @@ describe("production deployment ownership", () => {
   it("checks, audits, deploys through Alchemy, and audits again", () => {
     assert.deepEqual(resolveProductionTopology(PRODUCTION_TOPOLOGY_ENVIRONMENT), {
       installationName: "test",
-      adoptionPath: undefined,
       workerName: "scotty-test-worker",
       runnerWorkerName: "scotty-test-runner",
       containerName: "scotty-test-sandbox",
@@ -317,7 +316,6 @@ describe("production deployment ownership", () => {
   it("requires an explicit complete preview topology and never derives account identity", () => {
     assert.deepEqual(resolveProductionTopology(PRODUCTION_TOPOLOGY_ENVIRONMENT), {
       installationName: "test",
-      adoptionPath: undefined,
       workerName: "scotty-test-worker",
       runnerWorkerName: "scotty-test-runner",
       containerName: "scotty-test-sandbox",
@@ -1177,8 +1175,8 @@ describe("production deployment ownership", () => {
   });
 
   it("tracks every scheduled session callback in the cancellation inventory", () => {
-    const session = read("worker/src/session.ts");
-    const lifecycle = read("worker/src/session-lifecycle.ts");
+    const session = read("worker/src/session/object.ts");
+    const lifecycle = read("worker/src/session/lifecycle.ts");
     const scheduled = [...session.matchAll(/this\.schedule\([\s\S]{0,120}?"([^"]+)"/gu)].map(
       (match) => match[1],
     );

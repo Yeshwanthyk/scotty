@@ -79,7 +79,7 @@ test("the Container context contains only static runtime assets and CLI graph in
     }
 
     const cliInput = "cli/scotty.ts";
-    const workerCliInput = "worker/src/runner-control.ts";
+    const workerCliInput = "worker/src/runner/control.ts";
     const unrelatedWorkerInput = "worker/src/index.ts";
     for (const input of [cliInput, workerCliInput, unrelatedWorkerInput]) {
       await mkdir(dirname(join(root, input)), { recursive: true });
@@ -253,14 +253,14 @@ test("CLI build metadata excludes installed dependencies and rejects paths outsi
     projectContainerCliInputs({
       inputs: {
         "cli/scotty.ts": {},
-        "worker/src/runner-control.ts": {},
+        "worker/src/runner/control.ts": {},
         "node_modules/effect/dist/index.js": {},
         "cli/src/node_modules/ignored.js": {},
         ".git/config": {},
         "worker/src/.git/HEAD": {},
       },
     }),
-    ["cli/scotty.ts", "worker/src/runner-control.ts"],
+    ["cli/scotty.ts", "worker/src/runner/control.ts"],
   );
   assert.equal(isSafeProjectPath("cli/src/index.ts"), true);
   assert.equal(isSafeProjectPath("../outside.ts"), false);

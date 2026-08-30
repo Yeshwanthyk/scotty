@@ -28,6 +28,8 @@ import {
   decodeVaporizeResponse,
   type AttachOutput,
   type BeamUpRequest,
+  type Config,
+  type InitJournal,
   type SessionOperationOutput,
   type VaporizeOutput,
 } from "./schemas";
@@ -73,6 +75,7 @@ import {
   InstallationRecovery,
   InstallationUninstaller,
   ProcessRunner,
+  type InstallationPlan,
   type InstallationResult,
 } from "./services";
 import { runRunnerSupervisor } from "./runner-link";
@@ -423,17 +426,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     return Buffer.from(bytes).toString("base64url");
   };
 
-  const managedConfig = (
-    deployed: InstallationResult,
-    token: string,
-    adoptionManifestPath?: string,
-  ) => ({
-    version:
-      deployed.evidenceEnabled === true
-        ? (3 as const)
-        : deployed.previewBase === undefined
-          ? (1 as const)
-          : (2 as const),
+  const managedConfig = (deployed: InstallationResult, token: string) => ({
     installationName: deployed.installationName,
     profile: deployed.profile,
     stackName: deployed.stackName,
@@ -448,9 +441,87 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       ? {}
       : { previewBase: deployed.previewBase, previewZoneId: deployed.previewZoneId }),
     ...(deployed.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
-    ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
     host: deployed.host,
     token,
+  });
+
+  const configuredPreview = (config: Config) =>
+    config.previewBase === undefined || config.previewZoneId === undefined
+      ? {}
+      : { previewBase: config.previewBase, previewZoneId: config.previewZoneId };
+
+  const configuredEvidence = (config: Config) =>
+    config.evidenceEnabled === true ? { evidenceEnabled: true as const } : {};
+
+  const completeInstallationOwnership = (
+    config: Config,
+  ): config is Config & { readonly accountId: string } => config.accountId !== undefined;
+
+  const initJournalMatches = (
+    journal: InitJournal,
+    installationName: string,
+    profile: string,
+    plan: InstallationPlan,
+    topology: ReturnType<typeof makeInstallationTopology>,
+  ): boolean =>
+    journal.installationName === installationName &&
+    journal.profile === profile &&
+    journal.accountId === plan.accountId &&
+    journal.stackName === topology.stackName &&
+    journal.workerName === topology.workerName &&
+    journal.runnerWorkerName === topology.runnerWorkerName &&
+    journal.containerName === topology.containerName &&
+    journal.kvTitle === topology.kvTitle &&
+    journal.backupBucketName === topology.backupBucketName &&
+    journal.previewBase === topology.preview?.base &&
+    journal.previewZoneId === topology.preview?.zoneId &&
+    journal.evidenceEnabled === topology.evidenceEnabled;
+
+  const validateInitPlan = Effect.fnUntraced(function* (
+    existingJournal: Option.Option<InitJournal>,
+    installationName: string,
+    profile: string,
+    plan: InstallationPlan,
+    topology: ReturnType<typeof makeInstallationTopology>,
+    journalPath: string,
+  ) {
+    if (
+      Option.isSome(existingJournal) &&
+      !initJournalMatches(existingJournal.value, installationName, profile, plan, topology)
+    )
+      return yield* new CliError(
+        "init_journal_conflict",
+        "The pending init journal targets a different installation",
+        `Use the original profile or move ${journalPath} aside after verifying Cloudflare state.`,
+        EXIT.GENERIC,
+      );
+    const freshPlanIsUnsafe =
+      plan.hasExistingResources ||
+      plan.changes.length === 0 ||
+      plan.changes.some(
+        (change) =>
+          change.action !== "create" &&
+          change.action !== "run" &&
+          change.action !== "binding-create",
+      );
+    if (Option.isNone(existingJournal) && freshPlanIsUnsafe)
+      return yield* new CliError(
+        "installation_not_empty",
+        "The named Scotty installation already exists or is not empty",
+        "Use scotty recover for an existing installation.",
+        EXIT.GENERIC,
+      );
+    if (
+      Option.isSome(existingJournal) &&
+      existingJournal.value.phase === "prepared" &&
+      existingJournal.value.planFingerprint !== plan.fingerprint
+    )
+      return yield* new CliError(
+        "init_plan_changed",
+        "The installation plan changed before deployment started",
+        `Remove ${journalPath} only after confirming no Cloudflare resources were changed.`,
+        EXIT.GENERIC,
+      );
   });
 
   const init = Command.make(
@@ -532,55 +603,15 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               evidenceEnabled,
             };
             const plan = yield* creator.plan(deploymentTarget);
-            const topology = makeInstallationTopology(installationName, undefined, preview, true);
-            const journalMatches =
-              Option.isSome(existingJournal) &&
-              existingJournal.value.installationName === installationName &&
-              existingJournal.value.profile === profile &&
-              existingJournal.value.accountId === plan.accountId &&
-              existingJournal.value.stackName === topology.stackName &&
-              existingJournal.value.workerName === topology.workerName &&
-              existingJournal.value.runnerWorkerName === topology.runnerWorkerName &&
-              existingJournal.value.containerName === topology.containerName &&
-              existingJournal.value.kvTitle === topology.kvTitle &&
-              existingJournal.value.backupBucketName === topology.backupBucketName &&
-              existingJournal.value.previewBase === topology.preview?.base &&
-              existingJournal.value.previewZoneId === topology.preview?.zoneId &&
-              existingJournal.value.evidenceEnabled === topology.evidenceEnabled;
-            if (Option.isSome(existingJournal) && !journalMatches)
-              return yield* new CliError(
-                "init_journal_conflict",
-                "The pending init journal targets a different installation",
-                `Use the original profile or move ${journalPath} aside after verifying Cloudflare state.`,
-                EXIT.GENERIC,
-              );
-            const freshPlanIsUnsafe =
-              plan.hasExistingResources ||
-              plan.changes.length === 0 ||
-              plan.changes.some(
-                (change) =>
-                  change.action !== "create" &&
-                  change.action !== "run" &&
-                  change.action !== "binding-create",
-              );
-            if (Option.isNone(existingJournal) && freshPlanIsUnsafe)
-              return yield* new CliError(
-                "installation_not_empty",
-                "The named Scotty installation already exists or is not empty",
-                "Use scotty recover for an existing installation.",
-                EXIT.GENERIC,
-              );
-            if (
-              Option.isSome(existingJournal) &&
-              existingJournal.value.phase === "prepared" &&
-              existingJournal.value.planFingerprint !== plan.fingerprint
-            )
-              return yield* new CliError(
-                "init_plan_changed",
-                "The installation plan changed before deployment started",
-                `Remove ${journalPath} only after confirming no Cloudflare resources were changed.`,
-                EXIT.GENERIC,
-              );
+            const topology = makeInstallationTopology(installationName, preview, true);
+            yield* validateInitPlan(
+              existingJournal,
+              installationName,
+              profile,
+              plan,
+              topology,
+              journalPath,
+            );
             if (Option.isNone(existingJournal) && !yes) {
               if (!runtime.stdinIsTTY || !runtime.stdoutIsTTY)
                 return yield* usage(
@@ -621,7 +652,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               ? existingJournal.value.credentialWrappingKey
               : credentialWrappingKey();
             const journal = {
-              version: 3 as const,
               operation: "init" as const,
               phase: "prepared" as const,
               installationName,
@@ -720,10 +750,6 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         Flag.withDefault("default"),
         Flag.withDescription("Alchemy Cloudflare authentication profile"),
       ),
-      adoptionManifest: Flag.string("adoption-manifest").pipe(
-        Flag.optional,
-        Flag.withDescription("Private legacy resource-name mapping"),
-      ),
       previewBase: Flag.string("preview-base").pipe(
         Flag.optional,
         Flag.withDescription("Explicit installation preview DNS base"),
@@ -737,7 +763,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
       ),
       yes: Flag.boolean("yes").pipe(Flag.withDescription("Confirm the displayed resource mapping")),
     },
-    ({ adoptionManifest, enableEvidence, name, previewBase, previewZoneId, profile, yes }) =>
+    ({ enableEvidence, name, previewBase, previewZoneId, profile, yes }) =>
       Effect.gen(function* () {
         const { autoJson, options, runtime } = yield* commandContext();
         if (options.host || options.tokenFile)
@@ -747,12 +773,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         if (enableEvidence && preview === undefined)
           return yield* usage("--enable-evidence requires --preview-base and --preview-zone-id");
         const evidenceEnabled = enableEvidence ? (true as const) : undefined;
-        const adoptionManifestPath = Option.getOrUndefined(adoptionManifest);
         const recovery = yield* InstallationRecovery;
         const deploymentTarget = {
           installationName,
           profile,
-          ...(adoptionManifestPath === undefined ? {} : { adoptionManifestPath }),
           ...(preview === undefined
             ? {}
             : { previewBase: preview.base, previewZoneId: preview.zoneId }),
@@ -814,13 +838,12 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
               existingJournal.backupBucketName === inspected.backupBucketName &&
               existingJournal.previewBase === inspected.previewBase &&
               existingJournal.previewZoneId === inspected.previewZoneId &&
-              existingJournal.evidenceEnabled === inspected.evidenceEnabled &&
-              existingJournal.adoptionManifestPath === adoptionManifestPath;
+              existingJournal.evidenceEnabled === inspected.evidenceEnabled;
             const token =
               journalMatchesTarget && existingJournal.token ? existingJournal.token : rootToken();
             yield* secureWrite(
               journalPath,
-              `${JSON.stringify(managedConfig(inspected, token, adoptionManifestPath), null, 2)}\n`,
+              `${JSON.stringify(managedConfig(inspected, token), null, 2)}\n`,
             );
             const recovered = yield* recovery.recover({
               ...deploymentTarget,
@@ -841,11 +864,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             const host = yield* Effect.fromResult(normalizeHost(recovered.host));
             yield* secureWrite(
               configPath,
-              `${JSON.stringify(
-                managedConfig({ ...recovered, host }, token, adoptionManifestPath),
-                null,
-                2,
-              )}\n`,
+              `${JSON.stringify(managedConfig({ ...recovered, host }, token), null, 2)}\n`,
             );
             yield* fileSystem
               .remove(journalPath)
@@ -910,15 +929,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const containerName = config.containerName ?? conventional.containerName;
         const kvTitle = config.kvTitle ?? conventional.kvTitle;
         const backupBucketName = config.backupBucketName ?? conventional.backupBucketName;
-        if (
-          !config.accountId ||
-          (config.adoptionManifestPath !== undefined &&
-            (!config.workerName ||
-              !config.runnerWorkerName ||
-              !config.containerName ||
-              !config.kvTitle ||
-              !config.backupBucketName))
-        )
+        if (!completeInstallationOwnership(config))
           return yield* usage(
             "Installation ownership details are incomplete",
             "Run scotty recover --name NAME before uninstalling.",
@@ -956,18 +967,14 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           expectedContainerName: containerName,
           expectedKvTitle: kvTitle,
           expectedBackupBucketName: backupBucketName,
+          ...configuredPreview(config),
           ...(config.previewBase === undefined || config.previewZoneId === undefined
             ? {}
             : {
-                previewBase: config.previewBase,
-                previewZoneId: config.previewZoneId,
                 expectedPreviewBase: config.previewBase,
                 expectedPreviewZoneId: config.previewZoneId,
               }),
-          ...(config.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
-          ...(config.adoptionManifestPath === undefined
-            ? {}
-            : { adoptionManifestPath: config.adoptionManifestPath }),
+          ...configuredEvidence(config),
         });
         const fileSystem = yield* CliFileSystem;
         yield* fileSystem
@@ -1041,13 +1048,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const request = {
           installationName: config.installationName,
           profile: config.profile,
-          ...(config.adoptionManifestPath === undefined
-            ? {}
-            : { adoptionManifestPath: config.adoptionManifestPath }),
-          ...(config.previewBase === undefined || config.previewZoneId === undefined
-            ? {}
-            : { previewBase: config.previewBase, previewZoneId: config.previewZoneId }),
-          ...(config.evidenceEnabled === true ? { evidenceEnabled: true as const } : {}),
+          ...configuredPreview(config),
+          ...configuredEvidence(config),
         };
         const plan = yield* deployer.plan(request);
         if (plan.accountId !== config.accountId)
@@ -1109,11 +1111,7 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const host = yield* Effect.fromResult(normalizeHost(deployed.host));
         yield* secureWrite(
           managedInstallationPath(runtime.home),
-          `${JSON.stringify(
-            managedConfig({ ...deployed, host }, config.token, config.adoptionManifestPath),
-            null,
-            2,
-          )}\n`,
+          `${JSON.stringify(managedConfig({ ...deployed, host }, config.token), null, 2)}\n`,
         );
         const result = {
           installationName: deployed.installationName,
@@ -1487,6 +1485,61 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
     Command.withSubcommands([ownerRecover]),
   );
 
+  const processRunnerIsolation = Effect.fnUntraced(function* (
+    hostUrl: URL,
+    image: string | undefined,
+    codexAuth: string | undefined,
+    githubConfig: string | undefined,
+  ) {
+    if (!isLoopbackHost(hostUrl.hostname))
+      return yield* usage(
+        "--isolation process is only allowed with a loopback Scotty host",
+        "Use --isolation docker for remote runners.",
+      );
+    if (image !== undefined) return yield* usage("--image is only valid with --isolation docker");
+    if (codexAuth !== undefined)
+      return yield* usage("--codex-auth is only valid with --isolation docker");
+    if (githubConfig !== undefined)
+      return yield* usage("--github-config is only valid with --isolation docker");
+    return { type: "process" } as const;
+  });
+
+  const dockerRunnerIsolation = Effect.fnUntraced(function* (
+    image: string | undefined,
+    codexAuth: string | undefined,
+    githubConfig: string | undefined,
+  ) {
+    if (image === undefined)
+      return yield* usage(
+        "--image is required with --isolation docker",
+        "Use a digest-pinned image: REPOSITORY@sha256:DIGEST.",
+      );
+    if (!RUNNER_IMAGE_PATTERN.test(image))
+      return yield* usage(
+        "--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX or sha256:64_LOWER_HEX",
+      );
+    if (codexAuth === undefined)
+      return yield* usage("--codex-auth is required with --isolation docker");
+    if (githubConfig === undefined)
+      return yield* usage("--github-config is required with --isolation docker");
+    if (!isAbsolute(codexAuth)) return yield* usage("--codex-auth must be an absolute path");
+    if (!isAbsolute(githubConfig)) return yield* usage("--github-config must be an absolute path");
+    yield* validateCredentialSource("--codex-auth", codexAuth);
+    yield* validateCredentialSource("--github-config", githubConfig);
+    const identity = processIdentity();
+    if (identity === undefined)
+      return yield* usage("--isolation docker requires a numeric process uid and gid");
+    return {
+      type: "docker" as const,
+      image,
+      uid: identity.uid,
+      gid: identity.gid,
+      safePath: RUNNER_CONTAINER_PATH,
+      codexAuthSource: codexAuth,
+      githubConfigSource: githubConfig,
+    };
+  });
+
   const runnerServe = Command.make(
     "serve",
     {
@@ -1541,65 +1594,10 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
         const imageValue = Option.getOrUndefined(image);
         const codexAuthValue = Option.getOrUndefined(codexAuth);
         const githubConfigValue = Option.getOrUndefined(githubConfig);
-        if (isolation === "process" && !isLoopbackHost(hostUrl.hostname))
-          return yield* usage(
-            "--isolation process is only allowed with a loopback Scotty host",
-            "Use --isolation docker for remote runners.",
-          );
-        if (isolation === "process" && imageValue !== undefined)
-          return yield* usage("--image is only valid with --isolation docker");
-        if (isolation === "process" && codexAuthValue !== undefined)
-          return yield* usage("--codex-auth is only valid with --isolation docker");
-        if (isolation === "process" && githubConfigValue !== undefined)
-          return yield* usage("--github-config is only valid with --isolation docker");
-        if (isolation === "docker" && imageValue === undefined)
-          return yield* usage(
-            "--image is required with --isolation docker",
-            "Use a digest-pinned image: REPOSITORY@sha256:DIGEST.",
-          );
-        if (
-          isolation === "docker" &&
-          imageValue !== undefined &&
-          !RUNNER_IMAGE_PATTERN.test(imageValue)
-        )
-          return yield* usage(
-            "--image must be digest-pinned as REPOSITORY@sha256:64_LOWER_HEX or sha256:64_LOWER_HEX",
-          );
-        if (isolation === "docker" && codexAuthValue === undefined)
-          return yield* usage("--codex-auth is required with --isolation docker");
-        if (isolation === "docker" && githubConfigValue === undefined)
-          return yield* usage("--github-config is required with --isolation docker");
-        if (codexAuthValue !== undefined && !isAbsolute(codexAuthValue))
-          return yield* usage("--codex-auth must be an absolute path");
-        if (githubConfigValue !== undefined && !isAbsolute(githubConfigValue))
-          return yield* usage("--github-config must be an absolute path");
-        if (isolation === "docker" && codexAuthValue !== undefined)
-          yield* validateCredentialSource("--codex-auth", codexAuthValue);
-        if (isolation === "docker" && githubConfigValue !== undefined)
-          yield* validateCredentialSource("--github-config", githubConfigValue);
         const runtimeIsolation =
           isolation === "process"
-            ? ({ type: "process" } as const)
-            : yield* Effect.gen(function* () {
-                if (imageValue === undefined)
-                  return yield* usage("--image is required with --isolation docker");
-                if (codexAuthValue === undefined)
-                  return yield* usage("--codex-auth is required with --isolation docker");
-                if (githubConfigValue === undefined)
-                  return yield* usage("--github-config is required with --isolation docker");
-                const identity = processIdentity();
-                if (identity === undefined)
-                  return yield* usage("--isolation docker requires a numeric process uid and gid");
-                return {
-                  type: "docker" as const,
-                  image: imageValue,
-                  uid: identity.uid,
-                  gid: identity.gid,
-                  safePath: RUNNER_CONTAINER_PATH,
-                  codexAuthSource: codexAuthValue,
-                  githubConfigSource: githubConfigValue,
-                };
-              });
+            ? yield* processRunnerIsolation(hostUrl, imageValue, codexAuthValue, githubConfigValue)
+            : yield* dockerRunnerIsolation(imageValue, codexAuthValue, githubConfigValue);
         const url = new URL(`/api/runners/${encodeURIComponent(name)}/connect`, host);
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
         const runtimeLayer = runnerRuntimeLayer({
