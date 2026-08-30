@@ -13,7 +13,6 @@ import {
 } from "./runner.ts";
 
 const job = (video = true): BrowserEvidenceJob => ({
-  version: 2,
   port: 4_173,
   viewport: { width: 800, height: 600 },
   steps: [

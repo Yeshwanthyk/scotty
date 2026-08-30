@@ -55,7 +55,6 @@ export interface RunnerStep {
 }
 
 export interface RunnerManifest {
-  readonly version: 1;
   readonly status: RunnerStatus;
   readonly completedSteps: number;
   readonly steps: readonly RunnerStep[];
@@ -540,7 +539,6 @@ const failureManifest = (
   steps: readonly RunnerStep[],
   failure: BrowserTestFailure,
 ): RunnerManifest => ({
-  version: 1,
   status: failure.status,
   completedSteps: steps.length,
   steps,
@@ -676,7 +674,7 @@ export async function runBrowserEvidenceJob(
   }
 
   if (!job.capture.video)
-    return { version: 1, status: "succeeded", completedSteps: steps.length, steps };
+    return { status: "succeeded", completedSteps: steps.length, steps };
 
   try {
     await runtime.validateArtifact(stagedVideoPath, "webm");
@@ -687,7 +685,6 @@ export async function runBrowserEvidenceJob(
   }
   const capturedAtMillis = videoCapturedAtMillis ?? runtime.now();
   return {
-    version: 1,
     status: "succeeded",
     completedSteps: steps.length,
     steps,

@@ -27,8 +27,6 @@ const unversionedJob = {
   steps: [step],
 } as const;
 
-const evidenceJob = { version: 2, ...unversionedJob } as const;
-
 const diagnostic = {
   operation: "screenshot",
   reason: "ambiguous",
@@ -83,26 +81,25 @@ const activeState = {
 };
 
 describe("evidence contracts", () => {
-  it("decodes the bounded declarative v2 job without retaining excess input", () => {
-    const decoded = decodeBrowserEvidenceJob(evidenceJob);
+  it("decodes the bounded declarative job without retaining excess input", () => {
+    const decoded = decodeBrowserEvidenceJob(unversionedJob);
     assert.ok(Option.isSome(decoded));
-    assert.strictEqual(decoded.value.version, 2);
     assert.deepStrictEqual(decoded.value.steps[0], step);
   });
 
-  it("rejects missing, legacy, excess, and otherwise invalid v2 job shapes", () => {
+  it("rejects versioned, excess, and otherwise invalid job shapes", () => {
     for (const input of [
-      unversionedJob,
-      { ...evidenceJob, version: 1 },
-      { ...evidenceJob, targetOrigin: "https://example.com" },
-      { ...evidenceJob, port: 80 },
-      { ...evidenceJob, port: 3_000 },
-      { ...evidenceJob, port: 43_117 },
+      { ...unversionedJob, version: 1 },
+      { ...unversionedJob, version: 2 },
+      { ...unversionedJob, targetOrigin: "https://example.com" },
+      { ...unversionedJob, port: 80 },
+      { ...unversionedJob, port: 3_000 },
+      { ...unversionedJob, port: 43_117 },
       {
-        ...evidenceJob,
+        ...unversionedJob,
         steps: [{ ...step, action: { kind: "goto", path: "https://example.com" } }],
       },
-      { ...evidenceJob, steps: Array.from({ length: 13 }, () => step) },
+      { ...unversionedJob, steps: Array.from({ length: 13 }, () => step) },
     ]) {
       assert.ok(Option.isNone(decodeBrowserEvidenceJob(input)));
     }

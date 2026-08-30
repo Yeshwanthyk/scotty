@@ -3011,7 +3011,6 @@ describe("real Hono boundary", () => {
     });
     await harness.startRuntime();
     const accepted = await harness.sandbox.acceptScottyEvidenceJob({
-      version: 2,
       port: 4_173,
       viewport: { width: 1_280, height: 720 },
       capture: { screenshots: "after-each-step", video: false },
