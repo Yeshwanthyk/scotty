@@ -30,6 +30,20 @@
   color: var(--beam);
 }
 
+.showcase-status[data-state="error"] {
+  color: var(--danger);
+}
+
+.notice-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.notice-copy strong {
+  color: var(--ink);
+  font-weight: 720;
+}
+
 .showcase-hatch {
   color: var(--beam);
 }
@@ -72,6 +86,59 @@
   max-height: 74vh;
   background: #02080c;
   box-shadow: var(--ring);
+}
+
+.showcase-video-frame {
+  background: #02080c;
+}
+
+.showcase-video-meta,
+.showcase-video-actions,
+.showcase-video-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.showcase-video-meta {
+  justify-content: space-between;
+  padding-top: 10px;
+  color: var(--quiet);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.7rem;
+}
+
+.showcase-video-actions {
+  justify-content: flex-end;
+  padding-top: 12px;
+}
+
+.showcase-video-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 13px 14px;
+  border: 1px solid rgb(255 130 120 / 0.58);
+  background: rgb(255 130 120 / 0.08);
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.showcase-video-error[hidden] {
+  display: none;
+}
+
+.showcase-video-error > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.showcase-video-error strong {
+  color: var(--danger);
+  font-weight: 720;
 }
 
 .showcase-slice {
@@ -152,11 +219,37 @@
     grid-template-columns: 1fr;
   }
 
+  .showcase-video-error {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .showcase-video-error-actions,
+  .showcase-video-actions {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .showcase-video-error-actions .button,
+  .showcase-video-actions .button {
+    flex: 1 1 180px;
+  }
+
   .showcase-slice-heading {
     grid-template-columns: 28px minmax(0, 1fr);
   }
 
   .showcase-step-pass {
     grid-column: 2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .showcase-page .button {
+    transition: none;
+  }
+
+  .showcase-page .button:active {
+    scale: 1;
   }
 }
