@@ -152,6 +152,24 @@ describe("agent Summary projection", () => {
     assert.deepInclude(evidence, { jobId: "job-1", frameCount: 1 });
     assert.isUndefined(decodeSummaryEvidence({ ...evidencePayload, jobId: "other" }, "job-1"));
 
+    assert.deepInclude(
+      decodeSummaryEvidence(
+        {
+          ...evidencePayload,
+          status: "failed",
+          completedSteps: 0,
+          frameCount: 0,
+          steps: [],
+          failure: { code: "port_conflict" },
+        },
+        "job-1",
+      ),
+      { failure: { code: "port_conflict" }, frameCount: 0 },
+    );
+    assert.isUndefined(
+      decodeSummaryEvidence({ ...evidencePayload, failure: { code: "private_failure" } }, "job-1"),
+    );
+
     const recordedEvidence = decodeSummaryEvidence(
       {
         ...evidencePayload,

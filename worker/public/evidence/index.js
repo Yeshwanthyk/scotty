@@ -1,4 +1,5 @@
 import {
+  evidenceFailurePresentation,
   evidenceStatusLabel,
   orderedEvidenceFrames,
   orderedEvidenceSteps,
@@ -177,12 +178,13 @@ function textCaption(value) {
 
 function renderSummary(summary) {
   pageTitle.textContent = `Evidence run ${summary.sequence + 1}`;
+  const failure = evidenceFailurePresentation(summary.failure);
   pageSubtitle.textContent =
-    summary.failure?.code === "assertion_mismatch"
-      ? `A required assertion failed at step ${(summary.failure.step ?? 0) + 1}.`
-      : summary.video
+    failure === undefined
+      ? summary.video
         ? "Verified screenshots and a real browser recording are available."
-        : "Verified screenshots are available for this baseline run.";
+        : "Verified screenshots are available for this baseline run."
+      : `${failure.detail}${failure.hint === undefined ? "" : ` ${failure.hint}`}`;
   jobStatus.hidden = false;
   jobStatus.dataset.status = summary.status;
   jobStatus.textContent = evidenceStatusLabel(summary.status);

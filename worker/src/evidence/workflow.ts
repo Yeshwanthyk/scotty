@@ -33,6 +33,7 @@ export class EvidenceWorkflowError extends Schema.TaggedError<EvidenceWorkflowEr
         "artifact_put_unknown",
         "deadline",
         "interrupted",
+        "port_conflict",
         "unsupported",
       ]),
     ),
@@ -58,6 +59,7 @@ export class EvidenceWorkflowControlError extends Schema.TaggedError<EvidenceWor
       "artifact_put_unknown",
       "deadline",
       "interrupted",
+      "port_conflict",
       "unsupported",
     ]),
   },
@@ -98,6 +100,7 @@ export interface RunEvidenceWorkflowInput {
   readonly active: EvidenceActiveJob;
   readonly job: BrowserEvidenceJob;
   readonly summaryUrl: string;
+  readonly preflightFailure?: EvidenceFailure;
 }
 
 const workflowError = (
@@ -251,6 +254,11 @@ const executeJob = Effect.fnUntraced(function* (
   const nowMillis = yield* Clock.currentTimeMillis;
   if (!Number.isFinite(deadlineMillis) || deadlineMillis <= nowMillis)
     return yield* workflowError("browser", "deadline", { failureCode: "deadline" });
+  if (input.preflightFailure !== undefined)
+    return yield* workflowError("validate", "state", {
+      failureCode: input.preflightFailure.code,
+      ...(input.preflightFailure.step === undefined ? {} : { step: input.preflightFailure.step }),
+    });
   const jobStartedAtMillis = yield* Clock.currentTimeMillis;
   const artifactOperation = input.job.capture.video ? "video" : "screenshot";
   yield* control

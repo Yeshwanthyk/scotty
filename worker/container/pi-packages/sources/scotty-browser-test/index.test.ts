@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import scottyBrowserTest, {
   BrowserEvidenceJobParameters,
+  renderBrowserEvidenceResult,
   runScottyBrowserTest,
   SCOTTY_BROWSER_TEST_MAX_BYTES,
   SCOTTY_BROWSER_TEST_ROUTE,
@@ -128,6 +129,37 @@ test("posts only the decoded job to the exact internal route and returns safe me
   });
   assert.equal(calls, 1);
   assert.deepEqual(output, result());
+});
+
+test("renders a port conflict with the distinct-target recovery hint", () => {
+  const conflict = {
+    ...result(),
+    status: "failed" as const,
+    completedSteps: 0,
+    frameCount: 0,
+    video: false,
+    failure: { code: "port_conflict" as const },
+  };
+  assert.match(renderBrowserEvidenceResult(conflict), /Failure: port_conflict/u);
+  assert.match(renderBrowserEvidenceResult(conflict), /different port from Hatch/u);
+});
+
+test("preserves a rejected preflight recovery hint", async () => {
+  await assert.rejects(
+    runScottyBrowserTest(job(), undefined, async () =>
+      Response.json(
+        {
+          error: {
+            code: "conflict",
+            message: "Evidence target conflicts with Hatch",
+            hint: "Use a distinct temporary app port.",
+          },
+        },
+        { status: 409 },
+      ),
+    ),
+    /Evidence target conflicts with Hatch[\s\S]*Recovery: Use a distinct temporary app port/u,
+  );
 });
 
 test("rejects oversized, malformed, extra-field, and mismatched results", async () => {
