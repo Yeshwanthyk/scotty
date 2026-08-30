@@ -20,6 +20,13 @@ export type SessionMemoryEntry = {
 };
 export type ComposerProjection = {
   readonly active?: boolean;
+  readonly messages?: ReadonlyArray<{
+    readonly id?: string;
+    readonly role?: string;
+    readonly content?:
+      | string
+      | ReadonlyArray<string | { readonly type?: string; readonly text?: string }>;
+  }>;
   readonly queue?: {
     readonly steer?: ReadonlyArray<string | { readonly text?: string }>;
     readonly followUp?: ReadonlyArray<string | { readonly text?: string }>;

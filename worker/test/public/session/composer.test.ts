@@ -115,4 +115,13 @@ describe("session composer", () => {
     });
     assert.strictEqual(delivered?.status, "delivered");
   });
+
+  it("recovers an accepted prompt from the authoritative transcript after reload", () => {
+    const accepted = { kind: "prompt" as const, message: "Ship it", status: "accepted" as const };
+    const delivered = reconcileDelivery(accepted, {
+      active: true,
+      messages: [{ id: "user-1", role: "user", content: [{ type: "text", text: "Ship it" }] }],
+    });
+    assert.strictEqual(delivered?.status, "delivered");
+  });
 });

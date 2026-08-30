@@ -97,16 +97,16 @@ export function summaryProjection(projection, sessionId) {
       );
       return {
         update,
-        artifacts: extractSummaryReferences(update).map(
-          (reference) =>
-            verified.get(reference) ?? {
-              kind: "unavailable",
-              reference,
-              label: reference.startsWith("scotty-hatch:")
-                ? "Hatch unavailable"
-                : "Evidence unavailable",
-            },
-        ),
+        artifacts: extractSummaryReferences(update)
+          .filter((reference) => reference.startsWith("scotty-evidence:"))
+          .map(
+            (reference) =>
+              verified.get(reference) ?? {
+                kind: "unavailable",
+                reference,
+                label: "Evidence unavailable",
+              },
+          ),
       };
     }
   }
@@ -219,12 +219,14 @@ export function decodeSummaryEvidence(value, jobId) {
   };
 }
 
-export function decodeSummaryHatch(value, hatchId) {
+export function decodeSummaryHatch(value) {
+  if (isObject(value) && value.status === "not_configured")
+    return { configured: false, available: false };
   if (
     !isObject(value) ||
     value.status !== "configured" ||
-    value.hatchId !== hatchId ||
-    !IDENTIFIER.test(hatchId) ||
+    typeof value.hatchId !== "string" ||
+    !IDENTIFIER.test(value.hatchId) ||
     !isObject(value.service) ||
     typeof value.service.name !== "string" ||
     !HATCH_STATES.has(value.observedStatus) ||
@@ -233,7 +235,8 @@ export function decodeSummaryHatch(value, hatchId) {
   )
     return undefined;
   return {
-    hatchId,
+    configured: true,
+    hatchId: value.hatchId,
     serviceName: sanitizeText(value.service.name, 120),
     observedStatus: value.observedStatus,
     available:
@@ -311,11 +314,18 @@ function renderEvidence(document, target, sessionId, evidence) {
 }
 
 function renderHatch(document, target, sessionId, hatch) {
+  if (!hatch.configured) {
+    target.replaceChildren(
+      sectionHeading(document, "Hatch", "Not configured"),
+      summaryState(document, "No Hatch is configured for this session."),
+    );
+    return;
+  }
   const meta = document.createElement("p");
   meta.className = "summary-meta";
   meta.textContent = hatch.available
-    ? `${hatch.observedStatus} · authenticated`
-    : hatch.observedStatus;
+    ? `${hatch.observedStatus} · public HTTPS ready`
+    : `${hatch.observedStatus} · public HTTPS unavailable`;
   target.replaceChildren(sectionHeading(document, "Hatch", hatch.serviceName), meta);
   if (hatch.available) {
     const link = document.createElement("a");
@@ -356,6 +366,32 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
       if (summary.update) update.append(renderSafeMarkdown(document, summary.update, baseUrl));
       else update.append(summaryState(document, "Pi's latest completed update will appear here."));
       fragment.append(update);
+      const hatchTarget = document.createElement("section");
+      hatchTarget.className = "summary-section summary-hatch";
+      hatchTarget.dataset.currentHatch = "";
+      hatchTarget.append(
+        sectionHeading(document, "Hatch", "Loading…"),
+        summaryState(document, "Checking the current authenticated session state…"),
+      );
+      fragment.append(hatchTarget);
+      void fetchJson(fetch, `/api/sessions/${encodeURIComponent(sessionId)}/hatch`)
+        .then((value) => {
+          if (generation !== currentGeneration) return;
+          const hatch = decodeSummaryHatch(value);
+          if (hatch) renderHatch(document, hatchTarget, sessionId, hatch);
+          else
+            hatchTarget.replaceChildren(
+              sectionHeading(document, "Hatch", "Unavailable"),
+              summaryState(document, "Current Hatch status could not be verified."),
+            );
+        })
+        .catch(() => {
+          if (generation === currentGeneration)
+            hatchTarget.replaceChildren(
+              sectionHeading(document, "Hatch", "Unavailable"),
+              summaryState(document, "Current Hatch status could not be loaded."),
+            );
+        });
       for (const artifact of summary.artifacts) {
         const target = document.createElement("section");
         target.className = `summary-section summary-${artifact.kind}`;
@@ -374,22 +410,13 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
           summaryState(document, "Checking the authenticated session state…"),
         );
         fragment.append(target);
-        const path =
-          artifact.kind === "evidence"
-            ? `/api/sessions/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(artifact.jobId)}`
-            : `/api/sessions/${encodeURIComponent(sessionId)}/hatch`;
+        const path = `/api/sessions/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(artifact.jobId)}`;
         void fetchJson(fetch, path)
           .then((value) => {
             if (generation !== currentGeneration) return;
-            if (artifact.kind === "evidence") {
-              const evidence = decodeSummaryEvidence(value, artifact.jobId);
-              if (evidence) renderEvidence(document, target, sessionId, evidence);
-              else renderUnavailable(document, target, artifact);
-            } else {
-              const hatch = decodeSummaryHatch(value, artifact.hatchId);
-              if (hatch) renderHatch(document, target, sessionId, hatch);
-              else renderUnavailable(document, target, artifact);
-            }
+            const evidence = decodeSummaryEvidence(value, artifact.jobId);
+            if (evidence) renderEvidence(document, target, sessionId, evidence);
+            else renderUnavailable(document, target, artifact);
           })
           .catch(() => {
             if (generation === currentGeneration) renderUnavailable(document, target, artifact);

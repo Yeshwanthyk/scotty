@@ -102,11 +102,6 @@ describe("agent Summary projection", () => {
           reference: "scotty-evidence:job-1",
           label: "Evidence unavailable",
         },
-        {
-          kind: "unavailable",
-          reference: "scotty-hatch:invented",
-          label: "Hatch unavailable",
-        },
       ],
     });
   });
@@ -198,22 +193,41 @@ describe("agent Summary projection", () => {
     );
 
     assert.deepStrictEqual(
-      decodeSummaryHatch(
-        {
-          status: "configured",
-          hatchId: "hatch-1",
-          service: { name: "Preview", port: 4173 },
-          desiredStatus: "open",
-          observedStatus: "running",
-          exposure: "active",
-        },
-        "hatch-1",
-      ),
+      decodeSummaryHatch({
+        status: "configured",
+        hatchId: "hatch-1",
+        service: { name: "Preview", port: 4173 },
+        desiredStatus: "open",
+        observedStatus: "running",
+        exposure: "active",
+      }),
       {
+        configured: true,
         hatchId: "hatch-1",
         serviceName: "Preview",
         observedStatus: "running",
         available: true,
+      },
+    );
+    assert.deepStrictEqual(decodeSummaryHatch({ status: "not_configured" }), {
+      configured: false,
+      available: false,
+    });
+    assert.deepStrictEqual(
+      decodeSummaryHatch({
+        status: "configured",
+        hatchId: "hatch-1",
+        service: { name: "Preview", port: 4173 },
+        desiredStatus: "open",
+        observedStatus: "running",
+        exposure: "closed",
+      }),
+      {
+        configured: true,
+        hatchId: "hatch-1",
+        serviceName: "Preview",
+        observedStatus: "running",
+        available: false,
       },
     );
   });
@@ -223,6 +237,9 @@ describe("agent Summary projection", () => {
     assert.include(summarySource, 'credentials: "same-origin"');
     assert.include(summarySource, 'cache: "no-store"');
     assert.include(summarySource, "/api/sessions/");
+    assert.include(summarySource, 'hatchTarget.dataset.currentHatch = ""');
+    assert.include(summarySource, "public HTTPS ready");
+    assert.include(summarySource, "public HTTPS unavailable");
     assert.include(summarySource, "/hatch/open");
     assert.include(summarySource, "/video.webm");
     assert.include(summarySource, "Watch browser recording");

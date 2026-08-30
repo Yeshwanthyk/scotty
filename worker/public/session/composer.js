@@ -31,6 +31,14 @@ export function shouldSubmitComposerKey(event) {
 const queueText = (item) =>
   typeof item === "string" ? item : typeof item?.text === "string" ? item.text : undefined;
 
+const messageText = (message) => {
+  if (typeof message?.content === "string") return message.content;
+  if (!Array.isArray(message?.content)) return undefined;
+  return message.content
+    .map((part) => (typeof part === "string" ? part : part?.type === "text" ? part.text : ""))
+    .join("");
+};
+
 export function reconcileDelivery(delivery, projection, event) {
   if (!delivery || !projection) return delivery;
   const queue = delivery.kind === "steer" ? projection.queue?.steer : projection.queue?.followUp;
@@ -39,13 +47,15 @@ export function reconcileDelivery(delivery, projection, event) {
     return { ...delivery, status: "queued" };
   if (delivery.status === "queued" && !queued) return { ...delivery, status: "delivered" };
   const message = event?.message;
-  if (
+  const deliveredPrompt =
     delivery.kind === "prompt" &&
     ["submitting", "accepted"].includes(delivery.status) &&
-    message?.role === "user" &&
-    message.content === delivery.message
-  )
-    return { ...delivery, status: "delivered" };
+    (message?.role === "user" && messageText(message) === delivery.message
+      ? true
+      : projection.messages?.some(
+          (candidate) => candidate?.role === "user" && messageText(candidate) === delivery.message,
+        ));
+  if (deliveredPrompt) return { ...delivery, status: "delivered" };
   return delivery;
 }
 

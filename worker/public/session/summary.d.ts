@@ -31,12 +31,15 @@ export interface SummaryEvidence {
   }>;
 }
 
-export interface SummaryHatch {
-  readonly hatchId: string;
-  readonly serviceName: string;
-  readonly observedStatus: string;
-  readonly available: boolean;
-}
+export type SummaryHatch =
+  | { readonly configured: false; readonly available: false }
+  | {
+      readonly configured: true;
+      readonly hatchId: string;
+      readonly serviceName: string;
+      readonly observedStatus: string;
+      readonly available: boolean;
+    };
 
 export declare function extractSummaryReferences(text: string): ReadonlyArray<string>;
 export declare function summaryProjection(
@@ -47,10 +50,7 @@ export declare function decodeSummaryEvidence(
   value: unknown,
   jobId: string,
 ): SummaryEvidence | undefined;
-export declare function decodeSummaryHatch(
-  value: unknown,
-  hatchId: string,
-): SummaryHatch | undefined;
+export declare function decodeSummaryHatch(value: unknown): SummaryHatch | undefined;
 export declare function createSummaryView(options: {
   readonly document: Document;
   readonly root: HTMLElement;
