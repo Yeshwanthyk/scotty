@@ -467,6 +467,44 @@ describe("authoritative Hatch session lifecycle", () => {
     }),
   );
 
+  it.effect("does not publish stale readiness when clearing it fails", () =>
+    Effect.gen(function* () {
+      let publicReady = true;
+      const harness = yield* createHarness(false, async () =>
+        publicReady
+          ? new Response(null, {
+              status: 204,
+              headers: {
+                "cache-control": "no-store",
+                [HATCH_PRIVATE_READINESS_HEADER]: "ready",
+                "x-robots-tag": "noindex, nofollow, noarchive",
+              },
+            })
+          : new Response("edge unavailable", { status: 503 }),
+      );
+      yield* Effect.promise(() => harness.sandbox.ensureScottyHatch({ service }));
+      publicReady = false;
+      harness.memory.injectFailure("transaction", {
+        countdown: 1,
+        error: new Error("injected readiness cleanup failure"),
+        times: 1,
+      });
+      const failedClosed = yield* Effect.promise(() =>
+        harness.sandbox.getScottyHatchStatus().then(
+          () => false,
+          () => true,
+        ),
+      );
+      assert.isTrue(failedClosed);
+      assert.ok(hatchState(harness)?.primary?.publicReadyAt);
+
+      const unavailable = yield* Effect.promise(() => harness.sandbox.getScottyHatchStatus());
+      assert.ok(unavailable.status === "configured");
+      assert.strictEqual(unavailable.exposure, "not_exposed");
+      assert.isUndefined(hatchState(harness)?.primary?.publicReadyAt);
+    }),
+  );
+
   it.effect("projects public-unready when route authorization is stale", () =>
     Effect.gen(function* () {
       const harness = yield* createHarness();

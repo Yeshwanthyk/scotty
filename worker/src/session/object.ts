@@ -3649,13 +3649,11 @@ export class Sandbox extends BaseSandbox<Bindings> {
     if (Result.isSuccess(health) && health.success >= 200 && health.success <= 399) {
       const publicRoute = yield* Effect.result(this.verifyPublicHatchRouteProgram(hatch));
       if (Result.isFailure(publicRoute)) {
-        yield* store
-          .clearPublicReady(
-            authorization.hatchId,
-            authorization.generation,
-            authorization.runtimeEpoch,
-          )
-          .pipe(Effect.ignore);
+        yield* store.clearPublicReady(
+          authorization.hatchId,
+          authorization.generation,
+          authorization.runtimeEpoch,
+        );
         return false;
       }
       const confirmed = yield* Effect.result(
