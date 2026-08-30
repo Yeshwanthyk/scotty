@@ -77,15 +77,16 @@ A syntactically valid reference without same-conversation provenance renders as 
 
 ## Hatch state
 
-Use a dedicated strict store key such as `scotty:hatch:v1`.
+Use the dedicated strict `scotty:hatch` store key. The schema is decoded strictly at the storage
+boundary; it does not carry speculative version names or compatibility branches.
 
 ```ts
-interface HatchStateV1 {
-  readonly version: 1;
-  readonly primary?: HatchRecordV1;
+interface HatchState {
+  readonly primary?: HatchRecord;
 }
 
-interface HatchRecordV1 {
+interface HatchRecord {
+  readonly sessionId: string;
   readonly hatchId: string;
   readonly generation: number;
   readonly service: {
@@ -100,7 +101,7 @@ interface HatchRecordV1 {
   readonly runtimeEpoch?: string;
   readonly exposure: "not_exposed" | "active" | "unexpose_pending" | "closed";
   readonly routeNonce: string;
-  readonly permits: readonly HatchBrowserPermitV1[];
+  readonly permits: readonly HatchBrowserPermit[];
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly lastHealthyAt?: string;
@@ -165,7 +166,7 @@ The first-party `scotty_hatch` Pi package has one session-local manager. It star
 - **Hatch application**: separate exact-host application origin.
 - **Activity drawer**: existing tasks, subagents, and workflows; remains independent.
 
-Desktop Summary is a collapsible right column. Compact Summary is coordinated through one modal-surface owner so workspace, Activity, and Summary cannot compete over focus, inertness, backdrop, or Escape handling.
+Desktop Summary is a persistent right column. Compact Summary is coordinated through one modal-surface owner so workspace, Activity, and Summary cannot compete over focus, inertness, backdrop, or Escape handling.
 
 ## Delivery slices
 

@@ -48,6 +48,8 @@ export function artifactForTool(tool, sessionId) {
     if (details.summaryUrl !== href) return { kind: "unavailable", label: "Evidence unavailable" };
     return {
       kind: "evidence",
+      reference: `scotty-evidence:${details.jobId}`,
+      jobId: details.jobId,
       label: "Browser evidence",
       status: details.status,
       completedSteps: details.completedSteps,
@@ -67,6 +69,8 @@ export function artifactForTool(tool, sessionId) {
     hatch.exposure === "active";
   return {
     kind: "hatch",
+    reference: details.reference,
+    hatchId: hatch.hatchId,
     label: hatch.service.name,
     status: hatch.observedStatus,
     available,

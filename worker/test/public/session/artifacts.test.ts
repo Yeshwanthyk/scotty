@@ -23,6 +23,8 @@ describe("session artifacts", () => {
     );
     assert.deepStrictEqual(artifact, {
       kind: "evidence",
+      reference: "scotty-evidence:job-1",
+      jobId: "job-1",
       label: "Browser evidence",
       status: "succeeded",
       completedSteps: 3,
@@ -74,6 +76,8 @@ describe("session artifacts", () => {
     };
     assert.deepStrictEqual(artifactForTool({ name: "scotty_hatch", details: hatch }, sessionId), {
       kind: "hatch",
+      reference: "scotty-hatch:hatch-1",
+      hatchId: "hatch-1",
       label: "Preview",
       status: "running",
       available: true,

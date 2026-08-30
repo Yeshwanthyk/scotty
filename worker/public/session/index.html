@@ -63,16 +63,27 @@
             <h1 id="agent-title">Cloud agent</h1>
             <p id="agent-meta">Connecting to Pi</p>
           </div>
-          <div
-            id="connection-state"
-            class="connection-state"
-            data-state="connecting"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            <span class="connection-dot" aria-hidden="true"></span>
-            <span id="connection-label">Connecting</span>
+          <div class="agent-header-actions">
+            <div
+              id="connection-state"
+              class="connection-state"
+              data-state="connecting"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <span class="connection-dot" aria-hidden="true"></span>
+              <span id="connection-label">Connecting</span>
+            </div>
+            <button
+              id="open-summary"
+              class="summary-toggle"
+              type="button"
+              aria-controls="summary-panel"
+              aria-expanded="false"
+            >
+              Summary
+            </button>
           </div>
         </header>
 
@@ -125,6 +136,26 @@
           </form>
         </div>
       </main>
+
+      <aside id="summary-panel" class="summary-panel" aria-label="Agent summary">
+        <header class="summary-header">
+          <div>
+            <span>Current session</span>
+            <h2>Summary</h2>
+          </div>
+          <button
+            id="close-summary"
+            class="icon-button summary-close"
+            type="button"
+            aria-label="Close summary"
+          >
+            ×
+          </button>
+        </header>
+        <div id="summary-content" class="summary-content" aria-live="polite">
+          <p class="summary-state">Loading the latest agent update…</p>
+        </div>
+      </aside>
     </div>
     <script type="module" src="/session/index.js"></script>
   </body>
