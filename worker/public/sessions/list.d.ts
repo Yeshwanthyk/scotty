@@ -19,7 +19,10 @@ export interface SessionListItem {
   };
 }
 
-export type SessionAction = "sleep" | "resume" | "delete" | "rename";
+export type SessionAction = "sleep" | "resume" | "delete" | "retry-delete" | "rename";
+
+export function lifecycleActionLabel(expanded: boolean): string;
+export function deletionActionLabel(pendingAction: unknown, fallback: string): string;
 
 export function normalizeSessionListItem(value: unknown): SessionListItem | undefined;
 
@@ -37,6 +40,8 @@ export interface SessionListRenderState {
   readonly renamingId?: string;
   readonly renameDraft: string;
   readonly preserveFocusedDraft: boolean;
+  readonly targetSessionId?: string;
+  readonly focusTargetSession: boolean;
 }
 
 export function formatSessionDuration(value: unknown): string;

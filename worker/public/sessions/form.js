@@ -105,7 +105,7 @@ export function safeSessionPath(value, id, origin) {
 
 export function sessionDisplayStatus(value, pendingAction, deleting = false) {
   const status = typeof value === "string" ? value : "unknown";
-  if (deleting || pendingAction === "delete") return "deleting";
+  if (deleting || pendingAction === "delete" || pendingAction === "retry-delete") return "deleting";
   return pendingAction === "sleep" && status === "warm" ? "stopping" : status;
 }
 

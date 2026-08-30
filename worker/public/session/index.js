@@ -20,6 +20,7 @@ const summaryPanel = byId("summary-panel");
 const summaryContent = byId("summary-content");
 const openSummaryButton = byId("open-summary");
 const closeSummaryButton = byId("close-summary");
+const manageSessionLink = byId("manage-session");
 const agentList = byId("agent-list");
 const agentCount = byId("agent-count");
 const title = byId("agent-title");
@@ -67,6 +68,12 @@ function sessionIdFromLocation() {
   } catch {
     return undefined;
   }
+}
+
+function updateManageSessionLink(sessionId) {
+  manageSessionLink.href = sessionId
+    ? `/sessions?focus=${encodeURIComponent(sessionId)}`
+    : "/sessions";
 }
 
 const memoryEntry = (sessionId) => sessionMemory.entry(sessionId);
@@ -272,6 +279,7 @@ async function switchSession(sessionId, options = {}) {
   }
   saveBrowserState();
   currentSessionId = sessionId;
+  updateManageSessionLink(sessionId);
   directory.setCurrent(sessionId);
   updateAgentCopy(directory.find(sessionId));
   const entry = memoryEntry(sessionId);
@@ -553,6 +561,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 currentSessionId = sessionIdFromLocation();
+updateManageSessionLink(currentSessionId);
 directory.setCurrent(currentSessionId);
 setSidebar(false);
 setSummary(false);
