@@ -48,6 +48,14 @@ describe("cloud-agent session application", () => {
     assert.notInclude(appSource, "/rpc/");
   });
 
+  it("makes accepted follow-up delivery visible while Pi is working", () => {
+    assert.include(sessionHtml, 'id="composer-hint" class="composer-hint" role="status"');
+    assert.include(sessionHtml, 'aria-live="polite"');
+    assert.include(appSource, "projection?.queue?.followUp");
+    assert.include(appSource, "follow-up queued · sends after Pi finishes");
+    assert.include(appSource, "follow-ups queued · send after Pi finishes");
+  });
+
   it("uses a modal mobile sidebar, visible focus, safe areas, and reduced motion", () => {
     assert.include(sessionHtml, 'aria-controls="agent-sidebar"');
     assert.match(sessionHtml, /role="status"[\s\S]*?aria-live="polite"/u);

@@ -111,6 +111,9 @@ function updateComposer() {
   const lane = laneState();
   const paused = lane.paused;
   const active = Boolean(projection?.active);
+  const queuedFollowUps = Array.isArray(projection?.queue?.followUp)
+    ? projection.queue.followUp.length
+    : 0;
   const hasDraft = composerInput.value.trim().length > 0;
   recovery.hidden = !paused;
   if (paused) {
@@ -134,11 +137,15 @@ function updateComposer() {
       : "Outcome unknown · commands held"
     : lane.items.some((item) => item.state === "sending")
       ? "Submitting…"
-      : active
-        ? "Pi is working"
-        : projection
-          ? "Pi is ready"
-          : "Loading session state…";
+      : queuedFollowUps === 1
+        ? "1 follow-up queued · sends after Pi finishes"
+        : queuedFollowUps > 1
+          ? `${queuedFollowUps} follow-ups queued · send after Pi finishes`
+          : active
+            ? "Pi is working"
+            : projection
+              ? "Pi is ready"
+              : "Loading session state…";
 }
 
 function autosizeComposer() {
