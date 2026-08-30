@@ -347,9 +347,53 @@ async function fetchJson(fetch, path) {
   return response.json();
 }
 
+export function createHatchStatusLoader(load) {
+  let activeSessionId;
+  let value;
+  let pending;
+  const select = (sessionId) => {
+    if (activeSessionId === sessionId) return;
+    activeSessionId = sessionId;
+    value = undefined;
+    pending = undefined;
+  };
+  return {
+    current(sessionId) {
+      select(sessionId);
+      return value;
+    },
+    refresh(sessionId) {
+      select(sessionId);
+      if (pending) return pending;
+      const ownedSessionId = sessionId;
+      const request = Promise.resolve()
+        .then(() => load(sessionId))
+        .then((next) => {
+          if (activeSessionId === ownedSessionId) value = next;
+          return next;
+        })
+        .finally(() => {
+          if (activeSessionId === ownedSessionId && pending === request) pending = undefined;
+        });
+      pending = request;
+      return request;
+    },
+    reset() {
+      activeSessionId = undefined;
+      value = undefined;
+      pending = undefined;
+    },
+  };
+}
+
 export function createSummaryView({ document, root, baseUrl, fetch }) {
   let generation = 0;
   let renderedSignature = "";
+  const hatchStatus = createHatchStatusLoader((sessionId) =>
+    fetchJson(fetch, `/api/sessions/${encodeURIComponent(sessionId)}/hatch`).then(
+      decodeSummaryHatch,
+    ),
+  );
   return {
     render(projection, sessionId) {
       const summary = summaryProjection(projection, sessionId);
@@ -369,15 +413,18 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
       const hatchTarget = document.createElement("section");
       hatchTarget.className = "summary-section summary-hatch";
       hatchTarget.dataset.currentHatch = "";
-      hatchTarget.append(
-        sectionHeading(document, "Hatch", "Loading…"),
-        summaryState(document, "Checking the current authenticated session state…"),
-      );
+      const currentHatch = hatchStatus.current(sessionId);
+      if (currentHatch) renderHatch(document, hatchTarget, sessionId, currentHatch);
+      else
+        hatchTarget.append(
+          sectionHeading(document, "Hatch", "Loading…"),
+          summaryState(document, "Checking the current authenticated session state…"),
+        );
       fragment.append(hatchTarget);
-      void fetchJson(fetch, `/api/sessions/${encodeURIComponent(sessionId)}/hatch`)
-        .then((value) => {
+      void hatchStatus
+        .refresh(sessionId)
+        .then((hatch) => {
           if (generation !== currentGeneration) return;
-          const hatch = decodeSummaryHatch(value);
           if (hatch) renderHatch(document, hatchTarget, sessionId, hatch);
           else
             hatchTarget.replaceChildren(
@@ -386,7 +433,7 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
             );
         })
         .catch(() => {
-          if (generation === currentGeneration)
+          if (generation === currentGeneration && !hatchStatus.current(sessionId))
             hatchTarget.replaceChildren(
               sectionHeading(document, "Hatch", "Unavailable"),
               summaryState(document, "Current Hatch status could not be loaded."),
@@ -427,6 +474,7 @@ export function createSummaryView({ document, root, baseUrl, fetch }) {
     reset() {
       generation += 1;
       renderedSignature = "";
+      hatchStatus.reset();
       root.replaceChildren(summaryState(document, "Loading the latest agent update…"));
     },
   };
