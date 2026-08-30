@@ -19,10 +19,19 @@
           <img class="brand-mark" src="/brand/scotty-mark-128.png" alt="" />
           <span class="wordmark">SCOTTY</span>
         </a>
-        <nav class="masthead-nav" aria-label="Evidence navigation">
-          <a class="button" id="session-link" href="/sessions">Session</a>
-          <a class="button" id="evidence-list-link" href="/sessions">All evidence</a>
-        </nav>
+        <div class="masthead-actions">
+          <nav class="masthead-nav" aria-label="Evidence navigation">
+            <a class="button" id="session-link" href="/sessions">Session</a>
+            <a class="button" id="evidence-list-link" href="/sessions">All evidence</a>
+          </nav>
+          <details class="mobile-utilities">
+            <summary aria-label="Open evidence navigation">•••</summary>
+            <nav aria-label="Evidence navigation">
+              <a id="session-link-mobile" href="/sessions">Session</a>
+              <a id="evidence-list-link-mobile" href="/sessions">All evidence</a>
+            </nav>
+          </details>
+        </div>
       </div>
     </header>
 
