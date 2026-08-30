@@ -65,6 +65,7 @@ import {
 } from "./prebuilt-worker-bundles.ts";
 import type {
   InstallationApplyRequest,
+  InstallationDeploymentReadinessTarget,
   InstallationCreateRequest,
   InstallationDeployRequest,
   InstallationInspectRequest,
@@ -714,6 +715,7 @@ const deployWithProfile = async (
   root: string,
   prebuiltWorkers: boolean,
   credentialWrappingKey?: string,
+  readinessTarget?: InstallationDeploymentReadinessTarget,
 ): Promise<InstallationResult> => {
   const { installation, stack } = makeStack(request, prebuiltWorkers);
   return runWithProfile(
@@ -749,14 +751,14 @@ const deployWithProfile = async (
 
               if (containerChanged) {
                 if (summary.hasExistingResources) {
-                  if (request.host === undefined || request.token === undefined)
+                  if (readinessTarget === undefined)
                     return yield* new InstallationDeploymentError({
                       message:
                         "Cannot update SandboxContainer without an authenticated session-readiness preflight.",
                     });
                   const readiness = yield* readDeploymentSessionReadiness(
-                    request.host,
-                    request.token,
+                    readinessTarget.host,
+                    readinessTarget.token,
                   );
                   yield* assertDeploymentSessionReadiness(readiness);
                 }
@@ -1051,6 +1053,7 @@ export async function planInstallation(
 
 export async function deployInstallation(
   request: InstallationApplyRequest,
+  readinessTarget?: InstallationDeploymentReadinessTarget,
 ): Promise<InstallationResult> {
   const deployment = await prepareDeploymentRoot();
   // oxlint-disable-next-line scotty/no-try-catch-or-throw -- boundary: Promise deployment adapter must remove its extracted payload on every exit
@@ -1065,7 +1068,13 @@ export async function deployInstallation(
       scriptName: installation.workerName,
     });
     await prepareInstallationDeployment(deployment, installation);
-    return await deployWithProfile(request, deployment.root, deployment.prebuiltWorkers);
+    return await deployWithProfile(
+      request,
+      deployment.root,
+      deployment.prebuiltWorkers,
+      undefined,
+      readinessTarget,
+    );
   } finally {
     await deployment.cleanup();
   }

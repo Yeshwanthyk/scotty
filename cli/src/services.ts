@@ -72,7 +72,10 @@ export interface CliDependencies {
   createInstallation: (request: InstallationCreateRequest) => Promise<InstallationResult>;
   planCreateInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
   planInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
-  deployInstallation: (request: InstallationApplyRequest) => Promise<InstallationResult>;
+  deployInstallation: (
+    request: InstallationApplyRequest,
+    readinessTarget?: InstallationDeploymentReadinessTarget,
+  ) => Promise<InstallationResult>;
   inspectInstallation: (request: InstallationInspectRequest) => Promise<InstallationResult>;
   recoverInstallation: (request: InstallationRecoverRequest) => Promise<InstallationResult>;
   uninstallInstallation: (
@@ -100,8 +103,11 @@ export interface InstallationCreateRequest extends InstallationDeployRequest {
 export interface InstallationApplyRequest extends InstallationDeployRequest {
   readonly expectedAccountId: string;
   readonly expectedPlanFingerprint: string;
-  readonly host?: string;
-  readonly token?: string;
+}
+
+export interface InstallationDeploymentReadinessTarget {
+  readonly host: string;
+  readonly token: string;
 }
 
 export interface InstallationInspectRequest {
@@ -261,6 +267,7 @@ interface InstallationDeployerShape {
   readonly plan: (request: InstallationDeployRequest) => Effect.Effect<InstallationPlan, CliError>;
   readonly deploy: (
     request: InstallationApplyRequest,
+    readinessTarget?: InstallationDeploymentReadinessTarget,
   ) => Effect.Effect<InstallationResult, CliError>;
 }
 
@@ -527,9 +534,9 @@ export const defaultDependencies = (): CliDependencies => ({
     const { planInstallation } = await import("./installation-deployment.ts");
     return planInstallation(request);
   },
-  deployInstallation: async (request) => {
+  deployInstallation: async (request, readinessTarget) => {
     const { deployInstallation } = await import("./installation-deployment.ts");
-    return deployInstallation(request);
+    return deployInstallation(request, readinessTarget);
   },
   inspectInstallation: async (request) => {
     const { inspectInstallation } = await import("./installation-deployment.ts");
@@ -655,9 +662,9 @@ export const cliLayer = (
                 }),
           ),
         ),
-      deploy: (request) =>
+      deploy: (request, readinessTarget) =>
         Effect.tryPromise({
-          try: () => dependencies.deployInstallation(request),
+          try: () => dependencies.deployInstallation(request, readinessTarget),
           catch: (cause) =>
             isDeploymentSessionSafetyError(cause) ? cause : new InstallationHostFailure({ cause }),
         }).pipe(

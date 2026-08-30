@@ -1176,15 +1176,22 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           else runtime.stdout(`${config.installationName} is already up to date.\n`);
           return;
         }
+        if (config.host === undefined)
+          return yield* usage(
+            "Scotty host is not configured",
+            "Run scotty init or scotty recover first.",
+          );
+        const readinessHost = yield* Effect.fromResult(normalizeHost(config.host));
         yield* consumeAuthorizedDeploymentPlan(runtime.home, savedPlan);
         if (!autoJson) runtime.stdout(`Deploying ${config.installationName}...\n`);
-        const deployed = yield* deployer.deploy({
-          ...request,
-          expectedAccountId: plan.accountId,
-          expectedPlanFingerprint: plan.fingerprint,
-          host: config.host,
-          token: config.token,
-        });
+        const deployed = yield* deployer.deploy(
+          {
+            ...request,
+            expectedAccountId: plan.accountId,
+            expectedPlanFingerprint: plan.fingerprint,
+          },
+          { host: readinessHost, token: config.token },
+        );
         const host = yield* Effect.fromResult(normalizeHost(deployed.host));
         yield* secureWrite(
           managedInstallationPath(runtime.home),
