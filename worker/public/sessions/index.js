@@ -9,7 +9,11 @@ import {
   titleText,
 } from "./form.js";
 import { normalizeSessionListItem, renderSessionsView, sessionsRenderSignature } from "./list.js";
-import { focusedSessionId, reconcileCleanupProjection } from "./lifecycle.js";
+import {
+  createRefreshCoordinator,
+  focusedSessionId,
+  reconcileCleanupProjection,
+} from "./lifecycle.js";
 
 const POLL_INTERVAL = 5000;
 const content = document.querySelector("#content");
@@ -429,8 +433,7 @@ function applyProjectedSessions(next) {
   return cleanup;
 }
 
-async function refresh(options = {}) {
-  if (fetching) return;
+async function runRefresh(options = {}) {
   const wasLoaded = loaded;
   const previousCount = sessions.length;
   fetching = true;
@@ -469,6 +472,8 @@ async function refresh(options = {}) {
   }
 }
 
+const { refresh, waitForIdle: waitForRefresh } = createRefreshCoordinator(runRefresh);
+
 function pendingLifecycleAction(current, id, action) {
   if (action !== "delete") return action;
   return current?.deleting || cleanupPending.has(id) ? "retry-delete" : "delete";
@@ -494,9 +499,10 @@ async function applyLifecycleResult(id, action, result, title) {
     return true;
   }
   if (action === "delete") {
+    await waitForRefresh();
     cleanupPending.add(id);
     cleanupTitles.set(id, title);
-    const projectionChecked = await refresh({ actionId: id });
+    const projectionChecked = await refresh({ actionId: id, afterActive: true });
     if (!projectionChecked) {
       throw new Error(
         "Deletion finished, but the sessions list could not be checked. Retry cleanup.",
@@ -546,7 +552,7 @@ async function perform(id, action) {
   } finally {
     busy.delete(id);
     if (succeeded || projectionChecked) render();
-    else await refresh({ actionId: id });
+    else await refresh({ actionId: id, afterActive: action === "delete" });
   }
 }
 

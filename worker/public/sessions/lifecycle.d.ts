@@ -9,3 +9,15 @@ export function reconcileCleanupProjection(
   readonly pendingIds: ReadonlyArray<string>;
   readonly completedIds: ReadonlyArray<string>;
 };
+
+export interface RefreshOptions {
+  readonly actionId?: string;
+  readonly afterActive?: boolean;
+}
+
+export function createRefreshCoordinator(
+  runRefresh: (options: RefreshOptions) => Promise<boolean>,
+): {
+  readonly refresh: (options?: RefreshOptions) => Promise<boolean>;
+  readonly waitForIdle: () => Promise<void>;
+};

@@ -9,6 +9,7 @@ import {
   sleepingProjectFocusKey,
 } from "../../../public/sessions/list.js";
 import {
+  createRefreshCoordinator,
   focusedSessionId,
   reconcileCleanupProjection,
 } from "../../../public/sessions/lifecycle.js";
@@ -104,7 +105,37 @@ describe("sessions page", () => {
     const reconciled = reconcileCleanupProjection([], ["session-1"]);
     assert.deepStrictEqual(reconciled.completedIds, ["session-1"]);
     assert.deepStrictEqual(reconciled.pendingIds, []);
-    assert.include(sessionsScript, "const projectionChecked = await refresh({ actionId: id })");
+    assert.include(sessionsScript, "await waitForRefresh()");
+    assert.include(sessionsScript, "afterActive: true");
+  });
+
+  it("queues a fresh deletion check behind an active sessions poll", async () => {
+    const started: string[] = [];
+    const releases = new Map<string, (value: boolean) => void>();
+    const coordinator = createRefreshCoordinator(
+      (options) =>
+        new Promise<boolean>((resolve) => {
+          const actionId = options.actionId || "passive";
+          started.push(actionId);
+          releases.set(actionId, resolve);
+        }),
+    );
+
+    const poll = coordinator.refresh({ actionId: "poll" });
+    const verification = coordinator.refresh({ actionId: "delete", afterActive: true });
+    assert.deepStrictEqual(started, ["poll"]);
+
+    const releasePoll = releases.get("poll");
+    assert.ok(releasePoll);
+    releasePoll(true);
+    await poll;
+    await Promise.resolve();
+    assert.deepStrictEqual(started, ["poll", "delete"]);
+
+    const releaseDelete = releases.get("delete");
+    assert.ok(releaseDelete);
+    releaseDelete(true);
+    assert.isTrue(await verification);
   });
 
   it("keeps stale projected rows visible as deleting", () => {

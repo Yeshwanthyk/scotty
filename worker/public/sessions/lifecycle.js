@@ -18,3 +18,25 @@ export function reconcileCleanupProjection(sessions, cleanupIds) {
     completedIds,
   };
 }
+
+export function createRefreshCoordinator(runRefresh) {
+  let activeRefresh;
+
+  const waitForIdle = async () => {
+    while (activeRefresh) await activeRefresh;
+  };
+
+  const refresh = async (options = {}) => {
+    if (!options.afterActive && activeRefresh) return activeRefresh;
+    while (activeRefresh) await activeRefresh;
+    const operation = Promise.resolve(runRefresh(options));
+    activeRefresh = operation;
+    try {
+      return await operation;
+    } finally {
+      if (activeRefresh === operation) activeRefresh = undefined;
+    }
+  };
+
+  return { refresh, waitForIdle };
+}
