@@ -862,7 +862,7 @@ describe("configuration and transport", () => {
     expect(config.token).not.toBe("secret");
   });
 
-  test("init synchronizes the configured TOML bundle after saving the pointer", async () => {
+  test("init synchronizes the configured TOML bundle and directs browser activation", async () => {
     const home = await temporaryDirectory();
     const skillRoot = await temporaryDirectory();
     const skillPath = join(skillRoot, "release-notes");
@@ -875,6 +875,7 @@ describe("configuration and transport", () => {
     let uploadedDigest: string | undefined;
     const h = harness({
       home,
+      stdoutIsTTY: true,
       fetch: async (input, init) => {
         const request = new Request(input, init);
         const url = new URL(request.url);
@@ -921,6 +922,11 @@ describe("configuration and transport", () => {
     expect(await main(["init", "--name", "home", ...HATCH_INIT_ARGS, "--yes"], h.deps)).toBe(
       EXIT.OK,
     );
+    expect(h.stdout.join("")).toContain(
+      "Scotty is deployed and synchronized. Browser access is not active yet.\n",
+    );
+    expect(h.stdout.join("")).toContain("Run `scotty owner recover` next to activate it.\n");
+    expect(h.stdout.join("")).not.toContain("scotty sync");
     expect(uploadedDigest).toMatch(/^[0-9a-f]{64}$/u);
     expect(
       await stat(join(home, ".scotty", "sandbox.json")).then(

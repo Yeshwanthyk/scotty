@@ -775,7 +775,9 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
             if (autoJson) outputJson(runtime.stdout, result);
             else {
               runtime.stdout(`Saved ${configPath} with mode 0600\n`);
-              runtime.stdout("Scotty is deployed. Run scotty sync to publish credentials.\n");
+              runtime.stdout(
+                "Scotty is deployed and synchronized. Browser access is not active yet.\nRun `scotty owner recover` next to activate it.\n",
+              );
             }
           }),
         );
