@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 import { assert, describe, it } from "vitest";
 import {
+  evidenceFailurePresentation,
   evidenceStatusLabel,
   isTerminalEvidenceStatus,
   orderedEvidenceFrames,
@@ -93,6 +94,19 @@ describe("evidence page", () => {
     assert.isFalse(shouldPollEvidence([{ status: "succeeded" }, { status: "failed" }], false));
     assert.include(evidenceScript, "const POLL_INTERVAL = 1_000");
     assert.include(evidenceScript, "schedulePoll(shouldPollEvidence(payload, true))");
+  });
+
+  it("shows the actionable reason for zero-frame target and capture failures", () => {
+    assert.deepStrictEqual(evidenceFailurePresentation({ code: "port_conflict" }), {
+      title: "Evidence target conflicts with Hatch",
+      detail: "The requested app port is owned by Hatch or is still exposed.",
+      hint: "Start a separate temporary app server on a different port, then rerun the same flow. Leave Hatch running.",
+    });
+    assert.deepInclude(evidenceFailurePresentation({ code: "artifact_invalid", step: 0 }), {
+      title: "Evidence capture failed",
+      detail: "Evidence did not produce a valid screenshot or recording.",
+    });
+    assert.include(evidenceScript, "evidenceFailurePresentation(summary.failure)");
   });
 
   it("renders verified screenshots without a synthetic replay or unsafe HTML", () => {

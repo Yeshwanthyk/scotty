@@ -34,6 +34,38 @@ describe("session artifacts", () => {
     });
   });
 
+  it("retains a typed zero-frame failure in the final Evidence artifact projection", () => {
+    assert.deepStrictEqual(
+      artifactForTool(
+        {
+          name: "scotty_browser_test",
+          details: {
+            jobId: "job-conflict",
+            status: "failed",
+            summaryUrl: `/s/${sessionId}/evidence/job-conflict`,
+            completedSteps: 0,
+            frameCount: 0,
+            video: false,
+            failure: { code: "port_conflict" },
+          },
+        },
+        sessionId,
+      ),
+      {
+        kind: "evidence",
+        reference: "scotty-evidence:job-conflict",
+        jobId: "job-conflict",
+        label: "Browser evidence",
+        status: "failed",
+        completedSteps: 0,
+        frameCount: 0,
+        video: false,
+        failure: { code: "port_conflict" },
+        href: `/s/${sessionId}/evidence/job-conflict`,
+      },
+    );
+  });
+
   it("rejects malformed, cross-session, and arbitrary Evidence URLs", () => {
     for (const summaryUrl of [
       "/s/ffffffffffff/evidence/job-1",
