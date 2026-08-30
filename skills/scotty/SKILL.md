@@ -1,6 +1,6 @@
 ---
 name: scotty
-description: Set up, deploy, verify, or synchronize a Scotty installation using only the signed Scotty executable. Use when an agent needs to install Scotty, configure Hatch and Evidence, publish a reviewed release, add session capabilities, or verify a deployed sandbox.
+description: Set up, deploy, verify, or synchronize a Scotty installation from a verified release or an explicitly approved exact checkout. Use when an agent needs to install Scotty, configure Hatch and Evidence, publish a reviewed release, add session capabilities, or verify a deployed sandbox.
 ---
 
 # Set up Scotty
@@ -13,11 +13,14 @@ description: Set up, deploy, verify, or synchronize a Scotty installation using 
 
 # Deploy Scotty
 
-1. Run `scotty upgrade` so the installed executable contains the intended signed release.
-2. Run `scotty deploy --plan --json`. Review `version`, `plan`, `bundle`, and every entry in `changes`. This command does not write provider or Worker state; it saves a private one-use authorization record for the exact provider plan and capability bundle.
-3. Obtain explicit authorization for that exact plan. Then run `scotty deploy --yes --json`. Never add `--yes` without the preceding reviewed plan. If Scotty reports `deployment_plan_changed`, stop and review a fresh `--plan`; do not bypass the mismatch.
-4. Treat success as provider rollout settlement plus publication of the reviewed bundle. Run `scotty doctor --json` for the connected installation.
-5. For full sandbox proof, obtain an explicit `OWNER/REPO`; never infer one. Run `scotty beam` with that repository, verify the session, then run `scotty vaporize SESSION_ID --yes --json`. The signed executable owns this workflow; do not require a source checkout, Node, npm, or a repository deploy script.
+1. Choose one exact deployment source.
+   - For a published release, run `scotty upgrade` and use the verified signed executable.
+   - For an explicitly approved unreleased checkout, use `bun cli/scotty.ts` from a clean detached worktree at the intended commit. Record that commit. Never let an older installed executable deploy newer checkout sources, and never deploy from a dirty worktree.
+2. With the chosen executable, run `scotty deploy --plan --json` for a release or `bun cli/scotty.ts deploy --plan --json` for a checkout. Review `version`, `plan`, `bundle`, and every entry in `changes`. This command does not write provider or Worker state; it saves a private one-use authorization record for the exact provider plan and capability bundle.
+3. If `changes` includes `SandboxContainer`, expect apply to read authoritative session readiness. Wait for active work to finish and checkpoint affected sessions. Do not infer safety from `scotty list`, bypass a missing readiness route, or treat a 404 as an empty session set.
+4. Obtain explicit authorization for that exact plan. Then run `scotty deploy --yes --json` for a release or `bun cli/scotty.ts deploy --yes --json` for a checkout. Never add `--yes` without the preceding reviewed plan. If Scotty reports `deployment_plan_changed` or consumes a plan after a failed preflight, stop and review a fresh plan; do not bypass the mismatch.
+5. Treat success as provider rollout settlement plus publication of the reviewed bundle. Run `scotty doctor --json` or `bun cli/scotty.ts doctor --json`, then run the matching plan command again and require `changes: []`.
+6. For full sandbox proof, obtain an explicit `OWNER/REPO`; never infer one. Run `beam` with that repository, verify the session, then run `vaporize SESSION_ID --yes --json`. For a signed release, do not require a source checkout, Node, npm, or a repository deploy script.
 
 # Sync Scotty capabilities
 
