@@ -39,10 +39,13 @@
           <h1>Before and after</h1>
           <p class="subtitle" id="subtitle">Loading matched browser proof…</p>
         </div>
-        <div class="showcase-status" id="status">Checking</div>
+        <div class="showcase-status" id="status" role="status" aria-live="polite">Checking</div>
       </div>
       <div class="notice" id="notice" role="alert" hidden>
-        <span id="notice-text"></span>
+        <span class="notice-copy">
+          <strong id="notice-title"></strong>
+          <span id="notice-text"></span>
+        </span>
         <button class="button" id="retry" type="button">Retry</button>
       </div>
       <section id="content" aria-busy="true" aria-live="polite">
