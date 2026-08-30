@@ -52,6 +52,13 @@ describe("cloud-agent session application", () => {
     assert.notInclude(appSource, "/rpc/");
   });
 
+  it("links the conversation to its focused session management row", () => {
+    assert.include(sessionHtml, 'id="manage-session"');
+    assert.include(sessionHtml, "Manage session");
+    assert.include(appSource, "`/sessions?focus=${encodeURIComponent(sessionId)}`");
+    assert.include(appSource, "updateManageSessionLink(sessionId)");
+  });
+
   it("makes accepted follow-up delivery visible while Pi is working", () => {
     assert.include(sessionHtml, 'id="composer-hint" class="composer-hint" role="status"');
     assert.include(sessionHtml, 'aria-live="polite"');

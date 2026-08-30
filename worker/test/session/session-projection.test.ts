@@ -156,6 +156,22 @@ describe("SessionProjection", () => {
     }),
   );
 
+  it.effect("rejects deletion while a point read still sees a stale projection", () =>
+    Effect.gen(function* () {
+      const storage = new InMemoryFaultInjectableFake();
+      storage.values.set("session:a0b1c2d3e4f5", { stale: true });
+      storage.handle("delete", () => undefined);
+
+      const result = yield* Effect.result(
+        withProjection(storage, removeSessionProjection("a0b1c2d3e4f5")),
+      );
+
+      assert.ok(Result.isFailure(result));
+      assert.deepStrictEqual(result.failure, new SessionProjectionFailure({ operation: "delete" }));
+      assert.deepStrictEqual(storage.values.get("session:a0b1c2d3e4f5"), { stale: true });
+    }),
+  );
+
   it.effect("continues projection listing across empty pages", () =>
     Effect.gen(function* () {
       const storage = new InMemoryFaultInjectableFake();

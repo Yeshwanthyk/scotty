@@ -9,6 +9,7 @@ import {
   titleText,
 } from "./form.js";
 import { normalizeSessionListItem, renderSessionsView, sessionsRenderSignature } from "./list.js";
+import { focusedSessionId, reconcileCleanupProjection } from "./lifecycle.js";
 
 const POLL_INTERVAL = 5000;
 const content = document.querySelector("#content");
@@ -58,11 +59,15 @@ const busy = new Map();
 const confirmations = new Set();
 const expandedSleepingProjects = new Set();
 const expandedSessionDetails = new Set();
+const cleanupPending = new Set();
+const cleanupTitles = new Map();
 const rowErrors = new Map();
 const suppressedRepositories = new Set();
 let renamingId;
 let renameDraft = "";
 let renderedSessionsSignature;
+const targetSessionId = focusedSessionId(window.location.search);
+let focusTargetSession = targetSessionId !== undefined;
 
 function sessionPath(id, suffix = "") {
   return `/api/sessions/${encodeURIComponent(id)}${suffix}`;
@@ -263,8 +268,11 @@ function render(options = {}) {
     renamingId,
     renameDraft,
     preserveFocusedDraft: options.preserveFocusedDraft === true,
+    targetSessionId,
+    focusTargetSession,
   });
   if (!result.preservedDraft) renderedSessionsSignature = signature;
+  if (loaded) focusTargetSession = false;
   return { ...result, preservedView: false };
 }
 
@@ -397,6 +405,30 @@ async function createSession() {
   }
 }
 
+function finishProjectedCleanup(completedIds) {
+  for (const id of completedIds) {
+    cleanupPending.delete(id);
+    confirmations.delete(id);
+    expandedSessionDetails.delete(id);
+    rowErrors.delete(id);
+    announce(`${cleanupTitles.get(id) || "Session"} deleted.`);
+    cleanupTitles.delete(id);
+  }
+}
+
+function applyProjectedSessions(next) {
+  const normalized = next.map(normalizeSessionListItem).filter((session) => session !== undefined);
+  const cleanup = reconcileCleanupProjection(normalized, [...cleanupPending]);
+  sessions = cleanup.sessions;
+  finishProjectedCleanup(cleanup.completedIds);
+  const target = sessions.find((session) => session.id === targetSessionId);
+  if (focusTargetSession && target) {
+    expandedSessionDetails.add(target.id);
+    if (target.status === "sleeping" && target.repo) expandedSleepingProjects.add(target.repo);
+  }
+  return cleanup;
+}
+
 async function refresh(options = {}) {
   if (fetching) return;
   const wasLoaded = loaded;
@@ -415,17 +447,19 @@ async function refresh(options = {}) {
     const body = await response.json();
     const next = Array.isArray(body) ? body : body?.sessions;
     if (!Array.isArray(next)) throw new Error("Scotty returned an unexpected response.");
-    sessions = next.map(normalizeSessionListItem).filter((session) => session !== undefined);
+    const cleanup = applyProjectedSessions(next);
     loaded = true;
     notice.hidden = true;
-    if (!wasLoaded || sessions.length !== previousCount) {
+    if (cleanup.completedIds.length === 0 && (!wasLoaded || sessions.length !== previousCount)) {
       announce(`${sessions.length} ${sessions.length === 1 ? "session" : "sessions"} available.`);
     }
+    return true;
   } catch (error) {
     noticeText.textContent =
       error instanceof Error ? error.message : "Sessions could not be loaded.";
     notice.hidden = false;
     if (options.actionId) rowErrors.set(options.actionId, noticeText.textContent);
+    return false;
   } finally {
     fetching = false;
     render({
@@ -435,23 +469,62 @@ async function refresh(options = {}) {
   }
 }
 
+function pendingLifecycleAction(current, id, action) {
+  if (action !== "delete") return action;
+  return current?.deleting || cleanupPending.has(id) ? "retry-delete" : "delete";
+}
+
+function lifecycleAnnouncement(action, pendingAction, title) {
+  if (action === "sleep") return `Stopping ${title}.`;
+  if (action === "resume") return `Resuming ${title}.`;
+  return pendingAction === "retry-delete"
+    ? `Retrying cleanup for ${title}.`
+    : `Deleting ${title} and its backups.`;
+}
+
+function expectedLifecycleStatus(action) {
+  if (action === "delete") return "gone";
+  return action === "sleep" ? "sleeping" : "warm";
+}
+
+async function applyLifecycleResult(id, action, result, title) {
+  confirmations.delete(id);
+  if (action === "resume") {
+    window.location.assign(`/s/${encodeURIComponent(id)}`);
+    return true;
+  }
+  if (action === "delete") {
+    cleanupPending.add(id);
+    cleanupTitles.set(id, title);
+    const projectionChecked = await refresh({ actionId: id });
+    if (!projectionChecked) {
+      throw new Error(
+        "Deletion finished, but the sessions list could not be checked. Retry cleanup.",
+      );
+    }
+    if (sessions.some((session) => session.id === id)) {
+      throw new Error("Deletion finished, but list cleanup is still pending. Retry cleanup.");
+    }
+    return projectionChecked;
+  }
+  sessions = sessions.map((session) => (session.id === id ? { ...session, ...result } : session));
+  announce(`${title} stopped.`);
+  return false;
+}
+
 async function perform(id, action) {
   if (busy.has(id)) return;
   const current = sessions.find((session) => session.id === id);
-  const title = current ? sessionTitle(current) : "session";
-  busy.set(id, action);
+  const title = current ? sessionTitle(current) || "session" : "session";
+  const pendingAction = pendingLifecycleAction(current, id, action);
+  busy.set(id, pendingAction);
   rowErrors.delete(id);
-  announce(
-    action === "sleep"
-      ? `Stopping ${title}.`
-      : action === "resume"
-        ? `Resuming ${title}.`
-        : `Deleting ${title}.`,
-  );
+  announce(lifecycleAnnouncement(action, pendingAction, title));
   render();
   const suffix = action === "delete" ? "" : `/${action}`;
   const method = action === "delete" ? "DELETE" : "POST";
   let succeeded = false;
+  let projectionChecked = false;
   try {
     const response = await fetch(sessionPath(id, suffix), {
       method,
@@ -463,27 +536,16 @@ async function perform(id, action) {
       throw new Error(await errorMessage(response, `Could not ${action} this session.`));
     }
     const result = await response.json();
-    const expectedStatus = action === "delete" ? "gone" : action === "sleep" ? "sleeping" : "warm";
+    const expectedStatus = expectedLifecycleStatus(action);
     if (result?.id !== id || result?.status !== expectedStatus)
       throw new Error("Scotty returned an unexpected response.");
+    projectionChecked = await applyLifecycleResult(id, action, result, title);
     succeeded = true;
-    confirmations.delete(id);
-    expandedSessionDetails.delete(id);
-    if (action === "resume") {
-      window.location.assign(`/s/${encodeURIComponent(id)}`);
-      return;
-    }
-    if (action === "delete") sessions = sessions.filter((session) => session.id !== id);
-    else
-      sessions = sessions.map((session) =>
-        session.id === id ? { ...session, ...result } : session,
-      );
-    announce(action === "delete" ? `${title} deleted.` : `${title} stopped.`);
   } catch (error) {
     rowErrors.set(id, error instanceof Error ? error.message : `Could not ${action} this session.`);
   } finally {
     busy.delete(id);
-    if (succeeded) render();
+    if (succeeded || projectionChecked) render();
     else await refresh({ actionId: id });
   }
 }
@@ -590,14 +652,25 @@ content.addEventListener("submit", (event) => {
 });
 
 content.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || !event.target.matches(".rename-input")) return;
+  if (event.key !== "Escape") return;
+  if (event.target.matches(".rename-input")) {
+    event.preventDefault();
+    renamingId = undefined;
+    renameDraft = "";
+    render();
+    focusVisibleControl(
+      `[data-action="rename"][data-id="${CSS.escape(event.target.form?.dataset.id || "")}"]`,
+    );
+    return;
+  }
+  const row = event.target.closest(".session[data-session-id]");
+  const id = row?.dataset.sessionId;
+  if (!id || !expandedSessionDetails.has(id)) return;
   event.preventDefault();
-  renamingId = undefined;
-  renameDraft = "";
+  confirmations.delete(id);
+  expandedSessionDetails.delete(id);
   render();
-  focusVisibleControl(
-    `[data-action="rename"][data-id="${CSS.escape(event.target.form?.dataset.id || "")}"]`,
-  );
+  focusVisibleControl(`[data-action="toggle-details"][data-id="${CSS.escape(id)}"]`);
 });
 
 content.addEventListener(

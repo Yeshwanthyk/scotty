@@ -50,7 +50,9 @@ export function formatSessionDuration(value) {
 
 export function sessionPrimaryTiming(session, status, pendingAction) {
   if (status === "deleting") {
-    return pendingAction === "delete" ? "Retrying cleanup" : "Cleanup retries automatically";
+    if (pendingAction === "delete") return "Deleting session and backups";
+    if (pendingAction === "retry-delete") return "Retrying cleanup";
+    return "Cleanup retries automatically";
   }
   if (status === "stopping") return "Stopping now";
   if (status === "boot-failed") return "Needs attention";
@@ -147,6 +149,16 @@ function createdRecency(session, now) {
   };
 }
 
+export function lifecycleActionLabel(expanded) {
+  return expanded ? "Hide actions" : "Actions";
+}
+
+export function deletionActionLabel(pendingAction, fallback) {
+  if (pendingAction === "delete") return "Deleting…";
+  if (pendingAction === "retry-delete") return "Retrying cleanup…";
+  return fallback;
+}
+
 function actionButton(state, label, action, id, options = {}) {
   const button = document.createElement("button");
   button.type = "button";
@@ -159,8 +171,8 @@ function actionButton(state, label, action, id, options = {}) {
   button.textContent =
     pendingAction === "sleep" && action === "sleep"
       ? "Stopping…"
-      : pendingAction === "delete" && action === "delete"
-        ? "Retrying…"
+      : action === "delete"
+        ? deletionActionLabel(pendingAction, label)
         : pendingAction && action !== "confirm-delete"
           ? "Working…"
           : label;
@@ -207,8 +219,10 @@ function appendTiming(parent, state, session, status, created, className = "sess
     "",
     status === "deleting"
       ? state.busy.get(session.id) === "delete"
-        ? "Retrying now"
-        : "Retries automatically"
+        ? "Deleting now"
+        : state.busy.get(session.id) === "retry-delete"
+          ? "Retrying now"
+          : "Retries automatically"
       : status === "sleeping"
         ? session.backupId
           ? "Ready"
@@ -279,7 +293,7 @@ function appendConfirmation(parent, state, session, status, className = "") {
   addText(
     confirmation,
     "confirmation-copy",
-    "Permanently delete this session and its backups?",
+    "This permanently removes the session and its backups.",
     "span",
   );
   const confirmButton = actionButton(state, "Delete permanently", "delete", session.id, {
@@ -298,13 +312,13 @@ function appendConfirmation(parent, state, session, status, className = "") {
 function appendMobileDisclosure(item, state, session, status, created) {
   const expanded = state.expandedSessionDetails.has(session.id);
   const detailId = `session-detail-${encodeURIComponent(session.id)}`;
-  const toggle = actionButton(state, "•••", "toggle-details", session.id, {
+  const toggle = actionButton(state, lifecycleActionLabel(expanded), "toggle-details", session.id, {
     focusPrefix: "details-",
   });
   toggle.className = "session-disclosure-toggle";
   toggle.setAttribute(
     "aria-label",
-    `${expanded ? "Hide" : "Show"} details for ${sessionTitle(session)}`,
+    `${expanded ? "Hide" : "Show"} actions for ${sessionTitle(session)}`,
   );
   toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
   toggle.setAttribute("aria-controls", detailId);
@@ -349,7 +363,11 @@ function renderSessionRow(state, session, now) {
   const statusClass = sessionStatusClass(status);
   item.className = `session status-${statusClass}${
     state.renamingId === session.id ? " is-renaming" : ""
-  }${state.expandedSessionDetails.has(session.id) ? " is-expanded" : ""}`;
+  }${state.expandedSessionDetails.has(session.id) ? " is-expanded" : ""}${
+    state.targetSessionId === session.id ? " is-targeted" : ""
+  }`;
+  item.dataset.sessionId = session.id;
+  if (state.targetSessionId === session.id) item.tabIndex = -1;
 
   if (
     status === "warm" &&
@@ -483,6 +501,15 @@ function focusRenderedControl(content, focusKey) {
   control?.focus();
 }
 
+function focusTargetSession(content, state) {
+  if (!state.focusTargetSession || !state.targetSessionId) return;
+  const target = content.querySelector(
+    `.session[data-session-id="${CSS.escape(state.targetSessionId)}"]`,
+  );
+  target?.focus({ preventScroll: true });
+  target?.scrollIntoView({ block: "center" });
+}
+
 export function renderSessionsView(state) {
   const { content, summary, sessions, loaded, fetching } = state;
   const activeElement = document.activeElement;
@@ -574,6 +601,7 @@ export function renderSessionsView(state) {
     projects.append(project);
   }
   content.append(projects);
+  focusTargetSession(content, state);
   focusRenderedControl(content, focusKey);
   return { preservedDraft: false };
 }
