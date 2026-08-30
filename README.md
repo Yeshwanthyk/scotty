@@ -6,77 +6,83 @@ or permanently destroy the session.
 
 ![Scotty](assets/brand/scotty-hero-16x9.png)
 
-## Architecture
+## Set up with an AI agent
+
+Copy this prompt into your coding agent:
 
 ```text
- Browser                                                CLI
- owner/client cookie                              root bearer token
-    |                                                       |
-    +-------------------------+-----------------------------+
-                              v
-                 +---------------------------+
-                 | Cloudflare Worker         |
-                 | Hono API + static assets  |
-                 | browser/CLI auth boundary |
-                 +-----+-----------+---------+
-                       |           |
-             +---------+           +----------------------+
-             v                                            v
- +------------------------+                    +-----------------------+
- | Auth Durable Object    |                    | Runner control plane  |
- | one owner + epoch      |                    | registry + runner DOs |
- | paired browser clients |                    +-----------+-----------+
- +------------------------+                                |
-                                                           v
-                                                 trusted Linux runner
-                                                 (registration/control)
+Set up Scotty on this machine end to end using only the signed `scotty` executable. Do not clone the
+Scotty repository and do not deploy with Wrangler, Alchemy, npm, or source scripts.
 
-                 one Durable Object per Cloudflare session
-                              |
-                              v
-                 +---------------------------+
-                 | Sandbox Durable Object    |
-                 | AUTHORITATIVE             |
-                 | session state             |
-                 | credentials + lifecycle   |
-                 +-----+----------+----------+
-                       |          |
-              projects |          | immutable checkpoints
-                       v          v
-                +-----------+  +-----------+
-                | KV        |  | R2        |
-                | non-secret|  | backups   |
-                | projection|  +-----------+
-                +-----------+
-                       |
-                       v
-          +------------------------------------+
-          | Cloudflare Sandbox + Container    |
-          | persistent workspace              |
-          | scotty-pi-shell + Pi RPC worklog  |
-          | fixed managed handles only        |
-          +------------------+-----------------+
-                             |
-                             v
-          +------------------------------------+
-          | ContainerProxy allowlisted egress |
-          | Registry-backed exact egress       |
-          +------------------+-----------------+
-                             |
-                         GitHub + Pi providers
+Before changing anything:
+1. Check the operating system, CPU architecture, `command -v scotty`, `scotty --version`, GitHub CLI
+   authentication, Docker, and available Cloudflare profiles.
+2. If Scotty is missing, install the latest release for this OS and architecture from
+   `Yeshwanthyk/scotty`. Verify its GitHub build provenance against
+   `.github/workflows/release-cli.yml` before installing or executing it. If Scotty is installed,
+   run `scotty upgrade`.
+3. Read `scotty skill show` and follow that embedded guide.
+4. Ask me for every value Scotty requires, including the lowercase installation name, Cloudflare
+   profile, preview DNS base, preview zone ID, credential source paths, and the explicit GitHub
+   repository used for the first sandbox. Never infer any of them.
+
+Run setup one step at a time. Before any command that creates, changes, or deletes Cloudflare
+resources, show me the exact account, resource plan, and command, then wait for my approval. Never
+add `--yes` on your own. Keep credentials out of output and source files.
+
+Finish only after `scotty config check`, `scotty sync --json`, and `scotty doctor --json` pass; owner
+recovery is opened in my browser; and one sandbox for the repository I supplied reaches warm. Report
+the installed Scotty version, installation name, Worker host, bundle digest, and sandbox ID.
 ```
 
-The Sandbox Durable Object is the source of truth. KV is only a non-secret list, repository, and
-stats projection; R2 stores immutable backups. The Container application runs the workspace and Pi
-process but does not own session state or real credentials. The trusted-runner lane currently
-supports registration and lifecycle control; runner-backed session creation remains disabled until
-it has the native Pi RPC worklog transport.
+## Cloudflare structure
+
+```mermaid
+flowchart TB
+    User["Browser / scotty CLI"]
+    Preview["*.preview.example.com"]
+
+    subgraph Cloudflare["Cloudflare account"]
+        Worker["Main Worker<br/>API, UI, auth boundary"]
+        RunnerWorker["Runner Worker"]
+
+        subgraph DurableObjects["Durable Objects"]
+            Auth["Auth<br/>owner and paired browsers"]
+            Config["Sandbox config<br/>Pi seed and repositories"]
+            Credentials["Credential registry<br/>encrypted credentials"]
+            Session["Sandbox per session<br/>authoritative lifecycle"]
+            Runners["Runner registry and runners"]
+        end
+
+        Container["Container application<br/>persistent Pi workspace"]
+        KV["KV<br/>non-secret projections"]
+        R2["R2 buckets<br/>backups, artifacts, bundles"]
+    end
+
+    User --> Worker
+    Preview --> Worker
+    Worker --> Auth
+    Worker --> Config
+    Worker --> Credentials
+    Worker --> Session
+    Worker --> Runners
+    Runners --> RunnerWorker
+    Session --> Container
+    Session --> KV
+    Session --> R2
+    Config --> R2
+```
+
+The per-session Sandbox Durable Object is authoritative. KV is a non-secret projection, R2 stores
+immutable data, and the Container runs Pi without owning session state or real credentials. Runner
+registration exists, but runner-backed session creation remains disabled until native Pi RPC
+transport is proven.
 
 ## Components
 
 - `worker/` — Hono API, Sandbox Durable Object, credential-isolating egress proxy, direct Pi RPC
   lifecycle and worklog, and trusted-runner control plane.
-- `cli/` — Effect-native Bun CLI and embedded `scotty skills` guide.
+- `cli/` — Effect-native Bun CLI and embedded `scotty skill show` guide.
 - `assets/brand/` — app icons, favicons, hero/social art, and agent glyphs.
 - `e2e/` — direct static contract checks, the local-live harness and helper tests, deployed route
   checks, and an explicitly gated deployed canary.
@@ -331,14 +337,18 @@ case "$(uname -s)-$(uname -m)" in
 esac
 scotty_download_dir=$(mktemp -d)
 gh release download --repo Yeshwanthyk/scotty --pattern "$asset" --dir "$scotty_download_dir"
+gh attestation verify "$scotty_download_dir/$asset" \
+  --repo Yeshwanthyk/scotty \
+  --signer-workflow Yeshwanthyk/scotty/.github/workflows/release-cli.yml
 mkdir -p "${HOME}/.local/bin"
 install -m 0755 "$scotty_download_dir/$asset" "${HOME}/.local/bin/scotty"
 "${HOME}/.local/bin/scotty" --version
 ```
 
-After the first install, `scotty upgrade` verifies the signed release manifest and executable hash
-before replacing the current binary. Add `${HOME}/.local/bin` to `PATH` to invoke it as `scotty`.
-Contributors can instead run `npm run build:cli` and use `./dist/scotty` directly.
+The first install verifies signed GitHub build provenance before executing the binary. After that,
+`scotty upgrade` verifies Scotty's signed release manifest and executable hash before replacing the
+current binary. Add `${HOME}/.local/bin` to `PATH` to invoke it as `scotty`. Contributors can instead
+run `npm run build:cli` and use `./dist/scotty` directly.
 
 ```sh
 npm run build:cli
