@@ -236,7 +236,7 @@ const PREVIEW_PORT_PATTERN = /^(?:[1-9][0-9]{3,4})$/u;
 const authorizesHatchReadiness = (
   hatch: HatchRecord | undefined,
   route: HatchHostRoute & { readonly marker: string },
-): boolean => {
+): hatch is HatchRecord => {
   if (
     hatch === undefined ||
     hatch.sessionId !== route.sessionId ||
