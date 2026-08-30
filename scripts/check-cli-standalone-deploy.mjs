@@ -15,10 +15,12 @@ export const STANDALONE_DEPLOY_EXIT_CODE = 1;
 export const STANDALONE_DEPLOY_TIMEOUT_MS = 30_000;
 
 const CLEAN_ROOM_CONFIG = Object.freeze({
-  version: 1,
   installationName: "clean-room",
   profile: "clean-room",
   accountId: "00000000000000000000000000000000",
+  previewBase: "preview.clean-room.example",
+  previewZoneId: "11111111111111111111111111111111",
+  evidenceEnabled: true,
 });
 const FORBIDDEN_EARLY_PHASE_SIGNATURES = Object.freeze([
   /(?:embedded )?deployment archive/iu,
