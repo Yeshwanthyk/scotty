@@ -10,7 +10,7 @@ const sessionCss = readFileSync(
 );
 
 describe("cloud-agent session application", () => {
-  it("wires one semantic shell to the five focused native modules", () => {
+  it("wires one semantic shell to the focused native modules", () => {
     assert.include(sessionHtml, '<aside id="agent-sidebar"');
     assert.include(sessionHtml, '<main class="agent-workspace">');
     assert.include(sessionHtml, '<section id="transcript"');
@@ -19,7 +19,10 @@ describe("cloud-agent session application", () => {
     assert.include(appSource, 'from "./cloud-agents.js"');
     assert.include(appSource, 'from "./pi-connection.js"');
     assert.include(appSource, 'from "./chat.js"');
-    assert.notInclude(sessionHtml, "Summary");
+    assert.include(appSource, 'from "./summary.js"');
+    assert.include(sessionHtml, '<aside id="summary-panel"');
+    assert.include(sessionHtml, '<div id="summary-content"');
+    assert.include(sessionHtml, 'aria-controls="summary-panel"');
     assert.notInclude(sessionHtml, "subagent");
     assert.notInclude(sessionHtml, "workflow");
   });
@@ -48,7 +51,8 @@ describe("cloud-agent session application", () => {
   it("uses a modal mobile sidebar, visible focus, safe areas, and reduced motion", () => {
     assert.include(sessionHtml, 'aria-controls="agent-sidebar"');
     assert.match(sessionHtml, /role="status"[\s\S]*?aria-live="polite"/u);
-    assert.include(appSource, "trapSidebarFocus");
+    assert.include(appSource, "trapDrawerFocus");
+    assert.include(appSource, "setSummary(false)");
     assert.include(appSource, 'event.key === "Escape"');
     assert.include(sessionCss, "env(safe-area-inset-bottom)");
     assert.match(sessionCss, /\[hidden\]\s*\{\s*display: none !important;/u);

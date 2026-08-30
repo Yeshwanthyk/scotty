@@ -1,12 +1,17 @@
 import { createChatView, applyEvent, projectionFromSnapshot, sanitizeText } from "./chat.js";
 import { createCloudAgentDirectory } from "./cloud-agents.js";
 import { createConsoleTransport, createPiConnection } from "./pi-connection.js";
+import { createSummaryView } from "./summary.js";
 
 const byId = (id) => document.getElementById(id);
 const sidebar = byId("agent-sidebar");
 const backdrop = byId("agent-backdrop");
 const openAgentsButton = byId("open-agents");
 const closeAgentsButton = byId("close-agents");
+const summaryPanel = byId("summary-panel");
+const summaryContent = byId("summary-content");
+const openSummaryButton = byId("open-summary");
+const closeSummaryButton = byId("close-summary");
 const agentList = byId("agent-list");
 const agentCount = byId("agent-count");
 const title = byId("agent-title");
@@ -29,16 +34,24 @@ const recoveryTitle = byId("recovery-title");
 const recoveryCopy = byId("recovery-copy");
 const discardCommands = byId("discard-commands");
 const compactViewport = matchMedia("(max-width: 760px)");
+const compactSummary = matchMedia("(max-width: 1180px)");
 const memory = new Map();
 const pendingUiResponses = new Set();
 const deliveredUiResponses = new Set();
 const chatView = createChatView({ document, feed, baseUrl: window.location.href });
+const summaryView = createSummaryView({
+  document,
+  root: summaryContent,
+  baseUrl: window.location.href,
+  fetch: window.fetch.bind(window),
+});
 
 let currentSessionId;
 let projection;
 let renderFrame;
 let loadGeneration = 0;
 let sidebarOpener;
+let summaryOpener;
 
 function sessionIdFromLocation() {
   const match = window.location.pathname.match(/^\/s\/([^/]+)$/u);
@@ -137,7 +150,10 @@ function scheduleRender() {
   if (renderFrame !== undefined) return;
   renderFrame = requestAnimationFrame(() => {
     renderFrame = undefined;
-    if (projection && currentSessionId) chatView.render(projection, currentSessionId);
+    if (projection && currentSessionId) {
+      chatView.render(projection, currentSessionId);
+      summaryView.render(projection, currentSessionId);
+    }
     setConnection("connected");
     updateComposer();
   });
@@ -160,6 +176,7 @@ function showLoadError(error) {
     error instanceof Error ? error.message : "This cloud agent is unavailable",
   );
   feed.removeAttribute("aria-busy");
+  summaryView.reset();
   feed.replaceChildren();
   const state = document.createElement("div");
   state.className = "conversation-state";
@@ -221,6 +238,7 @@ async function loadSession(sessionId, options = {}) {
   const generation = ++loadGeneration;
   projection = undefined;
   chatView.reset();
+  summaryView.reset();
   feed.setAttribute("aria-busy", "true");
   updateComposer();
   try {
@@ -254,6 +272,7 @@ async function switchSession(sessionId, options = {}) {
   if (options.history !== false)
     window.history.pushState({ sessionId }, "", `/s/${encodeURIComponent(sessionId)}`);
   setSidebar(false);
+  setSummary(false);
   await loadSession(sessionId, { focusComposer: options.focusComposer });
 }
 
@@ -343,8 +362,9 @@ async function respondToQuestion(card, intent) {
 
 function setSidebar(open) {
   const compact = compactViewport.matches;
+  if (open) setSummary(false);
   sidebar.dataset.open = String(open);
-  backdrop.hidden = !open;
+  updateBackdrop();
   openAgentsButton.setAttribute("aria-expanded", String(open));
   if (compact) sidebar.inert = !open;
   else sidebar.inert = false;
@@ -358,15 +378,47 @@ function setSidebar(open) {
   }
 }
 
-function trapSidebarFocus(event) {
-  if (event.key === "Escape" && sidebar.dataset.open === "true") {
+function setSummary(open) {
+  const compact = compactSummary.matches;
+  const expanded = compact ? open : true;
+  if (open) setSidebar(false);
+  summaryPanel.dataset.open = String(expanded);
+  summaryPanel.inert = compact && !expanded;
+  openSummaryButton.setAttribute("aria-expanded", String(expanded));
+  updateBackdrop();
+  if (open && compact) {
+    summaryOpener = document.activeElement;
+    closeSummaryButton.focus({ preventScroll: true });
+  } else if (!open && summaryOpener && compact) {
+    summaryOpener.focus({ preventScroll: true });
+    summaryOpener = undefined;
+  }
+}
+
+function updateBackdrop() {
+  const sidebarOpen = compactViewport.matches && sidebar.dataset.open === "true";
+  const summaryOpen = compactSummary.matches && summaryPanel.dataset.open === "true";
+  backdrop.hidden = !sidebarOpen && !summaryOpen;
+}
+
+function trapDrawerFocus(event) {
+  const activeDrawer =
+    compactViewport.matches && sidebar.dataset.open === "true"
+      ? sidebar
+      : compactSummary.matches && summaryPanel.dataset.open === "true"
+        ? summaryPanel
+        : undefined;
+  if (event.key === "Escape" && activeDrawer) {
     event.preventDefault();
-    setSidebar(false);
+    if (activeDrawer === sidebar) setSidebar(false);
+    else setSummary(false);
     return;
   }
-  if (event.key !== "Tab" || sidebar.dataset.open !== "true" || !compactViewport.matches) return;
+  if (event.key !== "Tab" || !activeDrawer) return;
   const controls = [
-    ...sidebar.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'),
+    ...activeDrawer.querySelectorAll(
+      'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
   ];
   const first = controls[0];
   const last = controls.at(-1);
@@ -436,9 +488,15 @@ feed.addEventListener("submit", (event) => {
 });
 openAgentsButton.addEventListener("click", () => setSidebar(true));
 closeAgentsButton.addEventListener("click", () => setSidebar(false));
-backdrop.addEventListener("click", () => setSidebar(false));
-document.addEventListener("keydown", trapSidebarFocus);
+openSummaryButton.addEventListener("click", () => setSummary(true));
+closeSummaryButton.addEventListener("click", () => setSummary(false));
+backdrop.addEventListener("click", () => {
+  setSidebar(false);
+  setSummary(false);
+});
+document.addEventListener("keydown", trapDrawerFocus);
 compactViewport.addEventListener("change", () => setSidebar(false));
+compactSummary.addEventListener("change", () => setSummary(false));
 window.addEventListener("popstate", () => {
   const sessionId = sessionIdFromLocation();
   if (sessionId) void switchSession(sessionId, { history: false });
@@ -447,12 +505,14 @@ window.addEventListener("beforeunload", () => {
   saveBrowserState();
   directory.dispose();
   connection.close();
+  summaryView.reset();
   if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
 });
 
 currentSessionId = sessionIdFromLocation();
 directory.setCurrent(currentSessionId);
 setSidebar(false);
+setSummary(false);
 composerInput.value = currentSessionId ? memoryEntry(currentSessionId).draft : "";
 autosizeComposer();
 void directory.refresh().catch((error) => {

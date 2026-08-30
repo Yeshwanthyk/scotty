@@ -460,7 +460,7 @@ function appendDescriptor(document, parent, value) {
   parent.append(child);
 }
 
-function markdownFragment(document, source, baseUrl) {
+export function renderSafeMarkdown(document, source, baseUrl) {
   const fragment = document.createDocumentFragment();
   for (const value of safeMarkdownTree(source, baseUrl))
     appendDescriptor(document, fragment, value);
@@ -573,7 +573,7 @@ function renderTurn(document, turn, projection, sessionId, baseUrl, working) {
     for (const part of contentParts(message)) {
       if (part?.type === "thinking") thinking.push(partText(part));
       else if (part?.type === "text" || typeof part === "string")
-        assistant.append(markdownFragment(document, partText(part), baseUrl));
+        assistant.append(renderSafeMarkdown(document, partText(part), baseUrl));
     }
   }
   if (assistant.childNodes.length > 0) article.append(assistant);
