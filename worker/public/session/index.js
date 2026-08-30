@@ -252,6 +252,7 @@ async function loadSession(sessionId, options = {}) {
     projection = projectionFromSnapshot(snapshot);
     syncDeliveredUiResponses(sessionId, projection);
     const entry = memoryEntry(sessionId);
+    entry.delivery = reconcileDelivery(entry.delivery, projection);
     if (entry.delivery?.status === "stale")
       entry.delivery = { ...entry.delivery, detail: "refreshed" };
     scheduleRender();

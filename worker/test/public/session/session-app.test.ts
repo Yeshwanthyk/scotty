@@ -52,6 +52,13 @@ describe("cloud-agent session application", () => {
     assert.notInclude(appSource, "/rpc/");
   });
 
+  it("reconciles accepted or queued delivery state from each authoritative reload", () => {
+    assert.match(
+      appSource,
+      /projection = projectionFromSnapshot\(snapshot\);[\s\S]{0,240}entry\.delivery = reconcileDelivery\(entry\.delivery, projection\);/u,
+    );
+  });
+
   it("uses clear delivery choices and keeps Stop outside the message form", () => {
     assert.include(sessionHtml, 'id="composer-hint" class="composer-hint" role="status"');
     assert.include(sessionHtml, 'aria-live="polite"');
