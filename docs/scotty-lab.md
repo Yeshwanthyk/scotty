@@ -49,7 +49,10 @@ SESSION_ID="$(printf '%s\n' "$BEAM_OUTPUT" | tail -n 1 | jq -r '.id')"
 Then read a bounded snapshot with:
 
 ```sh
-npm run lab -- exec "$RUN_ID" -- read "$SESSION_ID" --last 5 --json
+READ_OUTPUT="$(npm --silent run lab -- exec "$RUN_ID" -- \
+  read "$SESSION_ID" --last 5 --json)"
+printf '%s\n' "$READ_OUTPUT"
+SEQUENCE="$(printf '%s\n' "$READ_OUTPUT" | jq -er '.sequence')"
 ```
 
 The result contains the session `id`, current `epoch` and `sequence`, readable `messages`, and the
