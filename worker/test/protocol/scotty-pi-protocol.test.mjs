@@ -236,7 +236,6 @@ describe("Scotty Pi supervisor protocol", () => {
   it("translates only approved slash intents and rejects legacy browser commands", () => {
     const slash = normalizeCommand(
       {
-        version: 1,
         epoch,
         commandId,
         expectedSessionRevision: 7,
@@ -252,7 +251,6 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.deepStrictEqual(
       normalizeCommand(
         {
-          version: 1,
           epoch,
           commandId,
           expectedSessionRevision: 7,
@@ -265,7 +263,6 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.deepStrictEqual(
       normalizeCommand(
         {
-          version: 1,
           epoch,
           commandId,
           expectedSessionRevision: 7,
@@ -278,7 +275,6 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.deepStrictEqual(
       normalizeCommand(
         {
-          version: 1,
           epoch,
           commandId,
           expectedSessionRevision: 7,
@@ -297,7 +293,6 @@ describe("Scotty Pi supervisor protocol", () => {
     });
     const steer = normalizeCommand(
       {
-        version: 1,
         epoch,
         commandId,
         expectedSessionRevision: 7,
@@ -334,7 +329,6 @@ describe("Scotty Pi supervisor protocol", () => {
       assert.deepStrictEqual(
         normalizeCommand(
           {
-            version: 1,
             epoch,
             commandId,
             expectedSessionRevision: 7,
@@ -347,7 +341,6 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.deepStrictEqual(
       normalizeCommand(
         {
-          version: 1,
           epoch,
           commandId,
           expectedSessionRevision: 7,
@@ -365,19 +358,19 @@ describe("Scotty Pi supervisor protocol", () => {
       { ok: false, error: "invalid_command" },
     );
     assert.deepStrictEqual(
-      normalizeCommand({ version: 1, epoch, commandId, intent: { type: "abort" } }, epoch),
+      normalizeCommand({ epoch, commandId, intent: { type: "abort" } }, epoch),
       { ok: false, error: "invalid_command" },
     );
     assert.deepStrictEqual(
       normalizeCommand(
-        { version: 2, epoch, commandId, expectedSessionRevision: 7, intent: { type: "abort" } },
+        { version: 1, epoch, commandId, expectedSessionRevision: 7, intent: { type: "abort" } },
         epoch,
       ),
       { ok: false, error: "invalid_command" },
     );
     assert.deepStrictEqual(
       normalizeCommand(
-        { version: 1, epoch, commandId, expectedSessionRevision: 7, intent: { type: "prompt" } },
+        { epoch, commandId, expectedSessionRevision: 7, intent: { type: "prompt" } },
         epoch,
       ),
       { ok: false, error: "invalid_command" },
@@ -385,7 +378,6 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.deepStrictEqual(
       normalizeCommand(
         {
-          version: 1,
           epoch: "epoch-2",
           commandId,
           expectedSessionRevision: 7,
@@ -405,7 +397,7 @@ describe("Scotty Pi supervisor protocol", () => {
       { type: "follow_up", message: "continue", images: [image] },
     ]) {
       const normalized = normalizeCommand(
-        { version: 1, epoch, commandId, expectedSessionRevision: 7, intent },
+        { epoch, commandId, expectedSessionRevision: 7, intent },
         epoch,
       );
       assert.strictEqual(normalized.ok, true);
@@ -431,7 +423,6 @@ describe("Scotty Pi supervisor protocol", () => {
       assert.deepStrictEqual(
         normalizeCommand(
           {
-            version: 1,
             epoch,
             commandId,
             expectedSessionRevision: 7,
@@ -444,7 +435,6 @@ describe("Scotty Pi supervisor protocol", () => {
     assert.deepStrictEqual(
       normalizeCommand(
         {
-          version: 1,
           epoch,
           commandId,
           expectedSessionRevision: 7,

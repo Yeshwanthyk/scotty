@@ -190,7 +190,6 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
 
   let commandSequence = 0;
   const commandEnvelope = (intent) => ({
-    version: 1,
     epoch: snapshot.epoch,
     commandId: `123e4567-e89b-42d3-a456-${String(++commandSequence).padStart(12, "0")}`,
     expectedSessionRevision: 7,
@@ -249,7 +248,6 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   );
 
   const concurrentCommand = {
-    version: 1,
     epoch: snapshot.epoch,
     commandId: "123e4567-e89b-42d3-a456-426614174000",
     expectedSessionRevision: 7,
@@ -283,7 +281,6 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   assert.deepEqual(await concurrentSameResponse.json(), await concurrentFirstResponse.json());
   assert.equal(concurrentConflict.status, 409);
   assert.deepEqual(await concurrentConflict.json(), {
-    version: 1,
     status: "error",
     code: "command_id_conflict",
     retryable: false,
@@ -317,7 +314,6 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
     method: "POST",
     headers: { ...transportHeaders, "content-type": "application/json" },
     body: JSON.stringify({
-      version: 1,
       epoch: snapshot.epoch,
       commandId: "123e4567-e89b-42d3-a456-426614174001",
       expectedSessionRevision: 7,
@@ -358,7 +354,6 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   });
   assert.equal(answer.status, 202);
   assert.deepEqual(await answer.json(), {
-    version: 1,
     epoch: snapshot.epoch,
     status: "delivered",
     commandId: answerCommand.commandId,
@@ -386,7 +381,6 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", (line)
   });
   assert.equal(duplicateAnswer.status, 409);
   assert.deepEqual(await duplicateAnswer.json(), {
-    version: 1,
     status: "error",
     code: "extension_ui_response_already_delivered",
     retryable: false,
