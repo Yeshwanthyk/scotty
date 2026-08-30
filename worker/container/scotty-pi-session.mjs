@@ -11,7 +11,6 @@ import {
   PI_CONSOLE_MAX_EVENTS,
   PI_CONSOLE_MAX_MESSAGES,
   PI_CONSOLE_MAX_RESPONSE_BYTES,
-  PI_CONSOLE_PROTOCOL_VERSION,
   commandIntentDigest,
   completeSnapshotOverlap,
   createPendingUiTracker,
@@ -298,7 +297,6 @@ const projectSnapshotResponse = ({
   );
   const sanitizedMessages = sanitizeRemoteValue(messages);
   return {
-    version: PI_CONSOLE_PROTOCOL_VERSION,
     epoch: snapshotEpoch,
     baseSequence,
     sequence: endSequence,
@@ -394,7 +392,6 @@ const quiesce = async () => {
 const commandError = (status, code) => ({
   status,
   body: {
-    version: PI_CONSOLE_PROTOCOL_VERSION,
     status: "error",
     code,
     retryable: false,
@@ -432,7 +429,6 @@ const executeCommand = async (normalized, digest, receiptKey) => {
   }
   const response = sanitizeRemoteValue(rpcResponse).value;
   const receipt = {
-    version: PI_CONSOLE_PROTOCOL_VERSION,
     epoch,
     status:
       normalized.command.type === "extension_ui_response"

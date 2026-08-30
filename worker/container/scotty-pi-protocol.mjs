@@ -5,7 +5,6 @@ import {
 
 export { commandIntentDigest };
 
-export const PI_CONSOLE_PROTOCOL_VERSION = 1;
 export const PI_CONSOLE_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const PI_CONSOLE_MAX_COMMAND_BYTES = 8 * 1024 * 1024;
 export const PI_CONSOLE_MAX_IMAGES = 4;
@@ -897,6 +896,7 @@ export const completeSnapshotOverlap = (events, baseSequence, endSequence) => {
 };
 
 const validCommandId = (value) => typeof value === "string" && uuidPattern.test(value);
+const commandEnvelopeKeys = new Set(["epoch", "commandId", "expectedSessionRevision", "intent"]);
 
 const invalidCommandResult = () => ({ ok: false, error: "invalid_command" });
 const validatePromptIntent = (command) => {
@@ -977,7 +977,10 @@ const validIntent = (command) => {
 
 export const normalizeCommand = (body, currentEpoch) => {
   if (
-    body?.version !== PI_CONSOLE_PROTOCOL_VERSION ||
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    Object.keys(body).some((key) => !commandEnvelopeKeys.has(key)) ||
     !Number.isSafeInteger(body?.expectedSessionRevision) ||
     body.expectedSessionRevision < 0
   )
