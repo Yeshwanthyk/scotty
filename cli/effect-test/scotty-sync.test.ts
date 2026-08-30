@@ -352,6 +352,10 @@ describe("top-level sync and embedded skill commands", () => {
         assert.include(scottySkillContent, "scotty init --name NAME");
         assert.include(scottySkillContent, "--preview-base DOMAIN --preview-zone-id ZONE_ID");
         assert.include(scottySkillContent, "scotty_hatch ensure");
+        assert.include(scottySkillContent, "scotty deploy --plan --json");
+        assert.include(scottySkillContent, "scotty deploy --yes --json");
+        assert.include(scottySkillContent, "never infer one");
+        assert.include(scottySkillContent, "do not require a source checkout, Node, npm");
         const human = run(home, ["skill", "show"], async () => new Response(), true);
         assert.strictEqual(yield* human.effect, EXIT.OK);
         assert.strictEqual(human.stdout.join(""), scottySkillContent);

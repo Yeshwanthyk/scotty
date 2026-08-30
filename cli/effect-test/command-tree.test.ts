@@ -118,6 +118,9 @@ describe("Effect command tree", () => {
 
         const deploy = run(["deploy", "--help"]);
         assert.strictEqual(yield* deploy.effect, EXIT.OK);
+        assert.include(deploy.stdout.join(""), "--plan");
+        assert.include(deploy.stdout.join(""), "--yes");
+        assert.include(deploy.stdout.join(""), "exact deployment plan");
         assert.notInclude(deploy.stdout.join(""), "__scotty_trailing__");
         assert.notInclude(deploy.stdout.join(""), "unexpected");
         assert.strictEqual(deploy.stderr.join(""), "");

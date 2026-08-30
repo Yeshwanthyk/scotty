@@ -1,6 +1,6 @@
 ---
 name: scotty
-description: Set up a Scotty installation or synchronize its skills, tools, packages, and extensions. Use when an agent needs to install Scotty, configure Hatch and Evidence, add session capabilities, or publish changed local bundle content.
+description: Set up, deploy, verify, or synchronize a Scotty installation using only the signed Scotty executable. Use when an agent needs to install Scotty, configure Hatch and Evidence, publish a reviewed release, add session capabilities, or verify a deployed sandbox.
 ---
 
 # Set up Scotty
@@ -10,6 +10,14 @@ description: Set up a Scotty installation or synchronize its skills, tools, pack
 3. Treat successful init as the setup boundary: it provisions the wildcard DNS and Worker route used by Hatch and Evidence, enables both capabilities, and saves the private managed installation pointer. Do not create parallel Wrangler resources or manually copy root credentials.
 4. Declare Pi and repository-scoped GitHub credential sources in `~/.config/scotty/scotty.toml`, then run `scotty config check`, `scotty sync --json`, and `scotty doctor --json`.
 5. Run `scotty owner recover` in the browser that will own the installation. Create a fresh session and verify chat plus `scotty_hatch ensure` before calling setup complete.
+
+# Deploy Scotty
+
+1. Run `scotty upgrade` so the installed executable contains the intended signed release.
+2. Run `scotty deploy --plan --json`. Review `version`, `plan`, `bundle`, and every entry in `changes`. This command does not write provider or Worker state; it saves a private one-use authorization record for the exact provider plan and capability bundle.
+3. Obtain explicit authorization for that exact plan. Then run `scotty deploy --yes --json`. Never add `--yes` without the preceding reviewed plan. If Scotty reports `deployment_plan_changed`, stop and review a fresh `--plan`; do not bypass the mismatch.
+4. Treat success as provider rollout settlement plus publication of the reviewed bundle. Run `scotty doctor --json` for the connected installation.
+5. For full sandbox proof, obtain an explicit `OWNER/REPO`; never infer one. Run `scotty beam` with that repository, verify the session, then run `scotty vaporize SESSION_ID --yes --json`. The signed executable owns this workflow; do not require a source checkout, Node, npm, or a repository deploy script.
 
 # Sync Scotty capabilities
 
