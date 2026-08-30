@@ -5,6 +5,8 @@ import { orderedEvidenceFrames } from "../evidence/view.js";
 const REFERENCE = /\bscotty-(?:evidence|hatch):[A-Za-z0-9][A-Za-z0-9_-]{0,127}\b/gu;
 const SESSION_ID = /^[0-9a-f]{12}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
+const SHA256 = /^[0-9a-f]{64}$/u;
+const MAX_EVIDENCE_VIDEO_BYTES = 25 * 1024 * 1024;
 const MAX_EVIDENCE_STEPS = 12;
 const MAX_ASSERTIONS_PER_STEP = 4;
 const EVIDENCE_STATUSES = new Set([
@@ -20,6 +22,21 @@ const EVIDENCE_STATUSES = new Set([
 const HATCH_STATES = new Set(["starting", "running", "sleeping", "unhealthy", "stopped", "failed"]);
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+function isSummaryVideo(value) {
+  return (
+    isObject(value) &&
+    value.artifactId === "recording" &&
+    typeof value.sha256 === "string" &&
+    SHA256.test(value.sha256) &&
+    Number.isSafeInteger(value.bytes) &&
+    value.bytes >= 1 &&
+    value.bytes <= MAX_EVIDENCE_VIDEO_BYTES &&
+    typeof value.capturedAt === "string" &&
+    Number.isSafeInteger(value.offsetMillis) &&
+    value.offsetMillis >= 0
+  );
+}
 
 function messageText(message) {
   const parts = Array.isArray(message?.content)
@@ -95,6 +112,8 @@ export function decodeSummaryEvidence(value, jobId) {
     value.steps.length > value.totalSteps
   )
     return undefined;
+  const video = value.video;
+  if (video !== undefined && !isSummaryVideo(video)) return undefined;
   const steps = value.steps.flatMap((step) => {
     if (
       !isObject(step) ||
@@ -148,6 +167,17 @@ export function decodeSummaryEvidence(value, jobId) {
     totalSteps: value.totalSteps,
     completedSteps: value.completedSteps,
     frameCount: value.frameCount,
+    ...(video === undefined
+      ? {}
+      : {
+          video: {
+            artifactId: video.artifactId,
+            sha256: video.sha256,
+            bytes: video.bytes,
+            capturedAt: video.capturedAt,
+            offsetMillis: video.offsetMillis,
+          },
+        }),
     steps,
   };
 }
@@ -220,10 +250,13 @@ function renderEvidence(document, target, sessionId, evidence) {
     figure.append(image, caption);
     frames.append(figure);
   }
+  const recordingAvailable = evidence.video !== undefined;
   const link = document.createElement("a");
-  link.className = "summary-link";
-  link.href = `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(evidence.jobId)}`;
-  link.textContent = "Open full evidence";
+  link.className = recordingAvailable ? "summary-link summary-link-primary" : "summary-link";
+  link.href = recordingAvailable
+    ? `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(evidence.jobId)}/video.webm`
+    : `/s/${encodeURIComponent(sessionId)}/evidence/${encodeURIComponent(evidence.jobId)}`;
+  link.textContent = recordingAvailable ? "Watch browser recording" : "Open full evidence";
   target.replaceChildren(sectionHeading(document, "Browser evidence", "Verified run"), meta);
   if (frames.childNodes.length > 0) target.append(frames);
   target.append(link);

@@ -152,6 +152,33 @@ describe("agent Summary projection", () => {
     assert.deepInclude(evidence, { jobId: "job-1", frameCount: 1 });
     assert.isUndefined(decodeSummaryEvidence({ ...evidencePayload, jobId: "other" }, "job-1"));
 
+    const recordedEvidence = decodeSummaryEvidence(
+      {
+        ...evidencePayload,
+        video: {
+          artifactId: "recording",
+          sha256: "a".repeat(64),
+          bytes: 1_024,
+          capturedAt: "2026-08-30T12:00:00.000Z",
+          offsetMillis: 100,
+        },
+      },
+      "job-1",
+    );
+    assert.deepStrictEqual(recordedEvidence?.video, {
+      artifactId: "recording",
+      sha256: "a".repeat(64),
+      bytes: 1_024,
+      capturedAt: "2026-08-30T12:00:00.000Z",
+      offsetMillis: 100,
+    });
+    assert.isUndefined(
+      decodeSummaryEvidence(
+        { ...evidencePayload, video: { artifactId: "recording", sha256: "not-a-digest" } },
+        "job-1",
+      ),
+    );
+
     assert.deepStrictEqual(
       decodeSummaryHatch(
         {
@@ -179,6 +206,9 @@ describe("agent Summary projection", () => {
     assert.include(summarySource, 'cache: "no-store"');
     assert.include(summarySource, "/api/sessions/");
     assert.include(summarySource, "/hatch/open");
+    assert.include(summarySource, "/video.webm");
+    assert.include(summarySource, "Watch browser recording");
+    assert.include(summarySource, "Open full evidence");
     assert.notInclude(summarySource, "localStorage");
     assert.notInclude(summarySource, "innerHTML");
   });
