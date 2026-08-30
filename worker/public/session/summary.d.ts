@@ -11,6 +11,13 @@ export interface SummaryEvidence {
   readonly totalSteps: number;
   readonly completedSteps: number;
   readonly frameCount: number;
+  readonly video?: {
+    readonly artifactId: "recording";
+    readonly sha256: string;
+    readonly bytes: number;
+    readonly capturedAt: string;
+    readonly offsetMillis: number;
+  };
   readonly steps: ReadonlyArray<{
     readonly index: number;
     readonly name: string;
