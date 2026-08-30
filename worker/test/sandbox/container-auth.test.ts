@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Result } from "effect";
-import { agentEnv, piAuthJson } from "../../src/sandbox/auth";
+import { agentEnv, piAuthJson, sandboxAgentsInstructions } from "../../src/sandbox/auth";
 import {
   githubManagedHandle,
   managedPiAccessToken,
@@ -45,6 +45,14 @@ const credentials = sessionRuntimeCredentials(grants);
 
 // Keep this assertion close to the ContainerAuth boundary: native files only receive projections.
 describe("container managed credential projection", () => {
+  it("directs PR creation through the repository-scoped GitHub REST API", () => {
+    assert.include(
+      sandboxAgentsInstructions,
+      "use the repository-scoped GitHub REST endpoint with `gh api --method POST repos/{owner}/{repo}/pulls`",
+    );
+    assert.include(sandboxAgentsInstructions, "do not use `gh pr create` or GitHub GraphQL");
+  });
+
   it("projects fixed handles into Pi auth and GitHub environment values", () => {
     const auth = JSON.parse(piAuthJson(credentials)) as ProjectedPiAuth;
     const apiKey = "scotty-managed://codex/openai/api-key";
