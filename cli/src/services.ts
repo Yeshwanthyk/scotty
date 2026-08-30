@@ -6,7 +6,9 @@ import { Context, Data, Effect, Layer, Option, Predicate } from "effect";
 import lockfile from "proper-lockfile";
 import { decodePreviewCleanupOwnershipError } from "../../infra/preview-ownership.ts";
 import { CliError, EXIT, type Writer } from "./core";
+import { DeploymentSessionSafetyError } from "./installation-deployment.ts";
 import { InstallationHostFailure, installationCommandFailure } from "./installation-diagnostics.ts";
+import type { SessionDeploymentReadiness } from "../../protocol/session-deployment-safety";
 
 const isFreshInstallationRequired = (cause: unknown): boolean => {
   let current = cause;
@@ -29,6 +31,29 @@ const freshInstallationRequired = (): CliError =>
     EXIT.GENERIC,
   );
 
+const isDeploymentSessionSafetyError = (cause: unknown): cause is DeploymentSessionSafetyError =>
+  Predicate.isTagged(cause, "DeploymentSessionSafetyError");
+
+const deploymentSessionSafetyFailure = (
+  blockers: ReadonlyArray<SessionDeploymentReadiness>,
+): CliError => {
+  const summary = blockers
+    .map(
+      (blocker) =>
+        `${blocker.id} (${blocker.title}): ${blocker.recordStatus}, ` +
+        `agent=${blocker.agentState ?? "unknown"}, ` +
+        `lastEvent=${blocker.lastAgentEventAt ?? "unknown"}, reason=${blocker.reason}`,
+    )
+    .join("; ");
+  return new CliError(
+    "deployment_sessions_not_ready",
+    "Deployment is blocked by active or unsafe Cloudflare sessions",
+    `Checkpoint or stop the affected sessions, then rerun scotty deploy --plan. Affected sessions: ${summary}`,
+    EXIT.WRONG_STATE,
+    blockers,
+  );
+};
+
 export interface CliDependencies {
   fetch: typeof fetch;
   env: Record<string, string | undefined>;
@@ -47,7 +72,10 @@ export interface CliDependencies {
   createInstallation: (request: InstallationCreateRequest) => Promise<InstallationResult>;
   planCreateInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
   planInstallation: (request: InstallationDeployRequest) => Promise<InstallationPlan>;
-  deployInstallation: (request: InstallationApplyRequest) => Promise<InstallationResult>;
+  deployInstallation: (
+    request: InstallationApplyRequest,
+    readinessTarget?: InstallationDeploymentReadinessTarget,
+  ) => Promise<InstallationResult>;
   inspectInstallation: (request: InstallationInspectRequest) => Promise<InstallationResult>;
   recoverInstallation: (request: InstallationRecoverRequest) => Promise<InstallationResult>;
   uninstallInstallation: (
@@ -75,6 +103,11 @@ export interface InstallationCreateRequest extends InstallationDeployRequest {
 export interface InstallationApplyRequest extends InstallationDeployRequest {
   readonly expectedAccountId: string;
   readonly expectedPlanFingerprint: string;
+}
+
+export interface InstallationDeploymentReadinessTarget {
+  readonly host: string;
+  readonly token: string;
 }
 
 export interface InstallationInspectRequest {
@@ -234,6 +267,7 @@ interface InstallationDeployerShape {
   readonly plan: (request: InstallationDeployRequest) => Effect.Effect<InstallationPlan, CliError>;
   readonly deploy: (
     request: InstallationApplyRequest,
+    readinessTarget?: InstallationDeploymentReadinessTarget,
   ) => Effect.Effect<InstallationResult, CliError>;
 }
 
@@ -500,9 +534,9 @@ export const defaultDependencies = (): CliDependencies => ({
     const { planInstallation } = await import("./installation-deployment.ts");
     return planInstallation(request);
   },
-  deployInstallation: async (request) => {
+  deployInstallation: async (request, readinessTarget) => {
     const { deployInstallation } = await import("./installation-deployment.ts");
-    return deployInstallation(request);
+    return deployInstallation(request, readinessTarget);
   },
   inspectInstallation: async (request) => {
     const { inspectInstallation } = await import("./installation-deployment.ts");
@@ -628,11 +662,15 @@ export const cliLayer = (
                 }),
           ),
         ),
-      deploy: (request) =>
+      deploy: (request, readinessTarget) =>
         Effect.tryPromise({
-          try: () => dependencies.deployInstallation(request),
-          catch: (cause) => new InstallationHostFailure({ cause }),
+          try: () => dependencies.deployInstallation(request, readinessTarget),
+          catch: (cause) =>
+            isDeploymentSessionSafetyError(cause) ? cause : new InstallationHostFailure({ cause }),
         }).pipe(
+          Effect.catchTag("DeploymentSessionSafetyError", ({ blockers }) =>
+            Effect.fail(deploymentSessionSafetyFailure(blockers)),
+          ),
           Effect.catchTag("InstallationHostFailure", ({ cause }) =>
             isFreshInstallationRequired(cause)
               ? Effect.fail(freshInstallationRequired())

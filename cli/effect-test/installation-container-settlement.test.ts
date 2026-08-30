@@ -8,7 +8,9 @@ import type { Plan } from "alchemy";
 import { EXIT } from "../src/core.ts";
 import { installationCommandFailure } from "../src/installation-diagnostics.ts";
 import {
+  assertDeploymentSessionReadiness,
   assertContainerBaselineSettled,
+  readDeploymentSessionReadiness,
   InstallationDeploymentError,
   isContainerPlanChanged,
   waitForContainerRollout,
@@ -111,6 +113,78 @@ const makeSyntheticPlan = (resources: Record<string, "create" | "update" | "noop
 });
 
 describe("installation container rollout settlement", () => {
+  it.effect("reads authoritative session readiness with the bearer token", () =>
+    Effect.gen(function* () {
+      let request: Request | undefined;
+      const readiness = yield* readDeploymentSessionReadiness(
+        "https://scotty.example/",
+        "root-token",
+        async (input, init) => {
+          request = new Request(input, init);
+          return Response.json([
+            {
+              id: "a0b1c2d3e4f5",
+              title: "Checkpoint me",
+              recordStatus: "sleeping",
+              operation: null,
+              runtime: "stopped",
+              pi: "not_running",
+              ready: true,
+              reason: "sleeping_checkpointed",
+            },
+          ]);
+        },
+      );
+      assert.deepStrictEqual(readiness[0], {
+        id: "a0b1c2d3e4f5",
+        title: "Checkpoint me",
+        recordStatus: "sleeping",
+        operation: null,
+        runtime: "stopped",
+        pi: "not_running",
+        ready: true,
+        reason: "sleeping_checkpointed",
+      });
+      assert.strictEqual(request?.url, "https://scotty.example/api/sessions/deployment-readiness");
+      assert.strictEqual(request?.headers.get("authorization"), "Bearer root-token");
+    }),
+  );
+
+  it.effect("returns a typed blocker for every unsafe session", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        assertDeploymentSessionReadiness([
+          {
+            id: "a0b1c2d3e4f5",
+            title: "Still working",
+            recordStatus: "warm",
+            operation: "snapshot",
+            agentState: "working",
+            lastAgentEventAt: "2026-08-30T12:00:00.000Z",
+            runtime: "running",
+            pi: "reachable",
+            ready: false,
+            reason: "lifecycle_busy",
+          },
+        ]),
+      );
+      const error = failed(result);
+      assert.isTrue(Predicate.isTagged(error, "DeploymentSessionSafetyError"));
+      assert.deepStrictEqual(error.blockers[0], {
+        id: "a0b1c2d3e4f5",
+        title: "Still working",
+        recordStatus: "warm",
+        operation: "snapshot",
+        agentState: "working",
+        lastAgentEventAt: "2026-08-30T12:00:00.000Z",
+        runtime: "running",
+        pi: "reachable",
+        ready: false,
+        reason: "lifecycle_busy",
+      });
+    }),
+  );
+
   it.effect("settled rollout completes the deployment wait", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(1_000_000);
