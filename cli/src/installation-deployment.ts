@@ -45,6 +45,10 @@ import {
   type InstallationPreviewConfiguration,
 } from "../../infra/installation.ts";
 import {
+  SessionDeploymentReadinessResponseSchema,
+  type SessionDeploymentReadiness,
+} from "../../protocol/session-deployment-safety";
+import {
   PreviewCleanupOwnershipError,
   readOwnedPreviewTopologyDeletion,
 } from "../../infra/preview-ownership.ts";
@@ -185,6 +189,68 @@ export class InstallationDeploymentError extends Data.TaggedError("InstallationD
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
+export class DeploymentSessionSafetyError extends Data.TaggedError("DeploymentSessionSafetyError")<{
+  readonly blockers: ReadonlyArray<SessionDeploymentReadiness>;
+}> {}
+
+const decodeDeploymentReadinessJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(SessionDeploymentReadinessResponseSchema),
+);
+
+export type DeploymentReadinessFetcher = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export const readDeploymentSessionReadiness = Effect.fnUntraced(function* (
+  host: string,
+  token: string,
+  fetcher: DeploymentReadinessFetcher = fetch,
+) {
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      fetcher(new URL("/api/sessions/deployment-readiness", `${host.replace(/\/+$/u, "")}/`), {
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${token}`,
+        },
+      }),
+    catch: (cause) =>
+      new InstallationDeploymentError({
+        message: "Could not read authoritative Cloudflare session readiness.",
+        cause,
+      }),
+  });
+  const body = yield* Effect.tryPromise({
+    try: () => response.text(),
+    catch: (cause) =>
+      new InstallationDeploymentError({
+        message: "Could not read authoritative Cloudflare session readiness.",
+        cause,
+      }),
+  });
+  if (!response.ok)
+    return yield* new InstallationDeploymentError({
+      message: "Could not read authoritative Cloudflare session readiness.",
+      cause: `Worker returned HTTP ${response.status}`,
+    });
+  const decoded = decodeDeploymentReadinessJson(body);
+  if (Option.isNone(decoded))
+    return yield* new InstallationDeploymentError({
+      message: "Cloudflare session readiness response was invalid.",
+    });
+  return decoded.value;
+});
+
+export const assertDeploymentSessionReadiness = (
+  readiness: ReadonlyArray<SessionDeploymentReadiness>,
+): Effect.Effect<void, DeploymentSessionSafetyError> => {
+  const blockers = readiness.filter((session) => !session.ready);
+  return blockers.length === 0
+    ? Effect.void
+    : Effect.fail(new DeploymentSessionSafetyError({ blockers }));
+};
 
 export type ContainerControlPlaneReader<R = never> = (input: {
   readonly accountId: string;
@@ -682,6 +748,18 @@ const deployWithProfile = async (
               let containerAppId: string | undefined;
 
               if (containerChanged) {
+                if (summary.hasExistingResources) {
+                  if (request.host === undefined || request.token === undefined)
+                    return yield* new InstallationDeploymentError({
+                      message:
+                        "Cannot update SandboxContainer without an authenticated session-readiness preflight.",
+                    });
+                  const readiness = yield* readDeploymentSessionReadiness(
+                    request.host,
+                    request.token,
+                  );
+                  yield* assertDeploymentSessionReadiness(readiness);
+                }
                 const applications = yield* Containers.listContainerApplications({ accountId });
                 const application = applications.find(
                   (candidate) => candidate.name === installation.containerName,

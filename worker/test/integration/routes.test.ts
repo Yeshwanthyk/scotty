@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sandbox = vi.hoisted(() => ({
   createScottySession: vi.fn(),
   getScottySession: vi.fn(),
+  getScottyDeploymentReadiness: vi.fn(),
   completeScottyEvidenceStep: vi.fn(),
   finalizeScottyEvidenceJob: vi.fn(),
   listScottyEvidence: vi.fn(),
@@ -87,7 +88,7 @@ import { createDeterministicTarGz } from "../../../cli/src/sandbox-archive";
 import { app } from "../../src/index";
 import type { Bindings } from "../../src/shared/bindings";
 import { commandIntentDigest, decodePiConsoleCommandPromise } from "../../../protocol/pi-console";
-import { conflict } from "../../src/session/contracts";
+import { conflict, toProjection } from "../../src/session/contracts";
 import type { EvidenceState } from "../../src/evidence/contracts";
 import { orderedEvidenceFrames } from "../../public/evidence/view.js";
 import evidenceHtml from "../../public/evidence/index.html?raw";
@@ -237,7 +238,15 @@ function emptySessionsNamespace(values = new Map<string, unknown>()): KVNamespac
     return value === undefined ? null : typeof value === "string" ? value : JSON.stringify(value);
   };
   return {
-    list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
+    list: async () => ({
+      keys: [...values.keys()].map((name) => ({
+        name,
+        expiration: undefined,
+        metadata: undefined,
+      })),
+      list_complete: true,
+      cacheStatus: null,
+    }),
     get: async (name: string | string[]) =>
       Array.isArray(name) ? new Map(name.map((key) => [key, textValue(key)])) : textValue(name),
     getWithMetadata: async (name: string | string[]) => {
@@ -440,6 +449,16 @@ describe("real Hono boundary", () => {
       provider: "cloudflare",
       repo: "owner/repo",
       branch: "scotty/a0b1c2d3e4f5",
+    });
+    sandbox.getScottyDeploymentReadiness.mockResolvedValue({
+      id: "a0b1c2d3e4f5",
+      title: "Test session",
+      recordStatus: "sleeping",
+      operation: null,
+      runtime: "stopped",
+      pi: "not_running",
+      ready: true,
+      reason: "sleeping_checkpointed",
     });
     sandbox.preparePiSessionAccess.mockResolvedValue(undefined);
     sandbox.getScottyHatchStatus.mockResolvedValue({ status: "not_configured" });
@@ -774,6 +793,53 @@ describe("real Hono boundary", () => {
         hint: "Open a fresh pairing or recovery link, or configure the CLI root token.",
       },
     });
+  });
+
+  it("reads deployment readiness from each authoritative Sandbox DO", async () => {
+    const record = makeSessionRecord({
+      id: "a0b1c2d3e4f5",
+      title: "Projected title must not decide readiness",
+      status: "warm",
+    });
+    const sessions = new Map<string, unknown>([
+      [
+        "session:a0b1c2d3e4f5",
+        JSON.stringify(toProjection(record, new Date("2026-08-30T12:00:00.000Z"))),
+      ],
+    ]);
+    sandbox.getScottyDeploymentReadiness.mockResolvedValueOnce({
+      id: record.id,
+      title: record.title,
+      recordStatus: "warm",
+      operation: null,
+      agentState: "waiting",
+      lastAgentEventAt: "2026-08-30T11:59:00.000Z",
+      runtime: "running",
+      pi: "reachable",
+      ready: false,
+      reason: "record_warm",
+    });
+    const response = await app.request(
+      "/api/sessions/deployment-readiness",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      { ...env(), SESSIONS: emptySessionsNamespace(sessions) },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual([
+      {
+        id: record.id,
+        title: record.title,
+        recordStatus: "warm",
+        operation: null,
+        agentState: "waiting",
+        lastAgentEventAt: "2026-08-30T11:59:00.000Z",
+        runtime: "running",
+        pi: "reachable",
+        ready: false,
+        reason: "record_warm",
+      },
+    ]);
+    expect(sandbox.getScottyDeploymentReadiness).toHaveBeenCalledTimes(1);
   });
 
   it("syncs a complete redacted credential desired set through the Registry", async () => {

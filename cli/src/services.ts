@@ -6,7 +6,9 @@ import { Context, Data, Effect, Layer, Option, Predicate } from "effect";
 import lockfile from "proper-lockfile";
 import { decodePreviewCleanupOwnershipError } from "../../infra/preview-ownership.ts";
 import { CliError, EXIT, type Writer } from "./core";
+import { DeploymentSessionSafetyError } from "./installation-deployment.ts";
 import { InstallationHostFailure, installationCommandFailure } from "./installation-diagnostics.ts";
+import type { SessionDeploymentReadiness } from "../../protocol/session-deployment-safety";
 
 const isFreshInstallationRequired = (cause: unknown): boolean => {
   let current = cause;
@@ -28,6 +30,29 @@ const freshInstallationRequired = (): CliError =>
     "Create a fresh Scotty installation before deploying or recovering Registry-backed code; existing sessions are unsupported and are not migrated.",
     EXIT.GENERIC,
   );
+
+const isDeploymentSessionSafetyError = (cause: unknown): cause is DeploymentSessionSafetyError =>
+  Predicate.isTagged(cause, "DeploymentSessionSafetyError");
+
+const deploymentSessionSafetyFailure = (
+  blockers: ReadonlyArray<SessionDeploymentReadiness>,
+): CliError => {
+  const summary = blockers
+    .map(
+      (blocker) =>
+        `${blocker.id} (${blocker.title}): ${blocker.recordStatus}, ` +
+        `agent=${blocker.agentState ?? "unknown"}, ` +
+        `lastEvent=${blocker.lastAgentEventAt ?? "unknown"}, reason=${blocker.reason}`,
+    )
+    .join("; ");
+  return new CliError(
+    "deployment_sessions_not_ready",
+    "Deployment is blocked by active or unsafe Cloudflare sessions",
+    `Checkpoint or stop the affected sessions, then rerun scotty deploy --plan. Affected sessions: ${summary}`,
+    EXIT.WRONG_STATE,
+    blockers,
+  );
+};
 
 export interface CliDependencies {
   fetch: typeof fetch;
@@ -75,6 +100,8 @@ export interface InstallationCreateRequest extends InstallationDeployRequest {
 export interface InstallationApplyRequest extends InstallationDeployRequest {
   readonly expectedAccountId: string;
   readonly expectedPlanFingerprint: string;
+  readonly host?: string;
+  readonly token?: string;
 }
 
 export interface InstallationInspectRequest {
@@ -631,8 +658,12 @@ export const cliLayer = (
       deploy: (request) =>
         Effect.tryPromise({
           try: () => dependencies.deployInstallation(request),
-          catch: (cause) => new InstallationHostFailure({ cause }),
+          catch: (cause) =>
+            isDeploymentSessionSafetyError(cause) ? cause : new InstallationHostFailure({ cause }),
         }).pipe(
+          Effect.catchTag("DeploymentSessionSafetyError", ({ blockers }) =>
+            Effect.fail(deploymentSessionSafetyFailure(blockers)),
+          ),
           Effect.catchTag("InstallationHostFailure", ({ cause }) =>
             isFreshInstallationRequired(cause)
               ? Effect.fail(freshInstallationRequired())

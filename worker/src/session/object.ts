@@ -159,6 +159,10 @@ import {
   type SessionStatus,
   type SessionView,
 } from "./contracts";
+import {
+  assessSessionDeploymentReadiness,
+  type SessionDeploymentReadiness,
+} from "../../../protocol/session-deployment-safety";
 import type { CreateIdempotencyMetadata } from "./create-idempotency";
 import { ALLOWED_HOSTS, denyOutbound, makeOutboundByHost } from "../egress/worker";
 import { inspectPassiveSession, scottyErrorResponse, steerPassiveSession } from "./passive";
@@ -2444,6 +2448,48 @@ export class Sandbox extends BaseSandbox<Bindings> {
     return toSessionView(toProjection(record, new Date(now)), now);
   });
 
+  private readonly getScottyDeploymentReadinessProgram = Effect.fnUntraced(
+    function* (this: Sandbox) {
+      const record = yield* this.requireRecordProgram();
+      const runtime =
+        this.rawContainer === undefined
+          ? ("unknown" as const)
+          : this.rawContainer.running
+            ? ("running" as const)
+            : ("stopped" as const);
+      const pi =
+        runtime !== "running" || record.status !== "warm" || record.operation !== null
+          ? runtime === "stopped"
+            ? ("not_running" as const)
+            : ("unknown" as const)
+          : yield* Effect.tryPromise({
+              try: () =>
+                inspectPassiveSession({
+                  fetch: (request) =>
+                    this.fetchNativePassivePiConsole({ sessionId: record.id, request }),
+                }),
+              catch: () => undefined,
+            }).pipe(
+              Effect.map((response) =>
+                response.status === 200 ? ("reachable" as const) : ("unreachable" as const),
+              ),
+              Effect.orElseSucceed(() => "unreachable" as const),
+            );
+      return assessSessionDeploymentReadiness({
+        id: record.id,
+        title: record.title,
+        recordStatus: record.status,
+        operation: record.operation?.kind ?? null,
+        ...(record.agentState === undefined ? {} : { agentState: record.agentState }),
+        ...(record.lastAgentEventAt === undefined
+          ? {}
+          : { lastAgentEventAt: record.lastAgentEventAt }),
+        runtime,
+        pi,
+      });
+    },
+  );
+
   private readonly renameScottySessionProgram = Effect.fnUntraced(function* (
     this: Sandbox,
     title: string,
@@ -3459,6 +3505,10 @@ export class Sandbox extends BaseSandbox<Bindings> {
 
   async getScottySession(): Promise<SessionView> {
     return this.#run(this.getScottySessionProgram());
+  }
+
+  async getScottyDeploymentReadiness(): Promise<SessionDeploymentReadiness> {
+    return this.#run(this.getScottyDeploymentReadinessProgram());
   }
 
   private readonly requireHealthyHatchServiceProgram = Effect.fnUntraced(function* (

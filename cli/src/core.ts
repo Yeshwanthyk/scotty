@@ -1,4 +1,5 @@
 import { Data } from "effect";
+import type { SessionDeploymentReadiness } from "../../protocol/session-deployment-safety";
 import packageMetadata from "../../package.json" with { type: "json" };
 
 export const EXIT = {
@@ -24,9 +25,16 @@ export class CliError extends Data.TaggedError("CliError")<{
   readonly message: string;
   readonly hint: string;
   readonly exitCode: ExitCode;
+  readonly details?: ReadonlyArray<SessionDeploymentReadiness>;
 }> {
-  constructor(code: string, message: string, hint: string, exitCode: ExitCode) {
-    super({ code, message, hint, exitCode });
+  constructor(
+    code: string,
+    message: string,
+    hint: string,
+    exitCode: ExitCode,
+    details?: ReadonlyArray<SessionDeploymentReadiness>,
+  ) {
+    super({ code, message, hint, exitCode, ...(details === undefined ? {} : { details }) });
   }
 }
 

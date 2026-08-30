@@ -1182,6 +1182,8 @@ export const makeScottyCommand = (setExitCode: SetExitCode) => {
           ...request,
           expectedAccountId: plan.accountId,
           expectedPlanFingerprint: plan.fingerprint,
+          host: config.host,
+          token: config.token,
         });
         const host = yield* Effect.fromResult(normalizeHost(deployed.host));
         yield* secureWrite(

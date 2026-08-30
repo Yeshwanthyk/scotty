@@ -656,6 +656,32 @@ app.get("/api/sessions", async (c) => {
   );
 });
 
+// KV supplies candidate IDs only. Readiness is decided by each authoritative
+// Sandbox DO, including its native runtime and passive Pi reachability probe.
+app.get("/api/sessions/deployment-readiness", async (c) => {
+  requireAuthScope(c.get("auth"), "sessions:read");
+  const result = await Effect.runPromise(
+    listSessionProjections.pipe(
+      Effect.provide(projectionLayers(c.env)),
+      Effect.scoped,
+      Effect.result,
+    ),
+  );
+  const candidates = Result.match(result, {
+    onFailure: (error) => {
+      throw error;
+    },
+    onSuccess: (sessions) => sessions,
+  });
+  return c.json(
+    await Promise.all(
+      candidates.map((candidate) =>
+        sessionSandbox(c.env, candidate.id).getScottyDeploymentReadiness(),
+      ),
+    ),
+  );
+});
+
 app.get("/api/stats", async (c) => {
   requireAuthScope(c.get("auth"), "sessions:read");
   const result = await Effect.runPromise(
