@@ -199,7 +199,8 @@ export function createCommandLane({ send, randomUUID, onChange = () => {} }) {
           error instanceof Error ? error.message : "The command outcome could not be confirmed",
       };
     }
-    if (outcome.status === "accepted") items.splice(items.indexOf(item), 1);
+    if (outcome.status === "accepted" || outcome.status === "rejected")
+      items.splice(items.indexOf(item), 1);
     else {
       item.state = outcome.status;
       item.outcome = outcome;

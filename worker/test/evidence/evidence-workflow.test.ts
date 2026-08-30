@@ -183,11 +183,13 @@ const execute = (
   state: ControlState,
   record: ContainerEvidenceRecorder["Service"]["record"],
   deadlineAt?: string,
+  preflightFailure?: EvidenceFailure,
 ) =>
   runEvidenceWorkflow({
     active: activeFor(job, deadlineAt),
     job,
     summaryUrl: "/s/session/evidence/job-test",
+    ...(preflightFailure === undefined ? {} : { preflightFailure }),
   }).pipe(
     Effect.provideService(
       ContainerEvidenceRecorder,
@@ -202,6 +204,35 @@ const execute = (
   );
 
 describe("Container evidence workflow", () => {
+  it.effect("finalizes a typed port conflict before capture starts", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const state = emptyState();
+      let recorderCalls = 0;
+      const result = yield* execute(
+        defaultJob,
+        state,
+        () => {
+          recorderCalls += 1;
+          return Effect.succeed(successfulRecording());
+        },
+        undefined,
+        { code: "port_conflict" },
+      );
+
+      assert.deepInclude(result, {
+        status: "failed",
+        completedSteps: 0,
+        frameCount: 0,
+        video: false,
+        failure: { code: "port_conflict" },
+      });
+      assert.strictEqual(recorderCalls, 0);
+      assert.deepStrictEqual(state.events, ["failure:port_conflict", "terminal:failed"]);
+      assert.deepStrictEqual(state.diagnostic, { operation: "validate", reason: "state" });
+    }),
+  );
+
   it.effect("publishes a non-video PNG after the local recorder closes", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);

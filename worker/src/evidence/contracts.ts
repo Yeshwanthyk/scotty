@@ -177,6 +177,7 @@ export const EvidenceFailureCodeSchema = Schema.Literals([
   "artifact_put_unknown",
   "deadline",
   "interrupted",
+  "port_conflict",
   "unsupported",
 ]);
 export type EvidenceFailureCode = typeof EvidenceFailureCodeSchema.Type;
