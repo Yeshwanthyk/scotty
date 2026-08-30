@@ -86,6 +86,10 @@ describe("clean-room CLI image gate", () => {
     const dockerfile = read("worker/container/Dockerfile");
     const bunVersion = read(".bun-version").trim();
     const release = read(".github/workflows/release-cli.yml");
+    const releaseBuildJob = release.slice(
+      release.indexOf("  build:"),
+      release.indexOf("  attest:"),
+    );
 
     assert.equal(pkg.scripts["check:cli-clean-room"], "node scripts/check-cli-clean-room.mjs");
     assert.equal(
@@ -110,6 +114,14 @@ describe("clean-room CLI image gate", () => {
       release,
       /node scripts\/check-cli-standalone-deploy\.mjs dist\/release\/scotty-linux-x64/u,
     );
+    assert.match(release, /attest:\n    needs: build/u);
+    assert.doesNotMatch(releaseBuildJob, /id-token: write/u);
+    assert.doesNotMatch(releaseBuildJob, /attestations: write/u);
+    assert.match(release, /id-token: write/u);
+    assert.match(release, /attestations: write/u);
+    assert.match(release, /actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4/u);
+    assert.match(release, /subject-path: dist\/release\/scotty-\*/u);
+    assert.match(release, /release:\n    needs: attest/u);
     assert.match(
       dockerfile,
       /FROM docker\.io\/cloudflare\/sandbox:0\.12\.3@sha256:[0-9a-f]{64} AS scotty-cli-build/u,

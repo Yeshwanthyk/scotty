@@ -18,7 +18,9 @@ Before changing anything:
 1. Check the operating system, CPU architecture, `command -v scotty`, `scotty --version`, GitHub CLI
    authentication, Docker, and available Cloudflare profiles.
 2. If Scotty is missing, install the latest release for this OS and architecture from
-   `Yeshwanthyk/scotty`. If it is installed, run `scotty upgrade`.
+   `Yeshwanthyk/scotty`. Verify its GitHub build provenance against
+   `.github/workflows/release-cli.yml` before installing or executing it. If Scotty is installed,
+   run `scotty upgrade`.
 3. Read `scotty skill show` and follow that embedded guide.
 4. Ask me for every value Scotty requires, including the lowercase installation name, Cloudflare
    profile, preview DNS base, preview zone ID, credential source paths, and the explicit GitHub
@@ -335,14 +337,18 @@ case "$(uname -s)-$(uname -m)" in
 esac
 scotty_download_dir=$(mktemp -d)
 gh release download --repo Yeshwanthyk/scotty --pattern "$asset" --dir "$scotty_download_dir"
+gh attestation verify "$scotty_download_dir/$asset" \
+  --repo Yeshwanthyk/scotty \
+  --signer-workflow Yeshwanthyk/scotty/.github/workflows/release-cli.yml
 mkdir -p "${HOME}/.local/bin"
 install -m 0755 "$scotty_download_dir/$asset" "${HOME}/.local/bin/scotty"
 "${HOME}/.local/bin/scotty" --version
 ```
 
-After the first install, `scotty upgrade` verifies the signed release manifest and executable hash
-before replacing the current binary. Add `${HOME}/.local/bin` to `PATH` to invoke it as `scotty`.
-Contributors can instead run `npm run build:cli` and use `./dist/scotty` directly.
+The first install verifies signed GitHub build provenance before executing the binary. After that,
+`scotty upgrade` verifies Scotty's signed release manifest and executable hash before replacing the
+current binary. Add `${HOME}/.local/bin` to `PATH` to invoke it as `scotty`. Contributors can instead
+run `npm run build:cli` and use `./dist/scotty` directly.
 
 ```sh
 npm run build:cli

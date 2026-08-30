@@ -81,8 +81,26 @@ jobs:
           path: dist/release/scotty-${{ matrix.platform }}-${{ matrix.architecture }}
           if-no-files-found: error
 
-  release:
+  attest:
     needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: scotty-*
+          path: dist/release
+          merge-multiple: true
+      - name: Attest release executables
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/release/scotty-*
+
+  release:
+    needs: attest
     runs-on: ubuntu-latest
     environment: cli-release
     permissions:
