@@ -24,7 +24,9 @@ import {
   EvidenceStateError,
 } from "../evidence/contracts";
 import {
-  decodeEnsureHatchInput,
+  decodeHatchToolEnsureRequest,
+  hatchToolRestoreDescriptorProjection,
+  hatchToolStatusProjection,
   HatchRestoreDescriptorSchema,
   PublicHatchStatusSchema,
   type EnsureHatchInput,
@@ -300,18 +302,22 @@ function sanitizeHatchStatus(value: unknown): Response {
   const body = Result.isSuccess(encoded) ? encoded.success : undefined;
   const parsed = typeof body === "string" ? decodeJsonValue(body) : Option.none();
   const decoded = Option.isSome(parsed) ? decodePublicHatchStatus(parsed.value) : Option.none();
-  if (
-    Option.isNone(decoded) ||
-    body === undefined ||
-    new TextEncoder().encode(body).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES
-  )
+  if (Option.isNone(decoded) || body === undefined)
     return scottyErrorResponse(
       new ScottyError("upstream", "Scotty Hatch result is unavailable", {
         httpStatus: 502,
         exitCode: 1,
       }),
     );
-  return new Response(JSON.stringify(decoded.value), {
+  const projected = JSON.stringify(hatchToolStatusProjection(decoded.value));
+  if (new TextEncoder().encode(projected).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES)
+    return scottyErrorResponse(
+      new ScottyError("upstream", "Scotty Hatch result is unavailable", {
+        httpStatus: 502,
+        exitCode: 1,
+      }),
+    );
+  return new Response(projected, {
     headers: {
       "cache-control": "no-store",
       "content-type": "application/json; charset=utf-8",
@@ -359,7 +365,7 @@ async function handleHatchRestoreEgress(
         exitCode: 1,
       }),
     );
-  const body = JSON.stringify(descriptor.value);
+  const body = JSON.stringify(hatchToolRestoreDescriptorProjection(descriptor.value));
   if (new TextEncoder().encode(body).byteLength > SCOTTY_HATCH_MAX_PROTOCOL_BYTES)
     return scottyErrorResponse(
       new ScottyError("upstream", "Scotty Hatch restore descriptor is unavailable", {
@@ -411,9 +417,9 @@ async function handleHatchEgress(
     if (bodyText === undefined) return rejectedRequest("Hatch ensure request body is too large");
     const body = decodeJsonValue(bodyText);
     if (Option.isNone(body)) return rejectedRequest("Request body must be valid JSON");
-    const input = decodeEnsureHatchInput(body.value);
+    const input = decodeHatchToolEnsureRequest(body.value);
     if (Option.isNone(input)) return rejectedRequest("Hatch ensure request is invalid");
-    intent = { operation: "ensure", input: input.value };
+    intent = { operation: "ensure", input: { service: input.value.service } };
   } else {
     return rejectedRequest("Hatch requires GET status, JSON POST ensure, or DELETE close");
   }

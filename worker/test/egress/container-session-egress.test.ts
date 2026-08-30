@@ -84,7 +84,7 @@ const hatchRestoreDescriptor = () => ({
 
 const hatchRequest = (
   method: "GET" | "POST" | "DELETE",
-  body: unknown = { service: hatchService() },
+  body: unknown = { version: 1, service: hatchService() },
   headers: Readonly<Record<string, string>> = {},
 ) =>
   new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}`, {
@@ -373,6 +373,7 @@ describe("container-only session egress", () => {
       assert.strictEqual(response.status, 200);
       assert.strictEqual(response.headers.get("cache-control"), "no-store");
       const result = await response.json();
+      assert.deepInclude(result, { version: 1 });
       assert.notProperty(result, "url");
       assert.notProperty(result, "credential");
     }
@@ -387,6 +388,25 @@ describe("container-only session egress", () => {
       { operation: "ensure", input: { service: hatchService() } },
       { operation: "close" },
     ]);
+  });
+
+  it("projects the v1 tool contract for an unconfigured Hatch", async () => {
+    const handler = makeOutboundByHost(() => Promise.resolve(new Response("native")))[
+      SCOTTY_INTERNAL_HOST
+    ];
+    assert.isFunction(handler);
+    const env = bindings(
+      sandboxNamespace({
+        fromString: () => ({
+          getScottyHatchStatus: async () => ({ status: "not_configured" }),
+        }),
+      }),
+    );
+
+    const response = await handler(hatchRequest("GET"), env, context());
+
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(await response.json(), { version: 1, status: "not_configured" });
   });
 
   it("returns only the source-derived strict Hatch restore descriptor", async () => {
@@ -405,7 +425,7 @@ describe("container-only session egress", () => {
     const restored = await handler(request(), env, context());
     assert.strictEqual(restored.status, 200);
     assert.strictEqual(restored.headers.get("cache-control"), "no-store");
-    assert.deepStrictEqual(await restored.json(), hatchRestoreDescriptor());
+    assert.deepStrictEqual(await restored.json(), { version: 1, ...hatchRestoreDescriptor() });
 
     descriptor = undefined;
     assert.strictEqual((await handler(request(), env, context())).status, 204);
@@ -449,8 +469,12 @@ describe("container-only session egress", () => {
     const env = bindings(sandboxNamespace({ fromString: () => source }));
 
     for (const request of [
-      hatchRequest("POST", { service: { ...hatchService(), env: { TOKEN: "x" } } }),
-      hatchRequest("POST", { service: hatchService(), sessionId: SESSION_ID }),
+      hatchRequest("POST", {
+        version: 1,
+        service: { ...hatchService(), env: { TOKEN: "x" } },
+      }),
+      hatchRequest("POST", { version: 1, service: hatchService(), sessionId: SESSION_ID }),
+      hatchRequest("POST", { service: hatchService() }),
       hatchRequest("POST", { service: hatchService() }, { authorization: "Bearer x" }),
       new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}?session=${SESSION_ID}`),
       new Request(`https://${SCOTTY_INTERNAL_HOST}${SCOTTY_HATCH_ROUTE}`, { method: "PUT" }),
